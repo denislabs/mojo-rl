@@ -38,7 +38,7 @@ comptime HIDDEN_DIM = 256
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 8
+comptime MAX_N_ENVS = 4
 
 # Training duration
 comptime NUM_STEPS = 2_000_000
@@ -80,8 +80,8 @@ def main() raises:
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
-            alpha_lr=0.001,  # CleanRL: uses q_lr for alpha too
-            target_entropy=-1.0,  # -ACTION_DIM
+            alpha_lr=0.0003,
+            target_entropy=-3.0,  # -ACTION_DIM
             max_grad_norm=0.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_hopper.ckpt",
@@ -100,7 +100,7 @@ def main() raises:
         print("  Key hyperparameters:")
         print("    - Actor LR: 3e-4")
         print("    - Critic LR: 1e-3 (CleanRL default)")
-        print("    - Alpha LR: 1e-3 (CleanRL default)")
+        print("    - Alpha LR: 3e-4")
         print("    - Tau (soft update): 0.005")
         print("    - Initial alpha: 0.2 (auto-tuned)")
         print("    - Target entropy: -" + String(ACTION_DIM))
@@ -126,7 +126,7 @@ def main() raises:
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
         logger.set_config("actor_lr", "3e-4")
         logger.set_config("critic_lr", "1e-3")
-        logger.set_config("alpha_lr", "1e-3")
+        logger.set_config("alpha_lr", "3e-4")
         logger.set_config("batch_size", String(BATCH_SIZE))
         logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
 
@@ -151,7 +151,9 @@ def main() raises:
                 logger=UnsafePointer(to=logger),
                 diag_every=5_000,
                 # gradient_steps=4,
-                reward_scale=5.0,
+                reward_scale=1.0,
+                eval_every=50_000,
+                eval_episodes=16,
             )
 
             var end_time = perf_counter_ns()

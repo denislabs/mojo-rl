@@ -29,6 +29,9 @@ from ..autodiff.primitives.gather import GatherOp
 from ..autodiff.primitives.ppo_ops import CategoricalLogProbOp, RatioOp, ClipSurrogateOp
 from ..autodiff.primitives.gaussian_log_prob import GaussianLogProbOp
 from ..autodiff.primitives.mse_op import MSEOp
+from ..autodiff.primitives.activations import GELUOp
+from ..autodiff.primitives.reshape import Transpose2DOp
+from ..autodiff.primitives.reduce import TokenMean as _TokenMeanOp
 
 
 comptime RSample[
@@ -66,3 +69,19 @@ from ..autodiff.primitives.identity import IdentityOp
 comptime HuberLoss[delta: Float64 = 1.0] = AutoDiffChain[HuberOp[delta]]
 
 comptime Identity[dim: Int] = AutoDiffChain[IdentityOp[dim]]
+
+# GELU (tanh approximation, GPT-2 / BERT canonical) wrapped as a Model so it
+# can be dropped into Sequential / Tokenwise. See autodiff/primitives/activations.mojo.
+comptime GELU[dim: Int] = AutoDiffChain[GELUOp[dim]]
+
+# Transpose2D — reshape (BATCH, A * B) viewed as (BATCH, A, B) row-major to
+# (BATCH, B, A) row-major. Used to bridge Conv2D (channel-major output) with
+# attention (patch-major input) in ViT. See autodiff/primitives/reshape.mojo.
+comptime Transpose2D[A: Int, B: Int] = AutoDiffChain[Transpose2DOp[A, B]]
+
+# TokenMean — average over the seq_len axis of a (seq_len, dim) per-sample
+# tensor. (BATCH, seq_len * dim) → (BATCH, dim). Used as the ViT
+# classification-head pooling step. See autodiff/primitives/reduce.mojo.
+comptime TokenMean[seq_len: Int, dim: Int] = AutoDiffChain[
+    _TokenMeanOp[seq_len, dim]
+]

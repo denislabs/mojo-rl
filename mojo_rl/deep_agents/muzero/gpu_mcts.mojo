@@ -622,6 +622,52 @@ def gpu_mcts_extract_actions_kernel[
             policies_out[e * ACT + a] = Scalar[dtype](1.0) / Scalar[dtype](ACT)
 
 
+def gpu_mcts_extract_root_value_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    ACT: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    values_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+):
+    """Extract MCTS root value as `Σ_a total_value[root,a] / Σ_a visit_count[root,a]`.
+
+    Mirrors muzero-general's `node.value() = value_sum / visit_count` and is
+    used as the n-step bootstrap V(s_{t+n}) in `nstep_value_targets_kernel`.
+    Without this, the bootstrap would be a hardcoded zero — value targets
+    collapse to the sum of K rewards regardless of state, and the value head
+    learns a constant. See docs/MUZERO_AUDIT.md F2.
+
+    Total_value is accumulated by the expand+backup kernel in raw (post-h⁻¹)
+    scalar space (after F1), so the returned root value is in raw space —
+    the same space the n-step return formula expects.
+
+    One thread per environment.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var root_off = e * MAX_NODES * ACT  # Root is always node 0
+
+    var visit_sum = Scalar[dtype](0.0)
+    var value_sum = Scalar[dtype](0.0)
+    for a in range(ACT):
+        visit_sum += rebind[Scalar[dtype]](visit_count[root_off + a])
+        value_sum += rebind[Scalar[dtype]](total_value[root_off + a])
+
+    if visit_sum > Scalar[dtype](0.5):
+        values_out[e] = value_sum / visit_sum
+    else:
+        values_out[e] = Scalar[dtype](0.0)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Self-Play Kernels (legal masking + negated backup)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1672,6 +1718,8 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
     BATCH_SIMS: Int,
     PRED_OUT: Int,
     STATE_SIZE: Int,
+    NEGATE_BACKUP: Bool,
+    VALUE_SQUASH: Bool,
     dtype: DType where dtype.is_floating_point(),
 ](
     # Node storage
@@ -1718,6 +1766,13 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
     step_rewards: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
     ],
+    # Done flags from env.step [N_ENVS * BATCH_SIMS]. Single-player path uses
+    # this to set leaf_value=0 vs V_pred. Two-player path infers terminal
+    # from `|step_rewards| > 0.5` and ignores this buffer (so any value is
+    # safe for board games — typically just pass exp_dones).
+    step_dones: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
     # Search paths [N_ENVS * BATCH_SIMS * MAX_DEPTH]
     search_paths: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin
@@ -1732,12 +1787,32 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
     expansion_legal_masks: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * BATCH_SIMS * ACT), MutAnyOrigin
     ],
+    # Discount factor (used only by single-player backup; ignored when
+    # NEGATE_BACKUP=True).
+    gamma: Scalar[dtype],
 ):
-    """Fused expand + negated backup + remove virtual losses — with child prior masking.
+    """Fused expand + backup + remove virtual losses — with child prior masking.
 
     Like gpu_mcts_batched_expand_backup_kernel but masks child priors with
     legal action masks (matching AlphaZero.jl / alpha-zero-general which mask
     priors at ALL nodes, not just root).
+
+    Comptime branches on game family:
+
+      NEGATE_BACKUP=True  (board games / two-player zero-sum):
+        Leaf value:
+          - terminal (|step_rew| > 0.5): leaf_value = -step_rew
+          - non-terminal: leaf_value = tanh(raw_v) if VALUE_SQUASH else raw_v
+        Backup recurrence: value = -value at each parent (perspective flip,
+        no per-edge reward — board games are terminal-reward-only).
+
+      NEGATE_BACKUP=False (single-player envs with per-step rewards):
+        Leaf value:
+          - terminal (step_dones[sim] >= 0.5): leaf_value = step_rew
+          - non-terminal: leaf_value = step_rew + γ · V_leaf
+            where V_leaf = tanh(raw_v) if VALUE_SQUASH else raw_v.
+        Backup recurrence: value = edge_reward + γ · value at each parent,
+        where `edge_reward` is read from `reward_buf` (set on prior expansions).
 
     One thread per env. Processes all BATCH_SIMS expansions sequentially.
     """
@@ -1854,19 +1929,52 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
 
         # ── Decode leaf value ───────────────────────────────
         var step_rew = rebind[Scalar[dtype]](step_rewards[sim_off])
-        var abs_rew = step_rew if step_rew >= Scalar[dtype](0.0) else -step_rew
         var leaf_value: Scalar[dtype]
-        if abs_rew > Scalar[dtype](0.5):
-            leaf_value = -step_rew  # Terminal: negate
+        comptime if NEGATE_BACKUP:
+            # Two-player: terminal detected by reward magnitude.
+            var abs_rew = (
+                step_rew if step_rew >= Scalar[dtype](0.0) else -step_rew
+            )
+            if abs_rew > Scalar[dtype](0.5):
+                leaf_value = -step_rew  # Terminal: negate
+            else:
+                var raw_v = rebind[Scalar[dtype]](
+                    pred_output[pred_off + ACT]
+                )
+                comptime if VALUE_SQUASH:
+                    if raw_v > Scalar[dtype](10.0):
+                        raw_v = Scalar[dtype](10.0)
+                    elif raw_v < Scalar[dtype](-10.0):
+                        raw_v = Scalar[dtype](-10.0)
+                    var ev_p = exp(raw_v)
+                    var ev_n = exp(-raw_v)
+                    leaf_value = (ev_p - ev_n) / (ev_p + ev_n)
+                else:
+                    leaf_value = raw_v
         else:
-            var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
-            if raw_v > Scalar[dtype](10.0):
-                raw_v = Scalar[dtype](10.0)
-            elif raw_v < Scalar[dtype](-10.0):
-                raw_v = Scalar[dtype](-10.0)
-            var ev_p = exp(raw_v)
-            var ev_n = exp(-raw_v)
-            leaf_value = (ev_p - ev_n) / (ev_p + ev_n)
+            # Single-player: terminal from explicit done flag; leaf value
+            # accumulates step reward + discounted V_pred.
+            var was_done = (
+                rebind[Scalar[dtype]](step_dones[sim_off])
+                > Scalar[dtype](0.5)
+            )
+            if was_done:
+                leaf_value = step_rew
+            else:
+                var raw_v = rebind[Scalar[dtype]](
+                    pred_output[pred_off + ACT]
+                )
+                comptime if VALUE_SQUASH:
+                    if raw_v > Scalar[dtype](10.0):
+                        raw_v = Scalar[dtype](10.0)
+                    elif raw_v < Scalar[dtype](-10.0):
+                        raw_v = Scalar[dtype](-10.0)
+                    var ev_p = exp(raw_v)
+                    var ev_n = exp(-raw_v)
+                    var v_pred = (ev_p - ev_n) / (ev_p + ev_n)
+                    leaf_value = step_rew + gamma * v_pred
+                else:
+                    leaf_value = step_rew + gamma * raw_v
 
         # ── Remove virtual loss ─────────────────────────────
         visit_count[tree_off + parent * ACT + action] = rebind[Scalar[dtype]](
@@ -1876,7 +1984,7 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
             total_visits[tv_off + parent]
         ) - Scalar[dtype](VIRTUAL_LOSS)
 
-        # ── Negated backup ──────────────────────────────────
+        # ── Backup ──────────────────────────────────────────
         var value = leaf_value
         var path_off = sim_off * MAX_DEPTH
         var path_len = Int(rebind[Scalar[dtype]](path_lengths[sim_off]))
@@ -1886,7 +1994,8 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
             var node = Int(rebind[Scalar[dtype]](search_paths[path_off + idx]))
             var act = Int(rebind[Scalar[dtype]](action_paths[path_off + idx]))
 
-            value = -value
+            comptime if NEGATE_BACKUP:
+                value = -value
 
             var na_off = tree_off + node * ACT + act
             visit_count[na_off] = rebind[Scalar[dtype]](
@@ -1905,6 +2014,22 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
                 min_q[e] = mean_q
             if mean_q > rebind[Scalar[dtype]](max_q[e]):
                 max_q[e] = mean_q
+
+            # Single-player: accumulate this edge's stored reward into the
+            # value seen by the next ancestor up the path. (Edge reward was
+            # written to reward_buf when this child was first expanded.)
+            comptime if not NEGATE_BACKUP:
+                if idx > 0:
+                    var anc = Int(rebind[Scalar[dtype]](
+                        search_paths[path_off + idx - 1]
+                    ))
+                    var anc_act = Int(rebind[Scalar[dtype]](
+                        action_paths[path_off + idx - 1]
+                    ))
+                    var edge_rew = rebind[Scalar[dtype]](
+                        reward_buf[tree_off + anc * ACT + anc_act]
+                    )
+                    value = edge_rew + gamma * value
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2236,6 +2361,25 @@ def gpu_mcts_batched_expand_backup_muzero_kernel[
                     / rew_se
                 )
                 rew_decoded += prob * (v_min + Scalar[dtype](i) * rew_step)
+            # Inverse scalar transform: targets are h(r), so the network
+            # output decodes to h(r); the backup recurrence
+            # `value = reward + γ · value` is only valid in raw space.
+            # h^{-1}(y) = sign(y) * (((sqrt(1+4ε(|y|+1+ε)) - 1)/(2ε))^2 - 1)
+            var sign_r = Scalar[dtype](1.0) if rew_decoded >= Scalar[dtype](
+                0.0
+            ) else Scalar[dtype](-1.0)
+            var abs_r = (
+                rew_decoded if rew_decoded >= Scalar[dtype](0.0) else -rew_decoded
+            )
+            var eps_r = Scalar[dtype](0.001)
+            var inner_r = sqrt(
+                Scalar[dtype](1.0)
+                + Scalar[dtype](4.0) * eps_r * (abs_r + Scalar[dtype](1.0) + eps_r)
+            )
+            var f_r = (inner_r - Scalar[dtype](1.0)) / (
+                Scalar[dtype](2.0) * eps_r
+            )
+            rew_decoded = sign_r * (f_r * f_r - Scalar[dtype](1.0))
         reward_buf[tree_off + parent * ACT + action] = rew_decoded
 
         # 4. Set child prior from prediction softmax
@@ -2303,6 +2447,24 @@ def gpu_mcts_batched_expand_backup_muzero_kernel[
                     / val_se
                 )
                 leaf_value += prob * (v_min + Scalar[dtype](i) * val_step)
+            # Inverse scalar transform: pred net is trained on h(V), so
+            # the categorical decode recovers h(V) (transformed space).
+            # Convert to raw V before entering the backup recurrence.
+            var sign_v = Scalar[dtype](1.0) if leaf_value >= Scalar[dtype](
+                0.0
+            ) else Scalar[dtype](-1.0)
+            var abs_v = (
+                leaf_value if leaf_value >= Scalar[dtype](0.0) else -leaf_value
+            )
+            var eps_v = Scalar[dtype](0.001)
+            var inner_v = sqrt(
+                Scalar[dtype](1.0)
+                + Scalar[dtype](4.0) * eps_v * (abs_v + Scalar[dtype](1.0) + eps_v)
+            )
+            var f_v = (inner_v - Scalar[dtype](1.0)) / (
+                Scalar[dtype](2.0) * eps_v
+            )
+            leaf_value = sign_v * (f_v * f_v - Scalar[dtype](1.0))
 
         # 6. Backup (negated or standard)
         var value = leaf_value

@@ -585,7 +585,7 @@ struct TDMPC2GPUState[
     var z_pred_buf: DeviceBuffer[dtype]  # [B_LATENT] dynamics(za_t)
     var z_history_buf: DeviceBuffer[
         dtype
-    ]  # [H * B_LATENT] z at each horizon step
+    ]  # [(H+1) * B_LATENT] z at each horizon step (z_0..z_H)
     var za_buf: DeviceBuffer[dtype]  # [B_ZA] [z_t, a_t]
     var pi_out_buf: DeviceBuffer[dtype]  # [BATCH * 2 * ACT]
     var pi_act_buf: DeviceBuffer[dtype]  # [B_ACT] tanh(mean) actions
@@ -610,6 +610,9 @@ struct TDMPC2GPUState[
     var grad_logits_buf: DeviceBuffer[dtype]  # [B_BINS]
     var grad_term_prob_buf: DeviceBuffer[dtype]  # [BATCH]
     var grad_pi_out_buf: DeviceBuffer[dtype]  # [BATCH * 2 * ACT]
+    # Diagnostic-only: holds entropy-only contribution at policy-update t=0
+    # for the diag step (||grad_Q|| / ||grad_ent|| logging).
+    var grad_pi_out_ent_buf: DeviceBuffer[dtype]  # [BATCH * 2 * ACT]
     var dummy_grad_buf: DeviceBuffer[dtype]  # [max(B_ZA, B_OBS)]
 
     # ── TD targets + reward targets + bins ──
@@ -651,6 +654,42 @@ struct TDMPC2GPUState[
     var q_vals_host: HostBuffer[
         dtype
     ]  # [BATCH] for Q-value diagnostic readback
+
+    # ── Diagnostic host buffers (downloaded only every diag_every steps) ──
+    var diag_rew_host: HostBuffer[dtype]  # [BATCH * H] batch rewards
+    var diag_done_host: HostBuffer[dtype]  # [BATCH * H] batch dones
+    var diag_pi_act_host: HostBuffer[
+        dtype
+    ]  # [BATCH * ACT] policy actions at z_0
+    var diag_pi_out_host: HostBuffer[
+        dtype
+    ]  # [BATCH * POL_OUT] policy mean + raw_log_std at z_0
+    var diag_logits_host: HostBuffer[
+        dtype
+    ]  # [BATCH * BINS] Q logits at (z_0, a_buffer_0)
+    var diag_td_targets_host: HostBuffer[
+        dtype
+    ]  # [H * BATCH * BINS] TD targets (only first BATCH*BINS chunk read)
+    var diag_rew_logits_host: HostBuffer[
+        dtype
+    ]  # [BATCH * BINS] reward logits at (z_0, a_buffer_0)
+    var diag_rew_targets_host: HostBuffer[
+        dtype
+    ]  # [H * BATCH * BINS] reward targets (only first BATCH*BINS chunk read)
+    var diag_z_pred_host: HostBuffer[
+        dtype
+    ]  # [BATCH * LATENT] dynamics(z_0, a_buffer_0) for consistency-loss diag
+    var diag_z_enc_next_host: HostBuffer[
+        dtype
+    ]  # [BATCH * LATENT] encoder(obs_1) (stop-grad target) for consistency-loss diag
+    # Stage-3 diagnostic: download grad_pi_out (Q+ent) and grad_pi_out_ent at
+    # policy-update t=0 to compute ||Q_grad|| / ||ent_grad|| ratio.
+    var diag_grad_pi_full_host: HostBuffer[
+        dtype
+    ]  # [BATCH * POL_OUT] = full grad_pi_out at t=0 (Q + entropy)
+    var diag_grad_pi_ent_host: HostBuffer[
+        dtype
+    ]  # [BATCH * POL_OUT] = entropy-only contribution at t=0
 
     def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU and host buffers."""
@@ -756,7 +795,7 @@ struct TDMPC2GPUState[
         self.z_next_buf = ctx.enqueue_create_buffer[dtype](Self.B_LATENT)
         self.z_pred_buf = ctx.enqueue_create_buffer[dtype](Self.B_LATENT)
         self.z_history_buf = ctx.enqueue_create_buffer[dtype](
-            Self.H * Self.B_LATENT
+            (Self.H + 1) * Self.B_LATENT
         )
         self.za_buf = ctx.enqueue_create_buffer[dtype](Self.B_ZA)
         self.pi_out_buf = ctx.enqueue_create_buffer[dtype](
@@ -784,6 +823,9 @@ struct TDMPC2GPUState[
         self.grad_logits_buf = ctx.enqueue_create_buffer[dtype](Self.B_BINS)
         self.grad_term_prob_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
         self.grad_pi_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.POL_OUT
+        )
+        self.grad_pi_out_ent_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH * Self.POL_OUT
         )
         self.dummy_grad_buf = ctx.enqueue_create_buffer[dtype](Self.DUMMY_SIZE)
@@ -847,6 +889,44 @@ struct TDMPC2GPUState[
         # ── Reusable host buffers ──
         self.qt_upload_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
         self.q_vals_host = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
+
+        # ── Diagnostic host buffers ──
+        self.diag_rew_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH_SCALAR_FLAT
+        )
+        self.diag_done_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH_SCALAR_FLAT
+        )
+        self.diag_pi_act_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.B_ACT
+        )
+        self.diag_pi_out_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.POL_OUT
+        )
+        self.diag_logits_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.B_BINS
+        )
+        self.diag_td_targets_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH_TGTS_FLAT
+        )
+        self.diag_rew_logits_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.B_BINS
+        )
+        self.diag_rew_targets_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH_TGTS_FLAT
+        )
+        self.diag_z_pred_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.B_LATENT
+        )
+        self.diag_z_enc_next_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.B_LATENT
+        )
+        self.diag_grad_pi_full_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.POL_OUT
+        )
+        self.diag_grad_pi_ent_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.POL_OUT
+        )
 
 
 # =============================================================================

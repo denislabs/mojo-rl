@@ -24,11 +24,15 @@ struct RMSprop[
     STATE_PER_PARAM = 1:
         - state[i, 0] = v (squared gradient moving average)
 
+    GLOBAL_STATE_SIZE = 1: slot 0 holds `lr_scale` (Scalar[dtype]) — written
+    by GPUNetworkState.set_lr_scale, read by the kernel each step so LR
+    schedules survive CUDA-graph replay.
+
     All hyperparameters are compile-time struct parameters.
     """
 
     comptime STATE_PER_PARAM: Int = 1
-    comptime GLOBAL_STATE_SIZE: Int = 0
+    comptime GLOBAL_STATE_SIZE: Int = 1
 
     def __init__(out self):
         pass
@@ -88,14 +92,21 @@ struct RMSprop[
         state: LayoutTensor[
             dtype, Layout.row_major(PARAM_SIZE, 1), MutAnyOrigin
         ],
-        lr: Scalar[dtype],
+        lr_scale_view: LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ],
+        base_lr: Scalar[dtype],
         alpha: Scalar[dtype],
         eps: Scalar[dtype],
     ):
+        """RMSprop kernel. lr_scale is read from a 1-element device view so
+        LR schedules survive CUDA-graph replay.
+        """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= PARAM_SIZE:
             return
 
+        var lr = base_lr * rebind[Scalar[dtype]](lr_scale_view[0])
         var g = rebind[Scalar[dtype]](grads[idx])
         var v_val = rebind[Scalar[dtype]](state[idx, 0])
 
@@ -129,12 +140,16 @@ struct RMSprop[
             dtype, Layout.row_major(Self.GLOBAL_STATE_SIZE), MutAnyOrigin
         ],
         step_num: Int,
-        lr_scale: Float64 = 1.0,
     ) raises:
-        """Launch RMSprop optimization step on GPU. step_num is unused."""
-        var lr = Scalar[dtype](Self.LR * lr_scale)
+        """Launch RMSprop optimization step on GPU. `lr_scale` lives in
+        `opt_global_state[0]` (the only slot). step_num is unused.
+        """
+        var base_lr = Scalar[dtype](Self.LR)
         var alpha = Scalar[dtype](Self.ALPHA)
         var eps = Scalar[dtype](Self.EPS)
+        var lr_scale_view = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](opt_global_state.ptr)
 
         @parameter
         @always_inline
@@ -148,12 +163,15 @@ struct RMSprop[
             state: LayoutTensor[
                 dtype, Layout.row_major(PARAM_SIZE, 1), MutAnyOrigin
             ],
-            lr: Scalar[dtype],
+            lr_scale_view: LayoutTensor[
+                dtype, Layout.row_major(1), MutAnyOrigin
+            ],
+            base_lr: Scalar[dtype],
             alpha: Scalar[dtype],
             eps: Scalar[dtype],
         ):
             Self.step_kernel_impl[PARAM_SIZE, dtype](
-                params, grads, state, lr, alpha, eps
+                params, grads, state, lr_scale_view, base_lr, alpha, eps
             )
 
         comptime grid_size = (PARAM_SIZE + TPB - 1) // TPB
@@ -162,7 +180,8 @@ struct RMSprop[
             params,
             grads,
             state,
-            lr,
+            lr_scale_view,
+            base_lr,
             alpha,
             eps,
             grid_dim=(grid_size,),

@@ -635,6 +635,17 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         elif u < -MAX_TORQUE:
             u = -MAX_TORQUE
 
+        # Reward computed from PRE-step (θ, θ_dot) — matches Gymnasium
+        # Pendulum-v1 reference. Older versions computed reward post-step
+        # which diverged subtly and made the env materially harder for
+        # value-based agents. See EZ-V2 Pendulum convergence notes
+        # 2026-05-10.
+        var reward = -(
+            theta * theta
+            + Scalar[dtype](0.1) * theta_dot * theta_dot
+            + Scalar[dtype](0.001) * u * u
+        )
+
         # Physics: θ'' = (3g/2L) * sin(θ) + (3/mL²) * u
         # Use sin directly on dtype to avoid Float64 on GPU
         var sin_theta = sin(theta)
@@ -642,15 +653,13 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             Scalar[dtype](3.0) * G / (Scalar[dtype](2.0) * L)
         ) * sin_theta + (Scalar[dtype](3.0) / (M * L * L)) * u
 
-        # Euler integration
+        # Euler integration — Gymnasium clips θ_dot BEFORE the θ update.
         theta_dot = theta_dot + theta_acc * DT
-        theta = theta + theta_dot * DT
-
-        # Clip angular velocity
         if theta_dot > MAX_SPEED:
             theta_dot = MAX_SPEED
         elif theta_dot < -MAX_SPEED:
             theta_dot = -MAX_SPEED
+        theta = theta + theta_dot * DT
 
         # Normalize angle to [-π, π] using dtype-native pi
         var PI = Scalar[dtype](3.14159265358979323846)
@@ -662,13 +671,6 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
 
         # Increment step
         step_count = step_count + Scalar[dtype](1.0)
-
-        # Compute reward: -(θ² + 0.1*θ_dot² + 0.001*u²)
-        var reward = -(
-            theta * theta
-            + Scalar[dtype](0.1) * theta_dot * theta_dot
-            + Scalar[dtype](0.001) * u * u
-        )
         total_reward = total_reward + reward
 
         # Check if done (pendulum never terminates early, only truncates)

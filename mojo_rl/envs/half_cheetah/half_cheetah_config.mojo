@@ -26,7 +26,12 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
     # Reward
     comptime FORWARD_REWARD_WEIGHT = 1.0
     comptime CTRL_COST_WEIGHT = 0.1
-    comptime ANGLE_PENALTY_WEIGHT = 0.5
+    # Angle penalty: previously 0.5 to suppress the "running on the head"
+    # local optimum SAC was finding. After 2026-05-07, with the optimizations
+    # accumulated since then, SAC reaches a healthy gait without it, and
+    # the penalty was actively blocking TD-MPC2 (Q-pessimism collapse — see
+    # docs/TDMPC2_AUDIT.md). Set to 0.0 to match reference dm_control HalfCheetah.
+    comptime ANGLE_PENALTY_WEIGHT = 0.0
 
     # Termination
     comptime MAX_PITCH = 1.0  # ~57 deg
@@ -255,12 +260,15 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
             ctrl_cost_sum += a * a
         var ctrl_cost = Scalar[DTYPE](0.1) * ctrl_cost_sum
 
-        # Angle penalty
+        # Angle penalty (uses Self.ANGLE_PENALTY_WEIGHT; previously hardcoded
+        # to 0.5 here, ignoring the comptime knob — fixed 2026-05-07).
         var y_angle = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
         var abs_angle = y_angle
         if abs_angle < Scalar[DTYPE](0.0):
             abs_angle = -abs_angle
-        var angle_penalty = Scalar[DTYPE](0.5) * abs_angle
+        var angle_penalty = Scalar[DTYPE](
+            Self.ANGLE_PENALTY_WEIGHT
+        ) * abs_angle
 
         var reward = forward_reward - ctrl_cost - angle_penalty
 

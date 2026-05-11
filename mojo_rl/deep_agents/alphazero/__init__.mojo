@@ -16,6 +16,13 @@ from .configs import (
     AlphaZeroConnectFourResNetConfig,
     AlphaZeroConnectFourFusedResNetConfig,
     AlphaZeroChessConfig,
+    AlphaZeroCartPoleConfig,
+)
+from .strategies import (
+    BoardAugmenter,
+    IdentityAugmenter,
+    D4SquareAugmenter,
+    HFlipColumnAugmenter,
 )
 from .state import AlphaZeroCPUState, AlphaZeroGPUState
 from .alphazero import GenericAlphaZeroAgent

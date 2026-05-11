@@ -10,7 +10,7 @@ The world model simultaneously learns:
 
 Architecture (all MLPs use NormedLinear blocks):
   encoder:     [NL(OBS, ENC), Linear(ENC, LATENT) + LayerNorm + SimNorm]
-  dynamics:    [NL(LATENT+ACT, MLP), NL(MLP, LATENT), Linear(LATENT, LATENT) + SimNorm]
+  dynamics:    [NL(LATENT+ACT, MLP), NL(MLP, LATENT), Linear(LATENT, LATENT) + LayerNorm + SimNorm]
   reward:      [NL(LATENT+ACT, MLP), NL(MLP, MLP), Linear(MLP, NUM_BINS)]
   termination: [NL(LATENT, MLP), NL(MLP, MLP), Linear(MLP, 1) + Sigmoid]
   policy:      [NL(LATENT, MLP), NL(MLP, MLP), Linear(MLP, 2*ACT)]
@@ -19,7 +19,7 @@ Architecture (all MLPs use NormedLinear blocks):
 Reference: Hansen et al., 2023 — TD-MPC2
 """
 
-from std.math import exp, log, sqrt
+from std.math import exp, log, sqrt, tanh
 from std.random import random_float64
 
 from layout import Layout, LayoutTensor
@@ -32,9 +32,11 @@ from mojo_rl.nn.model import (
     NormedLinear,
     SimNorm,
     LayerNorm,
+    Mish,
+    Dropout,
 )
 from mojo_rl.nn.optimizer import Adam
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.initializer import Kaiming, Normal
 from mojo_rl.nn.training import Network, NetworkState
 from mojo_rl.nn.loss.two_hot import (
     compute_bins,
@@ -97,10 +99,18 @@ struct WorldModel[
     ]
 
     # Dynamics: (LATENT + ACTION) → LATENT with SimNorm output
+    # Reference: mlp(ZA, [MLP, MLP], LATENT, act=SimNorm) decomposes to
+    #   NL(ZA, MLP)  →  NL(MLP, MLP)  →  NL(MLP, LATENT, act=SimNorm)
+    # where the final NormedLinear with SimNorm-activation =
+    #   Linear(MLP, LATENT) → LayerNorm(LATENT) → SimNorm.
+    # For HalfCheetah model_size=5 (MLP=LATENT=512) the middle-layer width is
+    # the same; for larger model sizes (19M+: mlp_dim=1024, latent_dim=768)
+    # the bottleneck happens in the final layer instead of middle.
     comptime DynModel = Sequential[
         NormedLinear[Self.ZA_DIM, Self.MLP_DIM],
-        NormedLinear[Self.MLP_DIM, Self.LATENT_DIM],
-        Linear[Self.LATENT_DIM, Self.LATENT_DIM],
+        NormedLinear[Self.MLP_DIM, Self.MLP_DIM],
+        Linear[Self.MLP_DIM, Self.LATENT_DIM],
+        LayerNorm[Self.LATENT_DIM],
         SimNorm[Self.LATENT_DIM, Self.SIMPLEX_DIM],
     ]
 
@@ -129,9 +139,25 @@ struct WorldModel[
         ],
     ]
 
+    # Q-network first layer: Linear → Dropout → LayerNorm → Mish.
+    # Mirrors reference TD-MPC2 (layers.py:107-111) where the first hidden
+    # layer of each Q net has dropout=0.01 — applied to the linear output
+    # BEFORE LayerNorm + Mish. Dropout is identity in `forward_gpu_no_cache`
+    # (used for target Q), active in `forward_gpu_with_cache` (used for
+    # online Q in BPTT and policy update). Matches reference's train()/eval()
+    # mode switch where target nets are forced into eval mode.
+    comptime Q_DROPOUT_P: Float64 = 0.01
+    comptime QFirstLayer = Sequential[
+        Linear[Self.ZA_DIM, Self.MLP_DIM],
+        Dropout[Self.MLP_DIM, Self.Q_DROPOUT_P, 0xD13D7, True],
+        LayerNorm[Self.MLP_DIM],
+        Mish[Self.MLP_DIM],
+    ]
     # Q-network: (LATENT + ACTION) → NUM_BINS logits
+    # Reference: mlp(za, [mlp_dim, mlp_dim], num_bins, dropout=0.01) which
+    # builds NormedLinear(dropout=0.01) → NormedLinear(dropout=0) → Linear.
     comptime QModel = Sequential[
-        NormedLinear[Self.ZA_DIM, Self.MLP_DIM],
+        Self.QFirstLayer,
         NormedLinear[Self.MLP_DIM, Self.MLP_DIM],
         Linear[Self.MLP_DIM, Self.NUM_BINS],
     ]
@@ -151,9 +177,14 @@ struct WorldModel[
         Self.TermModel,
         Adam[LR=Self.WM_LR],
     ]
+    # Reference TD-MPC2 explicitly sets eps=1e-5 on the policy optimizer
+    # (tdmpc2.py:32) while leaving the world-model optimizer at PyTorch's
+    # default eps=1e-8. The larger policy eps prevents the policy update
+    # from over-reacting when the v_t (second moment) accumulator dips —
+    # important early in training when policy gradients are tiny.
     comptime PolicyNet = Network[
         Self.PolModel,
-        Adam[LR=Self.PI_LR],
+        Adam[LR=Self.PI_LR, EPS=1e-5],
     ]
     comptime QNet = Network[
         Self.QModel,
@@ -167,7 +198,7 @@ struct WorldModel[
     var dynamics: NetworkState[Self.DynModel, Adam[LR=Self.WM_LR]]
     var reward_head: NetworkState[Self.RewModel, Adam[LR=Self.WM_LR]]
     var termination: NetworkState[Self.TermModel, Adam[LR=Self.WM_LR]]
-    var policy: NetworkState[Self.PolModel, Adam[LR=Self.PI_LR]]
+    var policy: NetworkState[Self.PolModel, Adam[LR=Self.PI_LR, EPS=1e-5]]
 
     # Q-ensemble (NUM_Q=5 networks)
     var q1: NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]
@@ -190,33 +221,75 @@ struct WorldModel[
         out self,
     ):
         """Initialize WorldModel with all sub-networks."""
+        # Encoder uses 2.5x the std of every other network (0.05 vs 0.02)
+        # to break out of the SimNorm trivial-collapse attractor at init.
+        # With Normal(0, 0.02) on HalfCheetah obs, the post-Linear pre-
+        # SimNorm activations are tiny so per-group softmax is nearly
+        # uniform and z is constant across the batch (std ~0.022 at step 0,
+        # decaying to ~0.0005). 0.05 keeps inputs in a regime where SimNorm
+        # outputs vary across samples. Reference uses 0.02 with trunc-
+        # normal but evidently doesn't hit this attractor; the difference
+        # is likely subtle (input distribution, init seed clustering).
         self.encoder = NetworkState[Self.EncModel, Adam[LR=Self.ENC_LR]]()
-        self.encoder.initialize[Kaiming[]]()
+        self.encoder.initialize[Normal[0.0, 0.05]]()
 
         self.dynamics = NetworkState[Self.DynModel, Adam[LR=Self.WM_LR]]()
-        self.dynamics.initialize[Kaiming[]]()
+        self.dynamics.initialize[Normal[0.0, 0.02]]()
 
         self.reward_head = NetworkState[Self.RewModel, Adam[LR=Self.WM_LR]]()
-        self.reward_head.initialize[Kaiming[]]()
+        self.reward_head.initialize[Normal[0.0, 0.02]]()
 
         self.termination = NetworkState[Self.TermModel, Adam[LR=Self.WM_LR]]()
-        self.termination.initialize[Kaiming[]]()
+        self.termination.initialize[Normal[0.0, 0.02]]()
 
-        self.policy = NetworkState[Self.PolModel, Adam[LR=Self.PI_LR]]()
-        self.policy.initialize[Kaiming[]]()
+        self.policy = NetworkState[Self.PolModel, Adam[LR=Self.PI_LR, EPS=1e-5]]()
+        self.policy.initialize[Normal[0.0, 0.02]]()
 
+        # Per-Q SEED so the 5 Q networks don't get bitwise-identical
+        # parameters at init (PhiloxRandom seeded by Self.SEED depends only
+        # on architecture, not network instance — same SEED + same shape =
+        # same params). The "ensemble" needs diversity from step 0; without
+        # different seeds the random 2-of-5 target subsampling is the only
+        # source of divergence and it's slow.
         self.q1 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q1.initialize[Kaiming[]]()
+        self.q1.initialize[Normal[0.0, 0.02, SEED=101]]()
         self.q2 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q2.initialize[Kaiming[]]()
+        self.q2.initialize[Normal[0.0, 0.02, SEED=102]]()
         self.q3 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q3.initialize[Kaiming[]]()
+        self.q3.initialize[Normal[0.0, 0.02, SEED=103]]()
         self.q4 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q4.initialize[Kaiming[]]()
+        self.q4.initialize[Normal[0.0, 0.02, SEED=104]]()
         self.q5 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q5.initialize[Kaiming[]]()
+        self.q5.initialize[Normal[0.0, 0.02, SEED=105]]()
 
-        # Initialize target Q networks with same weights as live Q networks
+        # Zero-init the last Linear's W for reward and each Q net. Matches
+        # reference TD-MPC2's `init.zero_([self._reward[-1].weight,
+        # self._Qs.params["2", "weight"]])` (init.py:32 of common/world_model.py).
+        # With W=0 in the last layer, initial logits = bias only ≈ 0
+        # (Normal(0, 0.02)), so softmax is near-uniform and decoded Q ≈ 0.
+        # Stops the heads from giving early erratic predictions that pull
+        # the dynamics into a bad basin.
+        comptime LAST_W_SIZE = Self.MLP_DIM * Self.NUM_BINS
+        comptime REW_LAST_OFFSET = Self.RewModel._param_offset[2]()
+        comptime Q_LAST_OFFSET = Self.QModel._param_offset[2]()
+        var rew_p = self.reward_head.params_view()
+        for i in range(LAST_W_SIZE):
+            rew_p[REW_LAST_OFFSET + i] = 0
+        var q1_p = self.q1.params_view()
+        var q2_p = self.q2.params_view()
+        var q3_p = self.q3.params_view()
+        var q4_p = self.q4.params_view()
+        var q5_p = self.q5.params_view()
+        for i in range(LAST_W_SIZE):
+            q1_p[Q_LAST_OFFSET + i] = 0
+            q2_p[Q_LAST_OFFSET + i] = 0
+            q3_p[Q_LAST_OFFSET + i] = 0
+            q4_p[Q_LAST_OFFSET + i] = 0
+            q5_p[Q_LAST_OFFSET + i] = 0
+
+        # Initialize target Q networks AFTER live-Q init + zero-W so they
+        # inherit the proper init values (reference soft_update_target_Q's
+        # them in lockstep going forward).
         self.q1_target = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
         self.q1_target.copy_params_from(self.q1)
         self.q2_target = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
@@ -423,15 +496,14 @@ struct WorldModel[
             dtype, Layout.row_major(BATCH, POL_OUT), MutAnyOrigin
         ](out.unsafe_ptr())
         Self.PolicyNet.forward[BATCH](z, out_t, self.policy.params_view(), self.policy.model_state_view())
+        # Smooth tanh-based log_std bound (matches reference + GPU kernels):
+        #   log_std = -10 + 6 * (tanh(x) + 1)  ∈ [-10, 2]
+        # The policy network's "log_std" channel emits raw x, not log_std.
         for b in range(BATCH):
             for i in range(Self.ACTION_DIM):
                 mean[b, i] = out[b * POL_OUT + i]
-                # Clamp log_std to [-10, 2] for numerical stability
-                var ls = Float64(out[b * POL_OUT + Self.ACTION_DIM + i])
-                if ls < -10.0:
-                    ls = -10.0
-                if ls > 2.0:
-                    ls = 2.0
+                var x = Float64(out[b * POL_OUT + Self.ACTION_DIM + i])
+                var ls = -10.0 + 6.0 * (Float64(tanh(Float32(x))) + 1.0)
                 log_std[b, i] = Scalar[dtype](ls)
 
     def policy_forward_with_cache[

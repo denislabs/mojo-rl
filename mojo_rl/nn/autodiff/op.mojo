@@ -21,6 +21,7 @@ struct OpID:
     comptime ELEM_ADD = OpID(3)
     comptime ELEM_MUL = OpID(4)
     comptime SCALE = OpID(5)
+    comptime ELEM_DIV = OpID(6)  # element-wise a/(b+eps), two-input
 
     # Activations (10-19)
     comptime RELU = OpID(10)
@@ -30,6 +31,8 @@ struct OpID:
     comptime SOFTMAX = OpID(14)
     comptime SWISH = OpID(15)
     comptime SYMLOG = OpID(16)
+    comptime GELU = OpID(17)
+    comptime LOG_STD_BOUND = OpID(18)  # smooth tanh-based log_std clamp
 
     # Normalization (20-29)
     comptime LAYER_NORM = OpID(20)
@@ -38,6 +41,7 @@ struct OpID:
     # Reduction (30-39)
     comptime REDUCE_SUM = OpID(30)
     comptime REDUCE_MEAN = OpID(31)
+    comptime TOKEN_MEAN = OpID(32)
 
     # Regularization (40-49)
     comptime DROPOUT = OpID(40)
@@ -47,6 +51,7 @@ struct OpID:
     comptime MAX_POOL2D = OpID(51)
     comptime AVG_POOL2D = OpID(52)
     comptime FLATTEN = OpID(53)
+    comptime TRANSPOSE_2D = OpID(54)
 
     # Embedding (60-69)
     comptime EMBEDDING = OpID(60)

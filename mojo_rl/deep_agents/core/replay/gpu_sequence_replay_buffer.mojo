@@ -1,15 +1,27 @@
-"""GPUSequenceReplayBuffer: GPU-resident sequence replay for TD-MPC2.
+"""GPUSequenceReplayBuffer: GPU-resident sequence replay for TD-MPC2,
+DreamerV3, MuZero.
 
 Stores transitions from N_ENVS parallel environments in per-env circular
 buffers on GPU. Samples contiguous sequences of length H directly on GPU,
 avoiding costly GPU->CPU->GPU round trips.
+
+Two parallel boundary fields:
+- dones_buf:        terminated OR truncated. Used by the sample kernel to
+                    reject sequences that would span an env reset (any
+                    obs[t+1] from the next episode is invalid for both
+                    the consistency loss and the TD bootstrap).
+- terminations_buf: terminated only. Returned in the output `batch_dones`
+                    so the consumer's `(1 - d) * V_next` zeros the
+                    bootstrap on natural termination (Hopper falling) but
+                    keeps it on time-limit truncation. Without this, V is
+                    biased toward |r / (1 - γ·(1 - p_truncation))|.
 
 Design:
 - Per-env storage: [N_ENVS * PER_ENV_CAP * dim] with strided addressing
 - All envs share the same write_idx/size (they step in lockstep)
 - Store: one kernel writes N_ENVS transitions per call
 - Sample: one kernel generates BATCH valid sequences via rejection sampling
-- Episode boundaries checked on-GPU (H-1 done flags per candidate)
+- Boundary check uses dones_buf; output dones field uses terminations_buf
 
 Usage:
     var rb = GPUSequenceReplayBuffer[PER_ENV_CAP, OBS_DIM, ACTION_DIM, N_ENVS](ctx)
@@ -17,8 +29,14 @@ Usage:
     # Before env step: save current observations
     rb.save_obs(ctx, env_obs_buf)
 
-    # After env step: store transitions
+    # After env step: store transitions (preferred — distinguish flags)
+    rb.store_with_termination(ctx, env_act_buf, env_rew_buf,
+                              env_done_buf, env_terminated_buf)
+
+    # Or, when only one flag is available (backwards-compatible):
     rb.store(ctx, env_act_buf, env_rew_buf, env_done_buf)
+    # ↑ stores the same flag in both fields — the bootstrap mask returned
+    #   in batch_dones will then mirror term|trunc, biasing V on truncation.
 
     # Sample batch of sequences directly on GPU
     rb.sample[BATCH, H](ctx, seed, batch_obs_buf, batch_act_buf,
@@ -56,7 +74,10 @@ def gpu_seq_store_kernel[
         dtype, Layout.row_major(N_ENVS * ACTION_DIM), MutAnyOrigin
     ],
     rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # term|trunc — boundary flag, drives sequence rejection in sampling
     dones: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # term-only — bootstrap mask returned in batch_dones at sample time
+    terminations: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Per-env circular buffer storage (flat, strided by env)
     buf_obs: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * PER_ENV_CAP * OBS_DIM), MutAnyOrigin
@@ -72,12 +93,15 @@ def gpu_seq_store_kernel[
     buf_dones: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
     ],
+    buf_terminations: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
+    ],
     write_idx: Scalar[DType.int32],
 ):
     """Store one transition per env into per-env circular buffers.
 
-    Thread i handles env i. Writes obs/act/rew/done at write_idx within
-    that env's section of the strided buffer.
+    Thread i handles env i. Writes obs/act/rew/done/terminated at write_idx
+    within that env's section of the strided buffer.
     """
     var env_idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env_idx >= N_ENVS:
@@ -100,6 +124,7 @@ def gpu_seq_store_kernel[
     # Scalars
     buf_rewards[env_idx * PER_ENV_CAP + w] = rewards[env_idx]
     buf_dones[env_idx * PER_ENV_CAP + w] = dones[env_idx]
+    buf_terminations[env_idx * PER_ENV_CAP + w] = terminations[env_idx]
 
 
 @always_inline
@@ -124,7 +149,12 @@ def gpu_seq_sample_kernel[
     buf_rewards: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
     ],
+    # term|trunc — used to reject sequences that would cross an env reset
     buf_dones: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
+    ],
+    # term-only — copied into the output batch_dones as the bootstrap mask
+    buf_terminations: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
     ],
     # Output batch buffers
@@ -146,13 +176,16 @@ def gpu_seq_sample_kernel[
     """Sample BATCH sequences of length H from per-env GPU replay buffers.
 
     Each thread produces one sequence. Envs are assigned round-robin.
-    Rejection sampling validates no episode boundary in first H-1 steps.
+    Rejection uses `buf_dones` (term|trunc) so sequences never cross a
+    reset; the output `batch_dones` is filled from `buf_terminations`
+    (term-only) so the consumer's `(1 - d) * V_next` masks bootstrap
+    correctly without zeroing on time-limit truncation.
 
     Output layout matches CPU SequenceReplayBuffer.sample_sequences:
       batch_obs:     [BATCH * (H+1) * OBS_DIM]  (batch-major)
       batch_actions: [BATCH * H * ACTION_DIM]
       batch_rewards: [BATCH * H]
-      batch_dones:   [BATCH * H]
+      batch_dones:   [BATCH * H]  (term-only — bootstrap mask)
     """
     var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
     if tid >= BATCH:
@@ -226,11 +259,11 @@ def gpu_seq_sample_kernel[
         var act_off = act_out_base + t * ACTION_DIM
         for d in range(ACTION_DIM):
             batch_actions[act_off + d] = buf_actions[env_act_base + d]
-        # Rewards and dones
+        # Rewards and dones (term-only bootstrap mask, not term|trunc)
         batch_rewards[scalar_out_base + t] = buf_rewards[
             env_idx * PER_ENV_CAP + buf_idx
         ]
-        batch_dones[scalar_out_base + t] = buf_dones[
+        batch_dones[scalar_out_base + t] = buf_terminations[
             env_idx * PER_ENV_CAP + buf_idx
         ]
 
@@ -263,7 +296,10 @@ struct GPUSequenceReplayBuffer[
     var obs_buf: DeviceBuffer[dtype]  # [N_ENVS * PER_ENV_CAP * OBS_DIM]
     var actions_buf: DeviceBuffer[dtype]  # [N_ENVS * PER_ENV_CAP * ACTION_DIM]
     var rewards_buf: DeviceBuffer[dtype]  # [N_ENVS * PER_ENV_CAP]
+    # term|trunc — boundary flag (drives sequence-rejection in sampling)
     var dones_buf: DeviceBuffer[dtype]  # [N_ENVS * PER_ENV_CAP]
+    # term-only — bootstrap mask (returned as batch_dones at sample time)
+    var terminations_buf: DeviceBuffer[dtype]  # [N_ENVS * PER_ENV_CAP]
 
     # Temp buffer to save obs before env step overwrites them
     var prev_obs_buf: DeviceBuffer[dtype]  # [N_ENVS * OBS_DIM]
@@ -286,6 +322,9 @@ struct GPUSequenceReplayBuffer[
         self.dones_buf = ctx.enqueue_create_buffer[dtype](
             Self.N_ENVS * Self.PER_ENV_CAP
         )
+        self.terminations_buf = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS * Self.PER_ENV_CAP
+        )
         self.prev_obs_buf = ctx.enqueue_create_buffer[dtype](
             Self.N_ENVS * Self.OBS_DIM
         )
@@ -293,6 +332,7 @@ struct GPUSequenceReplayBuffer[
         ctx.enqueue_memset(self.actions_buf, 0)
         ctx.enqueue_memset(self.rewards_buf, 0)
         ctx.enqueue_memset(self.dones_buf, 0)
+        ctx.enqueue_memset(self.terminations_buf, 0)
         ctx.enqueue_memset(self.prev_obs_buf, 0)
         self.write_idx = 0
         self.size = 0
@@ -302,6 +342,7 @@ struct GPUSequenceReplayBuffer[
         self.actions_buf = take.actions_buf^
         self.rewards_buf = take.rewards_buf^
         self.dones_buf = take.dones_buf^
+        self.terminations_buf = take.terminations_buf^
         self.prev_obs_buf = take.prev_obs_buf^
         self.write_idx = take.write_idx
         self.size = take.size
@@ -324,7 +365,32 @@ struct GPUSequenceReplayBuffer[
         rewards: DeviceBuffer[dtype],
         dones: DeviceBuffer[dtype],
     ) raises:
-        """Store one transition per env using saved obs + step results.
+        """Store one transition per env using a single done-like flag
+        (collapsed-flag form, backwards-compatible).
+
+        The same buffer is stored as both the boundary flag (drives
+        sequence rejection in sampling) and the bootstrap mask (returned
+        in `batch_dones`). Callers that can distinguish termination from
+        truncation should use `store_with_termination` so the bootstrap
+        mask stays off on time-limit truncation.
+
+        Args:
+            ctx: GPU device context.
+            actions: Actions taken [N_ENVS * ACTION_DIM].
+            rewards: Rewards received [N_ENVS].
+            dones: Done flags [N_ENVS].
+        """
+        self.store_with_termination(ctx, actions, rewards, dones, dones)
+
+    def store_with_termination(
+        mut self,
+        ctx: DeviceContext,
+        actions: DeviceBuffer[dtype],
+        rewards: DeviceBuffer[dtype],
+        dones: DeviceBuffer[dtype],
+        terminations: DeviceBuffer[dtype],
+    ) raises:
+        """Store one transition per env with explicit term/trunc separation.
 
         Call this AFTER stepping the environments and after save_obs.
         Enqueues one GPU kernel (N_ENVS threads) and updates CPU counters.
@@ -333,7 +399,13 @@ struct GPUSequenceReplayBuffer[
             ctx: GPU device context.
             actions: Actions taken [N_ENVS * ACTION_DIM].
             rewards: Rewards received [N_ENVS].
-            dones: Done flags [N_ENVS].
+            dones: Term|trunc flags [N_ENVS] — used for sequence-boundary
+                detection so we never sample sequences that cross a reset.
+            terminations: Term-only flags [N_ENVS] — returned at sample
+                time as `batch_dones` and consumed by the trainer as
+                `(1 - terminated) * V_next`. Must be 0 on time-limit
+                truncation, otherwise V is biased toward
+                |r / (1 - γ·(1 - p_truncation))|.
         """
         comptime ENV_BLOCKS = (Self.N_ENVS + TPB - 1) // TPB
 
@@ -353,6 +425,9 @@ struct GPUSequenceReplayBuffer[
         var dones_t = LayoutTensor[
             dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
         ](dones.unsafe_ptr())
+        var terminations_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
+        ](terminations.unsafe_ptr())
 
         var buf_obs_t = LayoutTensor[
             dtype,
@@ -374,6 +449,11 @@ struct GPUSequenceReplayBuffer[
             Layout.row_major(Self.N_ENVS * Self.PER_ENV_CAP),
             MutAnyOrigin,
         ](self.dones_buf.unsafe_ptr())
+        var buf_terminations_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.N_ENVS * Self.PER_ENV_CAP),
+            MutAnyOrigin,
+        ](self.terminations_buf.unsafe_ptr())
 
         var write_idx_s = Scalar[DType.int32](self.write_idx)
 
@@ -392,6 +472,9 @@ struct GPUSequenceReplayBuffer[
             ],
             r: LayoutTensor[dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin],
             d: LayoutTensor[dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin],
+            tm: LayoutTensor[
+                dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
+            ],
             bo: LayoutTensor[
                 dtype,
                 Layout.row_major(Self.N_ENVS * Self.PER_ENV_CAP * Self.OBS_DIM),
@@ -414,6 +497,11 @@ struct GPUSequenceReplayBuffer[
                 Layout.row_major(Self.N_ENVS * Self.PER_ENV_CAP),
                 MutAnyOrigin,
             ],
+            btm: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.N_ENVS * Self.PER_ENV_CAP),
+                MutAnyOrigin,
+            ],
             widx: Scalar[DType.int32],
         ):
             gpu_seq_store_kernel[
@@ -422,17 +510,19 @@ struct GPUSequenceReplayBuffer[
                 Self.PER_ENV_CAP,
                 Self.OBS_DIM,
                 Self.ACTION_DIM,
-            ](po, a, r, d, bo, ba, br, bd, widx)
+            ](po, a, r, d, tm, bo, ba, br, bd, btm, widx)
 
         ctx.enqueue_function[store_wrapper, store_wrapper](
             prev_obs_t,
             actions_t,
             rewards_t,
             dones_t,
+            terminations_t,
             buf_obs_t,
             buf_actions_t,
             buf_rewards_t,
             buf_dones_t,
+            buf_terminations_t,
             write_idx_s,
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
@@ -499,6 +589,11 @@ struct GPUSequenceReplayBuffer[
             Layout.row_major(Self.N_ENVS * Self.PER_ENV_CAP),
             MutAnyOrigin,
         ](self.dones_buf.unsafe_ptr())
+        var buf_terminations_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.N_ENVS * Self.PER_ENV_CAP),
+            MutAnyOrigin,
+        ](self.terminations_buf.unsafe_ptr())
 
         var batch_obs_t = LayoutTensor[
             dtype,
@@ -546,6 +641,11 @@ struct GPUSequenceReplayBuffer[
                 Layout.row_major(Self.N_ENVS * Self.PER_ENV_CAP),
                 MutAnyOrigin,
             ],
+            btm: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.N_ENVS * Self.PER_ENV_CAP),
+                MutAnyOrigin,
+            ],
             out_obs: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH * (H + 1) * Self.OBS_DIM),
@@ -579,6 +679,7 @@ struct GPUSequenceReplayBuffer[
                 ba,
                 br,
                 bd,
+                btm,
                 out_obs,
                 out_act,
                 out_rew,
@@ -593,6 +694,7 @@ struct GPUSequenceReplayBuffer[
             buf_actions_t,
             buf_rewards_t,
             buf_dones_t,
+            buf_terminations_t,
             batch_obs_t,
             batch_actions_t,
             batch_rewards_t,

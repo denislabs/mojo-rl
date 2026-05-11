@@ -38,18 +38,22 @@ struct Muon[
     STATE_PER_PARAM = 1:
         - state[i, 0] = momentum buffer
 
-    GLOBAL_STATE_SIZE = 1: one slot holding `inv_norm = 1 / (||g_nesterov||₂ + eps)`.
-    Computed entirely on-device by `_compute_inv_norm_kernel` inside `step_gpu`
-    so the value is fresh on every CUDA-graph replay (Phase 5 of
-    docs/STATE_SIZE_DESIGN.md). The CPU `step()` path keeps the host-side
-    Frobenius reduction.
+    GLOBAL_STATE_SIZE = 2:
+        - slot 0: Scalar[dtype] `inv_norm = 1 / (||g_nesterov||₂ + eps)`.
+          Computed entirely on-device by `_compute_inv_norm_kernel` inside
+          `step_gpu` so the value is fresh on every CUDA-graph replay
+          (Phase 5 of docs/STATE_SIZE_DESIGN.md).
+        - slot 1: Scalar[dtype] lr_scale, written by GPUNetworkState.set_lr_scale
+          and read by the kernel each step so LR schedules survive
+          CUDA-graph replay.
+    The CPU `step()` path keeps the host-side Frobenius reduction.
 
     All hyperparameters are compile-time struct parameters.
     For 2D weight matrices, use step_2d() for full Newton-Schulz orthogonalization.
     """
 
     comptime STATE_PER_PARAM: Int = 1
-    comptime GLOBAL_STATE_SIZE: Int = 1
+    comptime GLOBAL_STATE_SIZE: Int = 2
 
     # Newton-Schulz coefficients (tuned values from paper)
     comptime NS_A: Float64 = 3.4445
@@ -363,19 +367,23 @@ struct Muon[
         inv_norm_in: LayoutTensor[
             dtype, Layout.row_major(1), MutAnyOrigin
         ],
-        lr: Scalar[dtype],
+        lr_scale_view: LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ],
+        base_lr: Scalar[dtype],
         beta: Scalar[dtype],
         scale_factor: Scalar[dtype],
     ):
         """Apply the Muon update using `inv_norm` produced by the reduction
-        kernel. Reading from the device buffer (rather than a host-passed
-        scalar) keeps the value fresh under CUDA-graph replay.
+        kernel and `lr_scale` from a 1-element device view. Both reads are
+        fresh under CUDA-graph replay.
         """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= PARAM_SIZE:
             return
 
         var inv_norm = rebind[Scalar[dtype]](inv_norm_in[0])
+        var lr = base_lr * rebind[Scalar[dtype]](lr_scale_view[0])
         var g = rebind[Scalar[dtype]](grads[idx])
         var m_val = rebind[Scalar[dtype]](state[idx, 0])
 
@@ -411,19 +419,27 @@ struct Muon[
             dtype, Layout.row_major(Self.GLOBAL_STATE_SIZE), MutAnyOrigin
         ],
         step_num: Int,
-        lr_scale: Float64 = 1.0,
     ) raises:
         """Launch Muon optimization step on GPU.
 
         Phase 5: the gradient norm is computed by an on-device reduction
         kernel into `opt_global_state[0]`. The update kernel reads that slot
-        (no host-baked `inv_norm` scalar) so CUDA-graph replay produces a
-        fresh norm each time. `step_num` is unused.
+        for `inv_norm` and `opt_global_state[1]` for `lr_scale` so both stay
+        fresh under CUDA-graph replay. `step_num` is unused.
         """
         var beta = Scalar[dtype](Self.BETA)
-        var lr = Scalar[dtype](Self.LR * lr_scale)
+        var base_lr = Scalar[dtype](Self.LR)
         var eps = Scalar[dtype](Self.EPS)
         var scale_factor = Scalar[dtype](sqrt(Float64(PARAM_SIZE)))
+
+        # Slot 0 → inv_norm view (written by reduction kernel, read by update).
+        var inv_norm_view = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](opt_global_state.ptr)
+        # Slot 1 → lr_scale view (written by GPUNetworkState).
+        var lr_scale_view = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](opt_global_state.ptr + 1)
 
         # Step 1: GPU reduction → opt_global_state[0] = inv_norm.
         comptime REDUCE_BLOCK = TPB
@@ -450,14 +466,15 @@ struct Muon[
         ctx.enqueue_function[reduce_wrapper, reduce_wrapper](
             grads,
             state,
-            opt_global_state,
+            inv_norm_view,
             beta,
             eps,
             grid_dim=(1,),
             block_dim=(REDUCE_BLOCK,),
         )
 
-        # Step 2: apply Muon update reading `inv_norm` from opt_global_state[0].
+        # Step 2: apply Muon update reading `inv_norm` from opt_global_state[0]
+        # and `lr_scale` from opt_global_state[1].
         @parameter
         @always_inline
         def kernel_wrapper(
@@ -473,7 +490,10 @@ struct Muon[
             inv_norm_in: LayoutTensor[
                 dtype, Layout.row_major(1), MutAnyOrigin
             ],
-            lr: Scalar[dtype],
+            lr_scale_view: LayoutTensor[
+                dtype, Layout.row_major(1), MutAnyOrigin
+            ],
+            base_lr: Scalar[dtype],
             beta: Scalar[dtype],
             scale_factor: Scalar[dtype],
         ):
@@ -482,7 +502,8 @@ struct Muon[
                 grads,
                 state,
                 inv_norm_in,
-                lr,
+                lr_scale_view,
+                base_lr,
                 beta,
                 scale_factor,
             )
@@ -493,8 +514,9 @@ struct Muon[
             params,
             grads,
             state,
-            opt_global_state,
-            lr,
+            inv_norm_view,
+            lr_scale_view,
+            base_lr,
             beta,
             scale_factor,
             grid_dim=(grid_size,),

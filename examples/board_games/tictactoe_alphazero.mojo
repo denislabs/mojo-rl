@@ -43,11 +43,11 @@ def main() raises:
 
     # Choose architecture:
     # MLP (fastest, decent for TTT):
-    comptime Config = AlphaZeroTicTacToeConfig[]
+    # comptime Config = AlphaZeroTicTacToeConfig[]
     # CNN (heavier but better features):
     # comptime Config = AlphaZeroTicTacToeCNNConfig[]
     # ResNet (strongest, 50 MCTS sims):
-    # comptime Config = AlphaZeroTicTacToeResNetConfig[]
+    comptime Config = AlphaZeroTicTacToeResNetConfig[]
 
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "TicTacToe")
@@ -69,7 +69,7 @@ def main() raises:
         steps_per_iter=1000,
         train_epochs=10,
         warmup_iters=1,
-        arena_threshold=0.5,
+        arena_threshold=0.55,
         do_eval=True,
         do_eval2=True,
         do_arena=True,
@@ -77,6 +77,8 @@ def main() raises:
         checkpoint_path="tictactoe_alphazero.ckpt",
         logger=UnsafePointer(to=logger),
         diag_every=100,
+        dump_replay=True,
+        use_one_cycle=True,
     )
 
     logger.close()

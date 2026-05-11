@@ -30,16 +30,21 @@ def test_adam_gpu_counter_advances(ctx: DeviceContext) raises:
     comptime LR = 0.001
     comptime N_STEPS = 100
 
+    # Adam.GLOBAL_STATE_SIZE = 2: slot 0 is the bit-cast UInt32 step counter,
+    # slot 1 is `lr_scale`. Seed slot 1 = 1.0 so the kernel applies the base LR.
+    comptime OG = 2
     var params_buf = ctx.enqueue_create_buffer[dtype](PS)
     var grads_buf = ctx.enqueue_create_buffer[dtype](PS)
     var state_buf = ctx.enqueue_create_buffer[dtype](PS * 2)
-    var og_buf = ctx.enqueue_create_buffer[dtype](1)
-    var og_host = ctx.enqueue_create_host_buffer[dtype](1)
+    var og_buf = ctx.enqueue_create_buffer[dtype](OG)
+    var og_host = ctx.enqueue_create_host_buffer[dtype](OG)
 
     ctx.enqueue_memset(params_buf, 0)
     ctx.enqueue_memset(grads_buf, 0)
     ctx.enqueue_memset(state_buf, 0)
-    ctx.enqueue_memset(og_buf, 0)
+    og_host[0] = 0
+    og_host[1] = 1
+    ctx.enqueue_copy(og_buf, og_host)
 
     var params_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](
         params_buf.unsafe_ptr()
@@ -50,13 +55,13 @@ def test_adam_gpu_counter_advances(ctx: DeviceContext) raises:
     var state_t = LayoutTensor[
         dtype, Layout.row_major(PS, 2), MutAnyOrigin
     ](state_buf.unsafe_ptr())
-    var og_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
+    var og_t = LayoutTensor[dtype, Layout.row_major(OG), MutAnyOrigin](
         og_buf.unsafe_ptr()
     )
 
     for _ in range(N_STEPS):
         Adam[LR].step_gpu[PS](
-            ctx, params_t, grads_t, state_t, og_t, step_num=0, lr_scale=1.0
+            ctx, params_t, grads_t, state_t, og_t, step_num=0
         )
 
     ctx.enqueue_copy(og_host, og_buf)
@@ -77,16 +82,20 @@ def test_adamw_gpu_counter_advances(ctx: DeviceContext) raises:
     comptime LR = 0.001
     comptime N_STEPS = 50
 
+    # AdamW.GLOBAL_STATE_SIZE = 2 (same layout as Adam — see above).
+    comptime OG = 2
     var params_buf = ctx.enqueue_create_buffer[dtype](PS)
     var grads_buf = ctx.enqueue_create_buffer[dtype](PS)
     var state_buf = ctx.enqueue_create_buffer[dtype](PS * 2)
-    var og_buf = ctx.enqueue_create_buffer[dtype](1)
-    var og_host = ctx.enqueue_create_host_buffer[dtype](1)
+    var og_buf = ctx.enqueue_create_buffer[dtype](OG)
+    var og_host = ctx.enqueue_create_host_buffer[dtype](OG)
 
     ctx.enqueue_memset(params_buf, 0)
     ctx.enqueue_memset(grads_buf, 0)
     ctx.enqueue_memset(state_buf, 0)
-    ctx.enqueue_memset(og_buf, 0)
+    og_host[0] = 0
+    og_host[1] = 1
+    ctx.enqueue_copy(og_buf, og_host)
 
     var params_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](
         params_buf.unsafe_ptr()
@@ -97,13 +106,13 @@ def test_adamw_gpu_counter_advances(ctx: DeviceContext) raises:
     var state_t = LayoutTensor[
         dtype, Layout.row_major(PS, 2), MutAnyOrigin
     ](state_buf.unsafe_ptr())
-    var og_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
+    var og_t = LayoutTensor[dtype, Layout.row_major(OG), MutAnyOrigin](
         og_buf.unsafe_ptr()
     )
 
     for _ in range(N_STEPS):
         AdamW[LR].step_gpu[PS](
-            ctx, params_t, grads_t, state_t, og_t, step_num=0, lr_scale=1.0
+            ctx, params_t, grads_t, state_t, og_t, step_num=0
         )
 
     ctx.enqueue_copy(og_host, og_buf)

@@ -35,11 +35,19 @@ struct SequenceReplayBuffer[
         dtype: Data type for storage (default: float32).
 
     Storage layout (all circular, indexed by ptr mod capacity):
-        obs[t]:    observation at timestep t              [OBS_DIM]
-        actions[t]: action taken at timestep t            [ACTION_DIM]
-        rewards[t]: reward received at timestep t         [1]
-        dones[t]:  whether episode ended after step t     [1] (1.0 or 0.0)
-        valid[t]:  whether a full sequence can start at t [Bool]
+        obs[t]:          observation at timestep t                      [OBS_DIM]
+        actions[t]:      action taken at timestep t                     [ACTION_DIM]
+        rewards[t]:      reward received at timestep t                  [1]
+        dones[t]:        any episode boundary after step t              [1] (1.0 or 0.0)
+                          (terminated OR truncated — used for sequence
+                          boundary detection so we never sample across
+                          a reset).
+        terminations[t]: natural termination after step t               [1] (1.0 or 0.0)
+                          (terminated only — used as the bootstrap mask
+                          returned in `batch_dones`, so the continue head
+                          / TD target zeros V_next on real terminations
+                          but keeps it on time-limit truncations).
+        episode_id[t]:   incremented on each `dones[t] = 1`             [Int]
     """
 
     comptime OBS_DIM: Int = Self.obs_dim
@@ -49,7 +57,8 @@ struct SequenceReplayBuffer[
     var obs: List[Scalar[Self.dtype]]  # [capacity * OBS_DIM]
     var actions: List[Scalar[Self.dtype]]  # [capacity * ACTION_DIM]
     var rewards: List[Scalar[Self.dtype]]  # [capacity]
-    var dones: List[Scalar[Self.dtype]]  # [capacity] (1.0 = done)
+    var dones: List[Scalar[Self.dtype]]  # [capacity] (term|trunc — boundary)
+    var terminations: List[Scalar[Self.dtype]]  # [capacity] (term-only — bootstrap)
     var episode_id: List[Int]  # tracks which episode each step belongs to
 
     var ptr: Int  # next write position
@@ -62,6 +71,7 @@ struct SequenceReplayBuffer[
         self.actions = take.actions^
         self.rewards = take.rewards^
         self.dones = take.dones^
+        self.terminations = take.terminations^
         self.episode_id = take.episode_id^
         self.ptr = take.ptr
         self.size = take.size
@@ -73,6 +83,7 @@ struct SequenceReplayBuffer[
         self.actions = copy.actions.copy()
         self.rewards = copy.rewards.copy()
         self.dones = copy.dones.copy()
+        self.terminations = copy.terminations.copy()
         self.episode_id = copy.episode_id.copy()
         self.ptr = copy.ptr
         self.size = copy.size
@@ -88,6 +99,7 @@ struct SequenceReplayBuffer[
         )
         self.rewards = List[Scalar[Self.dtype]](capacity=Self.capacity)
         self.dones = List[Scalar[Self.dtype]](capacity=Self.capacity)
+        self.terminations = List[Scalar[Self.dtype]](capacity=Self.capacity)
         self.episode_id = List[Int](capacity=Self.capacity)
 
         # Pre-allocate
@@ -98,6 +110,7 @@ struct SequenceReplayBuffer[
         for _ in range(Self.capacity):
             self.rewards.append(Scalar[Self.dtype](0))
             self.dones.append(Scalar[Self.dtype](0))
+            self.terminations.append(Scalar[Self.dtype](0))
             self.episode_id.append(0)
 
         self.ptr = 0
@@ -111,13 +124,44 @@ struct SequenceReplayBuffer[
         reward: Scalar[Self.dtype],
         done: Bool,
     ):
-        """Add a transition to the buffer.
+        """Add a transition to the buffer (collapsed-flag form).
+
+        Callers that don't distinguish termination from truncation pass a
+        single `done` flag; it's stored as both the boundary flag and the
+        bootstrap mask. Callers that DO distinguish should use
+        `add_with_termination` so the continue head / TD bootstrap can stay
+        on at time-limit truncations.
 
         Args:
             obs: Current observation [OBS_DIM].
             action: Action taken [ACTION_DIM].
             reward: Reward received.
             done: Whether the episode ended after this step.
+        """
+        self.add_with_termination(obs, action, reward, done, done)
+
+    def add_with_termination(
+        mut self,
+        obs: InlineArray[Scalar[Self.dtype], Self.OBS_DIM],
+        action: InlineArray[Scalar[Self.dtype], Self.ACTION_DIM],
+        reward: Scalar[Self.dtype],
+        done: Bool,
+        terminated: Bool,
+    ):
+        """Add a transition with explicit terminated/truncated separation.
+
+        Args:
+            obs: Current observation [OBS_DIM].
+            action: Action taken [ACTION_DIM].
+            reward: Reward received.
+            done: True if the env was reset after this step (terminated OR
+                truncated). Used for sequence-boundary detection so we never
+                sample sequences that cross a reset.
+            terminated: True only on natural termination (e.g. Hopper falling).
+                Returned as `batch_dones` from `sample_sequences` and used by
+                the continue head / TD target as `(1 - terminated) * V_next`.
+                Must be False on time-limit truncation, otherwise V is biased
+                toward |r/(1 - γ·(1 - p_truncation))| ≪ |r/(1 - γ)|.
         """
         var p = self.ptr
 
@@ -129,9 +173,10 @@ struct SequenceReplayBuffer[
         for i in range(Self.ACTION_DIM):
             self.actions[p * Self.ACTION_DIM + i] = action[i]
 
-        # Write reward and done
+        # Write reward, done (boundary), terminated (bootstrap)
         self.rewards[p] = reward
         self.dones[p] = Scalar[Self.dtype](1.0 if done else 0.0)
+        self.terminations[p] = Scalar[Self.dtype](1.0 if terminated else 0.0)
         self.episode_id[p] = self.current_episode
 
         # Advance pointer
@@ -139,7 +184,7 @@ struct SequenceReplayBuffer[
         if self.size < Self.capacity:
             self.size += 1
 
-        # New episode starts after done
+        # New episode starts after any reset (terminated or truncated)
         if done:
             self.current_episode += 1
 
@@ -201,13 +246,23 @@ struct SequenceReplayBuffer[
           batch_obs:     [BATCH * (H+1) * OBS_DIM]
           batch_actions: [BATCH * H * ACTION_DIM]
           batch_rewards: [BATCH * H]
-          batch_dones:   [BATCH * H]
+          batch_dones:   [BATCH * H]  (terminations only — bootstrap mask)
+
+        Note:
+            `batch_dones` returns the per-step `terminations` flag (natural
+            termination only), not the boundary flag. This matches the
+            `(1 - terminated) * V_next` semantics required by the DreamerV3
+            continue head / TD target. Sequence-boundary integrity is
+            enforced internally via `_is_valid_sequence_start`, which uses
+            the broader `dones` (term|trunc) flag — sequences never cross
+            a reset, so the returned bootstrap mask is meaningful at every
+            step of the sampled window.
 
         Args:
             batch_obs: Pre-allocated output buffer for observations.
             batch_actions: Pre-allocated output buffer for actions.
             batch_rewards: Pre-allocated output buffer for rewards.
-            batch_dones: Pre-allocated output buffer for dones.
+            batch_dones: Pre-allocated output buffer for the bootstrap mask.
         """
         var sampled = 0
         var max_attempts = BATCH * 100  # prevent infinite loop
@@ -263,7 +318,9 @@ struct SequenceReplayBuffer[
                         idx * Self.ACTION_DIM + i
                     ]
                 batch_rewards[rew_off + t] = self.rewards[idx]
-                batch_dones[don_off + t] = self.dones[idx]
+                # batch_dones returns terminations (term-only) for bootstrap.
+                # Sequence boundaries (term|trunc) are enforced upstream.
+                batch_dones[don_off + t] = self.terminations[idx]
 
             sampled += 1
 

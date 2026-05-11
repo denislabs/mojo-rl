@@ -12,7 +12,7 @@ Rendering uses native SDL2 bindings (no Python/pygame dependency).
 Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 """
 
-from std.math import cos, sin, pi
+from std.math import cos, sin, floor, pi
 from std.random import random_float64
 from std.memory import alloc
 from mojo_rl.core import (
@@ -22,6 +22,7 @@ from mojo_rl.core import (
     TileCoding,
     BoxDiscreteActionEnv,
     PolynomialFeatures,
+    GPUDiscreteEnv,
     RenderableEnv,
 )
 from mojo_rl.render import (
@@ -33,6 +34,31 @@ from mojo_rl.render import (
     black,
     rgb,
 )
+from layout import LayoutTensor, Layout
+from std.gpu import block_dim, block_idx, thread_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.random.philox import Random as PhiloxRandom
+
+
+# =============================================================================
+# Physics Constants (shared by CPU and GPU kernels)
+# =============================================================================
+
+comptime gpu_dtype = DType.float32
+
+# Physics parameters (Gymnasium Acrobot-v1, use_book_dynamics=True)
+comptime ACR_GRAVITY: Float64 = 9.8
+comptime ACR_LINK_LENGTH_1: Float64 = 1.0
+comptime ACR_LINK_LENGTH_2: Float64 = 1.0
+comptime ACR_LINK_MASS_1: Float64 = 1.0
+comptime ACR_LINK_MASS_2: Float64 = 1.0
+comptime ACR_LINK_COM_POS_1: Float64 = 0.5
+comptime ACR_LINK_COM_POS_2: Float64 = 0.5
+comptime ACR_LINK_MOI: Float64 = 1.0
+comptime ACR_MAX_VEL_1: Float64 = 4.0 * pi
+comptime ACR_MAX_VEL_2: Float64 = 9.0 * pi
+comptime ACR_DT: Float64 = 0.2
+comptime ACR_MAX_STEPS: Int = 500
 
 
 # ============================================================================
@@ -134,7 +160,11 @@ def bound(x: Float64, m: Float64, M: Float64) -> Float64:
 
 
 struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
-    BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv
+    BoxDiscreteActionEnv
+    & DiscreteEnv
+    & GPUDiscreteEnv
+    & RenderableEnv
+    & Movable
 ):
     """Native Mojo Acrobot environment with integrated SDL2 rendering.
 
@@ -146,14 +176,26 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
     - Free end reaches target height: -cos(θ1) - cos(θ2 + θ1) > 1.0.
     - Episode length > 500 steps.
 
-    Implements DiscreteEnv for tabular methods and BoxDiscreteActionEnv for
-    function approximation with continuous 6D observations.
+    Implements:
+    - DiscreteEnv: for tabular methods.
+    - BoxDiscreteActionEnv: for function approximation with continuous 6D obs.
+    - GPUDiscreteEnv: for fused GPU kernels (A2C, PPO, EZ-V2, etc.). The GPU
+      path always uses book dynamics (matches the default CPU `__init__`).
     """
 
     # Type aliases for trait conformance
     comptime dtype = Self.DTYPE
     comptime StateType = AcrobotState
     comptime ActionType = AcrobotAction
+
+    # GPUDiscreteEnv trait constants
+    # State layout: [theta1, theta2, theta1_dot, theta2_dot, step_count]
+    comptime STATE_SIZE: Int = 5
+    # Obs: [cos(θ1), sin(θ1), cos(θ2), sin(θ2), θ1_dot, θ2_dot]
+    comptime OBS_DIM: Int = 6
+    comptime NUM_ACTIONS: Int = 3
+    comptime STEP_WS_SHARED: Int = 0
+    comptime STEP_WS_PER_ENV: Int = 0
 
     # Physical constants (same as Gymnasium)
     var gravity: Scalar[Self.dtype]
@@ -244,6 +286,35 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         # Renderer
         self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
         self._renderer_initialized = False
+
+    def __init__(out self, *, deinit take: Self):
+        """Move-init — required for `Movable` conformance, used by
+        `UnsafePointer.init_pointee_move(...)` in multi-env demos."""
+        self.gravity = take.gravity
+        self.link_length_1 = take.link_length_1
+        self.link_length_2 = take.link_length_2
+        self.link_mass_1 = take.link_mass_1
+        self.link_mass_2 = take.link_mass_2
+        self.link_com_pos_1 = take.link_com_pos_1
+        self.link_com_pos_2 = take.link_com_pos_2
+        self.link_moi = take.link_moi
+        self.max_vel_1 = take.max_vel_1
+        self.max_vel_2 = take.max_vel_2
+        self.avail_torque = take.avail_torque
+        self.torque_noise_max = take.torque_noise_max
+        self.dt = take.dt
+        self.theta1 = take.theta1
+        self.theta2 = take.theta2
+        self.theta1_dot = take.theta1_dot
+        self.theta2_dot = take.theta2_dot
+        self.steps = take.steps
+        self.max_steps = take.max_steps
+        self.done = take.done
+        self.total_reward = take.total_reward
+        self.num_bins = take.num_bins
+        self.use_book_dynamics = take.use_book_dynamics
+        self._renderer = take._renderer
+        self._renderer_initialized = take._renderer_initialized
 
     # ========================================================================
     # DiscreteEnv trait methods
@@ -956,3 +1027,599 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
     def renderer_step_once(self) -> Bool:
         return False
+
+    # ========================================================================
+    # GPUDiscreteEnv trait methods (for fused GPU kernels)
+    # ========================================================================
+
+    @staticmethod
+    @always_inline
+    def _wrap_pi_gpu(theta: Scalar[gpu_dtype]) -> Scalar[gpu_dtype]:
+        """Wrap angle to [-pi, pi) using branch-free floor formula."""
+        var two_pi = Scalar[gpu_dtype](2.0 * pi)
+        var pi_s = Scalar[gpu_dtype](pi)
+        return theta - two_pi * floor((theta + pi_s) / two_pi)
+
+    @staticmethod
+    @always_inline
+    def _bound_gpu(
+        x: Scalar[gpu_dtype],
+        m: Scalar[gpu_dtype],
+        M: Scalar[gpu_dtype],
+    ) -> Scalar[gpu_dtype]:
+        var y = x
+        if y < m:
+            y = m
+        if y > M:
+            y = M
+        return y
+
+    @staticmethod
+    @always_inline
+    def _dsdt_gpu(
+        s: SIMD[gpu_dtype, 4], torque: Scalar[gpu_dtype]
+    ) -> SIMD[gpu_dtype, 4]:
+        """Equations of motion for Acrobot (book dynamics).
+
+        Returns derivative SIMD[dtheta1, dtheta2, ddtheta1, ddtheta2].
+        """
+        var m1 = Scalar[gpu_dtype](ACR_LINK_MASS_1)
+        var m2 = Scalar[gpu_dtype](ACR_LINK_MASS_2)
+        var l1 = Scalar[gpu_dtype](ACR_LINK_LENGTH_1)
+        var lc1 = Scalar[gpu_dtype](ACR_LINK_COM_POS_1)
+        var lc2 = Scalar[gpu_dtype](ACR_LINK_COM_POS_2)
+        var I1 = Scalar[gpu_dtype](ACR_LINK_MOI)
+        var I2 = Scalar[gpu_dtype](ACR_LINK_MOI)
+        var g = Scalar[gpu_dtype](ACR_GRAVITY)
+
+        var theta1 = s[0]
+        var theta2 = s[1]
+        var dtheta1 = s[2]
+        var dtheta2 = s[3]
+
+        var cos_theta2 = cos(theta2)
+        var sin_theta2 = sin(theta2)
+        var pi_2 = Scalar[gpu_dtype](pi / 2.0)
+        var cos_t1_t2_pi2 = cos(theta1 + theta2 - pi_2)
+        var cos_t1_pi2 = cos(theta1 - pi_2)
+
+        var d1 = (
+            m1 * lc1 * lc1
+            + m2
+            * (
+                l1 * l1
+                + lc2 * lc2
+                + Scalar[gpu_dtype](2.0) * l1 * lc2 * cos_theta2
+            )
+            + I1
+            + I2
+        )
+        var d2 = m2 * (lc2 * lc2 + l1 * lc2 * cos_theta2) + I2
+        var phi2 = m2 * lc2 * g * cos_t1_t2_pi2
+        var phi1 = (
+            -m2 * l1 * lc2 * dtheta2 * dtheta2 * sin_theta2
+            - Scalar[gpu_dtype](2.0)
+            * m2
+            * l1
+            * lc2
+            * dtheta2
+            * dtheta1
+            * sin_theta2
+            + (m1 * lc1 + m2 * l1) * g * cos_t1_pi2
+            + phi2
+        )
+        # Book dynamics
+        var ddtheta2 = (
+            torque
+            + d2 / d1 * phi1
+            - m2 * l1 * lc2 * dtheta1 * dtheta1 * sin_theta2
+            - phi2
+        ) / (m2 * lc2 * lc2 + I2 - d2 * d2 / d1)
+        var ddtheta1 = -(d2 * ddtheta2 + phi1) / d1
+
+        var out = SIMD[gpu_dtype, 4](0.0)
+        out[0] = dtheta1
+        out[1] = dtheta2
+        out[2] = ddtheta1
+        out[3] = ddtheta2
+        return out
+
+    @staticmethod
+    @always_inline
+    def step_kernel[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        states: LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        actions: LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
+        ],
+        rewards: LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
+        dones: LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
+        rng_seed: Scalar[DType.uint64],
+    ):
+        # rng_seed unused in Acrobot (no torque noise on the GPU path)
+        var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if i >= BATCH_SIZE:
+            return
+
+        # Map action index → torque {-1, 0, +1}
+        var a = Int(actions[i])
+        var torque = Scalar[gpu_dtype](0.0)
+        if a == 0:
+            torque = Scalar[gpu_dtype](-1.0)
+        elif a == 2:
+            torque = Scalar[gpu_dtype](1.0)
+
+        # Load state (rebind LayoutTensor element_type → Scalar[gpu_dtype])
+        var y0 = SIMD[gpu_dtype, 4](0.0)
+        y0[0] = rebind[Scalar[gpu_dtype]](states[i, 0])
+        y0[1] = rebind[Scalar[gpu_dtype]](states[i, 1])
+        y0[2] = rebind[Scalar[gpu_dtype]](states[i, 2])
+        y0[3] = rebind[Scalar[gpu_dtype]](states[i, 3])
+
+        # RK4 integration with dt = ACR_DT
+        var dt = Scalar[gpu_dtype](ACR_DT)
+        var dt2 = dt / Scalar[gpu_dtype](2.0)
+
+        var k1 = Self._dsdt_gpu(y0, torque)
+        var k2 = Self._dsdt_gpu(y0 + dt2 * k1, torque)
+        var k3 = Self._dsdt_gpu(y0 + dt2 * k2, torque)
+        var k4 = Self._dsdt_gpu(y0 + dt * k3, torque)
+
+        var ns = y0 + dt / Scalar[gpu_dtype](6.0) * (
+            k1
+            + Scalar[gpu_dtype](2.0) * k2
+            + Scalar[gpu_dtype](2.0) * k3
+            + k4
+        )
+
+        # Wrap angles, bound velocities
+        var theta1 = Self._wrap_pi_gpu(ns[0])
+        var theta2 = Self._wrap_pi_gpu(ns[1])
+        var theta1_dot = Self._bound_gpu(
+            ns[2],
+            Scalar[gpu_dtype](-ACR_MAX_VEL_1),
+            Scalar[gpu_dtype](ACR_MAX_VEL_1),
+        )
+        var theta2_dot = Self._bound_gpu(
+            ns[3],
+            Scalar[gpu_dtype](-ACR_MAX_VEL_2),
+            Scalar[gpu_dtype](ACR_MAX_VEL_2),
+        )
+
+        # Write back state
+        states[i, 0] = theta1
+        states[i, 1] = theta2
+        states[i, 2] = theta1_dot
+        states[i, 3] = theta2_dot
+        states[i, 4] += Scalar[gpu_dtype](1.0)  # step counter
+
+        # Termination: free end above target height
+        var terminated = (
+            -cos(theta1) - cos(theta1 + theta2) > Scalar[gpu_dtype](1.0)
+        )
+        var truncated = states[i, 4] >= Scalar[gpu_dtype](ACR_MAX_STEPS)
+        var done = terminated or truncated
+
+        # Reward: 0 on the terminal step, -1 otherwise
+        var reward = Scalar[gpu_dtype](
+            0.0
+        ) if terminated else Scalar[gpu_dtype](-1.0)
+
+        rewards[i] = reward
+        dones[i] = Scalar[gpu_dtype](done)
+
+    @staticmethod
+    @always_inline
+    def reset_kernel[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        state: LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+    ):
+        """Reset state to random initial values via Philox RNG.
+
+        Matches CPU reset: each component sampled uniform in [-0.1, 0.1].
+        """
+        var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if i >= BATCH_SIZE:
+            return
+
+        var rng = PhiloxRandom(
+            seed=UInt64(i) * UInt64(2654435761) + 12345, offset=0
+        )
+        var rand_vals = rng.step_uniform()
+
+        # Map [0, 1) → [-0.1, 0.1]
+        state[i, 0] = Scalar[gpu_dtype](rand_vals[0]) * Scalar[gpu_dtype](
+            0.2
+        ) - Scalar[gpu_dtype](0.1)
+        state[i, 1] = Scalar[gpu_dtype](rand_vals[1]) * Scalar[gpu_dtype](
+            0.2
+        ) - Scalar[gpu_dtype](0.1)
+        state[i, 2] = Scalar[gpu_dtype](rand_vals[2]) * Scalar[gpu_dtype](
+            0.2
+        ) - Scalar[gpu_dtype](0.1)
+        state[i, 3] = Scalar[gpu_dtype](rand_vals[3]) * Scalar[gpu_dtype](
+            0.2
+        ) - Scalar[gpu_dtype](0.1)
+        state[i, 4] = Scalar[gpu_dtype](0.0)  # step counter
+
+    @staticmethod
+    @always_inline
+    def selective_reset_kernel[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        state: LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        dones: LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE),
+            MutAnyOrigin,
+        ],
+        rng_seed: Scalar[DType.uint32],
+    ):
+        """Reset only env slots where dones[i] > 0.5; clears that done flag."""
+        var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if i >= BATCH_SIZE:
+            return
+
+        if dones[i] < Scalar[gpu_dtype](0.5):
+            return
+
+        var rng = PhiloxRandom(
+            seed=UInt64(i) * UInt64(2654435761) + UInt64(rng_seed),
+            offset=0,
+        )
+        var rand_vals = rng.step_uniform()
+
+        state[i, 0] = Scalar[gpu_dtype](rand_vals[0]) * Scalar[gpu_dtype](
+            0.2
+        ) - Scalar[gpu_dtype](0.1)
+        state[i, 1] = Scalar[gpu_dtype](rand_vals[1]) * Scalar[gpu_dtype](
+            0.2
+        ) - Scalar[gpu_dtype](0.1)
+        state[i, 2] = Scalar[gpu_dtype](rand_vals[2]) * Scalar[gpu_dtype](
+            0.2
+        ) - Scalar[gpu_dtype](0.1)
+        state[i, 3] = Scalar[gpu_dtype](rand_vals[3]) * Scalar[gpu_dtype](
+            0.2
+        ) - Scalar[gpu_dtype](0.1)
+        state[i, 4] = Scalar[gpu_dtype](0.0)
+
+        dones[i] = Scalar[gpu_dtype](0.0)
+
+    # ========================================================================
+    # GPU Launcher Methods (host-side, call the kernels)
+    # ========================================================================
+
+    comptime TPB = 256  # Threads per block
+
+    @staticmethod
+    def step_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        actions_buf: DeviceBuffer[gpu_dtype],
+        mut rewards_buf: DeviceBuffer[gpu_dtype],
+        mut dones_buf: DeviceBuffer[gpu_dtype],
+        mut terminated_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt64 = 0,
+        workspace_ptr: UnsafePointer[
+            Scalar[gpu_dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+    ) raises:
+        """Launch step kernel on GPU with fused obs extraction.
+
+        Writes obs[i] = [cos(θ1), sin(θ1), cos(θ2), sin(θ2), θ1_dot, θ2_dot]
+        from the post-step state.
+        """
+        var states = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var actions = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+        var rewards = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+        var dones = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+        var terminated_out = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](terminated_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+
+        var seed = Scalar[DType.uint64](rng_seed)
+
+        @parameter
+        @always_inline
+        def step_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            actions: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
+            ],
+            rewards: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            dones: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            terminated_out: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            obs: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+            ],
+            rng_seed: Scalar[DType.uint64],
+        ):
+            Self.step_kernel[BATCH_SIZE, STATE_SIZE](
+                states, actions, rewards, dones, rng_seed
+            )
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i < BATCH_SIZE:
+                # Acrobot: terminated = goal-height crossed (not truncation).
+                var theta1 = states[i, 0]
+                var theta2 = states[i, 1]
+                var is_terminated = (
+                    -cos(theta1) - cos(theta1 + theta2)
+                    > Scalar[gpu_dtype](1.0)
+                )
+                terminated_out[i] = Scalar[gpu_dtype](is_terminated)
+
+                # Build observation from state
+                obs[i, 0] = cos(theta1)
+                obs[i, 1] = sin(theta1)
+                obs[i, 2] = cos(theta2)
+                obs[i, 3] = sin(theta2)
+                obs[i, 4] = states[i, 2]
+                obs[i, 5] = states[i, 3]
+
+        ctx.enqueue_function[step_wrapper, step_wrapper](
+            states,
+            actions,
+            rewards,
+            dones,
+            terminated_out,
+            obs,
+            seed,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
+        )
+
+    @staticmethod
+    def reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt64 = 0,
+    ) raises:
+        """Launch reset kernel on GPU."""
+        var states = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+
+        @parameter
+        @always_inline
+        def reset_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+        ):
+            Self.reset_kernel[BATCH_SIZE, STATE_SIZE](states)
+
+        ctx.enqueue_function[reset_wrapper, reset_wrapper](
+            states,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
+        )
+
+    @staticmethod
+    def selective_reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        mut dones_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt64,
+        workspace_ptr: UnsafePointer[
+            Scalar[gpu_dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+    ) raises:
+        """Launch selective reset kernel on GPU - only resets done envs."""
+        var states = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var dones = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+
+        if rng_counter_ptr:
+            var counter_t = LayoutTensor[
+                DType.uint64, Layout.row_major(1), MutAnyOrigin
+            ](rng_counter_ptr)
+
+            @parameter
+            @always_inline
+            def selective_reset_counter_wrapper(
+                states: LayoutTensor[
+                    gpu_dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                    MutAnyOrigin,
+                ],
+                dones: LayoutTensor[
+                    gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                counter: LayoutTensor[
+                    DType.uint64, Layout.row_major(1), MutAnyOrigin
+                ],
+            ):
+                Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
+                    states,
+                    dones,
+                    Scalar[DType.uint32](
+                        rebind[Scalar[DType.uint64]](counter[0])
+                    ),
+                )
+
+            ctx.enqueue_function[
+                selective_reset_counter_wrapper,
+                selective_reset_counter_wrapper,
+            ](
+                states,
+                dones,
+                counter_t,
+                grid_dim=(BLOCKS,),
+                block_dim=(Self.TPB,),
+            )
+        else:
+            var seed = Scalar[DType.uint64](rng_seed)
+
+            @parameter
+            @always_inline
+            def selective_reset_wrapper(
+                states: LayoutTensor[
+                    gpu_dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                    MutAnyOrigin,
+                ],
+                dones: LayoutTensor[
+                    gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                rng_seed: Scalar[DType.uint64],
+            ):
+                Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
+                    states, dones, Scalar[DType.uint32](rng_seed)
+                )
+
+            ctx.enqueue_function[
+                selective_reset_wrapper, selective_reset_wrapper
+            ](
+                states,
+                dones,
+                seed,
+                grid_dim=(BLOCKS,),
+                block_dim=(Self.TPB,),
+            )
+
+    @staticmethod
+    def init_step_workspace_gpu[
+        BATCH_SIZE: Int,
+    ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype]) raises:
+        """No-op: Acrobot doesn't need pre-allocated workspace."""
+        pass
+
+    @staticmethod
+    def update_curriculum_gpu(
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[gpu_dtype],
+        curriculum_values: List[Scalar[gpu_dtype]],
+    ) raises:
+        """No-op: Acrobot doesn't use curriculum."""
+        pass
+
+    @staticmethod
+    def extract_obs_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        states: DeviceBuffer[gpu_dtype],
+        mut obs: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Override default: Acrobot's obs is a non-trivial map of state.
+
+        obs[i] = [cos(θ1), sin(θ1), cos(θ2), sin(θ2), θ1_dot, θ2_dot]
+        from state[i, 0:4] = [theta1, theta2, theta1_dot, theta2_dot].
+        """
+        var states_t = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE),
+            MutAnyOrigin,
+        ](states.unsafe_ptr())
+        var obs_t = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, OBS_DIM),
+            MutAnyOrigin,
+        ](obs.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+
+        @parameter
+        @always_inline
+        def extract_wrapper(
+            s: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            o: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, OBS_DIM),
+                MutAnyOrigin,
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= BATCH_SIZE:
+                return
+            var theta1 = s[i, 0]
+            var theta2 = s[i, 1]
+            o[i, 0] = cos(theta1)
+            o[i, 1] = sin(theta1)
+            o[i, 2] = cos(theta2)
+            o[i, 3] = sin(theta2)
+            o[i, 4] = s[i, 2]
+            o[i, 5] = s[i, 3]
+
+        ctx.enqueue_function[extract_wrapper, extract_wrapper](
+            states_t,
+            obs_t,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
+        )

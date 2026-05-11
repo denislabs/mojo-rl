@@ -13,13 +13,13 @@ from .env_traits import (
     DiscreteEnv,
     BoxDiscreteActionEnv,
     BoxContinuousActionEnv,
+    TerminationAwareEnv,
     GPUDiscreteEnv,
     GPUContinuousEnv,
     CurriculumScheduler,
     NoCurriculumScheduler,
     TwoPlayerDiscreteEnv,
     GPUTwoPlayerDiscreteEnv,
-    DataAugmentable,
     Saveable,
 )
 from .space import Space, DiscreteSpace, BoxSpace

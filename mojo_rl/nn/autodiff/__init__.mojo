@@ -8,21 +8,27 @@ from .primitives import (
     SigmoidOp,
     MishOp,
     SwishOp,
+    GELUOp,
     Scale,
     ElemMul,
     ReduceSum,
     ReduceMean,
+    TokenMean,
     SoftmaxOp,
     LayerNormOp,
     RMSNormOp,
     DropoutOp,
     Flatten,
+    Transpose2DOp,
     Embedding,
     Conv2D,
     MaxPool2D,
     AvgPool2D,
     ScaledDotProductAttention,
     SymlogOp,
+    LogStdBoundOp,
+    DivideOp,
+    ElemMulTwoInputOp,
 )
 from .fused import (
     FusedMatMulBias,
@@ -35,7 +41,7 @@ from .fused import (
     SwishActivation,
 )
 from .auto_fused import AutoFused
-from .combinators import Residual, ProjectedResidual, Parallel, Repeat
+from .combinators import Residual, ProjectedResidual, Parallel, Repeat, Tokenwise
 from .compute_graph import ComputeGraph, GNode, GraphNode
 from .composite_params import CompositeParams
 

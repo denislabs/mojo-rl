@@ -120,7 +120,10 @@ struct CartPoleAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
 
 struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
-    BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv & RenderableEnv
+    BoxDiscreteActionEnv
+    & DiscreteEnv
+    & GPUDiscreteEnv
+    & RenderableEnv
 ):
     """Native Mojo CartPole environment with integrated SDL2 rendering.
 

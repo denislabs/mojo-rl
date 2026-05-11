@@ -35,7 +35,7 @@ Kernels provided:
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.memory import AddressSpace
-from std.math import exp, log, sqrt, cos, tanh
+from std.math import exp, log, sqrt, cos, tanh, isnan, isinf
 from std.random.philox import Random as PhiloxRandom
 from std.math import abs as math_abs
 
@@ -73,6 +73,33 @@ def _symexp[
         return exp(x) - Scalar[dtype](1.0)
     else:
         return -(exp(-x) - Scalar[dtype](1.0))
+
+
+# =============================================================================
+# Diagnostic Kernels
+# =============================================================================
+
+
+@always_inline
+def tdmpc2_has_nan_kernel[
+    dtype: DType,
+    SIZE: Int,
+](
+    buf: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    flag: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
+) where dtype.is_floating_point():
+    """Set flag[0] to 1 if any element of `buf` is NaN or Inf.
+
+    Race-tolerant: any thread that finds a bad value writes 1; all writes
+    have the same value, so no atomics or barriers needed. Caller must
+    pre-zero `flag` before launch (this kernel never writes 0).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= SIZE:
+        return
+    var v = Scalar[dtype](buf[i][0])
+    if isnan(v) or isinf(v):
+        flag[0] = UInt32(1)
 
 
 # =============================================================================
@@ -131,8 +158,14 @@ def tdmpc2_sample_actions_kernel[
 ) where dtype.is_floating_point():
     """Sample actions from tanh-squashed Gaussian policy (TD-MPC2 style).
 
-    Policy output layout: [mean[ACTION_DIM] | log_std[ACTION_DIM]]
+    Policy output layout: [mean[ACTION_DIM] | log_std_raw[ACTION_DIM]]
+    log_std = LOG_STD_MIN + 0.5 * LOG_STD_DIF * (tanh(log_std_raw) + 1)
     Action = tanh(mean + exp(log_std) * noise) ∈ (-1, 1)
+
+    Smooth tanh-based bound on log_std (matches reference TD-MPC2). This
+    keeps log_std ∈ [LOG_STD_MIN, LOG_STD_MIN + LOG_STD_DIF] with non-zero
+    gradient everywhere — unlike a hard clamp which kills gradients at the
+    boundary and can leave the policy stuck with saturated noise.
 
     Unlike PPO (unbounded Gaussian), TD-MPC2 uses tanh squashing to keep
     actions in the valid [-1, 1] range for continuous control tasks.
@@ -142,8 +175,8 @@ def tdmpc2_sample_actions_kernel[
         actions: Output sampled actions [BATCH_SIZE, ACTION_DIM].
         rng_seed: Random seed (should vary per call).
     """
-    comptime LOG_STD_MIN: Scalar[dtype] = -5.0
-    comptime LOG_STD_MAX: Scalar[dtype] = 2.0
+    comptime LOG_STD_MIN: Scalar[dtype] = -10.0
+    comptime LOG_STD_DIF: Scalar[dtype] = 12.0  # log_std_max(=2) - log_std_min(=-10)
 
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH_SIZE:
@@ -153,13 +186,12 @@ def tdmpc2_sample_actions_kernel[
         var mean_raw = pi_out[i, j]
         var log_std_raw = pi_out[i, ACTION_DIM + j]
         var mean = Scalar[dtype](mean_raw[0])
-        var log_std = Scalar[dtype](log_std_raw[0])
+        var x = Scalar[dtype](log_std_raw[0])
 
-        # Clamp log_std for numerical stability
-        if log_std < LOG_STD_MIN:
-            log_std = LOG_STD_MIN
-        elif log_std > LOG_STD_MAX:
-            log_std = LOG_STD_MAX
+        # Smooth tanh-based log_std bound (matches reference math.log_std)
+        var log_std = LOG_STD_MIN + Scalar[dtype](0.5) * LOG_STD_DIF * (
+            Scalar[dtype](tanh(Float32(x))) + Scalar[dtype](1.0)
+        )
 
         # Box-Muller transform for standard normal sample
         var philox = PhiloxRandom(
@@ -241,22 +273,33 @@ def tdmpc2_extract_z_from_za_grad_kernel[
         dtype, Layout.row_major(BATCH_SIZE, LATENT_DIM), MutAnyOrigin
     ],
 ) where dtype.is_floating_point():
-    """Extract the z-part gradient from grad_za (accumulates into grad_z).
+    """Extract the z-part gradient from grad_za (OVERWRITES grad_z).
 
-    When dynamics backward produces grad_za[BATCH, LATENT+ACT], only the
-    first LATENT elements flow back through the encoder. This kernel copies
-    grad_za[:, :LATENT] into grad_z (accumulating, not overwriting).
+    When dynamics / reward / Q backward produces grad_za[BATCH, LATENT+ACT],
+    only the first LATENT elements flow back through the encoder. This
+    kernel copies grad_za[:, :LATENT] into grad_z, *overwriting* whatever
+    was there.
+
+    OVERWRITE (not accumulate) is required: every BPTT iter calls this
+    kernel six times (dyn, rew, Q1..Q5) reading-and-writing the *same*
+    grad_z_dyn_buf. Each call must produce the contribution of that head
+    alone — the per-iter accumulation into grad_z_carry happens externally
+    via tdmpc2_add_into_kernel. If this kernel accumulated, every head's
+    contribution would be added multiple times into the carry (e.g., dyn
+    would weigh 7x relative to Q5 in a 1-rew-5-Q chain), which over-
+    weights consistency-via-dynamics on the encoder gradient and is the
+    classic cause of trivial encoder-collapse in TD-MPC2.
 
     Args:
         grad_za: Gradient w.r.t. (z, a) input [BATCH_SIZE, LATENT+ACT].
-        grad_z: Gradient accumulation buffer for z [BATCH_SIZE, LATENT_DIM].
+        grad_z: Output buffer for z gradient [BATCH_SIZE, LATENT_DIM].
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH_SIZE:
         return
 
     for k in range(LATENT_DIM):
-        grad_z[i, k] = grad_z[i, k] + grad_za[i, k]
+        grad_z[i, k] = grad_za[i, k]
 
 
 @always_inline
@@ -717,20 +760,26 @@ def tdmpc2_q_decode_backward_kernel[
     """Backward through distributional Q decode for policy gradient.
 
     Q_symlog = sum(softmax(logits) * bins)
-    Gradient: d(-Q_symlog / running_scale) / d(logits_k)
-            = -softmax_k * (bin_k - Q_symlog) / (running_scale * BATCH) * rho
+    Q_actual = symexp(Q_symlog) = sign(Q_symlog) * (exp(|Q_symlog|) - 1)
+    d(Q_actual)/d(Q_symlog) = exp(|Q_symlog|)   (uniformly positive)
 
-    RunningScale normalizes Q-values to prevent gradient magnitude issues.
-    Reference TD-MPC2 uses 5th-95th percentile range normalization.
+    Gradient: d(-Q_actual / running_scale) / d(logits_k)
+            = -exp(|Q_symlog|) * softmax_k * (bin_k - Q_symlog) / (S * B) * rho
+
+    Matches reference TD-MPC2: actor maximizes Q_actual / scale_actual, and
+    `running_scale` tracks the 5–95% percentile range of Q_actual. The
+    `exp(|Q_symlog|)` factor is the symexp chain-rule term — without it the
+    policy gradient is suppressed by ~exp(|Q_symlog|) (e.g. ~20× at Q≈-20).
 
     WRITES (not accumulates) to grad_logits.
 
     Args:
         logits: Q-network output logits [BATCH, BINS].
-        bins: Bin centers [BINS].
+        bins: Bin centers [BINS] (in symlog space).
         grad_logits: Output gradient [BATCH, BINS].
         rho_weight: Rho^t temporal decay weight.
-        running_scale: Q-value normalization scale (default: 1.0 = no scaling).
+        running_scale: Q-value normalization scale in actual space
+            (default: 1.0 = no scaling).
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH_SIZE:
@@ -753,11 +802,16 @@ def tdmpc2_q_decode_backward_kernel[
         var prob_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
         q_val = q_val + prob_k * Scalar[dtype](bins[k][0])
 
-    # d(-Q_symlog / S) / d(logits_k) = -softmax_k * (bin_k - Q_symlog) / (S * B) * rho
-    # Normalizing by running_scale prevents gradient magnitude issues when Q-values
-    # are large or small (matches reference RunningScale behavior).
+    # Symexp chain-rule factor: d(Q_actual)/d(Q_symlog) = exp(|Q_symlog|).
+    # Bins are clamped to [v_min, v_max] (typically [-10, 10]) so this is bounded.
+    var abs_q = q_val if q_val >= Scalar[dtype](0.0) else -q_val
+    var symexp_deriv = exp(abs_q)
+
+    # d(-Q_actual / S) / d(logits_k) = -exp(|Q_symlog|) * softmax_k * (bin_k - Q_symlog) / (S * B) * rho
     var inv_scale = Scalar[dtype](1.0) / running_scale
-    var scale = -rho_weight * inv_scale / Scalar[dtype](BATCH_SIZE)
+    var scale = (
+        -rho_weight * inv_scale * symexp_deriv / Scalar[dtype](BATCH_SIZE)
+    )
     for k in range(BINS):
         var prob_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
         grad_logits[i, k] = scale * prob_k * (Scalar[dtype](bins[k][0]) - q_val)
@@ -792,21 +846,39 @@ def tdmpc2_action_tanh_chain_kernel[
       da/d(mean) = tanh'(u)
       da/d(log_std) = tanh'(u) * exp(log_std) * eps
 
-    Entropy gradient (tanh-squashed Gaussian):
-      d(log_pi)/d(mean) = 2*tanh(u)  (from -log(1 - tanh(u)²) correction)
-      d(log_pi)/d(log_std) = -1  (from Gaussian entropy)
+    Entropy gradient (tanh-squashed Gaussian, with u = mean + std*eps):
+      d(log_pi)/d(mean)    = 2*tanh(u)
+        (squash correction d/dmean[-log(1-tanh(u)²)] = 2*tanh(u)*tanh'(u)/tanh'(u))
+      d(log_pi)/d(log_std) = -1 + 2*tanh(u) * std * eps
+        (-1 from Gaussian -log_std term; +2*tanh(u)*std*eps from squash via du/dlog_std)
+
+    NOTE: reference TD-MPC2 mathematically cancels the squash correction via
+    `entropy_scale = scaled_log_prob/log_prob_post` (world_model.py:166-176),
+    so its analytical entropy gradient on (mean, log_std) is (0, ACT). We
+    implement the squashed form here on purpose — empirically, removing the
+    squash-correction terms makes log_std saturate at the upper bound (+2)
+    in Mojo training. Hypothesis: the squash-correction terms add (a)
+    consistent positive bias to log_std grad when std is large (tanh(u) ≈
+    sign(eps), so 2·tanh(u)·std·eps > 0) and (b) extra variance to v_t,
+    both of which check Adam's tendency to drive log_std up under tiny
+    consistent entropy bias. See TDMPC2_AUDIT.md item 11.
 
     ACCUMULATES into grad_pi_out.
 
+    log_std is smoothly bounded:
+        log_std = LOG_STD_MIN + 0.5 * LOG_STD_DIF * (tanh(x) + 1)
+    where x is the raw policy output. Backward chains through this bound:
+        d(log_std)/d(x) = 0.5 * LOG_STD_DIF * (1 - tanh(x)²)
+
     Args:
         grad_za: Gradient from Q backward [BATCH, ZA_DIM].
-        pi_out: Policy output [BATCH, POL_OUT] (mean | log_std).
+        pi_out: Policy output [BATCH, POL_OUT] (mean | log_std_raw).
         grad_pi_out: Output gradient for policy backward [BATCH, POL_OUT].
         entropy_coef: Entropy coefficient * rho^t (includes temporal decay).
         rng_seed: Same seed used in forward kernel to reconstruct eps.
     """
-    comptime LOG_STD_MIN: Scalar[dtype] = -5.0
-    comptime LOG_STD_MAX: Scalar[dtype] = 2.0
+    comptime LOG_STD_MIN: Scalar[dtype] = -10.0
+    comptime LOG_STD_DIF: Scalar[dtype] = 12.0
 
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH_SIZE:
@@ -831,19 +903,23 @@ def tdmpc2_action_tanh_chain_kernel[
             mag * cos(u2 * Scalar[DType.float32](6.283185307179586))
         )
 
-        # Reconstruct u = mean + exp(log_std) * eps
+        # Reconstruct u = mean + exp(log_std) * eps using smooth log_std bound
         var mean_raw = Scalar[dtype](pi_out[i, j][0])
-        var log_std_raw = Scalar[dtype](pi_out[i, ACTION_DIM + j][0])
-        if log_std_raw < LOG_STD_MIN:
-            log_std_raw = LOG_STD_MIN
-        elif log_std_raw > LOG_STD_MAX:
-            log_std_raw = LOG_STD_MAX
-        var std = exp(log_std_raw)
+        var x = Scalar[dtype](pi_out[i, ACTION_DIM + j][0])
+        var tanh_x = Scalar[dtype](tanh(Float32(x)))
+        var log_std = LOG_STD_MIN + Scalar[dtype](0.5) * LOG_STD_DIF * (
+            tanh_x + Scalar[dtype](1.0)
+        )
+        var std = exp(log_std)
         var u = mean_raw + std * eps
 
-        # tanh derivative at u (not at mean!): d(tanh(u))/du = 1 - tanh(u)^2
+        # tanh derivative at u: d(tanh(u))/du = 1 - tanh(u)^2
         var t = Scalar[dtype](tanh(Float32(u)))
         var tanh_deriv = Scalar[dtype](1.0) - t * t
+        # Chain through smooth log_std bound: d(log_std)/d(x)
+        var log_std_deriv = (
+            Scalar[dtype](0.5) * LOG_STD_DIF * (Scalar[dtype](1.0) - tanh_x * tanh_x)
+        )
 
         # d(loss)/d(mean) = d(-Q)/d(a) * da/d(mean) + ent * d(log_pi)/d(mean)
         #                  = grad_action * tanh'(u) + ent * 2*tanh(u) / B
@@ -854,12 +930,103 @@ def tdmpc2_action_tanh_chain_kernel[
         )
 
         # d(loss)/d(log_std) = d(-Q)/d(a) * da/d(log_std) + ent * d(log_pi)/d(log_std)
-        #                    = grad_action * tanh'(u) * std * eps + ent * (-1/B)
-        grad_pi_out[i, ACTION_DIM + j] = (
-            grad_pi_out[i, ACTION_DIM + j]
-            + grad_action * tanh_deriv * std * eps
+        #                    = grad_action * tanh'(u) * std * eps
+        #                      + ent_scale * (-1 + 2*tanh(u) * std * eps)
+        # Then chain through d(log_std)/d(x).
+        var grad_log_std = (
+            grad_action * tanh_deriv * std * eps
             - ent_scale
+            + ent_scale * Scalar[dtype](2.0) * t * std * eps
         )
+        grad_pi_out[i, ACTION_DIM + j] = (
+            grad_pi_out[i, ACTION_DIM + j] + grad_log_std * log_std_deriv
+        )
+
+
+@always_inline
+def tdmpc2_compute_entropy_grad_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    ACTION_DIM: Int,
+    POL_OUT: Int = ACTION_DIM * 2,
+](
+    pi_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, POL_OUT), MutAnyOrigin
+    ],
+    grad_pi_out_ent: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, POL_OUT), MutAnyOrigin
+    ],
+    entropy_coef: Scalar[dtype],
+    rng_seed: Scalar[DType.uint32],
+) where dtype.is_floating_point():
+    """Compute *only* the entropy contribution to grad_pi_out (no Q chain).
+
+    Diagnostic-only kernel that recomputes the entropy gradient terms
+    contributed by `tdmpc2_action_tanh_chain_kernel` at qi_iter==0, *without*
+    the Q-chain part. Output is written (not accumulated) to grad_pi_out_ent.
+
+    Used at diagnostic steps to measure ||grad_ent|| separately from
+    ||grad_full|| so the caller can compute ||grad_Q|| = ||grad_full − grad_ent||
+    and the ratio ||grad_Q|| / ||grad_ent||. If the ratio is < 1, the entropy
+    bias is dominating Adam — log_std runs to its bound.
+
+    Must use the same `rng_seed` that was used in the forward sample kernel
+    so eps reconstruction is identical.
+
+    Args:
+        pi_out: Policy output [BATCH, POL_OUT] (mean | log_std_raw).
+        grad_pi_out_ent: Output buffer [BATCH, POL_OUT] (overwritten).
+        entropy_coef: Same scalar passed to action_tanh_chain at qi_iter==0
+                      (= entropy_coef_scalar * pol_rho_t at the calling t).
+        rng_seed: Same seed used in the forward sample kernel.
+    """
+    comptime LOG_STD_MIN: Scalar[dtype] = -10.0
+    comptime LOG_STD_DIF: Scalar[dtype] = 12.0
+
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+
+    var ent_scale = entropy_coef / Scalar[dtype](BATCH_SIZE)
+
+    for j in range(ACTION_DIM):
+        # Reconstruct eps using same RNG seed as forward
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(i) * UInt64(ACTION_DIM) + UInt64(j),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = Scalar[DType.float32](rand_vals[0]) + 1e-8
+        var u2 = Scalar[DType.float32](rand_vals[1])
+        var mag = sqrt(Float32(-2.0) * log(u1))
+        var eps = Scalar[dtype](
+            mag * cos(u2 * Scalar[DType.float32](6.283185307179586))
+        )
+
+        # Reconstruct log_std (smooth bound) and u
+        var mean_raw = Scalar[dtype](pi_out[i, j][0])
+        var x = Scalar[dtype](pi_out[i, ACTION_DIM + j][0])
+        var tanh_x = Scalar[dtype](tanh(Float32(x)))
+        var log_std = LOG_STD_MIN + Scalar[dtype](0.5) * LOG_STD_DIF * (
+            tanh_x + Scalar[dtype](1.0)
+        )
+        var std = exp(log_std)
+        var u = mean_raw + std * eps
+        var t = Scalar[dtype](tanh(Float32(u)))
+        var log_std_deriv = (
+            Scalar[dtype](0.5)
+            * LOG_STD_DIF
+            * (Scalar[dtype](1.0) - tanh_x * tanh_x)
+        )
+
+        # Entropy contribution on mean (squashed): + ent_scale * 2 * tanh(u)
+        grad_pi_out_ent[i, j] = ent_scale * Scalar[dtype](2.0) * t
+
+        # Entropy contribution on log_std raw: (-1 + 2*tanh(u)*std*eps) * ent_scale * log_std_deriv
+        var grad_log_std = (
+            -ent_scale + ent_scale * Scalar[dtype](2.0) * t * std * eps
+        )
+        grad_pi_out_ent[i, ACTION_DIM + j] = grad_log_std * log_std_deriv
 
 
 # Legacy kernel kept for compatibility but replaced by proper DPG chain above
@@ -1104,6 +1271,105 @@ def tdmpc2_decode_and_min_kernel[
 
 
 @always_inline
+def tdmpc2_decode_scaled_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    BINS: Int,
+](
+    logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, BINS), MutAnyOrigin
+    ],
+    bins: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
+    q_out: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    scale: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Decode Q logits to actual value, multiply by `scale`, OVERWRITE q_out.
+
+    Used to initialize q_avg buffer for the avg-of-2-random Q ensemble in
+    MPPI value estimation. Reference TD-MPC2 (`tdmpc2.py:137`) uses
+    `Q(..., return_type='avg')` which subsamples 2 of N Q-networks and
+    averages them — less pessimistic than min-of-N, important for MPPI to
+    fairly evaluate exploratory trajectories.
+
+    Args:
+        logits: Q-network logit output [BATCH, BINS].
+        bins: Value bin centers in symlog space [BINS].
+        q_out: Output buffer [BATCH] (written with scale * symexp(E[bins])).
+        scale: Multiplier (typically 0.5 = 1/N_Q_AVG).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+
+    var max_l = Scalar[dtype](logits[i, 0][0])
+    for k in range(1, BINS):
+        var v = Scalar[dtype](logits[i, k][0])
+        if v > max_l:
+            max_l = v
+
+    var sum_exp = Scalar[dtype](0.0)
+    for k in range(BINS):
+        sum_exp = sum_exp + exp(Scalar[dtype](logits[i, k][0]) - max_l)
+
+    var expected_val = Scalar[dtype](0.0)
+    for k in range(BINS):
+        var sm_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
+        expected_val = expected_val + sm_k * Scalar[dtype](bins[k][0])
+
+    var actual_val = _symexp[dtype](expected_val)
+    q_out[i] = scale * actual_val
+
+
+@always_inline
+def tdmpc2_decode_add_scaled_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    BINS: Int,
+](
+    logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, BINS), MutAnyOrigin
+    ],
+    bins: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
+    q_out: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    scale: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Decode Q logits to actual value, multiply by `scale`, ACCUMULATE into q_out.
+
+    Companion to tdmpc2_decode_scaled_kernel; together they implement
+    `q_avg[i] = (1/N) * sum_n symexp(E[bins_n])` for the random N-of-NUM_Q
+    Q-ensemble averaging used in MPPI.
+
+    Args:
+        logits: Q-network logit output [BATCH, BINS].
+        bins: Value bin centers in symlog space [BINS].
+        q_out: Accumulator buffer [BATCH] (q_out[i] += scale * symexp(...)).
+        scale: Multiplier (typically 0.5 = 1/N_Q_AVG).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+
+    var max_l = Scalar[dtype](logits[i, 0][0])
+    for k in range(1, BINS):
+        var v = Scalar[dtype](logits[i, k][0])
+        if v > max_l:
+            max_l = v
+
+    var sum_exp = Scalar[dtype](0.0)
+    for k in range(BINS):
+        sum_exp = sum_exp + exp(Scalar[dtype](logits[i, k][0]) - max_l)
+
+    var expected_val = Scalar[dtype](0.0)
+    for k in range(BINS):
+        var sm_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
+        expected_val = expected_val + sm_k * Scalar[dtype](bins[k][0])
+
+    var actual_val = _symexp[dtype](expected_val)
+    var cur = Scalar[dtype](q_out[i][0])
+    q_out[i] = cur + scale * actual_val
+
+
+@always_inline
 def tdmpc2_extract_all_build_za_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
@@ -1253,11 +1519,12 @@ def tdmpc2_apply_tanh_build_za_kernel[
     """Fused: sample stochastic action via reparameterization + build za.
 
     Uses reparameterization trick: a = tanh(mean + exp(log_std) * eps)
-    where eps ~ N(0,1). This matches the reference TD-MPC2 policy gradient.
+    where eps ~ N(0,1). log_std is smoothly bounded to
+    [LOG_STD_MIN, LOG_STD_MIN + LOG_STD_DIF] via tanh (matches reference).
     The same rng_seed must be passed to the backward kernel for correct gradients.
     """
-    comptime LOG_STD_MIN: Scalar[dtype] = -5.0
-    comptime LOG_STD_MAX: Scalar[dtype] = 2.0
+    comptime LOG_STD_MIN: Scalar[dtype] = -10.0
+    comptime LOG_STD_DIF: Scalar[dtype] = 12.0  # log_std_max(=2) - log_std_min(=-10)
 
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH_SIZE:
@@ -1266,15 +1533,13 @@ def tdmpc2_apply_tanh_build_za_kernel[
     # Sample stochastic actions via reparameterization
     for j in range(ACTION_DIM):
         var mean_raw = Scalar[dtype](pi_out[i, j][0])
-        var log_std_raw = Scalar[dtype](pi_out[i, ACTION_DIM + j][0])
+        var x = Scalar[dtype](pi_out[i, ACTION_DIM + j][0])
 
-        # Clamp log_std
-        if log_std_raw < LOG_STD_MIN:
-            log_std_raw = LOG_STD_MIN
-        elif log_std_raw > LOG_STD_MAX:
-            log_std_raw = LOG_STD_MAX
-
-        var std = exp(log_std_raw)
+        # Smooth tanh-based log_std bound (matches reference math.log_std)
+        var log_std = LOG_STD_MIN + Scalar[dtype](0.5) * LOG_STD_DIF * (
+            Scalar[dtype](tanh(Float32(x))) + Scalar[dtype](1.0)
+        )
+        var std = exp(log_std)
 
         # Box-Muller for N(0,1)
         var philox = PhiloxRandom(
@@ -1970,9 +2235,13 @@ def mppi_add_terminal_value_kernel[
     returns: LayoutTensor[dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin],
     discount: Scalar[dtype],
 ) where dtype.is_floating_point():
-    """Add discounted terminal Q-value to returns.
+    """Add discounted terminal Q-value to returns + replace NaN/Inf with 0.
 
-    returns[i] += discount * q_min[i]
+    Computes `returns[i] += discount * q_min[i]`, then guards against
+    NaN/Inf in the result by zeroing them out. Matches reference TD-MPC2
+    (`tdmpc2.py:185`, `value.nan_to_num(0)`) — without this, a single
+    NaN sample from saturating activations early in training pollutes
+    the entire env's softmax (because exp(NaN) = NaN propagates).
 
     Args:
         q_min: Min-Q terminal values [TOTAL_SAMPLES].
@@ -1983,7 +2252,10 @@ def mppi_add_terminal_value_kernel[
     if i >= TOTAL_SAMPLES:
         return
 
-    returns[i] = returns[i] + discount * q_min[i]
+    var v = Scalar[dtype](returns[i][0]) + discount * Scalar[dtype](q_min[i][0])
+    if isnan(v) or isinf(v):
+        v = Scalar[dtype](0.0)
+    returns[i] = v
 
 
 @always_inline
@@ -2132,6 +2404,7 @@ def mppi_softmax_weights_kernel[
     dtype: DType,
     N_ENVS: Int,
     TOTAL_SAMPLES: Int,
+    NUM_ELITES: Int,
     BLOCK_SIZE: Int,
 ](
     returns: LayoutTensor[
@@ -2142,11 +2415,27 @@ def mppi_softmax_weights_kernel[
     ],
     temperature: Scalar[dtype],
 ) where dtype.is_floating_point():
-    """Per-env softmax over returns → normalized weights. All on GPU.
+    """Per-env top-K elite softmax over returns → normalized weights.
 
     Grid: N_ENVS blocks. Block: BLOCK_SIZE threads.
     Each block handles one env's TOTAL_SAMPLES returns.
-    Uses shared memory for max-reduction and sum-reduction.
+
+    Reference TD-MPC2 (tdmpc2.py:186) selects num_elites=64 of num_samples
+    (=512+24=536) by value, then computes softmax over only those
+    elites. Without the elite filter the bottom 90% of trajectories still
+    contribute small but nonzero weight (exp(temp*(value-max)) for typical
+    value gaps), biasing the MPPI mean update toward averaging-in bad
+    samples and preventing commitment to elite directions. This was the
+    likely cause of the HalfCheetah training plateau at ~-800 reward.
+
+    Algorithm:
+      1. Find max return per env (existing reduction).
+      2. For each sample s, compute its rank = #{k : returns[k] > returns[s]
+         OR (returns[k] == returns[s] AND k < s)}. O(N²/BLOCK_SIZE) per
+         thread — cheap at TOTAL_SAMPLES~536.
+      3. Sample is elite iff rank < NUM_ELITES.
+      4. weights[s] = exp(temp * (returns[s] - max)) if elite, else 0.
+      5. Sum + normalize over elites.
     """
     var env_idx = Int(block_idx.x)
     var tid = Int(thread_idx.x)
@@ -2186,15 +2475,29 @@ def mppi_softmax_weights_kernel[
     var max_ret = smem[0]
     barrier()
 
-    # ── Pass 2: compute exp weights and local sum ──
+    # ── Pass 2: per-sample rank + masked exp weight + local sum ──
+    # Each thread iterates over its assigned samples (stride BLOCK_SIZE).
+    # For each sample s it counts how many other samples have strictly
+    # higher return (with a tiebreak by index) → rank. If rank < NUM_ELITES,
+    # the sample is in the top-K and contributes weight = exp(temp*(v-max));
+    # otherwise weight = 0.
     var local_sum: smem.element_type = 0.0
     s = tid
     while s < TOTAL_SAMPLES:
-        var w = exp(
-            temperature * (Scalar[dtype](returns[base + s][0]) - max_ret)
-        )
-        weights[base + s] = w
-        local_sum += w
+        var v_s = Scalar[dtype](returns[base + s][0])
+        var rank = 0
+        for k in range(TOTAL_SAMPLES):
+            var v_k = Scalar[dtype](returns[base + k][0])
+            if v_k > v_s:
+                rank += 1
+            elif v_k == v_s and k < s:
+                rank += 1
+        if rank < NUM_ELITES:
+            var w = exp(temperature * (v_s - max_ret))
+            weights[base + s] = w
+            local_sum += w
+        else:
+            weights[base + s] = Scalar[dtype](0.0)
         s += BLOCK_SIZE
     smem[tid] = local_sum
 
@@ -2297,6 +2600,155 @@ def mppi_weighted_mean_std_kernel[
         std_val = Scalar[dtype](2.0)
 
     std_out[tid] = std_val
+
+
+# =============================================================================
+# MPPI action selection (GPU-side replacement for CPU loop)
+# =============================================================================
+
+
+@always_inline
+def mppi_select_action_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    TOTAL_SAMPLES: Int,
+    ACTION_DIM: Int,
+    HORIZON: Int,
+    BLOCK_SIZE: Int,
+](
+    weights: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * TOTAL_SAMPLES), MutAnyOrigin
+    ],
+    all_actions: LayoutTensor[
+        dtype,
+        Layout.row_major(N_ENVS * TOTAL_SAMPLES * HORIZON * ACTION_DIM),
+        MutAnyOrigin,
+    ],
+    std: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * HORIZON * ACTION_DIM), MutAnyOrigin
+    ],
+    out_action: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACTION_DIM), MutAnyOrigin
+    ],
+    rng_seed: Scalar[DType.uint32],
+    action_scale: Scalar[dtype],
+    deterministic: UInt32,
+) where dtype.is_floating_point():
+    """Per-env action selection via gumbel-max trick + Gaussian noise.
+
+    Replaces the CPU loop in plan_gpu_batched (was: download weights/std/
+    actions, _weighted_sample, add noise, clamp). Now done in one kernel
+    so plan_gpu_batched no longer needs to sync mid-step.
+
+    Algorithm matches reference TD-MPC2 (tdmpc2.py:201-207):
+      1. Sample idx ~ Categorical(weights) via gumbel-max:
+           idx = argmax_s (log(weights[s]) + Gumbel(0,1)[s])
+         where weights are post-softmax (already normalized in
+         mppi_softmax_weights_kernel; non-elite weights are 0).
+      2. Take action = all_actions[env, idx, t=0, :].
+      3. If not deterministic: action += std[env, 0, :] * N(0, 1).
+      4. action = clamp(action * action_scale, ±action_scale).
+
+    Grid: N_ENVS blocks. Block: BLOCK_SIZE threads.
+    Block-wide argmax via shared memory tree-reduction.
+    """
+    var env_idx = Int(block_idx.x)
+    var tid = Int(thread_idx.x)
+    var w_off = env_idx * TOTAL_SAMPLES
+    var act_off = env_idx * TOTAL_SAMPLES * HORIZON * ACTION_DIM
+
+    # Shared memory: BLOCK_SIZE values + BLOCK_SIZE indices.
+    var smem_val = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var smem_idx = LayoutTensor[
+        DType.uint32,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # ── Phase 1: per-thread local argmax of (log(w) + gumbel) ──
+    var local_max = Scalar[dtype](-1e30)
+    var local_idx: UInt32 = 0
+    var s = tid
+    while s < TOTAL_SAMPLES:
+        var w = Scalar[dtype](weights[w_off + s][0])
+        if w > Scalar[dtype](1e-20):
+            # gumbel(0,1) = -log(-log(u)), u ~ Uniform(0, 1).
+            var philox = PhiloxRandom(
+                seed=UInt64(rng_seed) + UInt64(env_idx) * UInt64(TOTAL_SAMPLES) + UInt64(s),
+                offset=0,
+            )
+            var rand_vals = philox.step_uniform()
+            var u = Scalar[DType.float32](rand_vals[0]) + Scalar[DType.float32](1e-12)
+            var g = -log(-log(u) + Scalar[DType.float32](1e-12))
+            var score = log(w) + Scalar[dtype](g)
+            if score > local_max:
+                local_max = score
+                local_idx = UInt32(s)
+        s += BLOCK_SIZE
+    smem_val[tid] = local_max
+    smem_idx[tid] = local_idx
+
+    barrier()
+
+    # ── Phase 2: tree-reduce argmax across block ──
+    var stride = BLOCK_SIZE >> 1
+    while stride > 0:
+        if tid < stride:
+            var other_v = Scalar[dtype](smem_val[tid + stride][0])
+            var mine_v = Scalar[dtype](smem_val[tid][0])
+            if other_v > mine_v:
+                smem_val[tid] = other_v
+                smem_idx[tid] = smem_idx[tid + stride]
+        barrier()
+        stride >>= 1
+
+    var selected_s = Int(smem_idx[0])
+    barrier()
+
+    # ── Phase 3: thread 0..ACTION_DIM copies action, adds noise, clamps ──
+    if tid < ACTION_DIM:
+        var a = tid
+        var act_idx = (
+            act_off
+            + selected_s * HORIZON * ACTION_DIM
+            + 0 * ACTION_DIM  # t = 0
+            + a
+        )
+        var act_val = Scalar[dtype](all_actions[act_idx][0])
+
+        if deterministic == UInt32(0):
+            # Box-Muller for N(0, 1).
+            var noise_philox = PhiloxRandom(
+                seed=(
+                    UInt64(rng_seed)
+                    + UInt64(0xA5A5A5A5)
+                    + UInt64(env_idx) * UInt64(ACTION_DIM)
+                    + UInt64(a)
+                ),
+                offset=0,
+            )
+            var noise_vals = noise_philox.step_uniform()
+            var u1 = Scalar[DType.float32](noise_vals[0]) + Scalar[DType.float32](1e-8)
+            var u2 = Scalar[DType.float32](noise_vals[1])
+            var mag = sqrt(Float32(-2.0) * log(u1))
+            var z = mag * cos(u2 * Scalar[DType.float32](6.283185307179586))
+            var std_val = Scalar[dtype](
+                std[env_idx * HORIZON * ACTION_DIM + 0 * ACTION_DIM + a][0]
+            )
+            act_val = act_val + std_val * Scalar[dtype](z)
+
+        act_val = act_val * action_scale
+        if act_val > action_scale:
+            act_val = action_scale
+        if act_val < -action_scale:
+            act_val = -action_scale
+        out_action[env_idx * ACTION_DIM + a] = act_val
 
 
 # =============================================================================

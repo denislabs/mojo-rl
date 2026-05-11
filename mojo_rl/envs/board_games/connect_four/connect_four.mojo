@@ -30,7 +30,6 @@ from mojo_rl.core import (
     TwoPlayerDiscreteEnv,
     GPUTwoPlayerDiscreteEnv,
     RenderableEnv,
-    DataAugmentable,
     Saveable,
 )
 from mojo_rl.nn.constants import dtype as nn_dtype
@@ -70,7 +69,6 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     TwoPlayerDiscreteEnv
     & GPUTwoPlayerDiscreteEnv
     & RenderableEnv
-    & DataAugmentable
     & Saveable
 ):
     """ConnectFour environment — CPU+GPU dual path."""
@@ -85,55 +83,8 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     comptime OBS_DIM: Int = 126  # 3 planes × 7×6
     comptime NUM_ACTIONS: Int = 7
 
-    # DataAugmentable: 2 symmetries (identity + horizontal flip)
-    comptime NUM_SYMMETRIES: Int = 2
-
     # Saveable
     comptime SAVE_SIZE: Int = 47  # 46 state + 1 done flag
-
-    @staticmethod
-    def augment_obs[
-        OBS_DIM: Int,
-    ](
-        obs: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
-        sym_idx: Int,
-        mut out: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
-    ):
-        """Apply symmetry to 126D obs. sym_idx=0: identity, sym_idx=1: horizontal flip.
-        """
-        if sym_idx == 0:
-            for i in range(OBS_DIM):
-                out[i] = obs[i]
-            return
-        # Horizontal flip: mirror columns (col c → col 6-c)
-        # Obs is row-major: cell = row*7 + col (matching Conv2D layout)
-        # 3 planes of 42 cells each
-        for plane in range(3):
-            var plane_off = plane * 42
-            for row in range(6):
-                for col in range(7):
-                    var mirror_col = 6 - col
-                    out[plane_off + row * 7 + col] = obs[
-                        plane_off + row * 7 + mirror_col
-                    ]
-
-    @staticmethod
-    def augment_policy[
-        ACT: Int,
-    ](
-        policy: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
-        sym_idx: Int,
-        mut out: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
-    ):
-        """Apply symmetry to 7D policy. sym_idx=0: identity, sym_idx=1: flip columns.
-        """
-        if sym_idx == 0:
-            for i in range(ACT):
-                out[i] = policy[i]
-            return
-        # Flip: action c → action 6-c
-        for c in range(7):
-            out[c] = policy[6 - c]
 
     # CPU state
     var state: InlineArray[Scalar[Self.dtype], 46]

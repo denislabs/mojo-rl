@@ -1,4 +1,4 @@
-"""MuZero training on TicTacToe — fully GPU self-play.
+"""MuZero training on TicTacToe — fully GPU self-play with remote logging.
 
 MuZero learns a dynamics model g(s,a) and plans in latent space,
 unlike AlphaZero which uses true game rules. This tests whether
@@ -28,27 +28,74 @@ def main() raises:
     print("=== MuZero on TicTacToe ===")
     print()
 
+    # ── Logger setup ────────────────────────────────────────────
+    var env_vars = load_dotenv()
+    var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
+    var url = env_vars.get("RL_MONITOR_URL", "")
+
+    var logger = RemoteLogger(
+        server_url=url,
+        run_name="MuZero TicTacToe",
+        buffer_size=13,
+        api_key=api_key,
+    )
+
     comptime Config = MuZeroTicTacToeConfig[]
+
+    logger.set_config("agent", "MuZero")
+    logger.set_config("env", "TicTacToe")
+    logger.set_config("network", Config.NAME)
+    logger.set_config("sims", String(Config.num_simulations))
+    logger.set_config("batch_size", String(Config.batch_size))
+    logger.set_config("unroll_steps", String(Config.unroll_steps))
+    logger.set_config("td_steps", String(Config.td_steps))
 
     var ctx = DeviceContext()
     comptime TTT = TicTacToeEnv[DType.float32]
 
-    var agent = GenericMuZeroAgent[Config, 64]()
+    var agent = GenericMuZeroAgent[Config, 64, RemoteLogger]()
 
-    _ = agent.train_selfplay_gpu[TTT, RandomOpponent, GPUMinimaxTicTacToe](
+    # temp_threshold=5: temp=1 only for the first 5 moves; greedy from
+    # move 6+ during self-play. AlphaZero TTT uses 4. Previously 15 (>9
+    # max moves) which made every move exploratory and weakened the
+    # endgame policy signal.
+    _ = agent.train_selfplay_gpu[
+        TTT, RandomOpponent, GPUMinimaxTicTacToe, 5
+    ](
         ctx,
         num_iters=100,
         steps_per_iter=1000,
-        train_epochs=10,
+        # train_epochs=2 (was 10): with 10 epochs, late iters did ~7800
+        # grad steps over the same replay each iter. Network overfit to
+        # current MCTS-target distribution which softens as Dirichlet
+        # root noise propagates → policy collapses to uniform. AZ-general
+        # uses 1-3 epochs for the same reason.
+        train_epochs=2,
         warmup_iters=1,
         arena_threshold=0.5,
         do_eval=True,
         do_eval2=True,
-        do_arena=True,
+        do_arena=False,
         checkpoint_every=10,
         checkpoint_path="tictactoe_muzero.ckpt",
-        temp_threshold=15,
+        # Enable GPU reanalyze + Polyak target net (E2 / E4): bootstrap
+        # values are refreshed each train step from a slowly-tracking
+        # copy of the online networks, mirroring muzero-general's
+        # use_last_model_value=True.
+        use_reanalyze=True,
+        logger=UnsafePointer(to=logger),
+        # Log loss diagnostics every 500 grad steps. TTT does ~3K grad
+        # steps/iter so this gives ~6 loss samples per iter — enough to
+        # spot trends without drowning the logger.
+        diag_every=500,
+        # Per-iter 1cycle LR schedule (Smith): ramp up to base LR over
+        # the first 30% of grad steps, cosine-anneal to 1% by end.
+        # Mirrors AlphaZero. Helps prevent the late-iter weight-collapse
+        # we saw at iter ~63 with constant LR=1e-3.
+        use_one_cycle=True,
     )
 
+    logger.close()
     print()
+    print("Train steps:", agent.train_step_count)
     print("=== Done ===")

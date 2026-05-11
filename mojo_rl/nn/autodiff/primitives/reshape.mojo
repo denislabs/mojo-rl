@@ -217,3 +217,233 @@ struct Flatten[dim: Int](DiffOp):
             grid_dim=(grid_x,),
             block_dim=(TPB,),
         )
+
+
+# =============================================================================
+# Transpose2DOp[A, B]
+# =============================================================================
+#   Treats input (BATCH, A * B) as (BATCH, A, B) row-major and outputs the
+#   (BATCH, B, A) row-major view:
+#     out[b, j * A + i] = in[b, i * B + j]   for i in [0, A), j in [0, B)
+#
+# Backward is the same permutation in reverse:
+#     grad_in[b, i * B + j] = grad_out[b, j * A + i]
+#
+# Use case: bridging Conv2D → Attention in a ViT. Conv2D outputs
+# (BATCH, Cout, H*W) row-major (channel-major), but ScaledDotProductAttention
+# expects (BATCH, n_patches, dim) row-major (patch-major). Insert
+# Transpose2DOp[Cout, H*W] (= Transpose2DOp[dim, n_patches]) between them.
+struct Transpose2DOp[A: Int, B: Int](DiffOp):
+    """2D in-batch transpose: (BATCH, A, B) → (BATCH, B, A) (row-major flat).
+
+    PARAM_SIZE = 0
+    CACHE_SIZE = 0  (backward applies the inverse permutation; no info needed)
+    """
+
+    comptime OP_ID: Int = OpID.TRANSPOSE_2D._value
+    comptime IN_DIM: Int = Self.A * Self.B
+    comptime OUT_DIM: Int = Self.A * Self.B
+    comptime PARAM_SIZE: Int = 0
+    comptime CACHE_SIZE: Int = 0
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
+
+    def __init__(out self):
+        pass
+
+    def __init__(out self, *, deinit take: Self):
+        pass
+
+    def __init__(out self, *, copy: Self):
+        pass
+
+    # =========================================================================
+    # CPU eval / vjp
+    # =========================================================================
+
+    @staticmethod
+    def eval[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+    ):
+        for b in range(BATCH):
+            for i in range(Self.A):
+                for j in range(Self.B):
+                    output[b, j * Self.A + i] = input[b, i * Self.B + j]
+
+    @staticmethod
+    def vjp[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grad_params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        for b in range(BATCH):
+            for i in range(Self.A):
+                for j in range(Self.B):
+                    grad_input[b, i * Self.B + j] = grad_output[b, j * Self.A + i]
+
+    # =========================================================================
+    # GPU kernels — 1 thread per output element.
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    def eval_kernel_impl[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ],
+    ):
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= BATCH * Self.OUT_DIM:
+            return
+        var b = idx // Self.OUT_DIM
+        var off = idx % Self.OUT_DIM
+        # Output is (B, A) row-major: off = j * A + i
+        var j = off // Self.A
+        var i = off % Self.A
+        output[b, j * Self.A + i] = rebind[Scalar[dtype]](
+            input[b, i * Self.B + j]
+        )
+
+    @always_inline
+    @staticmethod
+    def backward_kernel_impl[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ],
+    ):
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= BATCH * Self.IN_DIM:
+            return
+        var b = idx // Self.IN_DIM
+        var off = idx % Self.IN_DIM
+        # Input is (A, B) row-major: off = i * B + j
+        var i = off // Self.B
+        var j = off % Self.B
+        grad_input[b, i * Self.B + j] = rebind[Scalar[dtype]](
+            grad_output[b, j * Self.A + i]
+        )
+
+    # =========================================================================
+    # GPU launchers
+    # =========================================================================
+
+    @staticmethod
+    def eval_gpu[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ) raises:
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](input.ptr)
+        var total = BATCH * Self.OUT_DIM
+        var grid_x = (total + TPB - 1) // TPB
+
+        @parameter
+        @always_inline
+        def wrapper(
+            output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+            ],
+            input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+            ],
+        ):
+            Self.eval_kernel_impl[BATCH, dtype](output, input)
+
+        ctx.enqueue_function[wrapper, wrapper](
+            output, input_immut, grid_dim=(grid_x,), block_dim=(TPB,)
+        )
+
+    @staticmethod
+    def vjp_gpu[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grad_params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ) raises:
+        var go_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
+        var total = BATCH * Self.IN_DIM
+        var grid_x = (total + TPB - 1) // TPB
+
+        @parameter
+        @always_inline
+        def wrapper(
+            grad_input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+            ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+            ],
+        ):
+            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output)
+
+        ctx.enqueue_function[wrapper, wrapper](
+            grad_input, go_immut, grid_dim=(grid_x,), block_dim=(TPB,)
+        )

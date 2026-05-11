@@ -61,6 +61,7 @@ from mojo_rl.deep_agents.core.kernels import (
     build_dynamics_target_kernel,
     gaussian_nll_grad_kernel,
     gaussian_nll_grad_learnable_kernel,
+    reduce_loss_scratch_kernel,
     reduce_bounds_grad_l2_adam_kernel,
     dynamics_sample_kernel,
     dynamics_sample_learnable_kernel,
@@ -71,6 +72,7 @@ from mojo_rl.deep_agents.core.kernels import (
     increment_rng_counter_kernel,
     alpha_adam_update_kernel,
     reduce_mean_loss_kernel,
+    dynamics_mse_per_sample_kernel,
     mask_dead_rollouts_kernel,
     update_alive_mask_kernel,
     compute_scaler_mean_kernel,
@@ -621,6 +623,11 @@ struct GPUDynamicsEnsemble[
     var t_grad_in: DeviceBuffer[dtype]  # [train_batch * DYN_IN]
     var t_ws: DeviceBuffer[dtype]  # workspace
     var t_loss: DeviceBuffer[dtype]  # [train_batch]
+    # [train_batch * DYN_PRED] per-(b, d) sample-loss contributions written by
+    # the NLL kernel, then reduced to t_loss[b] via reduce_loss_scratch_kernel.
+    # Replaces a non-atomic multi-thread RMW on t_loss[b] that corrupted the
+    # holdout loss readings used for early-stop / elite ranking.
+    var t_loss_scratch: DeviceBuffer[dtype]
     var t_loss_host: HostBuffer[dtype]  # [1] reduced mean loss for CPU readback
     var t_loss_scalar: DeviceBuffer[dtype]  # [1] GPU-side reduced mean loss
 
@@ -664,6 +671,15 @@ struct GPUDynamicsEnsemble[
     # members train on different data subsets, matching MBPO reference
     # bnn.py:328-336. Initialized with distinct seeds [1..num_ensemble].
     var rng_counters: List[DeviceBuffer[DType.uint32]]
+
+    # Per-member GPU-side step counters for the learnable-logvar-bounds Adam
+    # optimizer. Bumped on-device by a 1-thread kernel inside _enqueue_train_batch
+    # so the bias correction stays correct under CUDA-graph replay (mirrors the
+    # opt_global_state pattern in nn/optimizer/adam.mojo). The pre-refactor code
+    # read self.members[m].step_num on the host, but Adam/AdamW now keep their
+    # counter on-device only — the host mirror stays at 0 and bias_correction
+    # collapsed to 0, producing NaN bounds.
+    var bounds_step_counters: List[DeviceBuffer[DType.uint32]]
 
     # Input scaler state (MBPO TensorStandardScaler equivalent).
     # Per-dim mean/std over concatenated [obs, act] inputs. Re-fit at the
@@ -718,6 +734,9 @@ struct GPUDynamicsEnsemble[
         self.t_grad_in = ctx.enqueue_create_buffer[dtype](TB * Self.DYN_IN)
         self.t_ws = ctx.enqueue_create_buffer[dtype](WS_SIZE)
         self.t_loss = ctx.enqueue_create_buffer[dtype](TB)
+        self.t_loss_scratch = ctx.enqueue_create_buffer[dtype](
+            TB * Self.DYN_PRED
+        )
         self.t_loss_host = ctx.enqueue_create_host_buffer[dtype](1)
         self.t_loss_scalar = ctx.enqueue_create_buffer[dtype](1)
 
@@ -787,6 +806,18 @@ struct GPUDynamicsEnsemble[
             rc.enqueue_fill(UInt32((m + 1) * 2654435761))
             self.rng_counters.append(rc^)
 
+        # Per-member bounds-Adam step counters, all zero-initialized. They
+        # are bumped to 1 on the first _enqueue_train_batch call before the
+        # bounds kernel reads them, matching the post-increment semantics of
+        # the previous host-side `members[m].step_num` read.
+        self.bounds_step_counters = List[DeviceBuffer[DType.uint32]](
+            capacity=Self.num_ensemble
+        )
+        for _ in range(Self.num_ensemble):
+            var bc = ctx.enqueue_create_buffer[DType.uint32](1)
+            bc.enqueue_fill(UInt32(0))
+            self.bounds_step_counters.append(bc^)
+
         # Scaler state: identity (mean=0, std=1) until first fit_scaler_gpu.
         self.input_mean = ctx.enqueue_create_buffer[dtype](Self.DYN_IN)
         self.input_std = ctx.enqueue_create_buffer[dtype](Self.DYN_IN)
@@ -812,6 +843,7 @@ struct GPUDynamicsEnsemble[
         self.t_grad_in = take.t_grad_in^
         self.t_ws = take.t_ws^
         self.t_loss = take.t_loss^
+        self.t_loss_scratch = take.t_loss_scratch^
         self.t_loss_host = take.t_loss_host^
         self.t_loss_scalar = take.t_loss_scalar^
         self.r_obs = take.r_obs^
@@ -835,6 +867,7 @@ struct GPUDynamicsEnsemble[
         self.s_done = take.s_done^
         self.s_idx = take.s_idx^
         self.rng_counters = take.rng_counters^
+        self.bounds_step_counters = take.bounds_step_counters^
         self.input_mean = take.input_mean^
         self.input_std = take.input_std^
 
@@ -1024,9 +1057,10 @@ struct GPUDynamicsEnsemble[
         var grad_out_t = LayoutTensor[
             dtype, Layout.row_major(TB, Self.DynModel.OUT_DIM), MutAnyOrigin
         ](self.t_grad_out.unsafe_ptr())
-        var loss_t = LayoutTensor[
-            dtype, Layout.row_major(TB), MutAnyOrigin
-        ](self.t_loss.unsafe_ptr())
+        # 2D scratch — race-free per-(b, d) write; only holdout reduces it.
+        var loss_scratch_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
+        ](self.t_loss_scratch.unsafe_ptr())
         # Per-member bounds views (offset pointer into [num_ensemble * DYN_PRED]).
         var max_lv_t = LayoutTensor[
             dtype, Layout.row_major(Self.DYN_PRED), MutAnyOrigin
@@ -1044,7 +1078,7 @@ struct GPUDynamicsEnsemble[
             grad_out_t,
             output_t,
             target_t,
-            loss_t,
+            loss_scratch_t,
             max_lv_t,
             min_lv_t,
             max_grad_t,
@@ -1080,16 +1114,31 @@ struct GPUDynamicsEnsemble[
         ](self.min_lv_v.unsafe_ptr() + m * Self.DYN_PRED)
 
         # Adam hyperparams — mirror Adam defaults, reuse DynOpt's lr so bounds
-        # and weights update at the same step size. Bias correction uses the
-        # dynamics network's step counter (already incremented above).
+        # and weights update at the same step size.
+        #
+        # Bias correction uses a device-side step counter bumped by the kernel
+        # below, mirroring the opt_global_state pattern in nn/optimizer/adam.mojo.
+        # The previous host-side read (`self.members[m].step_num`) silently
+        # returned 0 after the state-buffer refactor (Adam/AdamW now keep their
+        # counter on-device only), making bc1=bc2=0 → m_hat=v_hat=NaN → NaN
+        # bounds → every NLL evaluated against those bounds came back NaN.
         var lv_lr = Scalar[dtype](Self.bounds_lr)
         var lv_beta1 = Scalar[dtype](0.9)
         var lv_beta2 = Scalar[dtype](0.999)
         var lv_eps = Scalar[dtype](1e-8)
-        var step_n = self.members[m].step_num
-        var bc1 = Scalar[dtype](1.0 - 0.9 ** step_n)
-        var bc2 = Scalar[dtype](1.0 - 0.999 ** step_n)
+        var lv_log_beta1 = Scalar[dtype](log(Float64(0.9)))
+        var lv_log_beta2 = Scalar[dtype](log(Float64(0.999)))
         var l2_coef = Scalar[dtype](0.01)
+
+        # Bump the per-member bounds-Adam counter on-device. Reuses the same
+        # 1-thread `c[0] += 1` kernel as the RNG counter — both are uint32
+        # device counters that need to advance under CUDA-graph replay.
+        var bounds_counter_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](self.bounds_step_counters[m].unsafe_ptr())
+        ctx.enqueue_function[incr_k, incr_k](
+            bounds_counter_t, grid_dim=(1,), block_dim=(1,),
+        )
 
         ctx.enqueue_function[bounds_k, bounds_k](
             max_lv_t,
@@ -1105,8 +1154,9 @@ struct GPUDynamicsEnsemble[
             lv_beta1,
             lv_beta2,
             lv_eps,
-            bc1,
-            bc2,
+            lv_log_beta1,
+            lv_log_beta2,
+            bounds_counter_t,
             grid_dim=(Self.DYN_PRED,),
             block_dim=(1,),
         )
@@ -1314,6 +1364,9 @@ struct GPUDynamicsEnsemble[
                         Layout.row_major(TB, Self.DynModel.OUT_DIM),
                         MutAnyOrigin,
                     ](self.t_grad_out.unsafe_ptr())
+                    var h_loss_scratch_t = LayoutTensor[
+                        dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
+                    ](self.t_loss_scratch.unsafe_ptr())
                     var h_loss_t = LayoutTensor[
                         dtype, Layout.row_major(TB), MutAnyOrigin
                     ](self.t_loss.unsafe_ptr())
@@ -1334,12 +1387,24 @@ struct GPUDynamicsEnsemble[
                         h_grad_t,
                         h_output_t,
                         h_target_t,
-                        h_loss_t,
+                        h_loss_scratch_t,
                         h_max_lv_t,
                         h_min_lv_t,
                         h_max_grad_t,
                         h_min_grad_t,
                         grid_dim=(PRED_BLOCKS,),
+                        block_dim=(TPB_VAL,),
+                    )
+
+                    # Race-free reduction across PRED_DIM → per-sample loss.
+                    comptime reduce_loss_k = reduce_loss_scratch_kernel[
+                        dtype, TB, Self.DYN_PRED
+                    ]
+                    comptime LOSS_BLOCKS = (TB + TPB_VAL - 1) // TPB_VAL
+                    ctx.enqueue_function[reduce_loss_k, reduce_loss_k](
+                        h_loss_scratch_t,
+                        h_loss_t,
+                        grid_dim=(LOSS_BLOCKS,),
                         block_dim=(TPB_VAL,),
                     )
 
@@ -1398,6 +1463,147 @@ struct GPUDynamicsEnsemble[
         for i in range(Self.num_elites):
             elite_holdout_sum += holdout_losses[self.elite_indices[i]]
         return elite_holdout_sum / Float64(Self.num_elites)
+
+    def eval_member_holdout_mse[
+        BUF_CAP: Int,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        buffer: GPUReplayBuffer[BUF_CAP, Self.obs_dim, Self.action_dim],
+        m: Int,
+    ) raises -> Float64:
+        """Mean squared error of member `m` on a fresh holdout batch.
+
+        Mirrors `PCDynamicsEnsembleInstanceGPU.eval_member_holdout_loss` —
+        same averaging convention (mean over BATCH × PRED_DIM, μ portion
+        only) so vanilla MBPO and PCN-MBPO can be compared directly. NOT
+        used for elite selection (training-time NLL holdout still drives
+        that); diagnostics only.
+        """
+        comptime TB = Self.train_batch
+        comptime TPB_VAL = 256
+        comptime BATCH_BLOCKS = (TB + TPB_VAL - 1) // TPB_VAL
+        comptime DYN_IN_BLOCKS = (TB * Self.DYN_IN + TPB_VAL - 1) // TPB_VAL
+        comptime PRED_BLOCKS = (TB * Self.DYN_PRED + TPB_VAL - 1) // TPB_VAL
+
+        var n_data = buffer.size
+        if n_data < TB:
+            return 0.0
+
+        comptime concat_k = concat_obs_action_kernel[
+            dtype, TB, Self.obs_dim, Self.action_dim, Self.DYN_IN
+        ]
+        comptime norm_k = normalize_input_kernel[dtype, TB, Self.DYN_IN]
+        comptime target_k = build_dynamics_target_kernel[
+            dtype, TB, Self.obs_dim, Self.DYN_PRED
+        ]
+        comptime mse_k = dynamics_mse_per_sample_kernel[
+            dtype, TB, Self.DYN_PRED, Self.DYN_OUT
+        ]
+        comptime reduce_k = reduce_mean_loss_kernel[dtype, TB]
+
+        comptime dyn_incr_k = increment_rng_counter_kernel
+        var dyn_rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](self.rng_counters[m].unsafe_ptr())
+        ctx.enqueue_function[dyn_incr_k, dyn_incr_k](
+            dyn_rng_t,
+            grid_dim=(1,),
+            block_dim=(1,),
+        )
+        buffer.sample[TB](
+            ctx,
+            self.rng_counters[m],
+            self.s_obs,
+            self.s_act,
+            self.s_rew,
+            self.s_nobs,
+            self.s_done,
+            self.s_idx,
+        )
+
+        var h_obs_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.obs_dim), MutAnyOrigin
+        ](self.s_obs.unsafe_ptr())
+        var h_act_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.action_dim), MutAnyOrigin
+        ](self.s_act.unsafe_ptr())
+        var h_input_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.DYN_IN), MutAnyOrigin
+        ](self.t_input.unsafe_ptr())
+        ctx.enqueue_function[concat_k, concat_k](
+            h_input_t, h_obs_t, h_act_t,
+            grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
+        )
+        var h_mean_t = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_IN), MutAnyOrigin
+        ](self.input_mean.unsafe_ptr())
+        var h_std_t = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_IN), MutAnyOrigin
+        ](self.input_std.unsafe_ptr())
+        ctx.enqueue_function[norm_k, norm_k](
+            h_input_t, h_mean_t, h_std_t,
+            grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
+        )
+
+        var h_nobs_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.obs_dim), MutAnyOrigin
+        ](self.s_nobs.unsafe_ptr())
+        var h_rew_t = LayoutTensor[
+            dtype, Layout.row_major(TB), MutAnyOrigin
+        ](self.s_rew.unsafe_ptr())
+        var h_target_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
+        ](self.t_target.unsafe_ptr())
+        ctx.enqueue_function[target_k, target_k](
+            h_target_t, h_obs_t, h_nobs_t, h_rew_t,
+            grid_dim=(PRED_BLOCKS,), block_dim=(TPB_VAL,),
+        )
+
+        var h_output_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.DynModel.OUT_DIM), MutAnyOrigin
+        ](self.t_output.unsafe_ptr())
+        var p_h = self.members[m].params_view()
+        var s_h = self.members[m].model_state_view()
+        Self.DynNet.forward_gpu[TB](
+            ctx, h_input_t, h_output_t, p_h, s_h, self.t_ws,
+        )
+
+        var h_output_for_mse_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.DYN_OUT), MutAnyOrigin
+        ](self.t_output.unsafe_ptr())
+        var h_loss_t = LayoutTensor[
+            dtype, Layout.row_major(TB), MutAnyOrigin
+        ](self.t_loss.unsafe_ptr())
+        ctx.enqueue_function[mse_k, mse_k](
+            h_loss_t, h_output_for_mse_t, h_target_t,
+            grid_dim=(BATCH_BLOCKS,), block_dim=(TPB_VAL,),
+        )
+        var loss_scalar_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](self.t_loss_scalar.unsafe_ptr())
+        ctx.enqueue_function[reduce_k, reduce_k](
+            h_loss_t, loss_scalar_t,
+            grid_dim=(1,), block_dim=(1,),
+        )
+        ctx.enqueue_copy(self.t_loss_host, self.t_loss_scalar)
+        ctx.synchronize()
+        return Float64(self.t_loss_host[0])
+
+    def download_input_std(mut self, ctx: DeviceContext) raises -> Float64:
+        """Mean of `input_std` across DYN_IN dims (host-side scalar).
+
+        Tracks the *raw* per-dim scale of the buffer's (obs ‖ action) data;
+        the actual normalized inputs the dynamics consumes are ~unit-variance
+        post-divide. Same semantics + name as PCN-MBPO so charts overlay.
+        """
+        var host = ctx.enqueue_create_host_buffer[dtype](Self.DYN_IN)
+        ctx.enqueue_copy(host, self.input_std)
+        ctx.synchronize()
+        var s: Float64 = 0.0
+        for i in range(Self.DYN_IN):
+            s += Float64(host.unsafe_ptr()[i])
+        return s / Float64(Self.DYN_IN)
 
 
 # =============================================================================
@@ -4022,6 +4228,38 @@ struct MBPOAgent[
                 if logger:
                     logger[].log_scalar(
                         "dyn_holdout_loss", mean_holdout, total_steps
+                    )
+                    # Per-member MSE on a fresh holdout batch — same metric
+                    # names + units as PCN-MBPO so the two agents overlay.
+                    var mse_sum: Float64 = 0.0
+                    var mse_min: Float64 = 1e30
+                    var mse_max: Float64 = -1.0
+                    for m in range(Self.Config.ENSEMBLE_SIZE):
+                        var L = gpu_dynamics.eval_member_holdout_mse[
+                            Self.GPU_BUF_CAP
+                        ](ctx, gpu_state.buffer, m)
+                        mse_sum += L
+                        if L < mse_min:
+                            mse_min = L
+                        if L > mse_max:
+                            mse_max = L
+                    logger[].log_scalar(
+                        "dyn_holdout_mse_mean",
+                        mse_sum / Float64(Self.Config.ENSEMBLE_SIZE),
+                        total_steps,
+                    )
+                    logger[].log_scalar(
+                        "dyn_holdout_mse_min", mse_min, total_steps
+                    )
+                    logger[].log_scalar(
+                        "dyn_holdout_mse_max", mse_max, total_steps
+                    )
+                    logger[].log_scalar(
+                        "dyn_holdout_spread", mse_max - mse_min, total_steps
+                    )
+                    var input_std_mean = gpu_dynamics.download_input_std(ctx)
+                    logger[].log_scalar(
+                        "dyn_input_std_mean", input_std_mean, total_steps
                     )
                 self.update_rollout_length(epoch)
                 epoch += 1

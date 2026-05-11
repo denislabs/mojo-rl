@@ -25,7 +25,7 @@ Reference: Hansen et al., 2023 — TD-MPC2: Scalable, Robust World Models
            for Continuous Control
 """
 
-from std.math import exp, log, sqrt
+from std.math import exp, log, sqrt, tanh
 from std.gpu import thread_idx
 from std.random import random_float64, seed
 from std.random.philox import Random as PhiloxRandom
@@ -88,6 +88,7 @@ from .kernels import (
     tdmpc2_policy_grad_kernel,
     tdmpc2_q_decode_backward_kernel,
     tdmpc2_action_tanh_chain_kernel,
+    tdmpc2_compute_entropy_grad_kernel,
     tdmpc2_apply_tanh_kernel,
     tdmpc2_q_min_reduce_kernel,
     tdmpc2_zero_kernel,
@@ -102,6 +103,7 @@ from .kernels import (
     tdmpc2_gradient_norm_5q_kernel,
     tdmpc2_gradient_reduce_apply_5q_kernel,
     tdmpc2_adam_step_5q_kernel,
+    tdmpc2_has_nan_kernel,
 )
 
 
@@ -119,6 +121,7 @@ struct TDMPC2Agent[
     buffer_capacity: Int = 100000,
     num_samples: Int = 512,
     num_pi_trajs: Int = 24,
+    num_elites: Int = 64,
     num_iterations: Int = 6,
     v_min: Float64 = -10.0,
     v_max: Float64 = 10.0,
@@ -231,7 +234,9 @@ struct TDMPC2Agent[
     # Use make_gpu_state[n_envs, env_state_size](ctx) to construct.
     comptime EncOpt = Adam[LR=Self.WM.ENC_LR]
     comptime WMOpt = Adam[LR=Self.WM.WM_LR]
-    comptime PIOpt = Adam[LR=Self.WM.PI_LR]
+    # Match reference TD-MPC2 (tdmpc2.py:32) policy-only eps=1e-5; world
+    # model networks stay at PyTorch default eps=1e-8.
+    comptime PIOpt = Adam[LR=Self.WM.PI_LR, EPS=1e-5]
 
     var state: Self.CPUStateType
 
@@ -1359,6 +1364,24 @@ struct TDMPC2Agent[
                     block_dim=(TPB,),
                 )
 
+        # Store z[H] = z_pred from final dynamics step.
+        # The world-model backward (Phase 2) only reads z[0..H-1] for
+        # consistency targets, but the policy update (in train_gpu) consumes
+        # the full H+1 latent rollout — matching reference TD-MPC2's
+        # `update_pi(zs.detach(), task)` where zs has shape [H+1, B, latent].
+        var z_hist_H = LayoutTensor[
+            dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
+        ](gpu_state.z_history_buf.unsafe_ptr() + Self.H * Self.B_LATENT)
+        ctx.enqueue_function[
+            copy_buffer_kernel[dtype, Self.B_LATENT],
+            copy_buffer_kernel[dtype, Self.B_LATENT],
+        ](
+            z_hist_H,
+            z_pred_flat_tensor,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
         # ═══════════════════════════════════════════════════════════════════
         # PHASE 2: BACKWARD — reverse order, carry gradient through dynamics
         # ═══════════════════════════════════════════════════════════════════
@@ -2327,6 +2350,13 @@ struct TDMPC2Agent[
         comptime WS_ALLOC = TOTAL_WS if TOTAL_WS > 0 else 1
         var step_ws_buf = ctx.enqueue_create_buffer[dtype](WS_ALLOC)
         var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+
+        # Diagnostic: 1-element flag for per-network NaN/Inf scan. Set to
+        # 1 by `tdmpc2_has_nan_kernel` if any param goes bad. Reset to 0
+        # before each scan via enqueue_memset.
+        var nan_flag_buf = ctx.enqueue_create_buffer[DType.uint32](1)
+        var nan_flag_host = ctx.enqueue_create_host_buffer[DType.uint32](1)
+        var first_nan_step: Int = -1  # tracks earliest step any net hit NaN
         ENV.init_step_workspace_gpu[n_envs](ctx, step_ws_buf)
         ctx.synchronize()
 
@@ -2342,6 +2372,11 @@ struct TDMPC2Agent[
         # =================================================================
         var completed_episodes = 0
         var total_steps = 0
+        # Seed-step pretraining burst: on the first training iteration after
+        # warmup, do `warmup_steps` updates in a row on the random-policy
+        # seed data — matches reference TD-MPC2 (online_trainer.py:117).
+        # Bootstraps the world model before the policy starts moving.
+        var did_seed_pretraining = False
         var last_avg_reward: Float64 = 0.0
         var recent_reward_sum: Float64 = 0.0
         var recent_episode_count: Int = 0
@@ -2425,6 +2460,7 @@ struct TDMPC2Agent[
                     Self.H,
                     Self.num_samples,
                     Self.num_pi_trajs,
+                    Self.num_elites,
                     Self.num_iterations,
                     Self.WM.DynModel,
                     Self.WMOpt,
@@ -2448,14 +2484,17 @@ struct TDMPC2Agent[
                     self.temperature,
                     env_prev_means,
                     env_t0_flags,
-                    gs.env_act_host,
+                    LayoutTensor[
+                        dtype,
+                        Layout.row_major(n_envs * Self.ACT),
+                        MutAnyOrigin,
+                    ](gs.env_act_buf.unsafe_ptr()),
                     self.action_scale,
                     False,  # not deterministic (exploration)
                     mppi_seed,
                 )
-
-                # Upload all actions to GPU
-                ctx.enqueue_copy(gs.env_act_buf, gs.env_act_host)
+                # action selection now happens inside plan_gpu_batched on
+                # GPU; env_act_buf is populated directly. No host roundtrip.
             else:
                 # Policy-based exploration: encode obs → policy → sample actions
                 Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[n_envs](
@@ -2514,9 +2553,23 @@ struct TDMPC2Agent[
                     List[Scalar[dtype]](),
                 )
 
-            # Store transitions on GPU (saved obs + step results)
-            gpu_replay.store(
-                ctx, gs.env_act_buf, gs.env_rew_buf, gs.env_done_buf
+            # Store transitions on GPU with both boundary flags:
+            # - env_done_buf (term|trunc): drives sequence-rejection in
+            #   sampling so we never sample sequences that span an env
+            #   reset (post-reset obs[t+1] is meaningless for both the
+            #   consistency loss and the TD bootstrap).
+            # - terminated_buf (term-only): returned in batch_dones as
+            #   the bootstrap mask. The TD-target kernel uses this as
+            #   `(1-d)*Q_next` — zeroing only on real terminations
+            #   (Hopper falling), keeping it on time-limit truncation.
+            #   Reference TD-MPC2 (online_trainer.py, _td_target) does
+            #   the same: `info['terminated']` flows into `(1-terminated)`.
+            gpu_replay.store_with_termination(
+                ctx,
+                gs.env_act_buf,
+                gs.env_rew_buf,
+                gs.env_done_buf,
+                terminated_buf,
             )
 
             # Download only rew/done for episode tracking (small transfer)
@@ -2664,7 +2717,23 @@ struct TDMPC2Agent[
             if not gpu_replay.is_ready[min_ready]():
                 continue
 
-            for _upd in range(updates_per_step):
+            # Seed-step pretraining burst (matches reference TD-MPC2
+            # online_trainer.py:115-122). On the first training iteration after
+            # warmup, do `warmup_steps` updates in a row to bootstrap the world
+            # model on the random-policy seed data before regular UTD=1 begins.
+            var num_updates = updates_per_step
+            if not did_seed_pretraining:
+                num_updates = self.warmup_steps
+                did_seed_pretraining = True
+                if verbose:
+                    clear_progress_bar()
+                    print(
+                        "TD-MPC2 (GPU) | Pretraining agent on seed data ("
+                        + String(num_updates)
+                        + " updates)..."
+                    )
+
+            for _upd in range(num_updates):
                 # Sample BATCH sequences directly on GPU (no CPU round-trip)
                 var _t0_rs = perf_counter_ns()
                 var sample_seed = UInt32(
@@ -2697,6 +2766,23 @@ struct TDMPC2Agent[
                 var gamma_scalar = Scalar[dtype](self.gamma)
                 var vmin_scalar = Scalar[dtype](Self.v_min)
                 var vmax_scalar = Scalar[dtype](Self.v_max)
+
+                # Sample target-Q subset ONCE per `_compute_td_targets` call
+                # (matches reference TD-MPC2 `_td_target` calling Q with one
+                # `torch.randperm(num_q)[:2]` whose result is broadcast across
+                # all H horizon steps). Previously redrawn per-t which added
+                # variance to the TD target estimate.
+                var td_rng = PhiloxRandom(seed=td_q_rng_counter, offset=0)
+                td_q_rng_counter += 1
+                var td_rng_vals = td_rng.step_uniform()
+                var td_qi_a = Int(td_rng_vals[0] * 5.0) % 5
+                var td_qi_b = (td_qi_a + 1 + Int(td_rng_vals[1] * 4.0) % 4) % 5
+                var qta_p_const = LayoutTensor[
+                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                ](qt_param_ptrs[td_qi_a])
+                var qtb_p_const = LayoutTensor[
+                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                ](qt_param_ptrs[td_qi_b])
 
                 for t in range(Self.H):
                     # Fused: extract obs_{t+1} + rew/done at step t (2 kernels → 1)
@@ -2761,23 +2847,17 @@ struct TDMPC2Agent[
                         block_dim=(TPB,),
                     )
 
-                    # Random 2-of-5 target Q subsampling (reference TD-MPC2)
-                    var td_rng = PhiloxRandom(seed=td_q_rng_counter, offset=0)
-                    td_q_rng_counter += 1
-                    var td_rng_vals = td_rng.step_uniform()
-                    var td_qi_a = Int(td_rng_vals[0] * 5.0) % 5
-                    var td_qi_b = (td_qi_a + 1 + Int(td_rng_vals[1] * 4.0) % 4) % 5
+                    # Target Q subset (qta_p_const / qtb_p_const) was sampled
+                    # ONCE above the H loop — same pair is reused across all
+                    # horizon steps to match reference TD-MPC2.
 
                     # First target Q → decode → init q_min
-                    var qta_p = LayoutTensor[
-                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                    ](qt_param_ptrs[td_qi_a])
                     # Target Q nets share stateless QModel; any q*_model_state_tensor works
                     Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
                         ctx,
                         logits_tensor,
                         za_tensor,
-                        qta_p,
+                        qta_p_const,
                         q1_model_state_tensor,
                         gs.qt_batch_ws_buf,
                     )
@@ -2793,14 +2873,11 @@ struct TDMPC2Agent[
                     )
 
                     # Second target Q → decode + min-reduce
-                    var qtb_p = LayoutTensor[
-                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                    ](qt_param_ptrs[td_qi_b])
                     Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
                         ctx,
                         logits_tensor,
                         za_tensor,
-                        qtb_p,
+                        qtb_p_const,
                         q1_model_state_tensor,
                         gs.qt_batch_ws_buf,
                     )
@@ -2944,7 +3021,6 @@ struct TDMPC2Agent[
                     enc_state_tensor,
                     enc_og,
                     0,  # ignored — device counter is authoritative
-                    1.0,
                 )
 
                 ctx.enqueue_function[
@@ -2982,7 +3058,6 @@ struct TDMPC2Agent[
                     dyn_state_tensor,
                     dyn_og,
                     0,  # ignored — device counter is authoritative
-                    1.0,
                 )
 
                 ctx.enqueue_function[
@@ -3020,7 +3095,6 @@ struct TDMPC2Agent[
                     rew_state_tensor,
                     rew_og,
                     0,  # ignored — device counter is authoritative
-                    1.0,
                 )
 
                 ctx.enqueue_function[
@@ -3058,7 +3132,6 @@ struct TDMPC2Agent[
                     term_state_tensor,
                     term_og,
                     0,  # ignored — device counter is authoritative
-                    1.0,
                 )
 
                 # Q1..Q5 fused grad clip + Adam (15 launches → 3)
@@ -3250,25 +3323,61 @@ struct TDMPC2Agent[
                 # No sync needed — GPU pipelines optimizer → policy update naturally
                 gs.pol.zero_grads(ctx)
 
-                # Encode obs_0 with stop-grad → z_sg (reuse z_buf)
-                Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                    ctx,
-                    z_tensor,
-                    obs_step_tensor,
-                    enc_params_tensor,
-                    enc_model_state_tensor,
-                    gs.enc_batch_ws_buf,
-                )
-                # obs_step_buf still contains obs_0 from the world model step
+                # Reference TD-MPC2 reuses the H+1 latent rollout from the
+                # world-model forward pass (rolled with BUFFER actions) for
+                # the policy update via `zs.detach()` (tdmpc2.py:_update,
+                # update_pi). Phase 1 of `_wm_bptt_gpu` stores z_0..z_H in
+                # `z_history_buf`; we load each step's z directly from there
+                # instead of re-rolling dynamics with policy actions. This
+                # matches reference exactly and means the policy is improved
+                # at states the world model has actually been trained on.
 
                 var pol_rho_t = Scalar[dtype](1.0)
-                # Scale entropy by ACTION_DIM to match reference scaled_entropy
+                # Scale entropy by ACTION_DIM to match reference scaled_entropy.
+                # The 1/(H+1) factor mirrors `pi_loss = (... * rho).mean()` in
+                # reference TD-MPC2 (tdmpc2.py:227): the trailing .mean() over
+                # the horizon dimension averages over H+1 timesteps because
+                # `zs` has shape [H+1, B, latent] (z_0 from encode + z_1..z_H
+                # from H dynamics steps). Without this normalization the policy
+                # gradient is H+1× too large; pre-autodiff-fix the overwrite bug
+                # masked it by retaining only the last step's contribution.
                 var entropy_coef_scalar = Scalar[dtype](
-                    self.entropy_coef * Float64(Self.ACT)
+                    self.entropy_coef
+                    * Float64(Self.ACT)
+                    / Float64(Self.H + 1)
                 )
                 var scale_scalar = Scalar[dtype](self.running_scale)
+                var inv_HP1 = Scalar[dtype](1.0) / Scalar[dtype](Self.H + 1)
 
-                for t in range(Self.H):
+                # Sample live-Q subset ONCE per `update_pi` invocation (matches
+                # reference TD-MPC2 `update_pi` calling `Q(zs, action,
+                # return_type='avg')` once with one randperm pair broadcast
+                # across all H+1 horizon steps). Previously redrawn per-t.
+                var pi_rng = PhiloxRandom(seed=pi_q_rng_counter, offset=0)
+                pi_q_rng_counter += 1
+                var rng_vals = pi_rng.step_uniform()
+                var qi_a = Int(rng_vals[0] * 5.0) % 5
+                var qi_b = (qi_a + 1 + Int(rng_vals[1] * 4.0) % 4) % 5
+
+                for t in range(Self.H + 1):
+                    # Load z_t from world-model rollout history (buffer-action
+                    # rollout, computed pre-update — matches reference's
+                    # `zs.detach()` semantics).
+                    var z_hist_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
+                    ](
+                        gs.z_history_buf.unsafe_ptr() + t * Self.B_LATENT
+                    )
+                    ctx.enqueue_function[
+                        copy_buffer_kernel[dtype, Self.B_LATENT],
+                        copy_buffer_kernel[dtype, Self.B_LATENT],
+                    ](
+                        z_flat_tensor,
+                        z_hist_t,
+                        grid_dim=(Self.BATCH_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+
                     ctx.enqueue_memset(gs.grad_pi_out_buf, 0)
 
                     # Policy forward with cache → pi_out
@@ -3305,14 +3414,12 @@ struct TDMPC2Agent[
                     )
 
                     # ── Proper DPG: backprop through avg of 2 random Q-nets ──
-                    # Reference TD-MPC2: randomly subsample 2 of 5 Q-networks,
-                    # average their gradients for the policy update.
-                    var pi_rng = PhiloxRandom(seed=pi_q_rng_counter, offset=0)
-                    pi_q_rng_counter += 1
-                    var rng_vals = pi_rng.step_uniform()
-                    var qi_a = Int(rng_vals[0] * 5.0) % 5
-                    var qi_b = (qi_a + 1 + Int(rng_vals[1] * 4.0) % 4) % 5
-                    var q_rho = pol_rho_t / Scalar[dtype](2.0)
+                    # qi_a / qi_b were sampled ONCE above the H+1 loop and are
+                    # reused at every t (matches reference TD-MPC2 update_pi).
+                    # /(H+1) matches reference's trailing .mean() over the
+                    # H+1-element horizon dimension; /2 averages over the 2
+                    # random Q-nets used for DPG.
+                    var q_rho = pol_rho_t * inv_HP1 / Scalar[dtype](2.0)
 
                     # ── RunningScale update at first horizon step ──
                     # Decode Q-values from first Q-net to update scale (reference:
@@ -3358,11 +3465,33 @@ struct TDMPC2Agent[
                                 j -= 1
                             sorted_q[j + 1] = key
 
-                        var idx_5 = Int(0.05 * Float64(Self.BATCH))
-                        var idx_95 = Int(0.95 * Float64(Self.BATCH))
-                        if idx_95 >= Self.BATCH:
-                            idx_95 = Self.BATCH - 1
-                        var pct_range = sorted_q[idx_95] - sorted_q[idx_5]
+                        # Linearly interpolate the 5th and 95th percentiles
+                        # to match reference TD-MPC2 RunningScale._positions
+                        # (scale.py:21-37): pos = pct * (N-1) / 100, then
+                        # weighted blend of sorted[floor] and sorted[ceil].
+                        var pos_5 = 0.05 * Float64(Self.BATCH - 1)
+                        var pos_95 = 0.95 * Float64(Self.BATCH - 1)
+                        var floor_5 = Int(pos_5)
+                        var floor_95 = Int(pos_95)
+                        var ceil_5 = floor_5 + 1
+                        var ceil_95 = floor_95 + 1
+                        if ceil_5 > Self.BATCH - 1:
+                            ceil_5 = Self.BATCH - 1
+                        if ceil_95 > Self.BATCH - 1:
+                            ceil_95 = Self.BATCH - 1
+                        var w_ceil_5 = pos_5 - Float64(floor_5)
+                        var w_floor_5 = 1.0 - w_ceil_5
+                        var w_ceil_95 = pos_95 - Float64(floor_95)
+                        var w_floor_95 = 1.0 - w_ceil_95
+                        var p5_val = (
+                            sorted_q[floor_5] * w_floor_5
+                            + sorted_q[ceil_5] * w_ceil_5
+                        )
+                        var p95_val = (
+                            sorted_q[floor_95] * w_floor_95
+                            + sorted_q[ceil_95] * w_ceil_95
+                        )
+                        var pct_range = p95_val - p5_val
                         if pct_range < 1.0:
                             pct_range = 1.0
 
@@ -3459,6 +3588,55 @@ struct TDMPC2Agent[
                             block_dim=(TPB,),
                         )
 
+                    # ── Stage-3 diag: snapshot grad_pi_out (Q+ent) and the
+                    # entropy-only contribution at t=0 if this is a diag step.
+                    # See `tdmpc2_compute_entropy_grad_kernel` and
+                    # `docs/TDMPC2_AUDIT.md` Stage 4 plan: log
+                    # ||grad_Q|| / ||grad_ent|| ratio. The kernel +
+                    # enqueue_copy here are async on the same GPU stream as
+                    # the just-completed action_tanh_chain, so the data is
+                    # captured BEFORE next-iter's `enqueue_memset(grad_pi_out, 0)`.
+                    # Host data becomes valid after the existing diag-block
+                    # ctx.synchronize() below.
+                    if (
+                        t == 0
+                        and self.logger
+                        and self.diag_every > 0
+                        and (self.train_step_count + 1) % self.diag_every == 0
+                    ):
+                        # Entropy-only contribution → grad_pi_out_ent_buf (write, not accumulate).
+                        # Pass the same `entropy_coef_scalar * pol_rho_t` (= ent at t=0).
+                        var diag_ent = entropy_coef_scalar * pol_rho_t
+                        var grad_pi_ent_tensor = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.BATCH, Self.POL_OUT),
+                            MutAnyOrigin,
+                        ](gs.grad_pi_out_ent_buf.unsafe_ptr())
+                        ctx.enqueue_function[
+                            tdmpc2_compute_entropy_grad_kernel[
+                                dtype, Self.BATCH, Self.ACT
+                            ],
+                            tdmpc2_compute_entropy_grad_kernel[
+                                dtype, Self.BATCH, Self.ACT
+                            ],
+                        ](
+                            pi_out_tensor,
+                            grad_pi_ent_tensor,
+                            diag_ent,
+                            pi_reparam_seed,
+                            grid_dim=(Self.BATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+                        # Snapshot full grad (= Q + ent) and ent-only via
+                        # async enqueue_copy. Stream-ordered so they capture
+                        # the post-action_tanh_chain values, not later overwrites.
+                        ctx.enqueue_copy(
+                            gs.diag_grad_pi_full_host, gs.grad_pi_out_buf
+                        )
+                        ctx.enqueue_copy(
+                            gs.diag_grad_pi_ent_host, gs.grad_pi_out_ent_buf
+                        )
+
                     # Policy backward → accumulate pol_grads
                     Self.WM.PolicyNet.backward_gpu[Self.BATCH](
                         ctx,
@@ -3471,26 +3649,10 @@ struct TDMPC2Agent[
                         gs.pol_batch_ws_buf,
                     )
 
-                    # Advance z_sg via dynamics (stop-grad)
-                    if t < Self.H - 1:
-                        Self.WM.DynamicsNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                            ctx,
-                            z_pred_tensor,
-                            za_tensor,
-                            dyn_params_tensor,
-                            dyn_model_state_tensor,
-                            gs.dyn_batch_ws_buf,
-                        )
-                        ctx.enqueue_function[
-                            copy_buffer_kernel[dtype, Self.B_LATENT],
-                            copy_buffer_kernel[dtype, Self.B_LATENT],
-                        ](
-                            z_flat_tensor,
-                            z_pred_flat_tensor,
-                            grid_dim=(Self.BATCH_BLOCKS,),
-                            block_dim=(TPB,),
-                        )
-
+                    # No inline dynamics rollout: z_{t+1} is loaded from
+                    # `z_history_buf` at the top of the next iteration (it's
+                    # the world-model rollout from Phase 1, with buffer
+                    # actions — matches reference TD-MPC2's `zs.detach()`).
                     pol_rho_t = pol_rho_t * Scalar[dtype](self.rho)
 
                 # Policy gradient clip + optimizer step
@@ -3529,7 +3691,6 @@ struct TDMPC2Agent[
                     pol_state_tensor,
                     pol_og,
                     0,  # ignored — device counter is authoritative
-                    1.0,
                 )
 
                 # ──────────────────────────────────────────────────────────────
@@ -3566,13 +3727,451 @@ struct TDMPC2Agent[
 
                 self.train_step_count += 1
 
-                # Log training diagnostics periodically
+                # Log training diagnostics periodically.
+                # We piggyback fresh post-update forward passes on (z_0, a_buffer_0)
+                # to compute value/reward losses and mean targets — same idea as
+                # SAC's diag block in core/agents/offpolicy_agent.mojo.
                 if (
                     self.logger
                     and self.diag_every > 0
                     and self.train_step_count % self.diag_every == 0
                 ):
                     try:
+                        # ── Fresh post-update forward passes on (z_0, a_buf_0) ──
+                        # obs_step_buf still holds obs_0 from earlier in this iter.
+                        Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                            ctx,
+                            z_tensor,
+                            obs_step_tensor,
+                            enc_params_tensor,
+                            enc_model_state_tensor,
+                            gs.enc_batch_ws_buf,
+                        )
+                        # Policy forward at z_0 → pi_out (mean | raw_log_std)
+                        Self.WM.PolicyNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                            ctx,
+                            pi_out_tensor,
+                            z_tensor,
+                            pol_params_tensor,
+                            pol_model_state_tensor,
+                            gs.pol_batch_ws_buf,
+                        )
+                        # Extract a_buffer at step 0 → act_step_tensor
+                        ctx.enqueue_function[
+                            tdmpc2_extract_act_step_kernel[
+                                dtype, Self.BATCH, Self.ACT, Self.H
+                            ],
+                            tdmpc2_extract_act_step_kernel[
+                                dtype, Self.BATCH, Self.ACT, Self.H
+                            ],
+                        ](
+                            LayoutTensor[
+                                dtype,
+                                Layout.row_major(Self.BATCH_ACT_FLAT),
+                                MutAnyOrigin,
+                            ](gs.batch_act_buf.unsafe_ptr()),
+                            0,
+                            LayoutTensor[
+                                dtype,
+                                Layout.row_major(Self.BATCH, Self.ACT),
+                                MutAnyOrigin,
+                            ](gs.act_step_buf.unsafe_ptr()),
+                            grid_dim=(Self.BATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+                        # Build za = [z_0, a_buffer_0]
+                        ctx.enqueue_function[
+                            tdmpc2_build_za_kernel[
+                                dtype, Self.BATCH, Self.LATENT, Self.ACT
+                            ],
+                            tdmpc2_build_za_kernel[
+                                dtype, Self.BATCH, Self.LATENT, Self.ACT
+                            ],
+                        ](
+                            z_tensor,
+                            LayoutTensor[
+                                dtype,
+                                Layout.row_major(Self.BATCH, Self.ACT),
+                                MutAnyOrigin,
+                            ](gs.act_step_buf.unsafe_ptr()),
+                            za_tensor,
+                            grid_dim=(Self.BATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+                        # Q1 forward → logits, then download
+                        Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                            ctx,
+                            logits_tensor,
+                            za_tensor,
+                            q1_params_tensor,
+                            q1_model_state_tensor,
+                            gs.q1_batch_ws_buf,
+                        )
+                        ctx.enqueue_copy(gs.diag_logits_host, gs.logits_buf)
+                        # Reward forward → logits (overwrites), download
+                        Self.WM.RewardNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                            ctx,
+                            logits_tensor,
+                            za_tensor,
+                            rew_params_tensor,
+                            rew_model_state_tensor,
+                            gs.rew_batch_ws_buf,
+                        )
+                        ctx.enqueue_copy(gs.diag_rew_logits_host, gs.logits_buf)
+                        # ── Consistency-loss diagnostic ──
+                        # Roll dynamics one step from (z_0, a_buffer_0) and
+                        # encode obs_1; their MSE is the consistency component
+                        # of the WM loss (multiplied by consistency_coef=20 in
+                        # the combined "World Model Losses" chart).
+                        Self.WM.DynamicsNet.MODEL.forward_gpu_no_cache[
+                            Self.BATCH
+                        ](
+                            ctx,
+                            z_pred_tensor,
+                            za_tensor,
+                            dyn_params_tensor,
+                            dyn_model_state_tensor,
+                            gs.dyn_batch_ws_buf,
+                        )
+                        ctx.enqueue_function[
+                            tdmpc2_extract_obs_step_kernel[
+                                dtype, Self.BATCH, Self.OBS, Self.H
+                            ],
+                            tdmpc2_extract_obs_step_kernel[
+                                dtype, Self.BATCH, Self.OBS, Self.H
+                            ],
+                        ](
+                            batch_obs_flat_tensor,
+                            1,
+                            obs_next_step_tensor,
+                            grid_dim=(Self.BATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+                        Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[
+                            Self.BATCH
+                        ](
+                            ctx,
+                            z_next_tensor,
+                            obs_next_step_tensor,
+                            enc_params_tensor,
+                            enc_model_state_tensor,
+                            gs.enc_batch_ws_buf,
+                        )
+                        ctx.enqueue_copy(gs.diag_z_pred_host, gs.z_pred_buf)
+                        ctx.enqueue_copy(
+                            gs.diag_z_enc_next_host, gs.z_next_buf
+                        )
+                        # Download targets + raw signals + policy out
+                        ctx.enqueue_copy(gs.diag_rew_host, gs.batch_rew_buf)
+                        ctx.enqueue_copy(gs.diag_done_host, gs.batch_done_buf)
+                        ctx.enqueue_copy(gs.diag_pi_out_host, gs.pi_out_buf)
+                        ctx.enqueue_copy(
+                            gs.diag_td_targets_host, gs.td_targets_buf
+                        )
+                        ctx.enqueue_copy(
+                            gs.diag_rew_targets_host, gs.rew_targets_buf
+                        )
+                        ctx.synchronize()
+
+                        # ── CPU-side aggregation ──
+                        comptime BS = Self.BATCH
+                        comptime BNS = Self.BINS
+
+                        var mean_reward: Float64 = 0.0
+                        var mean_done: Float64 = 0.0
+                        var sumsq_reward: Float64 = 0.0
+                        for i in range(Self.BATCH_SCALAR_FLAT):
+                            var r = Float64(gs.diag_rew_host[i])
+                            mean_reward += r
+                            sumsq_reward += r * r
+                            mean_done += Float64(gs.diag_done_host[i])
+                        mean_reward /= Float64(Self.BATCH_SCALAR_FLAT)
+                        mean_done /= Float64(Self.BATCH_SCALAR_FLAT)
+                        var var_reward = (
+                            sumsq_reward / Float64(Self.BATCH_SCALAR_FLAT)
+                        ) - (mean_reward * mean_reward)
+                        if var_reward < 0.0:
+                            var_reward = 0.0
+                        var std_reward = sqrt(var_reward)
+
+                        # consistency_loss = mean((z_pred - z_enc_next)^2),
+                        # i.e. the raw MSE between rolled and encoded next
+                        # latent at horizon step 0. This is the same form as
+                        # the consistency_loss term in the WM total loss
+                        # (the dashboard "World Model Losses" multiplies it
+                        # by consistency_coef = 20).
+                        # Trivial-collapse detector: per-feature batch std of
+                        # z_pred and z_enc_next, averaged across LATENT. If
+                        # either drops near zero while consistency_loss = 0,
+                        # the world model has settled at the constant-output
+                        # trivial minimum. A genuine consistency-loss=0 with
+                        # healthy representations keeps both ~0.05–0.2.
+                        var consistency_loss: Float64 = 0.0
+                        var sum_std_z_pred: Float64 = 0.0
+                        var sum_std_z_enc: Float64 = 0.0
+                        for k in range(Self.LATENT):
+                            var mean_p: Float64 = 0.0
+                            var sumsq_p: Float64 = 0.0
+                            var mean_e: Float64 = 0.0
+                            var sumsq_e: Float64 = 0.0
+                            for b in range(Self.BATCH):
+                                var p = Float64(
+                                    gs.diag_z_pred_host[b * Self.LATENT + k]
+                                )
+                                var e = Float64(
+                                    gs.diag_z_enc_next_host[
+                                        b * Self.LATENT + k
+                                    ]
+                                )
+                                var diff = p - e
+                                consistency_loss += diff * diff
+                                mean_p += p
+                                sumsq_p += p * p
+                                mean_e += e
+                                sumsq_e += e * e
+                            mean_p /= Float64(Self.BATCH)
+                            mean_e /= Float64(Self.BATCH)
+                            var var_p = (
+                                sumsq_p / Float64(Self.BATCH)
+                            ) - (mean_p * mean_p)
+                            var var_e = (
+                                sumsq_e / Float64(Self.BATCH)
+                            ) - (mean_e * mean_e)
+                            if var_p < 0.0:
+                                var_p = 0.0
+                            if var_e < 0.0:
+                                var_e = 0.0
+                            sum_std_z_pred += sqrt(var_p)
+                            sum_std_z_enc += sqrt(var_e)
+                        consistency_loss /= Float64(
+                            Self.BATCH * Self.LATENT
+                        )
+                        var std_z_pred = (
+                            sum_std_z_pred / Float64(Self.LATENT)
+                        )
+                        var std_z_enc_next = (
+                            sum_std_z_enc / Float64(Self.LATENT)
+                        )
+
+                        # mean_abs_action computed on tanh(mean) (deterministic
+                        # action) and mean_log_std after the smooth tanh-based
+                        # bound (matches what the policy actually emits).
+                        var mean_abs_action: Float64 = 0.0
+                        var mean_log_std: Float64 = 0.0
+                        for b in range(BS):
+                            for j in range(Self.ACT):
+                                var mean_raw = Float64(
+                                    gs.diag_pi_out_host[b * Self.POL_OUT + j]
+                                )
+                                var x = Float64(
+                                    gs.diag_pi_out_host[
+                                        b * Self.POL_OUT + Self.ACT + j
+                                    ]
+                                )
+                                var act_det = Float64(tanh(Float32(mean_raw)))
+                                var ls = -10.0 + 6.0 * (
+                                    Float64(tanh(Float32(x))) + 1.0
+                                )
+                                if act_det < 0.0:
+                                    act_det = -act_det
+                                mean_abs_action += act_det
+                                mean_log_std += ls
+                        mean_abs_action /= Float64(BS * Self.ACT)
+                        mean_log_std /= Float64(BS * Self.ACT)
+
+                        # ── Stage-3 diag: per-component grad-magnitude split ──
+                        # `diag_grad_pi_full_host` holds (Q + entropy) grad on
+                        # pi_out at policy-update t=0; `diag_grad_pi_ent_host`
+                        # holds the entropy-only contribution from the same
+                        # forward sample (recomputed by
+                        # tdmpc2_compute_entropy_grad_kernel). Q = full - ent.
+                        # Layout per row: [mean(0..ACT) | log_std_raw(ACT..2·ACT)].
+                        var sumsq_full_mean: Float64 = 0.0
+                        var sumsq_ent_mean: Float64 = 0.0
+                        var sumsq_q_mean: Float64 = 0.0
+                        var sumsq_full_lstd: Float64 = 0.0
+                        var sumsq_ent_lstd: Float64 = 0.0
+                        var sumsq_q_lstd: Float64 = 0.0
+                        for b in range(BS):
+                            for j in range(Self.ACT):
+                                # Mean half
+                                var f_m = Float64(
+                                    gs.diag_grad_pi_full_host[
+                                        b * Self.POL_OUT + j
+                                    ]
+                                )
+                                var e_m = Float64(
+                                    gs.diag_grad_pi_ent_host[
+                                        b * Self.POL_OUT + j
+                                    ]
+                                )
+                                var q_m = f_m - e_m
+                                sumsq_full_mean += f_m * f_m
+                                sumsq_ent_mean += e_m * e_m
+                                sumsq_q_mean += q_m * q_m
+                                # log_std raw half
+                                var f_l = Float64(
+                                    gs.diag_grad_pi_full_host[
+                                        b * Self.POL_OUT + Self.ACT + j
+                                    ]
+                                )
+                                var e_l = Float64(
+                                    gs.diag_grad_pi_ent_host[
+                                        b * Self.POL_OUT + Self.ACT + j
+                                    ]
+                                )
+                                var q_l = f_l - e_l
+                                sumsq_full_lstd += f_l * f_l
+                                sumsq_ent_lstd += e_l * e_l
+                                sumsq_q_lstd += q_l * q_l
+
+                        var l2_full_mean = sqrt(sumsq_full_mean)
+                        var l2_ent_mean = sqrt(sumsq_ent_mean)
+                        var l2_q_mean = sqrt(sumsq_q_mean)
+                        var l2_full_lstd = sqrt(sumsq_full_lstd)
+                        var l2_ent_lstd = sqrt(sumsq_ent_lstd)
+                        var l2_q_lstd = sqrt(sumsq_q_lstd)
+                        # Ratio: how strong is Q's pull vs entropy's pull?
+                        # If < 1, entropy dominates Adam's effective step on
+                        # that direction → log_std runs to its bound. Eps
+                        # guards against zero division for the very rare case
+                        # where ent is exactly zero (shouldn't happen with
+                        # entropy_coef > 0).
+                        var ratio_mean = l2_q_mean / (l2_ent_mean + 1e-12)
+                        var ratio_lstd = l2_q_lstd / (l2_ent_lstd + 1e-12)
+
+                        # value_loss = soft CE between Q logits and TD target
+                        # at horizon step 0; mean_target = symexp-decoded
+                        # expected value of the two-hot target.
+                        # std_q / std_target measure batch-wise spread of the
+                        # predicted Q and the bootstrapped TD target — both in
+                        # actual value space (symexp-decoded). Near-zero std
+                        # indicates Q-collapse (predictor is state-action
+                        # invariant).
+                        var value_loss: Float64 = 0.0
+                        var mean_target: Float64 = 0.0
+                        var sumsq_target: Float64 = 0.0
+                        var mean_q_pred: Float64 = 0.0
+                        var sumsq_q_pred: Float64 = 0.0
+                        for b in range(BS):
+                            var max_l: Float64 = -1e30
+                            for k in range(BNS):
+                                var v = Float64(
+                                    gs.diag_logits_host[b * BNS + k]
+                                )
+                                if v > max_l:
+                                    max_l = v
+                            var sum_exp: Float64 = 0.0
+                            for k in range(BNS):
+                                sum_exp += exp(
+                                    Float64(gs.diag_logits_host[b * BNS + k])
+                                    - max_l
+                                )
+                            var lse = log(sum_exp) + max_l
+                            var ce: Float64 = 0.0
+                            var tgt_symlog: Float64 = 0.0
+                            var pred_symlog: Float64 = 0.0
+                            for k in range(BNS):
+                                var logit = Float64(
+                                    gs.diag_logits_host[b * BNS + k]
+                                )
+                                var tgt = Float64(
+                                    gs.diag_td_targets_host[b * BNS + k]
+                                )
+                                ce -= tgt * (logit - lse)
+                                tgt_symlog += tgt * Float64(
+                                    self.state.world_model.bins[k]
+                                )
+                                var sm = exp(logit - lse)
+                                pred_symlog += sm * Float64(
+                                    self.state.world_model.bins[k]
+                                )
+                            value_loss += ce
+                            var ats = (
+                                tgt_symlog
+                                if tgt_symlog >= 0.0
+                                else -tgt_symlog
+                            )
+                            var dec_target = (exp(ats) - 1.0) if (
+                                tgt_symlog >= 0.0
+                            ) else -(exp(ats) - 1.0)
+                            mean_target += dec_target
+                            sumsq_target += dec_target * dec_target
+                            var aps = (
+                                pred_symlog
+                                if pred_symlog >= 0.0
+                                else -pred_symlog
+                            )
+                            var dec_pred_q = (exp(aps) - 1.0) if (
+                                pred_symlog >= 0.0
+                            ) else -(exp(aps) - 1.0)
+                            mean_q_pred += dec_pred_q
+                            sumsq_q_pred += dec_pred_q * dec_pred_q
+                        value_loss /= Float64(BS)
+                        mean_target /= Float64(BS)
+                        mean_q_pred /= Float64(BS)
+                        var var_target = (sumsq_target / Float64(BS)) - (
+                            mean_target * mean_target
+                        )
+                        if var_target < 0.0:
+                            var_target = 0.0
+                        var std_target = sqrt(var_target)
+                        var var_q_pred = (sumsq_q_pred / Float64(BS)) - (
+                            mean_q_pred * mean_q_pred
+                        )
+                        if var_q_pred < 0.0:
+                            var_q_pred = 0.0
+                        var std_q = sqrt(var_q_pred)
+
+                        # reward_loss = soft CE between reward logits and reward
+                        # target at horizon step 0; mean_pred_reward = symexp-
+                        # decoded expectation under predicted distribution.
+                        var reward_loss: Float64 = 0.0
+                        var mean_pred_reward: Float64 = 0.0
+                        for b in range(BS):
+                            var max_l: Float64 = -1e30
+                            for k in range(BNS):
+                                var v = Float64(
+                                    gs.diag_rew_logits_host[b * BNS + k]
+                                )
+                                if v > max_l:
+                                    max_l = v
+                            var sum_exp: Float64 = 0.0
+                            for k in range(BNS):
+                                sum_exp += exp(
+                                    Float64(
+                                        gs.diag_rew_logits_host[b * BNS + k]
+                                    )
+                                    - max_l
+                                )
+                            var lse = log(sum_exp) + max_l
+                            var ce: Float64 = 0.0
+                            var pred_symlog: Float64 = 0.0
+                            for k in range(BNS):
+                                var logit = Float64(
+                                    gs.diag_rew_logits_host[b * BNS + k]
+                                )
+                                var sm = exp(logit - lse)
+                                var tgt = Float64(
+                                    gs.diag_rew_targets_host[b * BNS + k]
+                                )
+                                ce -= tgt * (logit - lse)
+                                pred_symlog += sm * Float64(
+                                    self.state.world_model.bins[k]
+                                )
+                            reward_loss += ce
+                            var aps = (
+                                pred_symlog
+                                if pred_symlog >= 0.0
+                                else -pred_symlog
+                            )
+                            var dec_pred = (exp(aps) - 1.0) if (
+                                pred_symlog >= 0.0
+                            ) else -(exp(aps) - 1.0)
+                            mean_pred_reward += dec_pred
+                        reward_loss /= Float64(BS)
+                        mean_pred_reward /= Float64(BS)
+
                         var step = self.train_step_count
                         self.logger[].log_scalar("q_mean", diag_q_mean, step)
                         self.logger[].log_scalar("q_min", diag_q_min, step)
@@ -3581,8 +4180,151 @@ struct TDMPC2Agent[
                             "pi_scale", self.running_scale, step
                         )
                         self.logger[].log_scalar("gamma", self.gamma, step)
+                        self.logger[].log_scalar(
+                            "value_loss", value_loss, step
+                        )
+                        self.logger[].log_scalar(
+                            "reward_loss", reward_loss, step
+                        )
+                        self.logger[].log_scalar(
+                            "mean_target", mean_target, step
+                        )
+                        self.logger[].log_scalar(
+                            "mean_pred_reward", mean_pred_reward, step
+                        )
+                        self.logger[].log_scalar(
+                            "mean_reward", mean_reward, step
+                        )
+                        self.logger[].log_scalar(
+                            "mean_done", mean_done, step
+                        )
+                        self.logger[].log_scalar(
+                            "mean_abs_action", mean_abs_action, step
+                        )
+                        self.logger[].log_scalar(
+                            "mean_log_std", mean_log_std, step
+                        )
+                        self.logger[].log_scalar("std_q", std_q, step)
+                        self.logger[].log_scalar(
+                            "std_target", std_target, step
+                        )
+                        self.logger[].log_scalar(
+                            "std_reward", std_reward, step
+                        )
+                        self.logger[].log_scalar(
+                            "consistency_loss", consistency_loss, step
+                        )
+                        self.logger[].log_scalar(
+                            "std_z_pred", std_z_pred, step
+                        )
+                        self.logger[].log_scalar(
+                            "std_z_enc_next", std_z_enc_next, step
+                        )
+                        # Stage-3 grad-magnitude split (Q vs entropy on pi_out
+                        # at policy-update t=0). See `tdmpc2_compute_entropy_grad_kernel`.
+                        self.logger[].log_scalar(
+                            "pi_grad_full_mean_l2", l2_full_mean, step
+                        )
+                        self.logger[].log_scalar(
+                            "pi_grad_ent_mean_l2", l2_ent_mean, step
+                        )
+                        self.logger[].log_scalar(
+                            "pi_grad_q_mean_l2", l2_q_mean, step
+                        )
+                        self.logger[].log_scalar(
+                            "pi_grad_q_over_ent_mean", ratio_mean, step
+                        )
+                        self.logger[].log_scalar(
+                            "pi_grad_full_lstd_l2", l2_full_lstd, step
+                        )
+                        self.logger[].log_scalar(
+                            "pi_grad_ent_lstd_l2", l2_ent_lstd, step
+                        )
+                        self.logger[].log_scalar(
+                            "pi_grad_q_lstd_l2", l2_q_lstd, step
+                        )
+                        self.logger[].log_scalar(
+                            "pi_grad_q_over_ent_lstd", ratio_lstd, step
+                        )
                     except:
                         pass
+
+                # ──────────────────────────────────────────────────────
+                # NaN/Inf scan on each network's params.
+                # Every step for the first 100 (where the cascade
+                # likely starts) so we can pin the first network to
+                # NaN. After 100, back off to every 10 steps to keep
+                # the scan cheap.
+                # ──────────────────────────────────────────────────────
+                var nan_scan_every = 1 if self.train_step_count < 100 else 10
+                if (
+                    self.train_step_count % nan_scan_every == 0
+                ):
+                    var nan_names = List[String]()
+
+                    @parameter
+                    @always_inline
+                    def _scan_nan[
+                        SIZE: Int
+                    ](
+                        net_name: String,
+                        params_buf: DeviceBuffer[dtype],
+                    ) raises:
+                        ctx.enqueue_memset(nan_flag_buf, 0)
+                        var params_t = LayoutTensor[
+                            dtype, Layout.row_major(SIZE), MutAnyOrigin
+                        ](params_buf.unsafe_ptr())
+                        var flag_t = LayoutTensor[
+                            DType.uint32,
+                            Layout.row_major(1),
+                            MutAnyOrigin,
+                        ](nan_flag_buf.unsafe_ptr())
+                        comptime SCAN_BLOCKS = (SIZE + TPB - 1) // TPB
+                        ctx.enqueue_function[
+                            tdmpc2_has_nan_kernel[dtype, SIZE],
+                            tdmpc2_has_nan_kernel[dtype, SIZE],
+                        ](
+                            params_t,
+                            flag_t,
+                            grid_dim=(SCAN_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+                        ctx.enqueue_copy(nan_flag_host, nan_flag_buf)
+                        ctx.synchronize()
+                        if nan_flag_host[0] != UInt32(0):
+                            nan_names.append(net_name)
+
+                    _scan_nan[Self.ENC_P]("encoder", gs.enc.params_buf)
+                    _scan_nan[Self.DYN_P]("dynamics", gs.dyn.params_buf)
+                    _scan_nan[Self.REW_P]("reward", gs.rew.params_buf)
+                    _scan_nan[Self.TERM_P]("term", gs.term.params_buf)
+                    _scan_nan[Self.POL_P]("policy", gs.pol.params_buf)
+                    _scan_nan[Self.Q_P]("q1", gs.q1.params_buf)
+                    _scan_nan[Self.Q_P]("q2", gs.q2.params_buf)
+                    _scan_nan[Self.Q_P]("q3", gs.q3.params_buf)
+                    _scan_nan[Self.Q_P]("q4", gs.q4.params_buf)
+                    _scan_nan[Self.Q_P]("q5", gs.q5.params_buf)
+
+                    if len(nan_names) > 0:
+                        clear_progress_bar()
+                        var step = self.train_step_count
+                        if first_nan_step < 0:
+                            first_nan_step = step
+                            print(
+                                "*** FIRST NaN at train_step",
+                                step,
+                                ":",
+                                String(", ").join(nan_names),
+                            )
+                        else:
+                            print(
+                                "    NaN at train_step",
+                                step,
+                                "(first @",
+                                first_nan_step,
+                                "):",
+                                String(", ").join(nan_names),
+                            )
 
         # =================================================================
         # Print timing summary

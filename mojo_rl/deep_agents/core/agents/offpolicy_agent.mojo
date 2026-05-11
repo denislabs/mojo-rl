@@ -50,8 +50,11 @@ from mojo_rl.deep_agents.core import (
     OffPolicyContinuousAgent,
     GPUOffPolicyState,
     GPUOffPolicyAgent,
+    GPUEvaluableContinuous,
+    CPUEvaluableContinuous,
     run_offpolicy_continuous_train,
     run_offpolicy_continuous_train_gpu,
+    run_offpolicy_continuous_train_cpu_env_gpu_agent,
     Checkpointable,
 )
 from mojo_rl.deep_agents.core.utils import (
@@ -81,6 +84,7 @@ from mojo_rl.core import (
     BoxContinuousActionEnv,
     GPUContinuousEnv,
     RenderableEnv,
+    TerminationAwareEnv,
     CurriculumScheduler,
     NoCurriculumScheduler,
 )
@@ -661,7 +665,13 @@ struct GenericOffPolicyAgent[
     profile: Int = 0,
     L: Logger = NoOpLogger,
     max_n_envs: Int = 64,
-](OffPolicyContinuousAgent & GPUOffPolicyAgent & Checkpointable):
+](
+    OffPolicyContinuousAgent
+    & GPUOffPolicyAgent
+    & GPUEvaluableContinuous
+    & CPUEvaluableContinuous
+    & Checkpointable
+):
     """Generic off-policy agent. Supports DDPG, TD3, and SAC via Config strategies.
     """
 
@@ -1297,6 +1307,13 @@ struct GenericOffPolicyAgent[
                     a = -self.action_scale
                 result.append(a)
             return result^
+
+    # =========================================================================
+    # CPUEvaluableContinuous trait
+    # =========================================================================
+
+    def select_greedy_action_obs(self, obs: List[Float64]) -> List[Float64]:
+        return self.select_greedy_action(self.state, obs)
 
     # =========================================================================
     # GPUOffPolicyAgent trait
@@ -2465,6 +2482,7 @@ struct GenericOffPolicyAgent[
         CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
         USE_CUDA_GRAPH: Bool = True,
         USE_ENV_CUDA_GRAPH: Bool = True,
+        EVAL_ENVS: Int = 16,
     ](
         mut self,
         ctx: DeviceContext,
@@ -2479,6 +2497,8 @@ struct GenericOffPolicyAgent[
         diag_every: Int = 0,
         gradient_steps: Int = 0,
         reward_scale: Float64 = 1.0,
+        eval_every: Int = 0,
+        eval_episodes: Int = 16,
     ) raises -> TrainingMetrics:
         """Train using GPU-accelerated training loop.
 
@@ -2527,6 +2547,7 @@ struct GenericOffPolicyAgent[
             CurriculumType,
             USE_CUDA_GRAPH,
             USE_ENV_CUDA_GRAPH,
+            EVAL_ENVS,
         ](
             self,
             ctx,
@@ -2542,6 +2563,8 @@ struct GenericOffPolicyAgent[
             target_total_steps=tgt_steps,
             gradient_steps=gradient_steps,
             reward_scale=reward_scale,
+            eval_every=eval_every,
+            eval_episodes=eval_episodes,
         )
 
         comptime if Self.profile >= 2:
@@ -2549,5 +2572,87 @@ struct GenericOffPolicyAgent[
         comptime if Self.profile >= 1:
             timer.print_report(Self.Config.NAME + " GPU Profile")
 
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        return metrics^
+
+    def train_hybrid[
+        E: TerminationAwareEnv,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut envs: List[UnsafePointer[E, MutAnyOrigin]],
+        num_steps: Int,
+        warmup_steps: Int = 1000,
+        verbose: Bool = False,
+        print_every: Int = 50_000,
+        environment_name: String = "Environment",
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
+        gradient_steps: Int = 0,
+        reward_scale: Float64 = 1.0,
+        eval_env: UnsafePointer[E, MutAnyOrigin] = UnsafePointer[
+            E, MutAnyOrigin
+        ](),
+        eval_every: Int = 0,
+        eval_episodes: Int = 5,
+        eval_max_steps: Int = 1000,
+        diag_every: Int = 0,
+    ) raises -> TrainingMetrics:
+        """Hybrid training: this GPU agent driven by CPU-stepped envs.
+
+        Built for diagnostics — lets us swap our native env for a CPU env
+        like Gymnasium MuJoCo Hopper-v5 to attribute training failure to
+        the env vs. the algorithm.
+
+        After training, CPU state holds the trained weights so evaluate()
+        works immediately.
+
+        Args:
+            ctx: GPU device context (still used for the agent's networks
+                and replay buffer).
+            envs: List of CPU envs satisfying TerminationAwareEnv.
+            num_steps: Total env transitions across all envs.
+            warmup_steps: Uniform-random transitions before the policy
+                takes over (default: 1000).
+            verbose: Print progress lines (default: False).
+            print_every: Print/log cadence (default: 50000).
+            environment_name: Used in metrics labeling.
+            logger: Optional metrics logger.
+            gradient_steps: Train updates per collect iteration. 0 → n_envs.
+            reward_scale: Multiplier on env reward before storing in buffer.
+
+        Returns:
+            TrainingMetrics with episode statistics.
+        """
+        self.logger = logger
+        self.diag_every = diag_every
+        var ckpt_every = self.checkpoint_every
+        var ckpt_path = String(self.checkpoint_path)
+        var metrics = run_offpolicy_continuous_train_cpu_env_gpu_agent[
+            E,
+            Self,
+            Self.L,
+        ](
+            self,
+            ctx,
+            envs,
+            num_steps,
+            logger=logger,
+            warmup_steps=warmup_steps,
+            gradient_steps=gradient_steps,
+            checkpoint_every=ckpt_every,
+            checkpoint_path=ckpt_path,
+            verbose=verbose,
+            print_every=print_every,
+            environment_name=environment_name,
+            algorithm_name=Self.Config.NAME + "_HYBRID",
+            reward_scale=reward_scale,
+            eval_env=eval_env,
+            eval_every=eval_every,
+            eval_episodes=eval_episodes,
+            eval_max_steps=eval_max_steps,
+            diag_every=diag_every,
+        )
         self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics^

@@ -171,7 +171,9 @@ struct BiasAdd[dim: Int](DiffOp):
 
         var total = block.sum[block_size=TPB, broadcast=False](val=my_sum)
         if local_i == 0:
-            db[col] = total[0]
+            # Accumulate into db (pre-zeroed via zero_grads) so multi-call
+            # backward sequences sum bias gradients instead of overwriting.
+            db[col] = db[col] + total[0]
 
     # =========================================================================
     # GPU launchers

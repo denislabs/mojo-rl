@@ -22,6 +22,8 @@ from mojo_rl.nn.model import (
     Linear,
     LinearReLU,
     LinearMish,
+    LayerNorm,
+    MinMaxNorm,
     Sequential,
     Parallel,
 )
@@ -145,16 +147,39 @@ struct MuZeroMLPConfig[
     comptime PRED_OUT: Int = Self.ACT + Self.BINS
 
     # Networks
+    # MinMaxNorm at end of rep — Phase G post-mortem 2026-05-05: muzero-general's
+    # `representation()` does min-max via PyTorch tensor ops (`.min`/`.max`/
+    # subtract/divide) which PyTorch tracks in autograd, so gradient flows
+    # through min-max during training. Our previous post-hoc
+    # `scale_hidden_kernel` was OUTSIDE the autodiff graph, leaving the rep
+    # network with no gradient signal about its raw output magnitudes →
+    # activations exploded to 10⁶ and direction collapsed (sign-symmetric).
+    # MinMaxNorm is a proper Model with forward + backward, so gradient now
+    # flows through it like in the reference. The post-hoc kernel call after
+    # rep_net forward is redundant on already-normalized output (idempotent
+    # on [0,1]).
     comptime RepModel = Sequential[
         LinearMish[Self.OBS, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
         Linear[Self.HIDDEN, Self.LATENT],
+        MinMaxNorm[Self.LATENT],
     ]
 
+    # DynModel — split output into [hidden + reward_logits] via Parallel so
+    # MinMaxNorm only normalizes the hidden portion (BINS reward bins are
+    # categorical logits and should NOT be min-max-normalized). Matches
+    # muzero-general/models.py:147-170 where `next_encoded_state` is
+    # min-max'd via PyTorch tensor ops while `reward` is left unnormalized.
     comptime DynModel = Sequential[
         LinearMish[Self.DYN_IN, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, Self.DYN_OUT],
+        Parallel[
+            Sequential[
+                Linear[Self.HIDDEN, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
     ]
 
     comptime PredModel = Sequential[
@@ -165,7 +190,25 @@ struct MuZeroMLPConfig[
         ],
     ]
 
-    comptime OptType = Adam[LR=Self.LR]
+    # AdamW with weight_decay=1e-4 — matches muzero-general's
+    # `torch.optim.Adam(weight_decay=1e-4)` (cartpole.py:86, trainer.py:48).
+    # Our `Adam` struct does not support weight_decay (only `AdamW` does);
+    # using bare `Adam` previously meant the agent's `weight_decay` field
+    # was a dead knob and rep weights drifted unbounded under the K-step
+    # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
+    # post-scale hidden state to saturate uniform across obs (state-blind).
+    # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
+    # Adam with PyTorch-style L2-in-gradient weight decay (WEIGHT_DECAY=1e-4
+    # to match muzero-general/games/cartpole.py:86 exactly). Switched from
+    # AdamW (decoupled decay) on 2026-05-05: AdamW's `param *= (1 - LR*W)`
+    # continues shrinking weights at rate LR·W·param indefinitely, which
+    # over-decays small late-training gradients. PyTorch's L2-in-gradient
+    # adds `W·param` to grad before m/v update — when grad → 0 in late
+    # training, v_hat → (W·param)² and the per-step update caps at
+    # LR·sign(param), avoiding the "bleed-to-zero" weight collapse we
+    # observed for MuZero CartPole through the AdamW phase. See
+    # docs/MUZERO_AUDIT.md for the full chain of evidence.
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=1e-4]
 
     # Training
     comptime batch_size: Int = Self.BS
@@ -181,8 +224,27 @@ struct MuZeroMLPConfig[
     comptime Search = LearnedDynamics
     comptime Encoding = CategoricalEncoding
     comptime Scaling = MinMaxScale
+    # Dirichlet fraction reverted 0.5 → 0.25 (2026-05-05, Phase H12) to align
+    # with muzero-general's CartPole config (root_exploration_fraction=0.25).
+    # The 0.5 bump was a band-aid for a different root cause (pre-Bug-F
+    # representation collapse). After the pipeline-level fixes (Bug F, value
+    # encoding, network sizing per H12), reference fraction=0.25 should
+    # suffice. Alpha=0.25 is the standard small-game default.
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = MuZeroPUCT[19652.0, 1.25]
+    # Backup: NStepBootstrap. We tried MonteCarloReturn (2026-05-05,
+    # following AZ-CartPole's adaptation) and it was strictly worse — full
+    # representation collapse returned (post-train hiddens bit-identical
+    # across LEFT/CENTER/RIGHT, |rep| shrank to 0.27). Root cause:
+    # `nstep_value_targets_kernel` truncates at N steps, and with N=10 +
+    # CartPole avg episode ~22, the majority of sample positions don't
+    # terminate within the window, so MC target = Σ₀⁹ γⁱ ≈ 9.56 —
+    # state-independent constant. The bootstrap γⁿV(s_{t+N}), even from an
+    # undertrained value head, was the only state-dependent signal in
+    # late-trajectory targets. AZ-CartPole's MC works because their replay
+    # accesses full episodes, not an N-step window. Re-enabling MC for our
+    # path would require N ≥ episode length (~50 instead of 10), which is
+    # a separate experiment from the backup-mode change itself.
     comptime Backup = NStepBootstrap
     comptime Players = SinglePlayer
 
@@ -224,7 +286,8 @@ struct MuZeroCNNConfig[
     comptime DYN_OUT: Int = Self.LATENT + Self.BINS
     comptime PRED_OUT: Int = Self.ACT + Self.BINS
 
-    # CNN Representation (NatureDQN downsampling → latent)
+    # CNN Representation (NatureDQN downsampling → latent) + MinMaxNorm.
+    # See MuZeroMLPConfig (configs.mojo:150-183) for latent-norm rationale.
     comptime RepModel = Sequential[
         Conv2DReLU[4, 32, 8, 4, 0, 84, 84],     # → 20x20
         Conv2DReLU[32, 64, 4, 2, 0, 20, 20],    # → 9x9
@@ -232,13 +295,20 @@ struct MuZeroCNNConfig[
         FlattenLayer[64 * 7 * 7],                 # → 3136
         LinearReLU[64 * 7 * 7, 512],
         Linear[512, Self.LATENT],
+        MinMaxNorm[Self.LATENT],
     ]
 
-    # Dynamics + Prediction in latent space (same MLP as standard MuZero)
+    # Dynamics in latent space; MinMaxNorm only on hidden split, reward raw.
     comptime DynModel = Sequential[
         LinearMish[Self.DYN_IN, 256],
         LinearMish[256, 256],
-        Linear[256, Self.DYN_OUT],
+        Parallel[
+            Sequential[
+                Linear[256, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[256, Self.BINS],
+        ],
     ]
 
     comptime PredModel = Sequential[
@@ -249,7 +319,25 @@ struct MuZeroCNNConfig[
         ],
     ]
 
-    comptime OptType = Adam[LR=Self.LR]
+    # AdamW with weight_decay=1e-4 — matches muzero-general's
+    # `torch.optim.Adam(weight_decay=1e-4)` (cartpole.py:86, trainer.py:48).
+    # Our `Adam` struct does not support weight_decay (only `AdamW` does);
+    # using bare `Adam` previously meant the agent's `weight_decay` field
+    # was a dead knob and rep weights drifted unbounded under the K-step
+    # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
+    # post-scale hidden state to saturate uniform across obs (state-blind).
+    # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
+    # Adam with PyTorch-style L2-in-gradient weight decay (WEIGHT_DECAY=1e-4
+    # to match muzero-general/games/cartpole.py:86 exactly). Switched from
+    # AdamW (decoupled decay) on 2026-05-05: AdamW's `param *= (1 - LR*W)`
+    # continues shrinking weights at rate LR·W·param indefinitely, which
+    # over-decays small late-training gradients. PyTorch's L2-in-gradient
+    # adds `W·param` to grad before m/v update — when grad → 0 in late
+    # training, v_hat → (W·param)² and the per-step update caps at
+    # LR·sign(param), avoiding the "bleed-to-zero" weight collapse we
+    # observed for MuZero CartPole through the AdamW phase. See
+    # docs/MUZERO_AUDIT.md for the full chain of evidence.
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=1e-4]
 
     # Training
     comptime batch_size: Int = Self.BS
@@ -310,7 +398,8 @@ struct MuZeroResNetConfig[
     comptime DYN_OUT: Int = Self.LATENT + Self.BINS
     comptime PRED_OUT: Int = Self.ACT + Self.BINS
 
-    # Representation with ResBlocks
+    # Representation with ResBlocks + MinMaxNorm. See MuZeroMLPConfig
+    # (configs.mojo:150-183) for the latent-norm rationale.
     comptime RepModel = Sequential[
         LinearMish[Self.OBS, Self.HIDDEN],
         Residual[Sequential[
@@ -322,16 +411,23 @@ struct MuZeroResNetConfig[
             Linear[Self.HIDDEN, Self.HIDDEN],
         ]],
         Linear[Self.HIDDEN, Self.LATENT],
+        MinMaxNorm[Self.LATENT],
     ]
 
-    # Dynamics with ResBlock
+    # Dynamics with ResBlock; MinMaxNorm only on hidden split, reward raw.
     comptime DynModel = Sequential[
         LinearMish[Self.DYN_IN, Self.HIDDEN],
         Residual[Sequential[
             LinearMish[Self.HIDDEN, Self.HIDDEN],
             Linear[Self.HIDDEN, Self.HIDDEN],
         ]],
-        Linear[Self.HIDDEN, Self.DYN_OUT],
+        Parallel[
+            Sequential[
+                Linear[Self.HIDDEN, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
     ]
 
     # Prediction with deeper heads
@@ -344,7 +440,25 @@ struct MuZeroResNetConfig[
         ],
     ]
 
-    comptime OptType = Adam[LR=Self.LR]
+    # AdamW with weight_decay=1e-4 — matches muzero-general's
+    # `torch.optim.Adam(weight_decay=1e-4)` (cartpole.py:86, trainer.py:48).
+    # Our `Adam` struct does not support weight_decay (only `AdamW` does);
+    # using bare `Adam` previously meant the agent's `weight_decay` field
+    # was a dead knob and rep weights drifted unbounded under the K-step
+    # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
+    # post-scale hidden state to saturate uniform across obs (state-blind).
+    # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
+    # Adam with PyTorch-style L2-in-gradient weight decay (WEIGHT_DECAY=1e-4
+    # to match muzero-general/games/cartpole.py:86 exactly). Switched from
+    # AdamW (decoupled decay) on 2026-05-05: AdamW's `param *= (1 - LR*W)`
+    # continues shrinking weights at rate LR·W·param indefinitely, which
+    # over-decays small late-training gradients. PyTorch's L2-in-gradient
+    # adds `W·param` to grad before m/v update — when grad → 0 in late
+    # training, v_hat → (W·param)² and the per-step update caps at
+    # LR·sign(param), avoiding the "bleed-to-zero" weight collapse we
+    # observed for MuZero CartPole through the AdamW phase. See
+    # docs/MUZERO_AUDIT.md for the full chain of evidence.
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=1e-4]
 
     # Training
     comptime batch_size: Int = Self.BS
@@ -394,17 +508,26 @@ struct MuZeroLargeConfig[
     comptime DYN_OUT: Int = 512 + 301
     comptime PRED_OUT: Int = Self.ACT + 301
 
+    # MinMaxNorm appended to rep + on dynamics hidden split. See
+    # MuZeroMLPConfig (configs.mojo:150-183) for the latent-norm rationale.
     comptime RepModel = Sequential[
         LinearMish[Self.OBS, 512],
         LinearMish[512, 512],
         Residual[Sequential[LinearMish[512, 512], Linear[512, 512]]],
         Linear[512, 512],
+        MinMaxNorm[512],
     ]
 
     comptime DynModel = Sequential[
         LinearMish[Self.DYN_IN, 512],
         Residual[Sequential[LinearMish[512, 512], Linear[512, 512]]],
-        Linear[512, Self.DYN_OUT],
+        Parallel[
+            Sequential[
+                Linear[512, 512],
+                MinMaxNorm[512],
+            ],
+            Linear[512, 301],
+        ],
     ]
 
     comptime PredModel = Sequential[
@@ -413,7 +536,25 @@ struct MuZeroLargeConfig[
         Parallel[Linear[512, Self.ACT], Linear[512, 301]],
     ]
 
-    comptime OptType = Adam[LR=Self.LR]
+    # AdamW with weight_decay=1e-4 — matches muzero-general's
+    # `torch.optim.Adam(weight_decay=1e-4)` (cartpole.py:86, trainer.py:48).
+    # Our `Adam` struct does not support weight_decay (only `AdamW` does);
+    # using bare `Adam` previously meant the agent's `weight_decay` field
+    # was a dead knob and rep weights drifted unbounded under the K-step
+    # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
+    # post-scale hidden state to saturate uniform across obs (state-blind).
+    # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
+    # Adam with PyTorch-style L2-in-gradient weight decay (WEIGHT_DECAY=1e-4
+    # to match muzero-general/games/cartpole.py:86 exactly). Switched from
+    # AdamW (decoupled decay) on 2026-05-05: AdamW's `param *= (1 - LR*W)`
+    # continues shrinking weights at rate LR·W·param indefinitely, which
+    # over-decays small late-training gradients. PyTorch's L2-in-gradient
+    # adds `W·param` to grad before m/v update — when grad → 0 in late
+    # training, v_hat → (W·param)² and the per-step update caps at
+    # LR·sign(param), avoiding the "bleed-to-zero" weight collapse we
+    # observed for MuZero CartPole through the AdamW phase. See
+    # docs/MUZERO_AUDIT.md for the full chain of evidence.
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=1e-4]
 
     comptime batch_size: Int = 256
     comptime buffer_capacity: Int = 500000
@@ -468,15 +609,24 @@ struct EfficientZeroConfig[
     comptime DYN_OUT: Int = Self.LATENT + Self.BINS
     comptime PRED_OUT: Int = Self.ACT + Self.BINS
 
+    # MinMaxNorm at end of rep + on dynamics hidden split. See
+    # MuZeroMLPConfig (configs.mojo:150-183) for the latent-norm rationale.
     comptime RepModel = Sequential[
         LinearMish[Self.OBS, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
         Linear[Self.HIDDEN, Self.LATENT],
+        MinMaxNorm[Self.LATENT],
     ]
     comptime DynModel = Sequential[
         LinearMish[Self.DYN_IN, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, Self.DYN_OUT],
+        Parallel[
+            Sequential[
+                Linear[Self.HIDDEN, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
     ]
     comptime PredModel = Sequential[
         LinearMish[Self.LATENT, Self.HIDDEN],
@@ -485,7 +635,25 @@ struct EfficientZeroConfig[
             Linear[Self.HIDDEN, Self.BINS],
         ],
     ]
-    comptime OptType = Adam[LR=Self.LR]
+    # AdamW with weight_decay=1e-4 — matches muzero-general's
+    # `torch.optim.Adam(weight_decay=1e-4)` (cartpole.py:86, trainer.py:48).
+    # Our `Adam` struct does not support weight_decay (only `AdamW` does);
+    # using bare `Adam` previously meant the agent's `weight_decay` field
+    # was a dead knob and rep weights drifted unbounded under the K-step
+    # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
+    # post-scale hidden state to saturate uniform across obs (state-blind).
+    # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
+    # Adam with PyTorch-style L2-in-gradient weight decay (WEIGHT_DECAY=1e-4
+    # to match muzero-general/games/cartpole.py:86 exactly). Switched from
+    # AdamW (decoupled decay) on 2026-05-05: AdamW's `param *= (1 - LR*W)`
+    # continues shrinking weights at rate LR·W·param indefinitely, which
+    # over-decays small late-training gradients. PyTorch's L2-in-gradient
+    # adds `W·param` to grad before m/v update — when grad → 0 in late
+    # training, v_hat → (W·param)² and the per-step update caps at
+    # LR·sign(param), avoiding the "bleed-to-zero" weight collapse we
+    # observed for MuZero CartPole through the AdamW phase. See
+    # docs/MUZERO_AUDIT.md for the full chain of evidence.
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=1e-4]
 
     comptime batch_size: Int = 128
     comptime buffer_capacity: Int = 100000
@@ -544,17 +712,26 @@ struct MuZeroTicTacToeConfig[
     comptime DYN_OUT: Int = Self.LATENT + Self.BINS
     comptime PRED_OUT: Int = 9 + Self.BINS
 
-    # Networks
+    # Networks. MinMaxNorm at end of rep + on dynamics hidden split — see
+    # MuZeroMLPConfig (configs.mojo:150-183) for the rationale; matches
+    # muzero-general/models.py:147-170 latent normalization.
     comptime RepModel = Sequential[
         LinearMish[27, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
         Linear[Self.HIDDEN, Self.LATENT],
+        MinMaxNorm[Self.LATENT],
     ]
 
     comptime DynModel = Sequential[
         LinearMish[Self.DYN_IN, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, Self.DYN_OUT],
+        Parallel[
+            Sequential[
+                Linear[Self.HIDDEN, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
     ]
 
     comptime PredModel = Sequential[
@@ -565,7 +742,36 @@ struct MuZeroTicTacToeConfig[
         ],
     ]
 
-    comptime OptType = Adam[LR=Self.LR]
+    # AdamW with weight_decay=1e-4 — matches muzero-general's
+    # `torch.optim.Adam(weight_decay=1e-4)` (cartpole.py:86, trainer.py:48).
+    # Our `Adam` struct does not support weight_decay (only `AdamW` does);
+    # using bare `Adam` previously meant the agent's `weight_decay` field
+    # was a dead knob and rep weights drifted unbounded under the K-step
+    # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
+    # post-scale hidden state to saturate uniform across obs (state-blind).
+    # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
+    # Adam with PyTorch-style L2-in-gradient weight decay (WEIGHT_DECAY=1e-4
+    # to match muzero-general/games/cartpole.py:86 exactly). Switched from
+    # AdamW (decoupled decay) on 2026-05-05: AdamW's `param *= (1 - LR*W)`
+    # continues shrinking weights at rate LR·W·param indefinitely, which
+    # over-decays small late-training gradients. PyTorch's L2-in-gradient
+    # adds `W·param` to grad before m/v update — when grad → 0 in late
+    # training, v_hat → (W·param)² and the per-step update caps at
+    # LR·sign(param), avoiding the "bleed-to-zero" weight collapse we
+    # observed for MuZero CartPole through the AdamW phase. See
+    # docs/MUZERO_AUDIT.md for the full chain of evidence.
+    # WEIGHT_DECAY=0 (Phase H17, 2026-05-07). Reference uses 1e-4 with
+    # PyTorch's Adam L2-in-grad, but our batch-then-train pattern leaves
+    # stretches where the true gradient is small; then the L2 term
+    # `WD·param` dominates Adam's m/v and per-step update collapses to
+    # `-LR·sign(param)`, bleeding weights toward zero linearly. The
+    # NVIDIA TTT run (epochs=2) showed pred_norm shrinking 232 → 37 over
+    # iters 39→79 — model still hit perfect play but tipped past iter 85
+    # when MCTS priors became uninformative. Removing decay eliminates
+    # the bleed. The earlier audit comment claiming Adam L2-in-grad
+    # "avoids bleed-to-zero" was incorrect — confirmed by the smooth
+    # `pred_norm` decline in the dashboard.
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=0.0]
 
     # Training
     comptime batch_size: Int = Self.BS
@@ -627,7 +833,8 @@ struct MuZeroConnectFourConfig[
     comptime DYN_OUT: Int = Self.LATENT + Self.BINS
     comptime PRED_OUT: Int = 7 + Self.BINS
 
-    # Representation with ResBlock
+    # Representation with ResBlock + MinMaxNorm. See MuZeroMLPConfig
+    # (configs.mojo:150-183) for the latent-norm rationale.
     comptime RepModel = Sequential[
         LinearMish[126, Self.HIDDEN],
         Residual[Sequential[
@@ -635,16 +842,23 @@ struct MuZeroConnectFourConfig[
             Linear[Self.HIDDEN, Self.HIDDEN],
         ]],
         Linear[Self.HIDDEN, Self.LATENT],
+        MinMaxNorm[Self.LATENT],
     ]
 
-    # Dynamics with ResBlock
+    # Dynamics with ResBlock; MinMaxNorm only on hidden split, reward bins raw.
     comptime DynModel = Sequential[
         LinearMish[Self.DYN_IN, Self.HIDDEN],
         Residual[Sequential[
             LinearMish[Self.HIDDEN, Self.HIDDEN],
             Linear[Self.HIDDEN, Self.HIDDEN],
         ]],
-        Linear[Self.HIDDEN, Self.DYN_OUT],
+        Parallel[
+            Sequential[
+                Linear[Self.HIDDEN, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
     ]
 
     # Prediction with deeper heads

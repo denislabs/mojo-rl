@@ -66,14 +66,21 @@ comptime NUM_ITERATIONS = 6
 
 # Replay buffer and batch
 comptime BATCH_SIZE = 256
-comptime BUFFER_CAPACITY = 100_000
+# Match reference TD-MPC2 (config.yaml:29 buffer_size=1_000_000). With n_envs=32
+# and per-env layout this gives 31250 transitions per env (~31 episodes worth),
+# vs the previous 100k → 3 episodes per env.
+comptime BUFFER_CAPACITY = 1_000_000
 
 # Value range for distributional RL
 comptime V_MIN = -10.0
 comptime V_MAX = 10.0
 
-# Number of parallel GPU environments
-comptime N_ENVS = 32
+# Number of parallel GPU environments — single env to match reference
+# TD-MPC2's data-collection setup. With N_ENVS=32 all envs are
+# temporally synchronized so the buffer doesn't see episode endings
+# until ~1000 env steps in × 32 envs = 32k transitions; single env
+# gives temporal diversity ~32× faster.
+comptime N_ENVS = 1
 
 # Training duration
 comptime NUM_EPISODES = 2_000
@@ -150,7 +157,14 @@ def main() raises:
             reward_coef=0.1,  # Reference default
             value_coef=0.1,
             terminal_coef=1.0,
-            entropy_coef=1e-4,  # Reference default
+            # Bumped from reference default 1e-4 → 5e-4 (2026-05-07).
+            # Diagnostic logging on a 92k-step run showed Q dominating entropy
+            # by 24-49× on the mean direction — entropy regularization was
+            # swamped, policy committed to a shuffle-forward local optimum
+            # (mean_log_std ↘ -1.8, mean_abs_action ↘ 0.59, episode reward
+            # plateaued at +20 to +80 mean). 5e-4 brings Q/ent ratio back to
+            # ~5-10× while still letting Q dominate. See docs/TDMPC2_AUDIT.md.
+            entropy_coef=5e-4,
             temperature=0.5,
             action_scale=1.0,
             warmup_steps=5_000,
@@ -185,7 +199,11 @@ def main() raises:
             "  Per-env buffer: "
             + String(max(BATCH_SIZE + HORIZON + 2, BUFFER_CAPACITY // N_ENVS))
         )
-        print("  Updates per step: " + String(N_ENVS) + " (1:1 UTD ratio)")
+        print(
+            "  Updates per step: "
+            + String(N_ENVS)
+            + " (= N_ENVS, gives UTD=1 per transition matching reference)"
+        )
         print("  Warmup steps: 5000 (random actions before training)")
         print("  World model LR: 3e-4")
         print("  Encoder LR scale: 0.3 (enc_lr = 9e-5)")
@@ -232,6 +250,7 @@ def main() raises:
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,
+                use_mppi=True,
                 updates_per_step=N_ENVS,
             )
 
@@ -264,7 +283,9 @@ def main() raises:
                 "Final average reward (last 100 episodes): "
                 + String(metrics.mean_reward_last_n(100))[byte=:8]
             )
-            print("Best episode reward: " + String(metrics.max_reward())[byte=:8])
+            print(
+                "Best episode reward: " + String(metrics.max_reward())[byte=:8]
+            )
             print()
 
             var final_avg = metrics.mean_reward_last_n(100)

@@ -1,12 +1,14 @@
 """End-to-end CNN training on MNIST — validates Conv2D forward + backward.
 
 Trains a small LeNet-style CNN on real MNIST and checks that test accuracy
-exceeds 95%. If Conv2D forward or backward is broken this test fails:
+exceeds 95%. If Conv2D forward or backward is broken this example fails:
 broken forward → train loss plateaus; broken backward dx → conv1 doesn't
 learn features; broken backward dW → filters don't update.
 
-Uses Trainer.train_gpu_minibatch to iterate the full 60k dataset in
-BATCH-sized slices — dataset is uploaded to GPU once, no per-batch H2D copy.
+Uses `Trainer.train_gpu_minibatch_full` for the full training loop:
+  - `IdentityAugmenter` (default) — no augmentation needed for MNIST.
+  - Per-epoch top-1 + CE-loss on the test set, computed on-device by the
+    Trainer's eval kernels (no host argmax loops).
 
 Architecture (unfused primitive Conv2D, NOT Conv2DReLU):
     Conv2DLayer[1,  16, 5×5, s=2]  28×28 -> 12×12×16
@@ -17,7 +19,8 @@ Architecture (unfused primitive Conv2D, NOT Conv2DReLU):
     Linear[512, 10]
 
 Run:
-    pixi run -e apple mojo run -I . tests/nn/test_conv2d_mnist.mojo
+    pixi run -e apple  mojo run -I . examples/nn/conv2d/conv2d_mnist_training_gpu.mojo
+    pixi run -e nvidia mojo run -I . examples/nn/conv2d/conv2d_mnist_training_gpu.mojo
 """
 
 from std.random import seed
@@ -33,9 +36,9 @@ from mojo_rl.nn.model.linear import Linear
 from mojo_rl.nn.model.sequential import Sequential
 from mojo_rl.nn.loss.cross_entropy import CrossEntropyLoss
 from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.training.trainer import Trainer
+from mojo_rl.nn.training import Trainer
 from mojo_rl.nn.initializer.initializers import Kaiming
-from mojo_rl.nn.datasets.mnist import MNIST
+from mojo_rl.nn.datasets import MNIST
 
 
 comptime BATCH = 64
@@ -102,18 +105,48 @@ def main() raises:
         dtype, Layout.row_major(MNIST.N_TRAIN, MNIST.NUM_CLASSES), MutAnyOrigin
     ](train_tgt_buf)
 
+    # ── Upload test set (images + int32 labels) to GPU once ──
+    var test_img_host = ctx.enqueue_create_host_buffer[dtype](
+        MNIST.N_TEST * MNIST.IMG_SIZE
+    )
+    var test_lbl_host = ctx.enqueue_create_host_buffer[DType.int32](
+        MNIST.N_TEST
+    )
+    for i in range(MNIST.N_TEST * MNIST.IMG_SIZE):
+        test_img_host.unsafe_ptr()[i] = ds.test_images[i]
+    for i in range(MNIST.N_TEST):
+        test_lbl_host.unsafe_ptr()[i] = ds.test_labels[i]
+
+    var test_img_buf = ctx.enqueue_create_buffer[dtype](
+        MNIST.N_TEST * MNIST.IMG_SIZE
+    )
+    var test_lbl_buf = ctx.enqueue_create_buffer[DType.int32](MNIST.N_TEST)
+    ctx.enqueue_copy(test_img_buf, test_img_host)
+    ctx.enqueue_copy(test_lbl_buf, test_lbl_host)
+
+    var test_img_lt = LayoutTensor[
+        dtype, Layout.row_major(MNIST.N_TEST, MNIST.IMG_SIZE), MutAnyOrigin
+    ](test_img_buf)
+    var test_lbl_lt = LayoutTensor[
+        DType.int32, Layout.row_major(MNIST.N_TEST), MutAnyOrigin
+    ](test_lbl_buf)
+
     # ── Train ──
     print("\n── Training ──")
     var t0 = perf_counter_ns()
-    var result = TRAINER.train_gpu_minibatch[BATCH, MNIST.N_TRAIN](
+    var result = TRAINER.train_gpu_minibatch_full[
+        BATCH, MNIST.N_TRAIN, MNIST.N_TEST,
+    ](
         state,
         ctx,
-        train_img_lt,
-        train_tgt_lt,
+        train_img_lt, train_tgt_lt,
+        test_img_lt, test_lbl_lt,
         epochs=EPOCHS,
-        print_every_batches=100,
         shuffle=True,
-        rng_seed=42,
+        rng_seed=UInt64(42),
+        show_progress=True,
+        eval_every_epochs=1,
+        progress_label="MNIST-Conv2D",
     )
     ctx.synchronize()
     var t1 = perf_counter_ns()
@@ -122,76 +155,13 @@ def main() raises:
     )
     print("  final batch loss: " + String(result.final_loss)[byte=:8])
 
-    # ── Evaluate test set ──
-    print("\n── Evaluating ──")
-
-    # Upload test images (labels stay on host for argmax comparison)
-    var test_img_host = ctx.enqueue_create_host_buffer[dtype](
-        MNIST.N_TEST * MNIST.IMG_SIZE
-    )
-    for i in range(MNIST.N_TEST * MNIST.IMG_SIZE):
-        test_img_host.unsafe_ptr()[i] = ds.test_images[i]
-    var test_img_buf = ctx.enqueue_create_buffer[dtype](
-        MNIST.N_TEST * MNIST.IMG_SIZE
-    )
-    ctx.enqueue_copy(test_img_buf, test_img_host)
-    var test_img_lt = LayoutTensor[
-        dtype, Layout.row_major(MNIST.N_TEST, MNIST.IMG_SIZE), MutAnyOrigin
-    ](test_img_buf)
-
-    # Inference buffers for one BATCH at a time
-    comptime num_test_batches = MNIST.N_TEST // BATCH
-    var output_buf = ctx.enqueue_create_buffer[dtype](BATCH * CNN.OUT_DIM)
-    var cache_buf = ctx.enqueue_create_buffer[dtype](BATCH * CNN.CACHE_SIZE)
-    var workspace_buf = ctx.enqueue_create_buffer[dtype](
-        BATCH * CNN.WORKSPACE_SIZE_PER_SAMPLE
-    )
-    var output_host = ctx.enqueue_create_host_buffer[dtype](BATCH * CNN.OUT_DIM)
-
-    var output_lt = LayoutTensor[
-        dtype, Layout.row_major(BATCH, CNN.OUT_DIM), MutAnyOrigin
-    ](output_buf)
-    var cache_lt = LayoutTensor[
-        dtype, Layout.row_major(BATCH, CNN.CACHE_SIZE), MutAnyOrigin
-    ](cache_buf)
-
-    var correct: Int = 0
-    var total: Int = 0
-
-    for batch_idx in range(num_test_batches):
-        var batch_input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, CNN.IN_DIM), MutAnyOrigin
-        ](test_img_buf.unsafe_ptr() + batch_idx * BATCH * CNN.IN_DIM)
-
-        var params_eval = state.params_view()
-        CNN.forward_gpu[BATCH](
-            ctx, output_lt, batch_input, params_eval, state.model_state_view(), cache_lt, workspace_buf
-        )
-        ctx.enqueue_copy(output_host, output_buf)
-        ctx.synchronize()
-
-        for b in range(BATCH):
-            var best_idx = 0
-            var best_val = output_host.unsafe_ptr()[b * 10 + 0]
-            for c in range(1, 10):
-                var v = output_host.unsafe_ptr()[b * 10 + c]
-                if v > best_val:
-                    best_val = v
-                    best_idx = c
-            var true_label = Int(ds.test_labels[batch_idx * BATCH + b])
-            if best_idx == true_label:
-                correct += 1
-            total += 1
-
-    var acc = Float64(correct) / Float64(total)
+    # ── Final report ──
+    var n_evals = len(result.val_top1_history)
+    var acc = result.val_top1_history[n_evals - 1]
+    var test_loss = result.val_loss_history[n_evals - 1]
+    print("\n── Final evaluation (full test set) ──")
     print(
-        "  test accuracy: "
-        + String(correct)
-        + " / "
-        + String(total)
-        + " = "
-        + String(acc * 100.0)[byte=:6]
-        + "%"
+        "  test_loss=" + String(test_loss) + "  top1=" + String(acc * 100.0)[byte=:6] + "%"
     )
 
     print("=" * 65)

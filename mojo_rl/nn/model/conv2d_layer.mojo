@@ -26,21 +26,66 @@ from ..autodiff.fused import (
 )
 
 comptime Conv2DLayer[
-    ic: Int, oc: Int, k: Int, s: Int, p: Int, h: Int, w: Int
-] = AutoFused[Conv2D[ic, oc, k, s, p, h, w]]
+    ic: Int,
+    oc: Int,
+    k: Int,
+    s: Int,
+    p: Int,
+    h: Int,
+    w: Int,
+    USE_MAX_KERNELS: Bool = True,
+] = AutoFused[Conv2D[ic, oc, k, s, p, h, w, USE_MAX_KERNELS]]
 
 comptime Conv2DReLU[
-    ic: Int, oc: Int, k: Int, s: Int, p: Int, h: Int, w: Int
-] = AutoFused[FusedConv2DActivation[ic, oc, k, s, p, h, w, ReLUActivation]]
+    ic: Int,
+    oc: Int,
+    k: Int,
+    s: Int,
+    p: Int,
+    h: Int,
+    w: Int,
+    USE_MAX_KERNELS: Bool = True,
+] = AutoFused[
+    FusedConv2DActivation[ic, oc, k, s, p, h, w, ReLUActivation, USE_MAX_KERNELS]
+]
 
 comptime Conv2DTanh[
-    ic: Int, oc: Int, k: Int, s: Int, p: Int, h: Int, w: Int
-] = AutoFused[FusedConv2DActivation[ic, oc, k, s, p, h, w, TanhActivation]]
+    ic: Int,
+    oc: Int,
+    k: Int,
+    s: Int,
+    p: Int,
+    h: Int,
+    w: Int,
+    USE_MAX_KERNELS: Bool = True,
+] = AutoFused[
+    FusedConv2DActivation[ic, oc, k, s, p, h, w, TanhActivation, USE_MAX_KERNELS]
+]
 
 comptime Conv2DSigmoid[
-    ic: Int, oc: Int, k: Int, s: Int, p: Int, h: Int, w: Int
-] = AutoFused[FusedConv2DActivation[ic, oc, k, s, p, h, w, SigmoidActivation]]
+    ic: Int,
+    oc: Int,
+    k: Int,
+    s: Int,
+    p: Int,
+    h: Int,
+    w: Int,
+    USE_MAX_KERNELS: Bool = True,
+] = AutoFused[
+    FusedConv2DActivation[
+        ic, oc, k, s, p, h, w, SigmoidActivation, USE_MAX_KERNELS
+    ]
+]
 
 comptime Conv2DMish[
-    ic: Int, oc: Int, k: Int, s: Int, p: Int, h: Int, w: Int
-] = AutoFused[FusedConv2DActivation[ic, oc, k, s, p, h, w, MishActivation]]
+    ic: Int,
+    oc: Int,
+    k: Int,
+    s: Int,
+    p: Int,
+    h: Int,
+    w: Int,
+    USE_MAX_KERNELS: Bool = True,
+] = AutoFused[
+    FusedConv2DActivation[ic, oc, k, s, p, h, w, MishActivation, USE_MAX_KERNELS]
+]

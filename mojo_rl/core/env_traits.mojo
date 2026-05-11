@@ -40,7 +40,7 @@ Algorithms specify requirements:
 from .env import Env
 from layout import LayoutTensor, Layout
 from mojo_rl.nn import dtype
-from std.gpu import DeviceContext, DeviceBuffer
+from std.gpu import DeviceContext, DeviceBuffer, block_dim, block_idx, thread_idx
 from std.memory import UnsafePointer
 
 
@@ -347,6 +347,27 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
 
 
 # ============================================================================
+# Termination-aware variant
+# ============================================================================
+
+
+trait TerminationAwareEnv(BoxContinuousActionEnv):
+    """BoxContinuousActionEnv that exposes terminated-vs-truncated.
+
+    `step_continuous_vec` collapses both into a single `done` flag; this
+    trait adds `was_terminated()` so off-policy training can keep the TD
+    bootstrap on time-limit truncation while dropping it on natural
+    termination — required for correct learning on Hopper/Walker/Ant where
+    truncation at 1000 steps is a common outcome of a successful policy.
+    """
+
+    def was_terminated(self) -> Bool:
+        """True iff the previous `step_continuous_vec` ended via natural
+        termination (not time-limit truncation)."""
+        ...
+
+
+# ============================================================================
 # GPU Environment Trait for Composable GPU RL. (Experimental)
 # ============================================================================
 
@@ -486,6 +507,75 @@ trait GPUDiscreteEnv:
         No-op for environments with STEP_WS_SHARED == 0.
         """
         ...
+
+    @staticmethod
+    def extract_obs_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        states: DeviceBuffer[dtype],
+        mut obs: DeviceBuffer[dtype],
+    ) raises:
+        """Extract observations from state buffer for all environments.
+
+        Default: copy `obs[e] = state[e][0:OBS_DIM]` for each env.
+        Most discrete-action envs (CartPole, MountainCar, Acrobot,
+        LunarLander) have observations that are a prefix of the state,
+        so the default works out of the box. Override when the obs
+        derives from state in a non-trivial way.
+
+        Used after `reset_kernel_gpu` / `selective_reset_kernel_gpu` to
+        seed obs (those kernels write state but not obs); also used by
+        AlphaZero's single-player `train_gpu` to fetch the current obs
+        for the MCTS root prediction before choosing an action.
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer [BATCH_SIZE * STATE_SIZE].
+            obs: Observations output [BATCH_SIZE * OBS_DIM].
+        """
+        var states_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH_SIZE * STATE_SIZE),
+            MutAnyOrigin,
+        ](states.unsafe_ptr())
+        var obs_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH_SIZE * OBS_DIM),
+            MutAnyOrigin,
+        ](obs.unsafe_ptr())
+
+        comptime TPB = 256
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @parameter
+        @always_inline
+        def extract_wrapper(
+            s: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH_SIZE * STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            o: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH_SIZE * OBS_DIM),
+                MutAnyOrigin,
+            ],
+        ):
+            var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if e >= BATCH_SIZE:
+                return
+            for d in range(OBS_DIM):
+                o[e * OBS_DIM + d] = s[e * STATE_SIZE + d]
+
+        ctx.enqueue_function[extract_wrapper, extract_wrapper](
+            states_t,
+            obs_t,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
 
 
 trait GPUContinuousEnv:
@@ -755,68 +845,6 @@ struct NoCurriculumScheduler(CurriculumScheduler):
     @staticmethod
     def get_stage_name[DTYPE: DType](progress: Scalar[DTYPE]) -> String:
         return ""
-
-
-# ============================================================================
-# Data Augmentation Trait (Board Symmetries)
-# ============================================================================
-
-
-trait DataAugmentable:
-    """Environments that can generate equivalent training samples via symmetries.
-
-    Board games have natural symmetries (rotations, reflections) that produce
-    equivalent positions. A TicTacToe board has 8 symmetries (4 rotations ×
-    2 reflections), ConnectFour has 2 (horizontal flip), etc.
-
-    The agent uses conforms_to[E, DataAugmentable]() at compile time to
-    check if augmentation is available, then calls augment_obs/augment_policy
-    for each symmetry to generate additional training data for free.
-
-    Environments without symmetries simply don't implement this trait.
-    """
-
-    comptime NUM_SYMMETRIES: Int
-    """Total number of symmetries including identity. E.g., 8 for 3×3 board."""
-
-    @staticmethod
-    def augment_obs[
-        OBS_DIM: Int,
-    ](
-        obs: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-        sym_idx: Int,
-        mut out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    ):
-        """Apply symmetry sym_idx to an observation vector.
-
-        sym_idx=0 is always identity. Higher indices are rotations/reflections.
-
-        Args:
-            obs: Input observation [OBS_DIM].
-            sym_idx: Symmetry index in [0, NUM_SYMMETRIES).
-            out: Output buffer [OBS_DIM] to write permuted observation.
-        """
-        ...
-
-    @staticmethod
-    def augment_policy[
-        ACT: Int,
-    ](
-        policy: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-        sym_idx: Int,
-        mut out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    ):
-        """Apply symmetry sym_idx to a policy vector.
-
-        The action permutation must be consistent with augment_obs:
-        if obs is rotated 90°, the policy actions must be rotated 90° too.
-
-        Args:
-            policy: Input policy [ACT].
-            sym_idx: Symmetry index in [0, NUM_SYMMETRIES).
-            out: Output buffer [ACT] to write permuted policy.
-        """
-        ...
 
 
 # ============================================================================

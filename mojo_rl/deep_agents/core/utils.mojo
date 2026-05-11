@@ -10,6 +10,10 @@ from layout import (
 
 from mojo_rl.nn.constants import dtype
 
+# Progress-bar utilities live in mojo_rl/utils/progress.mojo. Re-exported
+# here so existing call sites importing them from this module keep working.
+from mojo_rl.utils.progress import print_progress_bar, clear_progress_bar
+
 
 def fill_inline[
     N: Int, T: DType
@@ -87,59 +91,6 @@ def concat_obs_action[
         dst[i] = obs[i]
     for i in range(ACT):
         dst[OBS + i] = act[i]
-
-
-def print_progress_bar(
-    current: Int,
-    total: Int,
-    train_steps: Int,
-    algorithm_name: String,
-    bar_width: Int = 30,
-):
-    """Print an in-place progress bar using carriage return (no GPU sync).
-
-    Uses only CPU-side counters (total_steps, num_steps, total_train_steps)
-    so it adds zero overhead to GPU training.
-
-    Args:
-        current: Current step count.
-        total: Target step count.
-        train_steps: Total gradient updates so far.
-        algorithm_name: Algorithm name prefix.
-        bar_width: Width of the bar in characters (default 30).
-    """
-    var pct = current * 100 // total
-    var filled = current * bar_width // total
-    var bar = String("")
-    for i in range(bar_width):
-        if i < filled:
-            bar += "█"
-        else:
-            bar += "░"
-    print(
-        "\r"
-        + algorithm_name
-        + " ["
-        + bar
-        + "] "
-        + String(pct)
-        + "% | Step "
-        + String(current)
-        + "/"
-        + String(total)
-        + " | Train: "
-        + String(train_steps),
-        end="",
-    )
-
-
-def clear_progress_bar():
-    """Overwrite the current progress bar line with spaces and return to start.
-
-    Call this before printing stats to ensure the progress bar is fully erased.
-    """
-    # 120 spaces is enough to cover any progress bar output
-    print("\r" + String(" ") * 120 + "\r", end="")
 
 
 def concat_obs_action_batch[

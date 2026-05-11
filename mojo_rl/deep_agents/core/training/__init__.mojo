@@ -12,8 +12,13 @@ from .offpolicy_train import (
 from .gpu_offpolicy_train import (
     GPUOffPolicyState,
     GPUOffPolicyAgent,
+    GPUEvaluableContinuous,
     run_offpolicy_continuous_train_gpu,
     run_offpolicy_discrete_train_gpu,
+)
+from .gpu_agent_cpu_env_train import (
+    CPUEvaluableContinuous,
+    run_offpolicy_continuous_train_cpu_env_gpu_agent,
 )
 from .onpolicy_train import (
     OnPolicyAgent,
