@@ -278,7 +278,17 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
     def _step_with_torque(
         mut self, torque: Scalar[Self.dtype]
     ) -> Tuple[PendulumState, Scalar[Self.dtype], Bool]:
-        """Internal step function that accepts continuous torque."""
+        """Internal step function that accepts continuous torque.
+
+        Matches Gymnasium Pendulum-v1 reference:
+          - reward computed from PRE-step (θ, θ_dot)
+          - θ_dot clipped to ±max_speed BEFORE being used to update θ
+
+        (Older versions of this file computed reward post-step and
+        clipped θ_dot only after the θ update, which diverged subtly
+        from Gymnasium and made the env materially harder for value-
+        based agents — see EZ-V2 Pendulum convergence notes 2026-05-10.)
+        """
         # Clamp torque
         var u = torque
         if u > self.max_torque:
@@ -288,6 +298,13 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         self.last_torque = u
 
+        # Reward computed from PRE-step state (Gymnasium order).
+        var reward = -(
+            self.theta * self.theta
+            + Scalar[Self.dtype](0.1) * self.theta_dot * self.theta_dot
+            + Scalar[Self.dtype](0.001) * u * u
+        )
+
         # Physics: θ'' = (3g/2L) * sin(θ) + (3/mL²) * u
         var sin_theta = Scalar[Self.dtype](sin(Float64(self.theta)))
         var theta_acc = (Scalar[Self.dtype](3.0) * self.g) / (
@@ -296,27 +313,18 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
             Scalar[Self.dtype](3.0) / (self.m * self.l * self.l)
         ) * u
 
-        # Euler integration
+        # Euler integration — Gymnasium clips θ_dot BEFORE the θ update.
         self.theta_dot = self.theta_dot + theta_acc * self.dt
-        self.theta = self.theta + self.theta_dot * self.dt
-
-        # Clip angular velocity
         if self.theta_dot > self.max_speed:
             self.theta_dot = self.max_speed
         elif self.theta_dot < -self.max_speed:
             self.theta_dot = -self.max_speed
+        self.theta = self.theta + self.theta_dot * self.dt
 
         # Normalize angle to [-π, π]
         self.theta = self._angle_normalize(self.theta)
 
         self.steps += 1
-
-        # Compute reward: -(θ² + 0.1*θ_dot² + 0.001*u²)
-        var reward = -(
-            self.theta * self.theta
-            + Scalar[Self.dtype](0.1) * self.theta_dot * self.theta_dot
-            + Scalar[Self.dtype](0.001) * u * u
-        )
         self.total_reward += reward
 
         # Pendulum never terminates early, only truncates at max_steps
