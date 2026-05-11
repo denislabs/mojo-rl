@@ -99,12 +99,18 @@ def run_ezv2_continuous_train_gpu[
     use_gpu_sampling: Bool = False,
     # PUCT / Q-normalization constants for the GPU MCTS. Defaults match
     # the converging CPU-side `SampledGumbelMCTS` in `continuous_agent.mojo:219`
-    # (`c_scale=1.0` overrides the GPU MCTS signature's `0.1` default,
-    # which gave a 10× weaker Q signal in candidate scoring and was the
-    # root cause of the Pendulum GPU-driver regression observed
-    # 2026-05-12 — see git log).
+    # (`c_scale=1.0` overrides the GPU MCTS signature's `0.1` default).
     mcts_c_visit: Float64 = 50.0,
     mcts_c_scale: Float64 = 1.0,
+    # Hybrid diagnostic: when False, replace the GPU MCTS with the
+    # agent's CPU `SampledGumbelMCTS` (one search per env, sequential).
+    # Useful for isolating GPU-MCTS bugs from env/training-driver bugs
+    # — if a config converges with `use_gpu_mcts=False` but not True,
+    # the issue is in `gpu_mcts_sampled.mojo`. Defaults to True (GPU
+    # MCTS, the production path); pass False only for debugging since
+    # the CPU MCTS is much slower per env-step than the batched GPU
+    # search.
+    use_gpu_mcts: Bool = True,
     verbose: Bool = True,
 ) raises -> EZV2TrainStats:
     """Drive EZ-V2 continuous training fully on GPU (env + MCTS) with a
@@ -381,6 +387,28 @@ def run_ezv2_continuous_train_gpu[
                 sampled_actions_per_env.append(sampled^)
                 improved_policy_per_env.append(improved^)
                 root_value_per_env.append(Float64(0.0))
+        elif not use_gpu_mcts:
+            # ── Hybrid diagnostic path: CPU MCTS per env ──────────────
+            # Uses `agent.select_action()` against the agent's CPU
+            # networks. Those networks lag the on-device weights by up
+            # to `sync_interval` train steps — same staleness as the
+            # converging CPU-stepping baseline driver. The host already
+            # has `obs_per_env[e]` from the previous step's GPU obs
+            # download, so no extra download is needed.
+            for e in range(N_ENVS):
+                var sel = agent.select_action(
+                    obs_per_env[e], training=True
+                )
+                var action = sel[0].copy()
+                var root_value = sel[1]
+                var sampled = sel[2].copy()
+                var improved = sel[3].copy()
+                for d in range(ACT_DIM):
+                    host_action[e * ACT_DIM + d] = action[d]
+                actions_per_env.append(action^)
+                sampled_actions_per_env.append(sampled^)
+                improved_policy_per_env.append(improved^)
+                root_value_per_env.append(root_value)
         else:
             # ── 1. GPU MCTS — batched across all envs ─────────────────
             run_sampled_gumbel_search_gpu[
