@@ -498,7 +498,7 @@ def run_offpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for discrete-action off-policy agents.
 
@@ -597,9 +597,9 @@ def run_offpolicy_discrete_train[
         )
 
         # Logger: per-episode reward
-        if logger:
-            logger[].log_scalar("episode_reward", episode_reward, total_steps)
-            logger[].log_scalar(
+        if Bool(logger):
+            logger.value()[].log_scalar("episode_reward", episode_reward, total_steps)
+            logger.value()[].log_scalar(
                 "explore_rate", agent.get_explore_rate(), total_steps
             )
 
@@ -608,12 +608,12 @@ def run_offpolicy_discrete_train[
                 checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
             )
 
-        if (verbose or (logger and logger[].is_active())) and (
+        if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             episode + 1
         ) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)
-            if logger:
-                logger[].log_scalar("avg_reward", avg_reward, total_steps)
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_reward", avg_reward, total_steps)
 
             if verbose:
                 print(
@@ -627,8 +627,8 @@ def run_offpolicy_discrete_train[
                     + String(total_steps)
                 )
 
-    if logger:
-        logger[].flush()
+    if Bool(logger):
+        logger.value()[].flush()
     return metrics^
 
 
@@ -655,7 +655,7 @@ def run_offpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for OffPolicyDiscreteAgent (DQN family).
 
@@ -755,9 +755,9 @@ def run_offpolicy_discrete_train[
         )
 
         # Logger: per-episode reward
-        if logger:
-            logger[].log_scalar("episode_reward", episode_reward, total_steps)
-            logger[].log_scalar(
+        if Bool(logger):
+            logger.value()[].log_scalar("episode_reward", episode_reward, total_steps)
+            logger.value()[].log_scalar(
                 "explore_rate", agent.get_explore_rate(), total_steps
             )
 
@@ -766,12 +766,12 @@ def run_offpolicy_discrete_train[
                 checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
             )
 
-        if (verbose or (logger and logger[].is_active())) and (
+        if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             episode + 1
         ) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)
-            if logger:
-                logger[].log_scalar("avg_reward", avg_reward, total_steps)
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_reward", avg_reward, total_steps)
 
             if verbose:
                 print(
@@ -785,8 +785,8 @@ def run_offpolicy_discrete_train[
                     + String(total_steps)
                 )
 
-    if logger:
-        logger[].flush()
+    if Bool(logger):
+        logger.value()[].flush()
     return metrics^
 
 
@@ -812,7 +812,7 @@ def run_offpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for continuous-action off-policy agents.
 
@@ -917,9 +917,9 @@ def run_offpolicy_continuous_train[
         )
 
         # Logger: per-episode reward
-        if logger:
-            logger[].log_scalar("episode_reward", episode_reward, total_steps)
-            logger[].log_scalar(
+        if Bool(logger):
+            logger.value()[].log_scalar("episode_reward", episode_reward, total_steps)
+            logger.value()[].log_scalar(
                 "explore_rate", agent.get_explore_rate(), total_steps
             )
 
@@ -928,12 +928,12 @@ def run_offpolicy_continuous_train[
                 checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
             )
 
-        if (verbose or (logger and logger[].is_active())) and (
+        if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             episode + 1
         ) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)
-            if logger:
-                logger[].log_scalar("avg_reward", avg_reward, total_steps)
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_reward", avg_reward, total_steps)
 
             if verbose:
                 print(
@@ -947,8 +947,8 @@ def run_offpolicy_continuous_train[
                     + String(total_steps)
                 )
 
-    if logger:
-        logger[].flush()
+    if Bool(logger):
+        logger.value()[].flush()
     return metrics^
 
 
@@ -975,7 +975,7 @@ def run_offpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for OffPolicyContinuousAgent (DDPG/TD3/SAC).
 
@@ -1082,9 +1082,9 @@ def run_offpolicy_continuous_train[
         )
 
         # Logger: per-episode reward
-        if logger:
-            logger[].log_scalar("episode_reward", episode_reward, total_steps)
-            logger[].log_scalar(
+        if Bool(logger):
+            logger.value()[].log_scalar("episode_reward", episode_reward, total_steps)
+            logger.value()[].log_scalar(
                 "explore_rate", agent.get_explore_rate(), total_steps
             )
 
@@ -1093,12 +1093,12 @@ def run_offpolicy_continuous_train[
                 checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
             )
 
-        if (verbose or (logger and logger[].is_active())) and (
+        if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             episode + 1
         ) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)
-            if logger:
-                logger[].log_scalar("avg_reward", avg_reward, total_steps)
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_reward", avg_reward, total_steps)
 
             if verbose:
                 print(
@@ -1112,6 +1112,6 @@ def run_offpolicy_continuous_train[
                     + String(total_steps)
                 )
 
-    if logger:
-        logger[].flush()
+    if Bool(logger):
+        logger.value()[].flush()
     return metrics^

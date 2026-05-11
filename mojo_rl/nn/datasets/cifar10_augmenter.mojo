@@ -98,7 +98,7 @@ struct CIFAR10CropFlipAugmenter(Augmenter):
         ](raw.ptr)
 
         comptime aug_k = _cifar_augment_kernel[N, ddtype]
-        ctx.enqueue_function[aug_k, aug_k](
+        ctx.enqueue_function[aug_k](
             aug_fixed,
             raw_fixed,
             Scalar[DType.uint64](seed + UInt64(epoch)),

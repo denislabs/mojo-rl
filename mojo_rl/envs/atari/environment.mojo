@@ -188,11 +188,11 @@ trait GameDef:
 struct RomData(Movable):
     """Holds ROM data loaded from a file."""
 
-    var data: UnsafePointer[UInt8, MutAnyOrigin]
+    var data: Optional[UnsafePointer[UInt8, MutAnyOrigin]]
     var size: Int
 
     def __init__(out self):
-        self.data = UnsafePointer[UInt8, MutAnyOrigin]()
+        self.data = None
         self.size = 0
 
     def __init__(out self, *, deinit take: Self):
@@ -212,7 +212,8 @@ def load_rom(path: String) raises -> RomData:
         var content = f.read_bytes()
         result.size = len(content)
         result.data = alloc[UInt8](result.size)
+        var raw = result.data.value()
         for i in range(result.size):
-            result.data[i] = content[i]
+            raw[i] = content[i]
 
     return result^

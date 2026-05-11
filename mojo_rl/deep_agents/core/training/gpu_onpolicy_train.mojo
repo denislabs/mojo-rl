@@ -407,7 +407,7 @@ def run_onpolicy_discrete_train_gpu[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOnPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for discrete-action on-policy agents (PPO).
 
@@ -638,22 +638,20 @@ def run_onpolicy_discrete_train_gpu[
                 dtype, Layout.row_major(n_envs), MutAnyOrigin
             ](completed_mask_buf.unsafe_ptr())
 
-            ctx.enqueue_function[accum_rewards_wrapper, accum_rewards_wrapper](
+            ctx.enqueue_function[accum_rewards_wrapper](
                 episode_rewards_t,
                 rewards_t,
                 grid_dim=(env_blocks,),
                 block_dim=(tpb,),
             )
-            ctx.enqueue_function[incr_steps_wrapper, incr_steps_wrapper](
+            ctx.enqueue_function[incr_steps_wrapper](
                 episode_steps_t,
                 grid_dim=(env_blocks,),
                 block_dim=(tpb,),
             )
 
             # Extract completed episodes
-            ctx.enqueue_function[
-                extract_completed_wrapper, extract_completed_wrapper
-            ](
+            ctx.enqueue_function[extract_completed_wrapper](
                 dones_t,
                 episode_rewards_t,
                 episode_steps_t,
@@ -686,9 +684,7 @@ def run_onpolicy_discrete_train_gpu[
                 timer.mark()
 
             # Reset episode tracking for done environments
-            ctx.enqueue_function[
-                reset_tracking_wrapper, reset_tracking_wrapper
-            ](
+            ctx.enqueue_function[reset_tracking_wrapper](
                 dones_t,
                 episode_rewards_t,
                 episode_steps_t,
@@ -713,9 +709,7 @@ def run_onpolicy_discrete_train_gpu[
             var obs_t_reset = LayoutTensor[
                 dtype, Layout.row_major(n_envs, E.OBS_DIM), MutAnyOrigin
             ](obs_buf.unsafe_ptr())
-            ctx.enqueue_function[
-                extract_obs_after_reset, extract_obs_after_reset
-            ](
+            ctx.enqueue_function[extract_obs_after_reset](
                 states_t_reset,
                 obs_t_reset,
                 grid_dim=(env_blocks,),
@@ -767,7 +761,7 @@ def run_onpolicy_discrete_train_gpu[
             )
             next_progress += progress_interval
 
-        if (verbose or (logger and logger[].is_active())) and (
+        if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             update + 1
         ) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(
@@ -775,12 +769,12 @@ def run_onpolicy_discrete_train_gpu[
             )
 
             # Logger: record metrics
-            if logger:
-                logger[].log_scalar("avg_reward", avg_reward, total_steps)
-                logger[].log_scalar(
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_reward", avg_reward, total_steps)
+                logger.value()[].log_scalar(
                     "episodes", Float64(completed_episodes), total_steps
                 )
-                logger[].log_scalar("update", Float64(update + 1), total_steps)
+                logger.value()[].log_scalar("update", Float64(update + 1), total_steps)
 
             if verbose:
                 clear_progress_bar()
@@ -808,13 +802,13 @@ def run_onpolicy_discrete_train_gpu[
 
     # Final logger flush + print
     var final_avg = metrics.mean_reward_last_n(min(100, completed_episodes))
-    if logger:
-        logger[].log_scalar("avg_reward", final_avg, total_steps)
-        logger[].log_scalar(
+    if Bool(logger):
+        logger.value()[].log_scalar("avg_reward", final_avg, total_steps)
+        logger.value()[].log_scalar(
             "episodes", Float64(completed_episodes), total_steps
         )
-        logger[].log_scalar("update", Float64(num_updates), total_steps)
-        logger[].flush()
+        logger.value()[].log_scalar("update", Float64(num_updates), total_steps)
+        logger.value()[].flush()
 
     if verbose:
         clear_progress_bar()
@@ -861,7 +855,7 @@ def run_onpolicy_continuous_train_gpu[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOnPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for continuous-action on-policy agents (PPO).
 
@@ -1066,20 +1060,18 @@ def run_onpolicy_continuous_train_gpu[
                 dtype, Layout.row_major(n_envs), MutAnyOrigin
             ](completed_mask_buf.unsafe_ptr())
 
-            ctx.enqueue_function[accum_rewards_wrapper, accum_rewards_wrapper](
+            ctx.enqueue_function[accum_rewards_wrapper](
                 episode_rewards_t,
                 rewards_t,
                 grid_dim=(env_blocks,),
                 block_dim=(tpb,),
             )
-            ctx.enqueue_function[incr_steps_wrapper, incr_steps_wrapper](
+            ctx.enqueue_function[incr_steps_wrapper](
                 episode_steps_t,
                 grid_dim=(env_blocks,),
                 block_dim=(tpb,),
             )
-            ctx.enqueue_function[
-                extract_completed_wrapper, extract_completed_wrapper
-            ](
+            ctx.enqueue_function[extract_completed_wrapper](
                 dones_t,
                 episode_rewards_t,
                 episode_steps_t,
@@ -1110,9 +1102,7 @@ def run_onpolicy_continuous_train_gpu[
                 timer.accumulate(4)
                 timer.mark()
 
-            ctx.enqueue_function[
-                reset_tracking_wrapper, reset_tracking_wrapper
-            ](
+            ctx.enqueue_function[reset_tracking_wrapper](
                 dones_t,
                 episode_rewards_t,
                 episode_steps_t,
@@ -1179,7 +1169,7 @@ def run_onpolicy_continuous_train_gpu[
             )
             next_progress += progress_interval
 
-        if (verbose or (logger and logger[].is_active())) and (
+        if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             update + 1
         ) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(
@@ -1187,12 +1177,12 @@ def run_onpolicy_continuous_train_gpu[
             )
 
             # Logger: record metrics
-            if logger:
-                logger[].log_scalar("avg_reward", avg_reward, total_steps)
-                logger[].log_scalar(
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_reward", avg_reward, total_steps)
+                logger.value()[].log_scalar(
                     "episodes", Float64(completed_episodes), total_steps
                 )
-                logger[].log_scalar("update", Float64(update + 1), total_steps)
+                logger.value()[].log_scalar("update", Float64(update + 1), total_steps)
 
             if verbose:
                 var ep_progress = String(completed_episodes) + (
@@ -1221,13 +1211,13 @@ def run_onpolicy_continuous_train_gpu[
 
     # Final logger flush + print
     var final_avg = metrics.mean_reward_last_n(min(100, completed_episodes))
-    if logger:
-        logger[].log_scalar("avg_reward", final_avg, total_steps)
-        logger[].log_scalar(
+    if Bool(logger):
+        logger.value()[].log_scalar("avg_reward", final_avg, total_steps)
+        logger.value()[].log_scalar(
             "episodes", Float64(completed_episodes), total_steps
         )
-        logger[].log_scalar("update", Float64(num_updates), total_steps)
-        logger[].flush()
+        logger.value()[].log_scalar("update", Float64(num_updates), total_steps)
+        logger.value()[].flush()
 
     if verbose:
         var ep_progress = String(completed_episodes) + (

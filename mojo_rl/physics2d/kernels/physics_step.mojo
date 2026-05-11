@@ -322,7 +322,7 @@ struct PhysicsStepKernel:
                 slop,
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             shapes,
             edge_counts,
@@ -613,7 +613,7 @@ struct PhysicsStepKernelParallel:
                 slop,
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             shapes,
             edge_counts,

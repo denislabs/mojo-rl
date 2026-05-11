@@ -512,7 +512,7 @@ struct GPUSequenceReplayBuffer[
                 Self.ACTION_DIM,
             ](po, a, r, d, tm, bo, ba, br, bd, btm, widx)
 
-        ctx.enqueue_function[store_wrapper, store_wrapper](
+        ctx.enqueue_function[store_wrapper](
             prev_obs_t,
             actions_t,
             rewards_t,
@@ -689,7 +689,7 @@ struct GPUSequenceReplayBuffer[
                 seed,
             )
 
-        ctx.enqueue_function[sample_wrapper, sample_wrapper](
+        ctx.enqueue_function[sample_wrapper](
             buf_obs_t,
             buf_actions_t,
             buf_rewards_t,

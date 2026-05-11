@@ -91,7 +91,7 @@ def az_policy_value_grad_kernel[
     ACT: Int,
     PRED_OUT: Int,
     VALUE_SQUASH: Bool,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     grad_out: LayoutTensor[
         dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
@@ -104,7 +104,7 @@ def az_policy_value_grad_kernel[
     ],
     target_value: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     invalid_penalty: Scalar[dtype] = Scalar[dtype](0.0),
-):
+) where dtype.is_floating_point():
     """Compute combined policy CE + value MSE + invalid action penalty gradient.
 
     grad_policy = (softmax(logits) - target_policy) / BATCH
@@ -182,7 +182,7 @@ def az_policy_value_grad_kernel[
 
 @always_inline
 def az_gather_batch_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     OBS: Int,
     ACT: Int,
@@ -204,7 +204,7 @@ def az_gather_batch_kernel[
     replay_value: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
     # Sampled indices
     indices: LayoutTensor[DType.int32, Layout.row_major(BATCH), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Gather AlphaZero training batch from GPU replay buffer by indices.
 
     Each thread gathers one sample (obs, policy, value).
@@ -234,7 +234,7 @@ def az_init_root_gpu_rng_kernel[
     ACT: Int,
     LATENT: Int,
     PRED_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     visit_count: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
@@ -262,7 +262,7 @@ def az_init_root_gpu_rng_kernel[
     max_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     noise_fraction: Scalar[dtype],
     rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Graph-compatible init_root: reads seed from GPU counter tensor."""
     var seed = rebind[Scalar[DType.uint32]](rng_counter[0])
     gpu_mcts_init_root_kernel[N_ENVS, MAX_NODES, ACT, LATENT, PRED_OUT, dtype](
@@ -286,7 +286,7 @@ def az_extract_actions_temp_gpu_rng_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     visit_count: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
@@ -302,7 +302,7 @@ def az_extract_actions_temp_gpu_rng_kernel[
     temp_threshold: Int,
     rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
     temp_min: Scalar[dtype] = Scalar[dtype](0.0),
-):
+) where dtype.is_floating_point():
     """Graph-compatible extract_actions: reads seed from GPU counter tensor."""
     var seed = rebind[Scalar[DType.uint32]](rng_counter[0])
     gpu_mcts_extract_actions_temp_kernel[N_ENVS, MAX_NODES, ACT, dtype](
@@ -613,7 +613,7 @@ struct GenericAlphaZeroAgent[
     var gamma: Float64
 
     # Logger
-    var logger: UnsafePointer[Self.L, MutAnyOrigin]
+    var logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]]
     var diag_every: Int
 
     def __init__(out self, gamma: Float64 = 1.0):
@@ -621,7 +621,7 @@ struct GenericAlphaZeroAgent[
         self.train_step_count = 0
         self.total_steps = 0
         self.gamma = gamma
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         self.diag_every = 0
 
     def __init__(out self, *, deinit take: Self):
@@ -1174,7 +1174,7 @@ struct GenericAlphaZeroAgent[
         comptime run_grad = az_policy_value_grad_kernel[
             BATCH, ACT, Self.PRED_OUT, Self.Config.value_squash, dtype
         ]
-        ctx.enqueue_function[run_grad, run_grad](
+        ctx.enqueue_function[run_grad](
             grad_1d,
             pred_1d,
             pol_1d,
@@ -1211,7 +1211,7 @@ struct GenericAlphaZeroAgent[
             gpu.prediction.clip_grads(ctx, max_val=Scalar[dtype](_MAX_GRAD))
         # Log param delta across optimizer step (every diag_every steps)
         if (
-            self.logger
+            Bool(self.logger)
             and self.train_step_count > 0
             and (
                 self.diag_every <= 0
@@ -1239,12 +1239,12 @@ struct GenericAlphaZeroAgent[
                     var ad = d if d > 0 else -d
                     if ad > delta_max:
                         delta_max = ad
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "param_delta_norm",
                     sqrt(delta_norm) if delta_norm == delta_norm else 0.0,
                     self.train_step_count + 1,
                 )
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "param_delta_max", delta_max, self.train_step_count + 1
                 )
             except:
@@ -1254,7 +1254,7 @@ struct GenericAlphaZeroAgent[
         self.train_step_count += 1
 
         # ── Log training diagnostics ────────────────────────────────
-        if self.logger and (
+        if Bool(self.logger) and (
             self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
@@ -1326,10 +1326,10 @@ struct GenericAlphaZeroAgent[
                 if vm != vm or vm > 1e10 or vm < -1e10:
                     vm = 0.0
 
-                self.logger[].log_scalar("policy_ce", pl, step)
-                self.logger[].log_scalar("policy_entropy", pe, step)
-                self.logger[].log_scalar("value_mse", vl, step)
-                self.logger[].log_scalar("value_mean", vm, step)
+                self.logger.value()[].log_scalar("policy_ce", pl, step)
+                self.logger.value()[].log_scalar("policy_entropy", pe, step)
+                self.logger.value()[].log_scalar("value_mse", vl, step)
+                self.logger.value()[].log_scalar("value_mean", vm, step)
 
                 # MCTS target entropy — are targets sharp or uniform?
                 var target_entropy_sum: Float64 = 0.0
@@ -1346,14 +1346,14 @@ struct GenericAlphaZeroAgent[
                     target_entropy_sum += tent
                     target_max_sum += tmax
                 var target_entropy_mean = target_entropy_sum / n
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "target_entropy", target_entropy_mean, step
                 )
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "target_max_prob", target_max_sum / n, step
                 )
                 # KL gap = CE - entropy(target). Real fit-quality metric.
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "policy_ce_minus_target_entropy",
                     pl - target_entropy_mean,
                     step,
@@ -1377,8 +1377,8 @@ struct GenericAlphaZeroAgent[
                         if ag > go_max:
                             go_max = ag
                 var go_n = sqrt(go_norm) if go_norm == go_norm else 0.0
-                self.logger[].log_scalar("grad_output_norm", go_n, step)
-                self.logger[].log_scalar("grad_output_max", go_max, step)
+                self.logger.value()[].log_scalar("grad_output_norm", go_n, step)
+                self.logger.value()[].log_scalar("grad_output_max", go_max, step)
 
                 # Param gradient norm (after backward)
                 var grad_norm: Float64 = 0.0
@@ -1391,8 +1391,8 @@ struct GenericAlphaZeroAgent[
                         if ag > grad_max:
                             grad_max = ag
                 var gn = sqrt(grad_norm) if grad_norm == grad_norm else 0.0
-                self.logger[].log_scalar("grad_param_norm", gn, step)
-                self.logger[].log_scalar("grad_param_max", grad_max, step)
+                self.logger.value()[].log_scalar("grad_param_norm", gn, step)
+                self.logger.value()[].log_scalar("grad_param_max", grad_max, step)
 
                 # Param norm (are params changing?)
                 var param_norm: Float64 = 0.0
@@ -1401,7 +1401,7 @@ struct GenericAlphaZeroAgent[
                     if p == p:
                         param_norm += p * p
                 var pn = sqrt(param_norm) if param_norm == param_norm else 0.0
-                self.logger[].log_scalar("param_norm", pn, step)
+                self.logger.value()[].log_scalar("param_norm", pn, step)
 
                 # Value target stats (what is the network trying to learn?)
                 var vt_sum: Float64 = 0.0
@@ -1414,8 +1414,8 @@ struct GenericAlphaZeroAgent[
                         vt_pos += 1
                     elif t < -0.5:
                         vt_neg += 1
-                self.logger[].log_scalar("value_target_mean", vt_sum / n, step)
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar("value_target_mean", vt_sum / n, step)
+                self.logger.value()[].log_scalar(
                     "value_target_pos_frac",
                     Float64(vt_pos) / n,
                     step,
@@ -1484,7 +1484,7 @@ struct GenericAlphaZeroAgent[
         var rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu.rng_counter.unsafe_ptr())
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -1498,7 +1498,7 @@ struct GenericAlphaZeroAgent[
             DType.int32, Layout.row_major(1), MutAnyOrigin
         ](gpu.replay_size.unsafe_ptr())
         comptime sample_k = sample_indices_kernel[dtype, BATCH]
-        ctx.enqueue_function[sample_k, sample_k](
+        ctx.enqueue_function[sample_k](
             idx_t,
             buf_sz_t,
             rng_t,
@@ -1526,7 +1526,7 @@ struct GenericAlphaZeroAgent[
             gpu.replay_value.unsafe_ptr()
         )
         comptime gather_k = az_gather_batch_kernel[dtype, BATCH, OBS, ACT, CAP]
-        ctx.enqueue_function[gather_k, gather_k](
+        ctx.enqueue_function[gather_k](
             b_obs_t,
             b_pol_t,
             b_val_t,
@@ -1576,7 +1576,7 @@ struct GenericAlphaZeroAgent[
         comptime run_grad = az_policy_value_grad_kernel[
             BATCH, ACT, Self.PRED_OUT, Self.Config.value_squash, dtype
         ]
-        ctx.enqueue_function[run_grad, run_grad](
+        ctx.enqueue_function[run_grad](
             grad_1d,
             pred_1d,
             pol_1d,
@@ -1628,7 +1628,7 @@ struct GenericAlphaZeroAgent[
         for _ in range(num_steps):
             self.train_step_count += 1
             if (
-                self.logger
+                Bool(self.logger)
                 and self.diag_every > 0
                 and self.train_step_count % self.diag_every == 0
             ):
@@ -1711,10 +1711,10 @@ struct GenericAlphaZeroAgent[
             if vm != vm or vm > 1e10 or vm < -1e10:
                 vm = 0.0
 
-            self.logger[].log_scalar("policy_ce", pl, step)
-            self.logger[].log_scalar("policy_entropy", pe, step)
-            self.logger[].log_scalar("value_mse", vl, step)
-            self.logger[].log_scalar("value_mean", vm, step)
+            self.logger.value()[].log_scalar("policy_ce", pl, step)
+            self.logger.value()[].log_scalar("policy_entropy", pe, step)
+            self.logger.value()[].log_scalar("value_mse", vl, step)
+            self.logger.value()[].log_scalar("value_mean", vm, step)
 
             # MCTS target entropy
             var target_entropy_sum: Float64 = 0.0
@@ -1731,16 +1731,16 @@ struct GenericAlphaZeroAgent[
                 target_entropy_sum += tent
                 target_max_sum += tmax
             var target_entropy_mean = target_entropy_sum / n
-            self.logger[].log_scalar(
+            self.logger.value()[].log_scalar(
                 "target_entropy", target_entropy_mean, step
             )
-            self.logger[].log_scalar(
+            self.logger.value()[].log_scalar(
                 "target_max_prob", target_max_sum / n, step
             )
             # KL divergence to targets — the real fit-quality metric.
             # CE = entropy(target) + KL(target ‖ pred); rising CE is only a
             # bug if this gap rises.
-            self.logger[].log_scalar(
+            self.logger.value()[].log_scalar(
                 "policy_ce_minus_target_entropy",
                 pl - target_entropy_mean,
                 step,
@@ -1763,8 +1763,8 @@ struct GenericAlphaZeroAgent[
                     if ag > go_max:
                         go_max = ag
             var go_n = sqrt(go_norm) if go_norm == go_norm else 0.0
-            self.logger[].log_scalar("grad_output_norm", go_n, step)
-            self.logger[].log_scalar("grad_output_max", go_max, step)
+            self.logger.value()[].log_scalar("grad_output_norm", go_n, step)
+            self.logger.value()[].log_scalar("grad_output_max", go_max, step)
 
             var grad_norm: Float64 = 0.0
             var grad_max: Float64 = 0.0
@@ -1776,8 +1776,8 @@ struct GenericAlphaZeroAgent[
                     if ag > grad_max:
                         grad_max = ag
             var gn = sqrt(grad_norm) if grad_norm == grad_norm else 0.0
-            self.logger[].log_scalar("grad_param_norm", gn, step)
-            self.logger[].log_scalar("grad_param_max", grad_max, step)
+            self.logger.value()[].log_scalar("grad_param_norm", gn, step)
+            self.logger.value()[].log_scalar("grad_param_max", grad_max, step)
 
             var param_norm: Float64 = 0.0
             for i in range(PS):
@@ -1785,7 +1785,7 @@ struct GenericAlphaZeroAgent[
                 if p == p:
                     param_norm += p * p
             var pn = sqrt(param_norm) if param_norm == param_norm else 0.0
-            self.logger[].log_scalar("param_norm", pn, step)
+            self.logger.value()[].log_scalar("param_norm", pn, step)
 
             var vt_sum: Float64 = 0.0
             var vt_pos = 0
@@ -1797,8 +1797,8 @@ struct GenericAlphaZeroAgent[
                     vt_pos += 1
                 elif t < -0.5:
                     vt_neg += 1
-            self.logger[].log_scalar("value_target_mean", vt_sum / n, step)
-            self.logger[].log_scalar(
+            self.logger.value()[].log_scalar("value_target_mean", vt_sum / n, step)
+            self.logger.value()[].log_scalar(
                 "value_target_pos_frac",
                 Float64(vt_pos) / n,
                 step,
@@ -2080,7 +2080,7 @@ struct GenericAlphaZeroAgent[
         comptime run_sel_cp = gpu_mcts_batched_select_and_copy_kernel[
             Self.n_envs, MAX_NODES, ACT, BATCH_SIMS, GS, dtype
         ]
-        ctx.enqueue_function[run_sel_cp, run_sel_cp](
+        ctx.enqueue_function[run_sel_cp](
             vc,
             tv,
             pr,
@@ -2158,7 +2158,7 @@ struct GenericAlphaZeroAgent[
             True,   # VALUE_SQUASH — targets ∈ [-1, +1]
             dtype,
         ]
-        ctx.enqueue_function[run_exp_bk, run_exp_bk](
+        ctx.enqueue_function[run_exp_bk](
             vc,
             tv,
             pr,
@@ -2316,7 +2316,7 @@ struct GenericAlphaZeroAgent[
         comptime run_sel_cp = gpu_mcts_batched_select_and_copy_kernel[
             Self.n_envs, MAX_NODES, ACT, BATCH_SIMS, GS, dtype
         ]
-        ctx.enqueue_function[run_sel_cp, run_sel_cp](
+        ctx.enqueue_function[run_sel_cp](
             vc, tv, pr, ci, tvis, nc, miq, mxq, gs,
             b_pp, b_pa, b_exp_st, b_sp, b_ap, b_pl,
             Scalar[dtype](Self.Config.PUCT.C_BASE),
@@ -2380,7 +2380,7 @@ struct GenericAlphaZeroAgent[
             Self.Config.value_squash,     # VALUE_SQUASH — config-driven
             dtype,
         ]
-        ctx.enqueue_function[run_exp_bk, run_exp_bk](
+        ctx.enqueue_function[run_exp_bk](
             vc, tv, pr, rw, ci, tvis, nc, miq, mxq, gs,
             b_exp_st, b_pp, b_pa, b_po, b_rew, b_dones,
             b_sp, b_ap, b_pl, b_lm,
@@ -2662,7 +2662,7 @@ struct GenericAlphaZeroAgent[
             comptime run_init = gpu_mcts_init_root_kernel[
                 N_ENVS, MAX_NODES, ACT, OBS, MCTS_PRED_OUT, dtype
             ]
-            ctx.enqueue_function[run_init, run_init](
+            ctx.enqueue_function[run_init](
                 vc,
                 tv,
                 pr,
@@ -2683,7 +2683,7 @@ struct GenericAlphaZeroAgent[
             comptime run_mask = gpu_mcts_apply_legal_mask_kernel[
                 N_ENVS, MAX_NODES, ACT, dtype
             ]
-            ctx.enqueue_function[run_mask, run_mask](
+            ctx.enqueue_function[run_mask](
                 pr, lm, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
             )
 
@@ -2691,7 +2691,7 @@ struct GenericAlphaZeroAgent[
             comptime run_rs = gpu_mcts_copy_root_state_kernel[
                 N_ENVS, MAX_NODES, GS, dtype
             ]
-            ctx.enqueue_function[run_rs, run_rs](
+            ctx.enqueue_function[run_rs](
                 gs, es, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
             )
 
@@ -2719,7 +2719,7 @@ struct GenericAlphaZeroAgent[
                 comptime run_sel = gpu_mcts_batched_select_and_copy_kernel[
                     N_ENVS, MAX_NODES, ACT, BATCH_SIMS, GS, dtype
                 ]
-                ctx.enqueue_function[run_sel, run_sel](
+                ctx.enqueue_function[run_sel](
                     vc,
                     tv,
                     pr,
@@ -2792,7 +2792,7 @@ struct GenericAlphaZeroAgent[
                     True,   # VALUE_SQUASH
                     dtype,
                 ]
-                ctx.enqueue_function[run_exp, run_exp](
+                ctx.enqueue_function[run_exp](
                     vc,
                     tv,
                     pr,
@@ -2828,7 +2828,7 @@ struct GenericAlphaZeroAgent[
             comptime run_act = gpu_mcts_extract_actions_masked_kernel[
                 N_ENVS, MAX_NODES, ACT, dtype
             ]
-            ctx.enqueue_function[run_act, run_act](
+            ctx.enqueue_function[run_act](
                 vc,
                 lm,
                 act_out,
@@ -3229,7 +3229,7 @@ struct GenericAlphaZeroAgent[
                     MCTS_PRED_OUT,
                     dtype,
                 ]
-                ctx.enqueue_function[e_run_init, e_run_init](
+                ctx.enqueue_function[e_run_init](
                     e_vc,
                     e_tv,
                     e_pr,
@@ -3248,7 +3248,7 @@ struct GenericAlphaZeroAgent[
                 comptime e_run_mask = gpu_mcts_apply_legal_mask_kernel[
                     N_ENVS, MAX_NODES, ACT, dtype
                 ]
-                ctx.enqueue_function[e_run_mask, e_run_mask](
+                ctx.enqueue_function[e_run_mask](
                     e_pr,
                     e_lm,
                     grid_dim=(ENV_BLOCKS,),
@@ -3257,7 +3257,7 @@ struct GenericAlphaZeroAgent[
                 comptime e_run_rs = gpu_mcts_copy_root_state_kernel[
                     N_ENVS, MAX_NODES, GS, dtype
                 ]
-                ctx.enqueue_function[e_run_rs, e_run_rs](
+                ctx.enqueue_function[e_run_rs](
                     e_gs,
                     e_es,
                     grid_dim=(ENV_BLOCKS,),
@@ -3307,7 +3307,7 @@ struct GenericAlphaZeroAgent[
                         GS,
                         dtype,
                     ]
-                    ctx.enqueue_function[e_run_sel, e_run_sel](
+                    ctx.enqueue_function[e_run_sel](
                         e_vc,
                         e_tv,
                         e_pr,
@@ -3388,7 +3388,7 @@ struct GenericAlphaZeroAgent[
                         True,   # VALUE_SQUASH
                         dtype,
                     ]
-                    ctx.enqueue_function[e_run_exp, e_run_exp](
+                    ctx.enqueue_function[e_run_exp](
                         e_vc,
                         e_tv,
                         e_pr,
@@ -3428,7 +3428,7 @@ struct GenericAlphaZeroAgent[
                 comptime e_run_act = gpu_mcts_extract_actions_masked_kernel[
                     N_ENVS, MAX_NODES, ACT, dtype
                 ]
-                ctx.enqueue_function[e_run_act, e_run_act](
+                ctx.enqueue_function[e_run_act](
                     e_vc,
                     e_lm,
                     e_act,
@@ -3533,9 +3533,7 @@ struct GenericAlphaZeroAgent[
         slow_window_growth: Int = 2,  # Grow window by 1 every N iterations
         checkpoint_every: Int = 0,
         checkpoint_path: String = "alphazero.ckpt",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         diag_every: Int = 50,
         verbose: Bool = True,
         dump_replay: Bool = False,
@@ -3860,7 +3858,7 @@ struct GenericAlphaZeroAgent[
                         DType.uint32, Layout.row_major(1), MutAnyOrigin
                     ](gpu.env_rng_counter.unsafe_ptr())
                     comptime run_incr_init = increment_rng_counter_kernel
-                    ctx.enqueue_function[run_incr_init, run_incr_init](
+                    ctx.enqueue_function[run_incr_init](
                         _init_rng_t,
                         grid_dim=(1,),
                         block_dim=(1,),
@@ -3869,7 +3867,7 @@ struct GenericAlphaZeroAgent[
                     comptime run_init = az_init_root_gpu_rng_kernel[
                         Self.n_envs, MAX_NODES, ACT, OBS, MCTS_PRED_OUT, dtype
                     ]
-                    ctx.enqueue_function[run_init, run_init](
+                    ctx.enqueue_function[run_init](
                         vc,
                         tv,
                         pr,
@@ -3893,7 +3891,7 @@ struct GenericAlphaZeroAgent[
                     comptime run_mask = gpu_mcts_apply_legal_mask_kernel[
                         Self.n_envs, MAX_NODES, ACT, dtype
                     ]
-                    ctx.enqueue_function[run_mask, run_mask](
+                    ctx.enqueue_function[run_mask](
                         pr, lm, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
                     )
 
@@ -3909,7 +3907,7 @@ struct GenericAlphaZeroAgent[
                     comptime run_rs = gpu_mcts_copy_root_state_kernel[
                         Self.n_envs, MAX_NODES, GS, dtype
                     ]
-                    ctx.enqueue_function[run_rs, run_rs](
+                    ctx.enqueue_function[run_rs](
                         gs, es, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
                     )
 
@@ -4060,7 +4058,7 @@ struct GenericAlphaZeroAgent[
                         DType.uint32, Layout.row_major(1), MutAnyOrigin
                     ](gpu.env_rng_counter.unsafe_ptr())
                     comptime run_incr_rng = increment_rng_counter_kernel
-                    ctx.enqueue_function[run_incr_rng, run_incr_rng](
+                    ctx.enqueue_function[run_incr_rng](
                         _act_rng_t,
                         grid_dim=(1,),
                         block_dim=(1,),
@@ -4068,7 +4066,7 @@ struct GenericAlphaZeroAgent[
                     comptime run_act = az_extract_actions_temp_gpu_rng_kernel[
                         Self.n_envs, MAX_NODES, ACT, dtype
                     ]
-                    ctx.enqueue_function[run_act, run_act](
+                    ctx.enqueue_function[run_act](
                         vc,
                         lm,
                         ep_steps_t,
@@ -4091,7 +4089,7 @@ struct GenericAlphaZeroAgent[
                     var wa = LayoutTensor[
                         dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
                     ](actions_buf.unsafe_ptr())
-                    ctx.enqueue_function[run_warmup, run_warmup](
+                    ctx.enqueue_function[run_warmup](
                         wa,
                         Scalar[DType.uint32](UInt32(total_steps)),
                         grid_dim=(ENV_BLOCKS,),
@@ -4137,7 +4135,7 @@ struct GenericAlphaZeroAgent[
                         OBS,
                         ACT,
                     ]
-                    ctx.enqueue_function[run_stage, run_stage](
+                    ctx.enqueue_function[run_stage](
                         _s_obs,
                         _s_pol,
                         _s_st_obs,
@@ -4185,7 +4183,7 @@ struct GenericAlphaZeroAgent[
                         Self.n_envs,
                         Self.Config.max_episode_length,
                     ]
-                    ctx.enqueue_function[run_stage_rew, run_stage_rew](
+                    ctx.enqueue_function[run_stage_rew](
                         _r_buf,
                         _r_st,
                         _r_st_len,
@@ -4209,11 +4207,11 @@ struct GenericAlphaZeroAgent[
                 comptime run_accum = accumulate_rewards_kernel[
                     dtype, Self.n_envs
                 ]
-                ctx.enqueue_function[run_accum, run_accum](
+                ctx.enqueue_function[run_accum](
                     epr_t, rew_t, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
                 )
                 comptime run_incr = increment_steps_kernel[dtype, Self.n_envs]
-                ctx.enqueue_function[run_incr, run_incr](
+                ctx.enqueue_function[run_incr](
                     eps_t, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
                 )
                 var rs_t = LayoutTensor[
@@ -4225,7 +4223,7 @@ struct GenericAlphaZeroAgent[
                 comptime run_log = log_and_reset_completed_kernel[
                     dtype, Self.n_envs
                 ]
-                ctx.enqueue_function[run_log, run_log](
+                ctx.enqueue_function[run_log](
                     don_t,
                     epr_t,
                     eps_t,
@@ -4297,7 +4295,7 @@ struct GenericAlphaZeroAgent[
                         ACT,
                         CAP,
                     ]
-                    ctx.enqueue_function[run_flush, run_flush](
+                    ctx.enqueue_function[run_flush](
                         don_t,
                         term_t,
                         st_obs_t,
@@ -4320,7 +4318,7 @@ struct GenericAlphaZeroAgent[
                         dtype,
                         Self.n_envs,
                     ]
-                    ctx.enqueue_function[run_rst, run_rst](
+                    ctx.enqueue_function[run_rst](
                         don_t,
                         st_len_t,
                         grid_dim=(ENV_BLOCKS,),
@@ -4689,7 +4687,7 @@ struct GenericAlphaZeroAgent[
             print("Arena: accepted", arena_accepts, "/ rejected", arena_rejects)
         if checkpoint_every > 0:
             self.save_checkpoint(checkpoint_path)
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         return metrics
 
     # ══════════════════════════════════════════════════════════════
@@ -4890,7 +4888,7 @@ struct GenericAlphaZeroAgent[
                         DType.uint32, Layout.row_major(1), MutAnyOrigin
                     ](gpu.env_rng_counter.unsafe_ptr())
                     comptime run_incr_init = increment_rng_counter_kernel
-                    ctx.enqueue_function[run_incr_init, run_incr_init](
+                    ctx.enqueue_function[run_incr_init](
                         _init_rng_t,
                         grid_dim=(1,),
                         block_dim=(1,),
@@ -4899,7 +4897,7 @@ struct GenericAlphaZeroAgent[
                     comptime run_init = az_init_root_gpu_rng_kernel[
                         Self.n_envs, MAX_NODES, ACT, OBS, MCTS_PRED_OUT, dtype
                     ]
-                    ctx.enqueue_function[run_init, run_init](
+                    ctx.enqueue_function[run_init](
                         vc,
                         tv,
                         pr,
@@ -4923,7 +4921,7 @@ struct GenericAlphaZeroAgent[
                     comptime run_mask = gpu_mcts_apply_legal_mask_kernel[
                         Self.n_envs, MAX_NODES, ACT, dtype
                     ]
-                    ctx.enqueue_function[run_mask, run_mask](
+                    ctx.enqueue_function[run_mask](
                         pr, lm, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
                     )
 
@@ -4939,7 +4937,7 @@ struct GenericAlphaZeroAgent[
                     comptime run_rs = gpu_mcts_copy_root_state_kernel[
                         Self.n_envs, MAX_NODES, GS, dtype
                     ]
-                    ctx.enqueue_function[run_rs, run_rs](
+                    ctx.enqueue_function[run_rs](
                         gs, es, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
                     )
 
@@ -5009,7 +5007,7 @@ struct GenericAlphaZeroAgent[
                         DType.uint32, Layout.row_major(1), MutAnyOrigin
                     ](gpu.env_rng_counter.unsafe_ptr())
                     comptime run_incr_rng = increment_rng_counter_kernel
-                    ctx.enqueue_function[run_incr_rng, run_incr_rng](
+                    ctx.enqueue_function[run_incr_rng](
                         _act_rng_t,
                         grid_dim=(1,),
                         block_dim=(1,),
@@ -5017,7 +5015,7 @@ struct GenericAlphaZeroAgent[
                     comptime run_act = az_extract_actions_temp_gpu_rng_kernel[
                         Self.n_envs, MAX_NODES, ACT, dtype
                     ]
-                    ctx.enqueue_function[run_act, run_act](
+                    ctx.enqueue_function[run_act](
                         vc,
                         lm,
                         ep_steps_t,
@@ -5037,7 +5035,7 @@ struct GenericAlphaZeroAgent[
                     var wa = LayoutTensor[
                         dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
                     ](actions_buf.unsafe_ptr())
-                    ctx.enqueue_function[run_warmup, run_warmup](
+                    ctx.enqueue_function[run_warmup](
                         wa,
                         Scalar[DType.uint32](UInt32(total_steps)),
                         grid_dim=(ENV_BLOCKS,),
@@ -5082,7 +5080,7 @@ struct GenericAlphaZeroAgent[
                         OBS,
                         ACT,
                     ]
-                    ctx.enqueue_function[run_stage, run_stage](
+                    ctx.enqueue_function[run_stage](
                         _s_obs,
                         _s_pol,
                         _s_st_obs,
@@ -5128,7 +5126,7 @@ struct GenericAlphaZeroAgent[
                         Self.n_envs,
                         Self.Config.max_episode_length,
                     ]
-                    ctx.enqueue_function[run_stage_rew, run_stage_rew](
+                    ctx.enqueue_function[run_stage_rew](
                         _r_buf,
                         _r_st,
                         _r_st_len,
@@ -5152,11 +5150,11 @@ struct GenericAlphaZeroAgent[
                 comptime run_accum = accumulate_rewards_kernel[
                     dtype, Self.n_envs
                 ]
-                ctx.enqueue_function[run_accum, run_accum](
+                ctx.enqueue_function[run_accum](
                     epr_t, rew_t, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
                 )
                 comptime run_incr = increment_steps_kernel[dtype, Self.n_envs]
-                ctx.enqueue_function[run_incr, run_incr](
+                ctx.enqueue_function[run_incr](
                     eps_t, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
                 )
                 var rs_t = LayoutTensor[
@@ -5168,7 +5166,7 @@ struct GenericAlphaZeroAgent[
                 comptime run_log = log_and_reset_completed_kernel[
                     dtype, Self.n_envs
                 ]
-                ctx.enqueue_function[run_log, run_log](
+                ctx.enqueue_function[run_log](
                     don_t,
                     epr_t,
                     eps_t,
@@ -5213,7 +5211,7 @@ struct GenericAlphaZeroAgent[
                 comptime run_extract_v = az_extract_bootstrap_value_kernel[
                     dtype, Self.n_envs, PRED_OUT_DIM, ACT
                 ]
-                ctx.enqueue_function[run_extract_v, run_extract_v](
+                ctx.enqueue_function[run_extract_v](
                     bs_pred_out_flat,
                     bs_v_t,
                     grid_dim=(ENV_BLOCKS,),
@@ -5281,7 +5279,7 @@ struct GenericAlphaZeroAgent[
                         ACT,
                         CAP,
                     ]
-                    ctx.enqueue_function[run_flush, run_flush](
+                    ctx.enqueue_function[run_flush](
                         don_t,
                         term_t,
                         st_obs_t,
@@ -5302,7 +5300,7 @@ struct GenericAlphaZeroAgent[
                     comptime run_rst = az_reset_staging_kernel[
                         dtype, Self.n_envs,
                     ]
-                    ctx.enqueue_function[run_rst, run_rst](
+                    ctx.enqueue_function[run_rst](
                         don_t,
                         st_len_t,
                         grid_dim=(ENV_BLOCKS,),

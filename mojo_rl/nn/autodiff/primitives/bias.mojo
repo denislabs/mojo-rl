@@ -223,7 +223,7 @@ struct BiasAdd[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, bias)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             bias,
@@ -276,7 +276,7 @@ struct BiasAdd[dim: Int](DiffOp):
         ):
             Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output)
 
-        ctx.enqueue_function[dx_wrapper, dx_wrapper](
+        ctx.enqueue_function[dx_wrapper](
             grad_input,
             grad_output_immut,
             grid_dim=(grid_x,),
@@ -294,7 +294,7 @@ struct BiasAdd[dim: Int](DiffOp):
         ):
             Self.backward_db_kernel_impl[BATCH, dtype](db, grad_output)
 
-        ctx.enqueue_function[db_wrapper, db_wrapper](
+        ctx.enqueue_function[db_wrapper](
             db,
             grad_output_immut,
             grid_dim=(Self.dim,),

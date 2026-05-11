@@ -629,7 +629,7 @@ struct BatchNorm2D[
                 output, input, params, state, cache
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             output,
             input_immut,
             params,
@@ -691,7 +691,7 @@ struct BatchNorm2D[
                 output, input, params, state
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             output,
             input_immut,
             params_immut,
@@ -784,7 +784,7 @@ struct BatchNorm2D[
                 grad_input, grad_output, params, cache, grads
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             grad_input,
             grad_output_immut,
             params_immut,
@@ -928,7 +928,7 @@ struct BatchNorm2D[
                 grad_input, grad_output, params, state
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             grad_input,
             grad_output_immut,
             params_immut,

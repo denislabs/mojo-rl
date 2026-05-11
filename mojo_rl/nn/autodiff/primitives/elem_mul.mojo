@@ -223,7 +223,7 @@ struct ElemMul[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, gamma, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             gamma,
@@ -286,7 +286,7 @@ struct ElemMul[dim: Int](DiffOp):
         ):
             Self.backward_dx_kernel_impl[BATCH, dtype](grad_input, grad_output, gamma)
 
-        ctx.enqueue_function[dx_wrapper, dx_wrapper](
+        ctx.enqueue_function[dx_wrapper](
             grad_input,
             grad_output_immut,
             gamma,
@@ -310,7 +310,7 @@ struct ElemMul[dim: Int](DiffOp):
         ):
             Self.backward_dgamma_kernel_impl[BATCH, dtype](dgamma, grad_output, cache)
 
-        ctx.enqueue_function[dgamma_wrapper, dgamma_wrapper](
+        ctx.enqueue_function[dgamma_wrapper](
             dgamma,
             grad_output_immut,
             cache_immut,

@@ -150,7 +150,7 @@ struct RandomOpponent(Evaluator & GPUEvaluator):
         var lm_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
         ](legal_masks.unsafe_ptr())
-        ctx.enqueue_function[run, run](
+        ctx.enqueue_function[run](
             act_t,
             lm_t,
             Scalar[DType.uint32](UInt32(rng_seed)),
@@ -325,13 +325,13 @@ def _gpu_check_winner(board: InlineArray[Int, 9]) -> Int:
 def _gpu_minimax_ttt_kernel[
     N_ENVS: Int,
     STATE_SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     actions_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     game_states: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """GPU minimax for TicTacToe — iterative with explicit stack.
 
     No recursion — uses a fixed-size stack (max depth 9) to avoid
@@ -515,7 +515,7 @@ struct GPUMinimaxTicTacToe(GPUEvaluator):
         var gs_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
         ](game_states.unsafe_ptr())
-        ctx.enqueue_function[run, run](
+        ctx.enqueue_function[run](
             act_t,
             gs_t,
             grid_dim=(ENV_BLOCKS,),
@@ -643,13 +643,13 @@ def _gpu_minimax_c4_kernel[
     N_ENVS: Int,
     STATE_SIZE: Int,
     DEPTH: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     actions_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     game_states: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """GPU ConnectFour minimax kernel. One thread per environment.
 
     Reads board from game_states, runs alpha-beta minimax at DEPTH,
@@ -735,7 +735,7 @@ struct GPUMinimaxConnectFour[DEPTH: Int = 5](GPUEvaluator):
         var gs_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
         ](game_states.unsafe_ptr())
-        ctx.enqueue_function[run, run](
+        ctx.enqueue_function[run](
             act_t,
             gs_t,
             grid_dim=(ENV_BLOCKS,),

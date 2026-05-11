@@ -106,9 +106,9 @@ struct AtariRenderer(Movable):
     """
 
     # SDL handles
-    var window: Ptr[Window, MutAnyOrigin]
-    var sdl_renderer: Ptr[SDLRenderer, MutAnyOrigin]
-    var texture: Ptr[Texture, MutAnyOrigin]
+    var window: Optional[Ptr[Window, MutAnyOrigin]]
+    var sdl_renderer: Optional[Ptr[SDLRenderer, MutAnyOrigin]]
+    var texture: Optional[Ptr[Texture, MutAnyOrigin]]
 
     # Pixel buffer (BGRA, 160×210)
     var pixel_buf: UnsafePointer[UInt8, MutAnyOrigin]
@@ -144,9 +144,9 @@ struct AtariRenderer(Movable):
         height: Int = WINDOW_HEIGHT + HUD_HEIGHT,
         fps: Int = 60,
     ):
-        self.window = Ptr[Window, MutAnyOrigin]()
-        self.sdl_renderer = Ptr[SDLRenderer, MutAnyOrigin]()
-        self.texture = Ptr[Texture, MutAnyOrigin]()
+        self.window = None
+        self.sdl_renderer = None
+        self.texture = None
         self.pixel_buf = alloc[UInt8](FRAME_BUF_SIZE)
 
         self.screen_width = width
@@ -215,11 +215,10 @@ struct AtariRenderer(Movable):
             )
 
             var name = String("")
-            self.sdl_renderer = create_renderer(self.window, name)
+            self.sdl_renderer = create_renderer(self.window.value(), name)
 
             # Create streaming texture at native Atari resolution
-            self.texture = create_texture(
-                self.sdl_renderer,
+            self.texture = create_texture(self.sdl_renderer.value(),
                 PixelFormat.PIXELFORMAT_BGRA8888,
                 TextureAccess.TEXTUREACCESS_STREAMING,
                 c_int(FRAME_WIDTH),
@@ -227,7 +226,7 @@ struct AtariRenderer(Movable):
             )
 
             # Use nearest-neighbor scaling for crisp pixels
-            set_texture_scale_mode(self.texture, ScaleMode.SCALEMODE_NEAREST)
+            set_texture_scale_mode(self.texture.value(), ScaleMode.SCALEMODE_NEAREST)
 
             self.initialized = True
             self.last_frame_time = get_ticks()
@@ -392,13 +391,12 @@ struct AtariRenderer(Movable):
 
         try:
             # Clear screen (black background for HUD area)
-            set_render_draw_color(self.sdl_renderer, 0, 0, 0, 255)
-            render_clear(self.sdl_renderer)
+            set_render_draw_color(self.sdl_renderer.value(), 0, 0, 0, 255)
+            render_clear(self.sdl_renderer.value())
 
             # Upload pixels to texture
-            update_texture(
-                self.texture,
-                Ptr[Rect, ImmutAnyOrigin](),  # NULL = entire texture
+            update_texture(self.texture.value(),
+                Ptr[Rect, ImmutAnyOrigin](_unsafe_null=()),  # NULL = entire texture
                 rebind[Ptr[NoneType, ImmutAnyOrigin]](
                     Ptr[UInt8, ImmutAnyOrigin](self.pixel_buf)
                 ),
@@ -412,10 +410,9 @@ struct AtariRenderer(Movable):
                 c_float(self.screen_width),
                 c_float(self.screen_height - HUD_HEIGHT),
             )
-            render_texture(
-                self.sdl_renderer,
-                self.texture,
-                Ptr[FRect, ImmutAnyOrigin](),  # NULL = full source
+            render_texture(self.sdl_renderer.value(),
+                self.texture.value(),
+                Ptr[FRect, ImmutAnyOrigin](_unsafe_null=()),  # NULL = full source
                 rebind[Ptr[FRect, ImmutAnyOrigin]](Ptr(to=dst)),
             )
         except:
@@ -437,34 +434,30 @@ struct AtariRenderer(Movable):
             var hud_y = c_float(self.screen_height - HUD_HEIGHT + 4)
 
             # Score
-            set_render_draw_color(self.sdl_renderer, 255, 255, 255, 255)
+            set_render_draw_color(self.sdl_renderer.value(), 255, 255, 255, 255)
             var score_text = "Score: " + String(score)
-            render_debug_text(self.sdl_renderer, c_float(8), hud_y, score_text)
+            render_debug_text(self.sdl_renderer.value(), c_float(8), hud_y, score_text)
 
             # Lives
             var lives_text = "Lives: " + String(lives)
-            render_debug_text(
-                self.sdl_renderer, c_float(160), hud_y, lives_text
+            render_debug_text(self.sdl_renderer.value(), c_float(160), hud_y, lives_text
             )
 
             # Frame number
             var frame_text = "Frame: " + String(frame_num)
-            render_debug_text(
-                self.sdl_renderer, c_float(300), hud_y, frame_text
+            render_debug_text(self.sdl_renderer.value(), c_float(300), hud_y, frame_text
             )
 
             # Recording indicator
             if self.recorder.is_recording:
-                set_render_draw_color(self.sdl_renderer, 255, 0, 0, 255)
-                render_debug_text(
-                    self.sdl_renderer, c_float(8), c_float(4), "REC"
+                set_render_draw_color(self.sdl_renderer.value(), 255, 0, 0, 255)
+                render_debug_text(self.sdl_renderer.value(), c_float(8), c_float(4), "REC"
                 )
 
             # Paused indicator
             if self.paused:
-                set_render_draw_color(self.sdl_renderer, 255, 255, 0, 255)
-                render_debug_text(
-                    self.sdl_renderer,
+                set_render_draw_color(self.sdl_renderer.value(), 255, 255, 0, 255)
+                render_debug_text(self.sdl_renderer.value(),
                     c_float(self.screen_width // 2 - 24),
                     c_float(self.screen_height // 2 - 4),
                     "PAUSED",
@@ -479,8 +472,7 @@ struct AtariRenderer(Movable):
         try:
             # Capture frame for recording before present
             if self.recorder.is_recording:
-                var surf = render_read_pixels(
-                    self.sdl_renderer, Ptr[Rect, ImmutAnyOrigin]()
+                var surf = render_read_pixels(self.sdl_renderer.value(), Ptr[Rect, ImmutAnyOrigin](_unsafe_null=())
                 )
                 var pixels = surf[].pixels
                 self.recorder.add_frame_bgra(
@@ -488,7 +480,7 @@ struct AtariRenderer(Movable):
                 )
                 destroy_surface(surf)
 
-            render_present(self.sdl_renderer)
+            render_present(self.sdl_renderer.value())
         except:
             pass
 
@@ -511,12 +503,12 @@ struct AtariRenderer(Movable):
             pass
 
         try:
-            if self.texture:
-                destroy_texture(self.texture)
-            if self.sdl_renderer:
-                destroy_renderer(self.sdl_renderer)
-            if self.window:
-                destroy_window(self.window)
+            if Bool(self.texture):
+                destroy_texture(self.texture.value())
+            if Bool(self.sdl_renderer):
+                destroy_renderer(self.sdl_renderer.value())
+            if Bool(self.window):
+                destroy_window(self.window.value())
             sdl_quit()
         except:
             pass

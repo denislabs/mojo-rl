@@ -463,7 +463,7 @@ struct Muon[
                 PARAM_SIZE, REDUCE_BLOCK, dtype
             ](grads, state, inv_norm_out, beta, eps)
 
-        ctx.enqueue_function[reduce_wrapper, reduce_wrapper](
+        ctx.enqueue_function[reduce_wrapper](
             grads,
             state,
             inv_norm_view,
@@ -510,7 +510,7 @@ struct Muon[
 
         comptime grid_size = (PARAM_SIZE + TPB - 1) // TPB
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             params,
             grads,
             state,

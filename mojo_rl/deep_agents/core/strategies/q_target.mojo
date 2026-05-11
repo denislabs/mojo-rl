@@ -123,7 +123,7 @@ struct StandardQTarget(QTarget):
         ):
             dqn_td_target_kernel[dtype, BATCH, ACTIONS](tgt, nq, rew, don, g)
 
-        ctx.enqueue_function[td_wrapper, td_wrapper](
+        ctx.enqueue_function[td_wrapper](
             targets,
             target_next_q,
             rewards,
@@ -214,7 +214,7 @@ struct DoubleQTarget(QTarget):
                 tgt, onq, tnq, rew, don, g
             )
 
-        ctx.enqueue_function[double_td_wrapper, double_td_wrapper](
+        ctx.enqueue_function[double_td_wrapper](
             targets,
             online_next_q,
             target_next_q,

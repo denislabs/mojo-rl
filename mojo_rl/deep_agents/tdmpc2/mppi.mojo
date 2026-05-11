@@ -695,7 +695,7 @@ def plan_gpu[
         )
 
         # 1. Broadcast z0 to all samples
-        ctx.enqueue_function[broadcast_z0, broadcast_z0](
+        ctx.enqueue_function[broadcast_z0](
             z0_tensor,
             z_tensor,
             grid_dim=(MPPI_BLOCKS,),
@@ -703,7 +703,7 @@ def plan_gpu[
         )
 
         # 2. Zero returns
-        ctx.enqueue_function[zero_returns, zero_returns](
+        ctx.enqueue_function[zero_returns](
             returns_tensor,
             grid_dim=(RETURNS_BLOCKS,),
             block_dim=(TPB,),
@@ -727,7 +727,7 @@ def plan_gpu[
             )
 
             # 3b. Sample actions (policy + MPPI distribution)
-            ctx.enqueue_function[sample_actions, sample_actions](
+            ctx.enqueue_function[sample_actions](
                 pi_out_tensor,
                 mean_tensor,
                 std_tensor,
@@ -740,7 +740,7 @@ def plan_gpu[
             )
 
             # 3c. Build za = [z, action]
-            ctx.enqueue_function[build_za, build_za](
+            ctx.enqueue_function[build_za](
                 z_tensor,
                 act_step_tensor,
                 za_tensor,
@@ -759,7 +759,7 @@ def plan_gpu[
             )
 
             # 3e. Accumulate discounted reward
-            ctx.enqueue_function[accum_reward, accum_reward](
+            ctx.enqueue_function[accum_reward](
                 rew_logits_tensor,
                 bins_tensor,
                 returns_tensor,
@@ -780,7 +780,7 @@ def plan_gpu[
             )
 
             # 3g. Copy z_next → z for next step
-            ctx.enqueue_function[copy_z, copy_z](
+            ctx.enqueue_function[copy_z](
                 z_tensor,
                 z_next_tensor,
                 grid_dim=(MPPI_BLOCKS,),
@@ -798,7 +798,7 @@ def plan_gpu[
         )
 
         # Fused tanh(policy_mean) + build za
-        ctx.enqueue_function[tanh_build_za, tanh_build_za](
+        ctx.enqueue_function[tanh_build_za](
             pi_out_tensor,
             act_step_tensor,  # reused as terminal actions
             z_tensor,
@@ -819,7 +819,7 @@ def plan_gpu[
             q_state,
             mb.q_ws_buf,
         )
-        ctx.enqueue_function[q_decode, q_decode](
+        ctx.enqueue_function[q_decode](
             q_logits_tensor,
             bins_tensor,
             q_min_tensor,
@@ -840,7 +840,7 @@ def plan_gpu[
                 q_state,
                 mb.q_ws_buf,
             )
-            ctx.enqueue_function[decode_min, decode_min](
+            ctx.enqueue_function[decode_min](
                 q_logits_tensor,
                 bins_tensor,
                 q_min_tensor,
@@ -849,7 +849,7 @@ def plan_gpu[
             )
 
         # 4b. Add terminal value to returns
-        ctx.enqueue_function[add_terminal, add_terminal](
+        ctx.enqueue_function[add_terminal](
             q_min_tensor,
             returns_tensor,
             discount,
@@ -1184,7 +1184,7 @@ def plan_gpu_batched[
         )
 
         # 1. Fused: broadcast per-env z0 + zero returns (1 kernel, was 2)
-        ctx.enqueue_function[broadcast_z0_zero, broadcast_z0_zero](
+        ctx.enqueue_function[broadcast_z0_zero](
             z0_tensor,
             z_tensor,
             returns_tensor,
@@ -1208,7 +1208,7 @@ def plan_gpu_batched[
             )
 
             # 3b. Fused: sample actions + build za (1 kernel, was 2)
-            ctx.enqueue_function[sample_build_za, sample_build_za](
+            ctx.enqueue_function[sample_build_za](
                 pi_out_tensor,
                 mean_tensor,
                 std_tensor,
@@ -1239,7 +1239,7 @@ def plan_gpu_batched[
                 mb.dyn_ws_buf,
             )
             # Fused: accum reward + copy z
-            ctx.enqueue_function[accum_copy, accum_copy](
+            ctx.enqueue_function[accum_copy](
                 rew_logits_tensor,
                 bins_tensor,
                 returns_tensor,
@@ -1260,7 +1260,7 @@ def plan_gpu_batched[
             pol_state,
             mb.pol_ws_buf,
         )
-        ctx.enqueue_function[tanh_build_za, tanh_build_za](
+        ctx.enqueue_function[tanh_build_za](
             pi_out_tensor,
             act_step_tensor,
             z_tensor,
@@ -1305,7 +1305,7 @@ def plan_gpu_batched[
             q_state,
             mb.q_ws_buf,
         )
-        ctx.enqueue_function[decode_scaled, decode_scaled](
+        ctx.enqueue_function[decode_scaled](
             q_logits_tensor,
             bins_tensor,
             q_min_tensor,  # repurposed as q_avg accumulator
@@ -1326,7 +1326,7 @@ def plan_gpu_batched[
             q_state,
             mb.q_ws_buf,
         )
-        ctx.enqueue_function[decode_add_scaled, decode_add_scaled](
+        ctx.enqueue_function[decode_add_scaled](
             q_logits_tensor,
             bins_tensor,
             q_min_tensor,
@@ -1339,7 +1339,7 @@ def plan_gpu_batched[
         comptime add_terminal = mppi_add_terminal_value_kernel[
             dtype, BATCH_TOTAL
         ]
-        ctx.enqueue_function[add_terminal, add_terminal](
+        ctx.enqueue_function[add_terminal](
             q_min_tensor,
             returns_tensor,
             discount,
@@ -1348,14 +1348,14 @@ def plan_gpu_batched[
         )
 
         # 5. Softmax weights + 6. Weighted mean/std
-        ctx.enqueue_function[softmax_weights, softmax_weights](
+        ctx.enqueue_function[softmax_weights](
             returns_tensor,
             weights_tensor,
             temp_scalar,
             grid_dim=(N_ENVS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[weighted_mean_std, weighted_mean_std](
+        ctx.enqueue_function[weighted_mean_std](
             weights_tensor,
             all_actions_tensor,
             mean_tensor,
@@ -1376,7 +1376,7 @@ def plan_gpu_batched[
     ]
     var act_select_seed = rng_base_seed + UInt32(0x5E1EC7ED)
     var det_flag: UInt32 = 1 if deterministic else 0
-    ctx.enqueue_function[select_action, select_action](
+    ctx.enqueue_function[select_action](
         weights_tensor,
         all_actions_tensor,
         std_tensor,

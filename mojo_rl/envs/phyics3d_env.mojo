@@ -165,7 +165,7 @@ struct Phyics3dEnv[
     var prev_x: Scalar[Self.DTYPE]
 
     # Renderer (optional)
-    var _renderer: UnsafePointer[ModelRenderer[Self.MODEL_DEF], MutAnyOrigin]
+    var _renderer: Optional[UnsafePointer[ModelRenderer[Self.MODEL_DEF], MutAnyOrigin]]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -207,9 +207,7 @@ struct Phyics3dEnv[
         ]()
 
         # Renderer not initialized
-        self._renderer = UnsafePointer[
-            ModelRenderer[Self.MODEL_DEF], MutAnyOrigin
-        ]()
+        self._renderer = None
         self._renderer_initialized = False
 
         # Delegate full setup to config
@@ -465,12 +463,8 @@ struct Phyics3dEnv[
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[gpu_dtype]] = [],
-        workspace_ptr: UnsafePointer[
-            Scalar[gpu_dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         """Batched GPU step function using physics engine."""
         comptime MODEL_SIZE = model_size_with_invweight[
@@ -491,16 +485,16 @@ struct Phyics3dEnv[
         var model_buf: DeviceBuffer[gpu_dtype]
         var workspace_buf: DeviceBuffer[gpu_dtype]
 
-        if workspace_ptr:
+        if Bool(workspace_ptr):
             model_buf = DeviceBuffer[gpu_dtype](
                 ctx,
-                workspace_ptr,
+                workspace_ptr.value(),
                 MODEL_SIZE,
                 owning=False,
             )
             workspace_buf = DeviceBuffer[gpu_dtype](
                 ctx,
-                workspace_ptr + MODEL_SIZE,
+                workspace_ptr.value() + MODEL_SIZE,
                 BATCH_SIZE * WS_SIZE,
                 owning=False,
             )
@@ -646,7 +640,7 @@ struct Phyics3dEnv[
                 BATCH_SIZE,
             ](i, states, model)
 
-        ctx.enqueue_function[reset_with_fk_wrapper, reset_with_fk_wrapper](
+        ctx.enqueue_function[reset_with_fk_wrapper](
             states,
             model,
             Int(rng_seed),
@@ -663,12 +657,8 @@ struct Phyics3dEnv[
         mut states_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
-        workspace_ptr: UnsafePointer[
-            Scalar[gpu_dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         """Reset only done environments on GPU."""
         var states = LayoutTensor[
@@ -695,10 +685,10 @@ struct Phyics3dEnv[
         # Reuse model from pre-allocated workspace if available,
         # otherwise allocate (backward compatible)
         var model_buf: DeviceBuffer[gpu_dtype]
-        if workspace_ptr:
+        if Bool(workspace_ptr):
             model_buf = DeviceBuffer[gpu_dtype](
                 ctx,
-                workspace_ptr,
+                workspace_ptr.value(),
                 MODEL_SIZE,
                 owning=False,
             )
@@ -710,10 +700,10 @@ struct Phyics3dEnv[
             gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
         ](model_buf.unsafe_ptr())
 
-        if rng_counter_ptr:
+        if Bool(rng_counter_ptr):
             var counter_t = LayoutTensor[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
-            ](rng_counter_ptr)
+            ](rng_counter_ptr.value())
 
             @parameter
             @always_inline
@@ -753,10 +743,7 @@ struct Phyics3dEnv[
                     ](i, states, model)
                     dones[i] = Scalar[gpu_dtype](0.0)
 
-            ctx.enqueue_function[
-                selective_reset_with_fk_counter_wrapper,
-                selective_reset_with_fk_counter_wrapper,
-            ](
+            ctx.enqueue_function[selective_reset_with_fk_counter_wrapper](
                 states,
                 dones,
                 model,
@@ -802,10 +789,7 @@ struct Phyics3dEnv[
                     ](i, states, model)
                     dones[i] = Scalar[gpu_dtype](0.0)
 
-            ctx.enqueue_function[
-                selective_reset_with_fk_wrapper,
-                selective_reset_with_fk_wrapper,
-            ](
+            ctx.enqueue_function[selective_reset_with_fk_wrapper](
                 states,
                 dones,
                 model,
@@ -875,7 +859,7 @@ struct Phyics3dEnv[
                     gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, OBS_DIM_VAL
                 ](states, obs, env)
 
-        ctx.enqueue_function[custom_obs_kernel, custom_obs_kernel](
+        ctx.enqueue_function[custom_obs_kernel](
             states,
             obs,
             grid_dim=(BLOCKS,),
@@ -925,7 +909,7 @@ struct Phyics3dEnv[
         var dones_t = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ](dones_buf.unsafe_ptr())
-        ctx.enqueue_function[term_obs_wrapper, term_obs_wrapper](
+        ctx.enqueue_function[term_obs_wrapper](
             obs_t, dones_t,
             grid_dim=(BLOCKS,), block_dim=(TPB_VAL,),
         )
@@ -1008,7 +992,7 @@ struct Phyics3dEnv[
             model[0, CURR_OFF + 0] = v0
             model[0, CURR_OFF + 1] = v1
 
-        ctx.enqueue_function[write_curriculum_kernel, write_curriculum_kernel](
+        ctx.enqueue_function[write_curriculum_kernel](
             model,
             v0,
             v1,
@@ -1050,7 +1034,7 @@ struct Phyics3dEnv[
                 states, env, META_OFF
             )
 
-        ctx.enqueue_function[pre_step_kernel, pre_step_kernel](
+        ctx.enqueue_function[pre_step_kernel](
             states,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
@@ -1230,7 +1214,7 @@ struct Phyics3dEnv[
                 1.0
             ) if is_terminated else Scalar[gpu_dtype](0.0)
 
-        ctx.enqueue_function[extract_kernel, extract_kernel](
+        ctx.enqueue_function[extract_kernel](
             states,
             model,
             actions,
@@ -1308,7 +1292,7 @@ struct Phyics3dEnv[
         )
         renderer.init()
 
-        self._renderer.init_pointee_move(renderer^)
+        self._renderer.value().init_pointee_move(renderer^)
         self._renderer_initialized = True
         return True
 
@@ -1316,7 +1300,7 @@ struct Phyics3dEnv[
         if not self._renderer_initialized:
             return
 
-        if not self._renderer[].is_open():
+        if not self._renderer.value()[].is_open():
             return
 
         # Copy via accessor methods to bypass Mojo type-expression identity bug
@@ -1330,7 +1314,7 @@ struct Phyics3dEnv[
             xpos[i] = self.get_xpos(i)
         for i in range(Self.MODEL_DEF.NBODY * 4):
             xquat[i] = self.get_xquat(i)
-        self._renderer[].render_from_body_state(
+        self._renderer.value()[].render_from_body_state(
             xpos,
             xquat,
             Self.MODEL_DEF.NBODY,
@@ -1341,31 +1325,31 @@ struct Phyics3dEnv[
         if not self._renderer_initialized:
             return
 
-        self._renderer[].close()
-        self._renderer.free()
+        self._renderer.value()[].close()
+        self._renderer.value().free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
         if not self._renderer_initialized:
             return False
-        return self._renderer[].is_open()
+        return self._renderer.value()[].is_open()
 
     def check_renderer_quit(mut self) -> Bool:
         if not self._renderer_initialized:
             return False
-        return self._renderer[].check_quit()
+        return self._renderer.value()[].check_quit()
 
     def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:
             return
-        self._renderer[].delay(ms)
+        self._renderer.value()[].delay(ms)
 
     def renderer_is_paused(self) -> Bool:
         if not self._renderer_initialized:
             return False
-        return self._renderer[].renderer.is_paused
+        return self._renderer.value()[].renderer.is_paused
 
     def renderer_step_once(self) -> Bool:
         if not self._renderer_initialized:
             return False
-        return self._renderer[].renderer.step_once
+        return self._renderer.value()[].renderer.step_once

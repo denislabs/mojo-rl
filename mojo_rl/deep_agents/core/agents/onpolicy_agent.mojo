@@ -491,7 +491,7 @@ struct PPOGPUStateGeneric[
             dtype, N_ENVS, Self.OBS
         ]
         comptime OBS_BLOCKS = (Self.OBS + TPB - 1) // TPB
-        ctx.enqueue_function[obs_store_wrapper, obs_store_wrapper](
+        ctx.enqueue_function[obs_store_wrapper](
             r_obs,
             obs_t,
             grid_dim=(OBS_BLOCKS, N_ENVS),
@@ -518,7 +518,7 @@ struct PPOGPUStateGeneric[
             r_lp[i] = lp[i]
             r_v[i] = v[i]
 
-        ctx.enqueue_function[store_scalars_wrapper, store_scalars_wrapper](
+        ctx.enqueue_function[store_scalars_wrapper](
             r_actions,
             r_log_probs,
             r_values,
@@ -553,7 +553,7 @@ struct PPOGPUStateGeneric[
 
         comptime store_wrapper = _store_post_step_kernel[dtype, N_ENVS]
         comptime blocks = (N_ENVS + TPB - 1) // TPB
-        ctx.enqueue_function[store_wrapper, store_wrapper](
+        ctx.enqueue_function[store_wrapper](
             r_rewards,
             r_dones,
             rewards_t,
@@ -574,7 +574,7 @@ struct PPOGPUStateGeneric[
 
 
 def _generic_sample_actions_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     N_ENVS: Int,
     NUM_ACTIONS: Int,
 ](
@@ -584,7 +584,7 @@ def _generic_sample_actions_kernel[
     actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     seed: Scalar[DType.uint32],
-):
+) where dtype.is_floating_point():
     """Sample actions from categorical distribution and compute log probs."""
     from std.random.philox import Random as PhiloxRandom
     from std.gpu import block_dim, block_idx, thread_idx
@@ -1535,7 +1535,7 @@ struct GenericOnPolicyAgent[
         comptime sample_wrapper = _generic_sample_actions_kernel[
             dtype, N_ENVS, Self.ACTIONS
         ]
-        ctx.enqueue_function[sample_wrapper, sample_wrapper](
+        ctx.enqueue_function[sample_wrapper](
             logits_t,
             actions_t,
             log_probs_t,
@@ -1809,7 +1809,7 @@ struct GenericOnPolicyAgent[
                     dtype, MINIBATCH, Self.OBS, ROLLOUT_TOTAL
                 ]
                 comptime GATHER_OBS_BLOCKS = (Self.OBS + TPB - 1) // TPB
-                ctx.enqueue_function[gather_obs_wrapper, gather_obs_wrapper](
+                ctx.enqueue_function[gather_obs_wrapper](
                     mb_obs_t,
                     rollout_obs_t,
                     mb_indices_t,
@@ -1869,10 +1869,7 @@ struct GenericOnPolicyAgent[
                     mb_olp[i] = r_lp[src]
                     mb_ov[i] = r_v[src]
 
-                ctx.enqueue_function[
-                    gather_scalars_mb_wrapper,
-                    gather_scalars_mb_wrapper,
-                ](
+                ctx.enqueue_function[gather_scalars_mb_wrapper](
                     mb_actions_t,
                     mb_advantages_t,
                     mb_returns_t,
@@ -1912,10 +1909,7 @@ struct GenericOnPolicyAgent[
                             adv_var / Scalar[dtype](MINIBATCH)
                             + Scalar[dtype](1e-8)
                         )
-                        ctx.enqueue_function[
-                            normalize_advantages_wrapper,
-                            normalize_advantages_wrapper,
-                        ](
+                        ctx.enqueue_function[normalize_advantages_wrapper](
                             mb_advantages_t,
                             adv_mean,
                             adv_std,
@@ -2059,10 +2053,7 @@ struct GenericOnPolicyAgent[
                         ImmutAnyOrigin,
                     ](mb_advantages_t.ptr)
 
-                    ctx.enqueue_function[
-                        pack_discrete_loss_input_k,
-                        pack_discrete_loss_input_k,
-                    ](
+                    ctx.enqueue_function[pack_discrete_loss_input_k](
                         loss_input_t,
                         actor_logits_immut,
                         mb_actions_immut,
@@ -2129,9 +2120,7 @@ struct GenericOnPolicyAgent[
                             MINIBATCH
                         )
 
-                    ctx.enqueue_function[
-                        seed_discrete_grad_k, seed_discrete_grad_k
-                    ](
+                    ctx.enqueue_function[seed_discrete_grad_k](
                         loss_grad_output_t,
                         grid_dim=(MINIBATCH_BLOCKS,),
                         block_dim=(TPB,),
@@ -2289,10 +2278,7 @@ struct GenericOnPolicyAgent[
                         else:
                             clip_out[b] = Scalar[dtype](0.0)
 
-                    ctx.enqueue_function[
-                        extract_entropy_diag_k,
-                        extract_entropy_diag_k,
-                    ](
+                    ctx.enqueue_function[extract_entropy_diag_k](
                         actor_grad_output_t,
                         loss_gi_immut,
                         actor_logits_immut,
@@ -2356,26 +2342,20 @@ struct GenericOnPolicyAgent[
                 )
 
                 if self.max_grad_norm > 0.0:
-                    ctx.enqueue_function[
-                        actor_grad_norm_wrapper, actor_grad_norm_wrapper
-                    ](
+                    ctx.enqueue_function[actor_grad_norm_wrapper](
                         actor_grad_partial_sums_t,
                         actor_grads_t,
                         grid_dim=(ACTOR_GRAD_BLOCKS,),
                         block_dim=(TPB,),
                     )
-                    ctx.enqueue_function[
-                        actor_reduce_scale_wrapper, actor_reduce_scale_wrapper
-                    ](
+                    ctx.enqueue_function[actor_reduce_scale_wrapper](
                         actor_scale_t,
                         actor_grad_partial_sums_t,
                         Scalar[dtype](self.max_grad_norm),
                         grid_dim=(1,),
                         block_dim=(TPB,),
                     )
-                    ctx.enqueue_function[
-                        actor_apply_scale_wrapper, actor_apply_scale_wrapper
-                    ](
+                    ctx.enqueue_function[actor_apply_scale_wrapper](
                         actor_grads_t,
                         actor_scale_t,
                         grid_dim=(ACTOR_GRAD_BLOCKS,),
@@ -2405,10 +2385,7 @@ struct GenericOnPolicyAgent[
                 ctx.synchronize()
 
                 if self.clip_value:
-                    ctx.enqueue_function[
-                        critic_grad_clipped_wrapper,
-                        critic_grad_clipped_wrapper,
-                    ](
+                    ctx.enqueue_function[critic_grad_clipped_wrapper](
                         critic_grad_output_t,
                         critic_values_t,
                         mb_returns_t,
@@ -2420,9 +2397,7 @@ struct GenericOnPolicyAgent[
                         block_dim=(TPB,),
                     )
                 else:
-                    ctx.enqueue_function[
-                        critic_grad_wrapper, critic_grad_wrapper
-                    ](
+                    ctx.enqueue_function[critic_grad_wrapper](
                         critic_grad_output_t,
                         critic_values_t,
                         mb_returns_t,
@@ -2445,27 +2420,20 @@ struct GenericOnPolicyAgent[
                 )
 
                 if self.max_grad_norm > 0.0:
-                    ctx.enqueue_function[
-                        critic_grad_norm_wrapper, critic_grad_norm_wrapper
-                    ](
+                    ctx.enqueue_function[critic_grad_norm_wrapper](
                         critic_grad_partial_sums_t,
                         critic_grads_t,
                         grid_dim=(CRITIC_GRAD_BLOCKS,),
                         block_dim=(TPB,),
                     )
-                    ctx.enqueue_function[
-                        critic_reduce_scale_wrapper,
-                        critic_reduce_scale_wrapper,
-                    ](
+                    ctx.enqueue_function[critic_reduce_scale_wrapper](
                         critic_scale_t,
                         critic_grad_partial_sums_t,
                         Scalar[dtype](self.max_grad_norm),
                         grid_dim=(1,),
                         block_dim=(TPB,),
                     )
-                    ctx.enqueue_function[
-                        critic_apply_scale_wrapper, critic_apply_scale_wrapper
-                    ](
+                    ctx.enqueue_function[critic_apply_scale_wrapper](
                         critic_grads_t,
                         critic_scale_t,
                         grid_dim=(CRITIC_GRAD_BLOCKS,),

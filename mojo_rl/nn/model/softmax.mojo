@@ -384,7 +384,7 @@ struct Softmax[dim: Int](Model):
             Self.forward_kernel_impl[BATCH, dtype](output, input, cache)
 
         # One block per sample, single thread per block (simple version)
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             output,
             input_immut,
             cache,
@@ -430,7 +430,7 @@ struct Softmax[dim: Int](Model):
         ):
             Self.forward_kernel_impl_no_cache[BATCH, dtype](output, input)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             output,
             input_immut,
             grid_dim=(BATCH,),
@@ -510,7 +510,7 @@ struct Softmax[dim: Int](Model):
         ):
             Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             grad_input,
             grad_output_immut,
             cache_immut,

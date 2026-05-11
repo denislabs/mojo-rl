@@ -1002,7 +1002,7 @@ struct RevoluteJointSolver:
                 JOINTS_OFFSET,
             ](state, joint_counts, dt)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             joint_counts,
             dt,
@@ -1056,7 +1056,7 @@ struct RevoluteJointSolver:
                 JOINTS_OFFSET,
             ](state, joint_counts, baumgarte, slop)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             joint_counts,
             baumgarte,

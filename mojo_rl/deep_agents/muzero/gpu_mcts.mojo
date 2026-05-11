@@ -65,7 +65,7 @@ def gpu_mcts_init_root_kernel[
     ACT: Int,
     LATENT: Int,
     PRED_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     # Node storage
     visit_count: LayoutTensor[
@@ -97,7 +97,7 @@ def gpu_mcts_init_root_kernel[
     # Dirichlet noise
     noise_fraction: Scalar[dtype],
     rng_seed: Scalar[DType.uint32],
-):
+) where dtype.is_floating_point():
     """Initialize root node for each env's tree from prediction output.
 
     Sets prior from softmax of policy logits, adds Dirichlet noise.
@@ -161,7 +161,7 @@ def gpu_mcts_select_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     # Node storage (read)
     visit_count: LayoutTensor[
@@ -197,7 +197,7 @@ def gpu_mcts_select_kernel[
     # PUCT constants
     c_base: Scalar[dtype],
     c_init: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """PUCT selection: traverse each env's tree from root to leaf.
 
     One thread per environment. Sequential tree traversal within each tree,
@@ -280,7 +280,7 @@ def gpu_mcts_expand_kernel[
     LATENT: Int,
     PRED_OUT: Int,
     DYN_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     # Node storage (write)
     visit_count: LayoutTensor[
@@ -321,7 +321,7 @@ def gpu_mcts_expand_kernel[
     v_max: Scalar[dtype],
     # Output: leaf values for backup
     leaf_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Create child nodes from dynamics/prediction outputs.
 
     One thread per environment. Each thread:
@@ -504,7 +504,7 @@ def gpu_mcts_backup_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     # Node storage (read/write)
     visit_count: LayoutTensor[
@@ -531,7 +531,7 @@ def gpu_mcts_backup_kernel[
     path_lengths: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     leaf_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     gamma: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Backup leaf values through search paths.
 
     One thread per environment. Walks backwards from leaf to root,
@@ -578,7 +578,7 @@ def gpu_mcts_extract_actions_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     visit_count: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
@@ -587,7 +587,7 @@ def gpu_mcts_extract_actions_kernel[
     policies_out: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Extract action from root visit counts (argmax) and policy (normalized visits).
 
     One thread per environment.
@@ -626,7 +626,7 @@ def gpu_mcts_extract_root_value_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     visit_count: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
@@ -635,7 +635,7 @@ def gpu_mcts_extract_root_value_kernel[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
     ],
     values_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Extract MCTS root value as `Σ_a total_value[root,a] / Σ_a visit_count[root,a]`.
 
     Mirrors muzero-general's `node.value() = value_sum / visit_count` and is
@@ -677,7 +677,7 @@ def gpu_mcts_apply_legal_mask_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     prior: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
@@ -685,7 +685,7 @@ def gpu_mcts_apply_legal_mask_kernel[
     legal_masks: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Mask root prior with legal action mask and renormalize.
 
     For board games: zero out illegal actions in root prior, then
@@ -735,7 +735,7 @@ def gpu_mcts_apply_legal_mask_with_noise_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     prior: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
@@ -745,7 +745,7 @@ def gpu_mcts_apply_legal_mask_with_noise_kernel[
     ],
     noise_fraction: Scalar[dtype],
     rng_seed: Scalar[DType.uint32],
-):
+) where dtype.is_floating_point():
     """Mask root prior, add Dirichlet noise only to legal actions, renormalize.
 
     Unlike apply_legal_mask_kernel, this generates Dirichlet noise ONLY for
@@ -827,7 +827,7 @@ def gpu_mcts_backup_negated_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     # Node storage (read/write)
     visit_count: LayoutTensor[
@@ -853,7 +853,7 @@ def gpu_mcts_backup_negated_kernel[
     ],
     path_lengths: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     leaf_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Backup with value negation for two-player zero-sum games.
 
     At each backup level, the value is NEGATED (parent's perspective
@@ -906,7 +906,7 @@ def gpu_mcts_extract_actions_masked_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     visit_count: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
@@ -918,7 +918,7 @@ def gpu_mcts_extract_actions_masked_kernel[
     policies_out: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Extract actions respecting legal mask — choose only among legal actions.
 
     One thread per environment.
@@ -967,7 +967,7 @@ def gpu_mcts_extract_actions_temp_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     visit_count: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
@@ -983,7 +983,7 @@ def gpu_mcts_extract_actions_temp_kernel[
     temp_threshold: Int,
     rng_seed: Scalar[DType.uint32],
     temp_min: Scalar[dtype] = Scalar[dtype](0.0),
-):
+) where dtype.is_floating_point():
     """Extract actions with temperature annealing.
 
     Temperature schedule (matching AlphaZero.jl):
@@ -1087,7 +1087,7 @@ def gpu_mcts_copy_parent_state_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     STATE_SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     expansion_states: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
@@ -1096,7 +1096,7 @@ def gpu_mcts_copy_parent_state_kernel[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
     ],
     pending_parent: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Copy parent game state to expansion staging buffer.
 
     One thread per env. Copies STATE_SIZE floats from parent node's
@@ -1118,7 +1118,7 @@ def gpu_mcts_store_child_state_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     STATE_SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     game_states: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
@@ -1127,7 +1127,7 @@ def gpu_mcts_store_child_state_kernel[
         dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
     ],
     node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Copy expansion result (after env.step) to child node's game state slot.
 
     One thread per env. The child index is node_count (before increment —
@@ -1152,7 +1152,7 @@ def gpu_mcts_copy_root_state_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     STATE_SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     game_states: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
@@ -1160,7 +1160,7 @@ def gpu_mcts_copy_root_state_kernel[
     env_states: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Copy current env states to root node (node 0) of each env's tree.
 
     Called once at start of each MCTS search.
@@ -1182,7 +1182,7 @@ def gpu_mcts_expand_alphazero_kernel[
     MAX_NODES: Int,
     ACT: Int,
     PRED_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     # Node storage
     visit_count: LayoutTensor[
@@ -1215,7 +1215,7 @@ def gpu_mcts_expand_alphazero_kernel[
     step_rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Output
     leaf_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """AlphaZero-specific expand: uses env.step reward and scalar value with tanh.
 
     Unlike MuZero expand, this kernel:
@@ -1302,7 +1302,7 @@ def gpu_mcts_batched_select_and_copy_kernel[
     ACT: Int,
     BATCH_SIMS: Int,
     STATE_SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     # Node storage
     visit_count: LayoutTensor[
@@ -1350,7 +1350,7 @@ def gpu_mcts_batched_select_and_copy_kernel[
     # PUCT constants
     c_base: Scalar[dtype],
     c_init: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Fused: select BATCH_SIMS leaves per env with virtual losses + copy parent game states.
 
     One thread per env. Each thread sequentially selects BATCH_SIMS leaves,
@@ -1518,7 +1518,7 @@ def gpu_mcts_batched_expand_backup_kernel[
     BATCH_SIMS: Int,
     PRED_OUT: Int,
     STATE_SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     # Node storage
     visit_count: LayoutTensor[
@@ -1574,7 +1574,7 @@ def gpu_mcts_batched_expand_backup_kernel[
     path_lengths: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Fused: expand BATCH_SIMS nodes + negated backup + remove virtual losses.
 
     One thread per env. Processes all BATCH_SIMS expansions sequentially.
@@ -1720,7 +1720,7 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
     STATE_SIZE: Int,
     NEGATE_BACKUP: Bool,
     VALUE_SQUASH: Bool,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     # Node storage
     visit_count: LayoutTensor[
@@ -1790,7 +1790,7 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
     # Discount factor (used only by single-player backup; ignored when
     # NEGATE_BACKUP=True).
     gamma: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Fused expand + backup + remove virtual losses — with child prior masking.
 
     Like gpu_mcts_batched_expand_backup_kernel but masks child priors with
@@ -2044,7 +2044,7 @@ def gpu_mcts_batched_select_and_build_dyn_kernel[
     BATCH_SIMS: Int,
     LATENT: Int,
     DYN_IN: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     # Node storage
     visit_count: LayoutTensor[
@@ -2092,7 +2092,7 @@ def gpu_mcts_batched_select_and_build_dyn_kernel[
     # PUCT
     c_base: Scalar[dtype],
     c_init: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Fused: select BATCH_SIMS leaves per env + build dynamics input.
 
     MuZero version: copies parent hidden state + one-hot action into dyn_input.
@@ -2211,7 +2211,7 @@ def gpu_mcts_batched_expand_backup_muzero_kernel[
     LATENT: Int,
     PRED_OUT: Int,
     DYN_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     # Node storage
     visit_count: LayoutTensor[
@@ -2270,7 +2270,7 @@ def gpu_mcts_batched_expand_backup_muzero_kernel[
     gamma: Scalar[dtype],
     # Whether to negate backup (two-player) — passed as Scalar[DType.bool]
     negate: Scalar[DType.bool],
-):
+) where dtype.is_floating_point():
     """Fused: extract hidden + expand + backup for BATCH_SIMS MuZero leaves.
 
     One thread per env. For each of BATCH_SIMS expansions:
@@ -2513,7 +2513,7 @@ def gpu_mcts_build_dyn_input_kernel[
     ACT: Int,
     LATENT: Int,
     DYN_IN: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     dyn_input: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * DYN_IN), MutAnyOrigin
@@ -2523,7 +2523,7 @@ def gpu_mcts_build_dyn_input_kernel[
     ],
     pending_parent: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     pending_action: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Build dynamics input [hidden || one_hot_action] for each env's pending expansion.
 
     One thread per environment.
@@ -2551,7 +2551,7 @@ def gpu_mcts_copy_pred_input_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     LATENT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     pred_input: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * LATENT), MutAnyOrigin
@@ -2563,7 +2563,7 @@ def gpu_mcts_copy_pred_input_kernel[
     dyn_output: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * (LATENT + LATENT)), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Copy newly expanded child hidden states to prediction input buffer.
 
     The child's hidden state was written to hidden_states by the expand kernel.

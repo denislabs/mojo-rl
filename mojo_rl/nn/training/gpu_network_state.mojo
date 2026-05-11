@@ -280,7 +280,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
                 if Int(thread_idx.x) == 0:
                     og[LR_SLOT] = val
 
-            ctx.enqueue_function[write_lr_kernel, write_lr_kernel](
+            ctx.enqueue_function[write_lr_kernel](
                 og, val, grid_dim=(1,), block_dim=(1,),
             )
 
@@ -317,7 +317,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
                 grads[idx] = Scalar[Self.dtype](0.0)
 
         comptime BLOCKS = (Self.PARAM_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[_clip_kernel, _clip_kernel](
+        ctx.enqueue_function[_clip_kernel](
             g, max_val, grid_dim=(BLOCKS,), block_dim=(TPB,),
         )
 
@@ -385,7 +385,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
         ):
             soft_update_kernel[Self.dtype, PARAM_SIZE](tgt, src, t)
 
-        ctx.enqueue_function[soft_update_wrapper, soft_update_wrapper](
+        ctx.enqueue_function[soft_update_wrapper](
             target_t,
             source_t,
             tau_s,

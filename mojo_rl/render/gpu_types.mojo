@@ -280,8 +280,8 @@ struct MeshHandle(Copyable, Movable):
     var num_vertices: UInt32
 
     def __init__(out self):
-        self.vertex_buffer = Ptr[GPUBuffer, MutAnyOrigin]()
-        self.index_buffer = Ptr[GPUBuffer, MutAnyOrigin]()
+        self.vertex_buffer = Ptr[GPUBuffer, MutAnyOrigin](_unsafe_null=())
+        self.index_buffer = Ptr[GPUBuffer, MutAnyOrigin](_unsafe_null=())
         self.num_indices = 0
         self.num_vertices = 0
 

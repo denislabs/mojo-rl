@@ -499,7 +499,7 @@ def increment_explore_counter_kernel(
 
 @always_inline
 def alpha_adam_update_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     ALPHA_OFF: Int,
     LOG_ALPHA_OFF: Int,
@@ -514,7 +514,7 @@ def alpha_adam_update_kernel[
     log_alpha_max: Scalar[dtype],
     log_alpha_min: Scalar[dtype],
     lp_clip: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """GPU-side SAC alpha auto-tuning. Launch with grid=(1,), block=(1,).
 
     Reduces log_probs to mean, then does one Adam step on log_alpha.
@@ -1857,7 +1857,7 @@ def add_gaussian_noise_kernel[
 
 @always_inline
 def sac_sample_actions_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     N: Int,
     ACTION_DIM: Int,
     ACTOR_OUT_DIM: Int = ACTION_DIM + ACTION_DIM,
@@ -1870,7 +1870,7 @@ def sac_sample_actions_kernel[
     log_std_min: Scalar[dtype],
     log_std_max: Scalar[dtype],
     rng_seed: Scalar[DType.uint32],
-):
+) where dtype.is_floating_point():
     """SAC inference: sample actions from stochastic actor output, scaled by action_scale.
 
     Takes actor_out[N, 2*ACTION_DIM] where columns [0, ACTION_DIM) are mean
@@ -1925,7 +1925,7 @@ def sac_sample_actions_kernel[
 
 @always_inline
 def sac_sample_actions_counter_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     N: Int,
     ACTION_DIM: Int,
     ACTOR_OUT_DIM: Int = ACTION_DIM + ACTION_DIM,
@@ -1938,7 +1938,7 @@ def sac_sample_actions_counter_kernel[
     log_std_min: Scalar[dtype],
     log_std_max: Scalar[dtype],
     rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """CUDA graph compatible SAC exploration. Reads seed from GPU counter."""
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= N:
@@ -1973,7 +1973,7 @@ def sac_sample_actions_counter_kernel[
 
 @always_inline
 def sac_rsample_with_cache_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     ACTION_DIM: Int,
     ACTOR_OUT_DIM: Int = ACTION_DIM + ACTION_DIM,
@@ -1992,7 +1992,7 @@ def sac_rsample_with_cache_kernel[
     log_std_max: Scalar[dtype],
     action_scale: Scalar[dtype],
     rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """SAC training forward: reparameterize, compute log_prob, save eps for backward.
 
     Actions are scaled by action_scale so the critic sees the same action
@@ -2080,7 +2080,7 @@ def sac_rsample_with_cache_kernel[
 
 @always_inline
 def sac_rsample_bwd_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     ACTION_DIM: Int,
     ACTOR_OUT_DIM: Int = ACTION_DIM + ACTION_DIM,
@@ -2104,7 +2104,7 @@ def sac_rsample_bwd_kernel[
     log_std_min: Scalar[dtype],
     log_std_max: Scalar[dtype],
     action_scale: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """SAC backward through the reparameterization trick.
 
     Computes the full actor gradient actor_grad[BATCH, 2*ACTION_DIM] from:
@@ -2183,7 +2183,7 @@ def sac_rsample_bwd_kernel[
 
 @always_inline
 def min_q_dq_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     Q_DIM: Int = 1,
 ](
@@ -2191,7 +2191,7 @@ def min_q_dq_kernel[
     dq2: LayoutTensor[dtype, Layout.row_major(BATCH, Q_DIM), MutAnyOrigin],
     q1: LayoutTensor[dtype, Layout.row_major(BATCH, Q_DIM), MutAnyOrigin],
     q2: LayoutTensor[dtype, Layout.row_major(BATCH, Q_DIM), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Create masked dq gradients based on min(Q1, Q2).
 
     For each sample b:
@@ -2219,13 +2219,13 @@ def min_q_dq_kernel[
 
 @always_inline
 def add_ci_grads_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     DIM: Int,
 ](
     dst: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     src: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Add src to dst elementwise: dst[b,d] += src[b,d].
 
     Used to combine action gradients from Q1 and Q2 backward passes.
@@ -2241,12 +2241,12 @@ def add_ci_grads_kernel[
 
 @always_inline
 def fill_constant_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     TOTAL: Int,
 ](
     buf: LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin],
     value: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Write `value` to every element of a flat buffer of length TOTAL."""
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= TOTAL:
@@ -3094,7 +3094,7 @@ def ppo_gather_minibatch_kernel[
 
 @always_inline
 def ppo_actor_grad_with_kl_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH_SIZE: Int,
     NUM_ACTIONS: Int,
 ](
@@ -3119,7 +3119,7 @@ def ppo_actor_grad_with_kl_kernel[
     clip_epsilon: Scalar[dtype],
     entropy_coef: Scalar[dtype],
     batch_size: Int,
-):
+) where dtype.is_floating_point():
     """Compute gradient for PPO actor with clipped surrogate objective.
 
     Also computes approximate KL divergence for early stopping:
@@ -3302,7 +3302,7 @@ def ppo_gather_minibatch_obs_parallel_kernel[
 
 @always_inline
 def build_dynamics_target_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     OBS_DIM: Int,
     PRED_DIM: Int = 1 + OBS_DIM,
@@ -3315,7 +3315,7 @@ def build_dynamics_target_kernel[
         dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
     ],
     rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Build dynamics training target: [reward, delta_obs].
 
     target[b, 0] = reward[b]
@@ -3336,7 +3336,7 @@ def build_dynamics_target_kernel[
 
 @always_inline
 def gaussian_nll_grad_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     PRED_DIM: Int,
     OUT_DIM: Int = 2 * PRED_DIM,
@@ -3355,7 +3355,7 @@ def gaussian_nll_grad_kernel[
     ],
     min_logvar: Scalar[dtype],
     max_logvar: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Gaussian NLL gradient w.r.t. model output [mean, logvar].
 
     For each (b, d):
@@ -3456,7 +3456,7 @@ def gaussian_nll_grad_kernel[
 
 @always_inline
 def gaussian_nll_grad_learnable_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     PRED_DIM: Int,
     OUT_DIM: Int = 2 * PRED_DIM,
@@ -3481,7 +3481,7 @@ def gaussian_nll_grad_learnable_kernel[
     min_lv_grad_scratch: LayoutTensor[
         dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Gaussian NLL gradient with learnable per-dim logvar bounds.
 
     Matches `gaussian_nll_grad_kernel` but reads per-dim bounds from device
@@ -3575,7 +3575,7 @@ def gaussian_nll_grad_learnable_kernel[
 
 @always_inline
 def reduce_loss_scratch_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     PRED_DIM: Int,
 ](
@@ -3583,7 +3583,7 @@ def reduce_loss_scratch_kernel[
         dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
     ],
     loss_per_sample: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Sum `loss_scratch[b, :]` into `loss_per_sample[b]`.
 
     Pair with `gaussian_nll_grad_kernel` / `gaussian_nll_grad_learnable_kernel`,
@@ -3606,7 +3606,7 @@ def reduce_loss_scratch_kernel[
 
 @always_inline
 def reduce_bounds_grad_l2_adam_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     PRED_DIM: Int,
 ](
@@ -3630,7 +3630,7 @@ def reduce_bounds_grad_l2_adam_kernel[
     log_beta1: Scalar[dtype],
     log_beta2: Scalar[dtype],
     counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Reduce per-batch bounds grads, add L2, and Adam-update bounds.
 
     Reference (bnn.py:192): train_loss += 0.01 * sum(max_lv) - 0.01 * sum(min_lv).
@@ -3698,12 +3698,12 @@ def reduce_bounds_grad_l2_adam_kernel[
 
 @always_inline
 def reduce_mean_loss_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
 ](
     loss: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     result: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Reduce per-sample losses to mean. Launch with grid=(1,), block=(1,).
 
     result[0] = mean(loss[0:BATCH])
@@ -3720,7 +3720,7 @@ def reduce_mean_loss_kernel[
 
 @always_inline
 def dynamics_mse_per_sample_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     PRED_DIM: Int,
     OUT_DIM: Int = 2 * PRED_DIM,
@@ -3732,7 +3732,7 @@ def dynamics_mse_per_sample_kernel[
     target: LayoutTensor[
         dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Per-sample mean squared error on the μ portion of the dynamics output.
 
     Vanilla MBPO's dynamics output is [μ_0..μ_{P-1}, lv_0..lv_{P-1}]; this
@@ -3759,13 +3759,13 @@ def dynamics_mse_per_sample_kernel[
 
 @always_inline
 def clamp_rewards_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
 ](
     rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     lo: Scalar[dtype],
     hi: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Clamp rewards to [lo, hi] to prevent NaN cascades from model rollouts."""
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
@@ -3781,13 +3781,13 @@ def clamp_rewards_kernel[
 
 @always_inline
 def mask_dead_rollouts_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
 ](
     alive: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Zero out rewards and set done=1 for dead rollouts.
 
     For rollouts where alive[b]==0 (already terminated in a previous step):
@@ -3807,12 +3807,12 @@ def mask_dead_rollouts_kernel[
 
 @always_inline
 def update_alive_mask_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
 ](
     alive: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Update alive mask: alive[b] *= (1 - dones[b]).
 
     After this kernel, rollouts that just terminated have alive=0 and
@@ -3829,7 +3829,7 @@ def update_alive_mask_kernel[
 
 @always_inline
 def dynamics_sample_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     OBS_DIM: Int,
     PRED_DIM: Int = 1 + OBS_DIM,
@@ -3846,7 +3846,7 @@ def dynamics_sample_kernel[
     min_logvar: Scalar[dtype],
     max_logvar: Scalar[dtype],
     rng_seed: Scalar[DType.uint32],
-):
+) where dtype.is_floating_point():
     """Sample next_obs and reward from dynamics model output.
 
     For each batch element:
@@ -3912,7 +3912,7 @@ def dynamics_sample_kernel[
 
 @always_inline
 def dynamics_sample_learnable_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     OBS_DIM: Int,
     PRED_DIM: Int = 1 + OBS_DIM,
@@ -3929,7 +3929,7 @@ def dynamics_sample_learnable_kernel[
     max_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
     min_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
     rng_seed: Scalar[DType.uint32],
-):
+) where dtype.is_floating_point():
     """Sample next_obs and reward from dynamics output with per-dim bounds.
 
     Mirror of `dynamics_sample_kernel` but reads logvar bounds from per-dim
@@ -3983,13 +3983,13 @@ def dynamics_sample_learnable_kernel[
 
 @always_inline
 def sample_elite_assignment_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     NUM_ELITES: Int,
 ](
     out_slot: LayoutTensor[DType.int32, Layout.row_major(BATCH), MutAnyOrigin],
     rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Per-sample random elite-slot assignment for MBPO rollouts.
 
     Matches softlearning fake_env.py:54 (`model_inds = np.random.choice(
@@ -4022,7 +4022,7 @@ def sample_elite_assignment_kernel[
 
 @always_inline
 def dynamics_sample_ensemble_learnable_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     OBS_DIM: Int,
     NUM_ELITES: Int,
@@ -4051,7 +4051,7 @@ def dynamics_sample_ensemble_learnable_kernel[
         dtype, Layout.row_major(NUM_ENSEMBLE * PRED_DIM), MutAnyOrigin
     ],
     rng_seed: Scalar[DType.uint32],
-):
+) where dtype.is_floating_point():
     """Per-sample random-elite dynamics sampling (matches fake_env.py:54-58).
 
     For each batch element b:
@@ -4140,14 +4140,14 @@ def dynamics_sample_ensemble_learnable_kernel[
 
 @always_inline
 def compute_scaler_mean_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     CAP: Int,
     D: Int,
 ](
     out_mean: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
     data: LayoutTensor[dtype, Layout.row_major(CAP, D), MutAnyOrigin],
     n_samples: Int,
-):
+) where dtype.is_floating_point():
     """Per-column mean over first `n_samples` rows of `data`. One block per dim.
 
     Grid: (D,), Block: (1,). Single-thread serial sum per dim. Cheap because
@@ -4170,7 +4170,7 @@ def compute_scaler_mean_kernel[
 
 @always_inline
 def compute_scaler_std_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     CAP: Int,
     D: Int,
 ](
@@ -4179,7 +4179,7 @@ def compute_scaler_std_kernel[
     in_mean: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
     n_samples: Int,
     min_std: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Per-column std over first `n_samples` rows. Must be called after mean.
 
     Matches reference utils.py:49 behavior: `sigma[sigma < 1e-12] = 1.0` — if
@@ -4208,14 +4208,14 @@ def compute_scaler_std_kernel[
 
 @always_inline
 def normalize_input_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     D: Int,
 ](
     data: LayoutTensor[dtype, Layout.row_major(BATCH, D), MutAnyOrigin],
     in_mean: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
     in_std: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """In-place z-score per element: data[b, d] = (data[b, d] - mean[d]) / std[d].
 
     Grid: ceil(BATCH * D / TPB), Block: TPB.

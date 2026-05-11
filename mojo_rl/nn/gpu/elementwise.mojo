@@ -152,14 +152,14 @@ def gpu_relu[
 
 
 def gpu_tanh[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     layout: Layout,
     size: Int,
 ](
     output: LayoutTensor[mut=True, dtype, layout, MutAnyOrigin],
     input: LayoutTensor[mut=False, dtype, layout, MutAnyOrigin],
     ctx: DeviceContext,
-) raises:
+) raises where dtype.is_floating_point():
     """Element-wise tanh on GPU: output = tanh(input).
 
     Args:
@@ -183,14 +183,14 @@ def gpu_tanh[
 
 
 def gpu_sigmoid[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     layout: Layout,
     size: Int,
 ](
     output: LayoutTensor[mut=True, dtype, layout, MutAnyOrigin],
     input: LayoutTensor[mut=False, dtype, layout, MutAnyOrigin],
     ctx: DeviceContext,
-) raises:
+) raises where dtype.is_floating_point():
     """Element-wise sigmoid on GPU: output = 1 / (1 + exp(-input)).
 
     Args:

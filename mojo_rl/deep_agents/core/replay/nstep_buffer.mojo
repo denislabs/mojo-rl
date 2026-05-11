@@ -488,7 +488,7 @@ struct GPUNStepBuffer[N: Int, OBS_DIM: Int, N_ENVS: Int](Movable):
                 counts[e] = Int32(c)
 
         comptime ENV_BLOCKS = (Self.N_ENVS + TPB - 1) // TPB
-        ctx.enqueue_function[nstep_kernel, nstep_kernel](
+        ctx.enqueue_function[nstep_kernel](
             obs_t,
             act_t,
             rew_t,

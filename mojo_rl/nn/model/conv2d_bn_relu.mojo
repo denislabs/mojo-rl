@@ -760,7 +760,7 @@ struct Conv2DBatchNormReLU[
             dst.ptr[b * Self.CACHE_SIZE + i] = src.ptr[tid]
 
         comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[copy_im2col, copy_im2col](
+        ctx.enqueue_function[copy_im2col](
             cache, conv_cache,
             grid_dim=(COPY_BLOCKS,),
             block_dim=(TPB,),
@@ -777,7 +777,7 @@ struct Conv2DBatchNormReLU[
         ):
             Self.bn_relu_kernel_impl[BATCH, dtype](output, cache, params, state)
 
-        ctx.enqueue_function[bn_relu_wrapper, bn_relu_wrapper](
+        ctx.enqueue_function[bn_relu_wrapper](
             output, cache, params, state,
             grid_dim=(Self.out_channels,),
             block_dim=(TPB,),
@@ -842,7 +842,7 @@ struct Conv2DBatchNormReLU[
         ):
             Self.bn_relu_kernel_impl_no_cache[BATCH, dtype](output, params, state)
 
-        ctx.enqueue_function[bn_relu_nc_wrapper, bn_relu_nc_wrapper](
+        ctx.enqueue_function[bn_relu_nc_wrapper](
             output, params_immut, state_immut,
             grid_dim=(Self.out_channels,),
             block_dim=(TPB,),
@@ -936,7 +936,7 @@ struct Conv2DBatchNormReLU[
         ):
             Self.relu_bn_backward_kernel_impl[BATCH, dtype](grad_pre_bn, grad_output, params, cache, grads)
 
-        ctx.enqueue_function[relu_bn_bwd_wrapper, relu_bn_bwd_wrapper](
+        ctx.enqueue_function[relu_bn_bwd_wrapper](
             grad_pre_bn, grad_output_immut, params_immut, cache_immut, grads,
             grid_dim=(Self.out_channels,),
             block_dim=(TPB,),
@@ -973,7 +973,7 @@ struct Conv2DBatchNormReLU[
             dst.ptr[tid] = src.ptr[b * Self.CACHE_SIZE + i]
 
         comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[copy_im2col_bwd, copy_im2col_bwd](
+        ctx.enqueue_function[copy_im2col_bwd](
             conv_cache, cache,
             grid_dim=(COPY_BLOCKS,),
             block_dim=(TPB,),
@@ -1151,7 +1151,7 @@ struct Conv2DBatchNormReLU[
             dst.ptr[b * Self.CACHE_SIZE + i] = src.ptr[tid]
 
         comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[copy_im2col_inf, copy_im2col_inf](
+        ctx.enqueue_function[copy_im2col_inf](
             cache, conv_cache,
             grid_dim=(COPY_BLOCKS,),
             block_dim=(TPB,),
@@ -1174,7 +1174,7 @@ struct Conv2DBatchNormReLU[
         ):
             Self.bn_relu_kernel_impl_inference_with_cache[BATCH, dtype](output, cache, params, state)
 
-        ctx.enqueue_function[bn_relu_inf_wrapper, bn_relu_inf_wrapper](
+        ctx.enqueue_function[bn_relu_inf_wrapper](
             output, cache, params_immut, state_immut,
             grid_dim=(Self.out_channels,),
             block_dim=(TPB,),
@@ -1247,7 +1247,7 @@ struct Conv2DBatchNormReLU[
                 grad_pre_bn, grad_output, params, cache
             )
 
-        ctx.enqueue_function[relu_bn_bwd_inf_wrapper, relu_bn_bwd_inf_wrapper](
+        ctx.enqueue_function[relu_bn_bwd_inf_wrapper](
             grad_pre_bn, grad_output_immut, params_immut, cache_immut,
             grid_dim=(Self.out_channels,),
             block_dim=(TPB,),
@@ -1282,7 +1282,7 @@ struct Conv2DBatchNormReLU[
             dst.ptr[tid] = src.ptr[b * Self.CACHE_SIZE + i]
 
         comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[copy_im2col_bwd_inf, copy_im2col_bwd_inf](
+        ctx.enqueue_function[copy_im2col_bwd_inf](
             conv_cache, cache,
             grid_dim=(COPY_BLOCKS,),
             block_dim=(TPB,),

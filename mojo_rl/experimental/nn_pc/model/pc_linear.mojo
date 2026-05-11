@@ -929,7 +929,7 @@ struct PCLinear[
             else:
                 Self._predict_kernel_2x2[BATCH, dtype](x_above, W, a)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             x_above_immut, W, a,
             grid_dim=(grid_x, grid_y),
             block_dim=(MMA_BLOCK_THREADS, 1),
@@ -1000,7 +1000,7 @@ struct PCLinear[
             else:
                 Self._pull_back_kernel_2x2[BATCH, dtype](h, W, z)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             h_immut, W, z,
             grid_dim=(grid_x, grid_y),
             block_dim=(MMA_BLOCK_THREADS, 1),
@@ -1054,7 +1054,7 @@ struct PCLinear[
             else:
                 Self._weight_grad_kernel_2x2[BATCH, dtype](h, x_above, W, scale)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             h_immut, xa_immut, W, scale,
             grid_dim=(grid_x, grid_y),
             block_dim=(MMA_BLOCK_THREADS, 1),

@@ -209,7 +209,7 @@ struct GenericOnPolicyContinuousAgent[
     var checkpoint_path: String
 
     # Logger
-    var logger: UnsafePointer[Self.L, MutAnyOrigin]
+    var logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]]
     var diag_every: Int
 
     def __init__(
@@ -246,7 +246,7 @@ struct GenericOnPolicyContinuousAgent[
         self.target_total_steps = target_total_steps
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         self.diag_every = 0
 
         # Initialize CPU state (actor Kaiming, then critic Kaiming)
@@ -887,9 +887,7 @@ struct GenericOnPolicyContinuousAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the continuous PPO agent.
@@ -929,7 +927,7 @@ struct GenericOnPolicyContinuousAgent[
             logger=logger,
         )
         self.cpu_state = cpu_state^
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         return metrics^
 
     # =========================================================================
@@ -1224,7 +1222,7 @@ struct GenericOnPolicyContinuousAgent[
                 var log_probs_t = LayoutTensor[
                     dtype, Layout.row_major(N_EVAL_ENVS), MutAnyOrigin
                 ](log_probs_buf.unsafe_ptr())
-                ctx.enqueue_function[sample_k, sample_k](
+                ctx.enqueue_function[sample_k](
                     actor_out_t,
                     actions_t,
                     log_probs_t,
@@ -1238,10 +1236,7 @@ struct GenericOnPolicyContinuousAgent[
                     Layout.row_major(N_EVAL_ENVS, Self.ACTOR_OUT),
                     ImmutAnyOrigin,
                 ](actor_out_buf.unsafe_ptr())
-                ctx.enqueue_function[
-                    extract_deterministic_actions,
-                    extract_deterministic_actions,
-                ](
+                ctx.enqueue_function[extract_deterministic_actions](
                     actions_t,
                     actor_out_immut,
                     grid_dim=(ENV_BLOCKS,),
@@ -1424,7 +1419,7 @@ struct GenericOnPolicyContinuousAgent[
         comptime sample_k = _sample_continuous_actions_kernel[
             dtype, N_ENVS, Self.ACTIONS
         ]
-        ctx.enqueue_function[sample_k, sample_k](
+        ctx.enqueue_function[sample_k](
             actor_out_t,
             actions_t,
             log_probs_t,
@@ -1695,7 +1690,7 @@ struct GenericOnPolicyContinuousAgent[
 
         # Diagnostic accumulators
         var should_diag = False
-        if self.logger:
+        if Bool(self.logger):
             should_diag = self.diag_every <= 0 or (
                 (update_idx + 1) % self.diag_every == 0
             )
@@ -1738,7 +1733,7 @@ struct GenericOnPolicyContinuousAgent[
                     dtype, MINIBATCH, Self.OBS, ROLLOUT_TOTAL
                 ]
                 comptime GATHER_OBS_BLOCKS = (Self.OBS + TPB - 1) // TPB
-                ctx.enqueue_function[gather_obs_k, gather_obs_k](
+                ctx.enqueue_function[gather_obs_k](
                     mb_obs_t,
                     rollout_obs_t,
                     mb_indices_t,
@@ -1748,7 +1743,7 @@ struct GenericOnPolicyContinuousAgent[
                 )
 
                 # Scalar+action gather (actions are small dim, scalars trivial)
-                ctx.enqueue_function[gather_k, gather_k](
+                ctx.enqueue_function[gather_k](
                     mb_obs_t,
                     mb_actions_t,
                     mb_advantages_t,
@@ -1790,7 +1785,7 @@ struct GenericOnPolicyContinuousAgent[
                             adv_var / Scalar[dtype](MINIBATCH)
                             + Scalar[dtype](1e-8)
                         )
-                        ctx.enqueue_function[normalize_adv_k, normalize_adv_k](
+                        ctx.enqueue_function[normalize_adv_k](
                             mb_advantages_t,
                             adv_mean,
                             adv_std,
@@ -1924,7 +1919,7 @@ struct GenericOnPolicyContinuousAgent[
                         ImmutAnyOrigin,
                     ](mb_advantages_t.ptr)
 
-                    ctx.enqueue_function[pack_loss_input_k, pack_loss_input_k](
+                    ctx.enqueue_function[pack_loss_input_k](
                         loss_input_t,
                         actor_logits_immut,
                         mb_actions_immut,
@@ -1991,7 +1986,7 @@ struct GenericOnPolicyContinuousAgent[
                             MINIBATCH
                         )
 
-                    ctx.enqueue_function[seed_grad_k, seed_grad_k](
+                    ctx.enqueue_function[seed_grad_k](
                         loss_grad_output_t,
                         grid_dim=(MINIBATCH_BLOCKS,),
                         block_dim=(TPB,),
@@ -2058,9 +2053,7 @@ struct GenericOnPolicyContinuousAgent[
                                 idx * LOSS_IN + A + j
                             ] - ent_coef / Scalar[dtype](MINIBATCH)
 
-                    ctx.enqueue_function[
-                        extract_and_entropy_k, extract_and_entropy_k
-                    ](
+                    ctx.enqueue_function[extract_and_entropy_k](
                         actor_grad_output_t,
                         loss_gi_immut,
                         Scalar[dtype](self.entropy_coef),
@@ -2148,7 +2141,7 @@ struct GenericOnPolicyContinuousAgent[
                         else:
                             clip_out[b] = Scalar[dtype](0.0)
 
-                    ctx.enqueue_function[diag_kernel, diag_kernel](
+                    ctx.enqueue_function[diag_kernel](
                         kl_divergences_t,
                         diag_entropy_t,
                         diag_clip_t,
@@ -2160,7 +2153,7 @@ struct GenericOnPolicyContinuousAgent[
                         block_dim=(TPB,),
                     )
                 else:
-                    ctx.enqueue_function[actor_grad_k, actor_grad_k](
+                    ctx.enqueue_function[actor_grad_k](
                         actor_grad_output_t,
                         kl_divergences_t,
                         diag_entropy_t,
@@ -2227,24 +2220,20 @@ struct GenericOnPolicyContinuousAgent[
                 )
 
                 if self.max_grad_norm > 0.0:
-                    ctx.enqueue_function[actor_grad_norm_k, actor_grad_norm_k](
+                    ctx.enqueue_function[actor_grad_norm_k](
                         actor_grad_partial_sums_t,
                         actor_grads_t,
                         grid_dim=(ACTOR_GRAD_BLOCKS,),
                         block_dim=(TPB,),
                     )
-                    ctx.enqueue_function[
-                        actor_reduce_scale_k, actor_reduce_scale_k
-                    ](
+                    ctx.enqueue_function[actor_reduce_scale_k](
                         actor_scale_t,
                         actor_grad_partial_sums_t,
                         Scalar[dtype](self.max_grad_norm),
                         grid_dim=(1,),
                         block_dim=(TPB,),
                     )
-                    ctx.enqueue_function[
-                        actor_apply_scale_k, actor_apply_scale_k
-                    ](
+                    ctx.enqueue_function[actor_apply_scale_k](
                         actor_grads_t,
                         actor_scale_t,
                         grid_dim=(ACTOR_GRAD_BLOCKS,),
@@ -2259,7 +2248,7 @@ struct GenericOnPolicyContinuousAgent[
                 comptime clamp_k = clamp_log_std_params_kernel[
                     dtype, ACTOR_PARAMS, LOG_STD_OFFSET, Self.ACTIONS
                 ]
-                ctx.enqueue_function[clamp_k, clamp_k](
+                ctx.enqueue_function[clamp_k](
                     actor_params_t,
                     grid_dim=(1,),
                     block_dim=(TPB,),
@@ -2302,9 +2291,7 @@ struct GenericOnPolicyContinuousAgent[
                         diag_value_loss_sum += diff * diff
 
                 if self.clip_value:
-                    ctx.enqueue_function[
-                        critic_grad_clipped_k, critic_grad_clipped_k
-                    ](
+                    ctx.enqueue_function[critic_grad_clipped_k](
                         critic_grad_output_t,
                         critic_values_t,
                         mb_returns_t,
@@ -2316,7 +2303,7 @@ struct GenericOnPolicyContinuousAgent[
                         block_dim=(TPB,),
                     )
                 else:
-                    ctx.enqueue_function[critic_grad_k, critic_grad_k](
+                    ctx.enqueue_function[critic_grad_k](
                         critic_grad_output_t,
                         critic_values_t,
                         mb_returns_t,
@@ -2339,26 +2326,20 @@ struct GenericOnPolicyContinuousAgent[
                 )
 
                 if self.max_grad_norm > 0.0:
-                    ctx.enqueue_function[
-                        critic_grad_norm_k, critic_grad_norm_k
-                    ](
+                    ctx.enqueue_function[critic_grad_norm_k](
                         critic_grad_partial_sums_t,
                         critic_grads_t,
                         grid_dim=(CRITIC_GRAD_BLOCKS,),
                         block_dim=(TPB,),
                     )
-                    ctx.enqueue_function[
-                        critic_reduce_scale_k, critic_reduce_scale_k
-                    ](
+                    ctx.enqueue_function[critic_reduce_scale_k](
                         critic_scale_t,
                         critic_grad_partial_sums_t,
                         Scalar[dtype](self.max_grad_norm),
                         grid_dim=(1,),
                         block_dim=(TPB,),
                     )
-                    ctx.enqueue_function[
-                        critic_apply_scale_k, critic_apply_scale_k
-                    ](
+                    ctx.enqueue_function[critic_apply_scale_k](
                         critic_grads_t,
                         critic_scale_t,
                         grid_dim=(CRITIC_GRAD_BLOCKS,),
@@ -2373,10 +2354,10 @@ struct GenericOnPolicyContinuousAgent[
         if should_diag and diag_sample_count > 0:
             var n = Float64(diag_sample_count)
             var step = update_idx
-            self.logger[].log_scalar("approx_kl", diag_kl_sum / n, step)
-            self.logger[].log_scalar("entropy", diag_entropy_sum / n, step)
-            self.logger[].log_scalar("clip_fraction", diag_clip_sum / n, step)
-            self.logger[].log_scalar(
+            self.logger.value()[].log_scalar("approx_kl", diag_kl_sum / n, step)
+            self.logger.value()[].log_scalar("entropy", diag_entropy_sum / n, step)
+            self.logger.value()[].log_scalar("clip_fraction", diag_clip_sum / n, step)
+            self.logger.value()[].log_scalar(
                 "value_loss", diag_value_loss_sum / n, step
             )
 
@@ -2397,9 +2378,7 @@ struct GenericOnPolicyContinuousAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train on GPU with parallel environments.
@@ -2439,5 +2418,5 @@ struct GenericOnPolicyContinuousAgent[
             algorithm_name=Self.Config.NAME + " (GPU)",
             logger=logger,
         )
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         return metrics^

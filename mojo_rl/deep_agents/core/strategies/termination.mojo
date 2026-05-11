@@ -112,7 +112,7 @@ struct HopperTerminate(TerminationFn):
         var d_t = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
         ](dones.unsafe_ptr())
-        ctx.enqueue_function[hopper_term_kernel, hopper_term_kernel](
+        ctx.enqueue_function[hopper_term_kernel](
             obs_t, d_t, grid_dim=(BLOCKS,), block_dim=(TPB,),
         )
 
@@ -166,7 +166,7 @@ struct AntTerminate(TerminationFn):
         var d_t = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
         ](dones.unsafe_ptr())
-        ctx.enqueue_function[ant_term_kernel, ant_term_kernel](
+        ctx.enqueue_function[ant_term_kernel](
             obs_t, d_t, grid_dim=(BLOCKS,), block_dim=(TPB,),
         )
 
@@ -216,6 +216,6 @@ struct InvertedPendulumTerminate(TerminationFn):
         var d_t = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
         ](dones.unsafe_ptr())
-        ctx.enqueue_function[pendulum_term_kernel, pendulum_term_kernel](
+        ctx.enqueue_function[pendulum_term_kernel](
             obs_t, d_t, grid_dim=(BLOCKS,), block_dim=(TPB,),
         )

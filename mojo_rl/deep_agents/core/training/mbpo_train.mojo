@@ -36,7 +36,7 @@ def run_mbpo_train[
     verbose: Bool = False,
     print_every: Int = 1,
     environment_name: String = "Environment",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """MBPO CPU training loop. Delegates to `MBPOAgent._run_train_impl`."""
     return agent._run_train_impl[E](
@@ -73,7 +73,7 @@ def run_mbpo_train_gpu[
     verbose: Bool = False,
     print_every: Int = 50_000,
     environment_name: String = "Environment",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """MBPO GPU training loop. Delegates to `MBPOAgent._run_train_gpu_impl`."""
     return agent._run_train_gpu_impl[E, USE_CUDA_GRAPH](

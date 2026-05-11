@@ -424,7 +424,7 @@ def get_renderer(
         "SDL_GetRenderer",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> Ptr[Renderer, MutAnyOrigin],
     ]()(window)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -452,7 +452,7 @@ def get_render_window(
         "SDL_GetRenderWindow",
         def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> Ptr[Window, MutAnyOrigin],
     ]()(renderer)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -482,7 +482,7 @@ def get_renderer_name(
             renderer: Ptr[Renderer, MutAnyOrigin]
         ) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(renderer)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -706,7 +706,7 @@ def create_texture(
             h: c_int,
         ) thin -> Ptr[Texture, MutAnyOrigin],
     ]()(renderer, format, access, w, h)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -749,7 +749,7 @@ def create_texture_from_surface(
             surface: Ptr[Surface, MutAnyOrigin],
         ) thin -> Ptr[Texture, MutAnyOrigin],
     ]()(renderer, surface)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -872,7 +872,7 @@ def create_texture_with_properties(
             renderer: Ptr[Renderer, MutAnyOrigin], props: PropertiesID
         ) thin -> Ptr[Texture, MutAnyOrigin],
     ]()(renderer, props)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -3513,7 +3513,7 @@ def render_read_pixels(
             rect: Ptr[Rect, ImmutAnyOrigin],
         ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(renderer, rect)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 

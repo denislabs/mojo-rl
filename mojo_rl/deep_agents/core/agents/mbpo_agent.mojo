@@ -936,11 +936,11 @@ struct GPUDynamicsEnsemble[
         comptime act_mean_k = compute_scaler_mean_kernel[
             dtype, BUF_CAP, Self.action_dim
         ]
-        ctx.enqueue_function[obs_mean_k, obs_mean_k](
+        ctx.enqueue_function[obs_mean_k](
             mean_obs_t, obs_data_t, n,
             grid_dim=(Self.obs_dim,), block_dim=(1,),
         )
-        ctx.enqueue_function[act_mean_k, act_mean_k](
+        ctx.enqueue_function[act_mean_k](
             mean_act_t, act_data_t, n,
             grid_dim=(Self.action_dim,), block_dim=(1,),
         )
@@ -953,11 +953,11 @@ struct GPUDynamicsEnsemble[
         comptime act_std_k = compute_scaler_std_kernel[
             dtype, BUF_CAP, Self.action_dim
         ]
-        ctx.enqueue_function[obs_std_k, obs_std_k](
+        ctx.enqueue_function[obs_std_k](
             std_obs_t, obs_data_t, mean_obs_t, n, min_std,
             grid_dim=(Self.obs_dim,), block_dim=(1,),
         )
-        ctx.enqueue_function[act_std_k, act_std_k](
+        ctx.enqueue_function[act_std_k](
             std_act_t, act_data_t, mean_act_t, n, min_std,
             grid_dim=(Self.action_dim,), block_dim=(1,),
         )
@@ -997,7 +997,7 @@ struct GPUDynamicsEnsemble[
         var rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](self.rng_counters[m].unsafe_ptr())
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t, grid_dim=(1,), block_dim=(1,),
         )
         buffer.sample[TB](
@@ -1014,7 +1014,7 @@ struct GPUDynamicsEnsemble[
         var input_t = LayoutTensor[
             dtype, Layout.row_major(TB, Self.DynModel.IN_DIM), MutAnyOrigin
         ](self.t_input.unsafe_ptr())
-        ctx.enqueue_function[cat_k, cat_k](
+        ctx.enqueue_function[cat_k](
             input_t, obs_t, act_t,
             grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
         )
@@ -1026,7 +1026,7 @@ struct GPUDynamicsEnsemble[
             dtype, Layout.row_major(Self.DYN_IN), MutAnyOrigin
         ](self.input_std.unsafe_ptr())
         comptime norm_k = normalize_input_kernel[dtype, TB, Self.DYN_IN]
-        ctx.enqueue_function[norm_k, norm_k](
+        ctx.enqueue_function[norm_k](
             input_t, mean_full_t, std_full_t,
             grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
         )
@@ -1039,7 +1039,7 @@ struct GPUDynamicsEnsemble[
         var target_t = LayoutTensor[
             dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
         ](self.t_target.unsafe_ptr())
-        ctx.enqueue_function[tgt_k, tgt_k](
+        ctx.enqueue_function[tgt_k](
             target_t, obs_t, nobs_t, rew_t,
             grid_dim=(PRED_BLOCKS,), block_dim=(TPB_VAL,),
         )
@@ -1074,7 +1074,7 @@ struct GPUDynamicsEnsemble[
         var min_grad_t = LayoutTensor[
             dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
         ](self.min_lv_grad_scratch.unsafe_ptr())
-        ctx.enqueue_function[nll_k, nll_k](
+        ctx.enqueue_function[nll_k](
             grad_out_t,
             output_t,
             target_t,
@@ -1136,11 +1136,11 @@ struct GPUDynamicsEnsemble[
         var bounds_counter_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](self.bounds_step_counters[m].unsafe_ptr())
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             bounds_counter_t, grid_dim=(1,), block_dim=(1,),
         )
 
-        ctx.enqueue_function[bounds_k, bounds_k](
+        ctx.enqueue_function[bounds_k](
             max_lv_t,
             min_lv_t,
             max_m_t,
@@ -1270,7 +1270,7 @@ struct GPUDynamicsEnsemble[
                 # Holdout evaluation: check every holdout_check_every epochs
                 # to reduce GPU sync overhead (main Phase 2 optimization)
                 if (epoch + 1) % holdout_check_every == 0 or epoch == max_epochs - 1:
-                    ctx.enqueue_function[dyn_incr_k, dyn_incr_k](
+                    ctx.enqueue_function[dyn_incr_k](
                         dyn_rng_t,
                         grid_dim=(1,),
                         block_dim=(1,),
@@ -1299,7 +1299,7 @@ struct GPUDynamicsEnsemble[
                         Layout.row_major(TB, Self.DynModel.IN_DIM),
                         MutAnyOrigin,
                     ](self.t_input.unsafe_ptr())
-                    ctx.enqueue_function[concat_k, concat_k](
+                    ctx.enqueue_function[concat_k](
                         h_input_t,
                         h_obs_t,
                         h_act_t,
@@ -1316,7 +1316,7 @@ struct GPUDynamicsEnsemble[
                     comptime h_norm_k = normalize_input_kernel[
                         dtype, TB, Self.DYN_IN
                     ]
-                    ctx.enqueue_function[h_norm_k, h_norm_k](
+                    ctx.enqueue_function[h_norm_k](
                         h_input_t, h_mean_t, h_std_t,
                         grid_dim=(DYN_IN_BLOCKS,),
                         block_dim=(TPB_VAL,),
@@ -1333,7 +1333,7 @@ struct GPUDynamicsEnsemble[
                         Layout.row_major(TB, Self.DYN_PRED),
                         MutAnyOrigin,
                     ](self.t_target.unsafe_ptr())
-                    ctx.enqueue_function[target_k, target_k](
+                    ctx.enqueue_function[target_k](
                         h_target_t,
                         h_obs_t,
                         h_nobs_t,
@@ -1383,7 +1383,7 @@ struct GPUDynamicsEnsemble[
                     var h_min_grad_t = LayoutTensor[
                         dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
                     ](self.min_lv_grad_scratch.unsafe_ptr())
-                    ctx.enqueue_function[nll_k, nll_k](
+                    ctx.enqueue_function[nll_k](
                         h_grad_t,
                         h_output_t,
                         h_target_t,
@@ -1401,7 +1401,7 @@ struct GPUDynamicsEnsemble[
                         dtype, TB, Self.DYN_PRED
                     ]
                     comptime LOSS_BLOCKS = (TB + TPB_VAL - 1) // TPB_VAL
-                    ctx.enqueue_function[reduce_loss_k, reduce_loss_k](
+                    ctx.enqueue_function[reduce_loss_k](
                         h_loss_scratch_t,
                         h_loss_t,
                         grid_dim=(LOSS_BLOCKS,),
@@ -1413,7 +1413,7 @@ struct GPUDynamicsEnsemble[
                     var loss_scalar_t = LayoutTensor[
                         dtype, Layout.row_major(1), MutAnyOrigin
                     ](self.t_loss_scalar.unsafe_ptr())
-                    ctx.enqueue_function[reduce_k, reduce_k](
+                    ctx.enqueue_function[reduce_k](
                         h_loss_t,
                         loss_scalar_t,
                         grid_dim=(1,),
@@ -1506,7 +1506,7 @@ struct GPUDynamicsEnsemble[
         var dyn_rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](self.rng_counters[m].unsafe_ptr())
-        ctx.enqueue_function[dyn_incr_k, dyn_incr_k](
+        ctx.enqueue_function[dyn_incr_k](
             dyn_rng_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -1531,7 +1531,7 @@ struct GPUDynamicsEnsemble[
         var h_input_t = LayoutTensor[
             dtype, Layout.row_major(TB, Self.DYN_IN), MutAnyOrigin
         ](self.t_input.unsafe_ptr())
-        ctx.enqueue_function[concat_k, concat_k](
+        ctx.enqueue_function[concat_k](
             h_input_t, h_obs_t, h_act_t,
             grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
         )
@@ -1541,7 +1541,7 @@ struct GPUDynamicsEnsemble[
         var h_std_t = LayoutTensor[
             dtype, Layout.row_major(Self.DYN_IN), MutAnyOrigin
         ](self.input_std.unsafe_ptr())
-        ctx.enqueue_function[norm_k, norm_k](
+        ctx.enqueue_function[norm_k](
             h_input_t, h_mean_t, h_std_t,
             grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
         )
@@ -1555,7 +1555,7 @@ struct GPUDynamicsEnsemble[
         var h_target_t = LayoutTensor[
             dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
         ](self.t_target.unsafe_ptr())
-        ctx.enqueue_function[target_k, target_k](
+        ctx.enqueue_function[target_k](
             h_target_t, h_obs_t, h_nobs_t, h_rew_t,
             grid_dim=(PRED_BLOCKS,), block_dim=(TPB_VAL,),
         )
@@ -1575,14 +1575,14 @@ struct GPUDynamicsEnsemble[
         var h_loss_t = LayoutTensor[
             dtype, Layout.row_major(TB), MutAnyOrigin
         ](self.t_loss.unsafe_ptr())
-        ctx.enqueue_function[mse_k, mse_k](
+        ctx.enqueue_function[mse_k](
             h_loss_t, h_output_for_mse_t, h_target_t,
             grid_dim=(BATCH_BLOCKS,), block_dim=(TPB_VAL,),
         )
         var loss_scalar_t = LayoutTensor[
             dtype, Layout.row_major(1), MutAnyOrigin
         ](self.t_loss_scalar.unsafe_ptr())
-        ctx.enqueue_function[reduce_k, reduce_k](
+        ctx.enqueue_function[reduce_k](
             h_loss_t, loss_scalar_t,
             grid_dim=(1,), block_dim=(1,),
         )
@@ -1907,7 +1907,7 @@ struct MBPOAgent[
     var checkpoint_path: String
 
     # Logging
-    var logger: UnsafePointer[Self.L, MutAnyOrigin]
+    var logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]]
     var diag_every: Int
 
     def __init__(
@@ -1989,7 +1989,7 @@ struct MBPOAgent[
 
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         self.diag_every = diag_every
 
     # =========================================================================
@@ -2276,24 +2276,24 @@ struct MBPOAgent[
                 critic_loss = (critic_loss + ci_loss) / 2.0
 
         # Diagnostic logging
-        if self.logger and (
+        if Bool(self.logger) and (
             self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
-                self.logger[].log_scalar("critic_loss", critic_loss, step)
-                self.logger[].log_scalar("alpha", self.alpha, step)
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar("critic_loss", critic_loss, step)
+                self.logger.value()[].log_scalar("alpha", self.alpha, step)
+                self.logger.value()[].log_scalar(
                     "real_buffer_size",
                     Float64(cpu_state.real_buffer.size),
                     step,
                 )
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "synth_buffer_size",
                     Float64(cpu_state.synth_buffer.size),
                     step,
                 )
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "rollout_length", Float64(self.rollout_length), step
                 )
             except:
@@ -2671,7 +2671,7 @@ struct MBPOAgent[
         var rollout_rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu_state.rng_counter.unsafe_ptr())
-        ctx.enqueue_function[rollout_incr_k, rollout_incr_k](
+        ctx.enqueue_function[rollout_incr_k](
             rollout_rng_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -2729,7 +2729,7 @@ struct MBPOAgent[
                 Self.ACTIONS,
                 Self.ACTOR_OUT,
             ]
-            ctx.enqueue_function[sac_k, sac_k](
+            ctx.enqueue_function[sac_k](
                 r_act_t,
                 raw_t,
                 Scalar[dtype](self.action_scale),
@@ -2747,7 +2747,7 @@ struct MBPOAgent[
                 Layout.row_major(RB, Self.Config.DynamicsModel.IN_DIM),
                 MutAnyOrigin,
             ](gpu_dynamics.r_dyn_input.unsafe_ptr())
-            ctx.enqueue_function[concat_k, concat_k](
+            ctx.enqueue_function[concat_k](
                 r_dyn_in_t,
                 r_obs_t,
                 r_act_t,
@@ -2762,7 +2762,7 @@ struct MBPOAgent[
                 dtype, Layout.row_major(DYN_IN), MutAnyOrigin
             ](gpu_dynamics.input_std.unsafe_ptr())
             comptime r_norm_k = normalize_input_kernel[dtype, RB, DYN_IN]
-            ctx.enqueue_function[r_norm_k, r_norm_k](
+            ctx.enqueue_function[r_norm_k](
                 r_dyn_in_t, r_mean_t, r_std_t,
                 grid_dim=(DYN_IN_BLOCKS,),
                 block_dim=(TPB_VAL,),
@@ -2809,7 +2809,7 @@ struct MBPOAgent[
             var elite_rng_t = LayoutTensor[
                 DType.uint32, Layout.row_major(1), MutAnyOrigin
             ](gpu_dynamics.r_elite_rng.unsafe_ptr())
-            ctx.enqueue_function[rollout_incr_k, rollout_incr_k](
+            ctx.enqueue_function[rollout_incr_k](
                 elite_rng_t,
                 grid_dim=(1,),
                 block_dim=(1,),
@@ -2817,7 +2817,7 @@ struct MBPOAgent[
             var elite_slot_t = LayoutTensor[
                 DType.int32, Layout.row_major(RB), MutAnyOrigin
             ](gpu_dynamics.r_elite_idx_per_sample.unsafe_ptr())
-            ctx.enqueue_function[elite_assign_k, elite_assign_k](
+            ctx.enqueue_function[elite_assign_k](
                 elite_slot_t,
                 elite_rng_t,
                 grid_dim=(RB_BLOCKS,),
@@ -2854,7 +2854,7 @@ struct MBPOAgent[
                 Layout.row_major(NUM_ENSEMBLE_C * DYN_PRED),
                 MutAnyOrigin,
             ](gpu_dynamics.min_lv_buf.unsafe_ptr())
-            ctx.enqueue_function[sample_k, sample_k](
+            ctx.enqueue_function[sample_k](
                 r_next_t,
                 r_rew_t,
                 r_dyn_out_all_t,
@@ -2870,7 +2870,7 @@ struct MBPOAgent[
 
             # Clamp synthetic rewards to prevent NaN cascades
             comptime clamp_k = clamp_rewards_kernel[dtype, RB]
-            ctx.enqueue_function[clamp_k, clamp_k](
+            ctx.enqueue_function[clamp_k](
                 r_rew_t,
                 Scalar[dtype](-100.0),
                 Scalar[dtype](100.0),
@@ -2892,7 +2892,7 @@ struct MBPOAgent[
             var dones_for_mask = LayoutTensor[
                 dtype, Layout.row_major(RB), MutAnyOrigin
             ](gpu_dynamics.r_dones.unsafe_ptr())
-            ctx.enqueue_function[mask_dead_k, mask_dead_k](
+            ctx.enqueue_function[mask_dead_k](
                 alive_t,
                 r_rew_t,
                 dones_for_mask,
@@ -2916,7 +2916,7 @@ struct MBPOAgent[
             # dones now has 1.0 for both newly terminated AND already dead.
             # alive * (1-1) = 0 for both cases — correct.
             comptime update_alive_k = update_alive_mask_kernel[dtype, RB]
-            ctx.enqueue_function[update_alive_k, update_alive_k](
+            ctx.enqueue_function[update_alive_k](
                 alive_t,
                 dones_for_mask,
                 grid_dim=(RB_BLOCKS,),
@@ -2977,7 +2977,7 @@ struct MBPOAgent[
         comptime sac_explore_k = sac_sample_actions_kernel[
             dtype, N_ENVS, Self.ACTIONS, Self.ACTOR_OUT
         ]
-        ctx.enqueue_function[sac_explore_k, sac_explore_k](
+        ctx.enqueue_function[sac_explore_k](
             act_t,
             raw_t,
             Scalar[dtype](self.action_scale),
@@ -3026,7 +3026,7 @@ struct MBPOAgent[
         var rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu_state.rng_counter.unsafe_ptr())
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -3060,7 +3060,7 @@ struct MBPOAgent[
         )
 
         # Increment RNG again for independent synthetic sampling
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -3150,7 +3150,7 @@ struct MBPOAgent[
 
         # Phase 2: Target actions (SAC: use online actor, no target)
         # Increment RNG counter before target action
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -3176,7 +3176,7 @@ struct MBPOAgent[
 
         # Concat next_obs + next_act → next_ci, forward target critics
         var next_ci_t = gpu_state.next_ci_view[BS]()
-        ctx.enqueue_function[concat_k, concat_k](
+        ctx.enqueue_function[concat_k](
             next_ci_t,
             nobs_t,
             next_act_t,
@@ -3222,7 +3222,7 @@ struct MBPOAgent[
         var q_grad_t = gpu_state.q_grad_view[BS]()
         var d_ci_t = gpu_state.d_ci_view[BS]()
 
-        ctx.enqueue_function[concat_k, concat_k](
+        ctx.enqueue_function[concat_k](
             ci_t,
             obs_t,
             act_t,
@@ -3238,7 +3238,7 @@ struct MBPOAgent[
             q_cache_t,
             gpu_state.critic_ws,
         )
-        ctx.enqueue_function[mse_grad_k, mse_grad_k](
+        ctx.enqueue_function[mse_grad_k](
             q_grad_t,
             q_t,
             targets_t,
@@ -3271,13 +3271,13 @@ struct MBPOAgent[
                 dtype, Layout.row_major(C_BLOCKS), MutAnyOrigin
             ](gpu_state.grad_clip_ps.unsafe_ptr())
 
-            ctx.enqueue_function[c_norm_k, c_norm_k](
+            ctx.enqueue_function[c_norm_k](
                 c_ps_t,
                 g_critic,
                 grid_dim=(C_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[c_clip_k, c_clip_k](
+            ctx.enqueue_function[c_clip_k](
                 g_critic,
                 c_ps_t,
                 Scalar[dtype](self.max_grad_norm),
@@ -3300,7 +3300,7 @@ struct MBPOAgent[
                 q2_cache_t,
                 gpu_state.critic2_ws,
             )
-            ctx.enqueue_function[mse_grad_k, mse_grad_k](
+            ctx.enqueue_function[mse_grad_k](
                 q_grad_t,
                 q2_out_t,
                 targets_t,
@@ -3333,13 +3333,13 @@ struct MBPOAgent[
                     dtype, Layout.row_major(C_BLOCKS2), MutAnyOrigin
                 ](gpu_state.grad_clip_ps.unsafe_ptr())
 
-                ctx.enqueue_function[c2_norm_k, c2_norm_k](
+                ctx.enqueue_function[c2_norm_k](
                     c2_ps_t,
                     g_c2,
                     grid_dim=(C_BLOCKS2,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function[c2_clip_k, c2_clip_k](
+                ctx.enqueue_function[c2_clip_k](
                     g_c2,
                     c2_ps_t,
                     Scalar[dtype](self.max_grad_norm),
@@ -3363,7 +3363,7 @@ struct MBPOAgent[
                 p_c2 = gpu_state.critics.online_params_view(1)
                 c2_ws = gpu_state.critic2_ws
             # Increment RNG counter before actor loss
-            ctx.enqueue_function[incr_k, incr_k](
+            ctx.enqueue_function[incr_k](
                 rng_t,
                 grid_dim=(1,),
                 block_dim=(1,),
@@ -3407,13 +3407,13 @@ struct MBPOAgent[
                     dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
                 ](gpu_state.grad_clip_ps.unsafe_ptr())
 
-                ctx.enqueue_function[a_norm_k, a_norm_k](
+                ctx.enqueue_function[a_norm_k](
                     a_ps_t,
                     a_grads,
                     grid_dim=(A_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function[a_clip_k, a_clip_k](
+                ctx.enqueue_function[a_clip_k](
                     a_grads,
                     a_ps_t,
                     Scalar[dtype](self.max_grad_norm),
@@ -3473,9 +3473,7 @@ struct MBPOAgent[
                     # collapses to max-entropy and never recovers.
                     # lp_clip=50 bounds per-sample log_pi so a single
                     # tanh-saturated batch element can't poison Adam's moments.
-                    ctx.enqueue_function[
-                        mbpo_alpha_wrapper, mbpo_alpha_wrapper
-                    ](
+                    ctx.enqueue_function[mbpo_alpha_wrapper](
                         scalars_t,
                         src_lp,
                         Scalar[dtype](0.5),
@@ -3503,7 +3501,7 @@ struct MBPOAgent[
         # GPU Diagnostic logging (periodic)
         comptime BS = Self.BATCH
         if (
-            self.logger
+            Bool(self.logger)
             and self.diag_every > 0
             and self.train_step_count % self.diag_every == 0
         ):
@@ -3550,24 +3548,24 @@ struct MBPOAgent[
                 mean_abs_act /= Float64(BS * Self.ACTIONS)
 
                 var step = self.train_step_count
-                self.logger[].log_scalar("critic_loss", critic_loss, step)
-                self.logger[].log_scalar("mean_q", mean_q, step)
-                self.logger[].log_scalar("mean_target", mean_tgt, step)
-                self.logger[].log_scalar("mean_reward", mean_rew, step)
-                self.logger[].log_scalar("mean_next_q", mean_nq, step)
-                self.logger[].log_scalar("mean_done", mean_done, step)
-                self.logger[].log_scalar("mean_abs_action", mean_abs_act, step)
+                self.logger.value()[].log_scalar("critic_loss", critic_loss, step)
+                self.logger.value()[].log_scalar("mean_q", mean_q, step)
+                self.logger.value()[].log_scalar("mean_target", mean_tgt, step)
+                self.logger.value()[].log_scalar("mean_reward", mean_rew, step)
+                self.logger.value()[].log_scalar("mean_next_q", mean_nq, step)
+                self.logger.value()[].log_scalar("mean_done", mean_done, step)
+                self.logger.value()[].log_scalar("mean_abs_action", mean_abs_act, step)
                 # Read alpha from GPU (not self.alpha — that's only synced at
                 # print boundaries by the training loop). Uses caller-supplied
                 # pre-allocated alpha_host to avoid per-diag allocation.
                 comptime if Self.Config.ActorLoss.HAS_ALPHA:
                     ctx.enqueue_copy(alpha_host, gpu_state.gpu_scalars)
                     ctx.synchronize()
-                    self.logger[].log_scalar(
+                    self.logger.value()[].log_scalar(
                         "alpha", Float64(alpha_host[0]), step
                     )
                 else:
-                    self.logger[].log_scalar("alpha", self.alpha, step)
+                    self.logger.value()[].log_scalar("alpha", self.alpha, step)
             except:
                 pass
 
@@ -3590,7 +3588,7 @@ struct MBPOAgent[
         var rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu_state.rng_counter.unsafe_ptr())
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t, grid_dim=(1,), block_dim=(1,),
         )
         gpu_state.buffer.sample[BS](
@@ -3803,9 +3801,7 @@ struct MBPOAgent[
         verbose: Bool = False,
         print_every: Int = 1,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
     ) raises -> TrainingMetrics:
         """MBPO CPU training loop body. See `train()` and `run_mbpo_train`."""
         var metrics = TrainingMetrics(
@@ -3900,8 +3896,8 @@ struct MBPOAgent[
                         episode_steps,
                         self.get_explore_rate(),
                     )
-                    if logger:
-                        logger[].log_scalar(
+                    if Bool(logger):
+                        logger.value()[].log_scalar(
                             "episode_reward", episode_reward, total_env_steps
                         )
                     episode_obs = env.reset_obs_list()
@@ -3936,8 +3932,8 @@ struct MBPOAgent[
 
                 var avg_eval = eval_total / Float64(eval_episodes)
 
-                if logger:
-                    logger[].log_scalar("eval_reward", avg_eval, total_env_steps)
+                if Bool(logger):
+                    logger.value()[].log_scalar("eval_reward", avg_eval, total_env_steps)
 
                 if verbose and (epoch + 1) % print_every == 0:
                     print(
@@ -3960,8 +3956,8 @@ struct MBPOAgent[
             ):
                 self.save_checkpoint(cpu_state, self.checkpoint_path)
 
-        if logger:
-            logger[].flush()
+        if Bool(logger):
+            logger.value()[].flush()
         return metrics^
 
     def _run_train_gpu_impl[
@@ -3976,9 +3972,7 @@ struct MBPOAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
     ) raises -> TrainingMetrics:
         """MBPO GPU training loop body. See `train_gpu()` and `run_mbpo_train_gpu`."""
         comptime n_envs = Self.GPU_N_ENVS
@@ -4107,7 +4101,7 @@ struct MBPOAgent[
                     Layout.row_major(n_envs, E.ACTION_DIM),
                     MutAnyOrigin,
                 ](actions_buf.unsafe_ptr())
-                ctx.enqueue_function[warmup_k, warmup_k](
+                ctx.enqueue_function[warmup_k](
                     act_t,
                     action_scale_val,
                     Scalar[DType.uint32](step_seed),
@@ -4155,13 +4149,13 @@ struct MBPOAgent[
                 dtype, Layout.row_major(1), MutAnyOrigin
             ](gpu_episode_count_buf.unsafe_ptr())
 
-            ctx.enqueue_function[accum_k, accum_k](
+            ctx.enqueue_function[accum_k](
                 ep_rew_t, rew_t, grid_dim=(env_blocks,), block_dim=(tpb,),
             )
-            ctx.enqueue_function[incr_k, incr_k](
+            ctx.enqueue_function[incr_k](
                 ep_steps_t, grid_dim=(env_blocks,), block_dim=(tpb,),
             )
-            ctx.enqueue_function[log_reset_k, log_reset_k](
+            ctx.enqueue_function[log_reset_k](
                 dones_t, ep_rew_t, ep_steps_t, rsum_t, ecount_t,
                 grid_dim=(1,), block_dim=(1,),
             )
@@ -4225,8 +4219,8 @@ struct MBPOAgent[
                 var mean_holdout = gpu_dynamics.train_on_buffer[
                     Self.GPU_BUF_CAP
                 ](ctx, gpu_state.buffer)
-                if logger:
-                    logger[].log_scalar(
+                if Bool(logger):
+                    logger.value()[].log_scalar(
                         "dyn_holdout_loss", mean_holdout, total_steps
                     )
                     # Per-member MSE on a fresh holdout batch — same metric
@@ -4243,22 +4237,22 @@ struct MBPOAgent[
                             mse_min = L
                         if L > mse_max:
                             mse_max = L
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "dyn_holdout_mse_mean",
                         mse_sum / Float64(Self.Config.ENSEMBLE_SIZE),
                         total_steps,
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "dyn_holdout_mse_min", mse_min, total_steps
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "dyn_holdout_mse_max", mse_max, total_steps
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "dyn_holdout_spread", mse_max - mse_min, total_steps
                     )
                     var input_std_mean = gpu_dynamics.download_input_std(ctx)
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "dyn_input_std_mean", input_std_mean, total_steps
                     )
                 self.update_rollout_length(epoch)
@@ -4285,7 +4279,7 @@ struct MBPOAgent[
                 next_progress += progress_interval
 
             if (
-                verbose or (logger and logger[].is_active())
+                verbose or (Bool(logger) and logger.value()[].is_active())
             ) and total_steps >= next_print:
                 ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
                 ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
@@ -4318,33 +4312,33 @@ struct MBPOAgent[
                 ctx.enqueue_memset(gpu_reward_sum_buf, 0)
                 ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
-                if logger:
-                    logger[].log_scalar(
+                if Bool(logger):
+                    logger.value()[].log_scalar(
                         "avg_reward", last_avg_reward, total_steps
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "episodes", Float64(completed_episodes), total_steps
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "train_steps", Float64(total_train_steps), total_steps
                     )
-                    logger[].log_scalar("alpha", self.alpha, total_steps)
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar("alpha", self.alpha, total_steps)
+                    logger.value()[].log_scalar(
                         "rollout_length",
                         Float64(self.rollout_length),
                         total_steps,
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "real_buffer_size",
                         Float64(gpu_state.buffer.size),
                         total_steps,
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "synth_buffer_size",
                         Float64(synth_buffer.size),
                         total_steps,
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "model_epoch", Float64(epoch), total_steps
                     )
 
@@ -4403,8 +4397,8 @@ struct MBPOAgent[
         ):
             self.save_checkpoint(cpu_state, self.checkpoint_path)
 
-        if logger:
-            logger[].flush()
+        if Bool(logger):
+            logger.value()[].flush()
         return metrics^
 
     # =========================================================================
@@ -4425,9 +4419,7 @@ struct MBPOAgent[
         verbose: Bool = False,
         print_every: Int = 1,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
     ) raises -> TrainingMetrics:
         """CPU MBPO training convenience wrapper.
 
@@ -4463,9 +4455,7 @@ struct MBPOAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
     ) raises -> TrainingMetrics:
         """GPU MBPO training convenience wrapper.
 

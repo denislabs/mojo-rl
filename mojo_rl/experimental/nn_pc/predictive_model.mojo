@@ -206,7 +206,7 @@ struct PCReLU(PCActivation):
         comptime k = Self._apply_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
+        ctx.enqueue_function[k](
             a, x_hat,
             grid_dim=(blocks,),
             block_dim=(TPB,),
@@ -230,7 +230,7 @@ struct PCReLU(PCActivation):
         comptime k = Self._apply_deriv_mul_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
+        ctx.enqueue_function[k](
             a, eps, h,
             grid_dim=(blocks,),
             block_dim=(TPB,),
@@ -317,7 +317,7 @@ struct PCIdentity(PCActivation):
         comptime k = Self._copy_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
+        ctx.enqueue_function[k](
             a, x_hat,
             grid_dim=(blocks,),
             block_dim=(TPB,),
@@ -342,7 +342,7 @@ struct PCIdentity(PCActivation):
         comptime k = Self._copy_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
+        ctx.enqueue_function[k](
             eps, h,
             grid_dim=(blocks,),
             block_dim=(TPB,),

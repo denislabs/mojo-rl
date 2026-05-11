@@ -755,7 +755,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         MutAnyOrigin,
                     ](temp_grads_buf.unsafe_ptr())
                     comptime ACCUM_GRID = (Self.Inner.PARAM_SIZE + TPB - 1) // TPB
-                    ctx.enqueue_function[_accum_kernel, _accum_kernel](
+                    ctx.enqueue_function[_accum_kernel](
                         main_grads_v, temp_grads_v,
                         grid_dim=(ACCUM_GRID,), block_dim=(TPB,),
                     )
@@ -1087,7 +1087,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         MutAnyOrigin,
                     ](temp_grads_buf.unsafe_ptr())
                     comptime ACCUM_GRID = (Self.Inner.PARAM_SIZE + TPB - 1) // TPB
-                    ctx.enqueue_function[_accum_kernel, _accum_kernel](
+                    ctx.enqueue_function[_accum_kernel](
                         main_grads_v, temp_grads_v,
                         grid_dim=(ACCUM_GRID,), block_dim=(TPB,),
                     )

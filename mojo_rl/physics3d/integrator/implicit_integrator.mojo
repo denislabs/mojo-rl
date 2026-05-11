@@ -1835,7 +1835,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                 STEP_THREADS,
             ]
 
-            ctx.enqueue_function[mt_kernel_wrapper, mt_kernel_wrapper](
+            ctx.enqueue_function[mt_kernel_wrapper](
                 state,
                 model_lt,
                 workspace,
@@ -1857,7 +1857,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                 NGEOM,
             ]
 
-            ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            ctx.enqueue_function[kernel_wrapper](
                 state,
                 model_lt,
                 workspace,
@@ -1886,7 +1886,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             NSITE,
         ]
 
-        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+        ctx.enqueue_function[solver_wrapper](
             state,
             model_lt,
             workspace,
@@ -1907,7 +1907,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             WS_SIZE,
         ]
 
-        ctx.enqueue_function[finalize_kernel_wrapper, finalize_kernel_wrapper](
+        ctx.enqueue_function[finalize_kernel_wrapper](
             state,
             model_lt,
             workspace,

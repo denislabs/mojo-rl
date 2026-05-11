@@ -120,7 +120,7 @@ struct NegateOp[dim: Int](DiffOp):
                 return
             o.ptr[idx] = -i.ptr[idx]
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output, input_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )
 
@@ -167,6 +167,6 @@ struct NegateOp[dim: Int](DiffOp):
                 return
             gi.ptr[idx] = -go.ptr[idx]
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input, go_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )

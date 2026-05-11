@@ -214,7 +214,7 @@ struct PCReLU(PCActivation):
         comptime k = Self._relu_apply_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
+        ctx.enqueue_function[k](
             x, a, grid_dim=(blocks,), block_dim=(TPB,)
         )
 
@@ -234,7 +234,7 @@ struct PCReLU(PCActivation):
         comptime k = Self._relu_deriv_mul_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
+        ctx.enqueue_function[k](
             x, z_in, z_out, grid_dim=(blocks,), block_dim=(TPB,)
         )
 
@@ -311,7 +311,7 @@ struct PCIdentity(PCActivation):
         comptime k = Self._identity_copy_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
+        ctx.enqueue_function[k](
             x, a, grid_dim=(blocks,), block_dim=(TPB,)
         )
 
@@ -332,7 +332,7 @@ struct PCIdentity(PCActivation):
         comptime k = Self._identity_copy_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
+        ctx.enqueue_function[k](
             z_in, z_out, grid_dim=(blocks,), block_dim=(TPB,)
         )
 
@@ -443,7 +443,7 @@ struct PCTanh(PCActivation):
         comptime k = Self._tanh_apply_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
+        ctx.enqueue_function[k](
             x, a, grid_dim=(blocks,), block_dim=(TPB,)
         )
 
@@ -463,7 +463,7 @@ struct PCTanh(PCActivation):
         comptime k = Self._tanh_deriv_mul_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
+        ctx.enqueue_function[k](
             x, z_in, z_out, grid_dim=(blocks,), block_dim=(TPB,)
         )
 
@@ -590,7 +590,7 @@ struct PCSwish(PCActivation):
         comptime k = Self._swish_apply_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
+        ctx.enqueue_function[k](
             x, a, grid_dim=(blocks,), block_dim=(TPB,)
         )
 
@@ -610,7 +610,7 @@ struct PCSwish(PCActivation):
         comptime k = Self._swish_deriv_mul_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
+        ctx.enqueue_function[k](
             x, z_in, z_out, grid_dim=(blocks,), block_dim=(TPB,)
         )
 

@@ -2055,7 +2055,7 @@ struct NormedLinear[
                 var col = idx % Self.IN_DIM
                 cache[row, col] = input[row, col]
 
-            ctx.enqueue_function[cache_input_wrapper, cache_input_wrapper](
+            ctx.enqueue_function[cache_input_wrapper](
                 cache,
                 input_immut,
                 grid_dim=(cache_in_blocks,),
@@ -2091,7 +2091,7 @@ struct NormedLinear[
             ):
                 Self._bias_add_kernel[BATCH, dtype](output, bias)
 
-            ctx.enqueue_function[bias_add_wrapper, bias_add_wrapper](
+            ctx.enqueue_function[bias_add_wrapper](
                 linear_out_mut,
                 b,
                 grid_dim=(bias_blocks,),
@@ -2132,7 +2132,7 @@ struct NormedLinear[
                     linear_out, input, W, b, cache
                 )
 
-            ctx.enqueue_function[linear_wrapper, linear_wrapper](
+            ctx.enqueue_function[linear_wrapper](
                 linear_out_mut,
                 input_immut,
                 W,
@@ -2167,7 +2167,7 @@ struct NormedLinear[
                 output, linear_out, gamma, beta, cache, eps
             )
 
-        ctx.enqueue_function[ln_mish_wrapper, ln_mish_wrapper](
+        ctx.enqueue_function[ln_mish_wrapper](
             output,
             linear_out_immut,
             gamma,
@@ -2256,7 +2256,7 @@ struct NormedLinear[
             ):
                 Self._bias_add_kernel[BATCH, dtype](output, bias)
 
-            ctx.enqueue_function[bias_add_nc_wrapper, bias_add_nc_wrapper](
+            ctx.enqueue_function[bias_add_nc_wrapper](
                 linear_out_mut,
                 b,
                 grid_dim=(bias_blocks_nc,),
@@ -2292,7 +2292,7 @@ struct NormedLinear[
                     linear_out, input, W, b
                 )
 
-            ctx.enqueue_function[linear_nc_wrapper, linear_nc_wrapper](
+            ctx.enqueue_function[linear_nc_wrapper](
                 linear_out_mut,
                 input_immut,
                 W,
@@ -2323,7 +2323,7 @@ struct NormedLinear[
                 output, linear_out, gamma, beta, eps
             )
 
-        ctx.enqueue_function[ln_mish_wrapper, ln_mish_wrapper](
+        ctx.enqueue_function[ln_mish_wrapper](
             output,
             linear_out_immut,
             gamma,
@@ -2435,9 +2435,7 @@ struct NormedLinear[
                 d_linear_out, grad_output, gamma, cache
             )
 
-        ctx.enqueue_function[
-            mish_ln_backward_wrapper, mish_ln_backward_wrapper
-        ](
+        ctx.enqueue_function[mish_ln_backward_wrapper](
             d_linear_out_mut,
             grad_output_immut,
             gamma,
@@ -2470,9 +2468,7 @@ struct NormedLinear[
                 dgamma, dbeta, grad_output, cache
             )
 
-        ctx.enqueue_function[
-            dgamma_dbeta_wrapper, dgamma_dbeta_wrapper
-        ](
+        ctx.enqueue_function[dgamma_dbeta_wrapper](
             dgamma,
             dbeta,
             grad_output_immut,
@@ -2546,7 +2542,7 @@ struct NormedLinear[
                     dW, cache, d_linear_out
                 )
 
-            ctx.enqueue_function[dW_wrapper_max, dW_wrapper_max](
+            ctx.enqueue_function[dW_wrapper_max](
                 dW,
                 cache_immut,
                 d_linear_out_immut,
@@ -2578,7 +2574,7 @@ struct NormedLinear[
                     grad_input, d_linear_out, W
                 )
 
-            ctx.enqueue_function[dx_wrapper, dx_wrapper](
+            ctx.enqueue_function[dx_wrapper](
                 grad_input,
                 d_linear_out_immut,
                 W,
@@ -2609,7 +2605,7 @@ struct NormedLinear[
             ):
                 Self._backward_dW_kernel[BATCH, dtype](dW, cache, d_linear_out)
 
-            ctx.enqueue_function[dW_wrapper, dW_wrapper](
+            ctx.enqueue_function[dW_wrapper](
                 dW,
                 cache_immut,
                 d_linear_out_immut,
@@ -2639,7 +2635,7 @@ struct NormedLinear[
                 # multi-call backward sums bias gradients.
                 db[col] = db[col] + acc
 
-        ctx.enqueue_function[db_wrapper, db_wrapper](
+        ctx.enqueue_function[db_wrapper](
             db,
             d_linear_out_immut,
             grid_dim=(db_blocks,),

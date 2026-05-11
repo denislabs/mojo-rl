@@ -41,14 +41,14 @@ def ezv2_copy_obs_at_step_kernel[
     BATCH: Int,
     K_PLUS_1: Int,
     OBS: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     batch_obs: LayoutTensor[
         dtype, Layout.row_major(BATCH * K_PLUS_1 * OBS), MutAnyOrigin
     ],
     out_obs: LayoutTensor[dtype, Layout.row_major(BATCH * OBS), MutAnyOrigin],
     k_step: Int,
-):
+) where dtype.is_floating_point():
     """Gather `batch_obs[b, k_step, :]` into `out_obs[b, :]`."""
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
@@ -74,7 +74,7 @@ def ezv2_build_dyn_input_kernel[
     LATENT: Int,
     ACT: Int,
     K: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     hidden_step: LayoutTensor[
         dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
@@ -86,7 +86,7 @@ def ezv2_build_dyn_input_kernel[
         dtype, Layout.row_major(BATCH * (LATENT + ACT)), MutAnyOrigin
     ],
     k_step: Int,
-):
+) where dtype.is_floating_point():
     """Build `dyn_input[b, :] = hidden_step[b, :] ‖ batch_actions[b, k_step, :]`.
 
     `hidden_step` is a single time-slice already (host views the slot for
@@ -114,7 +114,7 @@ def ezv2_extract_hidden_after_dyn_kernel[
     BATCH: Int,
     LATENT: Int,
     BINS: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     dyn_out_step: LayoutTensor[
         dtype, Layout.row_major(BATCH * (LATENT + BINS)), MutAnyOrigin
@@ -122,7 +122,7 @@ def ezv2_extract_hidden_after_dyn_kernel[
     next_hidden: LayoutTensor[
         dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Copy `dyn_out_step[b, 0:LATENT]` → `next_hidden[b, :]`."""
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
@@ -154,7 +154,7 @@ def ezv2_policy_loss_grad_kernel[
     BATCH: Int,
     ACT: Int,
     PRED_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     pred_out_step: LayoutTensor[
         dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
@@ -169,7 +169,7 @@ def ezv2_policy_loss_grad_kernel[
         dtype, Layout.row_major(BATCH), MutAnyOrigin
     ],
     scale: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """CE(softmax(policy logits) || target) + grad on one time-slice.
 
     Writes scaled grad into the first ACT elements of
@@ -248,7 +248,7 @@ def ezv2_policy_loss_grad_continuous_kernel[
     BATCH: Int,
     ACT_DIM: Int,
     PRED_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     pred_out_step: LayoutTensor[
         dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
@@ -266,7 +266,7 @@ def ezv2_policy_loss_grad_continuous_kernel[
     ent_scale: Scalar[dtype],
     max_action: Scalar[dtype],
     min_std: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Squashed-Gaussian NLL + entropy bonus + grad on one time-slice.
 
     Pred-out layout: `pred_out_step[b, 0:2*ACT_DIM]` = (μ_raw ‖ σ_raw),
@@ -372,7 +372,7 @@ def ezv2_value_loss_grad_kernel[
     BINS: Int,
     ACT: Int,
     PRED_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     pred_out_step: LayoutTensor[
         dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
@@ -387,7 +387,7 @@ def ezv2_value_loss_grad_kernel[
         dtype, Layout.row_major(BATCH), MutAnyOrigin
     ],
     scale: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """CE(softmax(value logits) || two_hot(target)) + grad on one time-slice.
 
     Writes scaled grad into elements [ACT, ACT+BINS) of
@@ -432,7 +432,7 @@ def ezv2_reward_loss_grad_kernel[
     BINS: Int,
     LATENT: Int,
     DYN_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     dyn_out_step: LayoutTensor[
         dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
@@ -447,7 +447,7 @@ def ezv2_reward_loss_grad_kernel[
         dtype, Layout.row_major(BATCH), MutAnyOrigin
     ],
     scale: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """CE(softmax(reward logits) || two_hot(target)) + grad on one time-slice.
 
     Reward logits live at `dyn_out_step[b, LATENT:LATENT+BINS]`.
@@ -492,7 +492,7 @@ def ezv2_reward_loss_grad_kernel[
 def ezv2_cosine_loss_grad_kernel[
     BATCH: Int,
     PROJ: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     pred_dyn_step: LayoutTensor[
         dtype, Layout.row_major(BATCH * PROJ), MutAnyOrigin
@@ -507,7 +507,7 @@ def ezv2_cosine_loss_grad_kernel[
         dtype, Layout.row_major(BATCH), MutAnyOrigin
     ],
     scale: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Compute -cos(pred, target) and d/d pred on one time-slice.
 
     `proj_obs_step` is the stop-grad target; we only emit grad w.r.t.
@@ -552,11 +552,11 @@ def ezv2_cosine_loss_grad_kernel[
 
 def ezv2_reduce_add_kernel[
     BATCH: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     in_buf: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     accum: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Single-thread sum reduction: `accum[0] += Σ in_buf[i]`.
 
     Loss buffers are tiny (BATCH ≤ 64). One thread is fine + we avoid
@@ -583,11 +583,11 @@ def ezv2_reduce_add_kernel[
 
 def ezv2_add_kernel[
     SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     dst: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     src: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """`dst[i] += src[i]` elementwise."""
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= SIZE:
@@ -615,7 +615,7 @@ def ezv2_assemble_grad_dyn_step_kernel[
     BATCH: Int,
     LATENT: Int,
     BINS: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     grad_hidden_next: LayoutTensor[
         dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
@@ -626,7 +626,7 @@ def ezv2_assemble_grad_dyn_step_kernel[
     grad_dyn_out_step: LayoutTensor[
         dtype, Layout.row_major(BATCH * (LATENT + BINS)), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Build `grad_dyn_out_step[b] = [grad_hidden_next[b] || grad_dyn_out_reward[b, LATENT:]]`.
     """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -656,7 +656,7 @@ def ezv2_accumulate_dyn_grad_in_kernel[
     BATCH: Int,
     LATENT: Int,
     ACT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     grad_dyn_in: LayoutTensor[
         dtype, Layout.row_major(BATCH * (LATENT + ACT)), MutAnyOrigin
@@ -664,7 +664,7 @@ def ezv2_accumulate_dyn_grad_in_kernel[
     grad_hidden_step: LayoutTensor[
         dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Accumulate `grad_dyn_in[b, :LATENT]` into `grad_hidden_step[b, :]`."""
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
@@ -687,7 +687,7 @@ def ezv2_accumulate_dyn_grad_in_kernel[
 def ezv2_gather_reward_at_step_kernel[
     BATCH: Int,
     K: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     batch_rewards: LayoutTensor[
         dtype, Layout.row_major(BATCH * K), MutAnyOrigin
@@ -696,7 +696,7 @@ def ezv2_gather_reward_at_step_kernel[
         dtype, Layout.row_major(BATCH), MutAnyOrigin
     ],
     k_step: Int,
-):
+) where dtype.is_floating_point():
     """Gather `batch_rewards[b, k_step]` into `reward_target_scalar[b]`.
 
     `batch_rewards` is per-sample-time-major
@@ -716,7 +716,7 @@ def ezv2_gather_reward_at_step_kernel[
 def ezv2_gather_value_target_kernel[
     BATCH: Int,
     K_PLUS_1: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     value_target_full: LayoutTensor[
         dtype, Layout.row_major(BATCH * K_PLUS_1), MutAnyOrigin
@@ -725,7 +725,7 @@ def ezv2_gather_value_target_kernel[
         dtype, Layout.row_major(BATCH), MutAnyOrigin
     ],
     k_step: Int,
-):
+) where dtype.is_floating_point():
     """Gather `value_target_full[b, k_step]` into `value_target_scalar[b]`.
 
     `value_target_full` is per-sample-time-major
@@ -748,7 +748,7 @@ def ezv2_gather_policy_target_kernel[
     BATCH: Int,
     K_PLUS_1: Int,
     ACT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     batch_mcts_pol: LayoutTensor[
         dtype, Layout.row_major(BATCH * K_PLUS_1 * ACT), MutAnyOrigin
@@ -757,7 +757,7 @@ def ezv2_gather_policy_target_kernel[
         dtype, Layout.row_major(BATCH * ACT), MutAnyOrigin
     ],
     k_step: Int,
-):
+) where dtype.is_floating_point():
     """Gather `batch_mcts_pol[b, k_step, :]` into `policy_target_step[b, :]`.
 
     `batch_mcts_pol` is per-sample-time-major
@@ -779,7 +779,7 @@ def ezv2_gather_policy_target_kernel[
 
 def ezv2_priority_from_v_loss_kernel[
     BATCH: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     per_sample_v_loss: LayoutTensor[
         dtype, Layout.row_major(BATCH), MutAnyOrigin
@@ -787,7 +787,7 @@ def ezv2_priority_from_v_loss_kernel[
     priorities_out: LayoutTensor[
         dtype, Layout.row_major(BATCH), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Write `priorities_out[b] = per_sample_v_loss[b] + 1e-3`.
 
     Mirrors CPU `train_step` — `|TD error|` is approximated by the
@@ -815,7 +815,7 @@ def ezv2_priority_from_v_loss_kernel[
 def ezv2_copy_lstm_input_kernel[
     BATCH: Int,
     LSTM_HIDDEN: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     lstm_h_states: LayoutTensor[
         dtype, Layout.row_major(BATCH * LSTM_HIDDEN), MutAnyOrigin
@@ -829,7 +829,7 @@ def ezv2_copy_lstm_input_kernel[
     c_input: LayoutTensor[
         dtype, Layout.row_major(BATCH * LSTM_HIDDEN), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Copy a single-step slice of `lstm_h_states` / `lstm_c_states` into
     the per-step input scratch. The host pre-views the right time-slot
     via ptr-offset arithmetic before the call so the kernel sees only
@@ -844,7 +844,7 @@ def ezv2_copy_lstm_input_kernel[
 def ezv2_reward_prefix_loss_grad_kernel[
     BATCH: Int,
     BINS: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     rew_pref_logits_step: LayoutTensor[
         dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin
@@ -859,7 +859,7 @@ def ezv2_reward_prefix_loss_grad_kernel[
         dtype, Layout.row_major(BATCH), MutAnyOrigin
     ],
     scale: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """CE(softmax(reward-prefix logits) || two_hot(cumulative reward target))
     + grad on one time-slice.
 

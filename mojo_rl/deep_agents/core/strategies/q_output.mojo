@@ -147,7 +147,7 @@ struct DirectQ(QOutput):
             dst[b, a] = src[b, a]
 
         comptime TOTAL = BATCH * ACTIONS
-        ctx.enqueue_function[copy_kernel, copy_kernel](
+        ctx.enqueue_function[copy_kernel](
             raw_out,
             q_values,
             grid_dim=((TOTAL + TPB - 1) // TPB,),
@@ -186,7 +186,7 @@ struct DirectQ(QOutput):
             dst[b, a] = src[b, a]
 
         comptime TOTAL = BATCH * ACTIONS
-        ctx.enqueue_function[copy_kernel, copy_kernel](
+        ctx.enqueue_function[copy_kernel](
             dq,
             d_raw,
             grid_dim=((TOTAL + TPB - 1) // TPB,),
@@ -281,7 +281,7 @@ struct DuelingQ(QOutput):
         ):
             dueling_combine_kernel[dtype, BATCH, ACTIONS, RAW_OUT](q_out, d_out)
 
-        ctx.enqueue_function[combine_wrapper, combine_wrapper](
+        ctx.enqueue_function[combine_wrapper](
             q_values,
             raw_out,
             grid_dim=((BATCH + TPB - 1) // TPB,),
@@ -316,7 +316,7 @@ struct DuelingQ(QOutput):
         ):
             dueling_grad_kernel[dtype, BATCH, ACTIONS, RAW_OUT](d_out, dq_in)
 
-        ctx.enqueue_function[grad_wrapper, grad_wrapper](
+        ctx.enqueue_function[grad_wrapper](
             d_raw,
             dq,
             grid_dim=((BATCH + TPB - 1) // TPB,),

@@ -213,7 +213,7 @@ def create_surface(
             width: c_int, height: c_int, format: PixelFormat
         ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(width, height, format)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -265,7 +265,7 @@ def create_surface_from(
             pitch: c_int,
         ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(width, height, format, pixels, pitch)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -715,7 +715,7 @@ def load_bmp_io(
             src: Ptr[IOStream, MutAnyOrigin], closeio: Bool
         ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(src, closeio)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -743,7 +743,7 @@ def load_bmp(var file: String, out ret: Ptr[Surface, MutAnyOrigin]) raises:
         "SDL_LoadBMP",
         def(file: Ptr[c_char, ImmutAnyOrigin]) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(file.as_c_string_slice().unsafe_ptr())
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -1306,7 +1306,7 @@ def duplicate_surface(
         "SDL_DuplicateSurface",
         def(surface: Ptr[Surface, MutAnyOrigin]) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(surface)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -1348,7 +1348,7 @@ def scale_surface(
             scale_mode: ScaleMode,
         ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(surface, width, height, scale_mode)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -1391,7 +1391,7 @@ def convert_surface(
             surface: Ptr[Surface, MutAnyOrigin], format: PixelFormat
         ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(surface, format)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -1441,7 +1441,7 @@ def convert_surface_and_colorspace(
             props: PropertiesID,
         ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(surface, format, palette, colorspace, props)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 

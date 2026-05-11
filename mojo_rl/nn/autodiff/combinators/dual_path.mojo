@@ -447,7 +447,7 @@ struct DualPath[A: Model, B: Model](Model):
             else:
                 dst.ptr[idx] = sb.ptr[row * B_OUT + (col - A_OUT)]
 
-        ctx.enqueue_function[concat_k, concat_k](
+        ctx.enqueue_function[concat_k](
             output, a_immut, b_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )
 
@@ -580,7 +580,7 @@ struct DualPath[A: Model, B: Model](Model):
             var i = idx % A_OUT
             dst.ptr[idx] = src.ptr[b * Self.OUT_DIM + i]
 
-        ctx.enqueue_function[extract_a, extract_a](
+        ctx.enqueue_function[extract_a](
             ga_t, go_immut, grid_dim=(a_grid,), block_dim=(TPB,)
         )
 
@@ -605,7 +605,7 @@ struct DualPath[A: Model, B: Model](Model):
             var i = idx % B_OUT
             dst.ptr[idx] = src.ptr[b * Self.OUT_DIM + A_OUT + i]
 
-        ctx.enqueue_function[extract_b, extract_b](
+        ctx.enqueue_function[extract_b](
             gb_t, go_immut, grid_dim=(b_grid,), block_dim=(TPB,)
         )
 
@@ -672,7 +672,7 @@ struct DualPath[A: Model, B: Model](Model):
                 return
             a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
 
-        ctx.enqueue_function[add_gi, add_gi](
+        ctx.enqueue_function[add_gi](
             grad_input,
             gi_b_immut,
             grid_dim=(gi_grid,),
@@ -798,7 +798,7 @@ struct DualPath[A: Model, B: Model](Model):
             else:
                 dst.ptr[idx] = sb.ptr[row * B_OUT + (col - A_OUT)]
 
-        ctx.enqueue_function[concat_k, concat_k](
+        ctx.enqueue_function[concat_k](
             output, a_immut, b_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )
 
@@ -886,7 +886,7 @@ struct DualPath[A: Model, B: Model](Model):
             var i = idx % A_OUT
             dst.ptr[idx] = src.ptr[b * Self.OUT_DIM + i]
 
-        ctx.enqueue_function[extract_a, extract_a](
+        ctx.enqueue_function[extract_a](
             ga_t, go_immut, grid_dim=(a_grid,), block_dim=(TPB,)
         )
 
@@ -911,7 +911,7 @@ struct DualPath[A: Model, B: Model](Model):
             var i = idx % B_OUT
             dst.ptr[idx] = src.ptr[b * Self.OUT_DIM + A_OUT + i]
 
-        ctx.enqueue_function[extract_b, extract_b](
+        ctx.enqueue_function[extract_b](
             gb_t, go_immut, grid_dim=(b_grid,), block_dim=(TPB,)
         )
 
@@ -978,7 +978,7 @@ struct DualPath[A: Model, B: Model](Model):
                 return
             a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
 
-        ctx.enqueue_function[add_gi, add_gi](
+        ctx.enqueue_function[add_gi](
             grad_input,
             gi_b_immut,
             grid_dim=(gi_grid,),

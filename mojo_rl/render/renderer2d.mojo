@@ -100,8 +100,8 @@ struct Renderer2D(Movable):
             fps: Target frames per second.
             title: Window title.
         """
-        self.window = Ptr[Window, MutAnyOrigin]()
-        self.sdl_renderer = Ptr[SDLRenderer, MutAnyOrigin]()
+        self.window = Ptr[Window, MutAnyOrigin](_unsafe_null=())
+        self.sdl_renderer = Ptr[SDLRenderer, MutAnyOrigin](_unsafe_null=())
 
         self.screen_width = width
         self.screen_height = height
@@ -659,7 +659,7 @@ struct Renderer2D(Movable):
             filename: Output path, e.g. ``screenshot_0.jpg`` or ``screenshot_0.png``.
         """
         var surf = render_read_pixels(
-            self.sdl_renderer, Ptr[Rect, ImmutAnyOrigin]()
+            self.sdl_renderer, Ptr[Rect, ImmutAnyOrigin](_unsafe_null=())
         )
         var pixels = surf[].pixels
         self.recorder.save_frame_bgra(
@@ -687,7 +687,7 @@ struct Renderer2D(Movable):
                 try:
                     # NULL rect = read entire viewport into a new Surface
                     var surf = render_read_pixels(
-                        self.sdl_renderer, Ptr[Rect, ImmutAnyOrigin]()
+                        self.sdl_renderer, Ptr[Rect, ImmutAnyOrigin](_unsafe_null=())
                     )
                     var pixels = surf[].pixels
                     self.recorder.add_frame_bgra(

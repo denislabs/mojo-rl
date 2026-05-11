@@ -1136,7 +1136,7 @@ struct MatMul[
                 if idx < cache_elems:
                     cache.ptr[idx] = input.ptr[idx]
 
-            ctx.enqueue_function[cache_input_wrapper, cache_input_wrapper](
+            ctx.enqueue_function[cache_input_wrapper](
                 cache,
                 input_immut,
                 grid_dim=(cache_blocks,),
@@ -1182,7 +1182,7 @@ struct MatMul[
                 else:
                     Self.eval_kernel_2x2[BATCH, dtype](output, input, W, cache)
 
-            ctx.enqueue_function[wrapper, wrapper](
+            ctx.enqueue_function[wrapper](
                 output,
                 input_immut,
                 W,
@@ -1278,7 +1278,7 @@ struct MatMul[
                     dW, cache, grad_output
                 )
 
-            ctx.enqueue_function[dW_wrapper_max, dW_wrapper_max](
+            ctx.enqueue_function[dW_wrapper_max](
                 dW,
                 cache_immut,
                 grad_output_immut,
@@ -1310,7 +1310,7 @@ struct MatMul[
                 else:
                     Self.backward_dx_kernel_2x2[BATCH, dtype](grad_input, grad_output, W)
 
-            ctx.enqueue_function[dx_wrapper, dx_wrapper](
+            ctx.enqueue_function[dx_wrapper](
                 grad_input,
                 grad_output_immut,
                 W,
@@ -1340,7 +1340,7 @@ struct MatMul[
                 else:
                     Self.backward_dW_kernel_2x2[BATCH, dtype](dW, cache, grad_output)
 
-            ctx.enqueue_function[dW_wrapper, dW_wrapper](
+            ctx.enqueue_function[dW_wrapper](
                 dW,
                 cache_immut,
                 grad_output_immut,

@@ -1077,7 +1077,7 @@ struct LSTMCell[
                 x, h_prev, c_prev, params, h_t, c_t, cache
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             x_immut,
             h_prev_immut,
             c_prev_immut,
@@ -1153,7 +1153,7 @@ struct LSTMCell[
                 x, h_prev, c_prev, params, h_t, c_t
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             x_immut,
             h_prev_immut,
             c_prev_immut,
@@ -1274,7 +1274,7 @@ struct LSTMCell[
                 dx, dh_prev, dc_prev, d_combined_buf,
             )
 
-        ctx.enqueue_function[kernel_in, kernel_in](
+        ctx.enqueue_function[kernel_in](
             dh_immut,
             dc_immut,
             c_prev_immut,
@@ -1306,7 +1306,7 @@ struct LSTMCell[
                 x, d_combined_buf, grads
             )
 
-        ctx.enqueue_function[kernel_dWih, kernel_dWih](
+        ctx.enqueue_function[kernel_dWih](
             x_immut,
             dcomb_immut,
             grads,
@@ -1332,7 +1332,7 @@ struct LSTMCell[
                 h_prev, d_combined_buf, grads
             )
 
-        ctx.enqueue_function[kernel_dWhh, kernel_dWhh](
+        ctx.enqueue_function[kernel_dWhh](
             h_prev_immut,
             dcomb_immut,
             grads,
@@ -1353,7 +1353,7 @@ struct LSTMCell[
         ):
             Self.backward_db_kernel_impl[BATCH, dtype](d_combined_buf, grads)
 
-        ctx.enqueue_function[kernel_db, kernel_db](
+        ctx.enqueue_function[kernel_db](
             dcomb_immut,
             grads,
             grid_dim=(4 * Self.HIDDEN,),

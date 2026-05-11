@@ -17,14 +17,14 @@ from std.random.philox import Random as PhiloxRandom
 
 @always_inline
 def aux_mse_grad_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     DIM: Int,
 ](
     grad: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     pred: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     target: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Formula : grad[b, d] = 2 * (pred[b, d] - target[b, d]) / (BATCH * DIM).
 
     Scales by 1/(BATCH*DIM) so the loss is mean-over-all-elements
@@ -45,7 +45,7 @@ def aux_mse_grad_kernel[
 
 @always_inline
 def extract_phi_s_grad_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     PHI_S_DIM: Int,
     PHI_SA_IN_DIM: Int,
@@ -56,7 +56,7 @@ def extract_phi_s_grad_kernel[
     phi_sa_in_grad: LayoutTensor[
         dtype, Layout.row_major(BATCH, PHI_SA_IN_DIM), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Copy the leading PHI_S_DIM columns of each row into phi_s_grad.
 
     phi_sa_in = concat(phi_s, action) row-wise; this kernel extracts the
@@ -78,7 +78,7 @@ def extract_phi_s_grad_kernel[
 
 @always_inline
 def redq_ensemble_target_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     N_ENSEMBLE: Int,
     N_MIN: Int,
@@ -100,7 +100,7 @@ def redq_ensemble_target_kernel[
     gamma: Scalar[dtype],
     alpha_buf: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
     rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Compute REDQ TD target from N stacked target-Q values.
 
     SAC: y = r + γ * (combined_Q(s', a') - α * log_π(a'|s')) * (1 - done)

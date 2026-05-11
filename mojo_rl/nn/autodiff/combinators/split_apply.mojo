@@ -470,7 +470,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             var i = idx % Self.LEFT_IN
             dst.ptr[idx] = src.ptr[b * Self.IN_DIM + i]
 
-        ctx.enqueue_function[extract_left, extract_left](
+        ctx.enqueue_function[extract_left](
             left_t, input_immut, grid_dim=(l_grid,), block_dim=(TPB,)
         )
 
@@ -495,7 +495,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             var i = idx % Self.RIGHT_IN
             dst.ptr[idx] = src.ptr[b * Self.IN_DIM + Self.split + i]
 
-        ctx.enqueue_function[extract_right, extract_right](
+        ctx.enqueue_function[extract_right](
             right_t, input_immut, grid_dim=(r_grid,), block_dim=(TPB,)
         )
 
@@ -568,7 +568,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             else:
                 dst.ptr[idx] = sr.ptr[b * Self.RIGHT_OUT + (c - Self.LEFT_OUT)]
 
-        ctx.enqueue_function[concat_out, concat_out](
+        ctx.enqueue_function[concat_out](
             output, lo_immut, ro_immut, grid_dim=(o_grid,), block_dim=(TPB,)
         )
 
@@ -692,7 +692,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             var i = idx % Self.LEFT_OUT
             dst.ptr[idx] = src.ptr[b * Self.OUT_DIM + i]
 
-        ctx.enqueue_function[extract_gl, extract_gl](
+        ctx.enqueue_function[extract_gl](
             gl_t, go_immut, grid_dim=(gl_grid,), block_dim=(TPB,)
         )
 
@@ -719,7 +719,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             var i = idx % Self.RIGHT_OUT
             dst.ptr[idx] = src.ptr[b * Self.OUT_DIM + Self.LEFT_OUT + i]
 
-        ctx.enqueue_function[extract_gr, extract_gr](
+        ctx.enqueue_function[extract_gr](
             gr_t, go_immut, grid_dim=(gr_grid,), block_dim=(TPB,)
         )
 
@@ -801,7 +801,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             else:
                 dst.ptr[idx] = sr.ptr[b * Self.RIGHT_IN + (c - Self.split)]
 
-        ctx.enqueue_function[assemble_gi, assemble_gi](
+        ctx.enqueue_function[assemble_gi](
             grad_input,
             gi_l_immut,
             gi_r_immut,
@@ -887,7 +887,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             var i = idx % Self.LEFT_IN
             dst.ptr[idx] = src.ptr[b * Self.IN_DIM + i]
 
-        ctx.enqueue_function[extract_left, extract_left](
+        ctx.enqueue_function[extract_left](
             left_t, input_immut, grid_dim=(l_grid,), block_dim=(TPB,)
         )
 
@@ -912,7 +912,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             var i = idx % Self.RIGHT_IN
             dst.ptr[idx] = src.ptr[b * Self.IN_DIM + Self.split + i]
 
-        ctx.enqueue_function[extract_right, extract_right](
+        ctx.enqueue_function[extract_right](
             right_t, input_immut, grid_dim=(r_grid,), block_dim=(TPB,)
         )
 
@@ -985,7 +985,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             else:
                 dst.ptr[idx] = sr.ptr[b * Self.RIGHT_OUT + (c - Self.LEFT_OUT)]
 
-        ctx.enqueue_function[concat_out, concat_out](
+        ctx.enqueue_function[concat_out](
             output, lo_immut, ro_immut, grid_dim=(o_grid,), block_dim=(TPB,)
         )
 
@@ -1068,7 +1068,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             var i = idx % Self.LEFT_OUT
             dst.ptr[idx] = src.ptr[b * Self.OUT_DIM + i]
 
-        ctx.enqueue_function[extract_gl, extract_gl](
+        ctx.enqueue_function[extract_gl](
             gl_t, go_immut, grid_dim=(gl_grid,), block_dim=(TPB,)
         )
 
@@ -1095,7 +1095,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             var i = idx % Self.RIGHT_OUT
             dst.ptr[idx] = src.ptr[b * Self.OUT_DIM + Self.LEFT_OUT + i]
 
-        ctx.enqueue_function[extract_gr, extract_gr](
+        ctx.enqueue_function[extract_gr](
             gr_t, go_immut, grid_dim=(gr_grid,), block_dim=(TPB,)
         )
 
@@ -1177,7 +1177,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             else:
                 dst.ptr[idx] = sr.ptr[b * Self.RIGHT_IN + (c - Self.split)]
 
-        ctx.enqueue_function[assemble_gi, assemble_gi](
+        ctx.enqueue_function[assemble_gi](
             grad_input,
             gi_l_immut,
             gi_r_immut,

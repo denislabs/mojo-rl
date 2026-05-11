@@ -272,7 +272,7 @@ struct Swish[dim: Int](Model):
         ):
             Self.forward_kernel_impl[BATCH, dtype](output, input, cache)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             output,
             input_immut,
             cache,
@@ -320,7 +320,7 @@ struct Swish[dim: Int](Model):
         ):
             Self.forward_kernel_impl_no_cache[BATCH, dtype](output, input)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             output,
             input_immut,
             grid_dim=(grid_x,),
@@ -401,7 +401,7 @@ struct Swish[dim: Int](Model):
         ):
             Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             grad_input,
             grad_output_immut,
             cache_immut,

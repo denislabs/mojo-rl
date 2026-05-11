@@ -164,7 +164,7 @@ struct Flatten[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             grid_dim=(grid_x,),
@@ -211,7 +211,7 @@ struct Flatten[dim: Int](DiffOp):
         ):
             Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input,
             grad_output_immut,
             grid_dim=(grid_x,),
@@ -400,7 +400,7 @@ struct Transpose2DOp[A: Int, B: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output, input_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )
 
@@ -444,6 +444,6 @@ struct Transpose2DOp[A: Int, B: Int](DiffOp):
         ):
             Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input, go_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )

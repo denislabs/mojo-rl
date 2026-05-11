@@ -444,7 +444,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
             if Int(thread_idx.x) == 0:
                 c[0] = c[0] + UInt32(1)
 
-        ctx.enqueue_function[bump_kernel, bump_kernel](
+        ctx.enqueue_function[bump_kernel](
             counter_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -501,7 +501,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
                 nq[tid] = -sg if gauss < 0 else sg
 
         comptime NOISE_DIM = max(Self.in_dim, Self.out_dim)
-        ctx.enqueue_function[gen_noise_kernel, gen_noise_kernel](
+        ctx.enqueue_function[gen_noise_kernel](
             noise_p_t,
             noise_q_t,
             counter_t,
@@ -567,7 +567,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
             dst[b, j] = acc
 
         comptime TOTAL = BATCH * Self.out_dim
-        ctx.enqueue_function[fwd_kernel, fwd_kernel](
+        ctx.enqueue_function[fwd_kernel](
             output,
             input,
             params,
@@ -629,7 +629,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
             if Int(thread_idx.x) == 0:
                 c[0] = c[0] + UInt32(1)
 
-        ctx.enqueue_function[bump_kernel_nc, bump_kernel_nc](
+        ctx.enqueue_function[bump_kernel_nc](
             counter_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -683,7 +683,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
                 nq[tid] = -sg if gauss < 0 else sg
 
         comptime NOISE_DIM = max(Self.in_dim, Self.out_dim)
-        ctx.enqueue_function[gen_noise_nc, gen_noise_nc](
+        ctx.enqueue_function[gen_noise_nc](
             noise_p_t,
             noise_q_t,
             counter_t,
@@ -734,7 +734,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
             dst[b, j] = acc
 
         comptime TOTAL = BATCH * Self.out_dim
-        ctx.enqueue_function[fwd_noisy_nc_kernel, fwd_noisy_nc_kernel](
+        ctx.enqueue_function[fwd_noisy_nc_kernel](
             output,
             input,
             params,
@@ -843,7 +843,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
             gi[b, i] = acc
 
         comptime GI_TOTAL = BATCH * Self.in_dim
-        ctx.enqueue_function[grad_input_kernel, grad_input_kernel](
+        ctx.enqueue_function[grad_input_kernel](
             grad_input,
             grad_output,
             params,
@@ -924,7 +924,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
                 )
 
         comptime PG_TOTAL = Self.in_dim * Self.out_dim + Self.out_dim
-        ctx.enqueue_function[param_grad_kernel, param_grad_kernel](
+        ctx.enqueue_function[param_grad_kernel](
             grad_output,
             params,
             cache,

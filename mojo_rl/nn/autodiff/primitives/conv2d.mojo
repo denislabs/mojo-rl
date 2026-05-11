@@ -1503,7 +1503,7 @@ struct Conv2D[
                     val = input_4d[b, ch, ih, iw]
                 cache_3d[b, s, k] = val
 
-            ctx.enqueue_function[im2col_wrapper, im2col_wrapper](
+            ctx.enqueue_function[im2col_wrapper](
                 cache,
                 input_immut,
                 grid_dim=(im2col_blocks,),
@@ -1565,7 +1565,7 @@ struct Conv2D[
                         out_temp, col_flat, W_mat
                     )
 
-                ctx.enqueue_function[fwd_mm_wrapper, fwd_mm_wrapper](
+                ctx.enqueue_function[fwd_mm_wrapper](
                     out_temp,
                     col_flat,
                     W_mat,
@@ -1625,10 +1625,7 @@ struct Conv2D[
                 var s = out_pos % Self.spatial_out
                 output_3d[b, oc, s] = out_temp_3d[b, s, oc] + bias_tt[oc]
 
-            ctx.enqueue_function[
-                transpose_output_bias_wrapper,
-                transpose_output_bias_wrapper,
-            ](
+            ctx.enqueue_function[transpose_output_bias_wrapper](
                 output,
                 out_temp,
                 b_ptr,
@@ -1662,7 +1659,7 @@ struct Conv2D[
                     output, input, params, cache
                 )
 
-            ctx.enqueue_function[wrapper, wrapper](
+            ctx.enqueue_function[wrapper](
                 output,
                 input_immut,
                 params_immut,
@@ -1769,9 +1766,7 @@ struct Conv2D[
                 var s = bs % Self.spatial_out
                 dst_3d[oc, b, s] = src_3d[b, oc, s]
 
-            ctx.enqueue_function[
-                transpose_grad_wrapper, transpose_grad_wrapper
-            ](
+            ctx.enqueue_function[transpose_grad_wrapper](
                 grad_reshaped,
                 grad_output_immut,
                 grid_dim=(grad_blocks,),
@@ -1811,7 +1806,7 @@ struct Conv2D[
                     dW, grad_reshaped, col_flat
                 )
 
-            ctx.enqueue_function[dW_mm_wrapper, dW_mm_wrapper](
+            ctx.enqueue_function[dW_mm_wrapper](
                 dW,
                 grad_reshaped,
                 col_flat,
@@ -1870,7 +1865,7 @@ struct Conv2D[
                 comptime W_T_blocks = (
                     Self.out_channels * Self.col_size + TPB - 1
                 ) // TPB
-                ctx.enqueue_function[transpose_W_wrapper, transpose_W_wrapper](
+                ctx.enqueue_function[transpose_W_wrapper](
                     W_T,
                     W_bwd,
                     grid_dim=(W_T_blocks,),
@@ -1910,7 +1905,7 @@ struct Conv2D[
                         dcol, W, grad_reshaped
                     )
 
-                ctx.enqueue_function[dx_mm_wrapper, dx_mm_wrapper](
+                ctx.enqueue_function[dx_mm_wrapper](
                     dcol,
                     W_bwd,
                     grad_reshaped,
@@ -1981,7 +1976,7 @@ struct Conv2D[
                                 acc += dcol_3d[c_k, b, s]
                 grad_in_4d[b, c, ih, iw] = acc
 
-            ctx.enqueue_function[col2im_gather, col2im_gather](
+            ctx.enqueue_function[col2im_gather](
                 grad_input,
                 dcol,
                 grid_dim=(grid_dx,),
@@ -2011,7 +2006,7 @@ struct Conv2D[
                     grad_input, grad_output, params
                 )
 
-            ctx.enqueue_function[dx_wrapper, dx_wrapper](
+            ctx.enqueue_function[dx_wrapper](
                 grad_input,
                 grad_output_immut,
                 params_immut,
@@ -2045,7 +2040,7 @@ struct Conv2D[
                     dW, cache, grad_output
                 )
 
-            ctx.enqueue_function[dW_wrapper, dW_wrapper](
+            ctx.enqueue_function[dW_wrapper](
                 dW,
                 cache_immut,
                 grad_output_immut,
@@ -2071,7 +2066,7 @@ struct Conv2D[
         ):
             Self.backward_db_kernel[BATCH, dtype](db, grad_output)
 
-        ctx.enqueue_function[db_wrapper, db_wrapper](
+        ctx.enqueue_function[db_wrapper](
             db,
             grad_output_immut,
             grid_dim=(Self.out_channels,),

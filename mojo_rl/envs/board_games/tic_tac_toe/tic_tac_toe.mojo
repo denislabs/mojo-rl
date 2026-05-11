@@ -83,7 +83,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     var done: Bool
 
     # Renderer
-    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self):
@@ -91,7 +91,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
             fill=Scalar[Self.dtype](0.0)
         )
         self.done = False
-        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer = None
         self._renderer_initialized = False
 
     # ========================================================================
@@ -206,8 +206,8 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
 
     def close(mut self):
         if self._renderer_initialized:
-            self._renderer[].close()
-            self._renderer.free()
+            self._renderer.value()[].close()
+            self._renderer.value().free()
             self._renderer_initialized = False
 
     def action_from_index(self, action_idx: Int) -> BoardGameAction:
@@ -322,7 +322,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.init_pointee_move(
+        self._renderer.value().init_pointee_move(
             Renderer2D(width=400, height=450, fps=30, title="TicTacToe")
         )
         self._renderer_initialized = True
@@ -331,7 +331,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     def render_frame(mut self) raises -> None:
         if not self._renderer_initialized:
             return
-        self._render(self._renderer[])
+        self._render(self._renderer.value()[])
 
     def _render(self, mut renderer: Renderer2D):
         """Render TicTacToe board state."""
@@ -412,24 +412,24 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     def close_renderer(mut self) raises -> None:
         if not self._renderer_initialized:
             return
-        self._renderer[].close()
-        self._renderer.free()
+        self._renderer.value()[].close()
+        self._renderer.value().free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
         if not self._renderer_initialized:
             return False
-        return not self._renderer[].get_should_quit()
+        return not self._renderer.value()[].get_should_quit()
 
     def check_renderer_quit(mut self) -> Bool:
         if not self._renderer_initialized:
             return False
-        return self._renderer[].get_should_quit()
+        return self._renderer.value()[].get_should_quit()
 
     def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:
             return
-        self._renderer[].renderer_delay(ms)
+        self._renderer.value()[].renderer_delay(ms)
 
     def renderer_is_paused(self) -> Bool:
         return False
@@ -704,9 +704,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         mut obs_buf: DeviceBuffer[board_dtype],
         mut legal_masks_buf: DeviceBuffer[board_dtype],
         rng_seed: UInt64 = 0,
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -792,7 +790,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, 9
             ](states_read, obs, legal_masks)
 
-        ctx.enqueue_function[step_wrapper, step_wrapper](
+        ctx.enqueue_function[step_wrapper](
             states,
             actions,
             rewards,
@@ -830,7 +828,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         ):
             TicTacToeEnv.reset_kernel[BATCH_SIZE, STATE_SIZE](states)
 
-        ctx.enqueue_function[reset_wrapper, reset_wrapper](
+        ctx.enqueue_function[reset_wrapper](
             states,
             grid_dim=(BLOCKS,),
             block_dim=(Self.TPB,),
@@ -845,9 +843,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         mut states_buf: DeviceBuffer[board_dtype],
         mut dones_buf: DeviceBuffer[board_dtype],
         rng_seed: UInt64,
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -874,7 +870,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
                 states, dones
             )
 
-        ctx.enqueue_function[sel_reset_wrapper, sel_reset_wrapper](
+        ctx.enqueue_function[sel_reset_wrapper](
             states,
             dones,
             grid_dim=(BLOCKS,),
@@ -929,7 +925,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, 9
             ](states, obs, legal_masks)
 
-        ctx.enqueue_function[extract_wrapper, extract_wrapper](
+        ctx.enqueue_function[extract_wrapper](
             states,
             obs,
             legal_masks,

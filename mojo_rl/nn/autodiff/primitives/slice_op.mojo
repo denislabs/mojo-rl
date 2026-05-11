@@ -186,7 +186,7 @@ struct SliceOp[in_dim: Int, start: Int, end: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             grid_dim=(grid_x,),
@@ -234,7 +234,7 @@ struct SliceOp[in_dim: Int, start: Int, end: Int](DiffOp):
         ):
             Self.backward_kernel_impl[BATCH, dtype](gi, go)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input,
             go_immut,
             grid_dim=(grid_x,),

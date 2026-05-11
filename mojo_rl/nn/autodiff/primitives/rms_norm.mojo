@@ -314,7 +314,7 @@ struct RMSNormOp[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, params, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             params_immut,
@@ -378,7 +378,7 @@ struct RMSNormOp[dim: Int](DiffOp):
                 grad_input, grad_output, params, cache
             )
 
-        ctx.enqueue_function[dx_wrapper, dx_wrapper](
+        ctx.enqueue_function[dx_wrapper](
             grad_input,
             grad_output_immut,
             params_immut,
@@ -409,7 +409,7 @@ struct RMSNormOp[dim: Int](DiffOp):
         ):
             Self.backward_dgamma_kernel_impl[BATCH, dtype](dgamma, grad_output, cache)
 
-        ctx.enqueue_function[dgamma_wrapper, dgamma_wrapper](
+        ctx.enqueue_function[dgamma_wrapper](
             dgamma,
             grad_output_immut,
             cache_immut,

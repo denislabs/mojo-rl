@@ -862,7 +862,7 @@ struct ResBlockConv2DBN[
             Self.BN2_XHAT_OFF, Self.BN2_INVSTD_OFF,
             Self.BN_EPSILON, Self.BN_MOMENTUM, dtype,
         ]
-        ctx.enqueue_function[fwd_k, fwd_k](
+        ctx.enqueue_function[fwd_k](
             output, skip_t, bn2_params, bn2_state, bn2_cache,
             grid_dim=(Self.channels,), block_dim=(TPB,),
         )
@@ -913,7 +913,7 @@ struct ResBlockConv2DBN[
             Self.BN2_GAMMA_OFF, Self.BN2_BETA_OFF, Self.BN2_RMEAN_OFF, Self.BN2_RVAR_OFF,
             Self.BN_EPSILON, dtype,
         ]
-        ctx.enqueue_function[fwd_k, fwd_k](
+        ctx.enqueue_function[fwd_k](
             output, skip_t, bn2_params, bn2_state,
             grid_dim=(Self.channels,), block_dim=(TPB,),
         )
@@ -989,7 +989,7 @@ struct ResBlockConv2DBN[
             Self.BN2_GAMMA_OFF, Self.BN2_BETA_OFF, Self.BN2_XHAT_OFF, Self.BN2_INVSTD_OFF,
             dtype,
         ]
-        ctx.enqueue_function[bwd_k, bwd_k](
+        ctx.enqueue_function[bwd_k](
             grad_conv2, go_t, gi_t, bn2_params, bn2_cache, bn2_grads,
             grid_dim=(Self.channels,), block_dim=(TPB,),
         )
@@ -1021,7 +1021,7 @@ struct ResBlockConv2DBN[
             a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
 
         var temp_flat = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](temp_gi_ptr)
-        ctx.enqueue_function[add_wrapper, add_wrapper](
+        ctx.enqueue_function[add_wrapper](
             grad_input, temp_flat,
             grid_dim=(BLOCKS,), block_dim=(TPB,),
         )
@@ -1086,7 +1086,7 @@ struct ResBlockConv2DBN[
             Self.BN2_XHAT_OFF, Self.BN2_INVSTD_OFF,
             Self.BN_EPSILON, dtype,
         ]
-        ctx.enqueue_function[fwd_k, fwd_k](
+        ctx.enqueue_function[fwd_k](
             output, skip_t, bn2_params, bn2_state, bn2_cache,
             grid_dim=(Self.channels,), block_dim=(TPB,),
         )
@@ -1136,7 +1136,7 @@ struct ResBlockConv2DBN[
             Self.BN2_GAMMA_OFF, Self.BN2_XHAT_OFF, Self.BN2_INVSTD_OFF,
             dtype,
         ]
-        ctx.enqueue_function[bwd_k, bwd_k](
+        ctx.enqueue_function[bwd_k](
             grad_conv2, go_t, gi_t, bn2_params, bn2_cache,
             grid_dim=(Self.channels,), block_dim=(TPB,),
         )
@@ -1168,7 +1168,7 @@ struct ResBlockConv2DBN[
             a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
 
         var temp_flat = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](temp_gi_ptr)
-        ctx.enqueue_function[add_wrapper_inf, add_wrapper_inf](
+        ctx.enqueue_function[add_wrapper_inf](
             grad_input, temp_flat,
             grid_dim=(BLOCKS,), block_dim=(TPB,),
         )

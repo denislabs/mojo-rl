@@ -726,7 +726,7 @@ struct PCBlock[
             comptime kb = Self._bias_add_kernel[BATCH, Self.out_dim, dtype]
             var ba_threads = BATCH * Self.out_dim
             var ba_blocks = (ba_threads + TPB - 1) // TPB
-            ctx.enqueue_function[kb, kb](
+            ctx.enqueue_function[kb](
                 mu,
                 b_view,
                 grid_dim=(ba_blocks,),
@@ -738,7 +738,7 @@ struct PCBlock[
             comptime kt = Self._predict_kernel_2x2[BATCH, dtype]
             comptime grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
-            ctx.enqueue_function[kt, kt](
+            ctx.enqueue_function[kt](
                 a_below,
                 W,
                 mu,
@@ -749,7 +749,7 @@ struct PCBlock[
             comptime kb = Self._bias_add_kernel[BATCH, Self.out_dim, dtype]
             var ba_threads = BATCH * Self.out_dim
             var ba_blocks = (ba_threads + TPB - 1) // TPB
-            ctx.enqueue_function[kb, kb](
+            ctx.enqueue_function[kb](
                 mu,
                 b_view,
                 grid_dim=(ba_blocks,),
@@ -774,7 +774,7 @@ struct PCBlock[
         comptime k = Self._eps_kernel[BATCH, Self.out_dim, dtype]
         var threads = BATCH * Self.out_dim
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
+        ctx.enqueue_function[k](
             x_above,
             mu,
             eps,
@@ -818,7 +818,7 @@ struct PCBlock[
             comptime kt = Self._pull_back_kernel_2x2[BATCH, dtype]
             comptime grid_x = (Self.in_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
-            ctx.enqueue_function[kt, kt](
+            ctx.enqueue_function[kt](
                 eps_above,
                 W,
                 z_below,
@@ -882,7 +882,7 @@ struct PCBlock[
 
             comptime kt = Self._transpose_2d_kernel[BATCH, Self.in_dim, dtype]
             comptime t_blocks = (BATCH * Self.in_dim + TPB - 1) // TPB
-            ctx.enqueue_function[kt, kt](
+            ctx.enqueue_function[kt](
                 a_T,
                 a_below,
                 grid_dim=(t_blocks,),
@@ -904,7 +904,7 @@ struct PCBlock[
             ](grads.ptr)
             comptime kn = Self._negate_kernel[Self.in_dim * Self.out_dim, dtype]
             comptime n_blocks = (Self.in_dim * Self.out_dim + TPB - 1) // TPB
-            ctx.enqueue_function[kn, kn](
+            ctx.enqueue_function[kn](
                 W_grad_flat,
                 grid_dim=(n_blocks,),
                 block_dim=(TPB,),
@@ -915,7 +915,7 @@ struct PCBlock[
             comptime kw = Self._weight_grad_kernel_2x2[BATCH, dtype]
             comptime w_grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime w_grid_y = (Self.in_dim + MMA_BLOCK_M - 1) // MMA_BLOCK_M
-            ctx.enqueue_function[kw, kw](
+            ctx.enqueue_function[kw](
                 a_below,
                 eps_above,
                 W_grad,
@@ -926,7 +926,7 @@ struct PCBlock[
         comptime kb = Self._bias_grad_kernel[BATCH, Self.out_dim, dtype]
         var b_threads = Self.out_dim
         var b_blocks = (b_threads + TPB - 1) // TPB
-        ctx.enqueue_function[kb, kb](
+        ctx.enqueue_function[kb](
             eps_above,
             b_grad,
             grid_dim=(b_blocks,),

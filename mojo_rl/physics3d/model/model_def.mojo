@@ -1273,7 +1273,7 @@ struct ModelDef[
                     workspace[0, scratch2 + d]
                 )
 
-        ctx.enqueue_function[invweight0_kernel, invweight0_kernel](
+        ctx.enqueue_function[invweight0_kernel](
             state,
             model,
             workspace,

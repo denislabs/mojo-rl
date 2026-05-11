@@ -131,7 +131,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     var num_bins_velocity: Int
 
     # Renderer (RenderableEnv)
-    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -171,7 +171,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         self.num_bins_velocity = num_bins_velocity
 
         # Renderer
-        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer = None
         self._renderer_initialized = False
 
     def __init__(out self, *, copy: Self):
@@ -192,7 +192,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         self.num_bins_angle = copy.num_bins_angle
         self.num_bins_velocity = copy.num_bins_velocity
         # Do not copy renderer — reset to null
-        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer = None
         self._renderer_initialized = False
 
     def __init__(out self, *, deinit take: Self):
@@ -236,12 +236,8 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
-        workspace_ptr: UnsafePointer[
-            Scalar[dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         """Perform one environment step with continuous actions (GPUContinuousEnv trait).
 
@@ -322,7 +318,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             # Pendulum never terminates, only truncates at max steps
             terminated_out[env] = Scalar[dtype](0.0)
 
-        ctx.enqueue_function[step_wrapper, step_wrapper](
+        ctx.enqueue_function[step_wrapper](
             states_tensor,
             actions_tensor,
             rewards_tensor,
@@ -376,7 +372,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
                 states, env, combined_seed
             )
 
-        ctx.enqueue_function[reset_wrapper, reset_wrapper](
+        ctx.enqueue_function[reset_wrapper](
             states_tensor,
             Scalar[dtype](rng_seed),
             grid_dim=(BLOCKS,),
@@ -392,12 +388,8 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
-        workspace_ptr: UnsafePointer[
-            Scalar[dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         """Reset only done environments (GPUContinuousEnv trait).
 
@@ -421,10 +413,10 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        if rng_counter_ptr:
+        if Bool(rng_counter_ptr):
             var counter_t = LayoutTensor[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
-            ](rng_counter_ptr)
+            ](rng_counter_ptr.value())
 
             @parameter
             @always_inline
@@ -449,10 +441,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
                     )
                     dones[env] = Scalar[dtype](0.0)
 
-            ctx.enqueue_function[
-                selective_reset_counter_wrapper,
-                selective_reset_counter_wrapper,
-            ](
+            ctx.enqueue_function[selective_reset_counter_wrapper](
                 states_tensor,
                 dones_tensor,
                 counter_t,
@@ -484,7 +473,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
                     )
                     dones[env] = Scalar[dtype](0.0)
 
-            ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
+            ctx.enqueue_function[selective_reset_wrapper](
                 states_tensor,
                 dones_tensor,
                 Scalar[dtype](rng_seed),
@@ -531,7 +520,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             for d in range(OBS_DIM_VAL):
                 obs[i, d] = states[i, d]
 
-        ctx.enqueue_function[extract_obs, extract_obs](
+        ctx.enqueue_function[extract_obs](
             states,
             obs,
             grid_dim=(BLOCKS,),
@@ -1085,8 +1074,8 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     def close(mut self):
         """Clean up resources."""
         if self._renderer_initialized:
-            self._renderer[].close()
-            self._renderer.free()
+            self._renderer.value()[].close()
+            self._renderer.value().free()
             self._renderer_initialized = False
 
     # =========================================================================
@@ -1169,7 +1158,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.init_pointee_move(Renderer2D())
+        self._renderer.value().init_pointee_move(Renderer2D())
         self._renderer_initialized = True
         return True
 
@@ -1177,33 +1166,33 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         """Render the current frame using the internal renderer."""
         if not self._renderer_initialized:
             return
-        self.render(self._renderer[])
+        self.render(self._renderer.value()[])
 
     def close_renderer(mut self) raises -> None:
         """Close and free the SDL2 renderer."""
         if not self._renderer_initialized:
             return
-        self._renderer[].close()
-        self._renderer.free()
+        self._renderer.value()[].close()
+        self._renderer.value().free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
         """Return True if the renderer window is open."""
         if not self._renderer_initialized:
             return False
-        return not self._renderer[].get_should_quit()
+        return not self._renderer.value()[].get_should_quit()
 
     def check_renderer_quit(mut self) -> Bool:
         """Return True if the renderer has received a quit event."""
         if not self._renderer_initialized:
             return False
-        return self._renderer[].get_should_quit()
+        return self._renderer.value()[].get_should_quit()
 
     def renderer_delay(self, ms: Int) -> None:
         """Delay for frame rate control."""
         if not self._renderer_initialized:
             return
-        self._renderer[].renderer_delay(ms)
+        self._renderer.value()[].renderer_delay(ms)
 
     def renderer_is_paused(self) -> Bool:
         return False

@@ -299,7 +299,7 @@ struct SkipConcat[Inner: Model](Model):
             else:
                 dst.ptr[idx] = src_inner.ptr[b * INNER_OUT + (c - Self.IN_DIM)]
 
-        ctx.enqueue_function[concat_kernel, concat_kernel](
+        ctx.enqueue_function[concat_kernel](
             output,
             input_immut,
             inner_immut,
@@ -385,7 +385,7 @@ struct SkipConcat[Inner: Model](Model):
             else:
                 dst.ptr[idx] = src_inner.ptr[b * INNER_OUT + (c - Self.IN_DIM)]
 
-        ctx.enqueue_function[concat_kernel, concat_kernel](
+        ctx.enqueue_function[concat_kernel](
             output,
             input_immut,
             inner_immut,
@@ -488,7 +488,7 @@ struct SkipConcat[Inner: Model](Model):
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ](grad_output.ptr)
 
-        ctx.enqueue_function[extract_inner_grad, extract_inner_grad](
+        ctx.enqueue_function[extract_inner_grad](
             grad_inner_t,
             go_immut,
             grid_dim=(inner_grid,),
@@ -528,7 +528,7 @@ struct SkipConcat[Inner: Model](Model):
             var i = idx % Self.IN_DIM
             gi.ptr[idx] = gi.ptr[idx] + go.ptr[b * Self.OUT_DIM + i]
 
-        ctx.enqueue_function[add_skip_grad, add_skip_grad](
+        ctx.enqueue_function[add_skip_grad](
             grad_input,
             go_immut,
             grid_dim=(skip_grid,),
@@ -618,7 +618,7 @@ struct SkipConcat[Inner: Model](Model):
             else:
                 dst.ptr[idx] = src_inner.ptr[b * INNER_OUT + (c - Self.IN_DIM)]
 
-        ctx.enqueue_function[concat_kernel, concat_kernel](
+        ctx.enqueue_function[concat_kernel](
             output,
             input_immut,
             inner_immut,
@@ -699,7 +699,7 @@ struct SkipConcat[Inner: Model](Model):
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ](grad_output.ptr)
 
-        ctx.enqueue_function[extract_inner_grad, extract_inner_grad](
+        ctx.enqueue_function[extract_inner_grad](
             grad_inner_t,
             go_immut,
             grid_dim=(inner_grid,),
@@ -739,7 +739,7 @@ struct SkipConcat[Inner: Model](Model):
             var i = idx % Self.IN_DIM
             gi.ptr[idx] = gi.ptr[idx] + go.ptr[b * Self.OUT_DIM + i]
 
-        ctx.enqueue_function[add_skip_grad, add_skip_grad](
+        ctx.enqueue_function[add_skip_grad](
             grad_input,
             go_immut,
             grid_dim=(skip_grid,),

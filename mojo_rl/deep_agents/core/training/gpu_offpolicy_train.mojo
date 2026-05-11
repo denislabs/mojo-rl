@@ -385,7 +385,7 @@ def run_offpolicy_continuous_train_gpu[
     ctx: DeviceContext,
     num_steps: Int,
     mut timer: PerfTimer[PROFILE >= 1],
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     warmup_steps: Int = 1000,
     gradient_steps: Int = 0,
     sync_every: Int = 5000,
@@ -615,7 +615,7 @@ def run_offpolicy_continuous_train_gpu[
                     MutAnyOrigin,
                 ](actions_buf.unsafe_ptr())
                 var warmup_seed = Scalar[DType.uint32](step_seed)
-                ctx.enqueue_function[warmup_kernel, warmup_kernel](
+                ctx.enqueue_function[warmup_kernel](
                     act_t_w,
                     action_scale_val,
                     warmup_seed,
@@ -642,9 +642,7 @@ def run_offpolicy_continuous_train_gpu[
                     var rw_raw = LayoutTensor[
                         dtype, Layout.row_major(n_envs), MutAnyOrigin
                     ](rewards_buf.unsafe_ptr())
-                    ctx.enqueue_function[
-                        _scale_rewards_kernel, _scale_rewards_kernel
-                    ](
+                    ctx.enqueue_function[_scale_rewards_kernel](
                         sc_t,
                         rw_raw,
                         Scalar[dtype](reward_scale),
@@ -687,13 +685,11 @@ def run_offpolicy_continuous_train_gpu[
                 var ec_t = LayoutTensor[
                     dtype, Layout.row_major(1), MutAnyOrigin
                 ](gpu_episode_count_buf.unsafe_ptr())
-                ctx.enqueue_function[
-                    accum_rewards_wrapper, accum_rewards_wrapper
-                ](er_t, rw_t, grid_dim=(env_blocks,), block_dim=(tpb,))
-                ctx.enqueue_function[incr_steps_wrapper, incr_steps_wrapper](
+                ctx.enqueue_function[accum_rewards_wrapper](er_t, rw_t, grid_dim=(env_blocks,), block_dim=(tpb,))
+                ctx.enqueue_function[incr_steps_wrapper](
                     es_t, grid_dim=(env_blocks,), block_dim=(tpb,)
                 )
-                ctx.enqueue_function[log_reset_wrapper, log_reset_wrapper](
+                ctx.enqueue_function[log_reset_wrapper](
                     dn_t,
                     er_t,
                     es_t,
@@ -750,7 +746,7 @@ def run_offpolicy_continuous_train_gpu[
 
                     # Inline env step kernel sequence (no closure capture)
                     comptime incr_env_k = increment_env_rng_kernel
-                    ctx.enqueue_function[incr_env_k, incr_env_k](
+                    ctx.enqueue_function[incr_env_k](
                         env_rng_t,
                         grid_dim=(1,),
                         block_dim=(1,),
@@ -772,9 +768,7 @@ def run_offpolicy_continuous_train_gpu[
                         var sc_g = LayoutTensor[
                             dtype, Layout.row_major(n_envs), MutAnyOrigin
                         ](scaled_rewards_buf.unsafe_ptr())
-                        ctx.enqueue_function[
-                            _scale_rewards_kernel, _scale_rewards_kernel
-                        ](
+                        ctx.enqueue_function[_scale_rewards_kernel](
                             sc_g,
                             rw_g,
                             Scalar[dtype](reward_scale),
@@ -798,13 +792,9 @@ def run_offpolicy_continuous_train_gpu[
                             obs_buf,
                             terminated_buf,
                         )
-                    ctx.enqueue_function[
-                        accum_rewards_wrapper, accum_rewards_wrapper
-                    ](er_g, rw_g, grid_dim=(env_blocks,), block_dim=(tpb,))
-                    ctx.enqueue_function[
-                        incr_steps_wrapper, incr_steps_wrapper
-                    ](es_g, grid_dim=(env_blocks,), block_dim=(tpb,))
-                    ctx.enqueue_function[log_reset_wrapper, log_reset_wrapper](
+                    ctx.enqueue_function[accum_rewards_wrapper](er_g, rw_g, grid_dim=(env_blocks,), block_dim=(tpb,))
+                    ctx.enqueue_function[incr_steps_wrapper](es_g, grid_dim=(env_blocks,), block_dim=(tpb,))
+                    ctx.enqueue_function[log_reset_wrapper](
                         dn_g,
                         er_g,
                         es_g,
@@ -829,7 +819,7 @@ def run_offpolicy_continuous_train_gpu[
                     # Now capture the same sequence
                     var graph = CUDAGraph(ctx)
                     graph.begin_capture()
-                    ctx.enqueue_function[incr_env_k, incr_env_k](
+                    ctx.enqueue_function[incr_env_k](
                         env_rng_t,
                         grid_dim=(1,),
                         block_dim=(1,),
@@ -854,9 +844,7 @@ def run_offpolicy_continuous_train_gpu[
                         var rw_g2 = LayoutTensor[
                             dtype, Layout.row_major(n_envs), MutAnyOrigin
                         ](rewards_buf.unsafe_ptr())
-                        ctx.enqueue_function[
-                            _scale_rewards_kernel, _scale_rewards_kernel
-                        ](
+                        ctx.enqueue_function[_scale_rewards_kernel](
                             sc_g2,
                             rw_g2,
                             Scalar[dtype](reward_scale),
@@ -880,13 +868,9 @@ def run_offpolicy_continuous_train_gpu[
                             obs_buf,
                             terminated_buf,
                         )
-                    ctx.enqueue_function[
-                        accum_rewards_wrapper, accum_rewards_wrapper
-                    ](er_g, rw_g, grid_dim=(env_blocks,), block_dim=(tpb,))
-                    ctx.enqueue_function[
-                        incr_steps_wrapper, incr_steps_wrapper
-                    ](es_g, grid_dim=(env_blocks,), block_dim=(tpb,))
-                    ctx.enqueue_function[log_reset_wrapper, log_reset_wrapper](
+                    ctx.enqueue_function[accum_rewards_wrapper](er_g, rw_g, grid_dim=(env_blocks,), block_dim=(tpb,))
+                    ctx.enqueue_function[incr_steps_wrapper](es_g, grid_dim=(env_blocks,), block_dim=(tpb,))
+                    ctx.enqueue_function[log_reset_wrapper](
                         dn_g,
                         er_g,
                         es_g,
@@ -944,7 +928,7 @@ def run_offpolicy_continuous_train_gpu[
                     MutAnyOrigin,
                 ](actions_buf.unsafe_ptr())
                 var warmup_seed = Scalar[DType.uint32](step_seed)
-                ctx.enqueue_function[warmup_kernel, warmup_kernel](
+                ctx.enqueue_function[warmup_kernel](
                     act_t,
                     action_scale_val,
                     warmup_seed,
@@ -993,9 +977,7 @@ def run_offpolicy_continuous_train_gpu[
                 var raw_t = LayoutTensor[
                     dtype, Layout.row_major(n_envs), MutAnyOrigin
                 ](rewards_buf.unsafe_ptr())
-                ctx.enqueue_function[
-                    _scale_rewards_kernel, _scale_rewards_kernel
-                ](
+                ctx.enqueue_function[_scale_rewards_kernel](
                     scaled_t,
                     raw_t,
                     Scalar[dtype](reward_scale),
@@ -1045,20 +1027,20 @@ def run_offpolicy_continuous_train_gpu[
                 dtype, Layout.row_major(1), MutAnyOrigin
             ](gpu_episode_count_buf.unsafe_ptr())
 
-            ctx.enqueue_function[accum_rewards_wrapper, accum_rewards_wrapper](
+            ctx.enqueue_function[accum_rewards_wrapper](
                 episode_rewards_t,
                 rewards_t,
                 grid_dim=(env_blocks,),
                 block_dim=(tpb,),
             )
-            ctx.enqueue_function[incr_steps_wrapper, incr_steps_wrapper](
+            ctx.enqueue_function[incr_steps_wrapper](
                 episode_steps_t,
                 grid_dim=(env_blocks,),
                 block_dim=(tpb,),
             )
 
             # Log completed episodes to GPU-side stats and reset per-env counters
-            ctx.enqueue_function[log_reset_wrapper, log_reset_wrapper](
+            ctx.enqueue_function[log_reset_wrapper](
                 dones_t,
                 episode_rewards_t,
                 episode_steps_t,
@@ -1165,7 +1147,7 @@ def run_offpolicy_continuous_train_gpu[
         # Collect episode stats + print/log at print boundaries
         # ------------------------------------------------------------------
         if (
-            verbose or (logger and logger[].is_active())
+            verbose or (Bool(logger) and logger.value()[].is_active())
         ) and total_steps >= next_print:
             # Download GPU-side episode stats (only sync point for tracking)
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
@@ -1189,12 +1171,12 @@ def run_offpolicy_continuous_train_gpu[
             ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
             # Logger: record metrics
-            if logger:
-                logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
-                logger[].log_scalar(
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_reward", last_avg_reward, total_steps)
+                logger.value()[].log_scalar(
                     "episodes", Float64(completed_episodes), total_steps
                 )
-                logger[].log_scalar(
+                logger.value()[].log_scalar(
                     "train_steps", Float64(total_train_steps), total_steps
                 )
 
@@ -1213,8 +1195,8 @@ def run_offpolicy_continuous_train_gpu[
                     verbose=False,
                     stochastic=False,
                 )
-                if logger:
-                    logger[].log_scalar(
+                if Bool(logger):
+                    logger.value()[].log_scalar(
                         "eval_reward", last_eval_reward, total_steps
                     )
                 next_eval += eval_every
@@ -1228,15 +1210,15 @@ def run_offpolicy_continuous_train_gpu[
                     )
                 if cur_progress > 1.0:
                     cur_progress = 1.0
-                if logger:
-                    logger[].log_scalar(
+                if Bool(logger):
+                    logger.value()[].log_scalar(
                         "curriculum_progress", cur_progress, total_steps
                     )
                     var cur_params = CurriculumType.get_params[dtype](
                         Scalar[dtype](cur_progress)
                     )
                     for i in range(len(cur_params)):
-                        logger[].log_scalar(
+                        logger.value()[].log_scalar(
                             "curriculum_param_" + String(i),
                             Float64(cur_params[i]),
                             total_steps,
@@ -1302,15 +1284,15 @@ def run_offpolicy_continuous_train_gpu[
         agent.save_checkpoint(checkpoint_path)
 
     # Final logger flush + print
-    if logger and logger[].is_active():
-        logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
-        logger[].log_scalar(
+    if Bool(logger) and logger.value()[].is_active():
+        logger.value()[].log_scalar("avg_reward", last_avg_reward, total_steps)
+        logger.value()[].log_scalar(
             "episodes", Float64(completed_episodes), total_steps
         )
-        logger[].log_scalar(
+        logger.value()[].log_scalar(
             "train_steps", Float64(total_train_steps), total_steps
         )
-        logger[].flush()
+        logger.value()[].flush()
 
     if verbose:
         clear_progress_bar()
@@ -1348,7 +1330,7 @@ def run_offpolicy_discrete_train_gpu[
     ctx: DeviceContext,
     num_steps: Int,
     mut timer: PerfTimer[PROFILE >= 1],
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     warmup_steps: Int = 1000,
     gradient_steps: Int = 0,
     sync_every: Int = 5000,
@@ -1523,9 +1505,7 @@ def run_offpolicy_discrete_train_gpu[
                 dtype, Layout.row_major(n_envs), MutAnyOrigin
             ](actions_buf.unsafe_ptr())
             var warmup_seed = Scalar[DType.uint32](step_seed)
-            ctx.enqueue_function[
-                discrete_warmup_kernel, discrete_warmup_kernel
-            ](
+            ctx.enqueue_function[discrete_warmup_kernel](
                 act_t,
                 warmup_seed,
                 grid_dim=(act_blocks,),
@@ -1585,19 +1565,19 @@ def run_offpolicy_discrete_train_gpu[
             dtype, Layout.row_major(1), MutAnyOrigin
         ](gpu_episode_count_buf.unsafe_ptr())
 
-        ctx.enqueue_function[accum_rewards_wrapper, accum_rewards_wrapper](
+        ctx.enqueue_function[accum_rewards_wrapper](
             episode_rewards_t,
             rewards_t,
             grid_dim=(env_blocks,),
             block_dim=(tpb,),
         )
-        ctx.enqueue_function[incr_steps_wrapper, incr_steps_wrapper](
+        ctx.enqueue_function[incr_steps_wrapper](
             episode_steps_t,
             grid_dim=(env_blocks,),
             block_dim=(tpb,),
         )
 
-        ctx.enqueue_function[log_reset_wrapper, log_reset_wrapper](
+        ctx.enqueue_function[log_reset_wrapper](
             dones_t,
             episode_rewards_t,
             episode_steps_t,
@@ -1628,7 +1608,7 @@ def run_offpolicy_discrete_train_gpu[
         var obs_t_reset = LayoutTensor[
             dtype, Layout.row_major(n_envs, E.OBS_DIM), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
-        ctx.enqueue_function[extract_obs_after_reset, extract_obs_after_reset](
+        ctx.enqueue_function[extract_obs_after_reset](
             states_t_reset,
             obs_t_reset,
             grid_dim=(env_blocks,),
@@ -1679,7 +1659,7 @@ def run_offpolicy_discrete_train_gpu[
             next_progress += progress_interval
 
         if (
-            verbose or (logger and logger[].is_active())
+            verbose or (Bool(logger) and logger.value()[].is_active())
         ) and total_steps >= next_print:
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
@@ -1700,12 +1680,12 @@ def run_offpolicy_discrete_train_gpu[
             ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
             # Logger: record metrics
-            if logger:
-                logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
-                logger[].log_scalar(
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_reward", last_avg_reward, total_steps)
+                logger.value()[].log_scalar(
                     "episodes", Float64(completed_episodes), total_steps
                 )
-                logger[].log_scalar(
+                logger.value()[].log_scalar(
                     "train_steps", Float64(total_train_steps), total_steps
                 )
 
@@ -1718,15 +1698,15 @@ def run_offpolicy_discrete_train_gpu[
                     )
                 if cur_progress > 1.0:
                     cur_progress = 1.0
-                if logger:
-                    logger[].log_scalar(
+                if Bool(logger):
+                    logger.value()[].log_scalar(
                         "curriculum_progress", cur_progress, total_steps
                     )
                     var cur_params = CurriculumType.get_params[dtype](
                         Scalar[dtype](cur_progress)
                     )
                     for i in range(len(cur_params)):
-                        logger[].log_scalar(
+                        logger.value()[].log_scalar(
                             "curriculum_param_" + String(i),
                             Float64(cur_params[i]),
                             total_steps,
@@ -1788,15 +1768,15 @@ def run_offpolicy_discrete_train_gpu[
         agent.save_checkpoint(checkpoint_path)
 
     # Final logger flush + print
-    if logger:
-        logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
-        logger[].log_scalar(
+    if Bool(logger):
+        logger.value()[].log_scalar("avg_reward", last_avg_reward, total_steps)
+        logger.value()[].log_scalar(
             "episodes", Float64(completed_episodes), total_steps
         )
-        logger[].log_scalar(
+        logger.value()[].log_scalar(
             "train_steps", Float64(total_train_steps), total_steps
         )
-        logger[].flush()
+        logger.value()[].flush()
 
     if verbose:
         clear_progress_bar()

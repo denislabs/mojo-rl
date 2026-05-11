@@ -1196,7 +1196,7 @@ struct EdgeTerrainCollision(CollisionSystem):
                 EDGES_OFFSET,
             ](state, shapes, edge_counts, contacts, contact_counts)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             shapes,
             edge_counts,
@@ -1368,7 +1368,7 @@ struct EdgeTerrainCollision(CollisionSystem):
                 EDGES_OFFSET,
             ](state, shapes, edge_counts, contacts, body_contact_counts)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             shapes,
             edge_counts,
@@ -1556,7 +1556,7 @@ struct EdgeTerrainCollision(CollisionSystem):
                 EDGES_OFFSET,
             ](state, shapes, edge_counts, contacts, contact_flags)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             shapes,
             edge_counts,

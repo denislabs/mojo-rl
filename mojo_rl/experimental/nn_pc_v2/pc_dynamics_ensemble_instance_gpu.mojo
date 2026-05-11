@@ -912,14 +912,14 @@ struct PCDynamicsEnsembleInstanceGPU[
         comptime act_mean_k = compute_scaler_mean_kernel[
             Self.dtype, BUF_CAP, Self.ACTION_DIM
         ]
-        ctx.enqueue_function[obs_mean_k, obs_mean_k](
+        ctx.enqueue_function[obs_mean_k](
             mean_obs_t,
             obs_data_t,
             n,
             grid_dim=(Self.OBS_DIM,),
             block_dim=(1,),
         )
-        ctx.enqueue_function[act_mean_k, act_mean_k](
+        ctx.enqueue_function[act_mean_k](
             mean_act_t,
             act_data_t,
             n,
@@ -935,7 +935,7 @@ struct PCDynamicsEnsembleInstanceGPU[
         comptime act_std_k = compute_scaler_std_kernel[
             Self.dtype, BUF_CAP, Self.ACTION_DIM
         ]
-        ctx.enqueue_function[obs_std_k, obs_std_k](
+        ctx.enqueue_function[obs_std_k](
             std_obs_t,
             obs_data_t,
             mean_obs_t,
@@ -944,7 +944,7 @@ struct PCDynamicsEnsembleInstanceGPU[
             grid_dim=(Self.OBS_DIM,),
             block_dim=(1,),
         )
-        ctx.enqueue_function[act_std_k, act_std_k](
+        ctx.enqueue_function[act_std_k](
             std_act_t,
             act_data_t,
             mean_act_t,
@@ -999,12 +999,12 @@ struct PCDynamicsEnsembleInstanceGPU[
         comptime rew_std_k = compute_scaler_std_kernel[
             Self.dtype, BUF_CAP, 1
         ]
-        ctx.enqueue_function[rew_mean_k, rew_mean_k](
+        ctx.enqueue_function[rew_mean_k](
             rew_mean_t, rew_data_t, n,
             grid_dim=(1,), block_dim=(1,),
         )
         var min_std = Scalar[Self.dtype](1e-12)
-        ctx.enqueue_function[rew_std_k, rew_std_k](
+        ctx.enqueue_function[rew_std_k](
             rew_std_t, rew_data_t, rew_mean_t, n, min_std,
             grid_dim=(1,), block_dim=(1,),
         )

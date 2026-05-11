@@ -314,7 +314,7 @@ def compute_cfrc_ext_gpu[
                     rebind[Scalar[DTYPE]](states[env, base_off + 5]) - fw_z
                 )
 
-    ctx.enqueue_function[cfrc_ext_kernel, cfrc_ext_kernel](
+    ctx.enqueue_function[cfrc_ext_kernel](
         states,
         model,
         grid_dim=(BLOCKS,),

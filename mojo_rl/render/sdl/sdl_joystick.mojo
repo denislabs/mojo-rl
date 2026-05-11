@@ -224,7 +224,7 @@ def get_joysticks(
         "SDL_GetJoysticks",
         def(count: Ptr[c_int, MutAnyOrigin]) thin -> Ptr[JoystickID, MutAnyOrigin],
     ]()(count)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -434,7 +434,7 @@ def open_joystick(
         "SDL_OpenJoystick",
         def(instance_id: JoystickID) thin -> Ptr[Joystick, MutAnyOrigin],
     ]()(instance_id)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -480,7 +480,7 @@ def get_joystick_from_player_index(
         "SDL_GetJoystickFromPlayerIndex",
         def(player_index: c_int) thin -> Ptr[Joystick, MutAnyOrigin],
     ]()(player_index)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 

@@ -348,7 +348,7 @@ def io_from_mem(
             mem: Ptr[NoneType, MutAnyOrigin], size: c_size_t
         ) thin -> Ptr[IOStream, MutAnyOrigin],
     ]()(mem, size)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -401,7 +401,7 @@ def io_from_const_mem(
             mem: Ptr[NoneType, ImmutAnyOrigin], size: c_size_t
         ) thin -> Ptr[IOStream, MutAnyOrigin],
     ]()(mem, size)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -433,7 +433,7 @@ def io_from_dynamic_mem(out ret: Ptr[IOStream, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib, "SDL_IOFromDynamicMem", def() thin -> Ptr[IOStream, MutAnyOrigin]
     ]()()
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -475,7 +475,7 @@ def open_io(
             userdata: Ptr[NoneType, MutAnyOrigin],
         ) thin -> Ptr[IOStream, MutAnyOrigin],
     ]()(iface, userdata)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -819,7 +819,7 @@ def load_file_io(
             closeio: Bool,
         ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(src, datasize, closeio)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -858,7 +858,7 @@ def load_file(
             datasize: Ptr[c_size_t, MutAnyOrigin],
         ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(file.as_c_string_slice().unsafe_ptr(), datasize)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 

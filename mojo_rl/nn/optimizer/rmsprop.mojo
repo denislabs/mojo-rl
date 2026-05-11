@@ -176,7 +176,7 @@ struct RMSprop[
 
         comptime grid_size = (PARAM_SIZE + TPB - 1) // TPB
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             params,
             grads,
             state,

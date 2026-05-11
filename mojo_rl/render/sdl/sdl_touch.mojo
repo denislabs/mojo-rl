@@ -172,7 +172,7 @@ def get_touch_devices(
         "SDL_GetTouchDevices",
         def(count: Ptr[c_int, MutAnyOrigin]) thin -> Ptr[TouchID, MutAnyOrigin],
     ]()(count)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -196,7 +196,7 @@ def get_touch_device_name(
         "SDL_GetTouchDeviceName",
         def(touch_id: TouchID) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(touch_id)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -245,5 +245,5 @@ def get_touch_fingers(
             touch_id: TouchID, count: Ptr[c_int, MutAnyOrigin]
         ) thin -> Ptr[Ptr[Finger, MutAnyOrigin], MutAnyOrigin],
     ]()(touch_id, count)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

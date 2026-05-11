@@ -254,7 +254,7 @@ struct EZV2GPUSampledMCTSState[
 
 def gs_scatter_root_hidden_kernel[
     N_ENVS: Int, MAX_NODES: Int, LATENT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     root_hidden: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * LATENT), MutAnyOrigin
@@ -262,7 +262,7 @@ def gs_scatter_root_hidden_kernel[
     hidden_states: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Scatter contiguous rep-forward output into each env's slot-0 hidden."""
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
     if e >= N_ENVS:
@@ -281,7 +281,7 @@ def gs_init_root_kernel[
     K_ROOT: Int,
     K_PAD: Int,
     PRED_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     actions: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * K_PAD * ACT_DIM),
@@ -314,7 +314,7 @@ def gs_init_root_kernel[
     min_std: Scalar[dtype],
     std_mag: Scalar[dtype],
     rng_seed: Scalar[DType.uint32],
-):
+) where dtype.is_floating_point():
     """Initialize the root node:
         • read (μ_raw, σ_raw) from `pred_output[e, 0:2*ACT_DIM]`,
         • sample K_ROOT candidates (half N(μ, σ), half N(μ, std_mag · σ)),
@@ -492,7 +492,7 @@ def gs_select_kernel[
     K_PAD: Int,
     LATENT: Int,
     DYN_IN: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     visit_count: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * K_PAD), MutAnyOrigin
@@ -548,7 +548,7 @@ def gs_select_kernel[
     current_slot: Scalar[DType.int32],
     c_visit: Scalar[dtype],
     c_scale: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """One simulation's selection phase, per env. Picks the root candidate
     at slot `current_slot`, descends by visit-balance until an unexpanded
     candidate is hit, and writes (parent, cand, dyn_input) for the
@@ -728,7 +728,7 @@ def gs_select_kernel[
 
 def gs_copy_pred_input_kernel[
     N_ENVS: Int, LATENT: Int, DYN_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     pred_input: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * LATENT), MutAnyOrigin
@@ -736,7 +736,7 @@ def gs_copy_pred_input_kernel[
     dyn_output: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * DYN_OUT), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Copy LATENT prefix of dyn_output into pred_input."""
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
     if e >= N_ENVS:
@@ -758,7 +758,7 @@ def gs_expand_kernel[
     BINS: Int,
     PRED_OUT: Int,
     DYN_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     visit_count: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * K_PAD), MutAnyOrigin
@@ -811,7 +811,7 @@ def gs_expand_kernel[
     min_std: Scalar[dtype],
     rng_seed: Scalar[DType.uint32],
     sim_index: Scalar[DType.uint32],
-):
+) where dtype.is_floating_point():
     """Expand the leaf for each env: write hidden state, decode reward,
     sample K_NON_ROOT child candidates from N(μ, σ) (no magnification),
     populate child node, decode child value into both `node_value` and
@@ -1043,7 +1043,7 @@ def gs_expand_kernel[
 
 def gs_backup_kernel[
     N_ENVS: Int, MAX_NODES: Int, K_PAD: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     visit_count: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * K_PAD), MutAnyOrigin
@@ -1070,7 +1070,7 @@ def gs_backup_kernel[
     ],
     leaf_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     gamma: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Walk path leaf→root, accumulate discounted return, refresh min/max_Q."""
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
     if e >= N_ENVS:
@@ -1113,7 +1113,7 @@ def gs_backup_kernel[
 
 def gs_halve_active_kernel[
     N_ENVS: Int, MAX_NODES: Int, K_ROOT: Int, K_PAD: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     visit_count: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * K_PAD), MutAnyOrigin
@@ -1142,7 +1142,7 @@ def gs_halve_active_kernel[
     keep: Scalar[DType.int32],
     c_visit: Scalar[dtype],
     c_scale: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Sequential-Halving phase boundary: keep top-`keep` active root
     candidates by `g_i + log_prior_i + σ(completed_Q_i)`."""
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -1255,7 +1255,7 @@ def gs_extract_kernel[
     ACT_DIM: Int,
     K_ROOT: Int,
     K_PAD: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     visit_count: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * K_PAD), MutAnyOrigin
@@ -1272,7 +1272,7 @@ def gs_extract_kernel[
     ],
     deterministic: Scalar[DType.uint8],
     rng_seed: Scalar[DType.uint32],
-):
+) where dtype.is_floating_point():
     """Build per-env outputs from the root visit counts:
         • normalized visit distribution → `root_visits_out[e, i]`,
         • chosen action vector — argmax-visit if deterministic, else
@@ -1440,7 +1440,7 @@ def run_sampled_gumbel_search_gpu[
     comptime run_scatter = gs_scatter_root_hidden_kernel[
         N_ENVS, MAX_NODES, LATENT, dtype
     ]
-    ctx.enqueue_function[run_scatter, run_scatter](
+    ctx.enqueue_function[run_scatter](
         rh_flat,
         hs_flat,
         grid_dim=(ENV_BLOCKS,),
@@ -1483,7 +1483,7 @@ def run_sampled_gumbel_search_gpu[
     comptime run_init = gs_init_root_kernel[
         N_ENVS, MAX_NODES, ACT_DIM, BINS, K_ROOT, K_PAD, PRED_OUT, dtype
     ]
-    ctx.enqueue_function[run_init, run_init](
+    ctx.enqueue_function[run_init](
         act_t,
         lp_t,
         nv_t,
@@ -1575,7 +1575,7 @@ def run_sampled_gumbel_search_gpu[
             var tvis_t = LayoutTensor[
                 dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
             ](state.total_visits.unsafe_ptr())
-            ctx.enqueue_function[run_halve, run_halve](
+            ctx.enqueue_function[run_halve](
                 vc_t,
                 tv_t,
                 lp_t,
@@ -1641,7 +1641,7 @@ def run_sampled_gumbel_search_gpu[
     comptime run_extract = gs_extract_kernel[
         N_ENVS, MAX_NODES, ACT_DIM, K_ROOT, K_PAD, dtype
     ]
-    ctx.enqueue_function[run_extract, run_extract](
+    ctx.enqueue_function[run_extract](
         vc_extract_t,
         act_t,
         ca_t,
@@ -1758,7 +1758,7 @@ def _run_one_sim_gpu[
     comptime run_select = gs_select_kernel[
         N_ENVS, MAX_NODES, ACT_DIM, K_ROOT, K_PAD, LATENT, DYN_IN, dtype
     ]
-    ctx.enqueue_function[run_select, run_select](
+    ctx.enqueue_function[run_select](
         vc_t,
         tv_t,
         lp_t,
@@ -1810,7 +1810,7 @@ def _run_one_sim_gpu[
     var dyn_out_flat = LayoutTensor[
         dtype, Layout.row_major(N_ENVS * DYN_OUT), MutAnyOrigin
     ](state.dyn_output.unsafe_ptr())
-    ctx.enqueue_function[run_copy, run_copy](
+    ctx.enqueue_function[run_copy](
         pred_in_flat,
         dyn_out_flat,
         grid_dim=(ENV_BLOCKS,),
@@ -1843,7 +1843,7 @@ def _run_one_sim_gpu[
         N_ENVS, MAX_NODES, ACT_DIM, K_ROOT, K_NON_ROOT, K_PAD, LATENT,
         BINS, PRED_OUT, DYN_OUT, dtype,
     ]
-    ctx.enqueue_function[run_expand, run_expand](
+    ctx.enqueue_function[run_expand](
         vc_t,
         tv_t,
         lp_t,
@@ -1874,7 +1874,7 @@ def _run_one_sim_gpu[
     comptime run_backup = gs_backup_kernel[
         N_ENVS, MAX_NODES, K_PAD, dtype
     ]
-    ctx.enqueue_function[run_backup, run_backup](
+    ctx.enqueue_function[run_backup](
         vc_t,
         tv_t,
         rw_t,

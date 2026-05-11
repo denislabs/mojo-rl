@@ -373,7 +373,7 @@ struct LayerNormOp[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, params, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             params_immut,
@@ -435,7 +435,7 @@ struct LayerNormOp[dim: Int](DiffOp):
                 grad_input, grad_output, params, cache
             )
 
-        ctx.enqueue_function[dx_wrapper, dx_wrapper](
+        ctx.enqueue_function[dx_wrapper](
             grad_input,
             grad_output_immut,
             params_immut,
@@ -474,7 +474,7 @@ struct LayerNormOp[dim: Int](DiffOp):
                 dgamma, dbeta, grad_output, cache
             )
 
-        ctx.enqueue_function[dp_wrapper, dp_wrapper](
+        ctx.enqueue_function[dp_wrapper](
             dgamma,
             dbeta,
             grad_output_immut,

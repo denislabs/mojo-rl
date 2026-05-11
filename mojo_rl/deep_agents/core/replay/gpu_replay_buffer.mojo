@@ -302,7 +302,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                     dtype, N_ENVS, Self.OBS_DIM, Self.CAPACITY
                 ](s, ns, bs, bns, widx)
 
-            ctx.enqueue_function[store_obs_wrapper, store_obs_wrapper](
+            ctx.enqueue_function[store_obs_wrapper](
                 states_t,
                 next_states_t,
                 buf_states_t,
@@ -338,7 +338,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                 br[buf_idx] = r[i]
                 bd[buf_idx] = d[i]
 
-            ctx.enqueue_function[store_scalars_wrapper, store_scalars_wrapper](
+            ctx.enqueue_function[store_scalars_wrapper](
                 actions_t,
                 rewards_t,
                 dones_t,
@@ -404,7 +404,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                     dtype, N_ENVS, Self.OBS_DIM, Self.ACTION_DIM, Self.CAPACITY
                 ](s, a, r, ns, d, bs, ba, br, bns, bd, widx)
 
-            ctx.enqueue_function[store_nd_wrapper, store_nd_wrapper](
+            ctx.enqueue_function[store_nd_wrapper](
                 states_t,
                 actions_t,
                 rewards_t,
@@ -524,7 +524,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                     dtype, N_ENVS, Self.OBS_DIM, Self.CAPACITY
                 ](s, ns, bs, bns, rebind[Scalar[DType.int32]](widx[0]))
 
-            ctx.enqueue_function[store_obs_graph_wrapper, store_obs_graph_wrapper](
+            ctx.enqueue_function[store_obs_graph_wrapper](
                 states_t,
                 next_states_t,
                 buf_states_t,
@@ -559,9 +559,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                 br[buf_idx] = r[i]
                 bd[buf_idx] = d[i]
 
-            ctx.enqueue_function[
-                store_scalars_graph_wrapper, store_scalars_graph_wrapper
-            ](
+            ctx.enqueue_function[store_scalars_graph_wrapper](
                 actions_t,
                 rewards_t,
                 dones_t,
@@ -627,7 +625,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                     dtype, N_ENVS, Self.OBS_DIM, Self.ACTION_DIM, Self.CAPACITY
                 ](s, a, r, ns, d, bs, ba, br, bns, bd, rebind[Scalar[DType.int32]](widx[0]))
 
-            ctx.enqueue_function[store_nd_graph_wrapper, store_nd_graph_wrapper](
+            ctx.enqueue_function[store_nd_graph_wrapper](
                 states_t,
                 actions_t,
                 rewards_t,
@@ -645,7 +643,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
 
         # Advance GPU-side write index: (write_idx + N_ENVS) % CAPACITY
         comptime adv_k = advance_write_idx_kernel[N_ENVS, Self.CAPACITY]
-        ctx.enqueue_function[adv_k, adv_k](
+        ctx.enqueue_function[adv_k](
             widx_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -658,7 +656,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
         var size_t = LayoutTensor[
             DType.int32, Layout.row_major(1), MutAnyOrigin
         ](self.gpu_size.unsafe_ptr())
-        ctx.enqueue_function[size_k, size_k](
+        ctx.enqueue_function[size_k](
             size_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -724,7 +722,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
             comptime K_MAX = 1000
             comptime C_MIN = 5000
             comptime ere_update_k = ere_update_kernel[dtype, K_MAX, C_MIN]
-            ctx.enqueue_function[ere_update_k, ere_update_k](
+            ctx.enqueue_function[ere_update_k](
                 ere_state_t,
                 buf_size_t,
                 ere_c_t,
@@ -756,7 +754,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                     idx, bsize, widx, ere_c_arg, rng
                 )
 
-            ctx.enqueue_function[sample_ere_wrapper, sample_ere_wrapper](
+            ctx.enqueue_function[sample_ere_wrapper](
                 indices_t,
                 buf_size_t,
                 widx_t,
@@ -782,7 +780,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
             ):
                 sample_indices_kernel[dtype, BATCH](idx, bsize, rng)
 
-            ctx.enqueue_function[sample_wrapper, sample_wrapper](
+            ctx.enqueue_function[sample_wrapper](
                 indices_t,
                 buf_size_t,
                 rng_t,
@@ -852,7 +850,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                     dtype, BATCH, Self.OBS_DIM, Self.CAPACITY
                 ](bs, bns, rbs, rbns, idx)
 
-            ctx.enqueue_function[gather_obs_wrapper, gather_obs_wrapper](
+            ctx.enqueue_function[gather_obs_wrapper](
                 sampled_obs_t,
                 sampled_next_obs_t,
                 buf_states_t,
@@ -900,7 +898,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                         ba, br, bd, rba, rbr, rbd, idx
                     )
 
-                ctx.enqueue_function[gather_sc_wrapper, gather_sc_wrapper](
+                ctx.enqueue_function[gather_sc_wrapper](
                     sampled_actions_t,
                     sampled_rewards_t,
                     sampled_dones_t,
@@ -956,9 +954,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                         dtype, BATCH, Self.ACTION_DIM, Self.CAPACITY
                     ](ba, br, bd, rba, rbr, rbd, idx)
 
-                ctx.enqueue_function[
-                    gather_sc_nd_wrapper, gather_sc_nd_wrapper
-                ](
+                ctx.enqueue_function[gather_sc_nd_wrapper](
                     sampled_actions_t,
                     sampled_rewards_t,
                     sampled_dones_t,
@@ -1022,7 +1018,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                     bs, ba, br, bns, bd, rbs, rba, rbr, rbns, rbd, idx
                 )
 
-            ctx.enqueue_function[gather_wrapper, gather_wrapper](
+            ctx.enqueue_function[gather_wrapper](
                 sampled_obs_t,
                 sampled_actions_t,
                 sampled_rewards_t,
@@ -1098,7 +1094,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                     dtype, BATCH, Self.OBS_DIM, Self.ACTION_DIM, Self.CAPACITY
                 ](bs, ba, br, bns, bd, rbs, rba, rbr, rbns, rbd, idx)
 
-            ctx.enqueue_function[gather_nd_wrapper, gather_nd_wrapper](
+            ctx.enqueue_function[gather_nd_wrapper](
                 sampled_obs_t,
                 sampled_actions_t,
                 sampled_rewards_t,

@@ -262,7 +262,7 @@ def get_cameras(
         "SDL_GetCameras",
         def(count: Ptr[c_int, MutAnyOrigin]) thin -> Ptr[CameraID, MutAnyOrigin],
     ]()(count)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -339,7 +339,7 @@ def get_camera_name(
         "SDL_GetCameraName",
         def(instance_id: CameraID) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(instance_id)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -428,7 +428,7 @@ def open_camera(
             instance_id: CameraID, spec: Ptr[CameraSpec, ImmutAnyOrigin]
         ) thin -> Ptr[Camera, MutAnyOrigin],
     ]()(instance_id, spec)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 

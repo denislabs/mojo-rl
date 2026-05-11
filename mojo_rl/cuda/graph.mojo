@@ -57,10 +57,10 @@ struct CUDAGraph(Movable):
         """
         self._state = 0
         self._num_nodes = 0
-        self._graph = _CUptr()
-        self._exec = _CUptr()
-        self._mojo_stream = _CUptr()
-        self._replay_stream = _CUptr()
+        self._graph = _CUptr(_unsafe_null=())
+        self._exec = _CUptr(_unsafe_null=())
+        self._mojo_stream = _CUptr(_unsafe_null=())
+        self._replay_stream = _CUptr(_unsafe_null=())
 
         comptime if has_nvidia_gpu_accelerator():
             ctx.synchronize()
@@ -83,7 +83,7 @@ struct CUDAGraph(Movable):
                     def(UnsafePointer[_CUptr, MutAnyOrigin]) thin -> c_int
                 ]("intercept_stream_create")
                 var stream_buf = alloc[_CUptr](1)
-                stream_buf[] = _CUptr()
+                stream_buf[] = _CUptr(_unsafe_null=())
                 _ = stream_create(stream_buf)
                 self._replay_stream = stream_buf[]
                 stream_buf.free()
@@ -111,8 +111,8 @@ struct CUDAGraph(Movable):
             _ = self._lib.get_function[def(_CUptr) thin -> c_int](
                 "intercept_graph_destroy"
             )(self._graph)
-            self._exec = _CUptr()
-            self._graph = _CUptr()
+            self._exec = _CUptr(_unsafe_null=())
+            self._graph = _CUptr(_unsafe_null=())
 
         var r = self._lib.get_function[def(_CUptr) thin -> c_int](
             "intercept_stream_begin_capture"
@@ -131,7 +131,7 @@ struct CUDAGraph(Movable):
 
         # End capture
         var graph_buf = alloc[_CUptr](1)
-        graph_buf[] = _CUptr()
+        graph_buf[] = _CUptr(_unsafe_null=())
         var r_end = self._lib.get_function[
             def(_CUptr, UnsafePointer[_CUptr, MutAnyOrigin]) thin -> c_int
         ]("intercept_stream_end_capture")(self._mojo_stream, graph_buf)
@@ -162,7 +162,7 @@ struct CUDAGraph(Movable):
 
         # Instantiate
         var exec_buf = alloc[_CUptr](1)
-        exec_buf[] = _CUptr()
+        exec_buf[] = _CUptr(_unsafe_null=())
         var r_inst = self._lib.get_function[
             def(UnsafePointer[_CUptr, MutAnyOrigin], _CUptr) thin -> c_int
         ]("intercept_graph_instantiate")(exec_buf, self._graph)

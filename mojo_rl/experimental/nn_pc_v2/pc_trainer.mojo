@@ -1113,7 +1113,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
             ]
             var sub_threads = BATCH * Self.NET.block_types[l_idx].OUT_DIM
             var sub_blocks = (sub_threads + TPB - 1) // TPB
-            ctx.enqueue_function[sub_k, sub_k](
+            ctx.enqueue_function[sub_k](
                 li_eps_self, li_z, li_dx,
                 grid_dim=(sub_blocks,), block_dim=(TPB,),
             )
@@ -1124,7 +1124,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         ]
         var apply_threads = BATCH * Self.NET.LATENT_DIM
         var apply_blocks = (apply_threads + TPB - 1) // TPB
-        ctx.enqueue_function[apply_k, apply_k](
+        ctx.enqueue_function[apply_k](
             latents, dx_buf, lr_x,
             grid_dim=(apply_blocks,), block_dim=(TPB,),
         )
@@ -1693,7 +1693,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         ]
         var threads = BATCH * Self.NET.LATENT_DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
+        ctx.enqueue_function[k](
             noise_buf, seed, offset_base,
             grid_dim=(blocks,), block_dim=(TPB,),
         )
@@ -1813,7 +1813,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
             ]
             var z_threads = BATCH * out_dim_R
             var z_blocks = (z_threads + TPB - 1) // TPB
-            ctx.enqueue_function[zero_k, zero_k](
+            ctx.enqueue_function[zero_k](
                 li_eps_R,
                 grid_dim=(z_blocks,), block_dim=(TPB,),
             )
@@ -1873,7 +1873,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
             ]
             var sub_threads = BATCH * Self.NET.block_types[l_idx].OUT_DIM
             var sub_blocks = (sub_threads + TPB - 1) // TPB
-            ctx.enqueue_function[sub_k, sub_k](
+            ctx.enqueue_function[sub_k](
                 li_eps_self, li_z, li_dx,
                 grid_dim=(sub_blocks,), block_dim=(TPB,),
             )
@@ -1887,7 +1887,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         ]
         var apply_threads = BATCH * Self.NET.LATENT_DIM
         var apply_blocks = (apply_threads + TPB - 1) // TPB
-        ctx.enqueue_function[apply_k, apply_k](
+        ctx.enqueue_function[apply_k](
             latents, dx_buf, noise_buf, lr_x, noise_coeff,
             grid_dim=(apply_blocks,), block_dim=(TPB,),
         )

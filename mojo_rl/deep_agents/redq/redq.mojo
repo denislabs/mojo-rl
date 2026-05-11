@@ -817,7 +817,7 @@ struct REDQAgent[
         comptime sac_counter_k = sac_sample_actions_counter_kernel[
             dtype, N_ENVS, Self.ACTIONS, Self.ACTOR_OUT
         ]
-        ctx.enqueue_function[sac_counter_k, sac_counter_k](
+        ctx.enqueue_function[sac_counter_k](
             act_t,
             raw_t,
             Scalar[dtype](self.action_scale),
@@ -918,7 +918,7 @@ struct REDQAgent[
         self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
-        logger: UnsafePointer[L, MutAnyOrigin],
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
     ) raises -> None:
         """Emit fine-grained diagnostics every `diag_every` critic updates.
 
@@ -1010,16 +1010,16 @@ struct REDQAgent[
         )
 
         var step = self.critic_update_count
-        logger[].log_scalar("critic_loss", critic_loss, step)
-        logger[].log_scalar("mean_q", mean_q, step)
-        logger[].log_scalar("mean_target", mean_tgt, step)
-        logger[].log_scalar("mean_reward", mean_rew, step)
-        logger[].log_scalar("mean_next_q", mean_nq, step)
-        logger[].log_scalar("mean_done", mean_done, step)
-        logger[].log_scalar("mean_abs_action", mean_abs_act, step)
-        logger[].log_scalar("mean_log_pi", mean_lp, step)
-        logger[].log_scalar("alpha", alpha, step)
-        logger[].log_scalar("log_alpha", log_alpha, step)
+        logger.value()[].log_scalar("critic_loss", critic_loss, step)
+        logger.value()[].log_scalar("mean_q", mean_q, step)
+        logger.value()[].log_scalar("mean_target", mean_tgt, step)
+        logger.value()[].log_scalar("mean_reward", mean_rew, step)
+        logger.value()[].log_scalar("mean_next_q", mean_nq, step)
+        logger.value()[].log_scalar("mean_done", mean_done, step)
+        logger.value()[].log_scalar("mean_abs_action", mean_abs_act, step)
+        logger.value()[].log_scalar("mean_log_pi", mean_lp, step)
+        logger.value()[].log_scalar("alpha", alpha, step)
+        logger.value()[].log_scalar("log_alpha", log_alpha, step)
 
     # -------------------------------------------------------------------------
     # Single REDQ training iteration (one of UTD_RATIO inner steps)
@@ -1051,7 +1051,7 @@ struct REDQAgent[
         var rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu_state.rng_counter.unsafe_ptr())
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t, grid_dim=(1,), block_dim=(1,)
         )
 
@@ -1105,7 +1105,7 @@ struct REDQAgent[
         var rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu_state.rng_counter.unsafe_ptr())
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t, grid_dim=(1,), block_dim=(1,)
         )
 
@@ -1152,7 +1152,7 @@ struct REDQAgent[
                 acts, lp, eps, ao, lsmin, lsmax, asc, rng
             )
 
-        ctx.enqueue_function[rsample_next, rsample_next](
+        ctx.enqueue_function[rsample_next](
             nact_t,
             nlp_t,
             neps_t,
@@ -1169,7 +1169,7 @@ struct REDQAgent[
         var next_ci_t = LayoutTensor[
             dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
         ](gpu_state.next_ci.unsafe_ptr())
-        ctx.enqueue_function[concat_k, concat_k](
+        ctx.enqueue_function[concat_k](
             next_ci_t,
             nobs_t,
             nact_t,
@@ -1212,7 +1212,7 @@ struct REDQAgent[
         comptime target_k = redq_ensemble_target_kernel[
             dtype, BS, Self.N_ENS, Self.N_MIN, Self.Q_MODE
         ]
-        ctx.enqueue_function[target_k, target_k](
+        ctx.enqueue_function[target_k](
             targets_t,
             rew_t,
             nq_stack_t,
@@ -1230,7 +1230,7 @@ struct REDQAgent[
         var ci_t = LayoutTensor[
             dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
         ](gpu_state.ci.unsafe_ptr())
-        ctx.enqueue_function[concat_k, concat_k](
+        ctx.enqueue_function[concat_k](
             ci_t,
             obs_t,
             act_t,
@@ -1264,7 +1264,7 @@ struct REDQAgent[
                 q_cache_t,
                 gpu_state.critic_ws,
             )
-            ctx.enqueue_function[mse_grad_k, mse_grad_k](
+            ctx.enqueue_function[mse_grad_k](
                 q_grad_t,
                 q_out_t,
                 targets_t,
@@ -1318,7 +1318,7 @@ struct REDQAgent[
         ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
         # --- 1. Increment RNG counter before rsample ---
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t, grid_dim=(1,), block_dim=(1,)
         )
 
@@ -1369,7 +1369,7 @@ struct REDQAgent[
                 acts, lp, eps, ao, lsmin, lsmax, asc, rng
             )
 
-        ctx.enqueue_function[rsample_curr, rsample_curr](
+        ctx.enqueue_function[rsample_curr](
             curr_act_t,
             curr_lp_t,
             eps_t,
@@ -1386,7 +1386,7 @@ struct REDQAgent[
         var new_ci_t = LayoutTensor[
             dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
         ](gpu_state.new_ci.unsafe_ptr())
-        ctx.enqueue_function[concat_k, concat_k](
+        ctx.enqueue_function[concat_k](
             new_ci_t,
             obs_t,
             curr_act_t,
@@ -1423,7 +1423,7 @@ struct REDQAgent[
             dtype, Layout.row_major(BS * Self.CRITIC_OUT), MutAnyOrigin
         ](gpu_state.dq_actor.unsafe_ptr())
         comptime DQ_BLOCKS = (BS * Self.CRITIC_OUT + TPB - 1) // TPB
-        ctx.enqueue_function[fill_dq_k, fill_dq_k](
+        ctx.enqueue_function[fill_dq_k](
             dq_flat_t,
             seed_val,
             grid_dim=(DQ_BLOCKS,),
@@ -1437,7 +1437,7 @@ struct REDQAgent[
         var d_ci_sum_flat_t = LayoutTensor[
             dtype, Layout.row_major(BS * Self.CRITIC_IN), MutAnyOrigin
         ](gpu_state.d_ci_sum.unsafe_ptr())
-        ctx.enqueue_function[fill_sum_k, fill_sum_k](
+        ctx.enqueue_function[fill_sum_k](
             d_ci_sum_flat_t,
             Scalar[dtype](0.0),
             grid_dim=(ELEM_BLOCKS,),
@@ -1479,7 +1479,7 @@ struct REDQAgent[
             # populated for the next critic-update phase.
             gpu_state.critics.pairs[n].online.zero_grads(ctx)
             # Accumulate d_ci_sum += d_ci_per.
-            ctx.enqueue_function[add_k, add_k](
+            ctx.enqueue_function[add_k](
                 d_ci_sum_t,
                 d_ci_per_t,
                 grid_dim=(ELEM_BLOCKS,),
@@ -1493,7 +1493,7 @@ struct REDQAgent[
         comptime ext_k = actor_grad_from_critic_kernel[
             dtype, BS, Self.OBS, Self.ACTIONS
         ]
-        ctx.enqueue_function[ext_k, ext_k](
+        ctx.enqueue_function[ext_k](
             grad_act_t,
             d_ci_sum_t,
             grid_dim=(ACT_BLOCKS,),
@@ -1535,7 +1535,7 @@ struct REDQAgent[
                 agrad, ga, ab, ca, eps, ao, lsmin, lsmax, asc
             )
 
-        ctx.enqueue_function[rsample_bwd, rsample_bwd](
+        ctx.enqueue_function[rsample_bwd](
             actor_grad_t,
             grad_act_t,
             alpha_t,
@@ -1599,7 +1599,7 @@ struct REDQAgent[
             ):
                 alpha_k(sc, lp, la_max, la_min, lp_clip)
 
-            ctx.enqueue_function[alpha_wrapper, alpha_wrapper](
+            ctx.enqueue_function[alpha_wrapper](
                 scalars_t,
                 curr_lp_t,
                 Scalar[dtype](2.0),
@@ -1634,13 +1634,13 @@ struct REDQAgent[
         var ps_t = LayoutTensor[
             dtype, Layout.row_major(C_BLOCKS), MutAnyOrigin
         ](gpu_state.grad_clip_ps.unsafe_ptr())
-        ctx.enqueue_function[c_norm_k, c_norm_k](
+        ctx.enqueue_function[c_norm_k](
             ps_t,
             grads,
             grid_dim=(C_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[c_clip_k, c_clip_k](
+        ctx.enqueue_function[c_clip_k](
             grads,
             ps_t,
             Scalar[dtype](self.max_grad_norm),
@@ -1669,13 +1669,13 @@ struct REDQAgent[
         var ps_t = LayoutTensor[
             dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
         ](gpu_state.grad_clip_ps.unsafe_ptr())
-        ctx.enqueue_function[a_norm_k, a_norm_k](
+        ctx.enqueue_function[a_norm_k](
             ps_t,
             grads,
             grid_dim=(A_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[a_clip_k, a_clip_k](
+        ctx.enqueue_function[a_clip_k](
             grads,
             ps_t,
             Scalar[dtype](self.max_grad_norm),
@@ -1704,9 +1704,7 @@ struct REDQAgent[
         verbose: Bool = False,
         print_every: Int = 10_000,
         environment_name: String = "Environment",
-        logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
-            L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         rng_seed: UInt64 = 42,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
@@ -1804,7 +1802,7 @@ struct REDQAgent[
                     Layout.row_major(n_envs, E.ACTION_DIM),
                     MutAnyOrigin,
                 ](actions_buf.unsafe_ptr())
-                ctx.enqueue_function[warmup_kernel, warmup_kernel](
+                ctx.enqueue_function[warmup_kernel](
                     act_t,
                     action_scale_val,
                     Scalar[DType.uint32](step_seed),
@@ -1858,13 +1856,13 @@ struct REDQAgent[
             var ec_t = LayoutTensor[
                 dtype, Layout.row_major(1), MutAnyOrigin
             ](gpu_episode_count_buf.unsafe_ptr())
-            ctx.enqueue_function[accum_k, accum_k](
+            ctx.enqueue_function[accum_k](
                 er_t, rw_t, grid_dim=(env_blocks,), block_dim=(tpb,)
             )
-            ctx.enqueue_function[incr_steps_k, incr_steps_k](
+            ctx.enqueue_function[incr_steps_k](
                 es_t, grid_dim=(env_blocks,), block_dim=(tpb,)
             )
-            ctx.enqueue_function[log_reset_k, log_reset_k](
+            ctx.enqueue_function[log_reset_k](
                 dn_t,
                 er_t,
                 es_t,
@@ -1907,7 +1905,7 @@ struct REDQAgent[
                 next_progress += progress_interval
 
             if (
-                verbose or (logger and logger[].is_active())
+                verbose or (Bool(logger) and logger.value()[].is_active())
             ) and total_steps >= next_print:
                 ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
                 ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
@@ -1928,17 +1926,17 @@ struct REDQAgent[
                 ctx.enqueue_memset(gpu_reward_sum_buf, 0)
                 ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
-                if logger:
-                    logger[].log_scalar(
+                if Bool(logger):
+                    logger.value()[].log_scalar(
                         "avg_reward", last_avg_reward, total_steps
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "episodes", Float64(completed_episodes), total_steps
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "train_steps", Float64(total_train_steps), total_steps
                     )
-                    logger[].log_scalar("alpha", cur_alpha, total_steps)
+                    logger.value()[].log_scalar("alpha", cur_alpha, total_steps)
 
                 if verbose:
                     clear_progress_bar()
@@ -1994,18 +1992,18 @@ struct REDQAgent[
         if ckpt_every > 0 and ckpt_path.byte_length() > 0:
             self.save_checkpoint(ckpt_path)
 
-        if logger and logger[].is_active():
-            logger[].log_scalar(
+        if Bool(logger) and logger.value()[].is_active():
+            logger.value()[].log_scalar(
                 "avg_reward", last_avg_reward, total_steps
             )
-            logger[].log_scalar(
+            logger.value()[].log_scalar(
                 "episodes", Float64(completed_episodes), total_steps
             )
-            logger[].log_scalar(
+            logger.value()[].log_scalar(
                 "train_steps", Float64(total_train_steps), total_steps
             )
-            logger[].log_scalar("alpha", Float64(alpha_host[0]), total_steps)
-            logger[].flush()
+            logger.value()[].log_scalar("alpha", Float64(alpha_host[0]), total_steps)
+            logger.value()[].flush()
 
         if verbose:
             clear_progress_bar()
@@ -2041,9 +2039,7 @@ struct REDQAgent[
         verbose: Bool = False,
         print_every: Int = 10_000,
         environment_name: String = "Environment",
-        logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
-            L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         rng_seed: UInt64 = 42,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",

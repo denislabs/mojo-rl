@@ -1124,7 +1124,7 @@ struct FusedMatMulBias[
                 if idx < cache_elems:
                     cache.ptr[idx] = input.ptr[idx]
 
-            ctx.enqueue_function[cache_input_wrapper, cache_input_wrapper](
+            ctx.enqueue_function[cache_input_wrapper](
                 cache,
                 input_immut,
                 grid_dim=(cache_blocks,),
@@ -1164,7 +1164,7 @@ struct FusedMatMulBias[
                         b[col]
                     )
 
-            ctx.enqueue_function[bias_add_wrapper, bias_add_wrapper](
+            ctx.enqueue_function[bias_add_wrapper](
                 output,
                 b,
                 grid_dim=(bias_blocks,),
@@ -1200,7 +1200,7 @@ struct FusedMatMulBias[
                 else:
                     Self.eval_kernel_2x2[BATCH, dtype](output, input, W, b, cache)
 
-            ctx.enqueue_function[wrapper, wrapper](
+            ctx.enqueue_function[wrapper](
                 output,
                 input_immut,
                 W,
@@ -1269,7 +1269,7 @@ struct FusedMatMulBias[
             else:
                 Self.eval_kernel_2x2[BATCH, dtype](output, input, W, b, cache)
 
-        var compiled = ctx.compile_function[wrapper, wrapper]()
+        var compiled = ctx.compile_function[wrapper]()
         stream.enqueue_function(
             compiled,
             output,
@@ -1366,7 +1366,7 @@ struct FusedMatMulBias[
                     dW, cache, grad_output
                 )
 
-            ctx.enqueue_function[dW_wrapper_max, dW_wrapper_max](
+            ctx.enqueue_function[dW_wrapper_max](
                 dW,
                 cache_immut,
                 grad_output_immut,
@@ -1402,7 +1402,7 @@ struct FusedMatMulBias[
                         grad_input, grad_output, W
                     )
 
-            ctx.enqueue_function[dx_wrapper, dx_wrapper](
+            ctx.enqueue_function[dx_wrapper](
                 grad_input,
                 grad_output_immut,
                 W,
@@ -1436,7 +1436,7 @@ struct FusedMatMulBias[
                         dW, cache, grad_output
                     )
 
-            ctx.enqueue_function[dW_wrapper, dW_wrapper](
+            ctx.enqueue_function[dW_wrapper](
                 dW,
                 cache_immut,
                 grad_output_immut,
@@ -1459,7 +1459,7 @@ struct FusedMatMulBias[
         ):
             Self.backward_db_kernel[BATCH, dtype](db, grad_output)
 
-        ctx.enqueue_function[db_wrapper, db_wrapper](
+        ctx.enqueue_function[db_wrapper](
             db,
             grad_output_immut,
             grid_dim=(db_grid_x,),

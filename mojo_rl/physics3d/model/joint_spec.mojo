@@ -1135,7 +1135,7 @@ struct Joints[*J: JointSpec](JointsLike):
                 states, obs, env
             )
 
-        ctx.enqueue_function[kernel, kernel](
+        ctx.enqueue_function[kernel](
             states,
             obs,
             grid_dim=(BLOCKS,),
@@ -1184,7 +1184,7 @@ struct Joints[*J: JointSpec](JointsLike):
                 states, actions, env
             )
 
-        ctx.enqueue_function[kernel, kernel](
+        ctx.enqueue_function[kernel](
             states,
             actions,
             grid_dim=(BLOCKS,),
@@ -1218,7 +1218,7 @@ struct Joints[*J: JointSpec](JointsLike):
                 return
             Self.enforce_limits_gpu[GDTYPE, BATCH_SIZE, STATE_SIZE](states, env)
 
-        ctx.enqueue_function[kernel, kernel](
+        ctx.enqueue_function[kernel](
             states,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),

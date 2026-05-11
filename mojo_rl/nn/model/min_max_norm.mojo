@@ -457,7 +457,7 @@ struct MinMaxNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         ):
             Self.forward_kernel_impl[BATCH, dtype](output, input, cache, eps)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             cache,
@@ -575,7 +575,7 @@ struct MinMaxNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
                 grad_input, grad_output, cache, eps
             )
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input,
             grad_output_immut,
             cache_immut,

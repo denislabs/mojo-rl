@@ -226,7 +226,7 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
                 loss, predictions, targets, d
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             loss,
             predictions,
             targets,
@@ -276,7 +276,7 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
         comptime total = BATCH * OUT_DIM
         comptime grid_size = (total + TPB - 1) // TPB
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             grad_output,
             predictions,
             targets,

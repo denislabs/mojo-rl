@@ -17,7 +17,7 @@ from std.random.philox import Random as PhiloxRandom
 
 @always_inline
 def redq_ensemble_target_kernel[
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BATCH: Int,
     N_ENSEMBLE: Int,
     N_MIN: Int,
@@ -39,7 +39,7 @@ def redq_ensemble_target_kernel[
     gamma: Scalar[dtype],
     alpha_buf: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
     rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Compute REDQ TD target from N stacked target-Q values.
 
     SAC: y = r + γ * (combined_Q(s', a') - α * log_π(a'|s')) * (1 - done)

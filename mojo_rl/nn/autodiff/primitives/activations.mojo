@@ -179,7 +179,7 @@ struct ReLUOp[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             cache,
@@ -233,7 +233,7 @@ struct ReLUOp[dim: Int](DiffOp):
         ):
             Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input,
             grad_output_immut,
             cache_immut,
@@ -427,7 +427,7 @@ struct TanhOp[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             cache,
@@ -481,7 +481,7 @@ struct TanhOp[dim: Int](DiffOp):
         ):
             Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input,
             grad_output_immut,
             cache_immut,
@@ -676,7 +676,7 @@ struct SigmoidOp[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             cache,
@@ -730,7 +730,7 @@ struct SigmoidOp[dim: Int](DiffOp):
         ):
             Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input,
             grad_output_immut,
             cache_immut,
@@ -956,7 +956,7 @@ struct MishOp[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             cache,
@@ -1010,7 +1010,7 @@ struct MishOp[dim: Int](DiffOp):
         ):
             Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input,
             grad_output_immut,
             cache_immut,
@@ -1216,7 +1216,7 @@ struct SwishOp[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             cache,
@@ -1270,7 +1270,7 @@ struct SwishOp[dim: Int](DiffOp):
         ):
             Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input,
             grad_output_immut,
             cache_immut,
@@ -1504,7 +1504,7 @@ struct GELUOp[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             cache,
@@ -1558,7 +1558,7 @@ struct GELUOp[dim: Int](DiffOp):
         ):
             Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input,
             grad_output_immut,
             cache_immut,

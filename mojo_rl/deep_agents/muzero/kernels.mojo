@@ -25,8 +25,8 @@ comptime TPB: Int = 256  # Threads per block
 def scale_hidden_kernel[
     BATCH: Int,
     LATENT: Int,
-    dtype: DType where dtype.is_floating_point(),
-](hidden: LayoutTensor[dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin],):
+    dtype: DType,
+](hidden: LayoutTensor[dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin],) where dtype.is_floating_point():
     """Scale hidden states to [0, 1] per sample via min-max normalization.
 
     Each thread handles one sample (all LATENT elements).
@@ -65,7 +65,7 @@ def ce_policy_grad_kernel[
     BATCH: Int,
     ACT: Int,
     PRED_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     grad_out: LayoutTensor[
         dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
@@ -78,7 +78,7 @@ def ce_policy_grad_kernel[
     ],
     is_weights: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     scale: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Compute policy CE gradient: scale * w[b] * (softmax(logits) - target).
 
     One thread per batch sample. Writes to the first ACT elements of grad_out
@@ -121,7 +121,7 @@ def ce_value_grad_kernel[
     BINS: Int,
     ACT: Int,
     PRED_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     grad_out: LayoutTensor[
         dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
@@ -134,7 +134,7 @@ def ce_value_grad_kernel[
     ],
     is_weights: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     scale: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Compute value CE gradient: scale * w[b] * (softmax(value_logits) - target).
 
     One thread per batch sample. Writes to elements [ACT..ACT+BINS) of grad_out.
@@ -177,7 +177,7 @@ def ce_reward_grad_kernel[
     BINS: Int,
     DYN_OUT: Int,
     LATENT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     grad_out: LayoutTensor[
         dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
@@ -190,7 +190,7 @@ def ce_reward_grad_kernel[
     ],
     is_weights: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     scale: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Compute reward CE gradient: scale * w[b] * (softmax(reward_logits) - target).
 
     One thread per batch sample. Writes to elements [LATENT..LATENT+BINS) of grad_out.
@@ -234,7 +234,7 @@ def ce_reward_grad_kernel[
 def two_hot_encode_kernel[
     BATCH: Int,
     BINS: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     targets_out: LayoutTensor[
         dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin
@@ -242,7 +242,7 @@ def two_hot_encode_kernel[
     scalar_values: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     v_min: Scalar[dtype],
     v_max: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Encode scalar values as two-hot categorical distributions.
 
     One thread per batch sample.
@@ -286,7 +286,7 @@ def build_dyn_input_kernel[
     LATENT: Int,
     ACT: Int,
     DYN_IN: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     dyn_input: LayoutTensor[
         dtype, Layout.row_major(BATCH * DYN_IN), MutAnyOrigin
@@ -295,7 +295,7 @@ def build_dyn_input_kernel[
         dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
     ],
     actions: LayoutTensor[dtype, Layout.row_major(BATCH * ACT), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Assemble dynamics input: [hidden_state || one_hot_action] per sample.
 
     One thread per element in the output [BATCH * DYN_IN].
@@ -322,7 +322,7 @@ def extract_hidden_kernel[
     BATCH: Int,
     LATENT: Int,
     DYN_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     next_hidden: LayoutTensor[
         dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
@@ -330,7 +330,7 @@ def extract_hidden_kernel[
     dyn_output: LayoutTensor[
         dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Extract hidden state from dynamics output (first LATENT elements per sample).
     """
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -351,7 +351,7 @@ def extract_hidden_grad_kernel[
     BATCH: Int,
     LATENT: Int,
     DYN_IN: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     grad_hidden: LayoutTensor[
         dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
@@ -359,7 +359,7 @@ def extract_hidden_grad_kernel[
     grad_dyn_in: LayoutTensor[
         dtype, Layout.row_major(BATCH * DYN_IN), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Extract hidden state gradient from dynamics input gradient."""
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= BATCH * LATENT:
@@ -377,12 +377,12 @@ def extract_hidden_grad_kernel[
 
 def add_scaled_kernel[
     SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     dst: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     src: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     scale: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Formula : dst += src * scale (elementwise)."""
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= SIZE:
@@ -395,11 +395,11 @@ def add_scaled_kernel[
 
 def scale_kernel[
     SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     data: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     scale: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Formula : data *= scale (elementwise)."""
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= SIZE:
@@ -409,11 +409,11 @@ def scale_kernel[
 
 def copy_kernel[
     SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     dst: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     src: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Formula: dst = src (elementwise copy)."""
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= SIZE:
@@ -430,7 +430,7 @@ def set_hidden_grad_for_dyn_kernel[
     BATCH: Int,
     LATENT: Int,
     DYN_OUT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     grad_dyn_out: LayoutTensor[
         dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
@@ -439,7 +439,7 @@ def set_hidden_grad_for_dyn_kernel[
         dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
     ],
     scale: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Copy hidden gradient into dynamics output gradient (first LATENT elements), scaled.
 
     grad_dyn_out[:, :LATENT] = grad_hidden * scale
@@ -462,13 +462,13 @@ def set_hidden_grad_for_dyn_kernel[
 
 def to_play_from_episode_step_kernel[
     N_ENVS: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     ep_steps: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     to_play_out: LayoutTensor[
         DType.uint8, Layout.row_major(N_ENVS), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """Compute per-env player-to-move from per-env episode-step counter.
 
     Assumes player 0 starts after each reset and players strictly alternate
@@ -489,7 +489,7 @@ def store_mcts_targets_kernel[
     N_ENVS: Int,
     PER_ENV_CAP: Int,
     ACT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     # Input: MCTS policies/values/to-play for this step (from CPU)
     policies_in: LayoutTensor[
@@ -510,7 +510,7 @@ def store_mcts_targets_kernel[
         DType.uint8, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
     ],
     write_idx: Scalar[DType.int32],
-):
+) where dtype.is_floating_point():
     """Store MCTS policy/value/to-play targets into per-env circular buffer.
 
     One thread per env. Writes at the same write_idx used by
@@ -547,7 +547,7 @@ def sample_seq_with_targets_kernel[
     PER_ENV_CAP: Int,
     OBS_DIM: Int,
     ACT_DIM: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     # Replay buffer storage (per-env circular)
     buf_obs: LayoutTensor[
@@ -616,7 +616,7 @@ def sample_seq_with_targets_kernel[
     buf_size: Scalar[DType.int32],
     buf_write_idx: Scalar[DType.int32],
     rng_seed: Scalar[DType.uint32],
-):
+) where dtype.is_floating_point():
     """Sample BATCH sequences for MuZero K-step unrolled training.
 
     Layout (time-major so forward pass sees contiguous BATCH-sized slices):
@@ -737,7 +737,7 @@ def sample_seq_with_targets_priority_kernel[
     PER_ENV_CAP: Int,
     OBS_DIM: Int,
     ACT_DIM: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     # Same circular-buffer storage as the non-PER kernel.
     buf_obs: LayoutTensor[
@@ -801,7 +801,7 @@ def sample_seq_with_targets_priority_kernel[
     sampled_starts: LayoutTensor[
         DType.int32, Layout.row_major(BATCH), MutAnyOrigin
     ],
-):
+) where dtype.is_floating_point():
     """PER-aware variant of sample_seq_with_targets_kernel.
 
     Identical gather logic, but reads (env_idx, start_slot) from pre-sampled
@@ -869,7 +869,7 @@ def nstep_value_targets_kernel[
     BATCH: Int,
     K: Int,
     N: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
     BACKUP_TYPE: Int = 0,  # 0=N-step bootstrap, 1=Monte Carlo, 2=Lambda
 ](
     value_targets: LayoutTensor[
@@ -891,7 +891,7 @@ def nstep_value_targets_kernel[
         DType.uint8, Layout.row_major((K + N + 1) * BATCH), MutAnyOrigin
     ],
     gamma: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Compute n-step bootstrapped value targets and reward targets.
 
     One thread per (batch, k) pair. Total threads: BATCH * (K+1).
@@ -980,7 +980,7 @@ def decode_value_dist_kernel[
     BINS: Int,
     PRED_OUT: Int,  # full prediction output dim (= ACT + BINS)
     ACT_DIM: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     pred_logits: LayoutTensor[
         dtype, Layout.row_major(N * PRED_OUT), MutAnyOrigin
@@ -989,7 +989,7 @@ def decode_value_dist_kernel[
     v_min: Scalar[dtype],
     v_max: Scalar[dtype],
     eps: Scalar[dtype] = Scalar[dtype](0.001),
-):
+) where dtype.is_floating_point():
     """Decode a value distribution to a scalar via softmax expectation +
     inverse MuZero scalar transform.
 
@@ -1061,11 +1061,11 @@ def decode_value_dist_kernel[
 
 def scalar_transform_kernel[
     SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     data: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     eps: Scalar[dtype],
-):
+) where dtype.is_floating_point():
     """Apply MuZero scalar transform in-place: h(x) = sign(x)(sqrt(|x|+1)-1) + eps*x.
 
     One thread per element.
@@ -1087,11 +1087,11 @@ def scalar_transform_kernel[
 def action_histogram_kernel[
     N_ENVS: Int,
     ACT: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     hist: LayoutTensor[dtype, Layout.row_major(ACT), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Tally per-action selection counts. Single-threaded — N_ENVS is small
     and ACT is tiny (2-19 typical). Increments hist[actions[i]] by 1 for
     each env i. Used to detect bias in MuZero's MCTS visit-policy sampling
@@ -1109,12 +1109,12 @@ def action_histogram_kernel[
 
 def action_switch_kernel[
     N_ENVS: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType,
 ](
     actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     prev_actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     switch_count: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
-):
+) where dtype.is_floating_point():
     """Count per-env action switches: increment switch_count[0] for each env i
     where actions[i] != prev_actions[i], then copy actions[i] into prev_actions[i].
     Single-threaded: scalar accumulation over N_ENVS.

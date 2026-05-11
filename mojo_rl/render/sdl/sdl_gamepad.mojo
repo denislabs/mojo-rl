@@ -611,7 +611,7 @@ def get_gamepad_mapping_for_guid(
         "SDL_GetGamepadMappingForGUID",
         def(guid: GUID) thin -> Ptr[c_char, MutAnyOrigin],
     ]()(guid)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -703,7 +703,7 @@ def get_gamepads(
         "SDL_GetGamepads",
         def(count: Ptr[c_int, MutAnyOrigin]) thin -> Ptr[JoystickID, MutAnyOrigin],
     ]()(count)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -1454,7 +1454,7 @@ def get_gamepad_joystick(
         "SDL_GetGamepadJoystick",
         def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> Ptr[Joystick, MutAnyOrigin],
     ]()(gamepad)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 

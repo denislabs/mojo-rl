@@ -1281,7 +1281,7 @@ struct FusedMatMulBiasActivation[
                     var col = idx % Self.in_dim
                     cache[row, col] = input[row, col]
 
-            ctx.enqueue_function[cache_input_wrapper, cache_input_wrapper](
+            ctx.enqueue_function[cache_input_wrapper](
                 cache_full,
                 input_immut,
                 grid_dim=(cache_in_blocks,),
@@ -1334,7 +1334,7 @@ struct FusedMatMulBiasActivation[
                         rebind[Scalar[dtype]](pre_act), act_out
                     )
 
-            ctx.enqueue_function[bias_act_wrapper, bias_act_wrapper](
+            ctx.enqueue_function[bias_act_wrapper](
                 output,
                 b,
                 cache_full,
@@ -1373,7 +1373,7 @@ struct FusedMatMulBiasActivation[
                 else:
                     Self.eval_kernel_2x2[BATCH, dtype](output, input, W, b, cache)
 
-            ctx.enqueue_function[wrapper, wrapper](
+            ctx.enqueue_function[wrapper](
                 output,
                 input_immut,
                 W,
@@ -1449,7 +1449,7 @@ struct FusedMatMulBiasActivation[
             else:
                 Self.eval_kernel_2x2[BATCH, dtype](output, input, W, b, cache)
 
-        var compiled = ctx.compile_function[wrapper, wrapper]()
+        var compiled = ctx.compile_function[wrapper]()
         stream.enqueue_function(
             compiled,
             output,
@@ -1542,7 +1542,7 @@ struct FusedMatMulBiasActivation[
                     )
                     masked[row, col] = Self.ACT.backward(cache_val, grad_val)
 
-            ctx.enqueue_function[apply_act_grad_wrapper, apply_act_grad_wrapper](
+            ctx.enqueue_function[apply_act_grad_wrapper](
                 masked_dy,
                 grad_output_immut,
                 cache_immut,
@@ -1597,7 +1597,7 @@ struct FusedMatMulBiasActivation[
                     dW, cache, grad_output
                 )
 
-            ctx.enqueue_function[dW_wrapper_max, dW_wrapper_max](
+            ctx.enqueue_function[dW_wrapper_max](
                 dW,
                 cache_immut,
                 grad_output_immut,
@@ -1628,7 +1628,7 @@ struct FusedMatMulBiasActivation[
             ):
                 Self.backward_db_kernel[BATCH, dtype](db, grad_output, cache)
 
-            ctx.enqueue_function[db_wrapper, db_wrapper](
+            ctx.enqueue_function[db_wrapper](
                 db,
                 grad_output_immut,
                 cache_immut,
@@ -1669,7 +1669,7 @@ struct FusedMatMulBiasActivation[
                         grad_input, grad_output, W, cache
                     )
 
-            ctx.enqueue_function[dx_wrapper, dx_wrapper](
+            ctx.enqueue_function[dx_wrapper](
                 grad_input,
                 grad_output_immut,
                 W,
@@ -1702,7 +1702,7 @@ struct FusedMatMulBiasActivation[
                 else:
                     Self.backward_dW_kernel_2x2[BATCH, dtype](dW, cache, grad_output)
 
-            ctx.enqueue_function[dW_wrapper, dW_wrapper](
+            ctx.enqueue_function[dW_wrapper](
                 dW,
                 cache_immut,
                 grad_output_immut,
@@ -1730,7 +1730,7 @@ struct FusedMatMulBiasActivation[
             ):
                 Self.backward_db_kernel[BATCH, dtype](db, grad_output, cache)
 
-            ctx.enqueue_function[db_wrapper_mma, db_wrapper_mma](
+            ctx.enqueue_function[db_wrapper_mma](
                 db,
                 grad_output_immut,
                 cache_immut,

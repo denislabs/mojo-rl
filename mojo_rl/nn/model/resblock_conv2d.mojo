@@ -330,7 +330,7 @@ struct ResBlockConv2D[
             cache.ptr + BATCH * (Self.CONV1_CS + Self.CONV2_CS)
         )
         comptime fwd_kernel = _fwd_cache_add_relu_kernel[TOTAL, dtype]
-        ctx.enqueue_function[fwd_kernel, fwd_kernel](out_flat, skip_flat, pre_flat, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        ctx.enqueue_function[fwd_kernel](out_flat, skip_flat, pre_flat, grid_dim=(BLOCKS,), block_dim=(TPB,))
 
     # ── GPU Forward (inference, no cache) ────────────────────────
 
@@ -375,7 +375,7 @@ struct ResBlockConv2D[
         var out_flat = LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin](output.ptr)
         var skip_flat = LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin](input.ptr)
         comptime kernel = _add_relu_kernel[TOTAL, dtype]
-        ctx.enqueue_function[kernel, kernel](out_flat, skip_flat, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        ctx.enqueue_function[kernel](out_flat, skip_flat, grid_dim=(BLOCKS,), block_dim=(TPB,))
 
     # ── GPU Forward (no cache, on stream) ────────────────────────
 
@@ -438,7 +438,7 @@ struct ResBlockConv2D[
         )
         var gi_flat = LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin](grad_input.ptr)
         comptime bwd_kernel = _add_relu_backward_kernel[TOTAL, dtype]
-        ctx.enqueue_function[bwd_kernel, bwd_kernel](go_flat, pre_flat, gi_flat, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        ctx.enqueue_function[bwd_kernel](go_flat, pre_flat, gi_flat, grid_dim=(BLOCKS,), block_dim=(TPB,))
 
         # 2. Conv2 backward: grad_output → grad_inter (in workspace inter region)
         var inter_ptr = workspace.unsafe_ptr() + BATCH * Self.MAX_CONV_WS
@@ -458,7 +458,7 @@ struct ResBlockConv2D[
 
         # 4. Add conv1's grad_input to skip grad
         comptime add_k = _add_kernel[TOTAL, dtype]
-        ctx.enqueue_function[add_k, add_k](
+        ctx.enqueue_function[add_k](
             gi_flat,
             LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin](temp_gi_ptr),
             grid_dim=(BLOCKS,), block_dim=(TPB,),

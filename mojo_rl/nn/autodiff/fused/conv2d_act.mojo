@@ -1268,7 +1268,7 @@ struct FusedConv2DActivation[
                 # per-batch with stride CACHE_SIZE, not CONV_CACHE
                 cache_out[b, pos] = val
 
-            ctx.enqueue_function[im2col_wrapper, im2col_wrapper](
+            ctx.enqueue_function[im2col_wrapper](
                 cache,
                 input_immut,
                 grid_dim=(im2col_blocks,),
@@ -1322,7 +1322,7 @@ struct FusedConv2DActivation[
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
             ](cache.ptr)
 
-            ctx.enqueue_function[copy_col_fwd, copy_col_fwd](
+            ctx.enqueue_function[copy_col_fwd](
                 col_flat,
                 cache_immut_fwd,
                 grid_dim=(col_blocks,),
@@ -1380,7 +1380,7 @@ struct FusedConv2DActivation[
                         out_temp, col_flat, W_mat
                     )
 
-                ctx.enqueue_function[fwd_mm_wrapper, fwd_mm_wrapper](
+                ctx.enqueue_function[fwd_mm_wrapper](
                     out_temp,
                     col_flat,
                     W_mat,
@@ -1448,10 +1448,7 @@ struct FusedConv2DActivation[
                     pre_act, act_out
                 )
 
-            ctx.enqueue_function[
-                transpose_output_act_wrapper,
-                transpose_output_act_wrapper,
-            ](
+            ctx.enqueue_function[transpose_output_act_wrapper](
                 output,
                 out_temp,
                 params_immut,
@@ -1484,7 +1481,7 @@ struct FusedConv2DActivation[
             ):
                 Self.eval_kernel_2x2[BATCH, dtype](output, input, params, cache)
 
-            ctx.enqueue_function[wrapper, wrapper](
+            ctx.enqueue_function[wrapper](
                 output,
                 input_immut,
                 params_immut,
@@ -1589,7 +1586,7 @@ struct FusedConv2DActivation[
                     src[b, s * Self.col_size + k]
                 )
 
-            ctx.enqueue_function[copy_col_wrapper, copy_col_wrapper](
+            ctx.enqueue_function[copy_col_wrapper](
                 col_flat,
                 cache_immut,
                 grid_dim=(col_blocks,),
@@ -1648,10 +1645,7 @@ struct FusedConv2DActivation[
                 )
                 dst_3d[oc, b, s] = Self.ACT.backward(cache_val, go_val)
 
-            ctx.enqueue_function[
-                transpose_mask_grad_wrapper,
-                transpose_mask_grad_wrapper,
-            ](
+            ctx.enqueue_function[transpose_mask_grad_wrapper](
                 grad_reshaped,
                 grad_output_immut,
                 cache_immut,
@@ -1692,7 +1686,7 @@ struct FusedConv2DActivation[
                     dW, grad_reshaped, col_flat
                 )
 
-            ctx.enqueue_function[dW_mm_wrapper, dW_mm_wrapper](
+            ctx.enqueue_function[dW_mm_wrapper](
                 dW,
                 grad_reshaped,
                 col_flat,
@@ -1750,7 +1744,7 @@ struct FusedConv2DActivation[
                 comptime W_T_blocks = (
                     Self.out_channels * Self.col_size + TPB - 1
                 ) // TPB
-                ctx.enqueue_function[transpose_W_wrapper, transpose_W_wrapper](
+                ctx.enqueue_function[transpose_W_wrapper](
                     W_T,
                     W_bwd,
                     grid_dim=(W_T_blocks,),
@@ -1790,7 +1784,7 @@ struct FusedConv2DActivation[
                         dcol, W, grad_reshaped
                     )
 
-                ctx.enqueue_function[dx_mm_wrapper, dx_mm_wrapper](
+                ctx.enqueue_function[dx_mm_wrapper](
                     dcol,
                     W_bwd,
                     grad_reshaped,
@@ -1863,7 +1857,7 @@ struct FusedConv2DActivation[
                                 acc += dcol_3d[c_k, b, s]
                 grad_in_4d[b, c, ih, iw] = acc
 
-            ctx.enqueue_function[col2im_gather, col2im_gather](
+            ctx.enqueue_function[col2im_gather](
                 grad_input,
                 dcol,
                 grid_dim=(grid_dx,),
@@ -1898,7 +1892,7 @@ struct FusedConv2DActivation[
                     grad_input, grad_output, params, cache
                 )
 
-            ctx.enqueue_function[dx_wrapper, dx_wrapper](
+            ctx.enqueue_function[dx_wrapper](
                 grad_input,
                 grad_output_immut,
                 params_immut,
@@ -1931,7 +1925,7 @@ struct FusedConv2DActivation[
             ):
                 Self.backward_dW_kernel_2x2[BATCH, dtype](dW, cache, grad_output)
 
-            ctx.enqueue_function[dW_wrapper, dW_wrapper](
+            ctx.enqueue_function[dW_wrapper](
                 dW,
                 cache_immut,
                 grad_output_immut,
@@ -1960,7 +1954,7 @@ struct FusedConv2DActivation[
         ):
             Self.backward_db_kernel[BATCH, dtype](db, grad_output, cache)
 
-        ctx.enqueue_function[db_wrapper, db_wrapper](
+        ctx.enqueue_function[db_wrapper](
             db,
             grad_output_immut,
             cache_immut,

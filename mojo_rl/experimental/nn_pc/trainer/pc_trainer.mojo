@@ -765,7 +765,7 @@ struct PCTrainer[*LAYERS: PCLayer, dtype: DType = default_dtype]:
                 comptime k = Self._sub_kernel[BATCH, IN_I, Self.dtype]
                 var threads = BATCH * IN_I
                 var blocks = (threads + TPB - 1) // TPB
-                ctx.enqueue_function[k, k](
+                ctx.enqueue_function[k](
                     x_input, xh_view, eps_view,
                     grid_dim=(blocks,),
                     block_dim=(TPB,),
@@ -778,7 +778,7 @@ struct PCTrainer[*LAYERS: PCLayer, dtype: DType = default_dtype]:
                 comptime k = Self._sub_kernel[BATCH, IN_I, Self.dtype]
                 var threads = BATCH * IN_I
                 var blocks = (threads + TPB - 1) // TPB
-                ctx.enqueue_function[k, k](
+                ctx.enqueue_function[k](
                     prev_lat, xh_view, eps_view,
                     grid_dim=(blocks,),
                     block_dim=(TPB,),
@@ -850,7 +850,7 @@ struct PCTrainer[*LAYERS: PCLayer, dtype: DType = default_dtype]:
         comptime k_sub = Self._sub_swap_kernel[BATCH, IN_R, Self.dtype]
         var threads_sub = BATCH * IN_R
         var blocks_sub = (threads_sub + TPB - 1) // TPB
-        ctx.enqueue_function[k_sub, k_sub](
+        ctx.enqueue_function[k_sub](
             xh_R, y_target, eps_R,
             grid_dim=(blocks_sub,),
             block_dim=(TPB,),
@@ -921,7 +921,7 @@ struct PCTrainer[*LAYERS: PCLayer, dtype: DType = default_dtype]:
                 ]
                 var threads = BATCH * LAT_DIM
                 var blocks = (threads + TPB - 1) // TPB
-                ctx.enqueue_function[ku, ku](
+                ctx.enqueue_function[ku](
                     err_ext, pb_view, lat_view, eta_infer,
                     grid_dim=(blocks,),
                     block_dim=(TPB,),
@@ -935,7 +935,7 @@ struct PCTrainer[*LAYERS: PCLayer, dtype: DType = default_dtype]:
                 ]
                 var threads = BATCH * LAT_DIM
                 var blocks = (threads + TPB - 1) // TPB
-                ctx.enqueue_function[ku, ku](
+                ctx.enqueue_function[ku](
                     err_ext, pb_view, lat_view, eta_infer,
                     grid_dim=(blocks,),
                     block_dim=(TPB,),
@@ -1165,7 +1165,7 @@ struct PCTrainer[*LAYERS: PCLayer, dtype: DType = default_dtype]:
         ](epsL_dbuf)
         comptime kz = Self._zero_kernel[EPSL_SIZE, Self.dtype]
         var blocks_z = (EPSL_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[kz, kz](
+        ctx.enqueue_function[kz](
             epsL_view, grid_dim=(blocks_z,), block_dim=(TPB,)
         )
 

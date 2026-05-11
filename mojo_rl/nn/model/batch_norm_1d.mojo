@@ -591,7 +591,7 @@ struct BatchNorm1D[
         ):
             Self.forward_kernel_impl[BATCH, dtype](output, input, params, state, cache)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             output,
             input_immut,
             params,
@@ -653,7 +653,7 @@ struct BatchNorm1D[
                 output, input, params, state
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             output,
             input_immut,
             params_immut,
@@ -746,7 +746,7 @@ struct BatchNorm1D[
                 grad_input, grad_output, params, cache, grads
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             grad_input,
             grad_output_immut,
             params_immut,
@@ -899,7 +899,7 @@ struct BatchNorm1D[
                 grad_input, grad_output, params, state
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             grad_input,
             grad_output_immut,
             params_immut,

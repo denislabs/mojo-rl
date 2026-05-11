@@ -669,7 +669,7 @@ struct ScaledDotProductAttention[
             ):
                 Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
-            ctx.enqueue_function[wrapper, wrapper](
+            ctx.enqueue_function[wrapper](
                 output,
                 input_immut,
                 cache,
@@ -815,7 +815,7 @@ struct ScaledDotProductAttention[
             dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
         ](packed_v_buf.unsafe_ptr())
 
-        ctx.enqueue_function[pack_qkv_wrapper, pack_qkv_wrapper](
+        ctx.enqueue_function[pack_qkv_wrapper](
             packed_q_lt,
             packed_k_lt,
             packed_v_lt,
@@ -938,7 +938,7 @@ struct ScaledDotProductAttention[
             dtype, Layout.row_major(SCORES_SIZE), MutAnyOrigin
         ](scores_buf.unsafe_ptr())
 
-        ctx.enqueue_function[softmax_wrapper, softmax_wrapper](
+        ctx.enqueue_function[softmax_wrapper](
             scores_lt,
             cache,
             scale,
@@ -998,7 +998,7 @@ struct ScaledDotProductAttention[
             dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
         ](packed_out_buf.unsafe_ptr())
 
-        ctx.enqueue_function[unpack_wrapper, unpack_wrapper](
+        ctx.enqueue_function[unpack_wrapper](
             output,
             packed_out_lt,
             grid_dim=(unpack_blocks,),
@@ -1339,7 +1339,7 @@ struct ScaledDotProductAttention[
         comptime ZERO_BLOCKS = (
             BATCH * Self.IN_DIM + TPB - 1
         ) // TPB
-        ctx.enqueue_function[zero_wrapper, zero_wrapper](
+        ctx.enqueue_function[zero_wrapper](
             grad_input,
             grid_dim=(ZERO_BLOCKS,),
             block_dim=(TPB,),
@@ -1361,7 +1361,7 @@ struct ScaledDotProductAttention[
         ):
             Self.vjp_dV_kernel[BATCH, dtype](grad_input, grad_output, cache)
 
-        ctx.enqueue_function[dV_wrapper, dV_wrapper](
+        ctx.enqueue_function[dV_wrapper](
             grad_input,
             go_immut,
             cache_immut,
@@ -1387,7 +1387,7 @@ struct ScaledDotProductAttention[
                 grad_input, grad_output, cache
             )
 
-        ctx.enqueue_function[dscore_dQ_wrapper, dscore_dQ_wrapper](
+        ctx.enqueue_function[dscore_dQ_wrapper](
             grad_input,
             go_immut,
             cache,
@@ -1408,7 +1408,7 @@ struct ScaledDotProductAttention[
         ):
             Self.vjp_dK_kernel[BATCH, dtype](grad_input, cache)
 
-        ctx.enqueue_function[dK_wrapper, dK_wrapper](
+        ctx.enqueue_function[dK_wrapper](
             grad_input,
             cache_immut,
             grid_dim=(BATCH * Self.n_heads,),
@@ -1539,7 +1539,7 @@ struct ScaledDotProductAttention[
             dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
         ](packed_v_buf.unsafe_ptr())
 
-        ctx.enqueue_function[pack_in_wrapper, pack_in_wrapper](
+        ctx.enqueue_function[pack_in_wrapper](
             packed_dout_lt,
             packed_q_lt,
             packed_k_lt,
@@ -1646,7 +1646,7 @@ struct ScaledDotProductAttention[
             dtype, Layout.row_major(SCORES_SIZE), MutAnyOrigin
         ](dscore_buf.unsafe_ptr())
 
-        ctx.enqueue_function[softmax_jvp_wrapper, softmax_jvp_wrapper](
+        ctx.enqueue_function[softmax_jvp_wrapper](
             dscore_lt,
             dattn_lt,
             cache,
@@ -1693,7 +1693,7 @@ struct ScaledDotProductAttention[
             dtype, Layout.row_major(SCORES_SIZE), MutAnyOrigin
         ](attn_T_buf.unsafe_ptr())
 
-        ctx.enqueue_function[transpose_attn_wrapper, transpose_attn_wrapper](
+        ctx.enqueue_function[transpose_attn_wrapper](
             attn_T_lt,
             cache,
             grid_dim=(transpose_blocks,),
@@ -1742,9 +1742,7 @@ struct ScaledDotProductAttention[
             dtype, Layout.row_major(SCORES_SIZE), ImmutAnyOrigin
         ](dscore_buf.unsafe_ptr())
 
-        ctx.enqueue_function[
-            transpose_dscore_wrapper, transpose_dscore_wrapper
-        ](
+        ctx.enqueue_function[transpose_dscore_wrapper](
             attn_T_lt,  # reused for dscore_T
             dscore_immut,
             grid_dim=(transpose_blocks,),
@@ -1846,7 +1844,7 @@ struct ScaledDotProductAttention[
             dtype, Layout.row_major(PACKED_QKV_SIZE), ImmutAnyOrigin
         ](dV_buf.unsafe_ptr())
 
-        ctx.enqueue_function[unpack_grad_wrapper, unpack_grad_wrapper](
+        ctx.enqueue_function[unpack_grad_wrapper](
             grad_input,
             dQ_immut,
             dK_immut,

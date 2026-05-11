@@ -216,7 +216,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](o, i, c)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             cache,
@@ -263,7 +263,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
         ):
             Self.backward_kernel_impl[BATCH, dtype](gi, go, c)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input,
             go_immut,
             c_immut,

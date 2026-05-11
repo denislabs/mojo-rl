@@ -394,13 +394,13 @@ def ezv2_gpu_sample_and_gather[
         DType.int32, Layout.row_major(BATCH), MutAnyOrigin
     ](batch_start_idx_buf.unsafe_ptr())
 
-    ctx.enqueue_function[scan, scan](
+    ctx.enqueue_function[scan](
         prio_t, dones_t, cum_t, cs_t, nv_t, tp_t, oldest, buf_size,
         grid_dim=(1,), block_dim=(1,),
     )
 
     comptime sample_blocks = (BATCH + TPB - 1) // TPB
-    ctx.enqueue_function[sample, sample](
+    ctx.enqueue_function[sample](
         cum_t, cs_t, nv_t, tp_t, bsi_t, rng_seed,
         grid_dim=(sample_blocks,), block_dim=(TPB,),
     )
@@ -447,7 +447,7 @@ def ezv2_gpu_sample_and_gather[
 
     comptime gather_threads = BATCH * (K + 1)
     comptime gather_blocks = (gather_threads + TPB - 1) // TPB
-    ctx.enqueue_function[gather, gather](
+    ctx.enqueue_function[gather](
         bsi_t,
         sob_t, sac_t, sr_t, smp_t, smv_t, ssw_t,
         dob_t, dac_t, drw_t, dmp_t, dmv_t, dag_t,
@@ -456,7 +456,7 @@ def ezv2_gpu_sample_and_gather[
     )
 
     comptime cumr_blocks = (BATCH + TPB - 1) // TPB
-    ctx.enqueue_function[cumr, cumr](
+    ctx.enqueue_function[cumr](
         drw_t, dcr_t,
         grid_dim=(cumr_blocks,), block_dim=(TPB,),
     )

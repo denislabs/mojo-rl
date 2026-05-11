@@ -351,7 +351,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
                 if Int(thread_idx.x) == 0:
                     c[0] = c[0] + UInt32(1)
 
-            ctx.enqueue_function[bump_kernel, bump_kernel](
+            ctx.enqueue_function[bump_kernel](
                 counter_t,
                 grid_dim=(1,),
                 block_dim=(1,),
@@ -377,7 +377,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
                     output, input, cache, counter
                 )
 
-            ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            ctx.enqueue_function[kernel_wrapper](
                 output,
                 input_immut,
                 cache_view,
@@ -399,7 +399,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             ):
                 Self.forward_kernel_impl_no_cache[BATCH, dtype](output, input)
 
-            ctx.enqueue_function[kernel_wrapper_infer, kernel_wrapper_infer](
+            ctx.enqueue_function[kernel_wrapper_infer](
                 output,
                 input_immut,
                 grid_dim=(grid_x,),
@@ -447,7 +447,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         comptime total = BATCH * Self.dim
         var grid_x = (total + TPB - 1) // TPB
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             output,
             input_immut,
             grid_dim=(grid_x,),
@@ -532,7 +532,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             ):
                 Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
-            ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            ctx.enqueue_function[kernel_wrapper](
                 grad_input,
                 grad_output_immut,
                 cache_immut,
@@ -560,7 +560,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
                     grad_output[row, col]
                 )
 
-            ctx.enqueue_function[kernel_wrapper_infer, kernel_wrapper_infer](
+            ctx.enqueue_function[kernel_wrapper_infer](
                 grad_input,
                 grad_output_immut,
                 grid_dim=(grid_x,),

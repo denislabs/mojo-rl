@@ -495,7 +495,7 @@ struct PPOContinuousGPUState[
             dtype, N_ENVS, Self.OBS
         ]
         comptime OBS_BLOCKS = (Self.OBS + TPB - 1) // TPB
-        ctx.enqueue_function[obs_store_wrapper, obs_store_wrapper](
+        ctx.enqueue_function[obs_store_wrapper](
             r_obs,
             obs_t,
             grid_dim=(OBS_BLOCKS, N_ENVS),
@@ -527,9 +527,7 @@ struct PPOContinuousGPUState[
             r_lp[i] = lp[i]
             r_v[i] = v[i]
 
-        ctx.enqueue_function[
-            store_scalars_cont_wrapper, store_scalars_cont_wrapper
-        ](
+        ctx.enqueue_function[store_scalars_cont_wrapper](
             r_actions,
             r_log_probs,
             r_values,
@@ -569,7 +567,7 @@ struct PPOContinuousGPUState[
 
         comptime store_wrapper = _store_post_step_kernel[dtype, N_ENVS]
         comptime blocks = (N_ENVS + TPB - 1) // TPB
-        ctx.enqueue_function[store_wrapper, store_wrapper](
+        ctx.enqueue_function[store_wrapper](
             r_rewards,
             r_dones,
             rewards_t,

@@ -708,7 +708,7 @@ struct GenericRainbowAgent[
     var checkpoint_path: String
     var beta_start: Float64
     var beta_frames: Int
-    var logger: UnsafePointer[Self.L, MutAnyOrigin]
+    var logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]]
     var diag_every: Int
 
     def __init__(
@@ -734,7 +734,7 @@ struct GenericRainbowAgent[
         self.checkpoint_path = checkpoint_path
         self.beta_start = beta
         self.beta_frames = beta_frames
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         self.diag_every = 0
 
     def make_cpu_state(self) -> Self.CPUStateType:
@@ -1046,7 +1046,7 @@ struct GenericRainbowAgent[
         self.train_step_count += 1
 
         # ---- Diagnostic logging ----
-        if self.logger and (
+        if Bool(self.logger) and (
             self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
@@ -1070,16 +1070,16 @@ struct GenericRainbowAgent[
                         q_min = v
                     if v > q_max:
                         q_max = v
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "q_mean",
                     q_sum / Float64(Self.BATCH * Self.ACTIONS),
                     step,
                 )
-                self.logger[].log_scalar("q_min", q_min, step)
-                self.logger[].log_scalar("q_max", q_max, step)
+                self.logger.value()[].log_scalar("q_min", q_min, step)
+                self.logger.value()[].log_scalar("q_max", q_max, step)
 
                 # CE loss
-                self.logger[].log_scalar("loss", loss, step)
+                self.logger.value()[].log_scalar("loss", loss, step)
 
                 # TD error stats (CE loss per sample, used as PER priority)
                 var td_err_abs_sum: Float64 = 0.0
@@ -1091,12 +1091,12 @@ struct GenericRainbowAgent[
                     td_err_abs_sum += abs_err
                     if abs_err > td_err_max_abs:
                         td_err_max_abs = abs_err
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "td_error_abs_mean",
                     td_err_abs_sum / Float64(Self.BATCH),
                     step,
                 )
-                self.logger[].log_scalar("td_error_max", td_err_max_abs, step)
+                self.logger.value()[].log_scalar("td_error_max", td_err_max_abs, step)
 
                 # IS weight stats (importance sampling correction)
                 var w_min = Float64(b_weights[0])
@@ -1109,13 +1109,13 @@ struct GenericRainbowAgent[
                         w_min = w
                     if w > w_max:
                         w_max = w
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "is_weight_mean",
                     w_sum / Float64(Self.BATCH),
                     step,
                 )
-                self.logger[].log_scalar("is_weight_min", w_min, step)
-                self.logger[].log_scalar("is_weight_max", w_max, step)
+                self.logger.value()[].log_scalar("is_weight_min", w_min, step)
+                self.logger.value()[].log_scalar("is_weight_max", w_max, step)
 
                 # PER beta (IS correction annealing)
                 var beta_val = Float64(self.beta_start) + (
@@ -1125,7 +1125,7 @@ struct GenericRainbowAgent[
                 )
                 if beta_val > 1.0:
                     beta_val = 1.0
-                self.logger[].log_scalar("per_beta", beta_val, step)
+                self.logger.value()[].log_scalar("per_beta", beta_val, step)
 
                 # Distribution entropy (how peaked/spread the predicted dist is)
                 var entropy_sum: Float64 = 0.0
@@ -1147,7 +1147,7 @@ struct GenericRainbowAgent[
                         if p > 1e-8:
                             h -= p * log(p)
                     entropy_sum += h
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "dist_entropy_mean",
                     entropy_sum / Float64(Self.BATCH),
                     step,
@@ -1260,9 +1260,7 @@ struct GenericRainbowAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         from mojo_rl.deep_agents.core.training.offpolicy_train import (
@@ -1291,7 +1289,7 @@ struct GenericRainbowAgent[
             logger=logger,
         )
         self.state = cpu_state^
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         return metrics
 
     def evaluate[
@@ -1457,7 +1455,7 @@ struct GenericRainbowAgent[
                     best_action = a
             acts[e] = Scalar[dtype](best_action)
 
-        ctx.enqueue_function[rainbow_select_kernel, rainbow_select_kernel](
+        ctx.enqueue_function[rainbow_select_kernel](
             raw_t,
             q_t,
             bins_t,
@@ -1603,19 +1601,19 @@ struct GenericRainbowAgent[
                         - mean_a
                     )
 
-        ctx.enqueue_function[dueling_combine_kernel, dueling_combine_kernel](
+        ctx.enqueue_function[dueling_combine_kernel](
             q_raw_t,
             q_comb_t,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[dueling_combine_kernel, dueling_combine_kernel](
+        ctx.enqueue_function[dueling_combine_kernel](
             next_q_raw_t,
             next_comb_t,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[dueling_combine_kernel, dueling_combine_kernel](
+        ctx.enqueue_function[dueling_combine_kernel](
             online_next_q_raw_t,
             online_next_comb_t,
             grid_dim=(BATCH_BLOCKS,),
@@ -1658,7 +1656,7 @@ struct GenericRainbowAgent[
                     expected += prob * rebind[Scalar[dtype]](bins[i])
                 eq[b, a] = expected
 
-        ctx.enqueue_function[expected_q_kernel, expected_q_kernel](
+        ctx.enqueue_function[expected_q_kernel](
             online_next_comb_t,
             bins_t,
             expected_q_t,
@@ -1827,9 +1825,7 @@ struct GenericRainbowAgent[
                         - one_over_n * sum_dq
                     )
 
-        ctx.enqueue_function[
-            rainbow_project_grad_kernel, rainbow_project_grad_kernel
-        ](
+        ctx.enqueue_function[rainbow_project_grad_kernel](
             q_comb_t,
             next_comb_t,
             expected_q_t,
@@ -1873,7 +1869,7 @@ struct GenericRainbowAgent[
 
         # ---- GPU Diagnostic logging ----
         if (
-            self.logger
+            Bool(self.logger)
             and self.diag_every > 0
             and self.train_step_count % self.diag_every == 0
         ):
@@ -1970,11 +1966,11 @@ struct GenericRainbowAgent[
                             if expected > q_max:
                                 q_max = expected
                 if q_count > 0:
-                    self.logger[].log_scalar(
+                    self.logger.value()[].log_scalar(
                         "q_mean", q_sum / Float64(q_count), step,
                     )
-                    self.logger[].log_scalar("q_min", q_min, step)
-                    self.logger[].log_scalar("q_max", q_max, step)
+                    self.logger.value()[].log_scalar("q_min", q_min, step)
+                    self.logger.value()[].log_scalar("q_max", q_max, step)
 
                 # Done fraction and reward stats
                 var done_count: Float64 = 0.0
@@ -1989,18 +1985,18 @@ struct GenericRainbowAgent[
                         rew_min = r
                     if r > rew_max:
                         rew_max = r
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "done_fraction",
                     done_count / Float64(BATCH),
                     step,
                 )
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "reward_mean",
                     rew_sum / Float64(BATCH),
                     step,
                 )
-                self.logger[].log_scalar("reward_min", rew_min, step)
-                self.logger[].log_scalar("reward_max", rew_max, step)
+                self.logger.value()[].log_scalar("reward_min", rew_min, step)
+                self.logger.value()[].log_scalar("reward_max", rew_max, step)
 
                 # TD error stats (CE loss per sample, used as PER priority)
                 var td_err_abs_sum: Float64 = 0.0
@@ -2012,12 +2008,12 @@ struct GenericRainbowAgent[
                     td_err_abs_sum += abs_err
                     if abs_err > td_err_max_abs:
                         td_err_max_abs = abs_err
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "td_error_abs_mean",
                     td_err_abs_sum / Float64(BATCH),
                     step,
                 )
-                self.logger[].log_scalar("td_error_max", td_err_max_abs, step)
+                self.logger.value()[].log_scalar("td_error_max", td_err_max_abs, step)
 
                 # IS weight stats (importance sampling correction)
                 var w_min = Float64(gpu_state.diag_weights_host[0])
@@ -2030,13 +2026,13 @@ struct GenericRainbowAgent[
                         w_min = w
                     if w > w_max:
                         w_max = w
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "is_weight_mean",
                     w_sum / Float64(BATCH),
                     step,
                 )
-                self.logger[].log_scalar("is_weight_min", w_min, step)
-                self.logger[].log_scalar("is_weight_max", w_max, step)
+                self.logger.value()[].log_scalar("is_weight_min", w_min, step)
+                self.logger.value()[].log_scalar("is_weight_max", w_max, step)
 
                 # PER beta
                 var beta_val = Float64(self.beta_start) + (
@@ -2046,7 +2042,7 @@ struct GenericRainbowAgent[
                 )
                 if beta_val > 1.0:
                     beta_val = 1.0
-                self.logger[].log_scalar("per_beta", beta_val, step)
+                self.logger.value()[].log_scalar("per_beta", beta_val, step)
 
                 # Distribution entropy
                 var entropy_sum: Float64 = 0.0
@@ -2084,7 +2080,7 @@ struct GenericRainbowAgent[
                                 h -= p * log(p)
                         entropy_sum += h
                         entropy_count += 1
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "dist_entropy_mean",
                     entropy_sum / Float64(max(1, entropy_count)),
                     step,
@@ -2139,9 +2135,7 @@ struct GenericRainbowAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         target_total_steps: Int = 0,
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:

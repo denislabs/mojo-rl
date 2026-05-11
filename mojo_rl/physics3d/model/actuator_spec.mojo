@@ -635,7 +635,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
                 GDTYPE, BATCH_SIZE, STATE_SIZE, ACTION_DIM, NQ, NV
             ](states, actions, env)
 
-        ctx.enqueue_function[kernel, kernel](
+        ctx.enqueue_function[kernel](
             states,
             actions,
             grid_dim=(BLOCKS,),

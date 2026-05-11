@@ -140,7 +140,7 @@ def run_onpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """Shared on-policy discrete loop: collect → advantages → update × num_updates.
 
@@ -186,20 +186,20 @@ def run_onpolicy_discrete_train[
             agent.get_explore_rate(),
         )
 
-        if logger:
-            logger[].log_scalar("loss", loss, update)
+        if Bool(logger):
+            logger.value()[].log_scalar("loss", loss, update)
 
         if checkpoint_every > 0 and (update + 1) % checkpoint_every == 0:
             agent.save_checkpoint(
                 checkpoint_path + "_update_" + String(update + 1) + ".ckpt"
             )
 
-        if (verbose or (logger and logger[].is_active())) and (
+        if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             update + 1
         ) % print_every == 0:
             var avg_loss = metrics.mean_reward_last_n(print_every)
-            if logger:
-                logger[].log_scalar("avg_loss", avg_loss, update)
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_loss", avg_loss, update)
 
             if verbose:
                 print(
@@ -211,8 +211,8 @@ def run_onpolicy_discrete_train[
                     + String(agent.get_explore_rate())[byte=:5]
                 )
 
-    if logger:
-        logger[].flush()
+    if Bool(logger):
+        logger.value()[].flush()
     return metrics^
 
 
@@ -235,7 +235,7 @@ def run_onpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """Shared on-policy continuous loop: collect → advantages → update × num_updates.
 
@@ -278,20 +278,20 @@ def run_onpolicy_continuous_train[
             agent.get_explore_rate(),
         )
 
-        if logger:
-            logger[].log_scalar("loss", loss, update)
+        if Bool(logger):
+            logger.value()[].log_scalar("loss", loss, update)
 
         if checkpoint_every > 0 and (update + 1) % checkpoint_every == 0:
             agent.save_checkpoint(
                 checkpoint_path + "_update_" + String(update + 1) + ".ckpt"
             )
 
-        if (verbose or (logger and logger[].is_active())) and (
+        if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             update + 1
         ) % print_every == 0:
             var avg_loss = metrics.mean_reward_last_n(print_every)
-            if logger:
-                logger[].log_scalar("avg_loss", avg_loss, update)
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_loss", avg_loss, update)
 
             if verbose:
                 print(
@@ -303,8 +303,8 @@ def run_onpolicy_continuous_train[
                     + String(agent.get_explore_rate())[byte=:5]
                 )
 
-    if logger:
-        logger[].flush()
+    if Bool(logger):
+        logger.value()[].flush()
     return metrics^
 
 
@@ -490,7 +490,7 @@ def run_onpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """Shared on-policy discrete loop with explicit state: collect → advantages → update.
 
@@ -535,20 +535,20 @@ def run_onpolicy_discrete_train[
             agent.get_explore_rate(),
         )
 
-        if logger:
-            logger[].log_scalar("loss", loss, update)
+        if Bool(logger):
+            logger.value()[].log_scalar("loss", loss, update)
 
         if checkpoint_every > 0 and (update + 1) % checkpoint_every == 0:
             agent.save_checkpoint(
                 checkpoint_path + "_update_" + String(update + 1) + ".ckpt"
             )
 
-        if (verbose or (logger and logger[].is_active())) and (
+        if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             update + 1
         ) % print_every == 0:
             var avg_loss = metrics.mean_reward_last_n(print_every)
-            if logger:
-                logger[].log_scalar("avg_loss", avg_loss, update)
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_loss", avg_loss, update)
 
             if verbose:
                 print(
@@ -560,8 +560,8 @@ def run_onpolicy_discrete_train[
                     + String(agent.get_explore_rate())[byte=:5]
                 )
 
-    if logger:
-        logger[].flush()
+    if Bool(logger):
+        logger.value()[].flush()
     return metrics^
 
 
@@ -585,7 +585,7 @@ def run_onpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """Shared on-policy continuous loop with explicit state: collect → advantages → update.
 
@@ -630,20 +630,20 @@ def run_onpolicy_continuous_train[
             agent.get_explore_rate(),
         )
 
-        if logger:
-            logger[].log_scalar("loss", loss, update)
+        if Bool(logger):
+            logger.value()[].log_scalar("loss", loss, update)
 
         if checkpoint_every > 0 and (update + 1) % checkpoint_every == 0:
             agent.save_checkpoint(
                 checkpoint_path + "_update_" + String(update + 1) + ".ckpt"
             )
 
-        if (verbose or (logger and logger[].is_active())) and (
+        if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             update + 1
         ) % print_every == 0:
             var avg_loss = metrics.mean_reward_last_n(print_every)
-            if logger:
-                logger[].log_scalar("avg_loss", avg_loss, update)
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_loss", avg_loss, update)
 
             if verbose:
                 print(
@@ -655,6 +655,6 @@ def run_onpolicy_continuous_train[
                     + String(agent.get_explore_rate())[byte=:5]
                 )
 
-    if logger:
-        logger[].flush()
+    if Bool(logger):
+        logger.value()[].flush()
     return metrics^

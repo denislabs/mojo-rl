@@ -1090,7 +1090,7 @@ struct REDQOFEAgent[
         comptime sac_counter_k = sac_sample_actions_counter_kernel[
             dtype, N_ENVS, Self.ACTIONS, Self.ACTOR_OUT
         ]
-        ctx.enqueue_function[sac_counter_k, sac_counter_k](
+        ctx.enqueue_function[sac_counter_k](
             act_t,
             raw_t,
             Scalar[dtype](self.action_scale),
@@ -1191,7 +1191,7 @@ struct REDQOFEAgent[
         self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
-        logger: UnsafePointer[L, MutAnyOrigin],
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
     ) raises -> None:
         """Emit fine-grained diagnostics every `diag_every` critic updates.
 
@@ -1294,16 +1294,16 @@ struct REDQOFEAgent[
         )
 
         var step = self.critic_update_count
-        logger[].log_scalar("critic_loss", critic_loss, step)
-        logger[].log_scalar("mean_q", mean_q, step)
-        logger[].log_scalar("mean_target", mean_tgt, step)
-        logger[].log_scalar("mean_reward", mean_rew, step)
-        logger[].log_scalar("mean_next_q", mean_nq, step)
-        logger[].log_scalar("mean_done", mean_done, step)
-        logger[].log_scalar("mean_abs_action", mean_abs_act, step)
-        logger[].log_scalar("mean_log_pi", mean_lp, step)
-        logger[].log_scalar("alpha", alpha, step)
-        logger[].log_scalar("log_alpha", log_alpha, step)
+        logger.value()[].log_scalar("critic_loss", critic_loss, step)
+        logger.value()[].log_scalar("mean_q", mean_q, step)
+        logger.value()[].log_scalar("mean_target", mean_tgt, step)
+        logger.value()[].log_scalar("mean_reward", mean_rew, step)
+        logger.value()[].log_scalar("mean_next_q", mean_nq, step)
+        logger.value()[].log_scalar("mean_done", mean_done, step)
+        logger.value()[].log_scalar("mean_abs_action", mean_abs_act, step)
+        logger.value()[].log_scalar("mean_log_pi", mean_lp, step)
+        logger.value()[].log_scalar("alpha", alpha, step)
+        logger.value()[].log_scalar("log_alpha", log_alpha, step)
 
         # ---------------------------------------------------------------------
         # OFE drift diagnostics
@@ -1384,20 +1384,20 @@ struct REDQOFEAgent[
             rmean_abs_mean = rmean_abs_sum / n_features
             rvar_mean = rvar_sum / n_features
 
-        logger[].log_scalar("phi_s_var_mean", phi_var_mean, step)
-        logger[].log_scalar("phi_s_var_min", phi_var_min, step)
-        logger[].log_scalar("phi_s_var_max", phi_var_max, step)
-        logger[].log_scalar("phi_s_mean_abs_max", phi_mean_abs_max, step)
+        logger.value()[].log_scalar("phi_s_var_mean", phi_var_mean, step)
+        logger.value()[].log_scalar("phi_s_var_min", phi_var_min, step)
+        logger.value()[].log_scalar("phi_s_var_max", phi_var_max, step)
+        logger.value()[].log_scalar("phi_s_mean_abs_max", phi_mean_abs_max, step)
         # OFE BN running stats — only meaningful when OFE_SB has BN layers.
         # With LayerNorm-based DenseBlocks (STATE_SIZE=0) these are constant 0
         # and would just add noise to the dashboard, so skip the log emit.
         comptime if Self.OFESBModel.STATE_SIZE > 0:
-            logger[].log_scalar("ofe_rmean_abs_max", rmean_abs_max, step)
-            logger[].log_scalar("ofe_rmean_abs_mean", rmean_abs_mean, step)
-            logger[].log_scalar("ofe_rvar_mean", rvar_mean, step)
-            logger[].log_scalar("ofe_rvar_min", rvar_min, step)
-            logger[].log_scalar("ofe_rvar_max", rvar_max, step)
-            logger[].log_scalar(
+            logger.value()[].log_scalar("ofe_rmean_abs_max", rmean_abs_max, step)
+            logger.value()[].log_scalar("ofe_rmean_abs_mean", rmean_abs_mean, step)
+            logger.value()[].log_scalar("ofe_rvar_mean", rvar_mean, step)
+            logger.value()[].log_scalar("ofe_rvar_min", rvar_min, step)
+            logger.value()[].log_scalar("ofe_rvar_max", rvar_max, step)
+            logger.value()[].log_scalar(
                 "ofe_rvar_dev_from_one_max", rvar_dev_from_one_max, step
             )
 
@@ -1431,7 +1431,7 @@ struct REDQOFEAgent[
         var rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu_state.rng_counter.unsafe_ptr())
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t, grid_dim=(1,), block_dim=(1,)
         )
 
@@ -1495,7 +1495,7 @@ struct REDQOFEAgent[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu_state.rng_counter.unsafe_ptr())
         comptime incr_k = increment_rng_counter_kernel
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t, grid_dim=(1,), block_dim=(1,)
         )
         gpu_state.buffer.sample[BS](
@@ -1554,7 +1554,7 @@ struct REDQOFEAgent[
             Layout.row_major(BS, Self.OFEABModel.IN_DIM),
             MutAnyOrigin,
         ](gpu_state.aux_phi_sa_in.unsafe_ptr())
-        ctx.enqueue_function[concat_phi_k, concat_phi_k](
+        ctx.enqueue_function[concat_phi_k](
             phi_sa_in_concat_t,
             phi_s_concat_t,
             act_t,
@@ -1619,7 +1619,7 @@ struct REDQOFEAgent[
             Layout.row_major(BS, Self.OFEPRModel.OUT_DIM),
             MutAnyOrigin,
         ](gpu_state.aux_grad_pred.unsafe_ptr())
-        ctx.enqueue_function[mse_k, mse_k](
+        ctx.enqueue_function[mse_k](
             grad_pred_mse_t,
             pred_mse_t,
             nobs_mse_t,
@@ -1690,7 +1690,7 @@ struct REDQOFEAgent[
             Layout.row_major(BS, Self.OFESBModel.OUT_DIM),
             MutAnyOrigin,
         ](gpu_state.aux_grad_phi_s.unsafe_ptr())
-        ctx.enqueue_function[extract_k, extract_k](
+        ctx.enqueue_function[extract_k](
             grad_phi_s_extract_t,
             grad_phi_sa_in_extract_t,
             grid_dim=(EXTRACT_BLOCKS,),
@@ -1819,7 +1819,7 @@ struct REDQOFEAgent[
         var rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu_state.rng_counter.unsafe_ptr())
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t, grid_dim=(1,), block_dim=(1,)
         )
 
@@ -1866,7 +1866,7 @@ struct REDQOFEAgent[
                 acts, lp, eps, ao, lsmin, lsmax, asc, rng
             )
 
-        ctx.enqueue_function[rsample_next, rsample_next](
+        ctx.enqueue_function[rsample_next](
             nact_t,
             nlp_t,
             neps_t,
@@ -1885,7 +1885,7 @@ struct REDQOFEAgent[
             Layout.row_major(BS, Self.OFEABModel.IN_DIM),
             MutAnyOrigin,
         ](gpu_state.phi_sa_in_target.unsafe_ptr())
-        ctx.enqueue_function[concat_phi_k, concat_phi_k](
+        ctx.enqueue_function[concat_phi_k](
             phi_sa_in_tgt_t,
             phi_s_next_t,
             nact_t,
@@ -1953,7 +1953,7 @@ struct REDQOFEAgent[
         comptime target_k = redq_ensemble_target_kernel[
             dtype, BS, Self.N_ENS, Self.N_MIN, Self.Q_MODE
         ]
-        ctx.enqueue_function[target_k, target_k](
+        ctx.enqueue_function[target_k](
             targets_t,
             rew_t,
             nq_stack_t,
@@ -1973,7 +1973,7 @@ struct REDQOFEAgent[
             Layout.row_major(BS, Self.OFEABModel.IN_DIM),
             MutAnyOrigin,
         ](gpu_state.phi_sa_in_online.unsafe_ptr())
-        ctx.enqueue_function[concat_phi_k, concat_phi_k](
+        ctx.enqueue_function[concat_phi_k](
             phi_sa_in_online_t,
             phi_s_t,
             act_t,
@@ -2028,7 +2028,7 @@ struct REDQOFEAgent[
                 q_cache_t,
                 gpu_state.critic_ws,
             )
-            ctx.enqueue_function[mse_grad_k, mse_grad_k](
+            ctx.enqueue_function[mse_grad_k](
                 q_grad_t,
                 q_out_t,
                 targets_t,
@@ -2097,7 +2097,7 @@ struct REDQOFEAgent[
         ](gpu_state.phi_s_batch.unsafe_ptr())
 
         # --- 1. Increment RNG counter before rsample ---
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t, grid_dim=(1,), block_dim=(1,)
         )
 
@@ -2148,7 +2148,7 @@ struct REDQOFEAgent[
                 acts, lp, eps, ao, lsmin, lsmax, asc, rng
             )
 
-        ctx.enqueue_function[rsample_curr, rsample_curr](
+        ctx.enqueue_function[rsample_curr](
             curr_act_t,
             curr_lp_t,
             eps_t,
@@ -2167,7 +2167,7 @@ struct REDQOFEAgent[
             Layout.row_major(BS, Self.OFEABModel.IN_DIM),
             MutAnyOrigin,
         ](gpu_state.phi_sa_in_sampled.unsafe_ptr())
-        ctx.enqueue_function[concat_phi_k, concat_phi_k](
+        ctx.enqueue_function[concat_phi_k](
             phi_sa_in_sampled_t,
             phi_s_t,
             curr_act_t,
@@ -2230,7 +2230,7 @@ struct REDQOFEAgent[
             dtype, Layout.row_major(BS * Self.CRITIC_OUT), MutAnyOrigin
         ](gpu_state.dq_actor.unsafe_ptr())
         comptime DQ_BLOCKS = (BS * Self.CRITIC_OUT + TPB - 1) // TPB
-        ctx.enqueue_function[fill_dq_k, fill_dq_k](
+        ctx.enqueue_function[fill_dq_k](
             dq_flat_t,
             seed_val,
             grid_dim=(DQ_BLOCKS,),
@@ -2244,7 +2244,7 @@ struct REDQOFEAgent[
         var d_phi_sa_sum_flat_t = LayoutTensor[
             dtype, Layout.row_major(BS * Self.PHI_SA), MutAnyOrigin
         ](gpu_state.d_ci_sum.unsafe_ptr())
-        ctx.enqueue_function[fill_sum_k, fill_sum_k](
+        ctx.enqueue_function[fill_sum_k](
             d_phi_sa_sum_flat_t,
             Scalar[dtype](0.0),
             grid_dim=(PHI_SA_BLOCKS,),
@@ -2284,7 +2284,7 @@ struct REDQOFEAgent[
             )
             gpu_state.critics.pairs[n].online.zero_grads(ctx)
             # Accumulate d_phi_sa_sum += d_phi_sa_per.
-            ctx.enqueue_function[add_k, add_k](
+            ctx.enqueue_function[add_k](
                 d_ci_sum_t,           # reused as d_phi_sa_sum (BS, PHI_SA)
                 d_ci_per_t,
                 grid_dim=(PHI_SA_BLOCKS,),
@@ -2330,7 +2330,7 @@ struct REDQOFEAgent[
         comptime ext_k = actor_grad_from_critic_kernel[
             dtype, BS, Self.PHI_S, Self.ACTIONS
         ]
-        ctx.enqueue_function[ext_k, ext_k](
+        ctx.enqueue_function[ext_k](
             grad_act_t,
             d_phi_sa_in_t,
             grid_dim=(ACT_BLOCKS,),
@@ -2372,7 +2372,7 @@ struct REDQOFEAgent[
                 agrad, ga, ab, ca, eps, ao, lsmin, lsmax, asc
             )
 
-        ctx.enqueue_function[rsample_bwd, rsample_bwd](
+        ctx.enqueue_function[rsample_bwd](
             actor_grad_t,
             grad_act_t,
             alpha_t,
@@ -2442,7 +2442,7 @@ struct REDQOFEAgent[
             ):
                 alpha_k(sc, lp, la_max, la_min, lp_clip)
 
-            ctx.enqueue_function[alpha_wrapper, alpha_wrapper](
+            ctx.enqueue_function[alpha_wrapper](
                 scalars_t,
                 curr_lp_t,
                 Scalar[dtype](2.0),
@@ -2477,13 +2477,13 @@ struct REDQOFEAgent[
         var ps_t = LayoutTensor[
             dtype, Layout.row_major(C_BLOCKS), MutAnyOrigin
         ](gpu_state.grad_clip_ps.unsafe_ptr())
-        ctx.enqueue_function[c_norm_k, c_norm_k](
+        ctx.enqueue_function[c_norm_k](
             ps_t,
             grads,
             grid_dim=(C_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[c_clip_k, c_clip_k](
+        ctx.enqueue_function[c_clip_k](
             grads,
             ps_t,
             Scalar[dtype](self.max_grad_norm),
@@ -2512,13 +2512,13 @@ struct REDQOFEAgent[
         var ps_t = LayoutTensor[
             dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
         ](gpu_state.grad_clip_ps.unsafe_ptr())
-        ctx.enqueue_function[a_norm_k, a_norm_k](
+        ctx.enqueue_function[a_norm_k](
             ps_t,
             grads,
             grid_dim=(A_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[a_clip_k, a_clip_k](
+        ctx.enqueue_function[a_clip_k](
             grads,
             ps_t,
             Scalar[dtype](self.max_grad_norm),
@@ -2547,9 +2547,7 @@ struct REDQOFEAgent[
         verbose: Bool = False,
         print_every: Int = 10_000,
         environment_name: String = "Environment",
-        logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
-            L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         rng_seed: UInt64 = 42,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
@@ -2660,7 +2658,7 @@ struct REDQOFEAgent[
                     Layout.row_major(n_envs, E.ACTION_DIM),
                     MutAnyOrigin,
                 ](actions_buf.unsafe_ptr())
-                ctx.enqueue_function[warmup_kernel, warmup_kernel](
+                ctx.enqueue_function[warmup_kernel](
                     act_t,
                     action_scale_val,
                     Scalar[DType.uint32](step_seed),
@@ -2714,13 +2712,13 @@ struct REDQOFEAgent[
             var ec_t = LayoutTensor[
                 dtype, Layout.row_major(1), MutAnyOrigin
             ](gpu_episode_count_buf.unsafe_ptr())
-            ctx.enqueue_function[accum_k, accum_k](
+            ctx.enqueue_function[accum_k](
                 er_t, rw_t, grid_dim=(env_blocks,), block_dim=(tpb,)
             )
-            ctx.enqueue_function[incr_steps_k, incr_steps_k](
+            ctx.enqueue_function[incr_steps_k](
                 es_t, grid_dim=(env_blocks,), block_dim=(tpb,)
             )
-            ctx.enqueue_function[log_reset_k, log_reset_k](
+            ctx.enqueue_function[log_reset_k](
                 dn_t,
                 er_t,
                 es_t,
@@ -2806,7 +2804,7 @@ struct REDQOFEAgent[
                 next_progress += progress_interval
 
             if (
-                verbose or (logger and logger[].is_active())
+                verbose or (Bool(logger) and logger.value()[].is_active())
             ) and total_steps >= next_print:
                 ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
                 ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
@@ -2827,17 +2825,17 @@ struct REDQOFEAgent[
                 ctx.enqueue_memset(gpu_reward_sum_buf, 0)
                 ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
-                if logger:
-                    logger[].log_scalar(
+                if Bool(logger):
+                    logger.value()[].log_scalar(
                         "avg_reward", last_avg_reward, total_steps
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "episodes", Float64(completed_episodes), total_steps
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "train_steps", Float64(total_train_steps), total_steps
                     )
-                    logger[].log_scalar("alpha", cur_alpha, total_steps)
+                    logger.value()[].log_scalar("alpha", cur_alpha, total_steps)
 
                 if verbose:
                     clear_progress_bar()
@@ -2893,18 +2891,18 @@ struct REDQOFEAgent[
         if ckpt_every > 0 and ckpt_path.byte_length() > 0:
             self.save_checkpoint(ckpt_path)
 
-        if logger and logger[].is_active():
-            logger[].log_scalar(
+        if Bool(logger) and logger.value()[].is_active():
+            logger.value()[].log_scalar(
                 "avg_reward", last_avg_reward, total_steps
             )
-            logger[].log_scalar(
+            logger.value()[].log_scalar(
                 "episodes", Float64(completed_episodes), total_steps
             )
-            logger[].log_scalar(
+            logger.value()[].log_scalar(
                 "train_steps", Float64(total_train_steps), total_steps
             )
-            logger[].log_scalar("alpha", Float64(alpha_host[0]), total_steps)
-            logger[].flush()
+            logger.value()[].log_scalar("alpha", Float64(alpha_host[0]), total_steps)
+            logger.value()[].flush()
 
         if verbose:
             clear_progress_bar()
@@ -2940,9 +2938,7 @@ struct REDQOFEAgent[
         verbose: Bool = False,
         print_every: Int = 10_000,
         environment_name: String = "Environment",
-        logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
-            L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         rng_seed: UInt64 = 42,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",

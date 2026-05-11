@@ -165,7 +165,7 @@ struct DiscreteActionSpace[ACT: Int, K: Int = 8](ActionSpace):
             BATCH, POL_TGT_DIM, PRED_OUT, dtype
         ]
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
-        ctx.enqueue_function[kernel, kernel](
+        ctx.enqueue_function[kernel](
             pred_out_step,
             policy_target_step,
             grad_pred_out_step,
@@ -226,7 +226,7 @@ struct ContinuousActionSpace[
         BATCH: Int,
         PRED_OUT: Int,
         POL_TGT_DIM: Int,
-        dtype: DType where dtype.is_floating_point(),
+        dtype: DType,
     ](
         ctx: DeviceContext,
         pred_out_step: LayoutTensor[
@@ -253,7 +253,7 @@ struct ContinuousActionSpace[
             BATCH, POL_TGT_DIM, PRED_OUT, dtype
         ]
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
-        ctx.enqueue_function[kernel, kernel](
+        ctx.enqueue_function[kernel](
             pred_out_step,
             policy_target_step,
             grad_pred_out_step,

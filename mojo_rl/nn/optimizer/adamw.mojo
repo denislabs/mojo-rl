@@ -215,7 +215,7 @@ struct AdamW[
             if Int(thread_idx.x) == 0:
                 c[0] = c[0] + UInt32(1)
 
-        ctx.enqueue_function[bump_kernel, bump_kernel](
+        ctx.enqueue_function[bump_kernel](
             counter_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -264,7 +264,7 @@ struct AdamW[
 
         comptime grid_size = (PARAM_SIZE + TPB - 1) // TPB
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             params,
             grads,
             state,

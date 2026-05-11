@@ -73,7 +73,7 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
     ctx: DeviceContext,
     mut envs: List[UnsafePointer[E, MutAnyOrigin]],
     num_steps: Int,
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     warmup_steps: Int = 1000,
     gradient_steps: Int = 0,
     sync_every: Int = 5000,
@@ -84,7 +84,7 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
     environment_name: String = "Environment",
     algorithm_name: String = "GPUAgentCPUEnv",
     reward_scale: Float64 = 1.0,
-    eval_env: UnsafePointer[E, MutAnyOrigin] = UnsafePointer[E, MutAnyOrigin](),
+    eval_env: UnsafePointer[E, MutAnyOrigin] = UnsafePointer[E, MutAnyOrigin](_unsafe_null=()),
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     eval_max_steps: Int = 1000,
@@ -198,7 +198,7 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
     var next_checkpoint = checkpoint_every if checkpoint_every > 0 else (
         num_steps + 1
     )
-    var has_eval_env = Bool(eval_env)
+    var has_eval_env = Int(eval_env) != 0
     var next_eval = eval_every if (eval_every > 0 and has_eval_env) else (
         num_steps + 1
     )
@@ -393,7 +393,7 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
 
         # 11. Periodic print + log.
         if (
-            verbose or (logger and logger[].is_active())
+            verbose or (Bool(logger) and logger.value()[].is_active())
         ) and total_steps >= next_print:
             if recent_episode_count > 0:
                 last_avg_reward = recent_reward_sum / Float64(
@@ -416,25 +416,25 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
             interval_start_ns = now_ns
             interval_start_steps = total_steps
 
-            if logger:
-                logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
-                logger[].log_scalar(
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_reward", last_avg_reward, total_steps)
+                logger.value()[].log_scalar(
                     "avg_episode_length", last_avg_length, total_steps
                 )
-                logger[].log_scalar(
+                logger.value()[].log_scalar(
                     "episodes", Float64(completed_episodes), total_steps
                 )
-                logger[].log_scalar(
+                logger.value()[].log_scalar(
                     "train_steps",
                     Float64(total_train_steps),
                     total_steps,
                 )
-                logger[].log_scalar("steps_per_sec", steps_per_sec, total_steps)
+                logger.value()[].log_scalar("steps_per_sec", steps_per_sec, total_steps)
                 if eval_every > 0 and has_eval_env:
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "eval_reward", last_eval_reward, total_steps
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "eval_episode_length",
                         last_eval_length,
                         total_steps,
@@ -477,23 +477,23 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
     if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
         agent.save_checkpoint(checkpoint_path)
 
-    if logger and logger[].is_active():
-        logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
-        logger[].log_scalar(
+    if Bool(logger) and logger.value()[].is_active():
+        logger.value()[].log_scalar("avg_reward", last_avg_reward, total_steps)
+        logger.value()[].log_scalar(
             "avg_episode_length", last_avg_length, total_steps
         )
-        logger[].log_scalar(
+        logger.value()[].log_scalar(
             "episodes", Float64(completed_episodes), total_steps
         )
-        logger[].log_scalar(
+        logger.value()[].log_scalar(
             "train_steps", Float64(total_train_steps), total_steps
         )
         if eval_every > 0 and has_eval_env:
-            logger[].log_scalar("eval_reward", last_eval_reward, total_steps)
-            logger[].log_scalar(
+            logger.value()[].log_scalar("eval_reward", last_eval_reward, total_steps)
+            logger.value()[].log_scalar(
                 "eval_episode_length", last_eval_length, total_steps
             )
-        logger[].flush()
+        logger.value()[].flush()
 
     if verbose:
         clear_progress_bar()

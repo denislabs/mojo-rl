@@ -785,7 +785,7 @@ struct GenericOffPolicyAgent[
     var max_grad_norm: Float64
 
     # Diagnostic logging
-    var logger: UnsafePointer[Self.L, MutAnyOrigin]
+    var logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]]
     var diag_every: Int
 
     # ERE (Emphasizing Recent Experience) config — applied to GPU buffer at
@@ -868,7 +868,7 @@ struct GenericOffPolicyAgent[
         # The generic agent supports L1 + L2 profiling.
 
         # Logging
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         self.diag_every = 0
 
         # ERE config
@@ -1140,17 +1140,17 @@ struct GenericOffPolicyAgent[
                 critic_loss = (critic_loss + ci_loss) / 2.0
 
         # Diagnostic logging
-        if self.logger and (
+        if Bool(self.logger) and (
             self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
-                self.logger[].log_scalar("loss", critic_loss, step)
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar("loss", critic_loss, step)
+                self.logger.value()[].log_scalar(
                     "explore_rate", self.get_explore_rate(), step
                 )
                 comptime if Self.Config.ActorLoss.HAS_ALPHA:
-                    self.logger[].log_scalar("alpha", self.alpha, step)
+                    self.logger.value()[].log_scalar("alpha", self.alpha, step)
             except:
                 pass
 
@@ -1426,7 +1426,7 @@ struct GenericOffPolicyAgent[
             comptime sac_counter_k = sac_sample_actions_counter_kernel[
                 dtype, N_ENVS, Self.ACTIONS, Self.ACTOR_OUT
             ]
-            ctx.enqueue_function[sac_counter_k, sac_counter_k](
+            ctx.enqueue_function[sac_counter_k](
                 act_t,
                 raw_t,
                 Scalar[dtype](self.action_scale),
@@ -1442,7 +1442,7 @@ struct GenericOffPolicyAgent[
             comptime ddpg_counter_k = ddpg_exploration_counter_kernel[
                 dtype, N_ENVS, Self.ACTIONS
             ]
-            ctx.enqueue_function[ddpg_counter_k, ddpg_counter_k](
+            ctx.enqueue_function[ddpg_counter_k](
                 act_t,
                 raw_t,
                 Scalar[dtype](self.noise_std),
@@ -1490,7 +1490,7 @@ struct GenericOffPolicyAgent[
         var rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu_state.rng_counter.unsafe_ptr())
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -1525,7 +1525,7 @@ struct GenericOffPolicyAgent[
 
         # Phase 2: Target actions — delegate to Config.TargetAction
         # Increment RNG counter before target action (separate seed from sample)
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -1569,7 +1569,7 @@ struct GenericOffPolicyAgent[
 
         # Phase 2b: Concat next_obs + next_act → next_ci, forward target critics
         var next_ci_t = gpu_state.next_ci_view[BS]()
-        ctx.enqueue_function[concat_k, concat_k](
+        ctx.enqueue_function[concat_k](
             next_ci_t,
             nobs_t,
             next_act_t,
@@ -1615,7 +1615,7 @@ struct GenericOffPolicyAgent[
         var q_grad_t = gpu_state.q_grad_view[BS]()
         var d_ci_t = gpu_state.d_ci_view[BS]()
 
-        ctx.enqueue_function[concat_k, concat_k](
+        ctx.enqueue_function[concat_k](
             ci_t,
             obs_t,
             act_t,
@@ -1631,7 +1631,7 @@ struct GenericOffPolicyAgent[
             q_cache_t,
             gpu_state.critic_ws,
         )
-        ctx.enqueue_function[mse_grad_k, mse_grad_k](
+        ctx.enqueue_function[mse_grad_k](
             q_grad_t,
             q_t,
             targets_t,
@@ -1662,13 +1662,13 @@ struct GenericOffPolicyAgent[
                 dtype, Layout.row_major(C_BLOCKS), MutAnyOrigin
             ](gpu_state.grad_clip_ps.unsafe_ptr())
 
-            ctx.enqueue_function[c_norm_k, c_norm_k](
+            ctx.enqueue_function[c_norm_k](
                 c_ps_t,
                 g_critic,
                 grid_dim=(C_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[c_clip_k, c_clip_k](
+            ctx.enqueue_function[c_clip_k](
                 g_critic,
                 c_ps_t,
                 Scalar[dtype](self.max_grad_norm),
@@ -1691,7 +1691,7 @@ struct GenericOffPolicyAgent[
                 q2_cache_t,
                 gpu_state.critic2_ws,
             )
-            ctx.enqueue_function[mse_grad_k, mse_grad_k](
+            ctx.enqueue_function[mse_grad_k](
                 q_grad_t,
                 q2_out_t,
                 targets_t,
@@ -1724,13 +1724,13 @@ struct GenericOffPolicyAgent[
                     dtype, Layout.row_major(C_BLOCKS2), MutAnyOrigin
                 ](gpu_state.grad_clip_ps.unsafe_ptr())
 
-                ctx.enqueue_function[c2_norm_k, c2_norm_k](
+                ctx.enqueue_function[c2_norm_k](
                     c2_ps_t,
                     g_c2,
                     grid_dim=(C_BLOCKS2,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function[c2_clip_k, c2_clip_k](
+                ctx.enqueue_function[c2_clip_k](
                     g_c2,
                     c2_ps_t,
                     Scalar[dtype](self.max_grad_norm),
@@ -1753,7 +1753,7 @@ struct GenericOffPolicyAgent[
             p_c2_actor = gpu_state.critics.online_params_view(1)
             c2_ws = gpu_state.critic2_ws
         # Increment RNG counter before actor loss (separate seed)
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -1795,13 +1795,13 @@ struct GenericOffPolicyAgent[
                 dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
             ](gpu_state.grad_clip_ps.unsafe_ptr())
 
-            ctx.enqueue_function[norm_k, norm_k](
+            ctx.enqueue_function[norm_k](
                 ps_t,
                 a_grads,
                 grid_dim=(A_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[clip_k, clip_k](
+            ctx.enqueue_function[clip_k](
                 a_grads,
                 ps_t,
                 Scalar[dtype](self.max_grad_norm),
@@ -1854,7 +1854,7 @@ struct GenericOffPolicyAgent[
                 # Classic SAC clamp: log_alpha in [-10, +2] (alpha in
                 # [4.5e-5, 7.4]). Kept wide here for plain off-policy SAC
                 # compatibility; MBPO tightens the upper bound at its call site.
-                ctx.enqueue_function[alpha_wrapper, alpha_wrapper](
+                ctx.enqueue_function[alpha_wrapper](
                     scalars_t,
                     src_lp,
                     Scalar[dtype](2.0),
@@ -1880,7 +1880,7 @@ struct GenericOffPolicyAgent[
             self.update_count += 1
             comptime BS = Self.BATCH
             if (
-                self.logger
+                Bool(self.logger)
                 and self.diag_every > 0
                 and self.train_step_count % self.diag_every == 0
             ):
@@ -1921,13 +1921,13 @@ struct GenericOffPolicyAgent[
                     mean_abs_act /= Float64(BS * Self.ACTIONS)
 
                     var step = self.train_step_count
-                    self.logger[].log_scalar("critic_loss", critic_loss, step)
-                    self.logger[].log_scalar("mean_q", mean_q, step)
-                    self.logger[].log_scalar("mean_target", mean_tgt, step)
-                    self.logger[].log_scalar("mean_reward", mean_rew, step)
-                    self.logger[].log_scalar("mean_next_q", mean_nq, step)
-                    self.logger[].log_scalar("mean_done", mean_done, step)
-                    self.logger[].log_scalar(
+                    self.logger.value()[].log_scalar("critic_loss", critic_loss, step)
+                    self.logger.value()[].log_scalar("mean_q", mean_q, step)
+                    self.logger.value()[].log_scalar("mean_target", mean_tgt, step)
+                    self.logger.value()[].log_scalar("mean_reward", mean_rew, step)
+                    self.logger.value()[].log_scalar("mean_next_q", mean_nq, step)
+                    self.logger.value()[].log_scalar("mean_done", mean_done, step)
+                    self.logger.value()[].log_scalar(
                         "mean_abs_action", mean_abs_act, step
                     )
                     comptime if Self.Config.ActorLoss.HAS_ALPHA:
@@ -1936,7 +1936,7 @@ struct GenericOffPolicyAgent[
                         )
                         ctx.enqueue_copy(alpha_host, gpu_state.gpu_scalars)
                         ctx.synchronize()
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "alpha", Float64(alpha_host[0]), step
                         )
                 except:
@@ -2072,9 +2072,7 @@ struct GenericOffPolicyAgent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train the agent on a continuous-action environment.
@@ -2115,7 +2113,7 @@ struct GenericOffPolicyAgent[
             logger=logger,
         )
         self.state = cpu_state^
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         return metrics^
 
     # =========================================================================
@@ -2333,7 +2331,7 @@ struct GenericOffPolicyAgent[
 
                     # Increment RNG counter
                     comptime incr_k = increment_rng_counter_kernel
-                    ctx.enqueue_function[incr_k, incr_k](
+                    ctx.enqueue_function[incr_k](
                         rng_t,
                         grid_dim=(1,),
                         block_dim=(1,),
@@ -2342,7 +2340,7 @@ struct GenericOffPolicyAgent[
                     comptime sac_k = sac_sample_actions_counter_kernel[
                         dtype, N_EVAL_ENVS, Self.ACTIONS, Self.ACTOR_OUT
                     ]
-                    ctx.enqueue_function[sac_k, sac_k](
+                    ctx.enqueue_function[sac_k](
                         act_t,
                         raw_t,
                         Scalar[dtype](self.action_scale),
@@ -2359,10 +2357,7 @@ struct GenericOffPolicyAgent[
                         Layout.row_major(N_EVAL_ENVS, Self.ACTOR_OUT),
                         ImmutAnyOrigin,
                     ](actor_out_buf.unsafe_ptr())
-                    ctx.enqueue_function[
-                        extract_deterministic_actions,
-                        extract_deterministic_actions,
-                    ](
+                    ctx.enqueue_function[extract_deterministic_actions](
                         act_t,
                         actor_out_immut,
                         Scalar[dtype](self.action_scale),
@@ -2376,10 +2371,7 @@ struct GenericOffPolicyAgent[
                     Layout.row_major(N_EVAL_ENVS, Self.ACTOR_OUT),
                     ImmutAnyOrigin,
                 ](actor_out_buf.unsafe_ptr())
-                ctx.enqueue_function[
-                    extract_deterministic_actions,
-                    extract_deterministic_actions,
-                ](
+                ctx.enqueue_function[extract_deterministic_actions](
                     act_t,
                     actor_out_immut,
                     Scalar[dtype](self.action_scale),
@@ -2491,9 +2483,7 @@ struct GenericOffPolicyAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         gradient_steps: Int = 0,
         reward_scale: Float64 = 1.0,
@@ -2572,7 +2562,7 @@ struct GenericOffPolicyAgent[
         comptime if Self.profile >= 1:
             timer.print_report(Self.Config.NAME + " GPU Profile")
 
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         return metrics^
 
     def train_hybrid[
@@ -2586,14 +2576,12 @@ struct GenericOffPolicyAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         gradient_steps: Int = 0,
         reward_scale: Float64 = 1.0,
         eval_env: UnsafePointer[E, MutAnyOrigin] = UnsafePointer[
             E, MutAnyOrigin
-        ](),
+        ](_unsafe_null=()),
         eval_every: Int = 0,
         eval_episodes: Int = 5,
         eval_max_steps: Int = 1000,
@@ -2654,5 +2642,5 @@ struct GenericOffPolicyAgent[
             eval_max_steps=eval_max_steps,
             diag_every=diag_every,
         )
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         return metrics^
