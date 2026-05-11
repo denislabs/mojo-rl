@@ -172,5 +172,15 @@ def main() raises:
         log_every=2_000,
         rng_seed_base=UInt64(2026),
         use_gpu_sampling=False,  # ← SARSA path requires CPU sampling
+        # Hybrid path: GPU env stepping + GPU training + CPU MCTS via
+        # `agent.select_action()`. The GPU MCTS itself has an unresolved
+        # bug — Pendulum regression test 2026-05-13 confirmed GPU MCTS
+        # doesn't learn while CPU MCTS does, same agent/training/env.
+        # See docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md (GPU MCTS audit).
+        # Hybrid is ~2× slower per env-step than full GPU MCTS but
+        # actually trains; remaining diagnostic work is to instrument
+        # gpu_mcts_sampled.mojo at runtime to find the tree-state
+        # divergence from `mcts_sampled.mojo`.
+        use_gpu_mcts=False,
         verbose=True,
     )

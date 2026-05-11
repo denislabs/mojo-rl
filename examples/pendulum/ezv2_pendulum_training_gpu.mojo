@@ -103,10 +103,14 @@ def main() raises:
         log_every=2_000,
         rng_seed_base=UInt64(2026),
         use_gpu_sampling=False,
-        # Full GPU path including GPU MCTS. The hybrid diagnostic
-        # (use_gpu_mcts=False) confirmed the GPU MCTS was the bug;
-        # `gs_select_kernel` now mirrors the CPU's uniform-fallback when
-        # the softmax denominator underflows, matching mcts_sampled.mojo:720.
-        use_gpu_mcts=True,
+        # Hybrid path (`use_gpu_mcts=False`): CPU MCTS via
+        # `agent.select_action()`, GPU env + training. GPU MCTS has an
+        # unresolved bug that prevents learning even after c_scale fix,
+        # softmax-fallback fix, and smooth-improved_policy fix
+        # (2026-05-13 audit). Diagnostic confirmed CPU MCTS converges on
+        # this same env/agent/training in ~30k steps (best episode
+        # -2.67 = solved). Restore use_gpu_mcts=True once gpu_mcts_sampled.mojo
+        # is instrumented and the tree-state divergence is found.
+        use_gpu_mcts=False,
         verbose=True,
     )
