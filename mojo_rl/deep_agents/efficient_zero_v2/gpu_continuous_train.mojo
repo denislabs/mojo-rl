@@ -97,6 +97,14 @@ def run_ezv2_continuous_train_gpu[
     log_every: Int = 2_000,
     rng_seed_base: UInt64 = UInt64(2026),
     use_gpu_sampling: Bool = False,
+    # PUCT / Q-normalization constants for the GPU MCTS. Defaults match
+    # the converging CPU-side `SampledGumbelMCTS` in `continuous_agent.mojo:219`
+    # (`c_scale=1.0` overrides the GPU MCTS signature's `0.1` default,
+    # which gave a 10× weaker Q signal in candidate scoring and was the
+    # root cause of the Pendulum GPU-driver regression observed
+    # 2026-05-12 — see git log).
+    mcts_c_visit: Float64 = 50.0,
+    mcts_c_scale: Float64 = 1.0,
     verbose: Bool = True,
 ) raises -> EZV2TrainStats:
     """Drive EZ-V2 continuous training fully on GPU (env + MCTS) with a
@@ -403,6 +411,8 @@ def run_ezv2_continuous_train_gpu[
                 max_action=MAX_ACTION_F,
                 min_std=MIN_STD_F,
                 std_magnification=STD_MAG_F,
+                c_visit=mcts_c_visit,
+                c_scale=mcts_c_scale,
                 gamma=agent.gamma,
                 deterministic=(agent.temperature < 0.01),
                 rng_seed=mcts_seed,
