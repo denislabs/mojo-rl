@@ -41,7 +41,10 @@ from mojo_rl.nn.model import (
     MinMaxNorm,
     Sequential,
     Parallel,
+    Identity,
+    ReLU,
 )
+from mojo_rl.nn.autodiff.combinators import SplitApply
 from mojo_rl.nn.optimizer import Optimizer, Adam
 from mojo_rl.deep_agents.muzero.configs import MuZeroConfig
 from mojo_rl.deep_agents.muzero.strategies import (
@@ -63,6 +66,7 @@ from mojo_rl.deep_agents.muzero.strategies import (
 from mojo_rl.deep_agents.efficient_zero_v2.networks import (
     ProjectionMLP,
     PredictionMLP,
+    ActionEmbedding,
 )
 from mojo_rl.deep_agents.efficient_zero_v2.action_space import (
     ActionSpace,
@@ -373,6 +377,13 @@ struct EZV2ContinuousMLPConfig[
     PROJ: Int = 1024,
     PRED_BOTTLENECK: Int = 512,
     BINS: Int = 51,
+    # Action embedding width (paper App. G / ez_dmc_state.py). Reference
+    # uses 64. The action goes through Linear(ACT_DIM→ACT_EMBED) + LN +
+    # ReLU inside the dyn network (via SplitApply), so the dyn first
+    # linear receives [LATENT ‖ ACT_EMBED] instead of [LATENT ‖ ACT_DIM].
+    # Critical for low-ACT_DIM envs (Pendulum, 1-dim) where the raw
+    # action would otherwise have ~1.5% of dyn input variance.
+    ACT_EMBED: Int = 64,
     LR: Float64 = 1e-3,
     WD: Float64 = 1e-4,
     CAP: Int = 50000,
@@ -434,12 +445,22 @@ struct EZV2ContinuousMLPConfig[
     ]
 
     # Dynamics: (latent, raw_action_vector) → (next_latent, reward_logits).
-    # Per `docs/EZV2_CONTINUOUS_PHASE3.md` Option 2, the action embedding
-    # is folded into the first LinearMish — no explicit ActionEmbedding
-    # network. The dyn input width is `LATENT + ACT_DIM` (vs discrete's
-    # `LATENT + ACT` one-hot, but the kernel layout is identical).
+    # The dyn input from `build_dyn_input_kernel` is `[LATENT ‖ ACT_DIM]`
+    # (same layout for all configs). For continuous, the dyn network's
+    # first stage `SplitApply` keeps the LATENT slice unchanged and
+    # routes the ACT_DIM slice through an `ActionEmbedding`
+    # (`Linear[ACT_DIM, ACT_EMBED] → LayerNorm → ReLU`) — bringing the
+    # action's share of the hidden-layer input to a meaningful fraction
+    # (ACT_EMBED / (LATENT + ACT_EMBED)) instead of ACT_DIM / (LATENT +
+    # ACT_DIM). Critical for ACT_DIM==1 envs (Pendulum). See
+    # `docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md`.
     comptime DynModel = Sequential[
-        LinearMish[Self.DYN_IN, Self.HIDDEN],
+        SplitApply[
+            Identity[Self.LATENT],
+            ActionEmbedding[Self.ACT_DIM, Self.ACT_EMBED],
+            Self.LATENT,
+        ],
+        LinearMish[Self.LATENT + Self.ACT_EMBED, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
         Parallel[
             Sequential[

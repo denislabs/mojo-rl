@@ -1420,7 +1420,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                         disc *= self.gamma
                     td += disc * Float64(boot_v[b * (K + 1) + k + n_eff])
                 var age = Int(batch_age[b * (K + 1) + k])
-                var v_target = Float64(0.0)
+                var v_target: Float64
                 comptime if Self.Config.value_target_mode == VALUE_TARGET_SEARCH:
                     v_target = sve
                 elif Self.Config.value_target_mode == VALUE_TARGET_SARSA:
@@ -2669,7 +2669,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
     ) -> Tuple[Float64, Float64, Float64, Float64]:
         """Sample a batch, run the full K-step forward (rep + dyn × K +
         pred at every k + SimSiam projector/predictor), and return the
-        four mean loss components
+        four mean loss components.
 
             (L_R, L_P, L_V, L_G)
 

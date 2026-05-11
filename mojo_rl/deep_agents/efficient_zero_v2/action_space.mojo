@@ -219,13 +219,13 @@ struct ContinuousActionSpace[
             (μ ‖ σ_raw).
         K: Number of root candidates the sampled-Gumbel MCTS keeps
             (paper App. A default 16 for proprio).
-        MAX_ACTION: Action vector |a*_d| upper bound. The squash uses
+        MAX_ACTION_: Action vector |a*_d| upper bound. The squash uses
             `MAX·tanh(·/MAX)`; the kernel atanh-clamps `a*/MAX` to ±0.999
             for numerical stability.
-        MIN_STD: Floor on σ; bounds `1/σ` from above so pre-training
+        MIN_STD_: Floor on σ; bounds `1/σ` from above so pre-training
             (σ_raw ≈ 0) the gradient stays well-conditioned. Paper App. G
             default 0.1.
-        STD_MAGNIFICATION: Used by the sampled-MCTS root-candidate
+        STD_MAGNIFICATION_: Used by the sampled-MCTS root-candidate
             sampler (paper App. A: half the K candidates are drawn from
             `N(μ, STD_MAGNIFICATION·σ)` for exploration). The training
             kernel here ignores it; lives on the trait so the agent can

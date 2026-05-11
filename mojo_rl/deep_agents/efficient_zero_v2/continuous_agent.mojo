@@ -139,7 +139,10 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         Self.Config.num_bins,
         Self.Config.num_simulations,
         Self.Config.num_root_candidates,
-        Self.Config.num_root_candidates // 2 if Self.Config.num_root_candidates // 2 >= 1 else 1,
+        Self.Config.num_root_candidates
+        // 2 if Self.Config.num_root_candidates
+        // 2
+        >= 1 else 1,
         Self.Config.max_nodes,
         Self.Config.ActSpace.MAX_ACTION,
         Self.Config.ActSpace.MIN_STD,
@@ -205,7 +208,10 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             Self.Config.num_bins,
             Self.Config.num_simulations,
             Self.Config.num_root_candidates,
-            Self.Config.num_root_candidates // 2 if Self.Config.num_root_candidates // 2 >= 1 else 1,
+            Self.Config.num_root_candidates
+            // 2 if Self.Config.num_root_candidates
+            // 2
+            >= 1 else 1,
             Self.Config.max_nodes,
             Self.Config.ActSpace.MAX_ACTION,
             Self.Config.ActSpace.MIN_STD,
@@ -233,12 +239,8 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             self._episode_obs.append(List[List[Scalar[dtype]]]())
             self._episode_actions.append(List[List[Scalar[dtype]]]())
             self._episode_action_targets.append(List[List[Scalar[dtype]]]())
-            self._episode_sampled_actions.append(
-                List[List[Scalar[dtype]]]()
-            )
-            self._episode_improved_policy.append(
-                List[List[Scalar[dtype]]]()
-            )
+            self._episode_sampled_actions.append(List[List[Scalar[dtype]]]())
+            self._episode_improved_policy.append(List[List[Scalar[dtype]]]())
             self._episode_rewards.append(List[Float64]())
             self._episode_values.append(List[Float64]())
 
@@ -532,9 +534,9 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         var ep_len = len(self._episode_obs[env_id])
 
         for t in range(ep_len):
-            var obs_arr = InlineArray[
-                Scalar[dtype], Self.Config.obs_dim
-            ](uninitialized=True)
+            var obs_arr = InlineArray[Scalar[dtype], Self.Config.obs_dim](
+                uninitialized=True
+            )
             for i in range(Self.Config.obs_dim):
                 if i < len(self._episode_obs[env_id][t]):
                     obs_arr[i] = self._episode_obs[env_id][t][i]
@@ -542,9 +544,9 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                     obs_arr[i] = Scalar[dtype](0.0)
 
             # Continuous: store raw action vector — no one-hot.
-            var act_arr = InlineArray[
-                Scalar[dtype], Self.Config.action_dim
-            ](uninitialized=True)
+            var act_arr = InlineArray[Scalar[dtype], Self.Config.action_dim](
+                uninitialized=True
+            )
             var ep_act = self._episode_actions[env_id][t].copy()
             for i in range(Self.Config.action_dim):
                 if i < len(ep_act):
@@ -563,9 +565,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
 
             comptime CAP = 50000
             comptime K_ROOT = Self.Config.num_root_candidates
-            var buf_idx = (
-                self.state.buffer.ptr - 1 + CAP
-            ) % CAP
+            var buf_idx = (self.state.buffer.ptr - 1 + CAP) % CAP
             # Continuous: mcts_policies stores the chosen-action vector
             # (paper Eq. 7 simple-best-action target). Still used by the
             # legacy simple-best loss path; full-π uses the K-candidate
@@ -584,18 +584,16 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                     buf_idx * K_ROOT * Self.Config.action_dim + j
                 ] = ep_samp[j] if j < len(ep_samp) else Scalar[dtype](0.0)
             for i in range(K_ROOT):
-                self.state.mcts_improved_policy[
-                    buf_idx * K_ROOT + i
-                ] = ep_pi[i] if i < len(ep_pi) else Scalar[dtype](0.0)
+                self.state.mcts_improved_policy[buf_idx * K_ROOT + i] = ep_pi[
+                    i
+                ] if i < len(ep_pi) else Scalar[dtype](0.0)
             self.state.mcts_values[buf_idx] = Scalar[dtype](
                 self._episode_values[env_id][t]
             )
             self.state.step_at_write[buf_idx] = Scalar[DType.uint32](
                 self.train_step_count
             )
-            self.state.priorities[buf_idx] = Scalar[dtype](
-                self.max_priority
-            )
+            self.state.priorities[buf_idx] = Scalar[dtype](self.max_priority)
 
         self.reset_episode(env_id)
 
@@ -678,11 +676,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             # Build obs from buffer at this index.
             var obs = List[Scalar[dtype]](capacity=Self.Config.obs_dim)
             for d in range(Self.Config.obs_dim):
-                obs.append(
-                    self.state.buffer.obs[
-                        idx * Self.Config.obs_dim + d
-                    ]
-                )
+                obs.append(self.state.buffer.obs[idx * Self.Config.obs_dim + d])
 
             # Run sampled-Gumbel search with target networks.
             # `deterministic=True` → chosen = argmax-visit candidate (a
@@ -731,9 +725,9 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                         )
                 var probs = self.mcts._improved_policy_at(0)
                 for i in range(K_ROOT):
-                    self.state.mcts_improved_policy[
-                        idx * K_ROOT + i
-                    ] = Scalar[dtype](probs[i])
+                    self.state.mcts_improved_policy[idx * K_ROOT + i] = Scalar[
+                        dtype
+                    ](probs[i])
             self.state.mcts_values[idx] = Scalar[dtype](sve)
             self.state.step_at_write[idx] = Scalar[DType.uint32](
                 self.train_step_count
@@ -867,9 +861,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                 for i in range(K_ROOT_C):
                     gpu.batch_mcts_imp_pi_host[
                         (sampled * (K + 1) + k) * K_ROOT_C + i
-                    ] = self.state.mcts_improved_policy[
-                        idx * K_ROOT_C + i
-                    ]
+                    ] = self.state.mcts_improved_policy[idx * K_ROOT_C + i]
                 gpu.batch_mcts_val_host[
                     sampled * (K + 1) + k
                 ] = self.state.mcts_values[idx]
@@ -878,9 +870,9 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                 )
                 if age < 0:
                     age = 0
-                gpu.batch_age_host[sampled * (K + 1) + k] = Scalar[
-                    DType.int32
-                ](age)
+                gpu.batch_age_host[sampled * (K + 1) + k] = Scalar[DType.int32](
+                    age
+                )
             for k in range(K):
                 var idx = (start + k) % CAP
                 for a in range(ACT):
@@ -893,9 +885,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
 
             var cum = Float64(0.0)
             for k in range(K):
-                cum += Float64(
-                    gpu.batch_rewards_host[sampled * K + k]
-                )
+                cum += Float64(gpu.batch_rewards_host[sampled * K + k])
                 gpu.cum_rewards_host[sampled * K + k] = Scalar[dtype](cum)
 
         cum_prio.free()
@@ -911,7 +901,13 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                 # Compile-time error. Continuous + non-SEARCH value
                 # targets need a separate boot_v decode that respects
                 # the `2*ACT_DIM:2*ACT_DIM+BINS` value-bin slice.
-                _ = "ContinuousAgent.train_step_gpu: VALUE_TARGET_SARSA / VALUE_TARGET_MIXED not yet supported for continuous configs — use VALUE_TARGET_SEARCH (default) or switch to the discrete agent. Follow-up: port the boot-v decode to read pred_output[b * PRED_OUT + 2*ACT_DIM : ... + BINS]."
+                _ = (
+                    "ContinuousAgent.train_step_gpu: VALUE_TARGET_SARSA /"
+                    " VALUE_TARGET_MIXED not yet supported for continuous"
+                    " configs — use VALUE_TARGET_SEARCH (default) or switch to"
+                    " the discrete agent. Follow-up: port the boot-v decode to"
+                    " read pred_output[b * PRED_OUT + 2*ACT_DIM : ... + BINS]."
+                )
             var tgt_rep_input = alloc[Scalar[dtype]](BATCH * OBS)
             var tgt_z = alloc[Scalar[dtype]](BATCH * LATENT)
             var tgt_pred_out = alloc[Scalar[dtype]](BATCH * PRED_OUT)
@@ -954,9 +950,9 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                     Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
                     MutAnyOrigin,
                 ](tgt_z)
-                Network[
-                    Self.Config.RepModel, Self.Config.OptType
-                ].forward[BATCH](
+                Network[Self.Config.RepModel, Self.Config.OptType].forward[
+                    BATCH
+                ](
                     tgt_rep_in_t,
                     tgt_z_t,
                     tgt_rep_params,
@@ -972,9 +968,9 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                     Layout.row_major(BATCH, Self.Config.PredModel.OUT_DIM),
                     MutAnyOrigin,
                 ](tgt_pred_out)
-                Network[
-                    Self.Config.PredModel, Self.Config.OptType
-                ].forward[BATCH](
+                Network[Self.Config.PredModel, Self.Config.OptType].forward[
+                    BATCH
+                ](
                     tgt_pred_in_t,
                     tgt_pred_out_t,
                     tgt_pred_params,
@@ -1015,7 +1011,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                         boot_v_host[sampled * (K + 1) + k + n_eff]
                     )
                 var age = Int(gpu.batch_age_host[sampled * (K + 1) + k])
-                var v_target = Float64(0.0)
+                var v_target: Float64
                 comptime if Self.Config.value_target_mode == VALUE_TARGET_SEARCH:
                     v_target = sve
                 elif Self.Config.value_target_mode == VALUE_TARGET_SARSA:
@@ -1024,14 +1020,18 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                     v_target = MixedValueTarget[
                         Self.Config.t_fresh, Self.Config.t_stale
                     ].compute(sve, td, age)
-                gpu.value_target_full_host[
-                    sampled * (K + 1) + k
-                ] = Scalar[dtype](v_target)
+                gpu.value_target_full_host[sampled * (K + 1) + k] = Scalar[
+                    dtype
+                ](v_target)
 
         boot_v_host.free()
 
         var sums = ezv2_train_step_gpu_core[Self.Config](
-            gpu, ctx, self.v_min, self.v_max, self.max_grad_norm,
+            gpu,
+            ctx,
+            self.v_min,
+            self.v_max,
+            self.max_grad_norm,
         )
         var L_R = sums[0]
         var L_P = sums[1]
@@ -1042,9 +1042,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
 
         for b in range(BATCH):
             var new_p = Float64(gpu.priorities_out_host[b])
-            self.state.priorities[batch_start_idx[b]] = Scalar[dtype](
-                new_p
-            )
+            self.state.priorities[batch_start_idx[b]] = Scalar[dtype](new_p)
             if new_p > self.max_priority:
                 self.max_priority = new_p
 
@@ -1115,9 +1113,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             )
 
         # GPU priority sampling + window gather (kernels 1-4).
-        var oldest = (
-            gpu_replay.ptr - gpu_replay.size + CAP
-        ) % CAP
+        var oldest = (gpu_replay.ptr - gpu_replay.size + CAP) % CAP
         ezv2_gpu_sample_and_gather[CAP, BATCH, K, OBS, ACT](
             ctx,
             gpu_replay.priorities,
@@ -1149,16 +1145,16 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         # SEARCH mode: value target = stored MCTS root value at every
         # window position. Memcpy the gathered MCTS values into the
         # value-target buffer the core consumes.
-        ctx.enqueue_copy(
-            gpu.value_target_full_buf, gpu.batch_mcts_val_buf
-        )
+        ctx.enqueue_copy(gpu.value_target_full_buf, gpu.batch_mcts_val_buf)
 
         # Sections 2-9 — shared core, with section 2 (host upload) elided
         # since the GPU sampler wrote the device buffers directly.
-        var sums = ezv2_train_step_gpu_core[
-            Self.Config, SKIP_UPLOAD=True
-        ](
-            gpu, ctx, self.v_min, self.v_max, self.max_grad_norm,
+        var sums = ezv2_train_step_gpu_core[Self.Config, SKIP_UPLOAD=True](
+            gpu,
+            ctx,
+            self.v_min,
+            self.v_max,
+            self.max_grad_norm,
         )
         var L_R = sums[0]
         var L_P = sums[1]
@@ -1170,9 +1166,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         # Section 10 (host) — download batch_start_idx + writeback
         # priorities. priorities_out_host is already populated by the
         # core's section 9 download.
-        ctx.enqueue_copy(
-            gpu.batch_start_idx_host, gpu.batch_start_idx_buf
-        )
+        ctx.enqueue_copy(gpu.batch_start_idx_host, gpu.batch_start_idx_buf)
         ctx.synchronize()
         for b in range(BATCH):
             var idx = Int(gpu.batch_start_idx_host[b])
