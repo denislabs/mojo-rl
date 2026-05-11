@@ -96,9 +96,9 @@ comptime N_CEM_ITERS = 2
 comptime INITIAL_SIGMA: Float64 = 0.5
 comptime MIN_SIGMA: Float64 = 0.05
 comptime ACTION_PENALTY: Float64 = 0.001
-comptime POS_PENALTY: Float64 = 0.05      # x² coefficient in score
+comptime POS_PENALTY: Float64 = 0.05  # x² coefficient in score
 comptime MAX_EPISODE_STEPS = 200
-comptime PASS_STEPS = 195               # episode "solved" if survives ≥ this many steps.
+comptime PASS_STEPS = 195  # episode "solved" if survives ≥ this many steps.
 comptime N_EVAL_EPISODES = 5
 
 comptime NET = PCSequential[
@@ -118,7 +118,10 @@ comptime SCHED = CosineWarmupSchedule[
 
 
 def _step_cartpole(
-    x: Float64, x_dot: Float64, theta: Float64, theta_dot: Float64,
+    x: Float64,
+    x_dot: Float64,
+    theta: Float64,
+    theta_dot: Float64,
     action_norm: Float64,
 ) -> Tuple[Float64, Float64, Float64, Float64]:
     """One step of CartPole-Continuous dynamics (Gymnasium analytical Euler).
@@ -185,13 +188,21 @@ def _gen_rollout_into[
         x_dot = stepped[1]
         theta = stepped[2]
         theta_dot = stepped[3]
-        obs_buf[obs_offset + (t + 1) * OBS_DIM + 0] = Scalar[dtype](x / CP_X_SCALE)
-        obs_buf[obs_offset + (t + 1) * OBS_DIM + 1] = Scalar[dtype](x_dot / CP_XDOT_SCALE)
-        obs_buf[obs_offset + (t + 1) * OBS_DIM + 2] = Scalar[dtype](theta / CP_THETA_SCALE)
-        obs_buf[obs_offset + (t + 1) * OBS_DIM + 3] = Scalar[dtype](theta_dot / CP_THETADOT_SCALE)
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 0] = Scalar[dtype](
+            x / CP_X_SCALE
+        )
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 1] = Scalar[dtype](
+            x_dot / CP_XDOT_SCALE
+        )
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 2] = Scalar[dtype](
+            theta / CP_THETA_SCALE
+        )
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 3] = Scalar[dtype](
+            theta_dot / CP_THETADOT_SCALE
+        )
 
 
-fn _gauss_pair(mut rng: PhiloxRandom) -> Tuple[Float64, Float64]:
+def _gauss_pair(mut rng: PhiloxRandom) -> Tuple[Float64, Float64]:
     var u1 = Float64(rng.step_uniform()[0])
     var u2 = Float64(rng.step_uniform()[0])
     if u1 < 1e-12:
@@ -205,17 +216,52 @@ def main() raises:
     print("=" * 60)
     print("CartPole-Continuous — CEM planning demo (PCN world model)")
     print("=" * 60)
-    print("  PC arch    : PCBlock[", AUG_DIM, ",", HIDDEN, ",PCTanh] → PCBlock[", HIDDEN, ",", OBS_DIM, ",PCTanh]")
+    print(
+        "  PC arch    : PCBlock[",
+        AUG_DIM,
+        ",",
+        HIDDEN,
+        ",PCTanh] → PCBlock[",
+        HIDDEN,
+        ",",
+        OBS_DIM,
+        ",PCTanh]",
+    )
     print("  PC params  :", NET.PARAM_SIZE)
-    print("  Enc arch   : MLP[", ENC_INPUT_DIM, "→", ENC_HIDDEN_DIM, "→", ENC_OUTPUT_DIM, "]")
-    print("  CEM        : H=", PLAN_HORIZON, " N=", N_SAMPLES, " K=", N_ELITES, " iters=", N_CEM_ITERS)
+    print(
+        "  Enc arch   : MLP[",
+        ENC_INPUT_DIM,
+        "→",
+        ENC_HIDDEN_DIM,
+        "→",
+        ENC_OUTPUT_DIM,
+        "]",
+    )
+    print(
+        "  CEM        : H=",
+        PLAN_HORIZON,
+        " N=",
+        N_SAMPLES,
+        " K=",
+        N_ELITES,
+        " iters=",
+        N_CEM_ITERS,
+    )
     print("  Score      : -Σ (θ² + 0.05·x² + 0.001·a²)  (normalized obs)")
-    print("  Pass       : survive ≥", PASS_STEPS, " of", MAX_EPISODE_STEPS, " steps")
+    print(
+        "  Pass       : survive ≥",
+        PASS_STEPS,
+        " of",
+        MAX_EPISODE_STEPS,
+        " steps",
+    )
 
     # ── PC params + Adam state ────────────────────────────────────────────────
     var pc_params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
     var pc_grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var pc_opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT_PC.STATE_PER_PARAM)
+    var pc_opt_state_buf = alloc[Scalar[dtype]](
+        NET.PARAM_SIZE * OPT_PC.STATE_PER_PARAM
+    )
     var pc_opt_global_buf = alloc[Scalar[dtype]](OPT_PC.GLOBAL_STATE_SIZE)
     memset(pc_params_buf, 0, NET.PARAM_SIZE)
     memset(pc_grads_buf, 0, NET.PARAM_SIZE)
@@ -228,7 +274,9 @@ def main() raises:
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
     ](pc_grads_buf)
     var pc_opt_state = LayoutTensor[
-        dtype, Layout.row_major(NET.PARAM_SIZE, OPT_PC.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(NET.PARAM_SIZE, OPT_PC.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](pc_opt_state_buf)
     var pc_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_PC.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -237,7 +285,9 @@ def main() raises:
 
     var enc_params_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
     var enc_grads_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
-    var enc_opt_state_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE * OPT_ENC.STATE_PER_PARAM)
+    var enc_opt_state_buf = alloc[Scalar[dtype]](
+        ENC_PARAM_SIZE * OPT_ENC.STATE_PER_PARAM
+    )
     var enc_opt_global_buf = alloc[Scalar[dtype]](OPT_ENC.GLOBAL_STATE_SIZE)
     memset(enc_params_buf, 0, ENC_PARAM_SIZE)
     memset(enc_grads_buf, 0, ENC_PARAM_SIZE)
@@ -250,7 +300,9 @@ def main() raises:
         dtype, Layout.row_major(ENC_PARAM_SIZE), MutAnyOrigin
     ](enc_grads_buf)
     var enc_opt_state = LayoutTensor[
-        dtype, Layout.row_major(ENC_PARAM_SIZE, OPT_ENC.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(ENC_PARAM_SIZE, OPT_ENC.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](enc_opt_state_buf)
     var enc_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_ENC.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -364,8 +416,11 @@ def main() raises:
         for batch_idx in range(N_BATCHES_PER_EPOCH):
             for b in range(BATCH):
                 _gen_rollout_into[SEQ_LEN](
-                    rng, actions_buf, obs_buf,
-                    b * SEQ_LEN, b * (SEQ_LEN + 1) * OBS_DIM,
+                    rng,
+                    actions_buf,
+                    obs_buf,
+                    b * SEQ_LEN,
+                    b * (SEQ_LEN + 1) * OBS_DIM,
                 )
             memset(prev_z_buf, 0, BATCH * HIDDEN)
             for t in range(0, SEQ_LEN + 1):
@@ -374,14 +429,17 @@ def main() raises:
                         enc_input_buf[b * ENC_INPUT_DIM + j] = prev_z_buf[
                             b * HIDDEN + j
                         ]
-                    var act_val = Scalar[dtype](0.0) if t == 0 else actions_buf[
-                        b * SEQ_LEN + (t - 1)
-                    ]
+                    var act_val = (
+                        Scalar[dtype](0.0) if t
+                        == 0 else actions_buf[b * SEQ_LEN + (t - 1)]
+                    )
                     enc_input_buf[b * ENC_INPUT_DIM + HIDDEN] = act_val
                     for d in range(OBS_DIM):
                         enc_input_buf[
                             b * ENC_INPUT_DIM + HIDDEN + ACTION_DIM + d
-                        ] = obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d]
+                        ] = obs_buf[
+                            b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d
+                        ]
                     for j in range(HIDDEN):
                         x_in_buf[b * AUG_DIM + j] = prev_z_buf[b * HIDDEN + j]
                     x_in_buf[b * AUG_DIM + HIDDEN] = act_val
@@ -399,17 +457,27 @@ def main() raises:
                         ]
                 var T_refine_step = T_REFINE_BOOTSTRAP if t == 0 else T_REFINE
                 var result = TRAINER.compute_grads_from_latents[BATCH](
-                    pc_params, pc_grads, latents,
-                    mu_eps_buf, a_below_buf, z_below_buf, dx_buf,
-                    x_in, y_target,
+                    pc_params,
+                    pc_grads,
+                    latents,
+                    mu_eps_buf,
+                    a_below_buf,
+                    z_below_buf,
+                    dx_buf,
+                    x_in,
+                    y_target,
                     T_infer=T_refine_step,
                     lr_x=Scalar[dtype](LR_X),
                 )
                 clip_grad_norm[NET.PARAM_SIZE, dtype](pc_grads, GRAD_CLIP_NORM)
                 pc_step_num += 1
                 OPT_PC.step[NET.PARAM_SIZE, dtype](
-                    pc_params, pc_grads, pc_opt_state, pc_opt_global,
-                    pc_step_num, lr_scale=lr_scale,
+                    pc_params,
+                    pc_grads,
+                    pc_opt_state,
+                    pc_opt_global,
+                    pc_step_num,
+                    lr_scale=lr_scale,
                 )
                 last_loss = result.output_loss_final
                 for b in range(BATCH):
@@ -424,8 +492,12 @@ def main() raises:
                 clip_grad_norm[ENC_PARAM_SIZE, dtype](enc_grads, GRAD_CLIP_NORM)
                 enc_step_num += 1
                 OPT_ENC.step[ENC_PARAM_SIZE, dtype](
-                    enc_params, enc_grads, enc_opt_state, enc_opt_global,
-                    enc_step_num, lr_scale=lr_scale,
+                    enc_params,
+                    enc_grads,
+                    enc_opt_state,
+                    enc_opt_global,
+                    enc_step_num,
+                    lr_scale=lr_scale,
                 )
                 for b in range(BATCH):
                     for j in range(HIDDEN):
@@ -436,8 +508,15 @@ def main() raises:
         if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == EPOCHS - 1:
             var elapsed = Float64(perf_counter_ns() - t0) / 1e9
             print(
-                "    ep=", epoch, "  loss=", last_loss,
-                "  lr_scale=", lr_scale, "  wall=", elapsed, "s",
+                "    ep=",
+                epoch,
+                "  loss=",
+                last_loss,
+                "  lr_scale=",
+                lr_scale,
+                "  wall=",
+                elapsed,
+                "s",
             )
 
     var total_t = Float64(perf_counter_ns() - t0) / 1e9
@@ -515,9 +594,15 @@ def main() raises:
             enc_input_buf[j] = Scalar[dtype](0.0)
         enc_input_buf[HIDDEN] = Scalar[dtype](0.0)
         enc_input_buf[HIDDEN + ACTION_DIM + 0] = Scalar[dtype](x / CP_X_SCALE)
-        enc_input_buf[HIDDEN + ACTION_DIM + 1] = Scalar[dtype](x_dot / CP_XDOT_SCALE)
-        enc_input_buf[HIDDEN + ACTION_DIM + 2] = Scalar[dtype](theta / CP_THETA_SCALE)
-        enc_input_buf[HIDDEN + ACTION_DIM + 3] = Scalar[dtype](theta_dot / CP_THETADOT_SCALE)
+        enc_input_buf[HIDDEN + ACTION_DIM + 1] = Scalar[dtype](
+            x_dot / CP_XDOT_SCALE
+        )
+        enc_input_buf[HIDDEN + ACTION_DIM + 2] = Scalar[dtype](
+            theta / CP_THETA_SCALE
+        )
+        enc_input_buf[HIDDEN + ACTION_DIM + 3] = Scalar[dtype](
+            theta_dot / CP_THETADOT_SCALE
+        )
         for j in range(HIDDEN):
             x_in_buf[j] = Scalar[dtype](0.0)
         x_in_buf[HIDDEN] = Scalar[dtype](0.0)
@@ -531,9 +616,15 @@ def main() raises:
         for j in range(HIDDEN):
             lat_buf[j] = enc_output_buf[j]
         _ = TRAINER.compute_grads_from_latents[1](
-            pc_params, pc_grads, latents_1,
-            mu_eps_buf_1, a_below_buf_1, z_below_buf_1, dx_buf_1,
-            x_in_1, y_target_1,
+            pc_params,
+            pc_grads,
+            latents_1,
+            mu_eps_buf_1,
+            a_below_buf_1,
+            z_below_buf_1,
+            dx_buf_1,
+            x_in_1,
+            y_target_1,
             T_infer=T_REFINE_BOOTSTRAP,
             lr_x=Scalar[dtype](LR_X),
         )
@@ -575,7 +666,9 @@ def main() raises:
                             a1 = 1.0
                         elif a1 < -1.0:
                             a1 = -1.0
-                        cem_actions_buf[s1 * PLAN_HORIZON + h1] = Scalar[dtype](a1)
+                        cem_actions_buf[s1 * PLAN_HORIZON + h1] = Scalar[dtype](
+                            a1
+                        )
                         i += 1
 
                 for s in range(N_SAMPLES):
@@ -632,9 +725,7 @@ def main() raises:
                     var s_mu: Float64 = 0
                     for k in range(N_ELITES):
                         s_mu += Float64(
-                            cem_actions_buf[
-                                cem_indices[k] * PLAN_HORIZON + h
-                            ]
+                            cem_actions_buf[cem_indices[k] * PLAN_HORIZON + h]
                         )
                     var new_mu = s_mu / Float64(N_ELITES)
                     var s_var: Float64 = 0
@@ -660,7 +751,9 @@ def main() raises:
                 action_norm = 1.0
             elif action_norm < -1.0:
                 action_norm = -1.0
-            var stepped = _step_cartpole(x, x_dot, theta, theta_dot, action_norm)
+            var stepped = _step_cartpole(
+                x, x_dot, theta, theta_dot, action_norm
+            )
             x = stepped[0]
             x_dot = stepped[1]
             theta = stepped[2]
@@ -670,10 +763,18 @@ def main() raises:
             for j in range(HIDDEN):
                 enc_input_buf[j] = agent_z_buf[j]
             enc_input_buf[HIDDEN] = Scalar[dtype](action_norm)
-            enc_input_buf[HIDDEN + ACTION_DIM + 0] = Scalar[dtype](x / CP_X_SCALE)
-            enc_input_buf[HIDDEN + ACTION_DIM + 1] = Scalar[dtype](x_dot / CP_XDOT_SCALE)
-            enc_input_buf[HIDDEN + ACTION_DIM + 2] = Scalar[dtype](theta / CP_THETA_SCALE)
-            enc_input_buf[HIDDEN + ACTION_DIM + 3] = Scalar[dtype](theta_dot / CP_THETADOT_SCALE)
+            enc_input_buf[HIDDEN + ACTION_DIM + 0] = Scalar[dtype](
+                x / CP_X_SCALE
+            )
+            enc_input_buf[HIDDEN + ACTION_DIM + 1] = Scalar[dtype](
+                x_dot / CP_XDOT_SCALE
+            )
+            enc_input_buf[HIDDEN + ACTION_DIM + 2] = Scalar[dtype](
+                theta / CP_THETA_SCALE
+            )
+            enc_input_buf[HIDDEN + ACTION_DIM + 3] = Scalar[dtype](
+                theta_dot / CP_THETADOT_SCALE
+            )
             for j in range(HIDDEN):
                 x_in_buf[j] = agent_z_buf[j]
             x_in_buf[HIDDEN] = Scalar[dtype](action_norm)
@@ -687,9 +788,15 @@ def main() raises:
             for j in range(HIDDEN):
                 lat_buf[j] = enc_output_buf[j]
             _ = TRAINER.compute_grads_from_latents[1](
-                pc_params, pc_grads, latents_1,
-                mu_eps_buf_1, a_below_buf_1, z_below_buf_1, dx_buf_1,
-                x_in_1, y_target_1,
+                pc_params,
+                pc_grads,
+                latents_1,
+                mu_eps_buf_1,
+                a_below_buf_1,
+                z_below_buf_1,
+                dx_buf_1,
+                x_in_1,
+                y_target_1,
                 T_infer=T_REFINE,
                 lr_x=Scalar[dtype](LR_X),
             )
@@ -708,17 +815,31 @@ def main() raises:
             n_success += 1
         if terminated_at == -1:
             print(
-                "    ep=", ep, " : SURVIVED full ", MAX_EPISODE_STEPS,
-                " steps (final |x|=", x if x > 0.0 else -x,
-                " |θ|=", theta if theta > 0.0 else -theta, ")",
-                " →", "PASS" if passed else "MISS",
+                "    ep=",
+                ep,
+                " : SURVIVED full ",
+                MAX_EPISODE_STEPS,
+                " steps (final |x|=",
+                x if x > 0.0 else -x,
+                " |θ|=",
+                theta if theta > 0.0 else -theta,
+                ")",
+                " →",
+                "PASS" if passed else "MISS",
             )
         else:
             print(
-                "    ep=", ep, " : terminated at step ", terminated_at,
-                " (|x|=", x if x > 0.0 else -x,
-                " |θ|=", theta if theta > 0.0 else -theta, ")",
-                " →", "PASS" if passed else "MISS",
+                "    ep=",
+                ep,
+                " : terminated at step ",
+                terminated_at,
+                " (|x|=",
+                x if x > 0.0 else -x,
+                " |θ|=",
+                theta if theta > 0.0 else -theta,
+                ")",
+                " →",
+                "PASS" if passed else "MISS",
             )
 
     var t_eval = Float64(perf_counter_ns() - t_eval_start) / 1e9
@@ -733,14 +854,22 @@ def main() raises:
     if n_success >= pass_threshold:
         print(
             "\n  [PASS] CEM planner solved",
-            n_success, "/", N_EVAL_EPISODES,
-            " (threshold:", pass_threshold, ")"
+            n_success,
+            "/",
+            N_EVAL_EPISODES,
+            " (threshold:",
+            pass_threshold,
+            ")",
         )
     else:
         print(
             "\n  [FAIL] CEM planner solved only",
-            n_success, "/", N_EVAL_EPISODES,
-            " (need ≥", pass_threshold, ")"
+            n_success,
+            "/",
+            N_EVAL_EPISODES,
+            " (need ≥",
+            pass_threshold,
+            ")",
         )
 
     # cleanup

@@ -182,7 +182,7 @@ def _gen_rollout_into[
         )
 
 
-fn _gauss_pair(mut rng: PhiloxRandom) -> Tuple[Float64, Float64]:
+def _gauss_pair(mut rng: PhiloxRandom) -> Tuple[Float64, Float64]:
     var u1 = Float64(rng.step_uniform()[0])
     var u2 = Float64(rng.step_uniform()[0])
     if u1 < 1e-12:
@@ -192,7 +192,7 @@ fn _gauss_pair(mut rng: PhiloxRandom) -> Tuple[Float64, Float64]:
     return (r * cos(theta), r * sin(theta))
 
 
-fn _xavier_init_layer(
+def _xavier_init_layer(
     params: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
     in_dim: Int,
     out_dim: Int,
@@ -222,9 +222,7 @@ def _lt_forward[
         for j in range(OUT):
             var sum_j = Float64(params[IN * OUT + j])
             for i in range(IN):
-                sum_j += Float64(a[s * IN + i]) * Float64(
-                    params[i * OUT + j]
-                )
+                sum_j += Float64(a[s * IN + i]) * Float64(params[i * OUT + j])
             mu[s * OUT + j] = Scalar[dtype](sum_j)
 
 
@@ -238,12 +236,11 @@ def _lt_backward_accum[
     d_b: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
     d_x: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
 ):
-    """Backward through `μ = tanh(x) @ W + b`. Accumulates d_W, d_b. Writes d_x."""
+    """Backward through `μ = tanh(x) @ W + b`. Accumulates d_W, d_b. Writes d_x.
+    """
     for s in range(BATCH_T):
         for j in range(OUT):
-            d_b[j] = Scalar[dtype](
-                Float64(d_b[j]) + Float64(d_mu[s * OUT + j])
-            )
+            d_b[j] = Scalar[dtype](Float64(d_b[j]) + Float64(d_mu[s * OUT + j]))
         for i in range(IN):
             var a_i = Float64(a[s * IN + i])
             for j in range(OUT):
@@ -265,15 +262,25 @@ def main() raises:
     print("=" * 60)
     print("MountainCar Continuous — Exp 2: hybrid PCN-encoder + MLP-dynamics")
     print("=" * 60)
-    print("  Phase 1    : full PCN for", PHASE1_EPOCHS, " epochs (encoder + PC dynamics)")
-    print("  Phase 2    : frozen encoder + BPTT MLP dynamics for", PHASE2_EPOCHS, " epochs")
+    print(
+        "  Phase 1    : full PCN for",
+        PHASE1_EPOCHS,
+        " epochs (encoder + PC dynamics)",
+    )
+    print(
+        "  Phase 2    : frozen encoder + BPTT MLP dynamics for",
+        PHASE2_EPOCHS,
+        " epochs",
+    )
     print("  K_BPTT     :", K_BPTT, " (full-rollout)")
     print("  Eval       : encoder forward only + BPTT-MLP imagination")
 
     # ── Phase-1 PC params + Adam state (PCSequential layout) ─────────────────
     var pc_params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
     var pc_grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var pc_opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT_PC.STATE_PER_PARAM)
+    var pc_opt_state_buf = alloc[Scalar[dtype]](
+        NET.PARAM_SIZE * OPT_PC.STATE_PER_PARAM
+    )
     var pc_opt_global_buf = alloc[Scalar[dtype]](OPT_PC.GLOBAL_STATE_SIZE)
     memset(pc_params_buf, 0, NET.PARAM_SIZE)
     memset(pc_grads_buf, 0, NET.PARAM_SIZE)
@@ -286,7 +293,9 @@ def main() raises:
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
     ](pc_grads_buf)
     var pc_opt_state = LayoutTensor[
-        dtype, Layout.row_major(NET.PARAM_SIZE, OPT_PC.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(NET.PARAM_SIZE, OPT_PC.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](pc_opt_state_buf)
     var pc_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_PC.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -296,7 +305,9 @@ def main() raises:
     # ── Encoder params + Adam state (carries from phase 1 to phase 2 frozen)
     var enc_params_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
     var enc_grads_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
-    var enc_opt_state_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE * OPT_ENC.STATE_PER_PARAM)
+    var enc_opt_state_buf = alloc[Scalar[dtype]](
+        ENC_PARAM_SIZE * OPT_ENC.STATE_PER_PARAM
+    )
     var enc_opt_global_buf = alloc[Scalar[dtype]](OPT_ENC.GLOBAL_STATE_SIZE)
     memset(enc_params_buf, 0, ENC_PARAM_SIZE)
     memset(enc_grads_buf, 0, ENC_PARAM_SIZE)
@@ -309,7 +320,9 @@ def main() raises:
         dtype, Layout.row_major(ENC_PARAM_SIZE), MutAnyOrigin
     ](enc_grads_buf)
     var enc_opt_state = LayoutTensor[
-        dtype, Layout.row_major(ENC_PARAM_SIZE, OPT_ENC.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(ENC_PARAM_SIZE, OPT_ENC.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](enc_opt_state_buf)
     var enc_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_ENC.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -319,7 +332,9 @@ def main() raises:
     # ── Phase-2 BPTT params (T = transition, D = decoder) ────────────────────
     var T_params_buf = alloc[Scalar[dtype]](T_PARAM_SIZE)
     var T_grads_buf = alloc[Scalar[dtype]](T_PARAM_SIZE)
-    var T_opt_state_buf = alloc[Scalar[dtype]](T_PARAM_SIZE * OPT_BPTT.STATE_PER_PARAM)
+    var T_opt_state_buf = alloc[Scalar[dtype]](
+        T_PARAM_SIZE * OPT_BPTT.STATE_PER_PARAM
+    )
     var T_opt_global_buf = alloc[Scalar[dtype]](OPT_BPTT.GLOBAL_STATE_SIZE)
     var T_params = LayoutTensor[
         dtype, Layout.row_major(T_PARAM_SIZE), MutAnyOrigin
@@ -328,7 +343,9 @@ def main() raises:
         dtype, Layout.row_major(T_PARAM_SIZE), MutAnyOrigin
     ](T_grads_buf)
     var T_opt_state = LayoutTensor[
-        dtype, Layout.row_major(T_PARAM_SIZE, OPT_BPTT.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(T_PARAM_SIZE, OPT_BPTT.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](T_opt_state_buf)
     var T_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_BPTT.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -336,7 +353,9 @@ def main() raises:
 
     var D_params_buf = alloc[Scalar[dtype]](D_PARAM_SIZE)
     var D_grads_buf = alloc[Scalar[dtype]](D_PARAM_SIZE)
-    var D_opt_state_buf = alloc[Scalar[dtype]](D_PARAM_SIZE * OPT_BPTT.STATE_PER_PARAM)
+    var D_opt_state_buf = alloc[Scalar[dtype]](
+        D_PARAM_SIZE * OPT_BPTT.STATE_PER_PARAM
+    )
     var D_opt_global_buf = alloc[Scalar[dtype]](OPT_BPTT.GLOBAL_STATE_SIZE)
     var D_params = LayoutTensor[
         dtype, Layout.row_major(D_PARAM_SIZE), MutAnyOrigin
@@ -345,7 +364,9 @@ def main() raises:
         dtype, Layout.row_major(D_PARAM_SIZE), MutAnyOrigin
     ](D_grads_buf)
     var D_opt_state = LayoutTensor[
-        dtype, Layout.row_major(D_PARAM_SIZE, OPT_BPTT.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(D_PARAM_SIZE, OPT_BPTT.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](D_opt_state_buf)
     var D_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_BPTT.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -452,22 +473,30 @@ def main() raises:
         for batch_idx in range(N_BATCHES_PER_EPOCH):
             for b in range(BATCH):
                 _gen_rollout_into[SEQ_LEN](
-                    rng, actions_buf, obs_buf,
-                    b * SEQ_LEN, b * (SEQ_LEN + 1) * OBS_DIM,
+                    rng,
+                    actions_buf,
+                    obs_buf,
+                    b * SEQ_LEN,
+                    b * (SEQ_LEN + 1) * OBS_DIM,
                 )
             memset(prev_z_buf, 0, BATCH * HIDDEN)
             for t in range(0, SEQ_LEN + 1):
                 for b in range(BATCH):
                     for j in range(HIDDEN):
-                        enc_input_buf[b * ENC_INPUT_DIM + j] = prev_z_buf[b * HIDDEN + j]
-                    var act_val = Scalar[dtype](0.0) if t == 0 else actions_buf[
-                        b * SEQ_LEN + (t - 1)
-                    ]
+                        enc_input_buf[b * ENC_INPUT_DIM + j] = prev_z_buf[
+                            b * HIDDEN + j
+                        ]
+                    var act_val = (
+                        Scalar[dtype](0.0) if t
+                        == 0 else actions_buf[b * SEQ_LEN + (t - 1)]
+                    )
                     enc_input_buf[b * ENC_INPUT_DIM + HIDDEN] = act_val
                     for d in range(OBS_DIM):
                         enc_input_buf[
                             b * ENC_INPUT_DIM + HIDDEN + ACTION_DIM + d
-                        ] = obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d]
+                        ] = obs_buf[
+                            b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d
+                        ]
                     for j in range(HIDDEN):
                         x_in_buf[b * AUG_DIM + j] = prev_z_buf[b * HIDDEN + j]
                     x_in_buf[b * AUG_DIM + HIDDEN] = act_val
@@ -485,17 +514,27 @@ def main() raises:
                         ]
                 var T_refine_step = T_REFINE_BOOTSTRAP if t == 0 else T_REFINE
                 var result = TRAINER.compute_grads_from_latents[BATCH](
-                    pc_params, pc_grads, latents,
-                    mu_eps_buf, a_below_buf, z_below_buf, dx_buf,
-                    x_in, y_target,
+                    pc_params,
+                    pc_grads,
+                    latents,
+                    mu_eps_buf,
+                    a_below_buf,
+                    z_below_buf,
+                    dx_buf,
+                    x_in,
+                    y_target,
                     T_infer=T_refine_step,
                     lr_x=Scalar[dtype](LR_X),
                 )
                 clip_grad_norm[NET.PARAM_SIZE, dtype](pc_grads, GRAD_CLIP_NORM)
                 pc_step_num += 1
                 OPT_PC.step[NET.PARAM_SIZE, dtype](
-                    pc_params, pc_grads, pc_opt_state, pc_opt_global,
-                    pc_step_num, lr_scale=lr_scale,
+                    pc_params,
+                    pc_grads,
+                    pc_opt_state,
+                    pc_opt_global,
+                    pc_step_num,
+                    lr_scale=lr_scale,
                 )
                 last_loss = result.output_loss_final
                 for b in range(BATCH):
@@ -510,8 +549,12 @@ def main() raises:
                 clip_grad_norm[ENC_PARAM_SIZE, dtype](enc_grads, GRAD_CLIP_NORM)
                 enc_step_num += 1
                 OPT_ENC.step[ENC_PARAM_SIZE, dtype](
-                    enc_params, enc_grads, enc_opt_state, enc_opt_global,
-                    enc_step_num, lr_scale=lr_scale,
+                    enc_params,
+                    enc_grads,
+                    enc_opt_state,
+                    enc_opt_global,
+                    enc_step_num,
+                    lr_scale=lr_scale,
                 )
                 for b in range(BATCH):
                     for j in range(HIDDEN):
@@ -522,8 +565,15 @@ def main() raises:
         if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == PHASE1_EPOCHS - 1:
             var elapsed = Float64(perf_counter_ns() - t0) / 1e9
             print(
-                "    ep=", epoch, "  loss=", last_loss,
-                "  lr_scale=", lr_scale, "  wall=", elapsed, "s",
+                "    ep=",
+                epoch,
+                "  loss=",
+                last_loss,
+                "  lr_scale=",
+                lr_scale,
+                "  wall=",
+                elapsed,
+                "s",
             )
 
     var phase1_time = Float64(perf_counter_ns() - t0) / 1e9
@@ -557,8 +607,11 @@ def main() raises:
         for batch_idx in range(N_BATCHES_PER_EPOCH):
             for b in range(BATCH):
                 _gen_rollout_into[SEQ_LEN](
-                    rng, actions_buf, obs_buf,
-                    b * SEQ_LEN, b * (SEQ_LEN + 1) * OBS_DIM,
+                    rng,
+                    actions_buf,
+                    obs_buf,
+                    b * SEQ_LEN,
+                    b * (SEQ_LEN + 1) * OBS_DIM,
                 )
 
             # t=0 encoder forward (frozen). z_0 = enc(0, 0, obs_0).
@@ -610,19 +663,16 @@ def main() raises:
             for k in range(K_BPTT):
                 for b in range(BATCH):
                     for d in range(OBS_DIM):
-                        var diff = (
-                            Float64(
-                                cache_mu_obs_buf[
-                                    k * BATCH * OBS_DIM + b * OBS_DIM + d
-                                ]
-                            )
-                            - Float64(
-                                obs_buf[
-                                    b * (SEQ_LEN + 1) * OBS_DIM
-                                    + (k + 1) * OBS_DIM
-                                    + d
-                                ]
-                            )
+                        var diff = Float64(
+                            cache_mu_obs_buf[
+                                k * BATCH * OBS_DIM + b * OBS_DIM + d
+                            ]
+                        ) - Float64(
+                            obs_buf[
+                                b * (SEQ_LEN + 1) * OBS_DIM
+                                + (k + 1) * OBS_DIM
+                                + d
+                            ]
                         )
                         sum_sq += diff * diff
             last_loss = 0.5 * sum_sq / Float64(BATCH * K_BPTT)
@@ -684,19 +734,34 @@ def main() raises:
             clip_grad_norm[D_PARAM_SIZE, dtype](D_grads, GRAD_CLIP_NORM)
             bptt_step_num += 1
             OPT_BPTT.step[T_PARAM_SIZE, dtype](
-                T_params, T_grads, T_opt_state, T_opt_global,
-                bptt_step_num, lr_scale=lr_scale,
+                T_params,
+                T_grads,
+                T_opt_state,
+                T_opt_global,
+                bptt_step_num,
+                lr_scale=lr_scale,
             )
             OPT_BPTT.step[D_PARAM_SIZE, dtype](
-                D_params, D_grads, D_opt_state, D_opt_global,
-                bptt_step_num, lr_scale=lr_scale,
+                D_params,
+                D_grads,
+                D_opt_state,
+                D_opt_global,
+                bptt_step_num,
+                lr_scale=lr_scale,
             )
 
         if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == PHASE2_EPOCHS - 1:
             var elapsed = Float64(perf_counter_ns() - t1) / 1e9
             print(
-                "    ep=", epoch, "  loss=", last_loss,
-                "  lr_scale=", lr_scale, "  wall=", elapsed, "s",
+                "    ep=",
+                epoch,
+                "  loss=",
+                last_loss,
+                "  lr_scale=",
+                lr_scale,
+                "  wall=",
+                elapsed,
+                "s",
             )
 
     var phase2_time = Float64(perf_counter_ns() - t1) / 1e9
@@ -794,7 +859,9 @@ def main() raises:
                             a1 = 1.0
                         elif a1 < -1.0:
                             a1 = -1.0
-                        cem_actions_buf[s1 * PLAN_HORIZON + h1] = Scalar[dtype](a1)
+                        cem_actions_buf[s1 * PLAN_HORIZON + h1] = Scalar[dtype](
+                            a1
+                        )
                         i += 1
 
                 for s in range(N_SAMPLES):
@@ -814,11 +881,15 @@ def main() raises:
                         ]
                     _lt_forward[N_SAMPLES, AUG_DIM, HIDDEN](
                         T_params_buf,
-                        cem_x_aug_buf, cem_a_x_aug_buf, cem_mu_z_next_buf,
+                        cem_x_aug_buf,
+                        cem_a_x_aug_buf,
+                        cem_mu_z_next_buf,
                     )
                     _lt_forward[N_SAMPLES, HIDDEN, OBS_DIM](
                         D_params_buf,
-                        cem_mu_z_next_buf, cem_a_z_next_buf, cem_mu_obs_buf,
+                        cem_mu_z_next_buf,
+                        cem_a_z_next_buf,
+                        cem_mu_obs_buf,
                     )
                     for s in range(N_SAMPLES):
                         var pos_norm = Float64(cem_mu_obs_buf[s * OBS_DIM + 0])
@@ -854,9 +925,7 @@ def main() raises:
                     var s_mu: Float64 = 0
                     for k in range(N_ELITES):
                         s_mu += Float64(
-                            cem_actions_buf[
-                                cem_indices[k] * PLAN_HORIZON + h
-                            ]
+                            cem_actions_buf[cem_indices[k] * PLAN_HORIZON + h]
                         )
                     var new_mu = s_mu / Float64(N_ELITES)
                     var s_var: Float64 = 0
@@ -911,14 +980,21 @@ def main() raises:
 
         if not reached_goal:
             print(
-                "    ep=", ep,
-                " : MISS (max_position=", max_position_seen, ")",
+                "    ep=",
+                ep,
+                " : MISS (max_position=",
+                max_position_seen,
+                ")",
             )
         else:
             print(
-                "    ep=", ep,
-                " : GOAL at step", step_at_goal,
-                " (max_position=", max_position_seen, ")",
+                "    ep=",
+                ep,
+                " : GOAL at step",
+                step_at_goal,
+                " (max_position=",
+                max_position_seen,
+                ")",
             )
 
     var t_eval = Float64(perf_counter_ns() - t_eval_start) / 1e9
@@ -932,8 +1008,11 @@ def main() raises:
 
     print("\n  === Exp 2 (hybrid PCN-enc + MLP-dyn) summary ===")
     print(
-        "  Solved", n_success, "/", N_EVAL_EPISODES,
-        " (PCN baseline: 5/5; MLP+BPTT: 3/5; MLP-1step: 0/5)"
+        "  Solved",
+        n_success,
+        "/",
+        N_EVAL_EPISODES,
+        " (PCN baseline: 5/5; MLP+BPTT: 3/5; MLP-1step: 0/5)",
     )
 
     # cleanup

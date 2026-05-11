@@ -59,7 +59,7 @@ comptime TRAINER = PCTrainer[
 comptime OPT = Adam[LR=ADAM_LR]
 
 
-fn _set_action_target_kernel[
+def _set_action_target_kernel[
     BATCH: Int,
     AUG_DIM: Int,
     HIDDEN: Int,
@@ -71,7 +71,8 @@ fn _set_action_target_kernel[
     x_in: LayoutTensor[KDT, Layout.row_major(BATCH, AUG_DIM), MutAnyOrigin],
     y_tgt: LayoutTensor[KDT, Layout.row_major(BATCH, DATA_DIM), MutAnyOrigin],
 ):
-    """Write per-step action into x_in[:, HIDDEN] and target state into y_tgt[:, 0]."""
+    """Write per-step action into x_in[:, HIDDEN] and target state into y_tgt[:, 0].
+    """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
         return
@@ -79,7 +80,7 @@ fn _set_action_target_kernel[
     y_tgt[b, 0] = rebind[Scalar[KDT]](states_slice[b])
 
 
-fn _set_prev_hidden_kernel[
+def _set_prev_hidden_kernel[
     BATCH: Int,
     AUG_DIM: Int,
     HIDDEN: Int,
@@ -100,11 +101,11 @@ fn _set_prev_hidden_kernel[
     x_in[b, k] = rebind[Scalar[KDT]](latents[b, k])
 
 
-fn _zero_x_in_kernel[
-    BATCH: Int, AUG_DIM: Int, KDT: DType,
-](
-    x_in: LayoutTensor[KDT, Layout.row_major(BATCH, AUG_DIM), MutAnyOrigin],
-):
+def _zero_x_in_kernel[
+    BATCH: Int,
+    AUG_DIM: Int,
+    KDT: DType,
+](x_in: LayoutTensor[KDT, Layout.row_major(BATCH, AUG_DIM), MutAnyOrigin],):
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= BATCH * AUG_DIM:
         return
@@ -122,9 +123,28 @@ def main() raises:
     print("=" * 60)
     print("Action-conditioned tPC (GPU) — roadmap Step 2")
     print("=" * 60)
-    print("  arch       : PCBlock[", AUG_DIM, ",", HIDDEN, ",PCTanh] → PCBlock[", HIDDEN, ",", DATA_DIM, ",PCTanh]")
+    print(
+        "  arch       : PCBlock[",
+        AUG_DIM,
+        ",",
+        HIDDEN,
+        ",PCTanh] → PCBlock[",
+        HIDDEN,
+        ",",
+        DATA_DIM,
+        ",PCTanh]",
+    )
     print("  PARAM_SIZE :", NET.PARAM_SIZE, "  LATENT_DIM:", NET.LATENT_DIM)
-    print("  BATCH=", BATCH, " SEQ_LEN=", SEQ_LEN, " EPOCHS=", EPOCHS, " N_BATCHES=", N_BATCHES_PER_EPOCH)
+    print(
+        "  BATCH=",
+        BATCH,
+        " SEQ_LEN=",
+        SEQ_LEN,
+        " EPOCHS=",
+        EPOCHS,
+        " N_BATCHES=",
+        N_BATCHES_PER_EPOCH,
+    )
     print("  T_INFER=", T_INFER, " LR_X=", LR_X, " ADAM_LR=", ADAM_LR)
 
     var ctx = DeviceContext()
@@ -143,9 +163,15 @@ def main() raises:
 
     var grads_dbuf = ctx.enqueue_create_buffer[dtype](NET.PARAM_SIZE)
     var lat_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.LATENT_DIM)
-    var mu_eps_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.SCRATCH_OUT_DIM)
-    var a_below_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.SCRATCH_IN_DIM)
-    var z_below_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.SCRATCH_IN_DIM)
+    var mu_eps_dbuf = ctx.enqueue_create_buffer[dtype](
+        BATCH * NET.SCRATCH_OUT_DIM
+    )
+    var a_below_dbuf = ctx.enqueue_create_buffer[dtype](
+        BATCH * NET.SCRATCH_IN_DIM
+    )
+    var z_below_dbuf = ctx.enqueue_create_buffer[dtype](
+        BATCH * NET.SCRATCH_IN_DIM
+    )
     var dx_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.LATENT_DIM)
     var x_in_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * AUG_DIM)
     var y_tgt_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * DATA_DIM)
@@ -182,7 +208,9 @@ def main() raises:
     var opt_state_dbuf = ctx.enqueue_create_buffer[dtype](
         NET.PARAM_SIZE * OPT.STATE_PER_PARAM
     )
-    var opt_global_dbuf = ctx.enqueue_create_buffer[dtype](OPT.GLOBAL_STATE_SIZE)
+    var opt_global_dbuf = ctx.enqueue_create_buffer[dtype](
+        OPT.GLOBAL_STATE_SIZE
+    )
     var opt_state_init = ctx.enqueue_create_host_buffer[dtype](
         NET.PARAM_SIZE * OPT.STATE_PER_PARAM
     )
@@ -209,7 +237,9 @@ def main() raises:
     # Per-batch rollout buffers — column-major in time so per-step slice contiguous.
     # actions[t, b] at offset t * BATCH + b; states[t, b] similarly.
     var actions_host = ctx.enqueue_create_host_buffer[dtype](SEQ_LEN * BATCH)
-    var states_host = ctx.enqueue_create_host_buffer[dtype]((SEQ_LEN + 1) * BATCH)
+    var states_host = ctx.enqueue_create_host_buffer[dtype](
+        (SEQ_LEN + 1) * BATCH
+    )
     var actions_dbuf = ctx.enqueue_create_buffer[dtype](SEQ_LEN * BATCH)
     var states_dbuf = ctx.enqueue_create_buffer[dtype]((SEQ_LEN + 1) * BATCH)
 
@@ -248,7 +278,8 @@ def main() raises:
             var zero_blocks = (zero_threads + TPB - 1) // TPB
             ctx.enqueue_function[zero_k, zero_k](
                 x_in_t,
-                grid_dim=(zero_blocks,), block_dim=(TPB,),
+                grid_dim=(zero_blocks,),
+                block_dim=(TPB,),
             )
 
             for t in range(1, SEQ_LEN + 1):
@@ -264,15 +295,25 @@ def main() raises:
                 ]
                 var sat_blocks = (BATCH + TPB - 1) // TPB
                 ctx.enqueue_function[sat_k, sat_k](
-                    actions_slice, states_slice, x_in_t, y_tgt_t,
-                    grid_dim=(sat_blocks,), block_dim=(TPB,),
+                    actions_slice,
+                    states_slice,
+                    x_in_t,
+                    y_tgt_t,
+                    grid_dim=(sat_blocks,),
+                    block_dim=(TPB,),
                 )
 
                 TRAINER.compute_grads_only_gpu[BATCH](
                     ctx,
-                    params_t, grads_t, lat_t,
-                    mu_eps_t, a_below_t, z_below_t, dx_t,
-                    x_in_t, y_tgt_t,
+                    params_t,
+                    grads_t,
+                    lat_t,
+                    mu_eps_t,
+                    a_below_t,
+                    z_below_t,
+                    dx_t,
+                    x_in_t,
+                    y_tgt_t,
                     T_infer=T_INFER,
                     lr_x=Scalar[dtype](LR_X),
                 )
@@ -288,8 +329,10 @@ def main() raises:
                 var sph_threads = BATCH * HIDDEN
                 var sph_blocks = (sph_threads + TPB - 1) // TPB
                 ctx.enqueue_function[sph_k, sph_k](
-                    lat_t, x_in_t,
-                    grid_dim=(sph_blocks,), block_dim=(TPB,),
+                    lat_t,
+                    x_in_t,
+                    grid_dim=(sph_blocks,),
+                    block_dim=(TPB,),
                 )
 
         if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == EPOCHS - 1:
@@ -345,7 +388,8 @@ def main() raises:
     var zero_blocks_eval = (zero_threads_eval + TPB - 1) // TPB
     ctx.enqueue_function[zero_k_eval, zero_k_eval](
         x_in_t,
-        grid_dim=(zero_blocks_eval,), block_dim=(TPB,),
+        grid_dim=(zero_blocks_eval,),
+        block_dim=(TPB,),
     )
 
     # Per-block param views (for eval feedforward)
@@ -378,8 +422,12 @@ def main() raises:
         ]
         var sat_blocks_eval = (BATCH + TPB - 1) // TPB
         ctx.enqueue_function[sat_k_eval, sat_k_eval](
-            actions_slice, states_slice, x_in_t, y_tgt_t,
-            grid_dim=(sat_blocks_eval,), block_dim=(TPB,),
+            actions_slice,
+            states_slice,
+            x_in_t,
+            y_tgt_t,
+            grid_dim=(sat_blocks_eval,),
+            block_dim=(TPB,),
         )
 
         # 1) Predict (no settle): z_pred = block_0(x_in); s_pred = block_1(z_pred)
@@ -413,9 +461,15 @@ def main() raises:
         # 2) Settle z_t against s_t (teacher forcing)
         TRAINER.compute_grads_only_gpu[BATCH](
             ctx,
-            params_t, grads_t, lat_t,
-            mu_eps_t, a_below_t, z_below_t, dx_t,
-            x_in_t, y_tgt_t,
+            params_t,
+            grads_t,
+            lat_t,
+            mu_eps_t,
+            a_below_t,
+            z_below_t,
+            dx_t,
+            x_in_t,
+            y_tgt_t,
             T_infer=T_INFER,
             lr_x=Scalar[dtype](LR_X),
         )
@@ -427,8 +481,10 @@ def main() raises:
         var sph_threads_eval = BATCH * HIDDEN
         var sph_blocks_eval = (sph_threads_eval + TPB - 1) // TPB
         ctx.enqueue_function[sph_k_eval, sph_k_eval](
-            lat_t, x_in_t,
-            grid_dim=(sph_blocks_eval,), block_dim=(TPB,),
+            lat_t,
+            x_in_t,
+            grid_dim=(sph_blocks_eval,),
+            block_dim=(TPB,),
         )
 
     var avg_mse = total_sq_err / Float64(n_predictions)
@@ -436,10 +492,17 @@ def main() raises:
 
     print("\n  avg 1-step MSE :", avg_mse)
     print("  avg baseline   :", avg_baseline)
-    print("  ratio          :", avg_mse / avg_baseline if avg_baseline > 0 else 1.0)
+    print(
+        "  ratio          :",
+        avg_mse / avg_baseline if avg_baseline > 0 else 1.0,
+    )
 
     if avg_mse < 0.01:
-        print("\n  [PASS] action-conditioned tPC GPU: 1-step prediction MSE", avg_mse, "< 0.01")
+        print(
+            "\n  [PASS] action-conditioned tPC GPU: 1-step prediction MSE",
+            avg_mse,
+            "< 0.01",
+        )
     else:
         print("\n  [FAIL] 1-step prediction MSE", avg_mse, "≥ 0.01")
         raise Error("action-conditioned tPC GPU test failed")

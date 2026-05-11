@@ -85,7 +85,7 @@ comptime SAC_WARMUP_STEPS = 1000
 comptime SAC_PRINT_EVERY = 20
 
 
-fn _angle_normalize(t: Float64) -> Float64:
+def _angle_normalize(t: Float64) -> Float64:
     var x = (t + pi) - 2.0 * pi * Float64(Int((t + pi) / (2.0 * pi)))
     if x < 0.0:
         x += 2.0 * pi
@@ -100,10 +100,9 @@ def _step_pendulum(
         u = PEND_MAX_TORQUE
     elif u < -PEND_MAX_TORQUE:
         u = -PEND_MAX_TORQUE
-    var theta_acc = (
-        (3.0 * PEND_G) / (2.0 * PEND_L) * sin(theta)
-        + (3.0 / (PEND_M * PEND_L * PEND_L)) * u
-    )
+    var theta_acc = (3.0 * PEND_G) / (2.0 * PEND_L) * sin(theta) + (
+        3.0 / (PEND_M * PEND_L * PEND_L)
+    ) * u
     var new_dot = theta_dot + theta_acc * PEND_DT
     if new_dot > PEND_MAX_SPEED:
         new_dot = PEND_MAX_SPEED
@@ -144,7 +143,7 @@ def _gen_rollout_into[
         )
 
 
-fn _xavier_init_layer(
+def _xavier_init_layer(
     params: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
     in_dim: Int,
     out_dim: Int,
@@ -173,9 +172,7 @@ def _lt_forward[
         for j in range(OUT):
             var sum_j = Float64(params[IN * OUT + j])
             for i in range(IN):
-                sum_j += Float64(a[s * IN + i]) * Float64(
-                    params[i * OUT + j]
-                )
+                sum_j += Float64(a[s * IN + i]) * Float64(params[i * OUT + j])
             mu[s * OUT + j] = Scalar[dtype](sum_j)
 
 
@@ -191,9 +188,7 @@ def _lt_backward_accum[
 ):
     for s in range(BATCH_T):
         for j in range(OUT):
-            d_b[j] = Scalar[dtype](
-                Float64(d_b[j]) + Float64(d_mu[s * OUT + j])
-            )
+            d_b[j] = Scalar[dtype](Float64(d_b[j]) + Float64(d_mu[s * OUT + j]))
         for i in range(IN):
             var a_i = Float64(a[s * IN + i])
             for j in range(OUT):
@@ -352,8 +347,11 @@ def main() raises:
         for batch_idx in range(N_BATCHES_PER_EPOCH):
             for b in range(BATCH):
                 _gen_rollout_into[SEQ_LEN](
-                    rng, actions_buf, obs_buf,
-                    b * SEQ_LEN, b * (SEQ_LEN + 1) * OBS_DIM,
+                    rng,
+                    actions_buf,
+                    obs_buf,
+                    b * SEQ_LEN,
+                    b * (SEQ_LEN + 1) * OBS_DIM,
                 )
 
             # t=0 encoder forward (z_0 = enc(0, 0, obs_0)).
@@ -404,19 +402,16 @@ def main() raises:
             for k in range(K_BPTT):
                 for b in range(BATCH):
                     for d in range(OBS_DIM):
-                        var diff = (
-                            Float64(
-                                cache_mu_obs_buf[
-                                    k * BATCH * OBS_DIM + b * OBS_DIM + d
-                                ]
-                            )
-                            - Float64(
-                                obs_buf[
-                                    b * (SEQ_LEN + 1) * OBS_DIM
-                                    + (k + 1) * OBS_DIM
-                                    + d
-                                ]
-                            )
+                        var diff = Float64(
+                            cache_mu_obs_buf[
+                                k * BATCH * OBS_DIM + b * OBS_DIM + d
+                            ]
+                        ) - Float64(
+                            obs_buf[
+                                b * (SEQ_LEN + 1) * OBS_DIM
+                                + (k + 1) * OBS_DIM
+                                + d
+                            ]
                         )
                         sum_sq += diff * diff
             last_loss = 0.5 * sum_sq / Float64(BATCH * K_BPTT)
@@ -486,23 +481,42 @@ def main() raises:
             clip_grad_norm[ENC_PARAM_SIZE, dtype](enc_grads, GRAD_CLIP_NORM)
             step_num += 1
             OPT.step[T_PARAM_SIZE, dtype](
-                T_params, T_grads, T_opt_state, T_opt_global,
-                step_num, lr_scale=lr_scale,
+                T_params,
+                T_grads,
+                T_opt_state,
+                T_opt_global,
+                step_num,
+                lr_scale=lr_scale,
             )
             OPT.step[D_PARAM_SIZE, dtype](
-                D_params, D_grads, D_opt_state, D_opt_global,
-                step_num, lr_scale=lr_scale,
+                D_params,
+                D_grads,
+                D_opt_state,
+                D_opt_global,
+                step_num,
+                lr_scale=lr_scale,
             )
             OPT.step[ENC_PARAM_SIZE, dtype](
-                enc_params, enc_grads, enc_opt_state, enc_opt_global,
-                step_num, lr_scale=lr_scale,
+                enc_params,
+                enc_grads,
+                enc_opt_state,
+                enc_opt_global,
+                step_num,
+                lr_scale=lr_scale,
             )
 
         if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == ENC_EPOCHS - 1:
             var elapsed = Float64(perf_counter_ns() - t_enc0) / 1e9
             print(
-                "    ep=", epoch, "  loss=", last_loss,
-                "  lr_scale=", lr_scale, "  wall=", elapsed, "s",
+                "    ep=",
+                epoch,
+                "  loss=",
+                last_loss,
+                "  lr_scale=",
+                lr_scale,
+                "  wall=",
+                elapsed,
+                "s",
             )
 
     var enc_train_t = Float64(perf_counter_ns() - t_enc0) / 1e9

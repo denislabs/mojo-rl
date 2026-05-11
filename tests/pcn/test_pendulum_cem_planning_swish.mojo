@@ -83,8 +83,8 @@ comptime INITIAL_SIGMA: Float64 = 1.0
 comptime MIN_SIGMA: Float64 = 0.05
 comptime ACTION_PENALTY: Float64 = 0.001
 comptime MAX_EPISODE_STEPS = 200
-comptime EVAL_WINDOW = 100         # last 100 steps used for sustained-upright check.
-comptime UPRIGHT_THRESHOLD: Float64 = 0.9   # avg cos θ over EVAL_WINDOW > this = solved.
+comptime EVAL_WINDOW = 100  # last 100 steps used for sustained-upright check.
+comptime UPRIGHT_THRESHOLD: Float64 = 0.9  # avg cos θ over EVAL_WINDOW > this = solved.
 comptime N_EVAL_EPISODES = 5
 
 comptime NET = PCSequential[
@@ -103,7 +103,7 @@ comptime SCHED = CosineWarmupSchedule[
 ]
 
 
-fn _angle_normalize(t: Float64) -> Float64:
+def _angle_normalize(t: Float64) -> Float64:
     var x = (t + pi) - 2.0 * pi * Float64(Int((t + pi) / (2.0 * pi)))
     if x < 0.0:
         x += 2.0 * pi
@@ -118,10 +118,9 @@ def _step_pendulum(
         u = PEND_MAX_TORQUE
     elif u < -PEND_MAX_TORQUE:
         u = -PEND_MAX_TORQUE
-    var theta_acc = (
-        (3.0 * PEND_G) / (2.0 * PEND_L) * sin(theta)
-        + (3.0 / (PEND_M * PEND_L * PEND_L)) * u
-    )
+    var theta_acc = (3.0 * PEND_G) / (2.0 * PEND_L) * sin(theta) + (
+        3.0 / (PEND_M * PEND_L * PEND_L)
+    ) * u
     var new_dot = theta_dot + theta_acc * PEND_DT
     if new_dot > PEND_MAX_SPEED:
         new_dot = PEND_MAX_SPEED
@@ -162,7 +161,7 @@ def _gen_rollout_into[
         )
 
 
-fn _gauss_pair(mut rng: PhiloxRandom) -> Tuple[Float64, Float64]:
+def _gauss_pair(mut rng: PhiloxRandom) -> Tuple[Float64, Float64]:
     var u1 = Float64(rng.step_uniform()[0])
     var u2 = Float64(rng.step_uniform()[0])
     if u1 < 1e-12:
@@ -176,18 +175,58 @@ def main() raises:
     print("=" * 60)
     print("Pendulum — CEM planning demo (PCN world model, swish+identity)")
     print("=" * 60)
-    print("  PC arch    : PCBlock[", AUG_DIM, ",", HIDDEN, ",PCSwish] → PCBlock[", HIDDEN, ",", OBS_DIM, ",PCIdentity]")
+    print(
+        "  PC arch    : PCBlock[",
+        AUG_DIM,
+        ",",
+        HIDDEN,
+        ",PCSwish] → PCBlock[",
+        HIDDEN,
+        ",",
+        OBS_DIM,
+        ",PCIdentity]",
+    )
     print("  PC params  :", NET.PARAM_SIZE)
-    print("  Enc arch   : MLP[", ENC_INPUT_DIM, "→", ENC_HIDDEN_DIM, "→", ENC_OUTPUT_DIM, "]")
-    print("  CEM        : H=", PLAN_HORIZON, " N=", N_SAMPLES, " K=", N_ELITES, " iters=", N_CEM_ITERS)
+    print(
+        "  Enc arch   : MLP[",
+        ENC_INPUT_DIM,
+        "→",
+        ENC_HIDDEN_DIM,
+        "→",
+        ENC_OUTPUT_DIM,
+        "]",
+    )
+    print(
+        "  CEM        : H=",
+        PLAN_HORIZON,
+        " N=",
+        N_SAMPLES,
+        " K=",
+        N_ELITES,
+        " iters=",
+        N_CEM_ITERS,
+    )
     print("  Score      : Σ cos θ - 0.001·a²  (no velocity penalty)")
-    print("  Pass       : avg cos θ over last", EVAL_WINDOW, " > ", UPRIGHT_THRESHOLD)
-    print("  Eval       : ", N_EVAL_EPISODES, " episodes,", MAX_EPISODE_STEPS, " steps each")
+    print(
+        "  Pass       : avg cos θ over last",
+        EVAL_WINDOW,
+        " > ",
+        UPRIGHT_THRESHOLD,
+    )
+    print(
+        "  Eval       : ",
+        N_EVAL_EPISODES,
+        " episodes,",
+        MAX_EPISODE_STEPS,
+        " steps each",
+    )
 
     # ── PC params + Adam state ────────────────────────────────────────────────
     var pc_params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
     var pc_grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var pc_opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT_PC.STATE_PER_PARAM)
+    var pc_opt_state_buf = alloc[Scalar[dtype]](
+        NET.PARAM_SIZE * OPT_PC.STATE_PER_PARAM
+    )
     var pc_opt_global_buf = alloc[Scalar[dtype]](OPT_PC.GLOBAL_STATE_SIZE)
     memset(pc_params_buf, 0, NET.PARAM_SIZE)
     memset(pc_grads_buf, 0, NET.PARAM_SIZE)
@@ -200,7 +239,9 @@ def main() raises:
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
     ](pc_grads_buf)
     var pc_opt_state = LayoutTensor[
-        dtype, Layout.row_major(NET.PARAM_SIZE, OPT_PC.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(NET.PARAM_SIZE, OPT_PC.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](pc_opt_state_buf)
     var pc_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_PC.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -210,7 +251,9 @@ def main() raises:
     # ── Encoder params + Adam state ───────────────────────────────────────────
     var enc_params_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
     var enc_grads_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
-    var enc_opt_state_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE * OPT_ENC.STATE_PER_PARAM)
+    var enc_opt_state_buf = alloc[Scalar[dtype]](
+        ENC_PARAM_SIZE * OPT_ENC.STATE_PER_PARAM
+    )
     var enc_opt_global_buf = alloc[Scalar[dtype]](OPT_ENC.GLOBAL_STATE_SIZE)
     memset(enc_params_buf, 0, ENC_PARAM_SIZE)
     memset(enc_grads_buf, 0, ENC_PARAM_SIZE)
@@ -223,7 +266,9 @@ def main() raises:
         dtype, Layout.row_major(ENC_PARAM_SIZE), MutAnyOrigin
     ](enc_grads_buf)
     var enc_opt_state = LayoutTensor[
-        dtype, Layout.row_major(ENC_PARAM_SIZE, OPT_ENC.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(ENC_PARAM_SIZE, OPT_ENC.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](enc_opt_state_buf)
     var enc_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_ENC.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -340,8 +385,11 @@ def main() raises:
         for batch_idx in range(N_BATCHES_PER_EPOCH):
             for b in range(BATCH):
                 _gen_rollout_into[SEQ_LEN](
-                    rng, actions_buf, obs_buf,
-                    b * SEQ_LEN, b * (SEQ_LEN + 1) * OBS_DIM,
+                    rng,
+                    actions_buf,
+                    obs_buf,
+                    b * SEQ_LEN,
+                    b * (SEQ_LEN + 1) * OBS_DIM,
                 )
             memset(prev_z_buf, 0, BATCH * HIDDEN)
             for t in range(0, SEQ_LEN + 1):
@@ -350,14 +398,17 @@ def main() raises:
                         enc_input_buf[b * ENC_INPUT_DIM + j] = prev_z_buf[
                             b * HIDDEN + j
                         ]
-                    var act_val = Scalar[dtype](0.0) if t == 0 else actions_buf[
-                        b * SEQ_LEN + (t - 1)
-                    ]
+                    var act_val = (
+                        Scalar[dtype](0.0) if t
+                        == 0 else actions_buf[b * SEQ_LEN + (t - 1)]
+                    )
                     enc_input_buf[b * ENC_INPUT_DIM + HIDDEN] = act_val
                     for d in range(OBS_DIM):
                         enc_input_buf[
                             b * ENC_INPUT_DIM + HIDDEN + ACTION_DIM + d
-                        ] = obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d]
+                        ] = obs_buf[
+                            b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d
+                        ]
                     for j in range(HIDDEN):
                         x_in_buf[b * AUG_DIM + j] = prev_z_buf[b * HIDDEN + j]
                     x_in_buf[b * AUG_DIM + HIDDEN] = act_val
@@ -375,17 +426,27 @@ def main() raises:
                         ]
                 var T_refine_step = T_REFINE_BOOTSTRAP if t == 0 else T_REFINE
                 var result = TRAINER.compute_grads_from_latents[BATCH](
-                    pc_params, pc_grads, latents,
-                    mu_eps_buf, a_below_buf, z_below_buf, dx_buf,
-                    x_in, y_target,
+                    pc_params,
+                    pc_grads,
+                    latents,
+                    mu_eps_buf,
+                    a_below_buf,
+                    z_below_buf,
+                    dx_buf,
+                    x_in,
+                    y_target,
                     T_infer=T_refine_step,
                     lr_x=Scalar[dtype](LR_X),
                 )
                 clip_grad_norm[NET.PARAM_SIZE, dtype](pc_grads, GRAD_CLIP_NORM)
                 pc_step_num += 1
                 OPT_PC.step[NET.PARAM_SIZE, dtype](
-                    pc_params, pc_grads, pc_opt_state, pc_opt_global,
-                    pc_step_num, lr_scale=lr_scale,
+                    pc_params,
+                    pc_grads,
+                    pc_opt_state,
+                    pc_opt_global,
+                    pc_step_num,
+                    lr_scale=lr_scale,
                 )
                 last_loss = result.output_loss_final
                 for b in range(BATCH):
@@ -400,8 +461,12 @@ def main() raises:
                 clip_grad_norm[ENC_PARAM_SIZE, dtype](enc_grads, GRAD_CLIP_NORM)
                 enc_step_num += 1
                 OPT_ENC.step[ENC_PARAM_SIZE, dtype](
-                    enc_params, enc_grads, enc_opt_state, enc_opt_global,
-                    enc_step_num, lr_scale=lr_scale,
+                    enc_params,
+                    enc_grads,
+                    enc_opt_state,
+                    enc_opt_global,
+                    enc_step_num,
+                    lr_scale=lr_scale,
                 )
                 for b in range(BATCH):
                     for j in range(HIDDEN):
@@ -412,8 +477,15 @@ def main() raises:
         if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == EPOCHS - 1:
             var elapsed = Float64(perf_counter_ns() - t0) / 1e9
             print(
-                "    ep=", epoch, "  loss=", last_loss,
-                "  lr_scale=", lr_scale, "  wall=", elapsed, "s",
+                "    ep=",
+                epoch,
+                "  loss=",
+                last_loss,
+                "  lr_scale=",
+                lr_scale,
+                "  wall=",
+                elapsed,
+                "s",
             )
 
     var total_t = Float64(perf_counter_ns() - t0) / 1e9
@@ -508,9 +580,15 @@ def main() raises:
         for j in range(HIDDEN):
             lat_buf[j] = enc_output_buf[j]
         _ = TRAINER.compute_grads_from_latents[1](
-            pc_params, pc_grads, latents_1,
-            mu_eps_buf_1, a_below_buf_1, z_below_buf_1, dx_buf_1,
-            x_in_1, y_target_1,
+            pc_params,
+            pc_grads,
+            latents_1,
+            mu_eps_buf_1,
+            a_below_buf_1,
+            z_below_buf_1,
+            dx_buf_1,
+            x_in_1,
+            y_target_1,
             T_infer=T_REFINE_BOOTSTRAP,
             lr_x=Scalar[dtype](LR_X),
         )
@@ -544,7 +622,9 @@ def main() raises:
                             a1 = 1.0
                         elif a1 < -1.0:
                             a1 = -1.0
-                        cem_actions_buf[s1 * PLAN_HORIZON + h1] = Scalar[dtype](a1)
+                        cem_actions_buf[s1 * PLAN_HORIZON + h1] = Scalar[dtype](
+                            a1
+                        )
                         i += 1
 
                 # Imagine. Reset z to current agent latent, scores to 0.
@@ -570,7 +650,9 @@ def main() raises:
                     )
                     # Score: + cos θ - 0.001·a²  (no velocity penalty)
                     for s in range(N_SAMPLES):
-                        var cos_pred = Float64(cem_obs_pred_buf[s * OBS_DIM + 0])
+                        var cos_pred = Float64(
+                            cem_obs_pred_buf[s * OBS_DIM + 0]
+                        )
                         var a = Float64(cem_actions_buf[s * PLAN_HORIZON + h])
                         cem_scores[s] += cos_pred - ACTION_PENALTY * a * a
                     for s in range(N_SAMPLES):
@@ -599,9 +681,7 @@ def main() raises:
                     var s_mu: Float64 = 0
                     for k in range(N_ELITES):
                         s_mu += Float64(
-                            cem_actions_buf[
-                                cem_indices[k] * PLAN_HORIZON + h
-                            ]
+                            cem_actions_buf[cem_indices[k] * PLAN_HORIZON + h]
                         )
                     var new_mu = s_mu / Float64(N_ELITES)
                     var s_var: Float64 = 0
@@ -653,9 +733,15 @@ def main() raises:
             for j in range(HIDDEN):
                 lat_buf[j] = enc_output_buf[j]
             _ = TRAINER.compute_grads_from_latents[1](
-                pc_params, pc_grads, latents_1,
-                mu_eps_buf_1, a_below_buf_1, z_below_buf_1, dx_buf_1,
-                x_in_1, y_target_1,
+                pc_params,
+                pc_grads,
+                latents_1,
+                mu_eps_buf_1,
+                a_below_buf_1,
+                z_below_buf_1,
+                dx_buf_1,
+                x_in_1,
+                y_target_1,
                 T_infer=T_REFINE,
                 lr_x=Scalar[dtype](LR_X),
             )
@@ -682,9 +768,14 @@ def main() raises:
         if passed:
             n_success += 1
         print(
-            "    ep=", ep,
-            " : avg cos θ (last ", EVAL_WINDOW, ") =", avg_cos,
-            "  →", "PASS" if passed else "MISS",
+            "    ep=",
+            ep,
+            " : avg cos θ (last ",
+            EVAL_WINDOW,
+            ") =",
+            avg_cos,
+            "  →",
+            "PASS" if passed else "MISS",
         )
 
     var t_eval = Float64(perf_counter_ns() - t_eval_start) / 1e9
@@ -695,14 +786,22 @@ def main() raises:
     if n_success >= pass_threshold:
         print(
             "\n  [PASS] CEM planner solved",
-            n_success, "/", N_EVAL_EPISODES,
-            " (threshold:", pass_threshold, ")"
+            n_success,
+            "/",
+            N_EVAL_EPISODES,
+            " (threshold:",
+            pass_threshold,
+            ")",
         )
     else:
         print(
             "\n  [FAIL] CEM planner solved only",
-            n_success, "/", N_EVAL_EPISODES,
-            " (need ≥", pass_threshold, ")"
+            n_success,
+            "/",
+            N_EVAL_EPISODES,
+            " (need ≥",
+            pass_threshold,
+            ")",
         )
 
     # cleanup

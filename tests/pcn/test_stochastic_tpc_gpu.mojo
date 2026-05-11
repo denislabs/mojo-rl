@@ -68,15 +68,16 @@ def _gauss_n01(mut rng: PhiloxRandom) -> Float64:
     return sqrt(-2.0 * log(u1)) * cos(2.0 * pi * u2)
 
 
-fn _copy_lat_to_x_in_kernel[
-    BATCH: Int, HIDDEN: Int, LATENT_DIM: Int, KDT: DType,
+def _copy_lat_to_x_in_kernel[
+    BATCH: Int,
+    HIDDEN: Int,
+    LATENT_DIM: Int,
+    KDT: DType,
 ](
     latents: LayoutTensor[
         KDT, Layout.row_major(BATCH, LATENT_DIM), MutAnyOrigin
     ],
-    x_in: LayoutTensor[
-        KDT, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
-    ],
+    x_in: LayoutTensor[KDT, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin],
 ):
     """Copy lat[:, 0:HIDDEN] → x_in[:, 0:HIDDEN]. Here IN_DIM == HIDDEN."""
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -91,9 +92,24 @@ def main() raises:
     print("=" * 60)
     print("Stochastic tPC (GPU) — roadmap Step 1")
     print("=" * 60)
-    print("  arch       : PCBlock[", HIDDEN, ",", HIDDEN, ",PCTanh] → PCBlock[", HIDDEN, ",", DATA_DIM, ",PCTanh]")
+    print(
+        "  arch       : PCBlock[",
+        HIDDEN,
+        ",",
+        HIDDEN,
+        ",PCTanh] → PCBlock[",
+        HIDDEN,
+        ",",
+        DATA_DIM,
+        ",PCTanh]",
+    )
     print("  PARAM_SIZE :", NET.PARAM_SIZE, "  LATENT_DIM:", NET.LATENT_DIM)
-    print("  Phase A    : σ_obs=", OBS_NOISE_STD, "  SGLD noise_var=", SGLD_NOISE_VAR)
+    print(
+        "  Phase A    : σ_obs=",
+        OBS_NOISE_STD,
+        "  SGLD noise_var=",
+        SGLD_NOISE_VAR,
+    )
     print("  Phase B    : σ_obs=0  noise_var=0  (plain tPC parity)")
 
     var ctx = DeviceContext()
@@ -122,9 +138,15 @@ def main() raises:
     var params_dbuf = ctx.enqueue_create_buffer[dtype](NET.PARAM_SIZE)
     var grads_dbuf = ctx.enqueue_create_buffer[dtype](NET.PARAM_SIZE)
     var lat_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.LATENT_DIM)
-    var mu_eps_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.SCRATCH_OUT_DIM)
-    var a_below_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.SCRATCH_IN_DIM)
-    var z_below_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.SCRATCH_IN_DIM)
+    var mu_eps_dbuf = ctx.enqueue_create_buffer[dtype](
+        BATCH * NET.SCRATCH_OUT_DIM
+    )
+    var a_below_dbuf = ctx.enqueue_create_buffer[dtype](
+        BATCH * NET.SCRATCH_IN_DIM
+    )
+    var z_below_dbuf = ctx.enqueue_create_buffer[dtype](
+        BATCH * NET.SCRATCH_IN_DIM
+    )
     var dx_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.LATENT_DIM)
     var noise_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.LATENT_DIM)
     var x_in_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * HIDDEN)
@@ -132,7 +154,9 @@ def main() raises:
     var opt_state_dbuf = ctx.enqueue_create_buffer[dtype](
         NET.PARAM_SIZE * OPT.STATE_PER_PARAM
     )
-    var opt_global_dbuf = ctx.enqueue_create_buffer[dtype](OPT.GLOBAL_STATE_SIZE)
+    var opt_global_dbuf = ctx.enqueue_create_buffer[dtype](
+        OPT.GLOBAL_STATE_SIZE
+    )
 
     var params_t = LayoutTensor[
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
@@ -190,7 +214,9 @@ def main() raises:
     var hidden_init_host = ctx.enqueue_create_host_buffer[dtype](HIDDEN)
     var rng_init = PhiloxRandom(seed=UInt64(11), offset=UInt64(0))
     for i in range(HIDDEN):
-        hidden_init_host.unsafe_ptr()[i] = Scalar[dtype](0.5 * _gauss_n01(rng_init))
+        hidden_init_host.unsafe_ptr()[i] = Scalar[dtype](
+            0.5 * _gauss_n01(rng_init)
+        )
 
     # ── Per-block param views for eval feedforward ────────────────────────────
     comptime offset_b1 = NET._param_offset[1]()
@@ -223,10 +249,12 @@ def main() raises:
     var ratio_b: Float64 = 0.0
 
     for phase in range(2):
-        var is_stochastic = (phase == 0)
+        var is_stochastic = phase == 0
         var sigma_obs = OBS_NOISE_STD if is_stochastic else 0.0
         var sgld_var = SGLD_NOISE_VAR if is_stochastic else 0.0
-        var phase_label = "A (stochastic)" if is_stochastic else "B (degenerate, noise_var=0)"
+        var phase_label = (
+            "A (stochastic)" if is_stochastic else "B (degenerate, noise_var=0)"
+        )
 
         print("\n" + "=" * 60)
         print("  Phase", phase_label)
@@ -250,7 +278,9 @@ def main() raises:
         ctx.enqueue_copy(opt_global_dbuf, opt_global_init_host)
 
         var obs_rng = PhiloxRandom(seed=UInt64(23 + phase), offset=UInt64(0))
-        var noise_offset = UInt64(1_000_000) + UInt64(phase) * UInt64(500_000_000)
+        var noise_offset = UInt64(1_000_000) + UInt64(phase) * UInt64(
+            500_000_000
+        )
         var philox_seed = UInt64(42 + phase)
 
         var step_num: Int = 0
@@ -268,18 +298,27 @@ def main() raises:
             for t in range(SEQ_LEN):
                 # y_target = data[t] + ε_obs
                 for j in range(DATA_DIM):
-                    var noise = sigma_obs * _gauss_n01(obs_rng) if is_stochastic else 0.0
-                    y_tgt_host.unsafe_ptr()[j] = (
-                        seq_host.unsafe_ptr()[t * DATA_DIM + j]
-                        + Scalar[dtype](noise)
+                    var noise = (
+                        sigma_obs
+                        * _gauss_n01(obs_rng) if is_stochastic else 0.0
                     )
+                    y_tgt_host.unsafe_ptr()[j] = seq_host.unsafe_ptr()[
+                        t * DATA_DIM + j
+                    ] + Scalar[dtype](noise)
                 ctx.enqueue_copy(y_tgt_dbuf, y_tgt_host)
 
                 TRAINER.compute_grads_only_mcpc_gpu[BATCH](
                     ctx,
-                    params_t, grads_t, lat_t,
-                    mu_eps_t, a_below_t, z_below_t, dx_t, noise_t,
-                    x_in_t, y_tgt_t,
+                    params_t,
+                    grads_t,
+                    lat_t,
+                    mu_eps_t,
+                    a_below_t,
+                    z_below_t,
+                    dx_t,
+                    noise_t,
+                    x_in_t,
+                    y_tgt_t,
                     T_mixing=T_MIXING,
                     T_sampling=T_SAMPLING,
                     lr_x=Scalar[dtype](LR_X),
@@ -301,8 +340,10 @@ def main() raises:
                 var cp_threads = BATCH * HIDDEN
                 var cp_blocks = (cp_threads + TPB - 1) // TPB
                 ctx.enqueue_function[cp_k, cp_k](
-                    lat_t, x_in_t,
-                    grid_dim=(cp_blocks,), block_dim=(TPB,),
+                    lat_t,
+                    x_in_t,
+                    grid_dim=(cp_blocks,),
+                    block_dim=(TPB,),
                 )
 
             if epoch == 0 or (epoch + 1) % 25 == 0 or epoch == EPOCHS - 1:
@@ -324,9 +365,16 @@ def main() raises:
 
         TRAINER.compute_grads_only_mcpc_gpu[BATCH](
             ctx,
-            params_t, grads_t, lat_t,
-            mu_eps_t, a_below_t, z_below_t, dx_t, noise_t,
-            x_in_t, y_tgt_t,
+            params_t,
+            grads_t,
+            lat_t,
+            mu_eps_t,
+            a_below_t,
+            z_below_t,
+            dx_t,
+            noise_t,
+            x_in_t,
+            y_tgt_t,
             T_mixing=T_MIXING,
             T_sampling=T_SAMPLING,
             lr_x=Scalar[dtype](LR_X),
@@ -343,8 +391,10 @@ def main() raises:
         var cp_threads_recall = BATCH * HIDDEN
         var cp_blocks_recall = (cp_threads_recall + TPB - 1) // TPB
         ctx.enqueue_function[cp_k_recall, cp_k_recall](
-            lat_t, x_in_t,
-            grid_dim=(cp_blocks_recall,), block_dim=(TPB,),
+            lat_t,
+            x_in_t,
+            grid_dim=(cp_blocks_recall,),
+            block_dim=(TPB,),
         )
 
         # Recall steps 1..SEQ_LEN-1: feedforward only.
@@ -409,7 +459,10 @@ def main() raises:
     var pass_a = ratio_a < 0.7
     var pass_b = ratio_b < 0.7
     if pass_a and pass_b:
-        print("\n  [PASS] Stochastic tPC GPU: both phases beat zero baseline by ≥30%")
+        print(
+            "\n  [PASS] Stochastic tPC GPU: both phases beat zero baseline by"
+            " ≥30%"
+        )
     else:
         if not pass_a:
             print("\n  [FAIL] Phase A (stochastic) ratio", ratio_a, "≥ 0.7")

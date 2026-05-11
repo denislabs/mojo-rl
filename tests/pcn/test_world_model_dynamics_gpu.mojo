@@ -67,7 +67,7 @@ comptime TRAINER = PCTrainer[
 comptime OPT = Adam[LR=ADAM_LR]
 
 
-fn _set_action_target_kernel[
+def _set_action_target_kernel[
     BATCH: Int,
     AUG_DIM: Int,
     HIDDEN: Int,
@@ -86,8 +86,12 @@ fn _set_action_target_kernel[
     y_tgt[b, 0] = rebind[Scalar[KDT]](states_slice[b])
 
 
-fn _set_prev_hidden_kernel[
-    BATCH: Int, AUG_DIM: Int, HIDDEN: Int, LATENT_DIM: Int, KDT: DType,
+def _set_prev_hidden_kernel[
+    BATCH: Int,
+    AUG_DIM: Int,
+    HIDDEN: Int,
+    LATENT_DIM: Int,
+    KDT: DType,
 ](
     latents: LayoutTensor[
         KDT, Layout.row_major(BATCH, LATENT_DIM), MutAnyOrigin
@@ -102,8 +106,11 @@ fn _set_prev_hidden_kernel[
     x_in[b, k] = rebind[Scalar[KDT]](latents[b, k])
 
 
-fn _set_action_eval_kernel[
-    BATCH: Int, AUG_DIM: Int, HIDDEN: Int, KDT: DType,
+def _set_action_eval_kernel[
+    BATCH: Int,
+    AUG_DIM: Int,
+    HIDDEN: Int,
+    KDT: DType,
 ](
     x_in: LayoutTensor[KDT, Layout.row_major(BATCH, AUG_DIM), MutAnyOrigin],
     action_value: Scalar[KDT],
@@ -115,11 +122,11 @@ fn _set_action_eval_kernel[
     x_in[b, HIDDEN] = action_value
 
 
-fn _zero_x_in_kernel[
-    BATCH: Int, AUG_DIM: Int, KDT: DType,
-](
-    x_in: LayoutTensor[KDT, Layout.row_major(BATCH, AUG_DIM), MutAnyOrigin],
-):
+def _zero_x_in_kernel[
+    BATCH: Int,
+    AUG_DIM: Int,
+    KDT: DType,
+](x_in: LayoutTensor[KDT, Layout.row_major(BATCH, AUG_DIM), MutAnyOrigin],):
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= BATCH * AUG_DIM:
         return
@@ -145,10 +152,34 @@ def main() raises:
     print("=" * 60)
     print("World-model dynamics (GPU) — roadmap Step 3")
     print("=" * 60)
-    print("  arch       : PCBlock[", AUG_DIM, ",", HIDDEN, ",PCTanh] → PCBlock[", HIDDEN, ",", DATA_DIM, ",PCTanh]")
+    print(
+        "  arch       : PCBlock[",
+        AUG_DIM,
+        ",",
+        HIDDEN,
+        ",PCTanh] → PCBlock[",
+        HIDDEN,
+        ",",
+        DATA_DIM,
+        ",PCTanh]",
+    )
     print("  PARAM_SIZE :", NET.PARAM_SIZE, "  LATENT_DIM:", NET.LATENT_DIM)
-    print("  BATCH(train)=", BATCH, "  EVAL_BATCH=", EVAL_BATCH, "  SEQ_LEN=", SEQ_LEN)
-    print("  EPOCHS=", EPOCHS, "  T_MIXING=", T_MIXING, "  T_GENERATE=", T_GENERATE)
+    print(
+        "  BATCH(train)=",
+        BATCH,
+        "  EVAL_BATCH=",
+        EVAL_BATCH,
+        "  SEQ_LEN=",
+        SEQ_LEN,
+    )
+    print(
+        "  EPOCHS=",
+        EPOCHS,
+        "  T_MIXING=",
+        T_MIXING,
+        "  T_GENERATE=",
+        T_GENERATE,
+    )
     print("  env σ_env  :", SIGMA_ENV, "  SGLD noise_var=", SGLD_NOISE_VAR)
 
     var ctx = DeviceContext()
@@ -168,9 +199,15 @@ def main() raises:
     # Training scratch (BATCH=32)
     var grads_dbuf = ctx.enqueue_create_buffer[dtype](NET.PARAM_SIZE)
     var lat_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.LATENT_DIM)
-    var mu_eps_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.SCRATCH_OUT_DIM)
-    var a_below_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.SCRATCH_IN_DIM)
-    var z_below_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.SCRATCH_IN_DIM)
+    var mu_eps_dbuf = ctx.enqueue_create_buffer[dtype](
+        BATCH * NET.SCRATCH_OUT_DIM
+    )
+    var a_below_dbuf = ctx.enqueue_create_buffer[dtype](
+        BATCH * NET.SCRATCH_IN_DIM
+    )
+    var z_below_dbuf = ctx.enqueue_create_buffer[dtype](
+        BATCH * NET.SCRATCH_IN_DIM
+    )
     var dx_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.LATENT_DIM)
     var noise_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * NET.LATENT_DIM)
     var x_in_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * AUG_DIM)
@@ -211,7 +248,9 @@ def main() raises:
     var opt_state_dbuf = ctx.enqueue_create_buffer[dtype](
         NET.PARAM_SIZE * OPT.STATE_PER_PARAM
     )
-    var opt_global_dbuf = ctx.enqueue_create_buffer[dtype](OPT.GLOBAL_STATE_SIZE)
+    var opt_global_dbuf = ctx.enqueue_create_buffer[dtype](
+        OPT.GLOBAL_STATE_SIZE
+    )
     var opt_state_init = ctx.enqueue_create_host_buffer[dtype](
         NET.PARAM_SIZE * OPT.STATE_PER_PARAM
     )
@@ -236,7 +275,9 @@ def main() raises:
 
     # Per-batch rollout buffers (column-major time, contiguous per-step slice).
     var actions_host = ctx.enqueue_create_host_buffer[dtype](SEQ_LEN * BATCH)
-    var states_host = ctx.enqueue_create_host_buffer[dtype]((SEQ_LEN + 1) * BATCH)
+    var states_host = ctx.enqueue_create_host_buffer[dtype](
+        (SEQ_LEN + 1) * BATCH
+    )
     var actions_dbuf = ctx.enqueue_create_buffer[dtype](SEQ_LEN * BATCH)
     var states_dbuf = ctx.enqueue_create_buffer[dtype]((SEQ_LEN + 1) * BATCH)
 
@@ -282,7 +323,8 @@ def main() raises:
             var zero_blocks = (zero_threads + TPB - 1) // TPB
             ctx.enqueue_function[zero_k, zero_k](
                 x_in_t,
-                grid_dim=(zero_blocks,), block_dim=(TPB,),
+                grid_dim=(zero_blocks,),
+                block_dim=(TPB,),
             )
 
             for t in range(1, SEQ_LEN + 1):
@@ -298,15 +340,26 @@ def main() raises:
                 ]
                 var sat_blocks = (BATCH + TPB - 1) // TPB
                 ctx.enqueue_function[sat_k, sat_k](
-                    actions_slice, states_slice, x_in_t, y_tgt_t,
-                    grid_dim=(sat_blocks,), block_dim=(TPB,),
+                    actions_slice,
+                    states_slice,
+                    x_in_t,
+                    y_tgt_t,
+                    grid_dim=(sat_blocks,),
+                    block_dim=(TPB,),
                 )
 
                 TRAINER.compute_grads_only_mcpc_gpu[BATCH](
                     ctx,
-                    params_t, grads_t, lat_t,
-                    mu_eps_t, a_below_t, z_below_t, dx_t, noise_t,
-                    x_in_t, y_tgt_t,
+                    params_t,
+                    grads_t,
+                    lat_t,
+                    mu_eps_t,
+                    a_below_t,
+                    z_below_t,
+                    dx_t,
+                    noise_t,
+                    x_in_t,
+                    y_tgt_t,
                     T_mixing=T_MIXING,
                     T_sampling=T_SAMPLING,
                     lr_x=Scalar[dtype](LR_X),
@@ -327,8 +380,10 @@ def main() raises:
                 var sph_threads = BATCH * HIDDEN
                 var sph_blocks = (sph_threads + TPB - 1) // TPB
                 ctx.enqueue_function[sph_k, sph_k](
-                    lat_t, x_in_t,
-                    grid_dim=(sph_blocks,), block_dim=(TPB,),
+                    lat_t,
+                    x_in_t,
+                    grid_dim=(sph_blocks,),
+                    block_dim=(TPB,),
                 )
 
         if epoch == 0 or (epoch + 1) % 20 == 0 or epoch == EPOCHS - 1:
@@ -365,21 +420,22 @@ def main() raises:
     for t in range(SEQ_LEN + 1):
         var sum_v: Float64 = 0
         for n in range(N_MC):
-            sum_v += Float64(
-                mc_states_host.unsafe_ptr()[n * (SEQ_LEN + 1) + t]
-            )
+            sum_v += Float64(mc_states_host.unsafe_ptr()[n * (SEQ_LEN + 1) + t])
         mc_mean.unsafe_ptr()[t] = Scalar[dtype](sum_v / Float64(N_MC))
         var sum_sq: Float64 = 0
         for n in range(N_MC):
-            var d = (
-                Float64(mc_states_host.unsafe_ptr()[n * (SEQ_LEN + 1) + t])
-                - Float64(mc_mean.unsafe_ptr()[t])
-            )
+            var d = Float64(
+                mc_states_host.unsafe_ptr()[n * (SEQ_LEN + 1) + t]
+            ) - Float64(mc_mean.unsafe_ptr()[t])
             sum_sq += d * d
         mc_var.unsafe_ptr()[t] = Scalar[dtype](sum_sq / Float64(N_MC))
 
     # ── Imagined rollouts on GPU (EVAL_BATCH=500) ────────────────────────────
-    print("\n  [eval] generating", EVAL_BATCH, "imagined rollouts via generate_samples_gpu per step")
+    print(
+        "\n  [eval] generating",
+        EVAL_BATCH,
+        "imagined rollouts via generate_samples_gpu per step",
+    )
 
     var eval_lat_dbuf = ctx.enqueue_create_buffer[dtype](
         EVAL_BATCH * NET.LATENT_DIM
@@ -447,11 +503,14 @@ def main() raises:
     var zero_blocks_eval = (zero_threads_eval + TPB - 1) // TPB
     ctx.enqueue_function[zero_k_eval, zero_k_eval](
         eval_x_in_t,
-        grid_dim=(zero_blocks_eval,), block_dim=(TPB,),
+        grid_dim=(zero_blocks_eval,),
+        block_dim=(TPB,),
     )
 
     var imagined = ctx.enqueue_create_host_buffer[dtype](EVAL_BATCH * SEQ_LEN)
-    var sample_host = ctx.enqueue_create_host_buffer[dtype](EVAL_BATCH * DATA_DIM)
+    var sample_host = ctx.enqueue_create_host_buffer[dtype](
+        EVAL_BATCH * DATA_DIM
+    )
 
     var eval_offset: UInt64 = 5_000_000_000
     var eval_seed: UInt64 = 99
@@ -468,16 +527,24 @@ def main() raises:
         ]
         var sa_blocks = (EVAL_BATCH + TPB - 1) // TPB
         ctx.enqueue_function[sa_k, sa_k](
-            eval_x_in_t, Scalar[dtype](1.0),
-            grid_dim=(sa_blocks,), block_dim=(TPB,),
+            eval_x_in_t,
+            Scalar[dtype](1.0),
+            grid_dim=(sa_blocks,),
+            block_dim=(TPB,),
         )
 
         TRAINER.generate_samples_gpu[EVAL_BATCH](
             ctx,
-            params_t, eval_lat_t,
-            eval_mu_eps_t, eval_a_below_t, eval_z_below_t,
-            eval_dx_t, eval_noise_t,
-            eval_x_in_t, eval_y_dummy_t, eval_sample_t,
+            params_t,
+            eval_lat_t,
+            eval_mu_eps_t,
+            eval_a_below_t,
+            eval_z_below_t,
+            eval_dx_t,
+            eval_noise_t,
+            eval_x_in_t,
+            eval_y_dummy_t,
+            eval_sample_t,
             T=T_GENERATE,
             lr_x=Scalar[dtype](LR_X),
             noise_var=Scalar[dtype](SGLD_NOISE_VAR),
@@ -490,9 +557,9 @@ def main() raises:
         ctx.enqueue_copy(sample_host, eval_sample_dbuf)
         ctx.synchronize()
         for n in range(EVAL_BATCH):
-            imagined.unsafe_ptr()[n * SEQ_LEN + (t - 1)] = sample_host.unsafe_ptr()[
-                n * DATA_DIM
-            ]
+            imagined.unsafe_ptr()[
+                n * SEQ_LEN + (t - 1)
+            ] = sample_host.unsafe_ptr()[n * DATA_DIM]
 
         # prev_hidden = z_t (post-SGLD latent) — copy lat → x_in[:, 0:HIDDEN].
         comptime sph_k_eval = _set_prev_hidden_kernel[
@@ -501,8 +568,10 @@ def main() raises:
         var sph_threads_eval = EVAL_BATCH * HIDDEN
         var sph_blocks_eval = (sph_threads_eval + TPB - 1) // TPB
         ctx.enqueue_function[sph_k_eval, sph_k_eval](
-            eval_lat_t, eval_x_in_t,
-            grid_dim=(sph_blocks_eval,), block_dim=(TPB,),
+            eval_lat_t,
+            eval_x_in_t,
+            grid_dim=(sph_blocks_eval,),
+            block_dim=(TPB,),
         )
 
     ctx.synchronize()
@@ -510,8 +579,13 @@ def main() raises:
     print("  total eval time :", eval_t, "s")
 
     # ── Compare imagined stats to MC truth ───────────────────────────────────
-    print("\n  step | imagined mean | true mean | rel-err |  imag var | true var | rel-err")
-    print("  -----+---------------+-----------+---------+-----------+----------+---------")
+    print(
+        "\n  step | imagined mean | true mean | rel-err |  imag var | true var"
+        " | rel-err"
+    )
+    print(
+        "  -----+---------------+-----------+---------+-----------+----------+---------"
+    )
 
     var mean_rel_err_total: Float64 = 0.0
     var var_rel_err_total: Float64 = 0.0
@@ -547,13 +621,20 @@ def main() raises:
         var_rel_err_total += var_rel
 
         print(
-            "    ", t,
-            "    ", String(imag_mean)[byte=:9],
-            "    ", String(true_mean)[byte=:7],
-            "  ", String(mean_rel)[byte=:7],
-            "    ", String(imag_var)[byte=:9],
-            "  ", String(true_var)[byte=:7],
-            "  ", String(var_rel)[byte=:7],
+            "    ",
+            t,
+            "    ",
+            String(imag_mean)[byte=:9],
+            "    ",
+            String(true_mean)[byte=:7],
+            "  ",
+            String(mean_rel)[byte=:7],
+            "    ",
+            String(imag_var)[byte=:9],
+            "  ",
+            String(true_var)[byte=:7],
+            "  ",
+            String(var_rel)[byte=:7],
         )
 
     var avg_mean_rel = mean_rel_err_total / Float64(SEQ_LEN)

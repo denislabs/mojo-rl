@@ -80,8 +80,8 @@ comptime ENC_OUTPUT_DIM = HIDDEN
 comptime ENC = PCEncoder[ENC_INPUT_DIM, ENC_HIDDEN_DIM, ENC_OUTPUT_DIM]
 comptime ENC_PARAM_SIZE = ENC.PARAM_SIZE
 
-comptime T_PARAM_SIZE = AUG_DIM * HIDDEN + HIDDEN     # transition  W + b
-comptime D_PARAM_SIZE = HIDDEN * OBS_DIM + OBS_DIM    # decoder     W + b
+comptime T_PARAM_SIZE = AUG_DIM * HIDDEN + HIDDEN  # transition  W + b
+comptime D_PARAM_SIZE = HIDDEN * OBS_DIM + OBS_DIM  # decoder     W + b
 comptime T_W_OFFSET = 0
 comptime T_B_OFFSET = AUG_DIM * HIDDEN
 comptime D_W_OFFSET = 0
@@ -158,7 +158,7 @@ def _gen_rollout_into[
         )
 
 
-fn _gauss_pair(mut rng: PhiloxRandom) -> Tuple[Float64, Float64]:
+def _gauss_pair(mut rng: PhiloxRandom) -> Tuple[Float64, Float64]:
     var u1 = Float64(rng.step_uniform()[0])
     var u2 = Float64(rng.step_uniform()[0])
     if u1 < 1e-12:
@@ -172,7 +172,8 @@ fn _gauss_pair(mut rng: PhiloxRandom) -> Tuple[Float64, Float64]:
 # Forward / backward functions are hand-rolled here (test-local) — the
 # baseline isn't using PCBlock's local rules, so we need ordinary backprop.
 
-fn _xavier_init_layer(
+
+def _xavier_init_layer(
     params: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
     in_dim: Int,
     out_dim: Int,
@@ -203,9 +204,7 @@ def _lt_forward[
         for j in range(OUT):
             var sum_j = Float64(params[IN * OUT + j])  # bias
             for i in range(IN):
-                sum_j += Float64(a[s * IN + i]) * Float64(
-                    params[i * OUT + j]
-                )
+                sum_j += Float64(a[s * IN + i]) * Float64(params[i * OUT + j])
             mu[s * OUT + j] = Scalar[dtype](sum_j)
 
 
@@ -237,9 +236,7 @@ def _lt_backward[
     for s in range(BATCH_T):
         # d_b += d_mu (per j, summed over batch).
         for j in range(OUT):
-            d_b[j] = Scalar[dtype](
-                Float64(d_b[j]) + Float64(d_mu[s * OUT + j])
-            )
+            d_b[j] = Scalar[dtype](Float64(d_b[j]) + Float64(d_mu[s * OUT + j]))
         # d_W += a^T @ d_mu  (per (i, j), summed over batch).
         for i in range(IN):
             var a_i = Float64(a[s * IN + i])
@@ -265,16 +262,47 @@ def main() raises:
     print("MountainCar Continuous — MLP baseline + CEM planner")
     print("=" * 60)
     print("  Arch       : Encoder MLP (", ENC.PARAM_SIZE, " params)")
-    print("              + Linear[", AUG_DIM, "→", HIDDEN, "]+tanh transition (", T_PARAM_SIZE, " params)")
-    print("              + Linear[", HIDDEN, "→", OBS_DIM, "]+tanh decoder (", D_PARAM_SIZE, " params)")
-    print("  Total      :", ENC.PARAM_SIZE + T_PARAM_SIZE + D_PARAM_SIZE, " params")
+    print(
+        "              + Linear[",
+        AUG_DIM,
+        "→",
+        HIDDEN,
+        "]+tanh transition (",
+        T_PARAM_SIZE,
+        " params)",
+    )
+    print(
+        "              + Linear[",
+        HIDDEN,
+        "→",
+        OBS_DIM,
+        "]+tanh decoder (",
+        D_PARAM_SIZE,
+        " params)",
+    )
+    print(
+        "  Total      :",
+        ENC.PARAM_SIZE + T_PARAM_SIZE + D_PARAM_SIZE,
+        " params",
+    )
     print("  Training   : reconstruction loss, end-to-end backprop")
-    print("  CEM        : H=", PLAN_HORIZON, " N=", N_SAMPLES, " K=", N_ELITES, " iters=", N_CEM_ITERS)
+    print(
+        "  CEM        : H=",
+        PLAN_HORIZON,
+        " N=",
+        N_SAMPLES,
+        " K=",
+        N_ELITES,
+        " iters=",
+        N_CEM_ITERS,
+    )
 
     # ── Model params + Adam state ─────────────────────────────────────────────
     var T_params_buf = alloc[Scalar[dtype]](T_PARAM_SIZE)
     var T_grads_buf = alloc[Scalar[dtype]](T_PARAM_SIZE)
-    var T_opt_state_buf = alloc[Scalar[dtype]](T_PARAM_SIZE * OPT.STATE_PER_PARAM)
+    var T_opt_state_buf = alloc[Scalar[dtype]](
+        T_PARAM_SIZE * OPT.STATE_PER_PARAM
+    )
     var T_opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
     memset(T_params_buf, 0, T_PARAM_SIZE)
     memset(T_grads_buf, 0, T_PARAM_SIZE)
@@ -296,7 +324,9 @@ def main() raises:
 
     var D_params_buf = alloc[Scalar[dtype]](D_PARAM_SIZE)
     var D_grads_buf = alloc[Scalar[dtype]](D_PARAM_SIZE)
-    var D_opt_state_buf = alloc[Scalar[dtype]](D_PARAM_SIZE * OPT.STATE_PER_PARAM)
+    var D_opt_state_buf = alloc[Scalar[dtype]](
+        D_PARAM_SIZE * OPT.STATE_PER_PARAM
+    )
     var D_opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
     memset(D_params_buf, 0, D_PARAM_SIZE)
     memset(D_grads_buf, 0, D_PARAM_SIZE)
@@ -318,7 +348,9 @@ def main() raises:
 
     var enc_params_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
     var enc_grads_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
-    var enc_opt_state_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE * OPT.STATE_PER_PARAM)
+    var enc_opt_state_buf = alloc[Scalar[dtype]](
+        ENC_PARAM_SIZE * OPT.STATE_PER_PARAM
+    )
     var enc_opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
     memset(enc_params_buf, 0, ENC_PARAM_SIZE)
     memset(enc_grads_buf, 0, ENC_PARAM_SIZE)
@@ -331,7 +363,9 @@ def main() raises:
         dtype, Layout.row_major(ENC_PARAM_SIZE), MutAnyOrigin
     ](enc_grads_buf)
     var enc_opt_state = LayoutTensor[
-        dtype, Layout.row_major(ENC_PARAM_SIZE, OPT.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(ENC_PARAM_SIZE, OPT.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](enc_opt_state_buf)
     var enc_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -364,7 +398,7 @@ def main() raises:
     var x_aug_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM)
     var a_x_aug_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM)
     var mu_z_next_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var a_z_next_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)   # tanh(μ_z_next)
+    var a_z_next_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)  # tanh(μ_z_next)
     var mu_obs_buf = alloc[Scalar[dtype]](BATCH * OBS_DIM)
     var d_mu_obs_buf = alloc[Scalar[dtype]](BATCH * OBS_DIM)
     var d_mu_z_next_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
@@ -388,8 +422,11 @@ def main() raises:
             # Generate BATCH rollouts on host.
             for b in range(BATCH):
                 _gen_rollout_into[SEQ_LEN](
-                    rng, actions_buf, obs_buf,
-                    b * SEQ_LEN, b * (SEQ_LEN + 1) * OBS_DIM,
+                    rng,
+                    actions_buf,
+                    obs_buf,
+                    b * SEQ_LEN,
+                    b * (SEQ_LEN + 1) * OBS_DIM,
                 )
             memset(prev_z_buf, 0, BATCH * HIDDEN)
 
@@ -409,7 +446,9 @@ def main() raises:
                     for d in range(OBS_DIM):
                         enc_input_buf[
                             b * ENC_INPUT_DIM + HIDDEN + ACTION_DIM + d
-                        ] = obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d]
+                        ] = obs_buf[
+                            b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d
+                        ]
 
                 # ── Encoder forward → z_t = enc(prev_z, prev_action, obs_t) ──
                 ENC.forward[BATCH, dtype](
@@ -440,15 +479,14 @@ def main() raises:
                 var batch_loss: Float64 = 0.0
                 for b in range(BATCH):
                     for d in range(OBS_DIM):
-                        var diff = (
-                            Float64(mu_obs_buf[b * OBS_DIM + d])
-                            - Float64(
-                                obs_buf[
-                                    b * (SEQ_LEN + 1) * OBS_DIM
-                                    + (t + 1) * OBS_DIM
-                                    + d
-                                ]
-                            )
+                        var diff = Float64(
+                            mu_obs_buf[b * OBS_DIM + d]
+                        ) - Float64(
+                            obs_buf[
+                                b * (SEQ_LEN + 1) * OBS_DIM
+                                + (t + 1) * OBS_DIM
+                                + d
+                            ]
                         )
                         d_mu_obs_buf[b * OBS_DIM + d] = Scalar[dtype](diff)
                         batch_loss += 0.5 * diff * diff
@@ -456,7 +494,9 @@ def main() raises:
 
                 # ── Decoder backward → dL/dW_D, dL/db_D, dL/dμ_z_next ────────
                 _lt_backward[BATCH, HIDDEN, OBS_DIM](
-                    D_params_buf, a_z_next_buf, d_mu_obs_buf,
+                    D_params_buf,
+                    a_z_next_buf,
+                    d_mu_obs_buf,
                     D_grads_buf + D_W_OFFSET,
                     D_grads_buf + D_B_OFFSET,
                     d_mu_z_next_buf,
@@ -464,7 +504,9 @@ def main() raises:
 
                 # ── Transition backward → dL/dW_T, dL/db_T, dL/dx_aug ────────
                 _lt_backward[BATCH, AUG_DIM, HIDDEN](
-                    T_params_buf, a_x_aug_buf, d_mu_z_next_buf,
+                    T_params_buf,
+                    a_x_aug_buf,
+                    d_mu_z_next_buf,
                     T_grads_buf + T_W_OFFSET,
                     T_grads_buf + T_B_OFFSET,
                     d_x_aug_buf,
@@ -486,16 +528,28 @@ def main() raises:
                 clip_grad_norm[ENC_PARAM_SIZE, dtype](enc_grads, GRAD_CLIP_NORM)
                 step_num += 1
                 OPT.step[T_PARAM_SIZE, dtype](
-                    T_params, T_grads, T_opt_state, T_opt_global,
-                    step_num, lr_scale=lr_scale,
+                    T_params,
+                    T_grads,
+                    T_opt_state,
+                    T_opt_global,
+                    step_num,
+                    lr_scale=lr_scale,
                 )
                 OPT.step[D_PARAM_SIZE, dtype](
-                    D_params, D_grads, D_opt_state, D_opt_global,
-                    step_num, lr_scale=lr_scale,
+                    D_params,
+                    D_grads,
+                    D_opt_state,
+                    D_opt_global,
+                    step_num,
+                    lr_scale=lr_scale,
                 )
                 OPT.step[ENC_PARAM_SIZE, dtype](
-                    enc_params, enc_grads, enc_opt_state, enc_opt_global,
-                    step_num, lr_scale=lr_scale,
+                    enc_params,
+                    enc_grads,
+                    enc_opt_state,
+                    enc_opt_global,
+                    step_num,
+                    lr_scale=lr_scale,
                 )
 
                 # Roll prev_z forward (use raw encoder output as next prev_z).
@@ -508,8 +562,15 @@ def main() raises:
         if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == EPOCHS - 1:
             var elapsed = Float64(perf_counter_ns() - t0) / 1e9
             print(
-                "    ep=", epoch, "  loss=", last_loss,
-                "  lr_scale=", lr_scale, "  wall=", elapsed, "s",
+                "    ep=",
+                epoch,
+                "  loss=",
+                last_loss,
+                "  lr_scale=",
+                lr_scale,
+                "  wall=",
+                elapsed,
+                "s",
             )
 
     var total_t = Float64(perf_counter_ns() - t0) / 1e9
@@ -622,7 +683,9 @@ def main() raises:
                             a1 = 1.0
                         elif a1 < -1.0:
                             a1 = -1.0
-                        cem_actions_buf[s1 * PLAN_HORIZON + h1] = Scalar[dtype](a1)
+                        cem_actions_buf[s1 * PLAN_HORIZON + h1] = Scalar[dtype](
+                            a1
+                        )
                         i += 1
 
                 # 2. Imagine. Reset z to current agent latent.
@@ -645,12 +708,16 @@ def main() raises:
                     # Transition forward (μ_z_next).
                     _lt_forward[N_SAMPLES, AUG_DIM, HIDDEN](
                         T_params_buf,
-                        cem_x_aug_buf, cem_a_x_aug_buf, cem_mu_z_next_buf,
+                        cem_x_aug_buf,
+                        cem_a_x_aug_buf,
+                        cem_mu_z_next_buf,
                     )
                     # Decoder forward (μ_obs).
                     _lt_forward[N_SAMPLES, HIDDEN, OBS_DIM](
                         D_params_buf,
-                        cem_mu_z_next_buf, cem_a_z_next_buf, cem_mu_obs_buf,
+                        cem_mu_z_next_buf,
+                        cem_a_z_next_buf,
+                        cem_mu_obs_buf,
                     )
                     # Update score (max position over horizon - action cost).
                     for s in range(N_SAMPLES):
@@ -690,9 +757,7 @@ def main() raises:
                     var s_mu: Float64 = 0
                     for k in range(N_ELITES):
                         s_mu += Float64(
-                            cem_actions_buf[
-                                cem_indices[k] * PLAN_HORIZON + h
-                            ]
+                            cem_actions_buf[cem_indices[k] * PLAN_HORIZON + h]
                         )
                     var new_mu = s_mu / Float64(N_ELITES)
                     var s_var: Float64 = 0
@@ -749,14 +814,21 @@ def main() raises:
 
         if not reached_goal:
             print(
-                "    ep=", ep,
-                " : MISS (max_position=", max_position_seen, ")",
+                "    ep=",
+                ep,
+                " : MISS (max_position=",
+                max_position_seen,
+                ")",
             )
         else:
             print(
-                "    ep=", ep,
-                " : GOAL at step", step_at_goal,
-                " (max_position=", max_position_seen, ")",
+                "    ep=",
+                ep,
+                " : GOAL at step",
+                step_at_goal,
+                " (max_position=",
+                max_position_seen,
+                ")",
             )
 
     var t_eval = Float64(perf_counter_ns() - t_eval_start) / 1e9
@@ -770,8 +842,11 @@ def main() raises:
 
     print("\n  === MLP baseline summary ===")
     print(
-        "  Solved", n_success, "/", N_EVAL_EPISODES,
-        " (PCN reference: 5/5 in avg 126.8 steps)"
+        "  Solved",
+        n_success,
+        "/",
+        N_EVAL_EPISODES,
+        " (PCN reference: 5/5 in avg 126.8 steps)",
     )
 
     # cleanup

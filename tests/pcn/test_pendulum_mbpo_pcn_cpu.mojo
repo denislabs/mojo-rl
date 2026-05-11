@@ -66,7 +66,7 @@ comptime STEPS_PER_EPOCH = 1000
 comptime MAX_STEPS_PER_EPISODE = 200
 comptime WARMUP_STEPS = 1000
 comptime MODEL_TRAIN_FREQ = 250
-comptime DYN_TRAIN_BATCHES = 30   # number of minibatches per dynamics retrain
+comptime DYN_TRAIN_BATCHES = 30  # number of minibatches per dynamics retrain
 comptime NUM_ROLLOUTS_PER_RETRAIN = 100  # synth (s, a, s', r) per dynamics retrain
 comptime ROLLOUT_LENGTH = 1
 comptime SAC_UPDATES_PER_STEP = 10
@@ -87,7 +87,7 @@ comptime DYN_OPT = Adam[LR=DYN_LR]
 # =============================================================================
 
 
-fn real_buf_add(
+def real_buf_add(
     buf_obs: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
     buf_action: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
     buf_next: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
@@ -127,15 +127,15 @@ fn real_buf_add(
 comptime REWARD_SCALE: Float64 = 10.0  # Pendulum reward is in [-16ish, 0]
 
 
-fn obs_normalize(obs: List[Float64]) -> List[Float64]:
+def obs_normalize(obs: List[Float64]) -> List[Float64]:
     var n = List[Float64](capacity=OBS_DIM)
-    n.append(obs[0])                       # cos θ ∈ [-1, 1]
-    n.append(obs[1])                       # sin θ ∈ [-1, 1]
-    n.append(obs[2] / PEND_MAX_SPEED)      # θ_dot/8 ∈ [-1, 1]
+    n.append(obs[0])  # cos θ ∈ [-1, 1]
+    n.append(obs[1])  # sin θ ∈ [-1, 1]
+    n.append(obs[2] / PEND_MAX_SPEED)  # θ_dot/8 ∈ [-1, 1]
     return n^
 
 
-fn action_normalize(action: List[Float64]) -> List[Float64]:
+def action_normalize(action: List[Float64]) -> List[Float64]:
     var n = List[Float64](capacity=ACTION_DIM)
     n.append(action[0] / PEND_MAX_TORQUE)  # torque/2 ∈ [-1, 1]
     return n^
@@ -199,12 +199,24 @@ def main() raises:
     print("                   2-layer PCBlock chain, hidden=", DYN_HIDDEN)
     print("                   T_infer=", T_INFER, " lr_x=", LR_X)
     print("  Buffers (real) : SAC=", SAC_BUFFER_CAP, " dyn=", SAC_BUFFER_CAP)
-    print("  Training       :", NUM_EPOCHS, " epochs ×", STEPS_PER_EPOCH, " steps")
+    print(
+        "  Training       :", NUM_EPOCHS, " epochs ×", STEPS_PER_EPOCH, " steps"
+    )
     print("  Warmup         :", WARMUP_STEPS, " env steps")
-    print("  Model freq     : every", MODEL_TRAIN_FREQ, " steps;",
-          DYN_TRAIN_BATCHES, " minibatches per retrain")
-    print("  Rollouts       :", NUM_ROLLOUTS_PER_RETRAIN, " synth tuples per retrain,",
-          " length=", ROLLOUT_LENGTH)
+    print(
+        "  Model freq     : every",
+        MODEL_TRAIN_FREQ,
+        " steps;",
+        DYN_TRAIN_BATCHES,
+        " minibatches per retrain",
+    )
+    print(
+        "  Rollouts       :",
+        NUM_ROLLOUTS_PER_RETRAIN,
+        " synth tuples per retrain,",
+        " length=",
+        ROLLOUT_LENGTH,
+    )
     print("  SAC updates    :", SAC_UPDATES_PER_STEP, " per env step")
     print()
 
@@ -240,12 +252,11 @@ def main() raises:
     memset(dyn_params_buf, 0, ENS.TOTAL_PARAM_SIZE)
     memset(dyn_grads_buf, 0, ENS.TOTAL_PARAM_SIZE)
     memset(
-        dyn_opt_state_buf, 0,
+        dyn_opt_state_buf,
+        0,
         ENS.TOTAL_PARAM_SIZE * DYN_OPT.STATE_PER_PARAM,
     )
-    memset(
-        dyn_opt_global_buf, 0, NUM_ENSEMBLE * DYN_OPT.GLOBAL_STATE_SIZE
-    )
+    memset(dyn_opt_global_buf, 0, NUM_ENSEMBLE * DYN_OPT.GLOBAL_STATE_SIZE)
     ENS.init_all(dyn_params_buf, base_seed=UInt64(7))
 
     # SGLD scratch (DYN_BATCH).
@@ -365,9 +376,17 @@ def main() raises:
             cpu_state, warmup_obs, action, reward, next_obs, done
         )
         real_buf_add(
-            rb_obs, rb_action, rb_next, rb_reward,
-            rb_size, rb_widx, SAC_BUFFER_CAP,
-            warmup_obs, action, next_obs, reward,
+            rb_obs,
+            rb_action,
+            rb_next,
+            rb_reward,
+            rb_size,
+            rb_widx,
+            SAC_BUFFER_CAP,
+            warmup_obs,
+            action,
+            next_obs,
+            reward,
         )
         if done:
             warmup_obs_raw = env.reset_obs_list()
@@ -377,7 +396,9 @@ def main() raises:
         else:
             warmup_obs = next_obs^
 
-    print("Warmup complete:", WARMUP_STEPS, " env steps; real buf size:", rb_size)
+    print(
+        "Warmup complete:", WARMUP_STEPS, " env steps; real buf size:", rb_size
+    )
     print()
 
     # Episode tracking.
@@ -402,36 +423,58 @@ def main() raises:
             ep_steps += 1
             ep_reward += reward
             agent.store_transition[DType.float64](
-                cpu_state, ep_obs, action, reward, next_obs,
+                cpu_state,
+                ep_obs,
+                action,
+                reward,
+                next_obs,
                 done and (ep_steps < MAX_STEPS_PER_EPISODE),
             )
             real_buf_add(
-                rb_obs, rb_action, rb_next, rb_reward,
-                rb_size, rb_widx, SAC_BUFFER_CAP,
-                ep_obs, action, next_obs, reward,
+                rb_obs,
+                rb_action,
+                rb_next,
+                rb_reward,
+                rb_size,
+                rb_widx,
+                SAC_BUFFER_CAP,
+                ep_obs,
+                action,
+                next_obs,
+                reward,
             )
             total_env_steps += 1
 
             # Periodic dynamics retrain + synth rollouts.
-            if (
-                total_env_steps % MODEL_TRAIN_FREQ == 0
-                and rb_size >= DYN_BATCH
-            ):
+            if total_env_steps % MODEL_TRAIN_FREQ == 0 and rb_size >= DYN_BATCH:
                 # Train each ensemble member on DYN_TRAIN_BATCHES minibatches.
                 var avg_loss: Float64 = 0.0
                 for m in range(NUM_ENSEMBLE):
                     var member_loss: Float64 = 0.0
                     for _ in range(DYN_TRAIN_BATCHES):
                         build_dyn_batch[DYN_BATCH](
-                            rng, rb_obs, rb_action, rb_next, rb_reward,
+                            rng,
+                            rb_obs,
+                            rb_action,
+                            rb_next,
+                            rb_reward,
                             rb_size,
-                            s_a_buf_t, target_buf_t,
+                            s_a_buf_t,
+                            target_buf_t,
                         )
                         var loss = ENS.train_member[DYN_BATCH, DYN_OPT](
-                            m, s_a_t, target_t,
-                            dyn_params_buf, dyn_grads_buf,
-                            dyn_opt_state_buf, dyn_opt_global_buf,
-                            latents, mu_eps, a_below, z_below, dx,
+                            m,
+                            s_a_t,
+                            target_t,
+                            dyn_params_buf,
+                            dyn_grads_buf,
+                            dyn_opt_state_buf,
+                            dyn_opt_global_buf,
+                            latents,
+                            mu_eps,
+                            a_below,
+                            z_below,
+                            dx,
                             dyn_step_nums[m],
                             T_infer=T_INFER,
                             lr_x=Scalar[dtype](LR_X),
@@ -444,15 +487,26 @@ def main() raises:
 
                 # Re-evaluate elites (single batch holdout).
                 build_dyn_batch[DYN_BATCH](
-                    rng, rb_obs, rb_action, rb_next, rb_reward,
+                    rng,
+                    rb_obs,
+                    rb_action,
+                    rb_next,
+                    rb_reward,
                     rb_size,
-                    s_a_buf_t, target_buf_t,
+                    s_a_buf_t,
+                    target_buf_t,
                 )
                 var holdout_losses = List[Float64](capacity=NUM_ENSEMBLE)
                 for m in range(NUM_ENSEMBLE):
                     var L = ENS.eval_member_loss[DYN_BATCH](
-                        m, s_a_t, target_t, dyn_params_buf,
-                        e_a_aug, e_z, e_a_z, e_out,
+                        m,
+                        s_a_t,
+                        target_t,
+                        dyn_params_buf,
+                        e_a_aug,
+                        e_z,
+                        e_a_z,
+                        e_out,
                     )
                     holdout_losses.append(L)
                 ENS.select_elites(holdout_losses, elite_indices)
@@ -464,13 +518,11 @@ def main() raises:
                     var src_idx = Int(u * Float64(rb_size)) % rb_size
                     var sim_obs = List[Float64](capacity=OBS_DIM)
                     for d in range(OBS_DIM):
-                        sim_obs.append(
-                            Float64(rb_obs[src_idx * OBS_DIM + d])
-                        )
+                        sim_obs.append(Float64(rb_obs[src_idx * OBS_DIM + d]))
                     for _ in range(ROLLOUT_LENGTH):
-                        var sim_act = agent.select_action[
-                            DType.float64
-                        ](cpu_state, sim_obs)
+                        var sim_act = agent.select_action[DType.float64](
+                            cpu_state, sim_obs
+                        )
                         # Build normalized (s, a) for predict.
                         p_s_a_buf[0] = Scalar[dtype](sim_obs[0])
                         p_s_a_buf[1] = Scalar[dtype](sim_obs[1])
@@ -482,13 +534,18 @@ def main() raises:
                         )
                         # Pick random elite.
                         var ue = Float64(rng.step_uniform()[0])
-                        var elite_pos = Int(
-                            ue * Float64(NUM_ELITES)
-                        ) % NUM_ELITES
+                        var elite_pos = (
+                            Int(ue * Float64(NUM_ELITES)) % NUM_ELITES
+                        )
                         var elite_m = elite_indices[elite_pos]
                         ENS.predict_member[1](
-                            elite_m, p_s_a, dyn_params_buf,
-                            p_a_aug, p_z, p_a_z, p_out,
+                            elite_m,
+                            p_s_a,
+                            dyn_params_buf,
+                            p_a_aug,
+                            p_z,
+                            p_a_z,
+                            p_out,
                         )
                         # Un-normalize prediction.
                         var d0 = Float64(p_out_buf[0])
@@ -542,11 +599,17 @@ def main() raises:
             eval_total += ereward
         var avg_eval = eval_total / Float64(EVAL_EPISODES)
         print(
-            "Epoch", epoch + 1, " | Eval reward:", avg_eval,
-            " | Env steps:", total_env_steps,
-            " | Alpha:", String(agent.alpha)[byte=:6],
+            "Epoch",
+            epoch + 1,
+            " | Eval reward:",
+            avg_eval,
+            " | Env steps:",
+            total_env_steps,
+            " | Alpha:",
+            String(agent.alpha)[byte=:6],
             " | Last dyn loss:",
-            loss_history[len(loss_history) - 1] if len(loss_history) > 0 else 0.0,
+            loss_history[len(loss_history) - 1] if len(loss_history)
+            > 0 else 0.0,
         )
 
     var elapsed = Float64(perf_counter_ns() - t0) / 1e9

@@ -104,7 +104,10 @@ comptime SCHED = CosineWarmupSchedule[
 
 
 def _step_cartpole(
-    x: Float64, x_dot: Float64, theta: Float64, theta_dot: Float64,
+    x: Float64,
+    x_dot: Float64,
+    theta: Float64,
+    theta_dot: Float64,
     action_norm: Float64,
 ) -> Tuple[Float64, Float64, Float64, Float64]:
     var u = action_norm
@@ -161,13 +164,21 @@ def _gen_rollout_into[
         x_dot = stepped[1]
         theta = stepped[2]
         theta_dot = stepped[3]
-        obs_buf[obs_offset + (t + 1) * OBS_DIM + 0] = Scalar[dtype](x / CP_X_SCALE)
-        obs_buf[obs_offset + (t + 1) * OBS_DIM + 1] = Scalar[dtype](x_dot / CP_XDOT_SCALE)
-        obs_buf[obs_offset + (t + 1) * OBS_DIM + 2] = Scalar[dtype](theta / CP_THETA_SCALE)
-        obs_buf[obs_offset + (t + 1) * OBS_DIM + 3] = Scalar[dtype](theta_dot / CP_THETADOT_SCALE)
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 0] = Scalar[dtype](
+            x / CP_X_SCALE
+        )
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 1] = Scalar[dtype](
+            x_dot / CP_XDOT_SCALE
+        )
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 2] = Scalar[dtype](
+            theta / CP_THETA_SCALE
+        )
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 3] = Scalar[dtype](
+            theta_dot / CP_THETADOT_SCALE
+        )
 
 
-fn _gauss_pair(mut rng: PhiloxRandom) -> Tuple[Float64, Float64]:
+def _gauss_pair(mut rng: PhiloxRandom) -> Tuple[Float64, Float64]:
     var u1 = Float64(rng.step_uniform()[0])
     var u2 = Float64(rng.step_uniform()[0])
     if u1 < 1e-12:
@@ -183,15 +194,31 @@ def main() raises:
     print("=" * 60)
     print("  Arch       : same as PCN baseline (PCBlock × 2, PCTanh)")
     print("  PC params  :", NET.PARAM_SIZE)
-    print("  Enc arch   : MLP[", ENC_INPUT_DIM, "→", ENC_HIDDEN_DIM, "→", ENC_OUTPUT_DIM, "]")
+    print(
+        "  Enc arch   : MLP[",
+        ENC_INPUT_DIM,
+        "→",
+        ENC_HIDDEN_DIM,
+        "→",
+        ENC_OUTPUT_DIM,
+        "]",
+    )
     print("  Training   : NO SGLD; PC weight rule + energy ∂E/∂z to encoder")
     print("  Eval       : encoder + MLP imagination, NO SGLD")
-    print("  Pass       : survive ≥", PASS_STEPS, " of", MAX_EPISODE_STEPS, " steps")
+    print(
+        "  Pass       : survive ≥",
+        PASS_STEPS,
+        " of",
+        MAX_EPISODE_STEPS,
+        " steps",
+    )
 
     # ── PC params + Adam state ────────────────────────────────────────────────
     var pc_params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
     var pc_grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var pc_opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT_PC.STATE_PER_PARAM)
+    var pc_opt_state_buf = alloc[Scalar[dtype]](
+        NET.PARAM_SIZE * OPT_PC.STATE_PER_PARAM
+    )
     var pc_opt_global_buf = alloc[Scalar[dtype]](OPT_PC.GLOBAL_STATE_SIZE)
     memset(pc_params_buf, 0, NET.PARAM_SIZE)
     memset(pc_grads_buf, 0, NET.PARAM_SIZE)
@@ -204,7 +231,9 @@ def main() raises:
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
     ](pc_grads_buf)
     var pc_opt_state = LayoutTensor[
-        dtype, Layout.row_major(NET.PARAM_SIZE, OPT_PC.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(NET.PARAM_SIZE, OPT_PC.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](pc_opt_state_buf)
     var pc_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_PC.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -228,7 +257,9 @@ def main() raises:
     # ── Encoder params + Adam state ──────────────────────────────────────────
     var enc_params_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
     var enc_grads_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
-    var enc_opt_state_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE * OPT_ENC.STATE_PER_PARAM)
+    var enc_opt_state_buf = alloc[Scalar[dtype]](
+        ENC_PARAM_SIZE * OPT_ENC.STATE_PER_PARAM
+    )
     var enc_opt_global_buf = alloc[Scalar[dtype]](OPT_ENC.GLOBAL_STATE_SIZE)
     memset(enc_params_buf, 0, ENC_PARAM_SIZE)
     memset(enc_grads_buf, 0, ENC_PARAM_SIZE)
@@ -241,7 +272,9 @@ def main() raises:
         dtype, Layout.row_major(ENC_PARAM_SIZE), MutAnyOrigin
     ](enc_grads_buf)
     var enc_opt_state = LayoutTensor[
-        dtype, Layout.row_major(ENC_PARAM_SIZE, OPT_ENC.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(ENC_PARAM_SIZE, OPT_ENC.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](enc_opt_state_buf)
     var enc_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_ENC.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -347,8 +380,11 @@ def main() raises:
         for batch_idx in range(N_BATCHES_PER_EPOCH):
             for b in range(BATCH):
                 _gen_rollout_into[SEQ_LEN](
-                    rng, actions_buf, obs_buf,
-                    b * SEQ_LEN, b * (SEQ_LEN + 1) * OBS_DIM,
+                    rng,
+                    actions_buf,
+                    obs_buf,
+                    b * SEQ_LEN,
+                    b * (SEQ_LEN + 1) * OBS_DIM,
                 )
             memset(prev_z_buf, 0, BATCH * HIDDEN)
 
@@ -358,14 +394,17 @@ def main() raises:
                         enc_input_buf[b * ENC_INPUT_DIM + j] = prev_z_buf[
                             b * HIDDEN + j
                         ]
-                    var act_val = Scalar[dtype](0.0) if t == 0 else actions_buf[
-                        b * SEQ_LEN + (t - 1)
-                    ]
+                    var act_val = (
+                        Scalar[dtype](0.0) if t
+                        == 0 else actions_buf[b * SEQ_LEN + (t - 1)]
+                    )
                     enc_input_buf[b * ENC_INPUT_DIM + HIDDEN] = act_val
                     for d in range(OBS_DIM):
                         enc_input_buf[
                             b * ENC_INPUT_DIM + HIDDEN + ACTION_DIM + d
-                        ] = obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d]
+                        ] = obs_buf[
+                            b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d
+                        ]
                     for j in range(HIDDEN):
                         x_aug_buf[b * AUG_DIM + j] = prev_z_buf[b * HIDDEN + j]
                     x_aug_buf[b * AUG_DIM + HIDDEN] = act_val
@@ -418,14 +457,22 @@ def main() raises:
                 clip_grad_norm[NET.PARAM_SIZE, dtype](pc_grads, GRAD_CLIP_NORM)
                 pc_step_num += 1
                 OPT_PC.step[NET.PARAM_SIZE, dtype](
-                    pc_params, pc_grads, pc_opt_state, pc_opt_global,
-                    pc_step_num, lr_scale=lr_scale,
+                    pc_params,
+                    pc_grads,
+                    pc_opt_state,
+                    pc_opt_global,
+                    pc_step_num,
+                    lr_scale=lr_scale,
                 )
                 clip_grad_norm[ENC_PARAM_SIZE, dtype](enc_grads, GRAD_CLIP_NORM)
                 enc_step_num += 1
                 OPT_ENC.step[ENC_PARAM_SIZE, dtype](
-                    enc_params, enc_grads, enc_opt_state, enc_opt_global,
-                    enc_step_num, lr_scale=lr_scale,
+                    enc_params,
+                    enc_grads,
+                    enc_opt_state,
+                    enc_opt_global,
+                    enc_step_num,
+                    lr_scale=lr_scale,
                 )
 
                 for b in range(BATCH):
@@ -435,8 +482,15 @@ def main() raises:
         if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == EPOCHS - 1:
             var elapsed = Float64(perf_counter_ns() - t0) / 1e9
             print(
-                "    ep=", epoch, "  loss=", last_loss,
-                "  lr_scale=", lr_scale, "  wall=", elapsed, "s",
+                "    ep=",
+                epoch,
+                "  loss=",
+                last_loss,
+                "  lr_scale=",
+                lr_scale,
+                "  wall=",
+                elapsed,
+                "s",
             )
 
     var total_t = Float64(perf_counter_ns() - t0) / 1e9
@@ -506,9 +560,15 @@ def main() raises:
             enc_input_buf[j] = Scalar[dtype](0.0)
         enc_input_buf[HIDDEN] = Scalar[dtype](0.0)
         enc_input_buf[HIDDEN + ACTION_DIM + 0] = Scalar[dtype](x / CP_X_SCALE)
-        enc_input_buf[HIDDEN + ACTION_DIM + 1] = Scalar[dtype](x_dot / CP_XDOT_SCALE)
-        enc_input_buf[HIDDEN + ACTION_DIM + 2] = Scalar[dtype](theta / CP_THETA_SCALE)
-        enc_input_buf[HIDDEN + ACTION_DIM + 3] = Scalar[dtype](theta_dot / CP_THETADOT_SCALE)
+        enc_input_buf[HIDDEN + ACTION_DIM + 1] = Scalar[dtype](
+            x_dot / CP_XDOT_SCALE
+        )
+        enc_input_buf[HIDDEN + ACTION_DIM + 2] = Scalar[dtype](
+            theta / CP_THETA_SCALE
+        )
+        enc_input_buf[HIDDEN + ACTION_DIM + 3] = Scalar[dtype](
+            theta_dot / CP_THETADOT_SCALE
+        )
         ENC.forward[1, dtype](
             enc_params, enc_input_1, enc_hpre_1, enc_hact_1, enc_output_1
         )
@@ -548,7 +608,9 @@ def main() raises:
                             a1 = 1.0
                         elif a1 < -1.0:
                             a1 = -1.0
-                        cem_actions_buf[s1 * PLAN_HORIZON + h1] = Scalar[dtype](a1)
+                        cem_actions_buf[s1 * PLAN_HORIZON + h1] = Scalar[dtype](
+                            a1
+                        )
                         i += 1
 
                 for s in range(N_SAMPLES):
@@ -604,9 +666,7 @@ def main() raises:
                     var s_mu: Float64 = 0
                     for k in range(N_ELITES):
                         s_mu += Float64(
-                            cem_actions_buf[
-                                cem_indices[k] * PLAN_HORIZON + h
-                            ]
+                            cem_actions_buf[cem_indices[k] * PLAN_HORIZON + h]
                         )
                     var new_mu = s_mu / Float64(N_ELITES)
                     var s_var: Float64 = 0
@@ -631,7 +691,9 @@ def main() raises:
                 action_norm = 1.0
             elif action_norm < -1.0:
                 action_norm = -1.0
-            var stepped = _step_cartpole(x, x_dot, theta, theta_dot, action_norm)
+            var stepped = _step_cartpole(
+                x, x_dot, theta, theta_dot, action_norm
+            )
             x = stepped[0]
             x_dot = stepped[1]
             theta = stepped[2]
@@ -640,10 +702,18 @@ def main() raises:
             for j in range(HIDDEN):
                 enc_input_buf[j] = agent_z_buf[j]
             enc_input_buf[HIDDEN] = Scalar[dtype](action_norm)
-            enc_input_buf[HIDDEN + ACTION_DIM + 0] = Scalar[dtype](x / CP_X_SCALE)
-            enc_input_buf[HIDDEN + ACTION_DIM + 1] = Scalar[dtype](x_dot / CP_XDOT_SCALE)
-            enc_input_buf[HIDDEN + ACTION_DIM + 2] = Scalar[dtype](theta / CP_THETA_SCALE)
-            enc_input_buf[HIDDEN + ACTION_DIM + 3] = Scalar[dtype](theta_dot / CP_THETADOT_SCALE)
+            enc_input_buf[HIDDEN + ACTION_DIM + 0] = Scalar[dtype](
+                x / CP_X_SCALE
+            )
+            enc_input_buf[HIDDEN + ACTION_DIM + 1] = Scalar[dtype](
+                x_dot / CP_XDOT_SCALE
+            )
+            enc_input_buf[HIDDEN + ACTION_DIM + 2] = Scalar[dtype](
+                theta / CP_THETA_SCALE
+            )
+            enc_input_buf[HIDDEN + ACTION_DIM + 3] = Scalar[dtype](
+                theta_dot / CP_THETADOT_SCALE
+            )
             ENC.forward[1, dtype](
                 enc_params, enc_input_1, enc_hpre_1, enc_hact_1, enc_output_1
             )
@@ -662,17 +732,31 @@ def main() raises:
             n_success += 1
         if terminated_at == -1:
             print(
-                "    ep=", ep, " : SURVIVED full ", MAX_EPISODE_STEPS,
-                " steps (final |x|=", x if x > 0.0 else -x,
-                " |θ|=", theta if theta > 0.0 else -theta, ")",
-                " →", "PASS" if passed else "MISS",
+                "    ep=",
+                ep,
+                " : SURVIVED full ",
+                MAX_EPISODE_STEPS,
+                " steps (final |x|=",
+                x if x > 0.0 else -x,
+                " |θ|=",
+                theta if theta > 0.0 else -theta,
+                ")",
+                " →",
+                "PASS" if passed else "MISS",
             )
         else:
             print(
-                "    ep=", ep, " : terminated at step ", terminated_at,
-                " (|x|=", x if x > 0.0 else -x,
-                " |θ|=", theta if theta > 0.0 else -theta, ")",
-                " →", "PASS" if passed else "MISS",
+                "    ep=",
+                ep,
+                " : terminated at step ",
+                terminated_at,
+                " (|x|=",
+                x if x > 0.0 else -x,
+                " |θ|=",
+                theta if theta > 0.0 else -theta,
+                ")",
+                " →",
+                "PASS" if passed else "MISS",
             )
 
     var t_eval = Float64(perf_counter_ns() - t_eval_start) / 1e9
@@ -685,8 +769,11 @@ def main() raises:
 
     print("\n  === Exp 3 (MLP + energy local rules, no SGLD) summary ===")
     print(
-        "  Solved", n_success, "/", N_EVAL_EPISODES,
-        " (PCN baseline: 5/5; MLP+BPTT: 0/5; MLP-1step: 0/5)"
+        "  Solved",
+        n_success,
+        "/",
+        N_EVAL_EPISODES,
+        " (PCN baseline: 5/5; MLP+BPTT: 0/5; MLP-1step: 0/5)",
     )
 
     # cleanup

@@ -85,7 +85,7 @@ comptime SAC_WARMUP_STEPS = 1000
 comptime SAC_PRINT_EVERY = 20
 
 
-fn _angle_normalize(t: Float64) -> Float64:
+def _angle_normalize(t: Float64) -> Float64:
     var x = (t + pi) - 2.0 * pi * Float64(Int((t + pi) / (2.0 * pi)))
     if x < 0.0:
         x += 2.0 * pi
@@ -100,10 +100,9 @@ def _step_pendulum(
         u = PEND_MAX_TORQUE
     elif u < -PEND_MAX_TORQUE:
         u = -PEND_MAX_TORQUE
-    var theta_acc = (
-        (3.0 * PEND_G) / (2.0 * PEND_L) * sin(theta)
-        + (3.0 / (PEND_M * PEND_L * PEND_L)) * u
-    )
+    var theta_acc = (3.0 * PEND_G) / (2.0 * PEND_L) * sin(theta) + (
+        3.0 / (PEND_M * PEND_L * PEND_L)
+    ) * u
     var new_dot = theta_dot + theta_acc * PEND_DT
     if new_dot > PEND_MAX_SPEED:
         new_dot = PEND_MAX_SPEED
@@ -149,7 +148,9 @@ def main() raises:
     print("Gymnasium Pendulum-v1 SAC — Phase-2 PCN-encoded (diagnostic)")
     print("=" * 60)
     print("  Env        : GymPendulumEnv")
-    print("  Encoder    : PCN (Exp-3 procedure: per-step PC weight rule, no SGLD)")
+    print(
+        "  Encoder    : PCN (Exp-3 procedure: per-step PC weight rule, no SGLD)"
+    )
     print("  Wrapper    : EncoderWrappedEnv → SAC sees", HIDDEN, "-dim latent")
     print("  Enc epochs :", ENC_EPOCHS)
     print("  SAC eps    :", SAC_NUM_EPISODES, " steps/ep:", SAC_MAX_STEPS)
@@ -305,8 +306,11 @@ def main() raises:
         for batch_idx in range(N_BATCHES_PER_EPOCH):
             for b in range(BATCH):
                 _gen_rollout_into[SEQ_LEN](
-                    rng, actions_buf, obs_buf,
-                    b * SEQ_LEN, b * (SEQ_LEN + 1) * OBS_DIM,
+                    rng,
+                    actions_buf,
+                    obs_buf,
+                    b * SEQ_LEN,
+                    b * (SEQ_LEN + 1) * OBS_DIM,
                 )
             memset(prev_z_buf, 0, BATCH * HIDDEN)
 
@@ -316,14 +320,17 @@ def main() raises:
                         enc_input_buf[b * ENC_INPUT_DIM + j] = prev_z_buf[
                             b * HIDDEN + j
                         ]
-                    var act_val = Scalar[dtype](0.0) if t == 0 else actions_buf[
-                        b * SEQ_LEN + (t - 1)
-                    ]
+                    var act_val = (
+                        Scalar[dtype](0.0) if t
+                        == 0 else actions_buf[b * SEQ_LEN + (t - 1)]
+                    )
                     enc_input_buf[b * ENC_INPUT_DIM + HIDDEN] = act_val
                     for d in range(OBS_DIM):
                         enc_input_buf[
                             b * ENC_INPUT_DIM + HIDDEN + ACTION_DIM + d
-                        ] = obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d]
+                        ] = obs_buf[
+                            b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d
+                        ]
                     for j in range(HIDDEN):
                         x_aug_buf[b * AUG_DIM + j] = prev_z_buf[b * HIDDEN + j]
                     x_aug_buf[b * AUG_DIM + HIDDEN] = act_val
@@ -376,27 +383,40 @@ def main() raises:
                 clip_grad_norm[NET.PARAM_SIZE, dtype](pc_grads, GRAD_CLIP_NORM)
                 pc_step_num += 1
                 OPT_PC.step[NET.PARAM_SIZE, dtype](
-                    pc_params, pc_grads, pc_opt_state, pc_opt_global,
-                    pc_step_num, lr_scale=lr_scale,
+                    pc_params,
+                    pc_grads,
+                    pc_opt_state,
+                    pc_opt_global,
+                    pc_step_num,
+                    lr_scale=lr_scale,
                 )
                 clip_grad_norm[ENC_PARAM_SIZE, dtype](enc_grads, GRAD_CLIP_NORM)
                 enc_step_num += 1
                 OPT_ENC.step[ENC_PARAM_SIZE, dtype](
-                    enc_params, enc_grads, enc_opt_state, enc_opt_global,
-                    enc_step_num, lr_scale=lr_scale,
+                    enc_params,
+                    enc_grads,
+                    enc_opt_state,
+                    enc_opt_global,
+                    enc_step_num,
+                    lr_scale=lr_scale,
                 )
 
                 for b in range(BATCH):
                     for j in range(HIDDEN):
-                        prev_z_buf[b * HIDDEN + j] = z_init_buf[
-                            b * HIDDEN + j
-                        ]
+                        prev_z_buf[b * HIDDEN + j] = z_init_buf[b * HIDDEN + j]
 
         if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == ENC_EPOCHS - 1:
             var elapsed = Float64(perf_counter_ns() - t_enc0) / 1e9
             print(
-                "    ep=", epoch, "  loss=", last_loss,
-                "  lr_scale=", lr_scale, "  wall=", elapsed, "s",
+                "    ep=",
+                epoch,
+                "  loss=",
+                last_loss,
+                "  lr_scale=",
+                lr_scale,
+                "  wall=",
+                elapsed,
+                "s",
             )
 
     var enc_train_t = Float64(perf_counter_ns() - t_enc0) / 1e9

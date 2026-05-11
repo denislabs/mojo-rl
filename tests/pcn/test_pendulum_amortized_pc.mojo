@@ -59,17 +59,17 @@ comptime AUG_DIM = HIDDEN + ACTION_DIM
 comptime SEQ_LEN = 20
 comptime EVAL_HORIZON = 10
 comptime T_REFINE_BOOTSTRAP = 30  # Deeper refinement for the t=0 filter step
-                                    # (rare boundary case: prev_z=0, action=0)
+# (rare boundary case: prev_z=0, action=0)
 comptime EPOCHS = 100
 comptime N_BATCHES_PER_EPOCH = 100
 comptime T_REFINE = 10
 comptime WARMUP_EPOCHS = 5
-comptime LR_MIN_SCALE: Float64 = 0.1                  # K SGLD refinement steps after encoder init
+comptime LR_MIN_SCALE: Float64 = 0.1  # K SGLD refinement steps after encoder init
 comptime LR_X: Float64 = 0.01
 comptime ADAM_LR_PC: Float64 = 0.001
 comptime ADAM_LR_ENC: Float64 = 0.001
 comptime GRAD_CLIP_NORM: Float64 = 1.0
-comptime PC_WEIGHT_DECAY: Float64 = 0.01    # AdamW weight decay — regularizes decoder W to prevent unbounded ω predictions
+comptime PC_WEIGHT_DECAY: Float64 = 0.01  # AdamW weight decay — regularizes decoder W to prevent unbounded ω predictions
 # NOTE: spectral norm on the recurrence sub-block (σ_max(W_rec) ≤ 1) was tried
 # and made Pendulum strictly worse (1-step ratio 0.35 → 3.0, open-loop 6.5 →
 # 21.1). After tanh, the effective recurrence gain is σ_max · |tanh'| ≤ 1,
@@ -80,7 +80,7 @@ comptime PC_WEIGHT_DECAY: Float64 = 0.01    # AdamW weight decay — regularizes
 # (Option B result, 2026-04-28) for the full diagnostic.
 
 # Encoder architecture (framework PCEncoder, 2-layer MLP w/ tanh hidden)
-comptime ENC_INPUT_DIM = HIDDEN + ACTION_DIM + OBS_DIM   # [prev_z, action, obs]
+comptime ENC_INPUT_DIM = HIDDEN + ACTION_DIM + OBS_DIM  # [prev_z, action, obs]
 comptime ENC_HIDDEN_DIM = 64
 comptime ENC_OUTPUT_DIM = HIDDEN
 comptime ENC = PCEncoder[ENC_INPUT_DIM, ENC_HIDDEN_DIM, ENC_OUTPUT_DIM]
@@ -105,7 +105,7 @@ comptime SCHED = CosineWarmupSchedule[
 ]
 
 
-fn _angle_normalize(t: Float64) -> Float64:
+def _angle_normalize(t: Float64) -> Float64:
     var x = (t + pi) - 2.0 * pi * Float64(Int((t + pi) / (2.0 * pi)))
     if x < 0.0:
         x += 2.0 * pi
@@ -120,10 +120,9 @@ def _step_pendulum(
         u = PEND_MAX_TORQUE
     elif u < -PEND_MAX_TORQUE:
         u = -PEND_MAX_TORQUE
-    var theta_acc = (
-        (3.0 * PEND_G) / (2.0 * PEND_L) * sin(theta)
-        + (3.0 / (PEND_M * PEND_L * PEND_L)) * u
-    )
+    var theta_acc = (3.0 * PEND_G) / (2.0 * PEND_L) * sin(theta) + (
+        3.0 / (PEND_M * PEND_L * PEND_L)
+    ) * u
     var new_dot = theta_dot + theta_acc * PEND_DT
     if new_dot > PEND_MAX_SPEED:
         new_dot = PEND_MAX_SPEED
@@ -161,26 +160,65 @@ def _gen_rollout_into[
         theta_dot = stepped[1]
         obs_buf[obs_offset + (t + 1) * OBS_DIM + 0] = Scalar[dtype](cos(theta))
         obs_buf[obs_offset + (t + 1) * OBS_DIM + 1] = Scalar[dtype](sin(theta))
-        obs_buf[obs_offset + (t + 1) * OBS_DIM + 2] = Scalar[dtype](theta_dot / PEND_MAX_SPEED)
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 2] = Scalar[dtype](
+            theta_dot / PEND_MAX_SPEED
+        )
 
 
 def main() raises:
     print("=" * 60)
     print("Pendulum world model — amortized PC")
     print("=" * 60)
-    print("  PC arch    : PCBlock[", AUG_DIM, ",", HIDDEN, ",PCTanh] → PCBlock[", HIDDEN, ",", OBS_DIM, ",PCTanh]")
+    print(
+        "  PC arch    : PCBlock[",
+        AUG_DIM,
+        ",",
+        HIDDEN,
+        ",PCTanh] → PCBlock[",
+        HIDDEN,
+        ",",
+        OBS_DIM,
+        ",PCTanh]",
+    )
     print("  PC params  :", NET.PARAM_SIZE)
-    print("  Enc arch   : MLP[", ENC_INPUT_DIM, "→", ENC_HIDDEN_DIM, "→", ENC_OUTPUT_DIM, "]")
+    print(
+        "  Enc arch   : MLP[",
+        ENC_INPUT_DIM,
+        "→",
+        ENC_HIDDEN_DIM,
+        "→",
+        ENC_OUTPUT_DIM,
+        "]",
+    )
     print("  Enc params :", ENC_PARAM_SIZE)
-    print("  BATCH=", BATCH, " SEQ_LEN=", SEQ_LEN, " EPOCHS=", EPOCHS, " T_REFINE=", T_REFINE)
-    print("  PC_OPT=Adam(lr=", ADAM_LR_PC, ")  ENC_OPT=Adam(lr=", ADAM_LR_ENC, ")")
-    print("  LR schedule: cosine warmup (W=", WARMUP_EPOCHS, ", min=", LR_MIN_SCALE, ")")
+    print(
+        "  BATCH=",
+        BATCH,
+        " SEQ_LEN=",
+        SEQ_LEN,
+        " EPOCHS=",
+        EPOCHS,
+        " T_REFINE=",
+        T_REFINE,
+    )
+    print(
+        "  PC_OPT=Adam(lr=", ADAM_LR_PC, ")  ENC_OPT=Adam(lr=", ADAM_LR_ENC, ")"
+    )
+    print(
+        "  LR schedule: cosine warmup (W=",
+        WARMUP_EPOCHS,
+        ", min=",
+        LR_MIN_SCALE,
+        ")",
+    )
     print("  LR_X=", LR_X, "  GRAD_CLIP=", GRAD_CLIP_NORM)
 
     # ── PC params + Adam state ────────────────────────────────────────────────
     var pc_params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
     var pc_grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var pc_opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT_PC.STATE_PER_PARAM)
+    var pc_opt_state_buf = alloc[Scalar[dtype]](
+        NET.PARAM_SIZE * OPT_PC.STATE_PER_PARAM
+    )
     var pc_opt_global_buf = alloc[Scalar[dtype]](OPT_PC.GLOBAL_STATE_SIZE)
     memset(pc_params_buf, 0, NET.PARAM_SIZE)
     memset(pc_grads_buf, 0, NET.PARAM_SIZE)
@@ -193,7 +231,9 @@ def main() raises:
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
     ](pc_grads_buf)
     var pc_opt_state = LayoutTensor[
-        dtype, Layout.row_major(NET.PARAM_SIZE, OPT_PC.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(NET.PARAM_SIZE, OPT_PC.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](pc_opt_state_buf)
     var pc_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_PC.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -212,7 +252,9 @@ def main() raises:
     # ── Encoder params + Adam state ───────────────────────────────────────────
     var enc_params_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
     var enc_grads_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
-    var enc_opt_state_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE * OPT_ENC.STATE_PER_PARAM)
+    var enc_opt_state_buf = alloc[Scalar[dtype]](
+        ENC_PARAM_SIZE * OPT_ENC.STATE_PER_PARAM
+    )
     var enc_opt_global_buf = alloc[Scalar[dtype]](OPT_ENC.GLOBAL_STATE_SIZE)
     memset(enc_params_buf, 0, ENC_PARAM_SIZE)
     memset(enc_grads_buf, 0, ENC_PARAM_SIZE)
@@ -226,7 +268,9 @@ def main() raises:
         dtype, Layout.row_major(ENC_PARAM_SIZE), MutAnyOrigin
     ](enc_grads_buf)
     var enc_opt_state = LayoutTensor[
-        dtype, Layout.row_major(ENC_PARAM_SIZE, OPT_ENC.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(ENC_PARAM_SIZE, OPT_ENC.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](enc_opt_state_buf)
     var enc_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_ENC.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -300,7 +344,9 @@ def main() raises:
     var rng = PhiloxRandom(seed=UInt64(7), offset=UInt64(0))
     var pc_step_num: Int = 0
     var enc_step_num: Int = 0
-    var prev_z_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)  # carries z_{t-1} between time steps
+    var prev_z_buf = alloc[Scalar[dtype]](
+        BATCH * HIDDEN
+    )  # carries z_{t-1} between time steps
     var t0 = perf_counter_ns()
 
     for epoch in range(EPOCHS):
@@ -329,15 +375,14 @@ def main() raises:
                 # Build encoder input: [prev_z, action_{t-1} or 0, obs_t]
                 for b in range(BATCH):
                     for j in range(HIDDEN):
-                        enc_input_buf[
-                            b * ENC_INPUT_DIM + j
-                        ] = prev_z_buf[b * HIDDEN + j]
-                    var act_val = Scalar[dtype](0.0) if t == 0 else actions_buf[
-                        b * SEQ_LEN + (t - 1)
-                    ]
-                    enc_input_buf[
-                        b * ENC_INPUT_DIM + HIDDEN
-                    ] = act_val
+                        enc_input_buf[b * ENC_INPUT_DIM + j] = prev_z_buf[
+                            b * HIDDEN + j
+                        ]
+                    var act_val = (
+                        Scalar[dtype](0.0) if t
+                        == 0 else actions_buf[b * SEQ_LEN + (t - 1)]
+                    )
+                    enc_input_buf[b * ENC_INPUT_DIM + HIDDEN] = act_val
                     for d in range(OBS_DIM):
                         enc_input_buf[
                             b * ENC_INPUT_DIM + HIDDEN + ACTION_DIM + d
@@ -372,17 +417,27 @@ def main() raises:
                 # taken at the (less-noisy) energy minimum.
                 var T_refine_step = T_REFINE_BOOTSTRAP if t == 0 else T_REFINE
                 var result = TRAINER.compute_grads_from_latents[BATCH](
-                    pc_params, pc_grads, latents,
-                    mu_eps_buf, a_below_buf, z_below_buf, dx_buf,
-                    x_in, y_target,
+                    pc_params,
+                    pc_grads,
+                    latents,
+                    mu_eps_buf,
+                    a_below_buf,
+                    z_below_buf,
+                    dx_buf,
+                    x_in,
+                    y_target,
                     T_infer=T_refine_step,
                     lr_x=Scalar[dtype](LR_X),
                 )
                 clip_grad_norm[NET.PARAM_SIZE, dtype](pc_grads, GRAD_CLIP_NORM)
                 pc_step_num += 1
                 OPT_PC.step[NET.PARAM_SIZE, dtype](
-                    pc_params, pc_grads, pc_opt_state, pc_opt_global,
-                    pc_step_num, lr_scale=lr_scale,
+                    pc_params,
+                    pc_grads,
+                    pc_opt_state,
+                    pc_opt_global,
+                    pc_step_num,
+                    lr_scale=lr_scale,
                 )
                 last_loss = result.output_loss_final
 
@@ -399,8 +454,12 @@ def main() raises:
                 clip_grad_norm[ENC_PARAM_SIZE, dtype](enc_grads, GRAD_CLIP_NORM)
                 enc_step_num += 1
                 OPT_ENC.step[ENC_PARAM_SIZE, dtype](
-                    enc_params, enc_grads, enc_opt_state, enc_opt_global,
-                    enc_step_num, lr_scale=lr_scale,
+                    enc_params,
+                    enc_grads,
+                    enc_opt_state,
+                    enc_opt_global,
+                    enc_step_num,
+                    lr_scale=lr_scale,
                 )
 
                 # prev_z = settled z_t (post-refinement).
@@ -413,10 +472,15 @@ def main() raises:
         if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == EPOCHS - 1:
             var elapsed = Float64(perf_counter_ns() - t0) / 1e9
             print(
-                "    ep=", epoch,
-                "  loss=", last_loss,
-                "  lr_scale=", lr_scale,
-                "  wall=", elapsed, "s",
+                "    ep=",
+                epoch,
+                "  loss=",
+                last_loss,
+                "  lr_scale=",
+                lr_scale,
+                "  wall=",
+                elapsed,
+                "s",
             )
 
     var total_t = Float64(perf_counter_ns() - t0) / 1e9
@@ -455,7 +519,10 @@ def main() raises:
     # At each step, encode/filter z_t against actual s_t, predict s_{t+1} via
     # feedforward block_0+block_1 (PC recurrence). Compare to actual s_{t+1}.
     print("\n  === Mode 1: 1-step teacher-forced prediction ===")
-    print("  Per-dim cos/sin/ω: model_total | persist_total | model[per-dim] | persist[per-dim]")
+    print(
+        "  Per-dim cos/sin/ω: model_total | persist_total | model[per-dim] |"
+        " persist[per-dim]"
+    )
 
     memset(prev_z_buf, 0, BATCH * HIDDEN)
 
@@ -480,12 +547,20 @@ def main() raises:
     )
     for b in range(N_EVAL_TRAJ):
         for j in range(HIDDEN):
-            lat_buf[b * NET.LATENT_DIM + j] = enc_output_buf[b * ENC_OUTPUT_DIM + j]
+            lat_buf[b * NET.LATENT_DIM + j] = enc_output_buf[
+                b * ENC_OUTPUT_DIM + j
+            ]
     # Bootstrap filter (t=0): deeper refinement than per-step.
     _ = TRAINER.compute_grads_from_latents[BATCH](
-        pc_params, pc_grads, latents,
-        mu_eps_buf, a_below_buf, z_below_buf, dx_buf,
-        x_in, y_target,
+        pc_params,
+        pc_grads,
+        latents,
+        mu_eps_buf,
+        a_below_buf,
+        z_below_buf,
+        dx_buf,
+        x_in,
+        y_target,
         T_infer=T_REFINE_BOOTSTRAP,
         lr_x=Scalar[dtype](LR_X),
     )
@@ -501,9 +576,7 @@ def main() raises:
         for b in range(N_EVAL_TRAJ):
             for j in range(HIDDEN):
                 x_in_buf[b * AUG_DIM + j] = prev_z_buf[b * HIDDEN + j]
-            x_in_buf[b * AUG_DIM + HIDDEN] = actions_buf[
-                b * SEQ_LEN + (t - 1)
-            ]
+            x_in_buf[b * AUG_DIM + HIDDEN] = actions_buf[b * SEQ_LEN + (t - 1)]
 
         # 1-step prediction via PC feedforward (no settle): z_pred = block_0(x_in); s_pred = block_1(z_pred)
         NET.block_types[0].predict[BATCH, dtype](
@@ -521,12 +594,24 @@ def main() raises:
         var step_persist_1: Float64 = 0
         var step_persist_2: Float64 = 0
         for b in range(N_EVAL_TRAJ):
-            var s_true_0 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 0])
-            var s_true_1 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 1])
-            var s_true_2 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 2])
-            var s_prev_0 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 0])
-            var s_prev_1 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 1])
-            var s_prev_2 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 2])
+            var s_true_0 = Float64(
+                obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 0]
+            )
+            var s_true_1 = Float64(
+                obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 1]
+            )
+            var s_true_2 = Float64(
+                obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 2]
+            )
+            var s_prev_0 = Float64(
+                obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 0]
+            )
+            var s_prev_1 = Float64(
+                obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 1]
+            )
+            var s_prev_2 = Float64(
+                obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 2]
+            )
             var d0 = Float64(s_pred_buf[b * OBS_DIM + 0]) - s_true_0
             var d1 = Float64(s_pred_buf[b * OBS_DIM + 1]) - s_true_1
             var d2 = Float64(s_pred_buf[b * OBS_DIM + 2]) - s_true_2
@@ -553,17 +638,34 @@ def main() raises:
         # notation (e.g. "1.12e-04"); truncating to fixed bytes can hide the
         # exponent suffix and badly mislead diagnosis.
         print(
-            "    t=", t,
-            " | total=", mse_step,
-            " | persist=", persist_step,
-            " | per-dim=[", step_mse_0, ", ", step_mse_1, ", ", step_mse_2, "]",
-            " | persist=[", step_persist_0, ", ", step_persist_1, ", ", step_persist_2, "]",
+            "    t=",
+            t,
+            " | total=",
+            mse_step,
+            " | persist=",
+            persist_step,
+            " | per-dim=[",
+            step_mse_0,
+            ", ",
+            step_mse_1,
+            ", ",
+            step_mse_2,
+            "]",
+            " | persist=[",
+            step_persist_0,
+            ", ",
+            step_persist_1,
+            ", ",
+            step_persist_2,
+            "]",
         )
 
         # Filter z_t: encode against actual s_t, refine, save.
         for b in range(N_EVAL_TRAJ):
             for j in range(HIDDEN):
-                enc_input_buf[b * ENC_INPUT_DIM + j] = prev_z_buf[b * HIDDEN + j]
+                enc_input_buf[b * ENC_INPUT_DIM + j] = prev_z_buf[
+                    b * HIDDEN + j
+                ]
             enc_input_buf[b * ENC_INPUT_DIM + HIDDEN] = actions_buf[
                 b * SEQ_LEN + (t - 1)
             ]
@@ -584,9 +686,15 @@ def main() raises:
                     b * ENC_OUTPUT_DIM + j
                 ]
         _ = TRAINER.compute_grads_from_latents[BATCH](
-            pc_params, pc_grads, latents,
-            mu_eps_buf, a_below_buf, z_below_buf, dx_buf,
-            x_in, y_target,
+            pc_params,
+            pc_grads,
+            latents,
+            mu_eps_buf,
+            a_below_buf,
+            z_below_buf,
+            dx_buf,
+            x_in,
+            y_target,
             T_infer=T_REFINE,
             lr_x=Scalar[dtype](LR_X),
         )
@@ -598,7 +706,10 @@ def main() raises:
     var avg_mse_persist = mse_persist_total / Float64(SEQ_LEN)
     print("\n  avg 1-step MSE :", avg_mse_1step)
     print("  avg persist MSE:", avg_mse_persist)
-    print("  ratio (model / persist):", avg_mse_1step / avg_mse_persist if avg_mse_persist > 0 else 1.0)
+    print(
+        "  ratio (model / persist):",
+        avg_mse_1step / avg_mse_persist if avg_mse_persist > 0 else 1.0,
+    )
 
     # ── Eval mode 2: open-loop multi-step prediction ─────────────────────────
     print("\n  === Mode 2: open-loop multi-step prediction ===")
@@ -628,12 +739,20 @@ def main() raises:
     )
     for b in range(N_EVAL_TRAJ):
         for j in range(HIDDEN):
-            lat_buf[b * NET.LATENT_DIM + j] = enc_output_buf[b * ENC_OUTPUT_DIM + j]
+            lat_buf[b * NET.LATENT_DIM + j] = enc_output_buf[
+                b * ENC_OUTPUT_DIM + j
+            ]
     # Bootstrap filter (t=0): deeper refinement than per-step.
     _ = TRAINER.compute_grads_from_latents[BATCH](
-        pc_params, pc_grads, latents,
-        mu_eps_buf, a_below_buf, z_below_buf, dx_buf,
-        x_in, y_target,
+        pc_params,
+        pc_grads,
+        latents,
+        mu_eps_buf,
+        a_below_buf,
+        z_below_buf,
+        dx_buf,
+        x_in,
+        y_target,
         T_infer=T_REFINE_BOOTSTRAP,
         lr_x=Scalar[dtype](LR_X),
     )
@@ -648,9 +767,7 @@ def main() raises:
         for b in range(N_EVAL_TRAJ):
             for j in range(HIDDEN):
                 x_in_buf[b * AUG_DIM + j] = prev_z_buf[b * HIDDEN + j]
-            x_in_buf[b * AUG_DIM + HIDDEN] = actions_buf[
-                b * SEQ_LEN + (t - 1)
-            ]
+            x_in_buf[b * AUG_DIM + HIDDEN] = actions_buf[b * SEQ_LEN + (t - 1)]
         NET.block_types[0].predict[BATCH, dtype](
             x_in, params_b0, z_pred, a_z_pred
         )
@@ -662,8 +779,12 @@ def main() raises:
         var step_persist: Float64 = 0
         for b in range(N_EVAL_TRAJ):
             for d in range(OBS_DIM):
-                var s_true = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d])
-                var s_prev = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + d])
+                var s_true = Float64(
+                    obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d]
+                )
+                var s_prev = Float64(
+                    obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + d]
+                )
                 var d_m = Float64(s_pred_buf[b * OBS_DIM + d]) - s_true
                 step_mse += d_m * d_m
                 var d_p = s_prev - s_true
@@ -673,10 +794,16 @@ def main() raises:
         mse_openloop_total += step_mse
         mse_openloop_persist += step_persist
         print(
-            "    ", t,
-            "  ", String(step_mse)[byte=:9],
-            "  ", String(step_persist)[byte=:9],
-            "  ", String(step_mse / step_persist if step_persist > 0 else 1.0)[byte=:6],
+            "    ",
+            t,
+            "  ",
+            String(step_mse)[byte=:9],
+            "  ",
+            String(step_persist)[byte=:9],
+            "  ",
+            String(step_mse / step_persist if step_persist > 0 else 1.0)[
+                byte=:6
+            ],
         )
 
         # Open-loop: prev_z = z_pred (predicted, NOT filtered).
@@ -688,12 +815,21 @@ def main() raises:
     var avg_mse_openloop_persist = mse_openloop_persist / Float64(EVAL_HORIZON)
     print("\n  avg open-loop MSE :", avg_mse_openloop)
     print("  avg open-loop persist:", avg_mse_openloop_persist)
-    print("  ratio (model / persist):", avg_mse_openloop / avg_mse_openloop_persist if avg_mse_openloop_persist > 0 else 1.0)
+    print(
+        "  ratio (model / persist):",
+        avg_mse_openloop / avg_mse_openloop_persist if avg_mse_openloop_persist
+        > 0 else 1.0,
+    )
 
     # ── Pass criteria ─────────────────────────────────────────────────────────
     print("\n  === Summary ===")
-    var ratio_1step = avg_mse_1step / avg_mse_persist if avg_mse_persist > 0 else 1.0
-    var ratio_openloop = avg_mse_openloop / avg_mse_openloop_persist if avg_mse_openloop_persist > 0 else 1.0
+    var ratio_1step = (
+        avg_mse_1step / avg_mse_persist if avg_mse_persist > 0 else 1.0
+    )
+    var ratio_openloop = (
+        avg_mse_openloop / avg_mse_openloop_persist if avg_mse_openloop_persist
+        > 0 else 1.0
+    )
     print("  1-step MSE ratio  :", ratio_1step, "  (want < 0.5)")
     print("  open-loop MSE ratio:", ratio_openloop, "  (want < 1.0)")
 
@@ -701,12 +837,18 @@ def main() raises:
     var pass_openloop = ratio_openloop < 1.0
 
     if pass_1step and pass_openloop:
-        print("\n  [PASS] amortized PC: 1-step MSE < 0.5×persistence, open-loop beats persistence")
+        print(
+            "\n  [PASS] amortized PC: 1-step MSE < 0.5×persistence, open-loop"
+            " beats persistence"
+        )
     else:
         if not pass_1step:
             print("\n  [FAIL] 1-step MSE ratio ≥ 0.5")
         if not pass_openloop:
-            print("\n  [FAIL] open-loop MSE ratio ≥ 1.0 — model worse than persistence")
+            print(
+                "\n  [FAIL] open-loop MSE ratio ≥ 1.0 — model worse than"
+                " persistence"
+            )
         raise Error("amortized PC test failed")
 
     # cleanup

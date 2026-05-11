@@ -79,7 +79,7 @@ comptime TRAINER = PCTrainer[
 comptime OPT = Adam[LR=ADAM_LR]
 
 
-fn _angle_normalize(t: Float64) -> Float64:
+def _angle_normalize(t: Float64) -> Float64:
     """Wrap angle into [-π, π]."""
     var x = (t + pi) - 2.0 * pi * Float64(Int((t + pi) / (2.0 * pi)))
     if x < 0.0:
@@ -96,10 +96,9 @@ def _step_pendulum(
         u = PEND_MAX_TORQUE
     elif u < -PEND_MAX_TORQUE:
         u = -PEND_MAX_TORQUE
-    var theta_acc = (
-        (3.0 * PEND_G) / (2.0 * PEND_L) * sin(theta)
-        + (3.0 / (PEND_M * PEND_L * PEND_L)) * u
-    )
+    var theta_acc = (3.0 * PEND_G) / (2.0 * PEND_L) * sin(theta) + (
+        3.0 / (PEND_M * PEND_L * PEND_L)
+    ) * u
     var new_dot = theta_dot + theta_acc * PEND_DT
     if new_dot > PEND_MAX_SPEED:
         new_dot = PEND_MAX_SPEED
@@ -169,23 +168,58 @@ def _gen_rollout_into[
         theta_dot = stepped[1]
         obs_buf[obs_offset + (t + 1) * OBS_DIM + 0] = Scalar[dtype](cos(theta))
         obs_buf[obs_offset + (t + 1) * OBS_DIM + 1] = Scalar[dtype](sin(theta))
-        obs_buf[obs_offset + (t + 1) * OBS_DIM + 2] = Scalar[dtype](theta_dot / PEND_MAX_SPEED)
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 2] = Scalar[dtype](
+            theta_dot / PEND_MAX_SPEED
+        )
 
 
 def main() raises:
     print("=" * 60)
     print("Pendulum world model — real-env extension")
     print("=" * 60)
-    print("  arch       : PCBlock[", AUG_DIM, ",", HIDDEN, ",PCTanh] → PCBlock[", HIDDEN, ",", OBS_DIM, ",PCTanh]")
+    print(
+        "  arch       : PCBlock[",
+        AUG_DIM,
+        ",",
+        HIDDEN,
+        ",PCTanh] → PCBlock[",
+        HIDDEN,
+        ",",
+        OBS_DIM,
+        ",PCTanh]",
+    )
     print("  PARAM_SIZE :", NET.PARAM_SIZE, "  LATENT_DIM:", NET.LATENT_DIM)
-    print("  BATCH=", BATCH, " SEQ_LEN=", SEQ_LEN, " EPOCHS=", EPOCHS, " N_BATCHES=", N_BATCHES_PER_EPOCH)
-    print("  T_INFER=", T_INFER, " LR_X=", LR_X, " ADAM_LR=", ADAM_LR, " GRAD_CLIP=", GRAD_CLIP_NORM)
-    print("  env        : Pendulum (deterministic), obs=[cos θ, sin θ, ω/8], action ∈ [-1, 1]")
+    print(
+        "  BATCH=",
+        BATCH,
+        " SEQ_LEN=",
+        SEQ_LEN,
+        " EPOCHS=",
+        EPOCHS,
+        " N_BATCHES=",
+        N_BATCHES_PER_EPOCH,
+    )
+    print(
+        "  T_INFER=",
+        T_INFER,
+        " LR_X=",
+        LR_X,
+        " ADAM_LR=",
+        ADAM_LR,
+        " GRAD_CLIP=",
+        GRAD_CLIP_NORM,
+    )
+    print(
+        "  env        : Pendulum (deterministic), obs=[cos θ, sin θ, ω/8],"
+        " action ∈ [-1, 1]"
+    )
 
     # ── Allocate net params + Adam state ──────────────────────────────────────
     var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
     var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
+    var opt_state_buf = alloc[Scalar[dtype]](
+        NET.PARAM_SIZE * OPT.STATE_PER_PARAM
+    )
     var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
     memset(params_buf, 0, NET.PARAM_SIZE)
     memset(grads_buf, 0, NET.PARAM_SIZE)
@@ -199,7 +233,9 @@ def main() raises:
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
     ](grads_buf)
     var opt_state = LayoutTensor[
-        dtype, Layout.row_major(NET.PARAM_SIZE, OPT.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(NET.PARAM_SIZE, OPT.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](opt_state_buf)
     var opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -273,9 +309,15 @@ def main() raises:
                         b * (SEQ_LEN + 1) * OBS_DIM + 0 * OBS_DIM + d
                     ]
             _ = TRAINER.compute_grads_only[BATCH](
-                params, grads, latents,
-                mu_eps_buf, a_below_buf, z_below_buf, dx_buf,
-                x_in, y_target,
+                params,
+                grads,
+                latents,
+                mu_eps_buf,
+                a_below_buf,
+                z_below_buf,
+                dx_buf,
+                x_in,
+                y_target,
                 T_infer=T_INFER,
                 lr_x=Scalar[dtype](LR_X),
             )
@@ -286,9 +328,7 @@ def main() raises:
             )
             for b in range(BATCH):
                 for j in range(HIDDEN):
-                    x_in_buf[b * AUG_DIM + j] = lat_buf[
-                        b * NET.LATENT_DIM + j
-                    ]
+                    x_in_buf[b * AUG_DIM + j] = lat_buf[b * NET.LATENT_DIM + j]
 
             # Steps t = 1..SEQ_LEN: x_in = [prev_z, action_{t-1}], target = obs_t.
             for t in range(1, SEQ_LEN + 1):
@@ -301,9 +341,15 @@ def main() raises:
                             b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d
                         ]
                 var result = TRAINER.compute_grads_only[BATCH](
-                    params, grads, latents,
-                    mu_eps_buf, a_below_buf, z_below_buf, dx_buf,
-                    x_in, y_target,
+                    params,
+                    grads,
+                    latents,
+                    mu_eps_buf,
+                    a_below_buf,
+                    z_below_buf,
+                    dx_buf,
+                    x_in,
+                    y_target,
                     T_infer=T_INFER,
                     lr_x=Scalar[dtype](LR_X),
                 )
@@ -322,8 +368,11 @@ def main() raises:
         if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == EPOCHS - 1:
             var elapsed = Float64(perf_counter_ns() - t0) / 1e9
             print(
-                "    ", epoch, "  ",
-                String(last_loss)[byte=:11], "  ",
+                "    ",
+                epoch,
+                "  ",
+                String(last_loss)[byte=:11],
+                "  ",
                 String(elapsed)[byte=:7],
             )
 
@@ -383,9 +432,15 @@ def main() raises:
                 b * (SEQ_LEN + 1) * OBS_DIM + 0 * OBS_DIM + d
             ]
     _ = TRAINER.compute_grads_only[BATCH](
-        params, grads, latents,
-        mu_eps_buf, a_below_buf, z_below_buf, dx_buf,
-        x_in, y_target,
+        params,
+        grads,
+        latents,
+        mu_eps_buf,
+        a_below_buf,
+        z_below_buf,
+        dx_buf,
+        x_in,
+        y_target,
         T_infer=T_INFER,
         lr_x=Scalar[dtype](LR_X),
     )
@@ -405,9 +460,7 @@ def main() raises:
     for t in range(1, SEQ_LEN + 1):
         # Build x_in[:, HIDDEN] = action_{t-1}.
         for b in range(N_EVAL_TRAJ):
-            x_in_buf[b * AUG_DIM + HIDDEN] = actions_buf[
-                b * SEQ_LEN + (t - 1)
-            ]
+            x_in_buf[b * AUG_DIM + HIDDEN] = actions_buf[b * SEQ_LEN + (t - 1)]
 
         # Predict (no settle): z_pred = block_0(x_in); s_pred = block_1(z_pred)
         NET.block_types[0].predict[BATCH, dtype](
@@ -425,12 +478,24 @@ def main() raises:
         var step_persist_1: Float64 = 0
         var step_persist_2: Float64 = 0
         for b in range(N_EVAL_TRAJ):
-            var s_true_0 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 0])
-            var s_true_1 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 1])
-            var s_true_2 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 2])
-            var s_prev_0 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 0])
-            var s_prev_1 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 1])
-            var s_prev_2 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 2])
+            var s_true_0 = Float64(
+                obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 0]
+            )
+            var s_true_1 = Float64(
+                obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 1]
+            )
+            var s_true_2 = Float64(
+                obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 2]
+            )
+            var s_prev_0 = Float64(
+                obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 0]
+            )
+            var s_prev_1 = Float64(
+                obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 1]
+            )
+            var s_prev_2 = Float64(
+                obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 2]
+            )
             var d_m_0 = Float64(s_pred_buf[b * OBS_DIM + 0]) - s_true_0
             var d_m_1 = Float64(s_pred_buf[b * OBS_DIM + 1]) - s_true_1
             var d_m_2 = Float64(s_pred_buf[b * OBS_DIM + 2]) - s_true_2
@@ -461,11 +526,26 @@ def main() raises:
         mse_persist_per_dim_2 += step_persist_2
 
         print(
-            "    ", t,
-            "  ", String(mse_step)[byte=:9],
-            "  ", String(persist_step)[byte=:9],
-            "  [", String(step_mse_0)[byte=:6], ",", String(step_mse_1)[byte=:6], ",", String(step_mse_2)[byte=:6], "]",
-            "  [", String(step_persist_0)[byte=:6], ",", String(step_persist_1)[byte=:6], ",", String(step_persist_2)[byte=:6], "]",
+            "    ",
+            t,
+            "  ",
+            String(mse_step)[byte=:9],
+            "  ",
+            String(persist_step)[byte=:9],
+            "  [",
+            String(step_mse_0)[byte=:6],
+            ",",
+            String(step_mse_1)[byte=:6],
+            ",",
+            String(step_mse_2)[byte=:6],
+            "]",
+            "  [",
+            String(step_persist_0)[byte=:6],
+            ",",
+            String(step_persist_1)[byte=:6],
+            ",",
+            String(step_persist_2)[byte=:6],
+            "]",
         )
 
         # Filter z_t against actual s_t (teacher forcing).
@@ -475,9 +555,15 @@ def main() raises:
                     b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d
                 ]
         _ = TRAINER.compute_grads_only[BATCH](
-            params, grads, latents,
-            mu_eps_buf, a_below_buf, z_below_buf, dx_buf,
-            x_in, y_target,
+            params,
+            grads,
+            latents,
+            mu_eps_buf,
+            a_below_buf,
+            z_below_buf,
+            dx_buf,
+            x_in,
+            y_target,
             T_infer=T_INFER,
             lr_x=Scalar[dtype](LR_X),
         )
@@ -489,7 +575,10 @@ def main() raises:
     var avg_mse_persist = mse_persist_total / Float64(SEQ_LEN)
     print("\n  avg 1-step MSE :", avg_mse_1step)
     print("  avg persist MSE:", avg_mse_persist)
-    print("  ratio (model / persist):", avg_mse_1step / avg_mse_persist if avg_mse_persist > 0 else 1.0)
+    print(
+        "  ratio (model / persist):",
+        avg_mse_1step / avg_mse_persist if avg_mse_persist > 0 else 1.0,
+    )
 
     # ── Eval mode 2: open-loop multi-step prediction ─────────────────────────
     # Filter z_0 against s_0, then propagate forward via predict only.
@@ -504,9 +593,15 @@ def main() raises:
                 b * (SEQ_LEN + 1) * OBS_DIM + 0 * OBS_DIM + d
             ]
     _ = TRAINER.compute_grads_only[BATCH](
-        params, grads, latents,
-        mu_eps_buf, a_below_buf, z_below_buf, dx_buf,
-        x_in, y_target,
+        params,
+        grads,
+        latents,
+        mu_eps_buf,
+        a_below_buf,
+        z_below_buf,
+        dx_buf,
+        x_in,
+        y_target,
         T_infer=T_INFER,
         lr_x=Scalar[dtype](LR_X),
     )
@@ -519,9 +614,7 @@ def main() raises:
 
     for t in range(1, EVAL_HORIZON + 1):
         for b in range(N_EVAL_TRAJ):
-            x_in_buf[b * AUG_DIM + HIDDEN] = actions_buf[
-                b * SEQ_LEN + (t - 1)
-            ]
+            x_in_buf[b * AUG_DIM + HIDDEN] = actions_buf[b * SEQ_LEN + (t - 1)]
         NET.block_types[0].predict[BATCH, dtype](
             x_in, params_b0, z_pred, a_z_pred
         )
@@ -533,8 +626,12 @@ def main() raises:
         var step_persist: Float64 = 0
         for b in range(N_EVAL_TRAJ):
             for d in range(OBS_DIM):
-                var s_true = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d])
-                var s_prev = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + d])
+                var s_true = Float64(
+                    obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d]
+                )
+                var s_prev = Float64(
+                    obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + d]
+                )
                 var d_m = Float64(s_pred_buf[b * OBS_DIM + d]) - s_true
                 step_mse += d_m * d_m
                 var d_p = s_prev - s_true
@@ -544,10 +641,16 @@ def main() raises:
         mse_openloop_total += step_mse
         mse_openloop_persist += step_persist
         print(
-            "    ", t,
-            "  ", String(step_mse)[byte=:9],
-            "  ", String(step_persist)[byte=:9],
-            "  ", String(step_mse / step_persist if step_persist > 0 else 1.0)[byte=:6],
+            "    ",
+            t,
+            "  ",
+            String(step_mse)[byte=:9],
+            "  ",
+            String(step_persist)[byte=:9],
+            "  ",
+            String(step_mse / step_persist if step_persist > 0 else 1.0)[
+                byte=:6
+            ],
         )
 
         # Open-loop: prev_hidden = z_pred (NOT filtered).
@@ -559,25 +662,50 @@ def main() raises:
     var avg_mse_openloop_persist = mse_openloop_persist / Float64(EVAL_HORIZON)
     print("\n  avg open-loop MSE :", avg_mse_openloop)
     print("  avg open-loop persist:", avg_mse_openloop_persist)
-    print("  ratio (model / persist):", avg_mse_openloop / avg_mse_openloop_persist if avg_mse_openloop_persist > 0 else 1.0)
+    print(
+        "  ratio (model / persist):",
+        avg_mse_openloop / avg_mse_openloop_persist if avg_mse_openloop_persist
+        > 0 else 1.0,
+    )
 
     # ── Pass criteria ─────────────────────────────────────────────────────────
     print("\n  === Summary ===")
-    print("  1-step MSE ratio  :", avg_mse_1step / avg_mse_persist if avg_mse_persist > 0 else 1.0,
-          "  (want < 0.5)")
-    print("  open-loop MSE ratio:", avg_mse_openloop / avg_mse_openloop_persist if avg_mse_openloop_persist > 0 else 1.0,
-          "  (want < 1.0 — at least better than persistence)")
+    print(
+        "  1-step MSE ratio  :",
+        avg_mse_1step / avg_mse_persist if avg_mse_persist > 0 else 1.0,
+        "  (want < 0.5)",
+    )
+    print(
+        "  open-loop MSE ratio:",
+        avg_mse_openloop / avg_mse_openloop_persist if avg_mse_openloop_persist
+        > 0 else 1.0,
+        "  (want < 1.0 — at least better than persistence)",
+    )
 
-    var pass_1step = (avg_mse_1step / avg_mse_persist) < 0.5 if avg_mse_persist > 0 else False
-    var pass_openloop = (avg_mse_openloop / avg_mse_openloop_persist) < 1.0 if avg_mse_openloop_persist > 0 else False
+    var pass_1step = (
+        (avg_mse_1step / avg_mse_persist)
+        < 0.5 if avg_mse_persist
+        > 0 else False
+    )
+    var pass_openloop = (
+        (avg_mse_openloop / avg_mse_openloop_persist)
+        < 1.0 if avg_mse_openloop_persist
+        > 0 else False
+    )
 
     if pass_1step and pass_openloop:
-        print("\n  [PASS] Pendulum world model: 1-step MSE < 0.5×persistence, open-loop beats persistence")
+        print(
+            "\n  [PASS] Pendulum world model: 1-step MSE < 0.5×persistence,"
+            " open-loop beats persistence"
+        )
     else:
         if not pass_1step:
             print("\n  [FAIL] 1-step MSE ratio ≥ 0.5")
         if not pass_openloop:
-            print("\n  [FAIL] open-loop MSE ratio ≥ 1.0 — model worse than persistence")
+            print(
+                "\n  [FAIL] open-loop MSE ratio ≥ 1.0 — model worse than"
+                " persistence"
+            )
         raise Error("Pendulum world model test failed")
 
     # cleanup

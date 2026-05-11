@@ -70,8 +70,10 @@ comptime OPT = Adam[LR=ADAM_LR]
 # =============================================================================
 
 
-fn _dx_combine_apply_kernel[
-    BATCH: Int, DIM: Int, KDT: DType,
+def _dx_combine_apply_kernel[
+    BATCH: Int,
+    DIM: Int,
+    KDT: DType,
 ](
     x_shared: LayoutTensor[KDT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     eps_up_0: LayoutTensor[KDT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -87,22 +89,20 @@ fn _dx_combine_apply_kernel[
         return
     var b = idx // DIM
     var k = idx % DIM
-    var u = (
-        rebind[Scalar[KDT]](eps_up_0[b, k])
-        - rebind[Scalar[KDT]](z_up_1[b, k])
+    var u = rebind[Scalar[KDT]](eps_up_0[b, k]) - rebind[Scalar[KDT]](
+        z_up_1[b, k]
     )
-    var d = (
-        rebind[Scalar[KDT]](eps_dn_0[b, k])
-        - rebind[Scalar[KDT]](z_dn_1[b, k])
+    var d = rebind[Scalar[KDT]](eps_dn_0[b, k]) - rebind[Scalar[KDT]](
+        z_dn_1[b, k]
     )
-    x_shared[b, k] = (
-        rebind[Scalar[KDT]](x_shared[b, k])
-        - lr_x * (alpha_up * u + alpha_down * d)
+    x_shared[b, k] = rebind[Scalar[KDT]](x_shared[b, k]) - lr_x * (
+        alpha_up * u + alpha_down * d
     )
 
 
-fn _scale_kernel[
-    SIZE: Int, KDT: DType,
+def _scale_kernel[
+    SIZE: Int,
+    KDT: DType,
 ](
     arr: LayoutTensor[KDT, Layout.row_major(SIZE), MutAnyOrigin],
     factor: Scalar[KDT],
@@ -119,7 +119,9 @@ def main() raises:
     print("=" * 60)
     print("  UP   arch  : 784 →", HIDDEN, "→ 10")
     print("  DOWN arch  : 10  →", HIDDEN, "→ 784")
-    print("  hyperparams: BATCH=", BATCH, " T_INFER=", T_INFER, " EPOCHS=", EPOCHS)
+    print(
+        "  hyperparams: BATCH=", BATCH, " T_INFER=", T_INFER, " EPOCHS=", EPOCHS
+    )
     print("  α_up=", ALPHA_UP, " α_down=", ALPHA_DOWN)
 
     var ctx = DeviceContext()
@@ -141,14 +143,18 @@ def main() raises:
     var up_opt_state_dbuf = ctx.enqueue_create_buffer[dtype](
         UP_PARAM_SIZE * OPT.STATE_PER_PARAM
     )
-    var up_opt_global_dbuf = ctx.enqueue_create_buffer[dtype](OPT.GLOBAL_STATE_SIZE)
+    var up_opt_global_dbuf = ctx.enqueue_create_buffer[dtype](
+        OPT.GLOBAL_STATE_SIZE
+    )
     var up_zero_state = ctx.enqueue_create_host_buffer[dtype](
         UP_PARAM_SIZE * OPT.STATE_PER_PARAM
     )
     for i in range(UP_PARAM_SIZE * OPT.STATE_PER_PARAM):
         up_zero_state.unsafe_ptr()[i] = Scalar[dtype](0)
     ctx.enqueue_copy(up_opt_state_dbuf, up_zero_state)
-    var up_opt_global_init = ctx.enqueue_create_host_buffer[dtype](OPT.GLOBAL_STATE_SIZE)
+    var up_opt_global_init = ctx.enqueue_create_host_buffer[dtype](
+        OPT.GLOBAL_STATE_SIZE
+    )
     up_opt_global_init.unsafe_ptr()[0] = Scalar[dtype](0)
     up_opt_global_init.unsafe_ptr()[1] = Scalar[dtype](1.0)
     ctx.enqueue_copy(up_opt_global_dbuf, up_opt_global_init)
@@ -168,14 +174,18 @@ def main() raises:
     var dn_opt_state_dbuf = ctx.enqueue_create_buffer[dtype](
         DOWN_PARAM_SIZE * OPT.STATE_PER_PARAM
     )
-    var dn_opt_global_dbuf = ctx.enqueue_create_buffer[dtype](OPT.GLOBAL_STATE_SIZE)
+    var dn_opt_global_dbuf = ctx.enqueue_create_buffer[dtype](
+        OPT.GLOBAL_STATE_SIZE
+    )
     var dn_zero_state = ctx.enqueue_create_host_buffer[dtype](
         DOWN_PARAM_SIZE * OPT.STATE_PER_PARAM
     )
     for i in range(DOWN_PARAM_SIZE * OPT.STATE_PER_PARAM):
         dn_zero_state.unsafe_ptr()[i] = Scalar[dtype](0)
     ctx.enqueue_copy(dn_opt_state_dbuf, dn_zero_state)
-    var dn_opt_global_init = ctx.enqueue_create_host_buffer[dtype](OPT.GLOBAL_STATE_SIZE)
+    var dn_opt_global_init = ctx.enqueue_create_host_buffer[dtype](
+        OPT.GLOBAL_STATE_SIZE
+    )
     dn_opt_global_init.unsafe_ptr()[0] = Scalar[dtype](0)
     dn_opt_global_init.unsafe_ptr()[1] = Scalar[dtype](1.0)
     ctx.enqueue_copy(dn_opt_global_dbuf, dn_opt_global_init)
@@ -188,7 +198,9 @@ def main() raises:
         dtype, Layout.row_major(UP_PARAM_SIZE), MutAnyOrigin
     ](up_grads_dbuf)
     var up_opt_state_t = LayoutTensor[
-        dtype, Layout.row_major(UP_PARAM_SIZE, OPT.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(UP_PARAM_SIZE, OPT.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](up_opt_state_dbuf)
     var up_opt_global_t = LayoutTensor[
         dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -201,7 +213,9 @@ def main() raises:
         dtype, Layout.row_major(DOWN_PARAM_SIZE), MutAnyOrigin
     ](dn_grads_dbuf)
     var dn_opt_state_t = LayoutTensor[
-        dtype, Layout.row_major(DOWN_PARAM_SIZE, OPT.STATE_PER_PARAM), MutAnyOrigin
+        dtype,
+        Layout.row_major(DOWN_PARAM_SIZE, OPT.STATE_PER_PARAM),
+        MutAnyOrigin,
     ](dn_opt_state_dbuf)
     var dn_opt_global_t = LayoutTensor[
         dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin
@@ -311,15 +325,17 @@ def main() raises:
     for i in range(MNIST.N_TRAIN * 10):
         train_lbl_host.unsafe_ptr()[i] = Scalar[dtype](0)
     for i in range(MNIST.N_TRAIN):
-        train_lbl_host.unsafe_ptr()[i * 10 + Int(ds.train_labels[i])] = (
-            Scalar[dtype](1.0)
-        )
+        train_lbl_host.unsafe_ptr()[i * 10 + Int(ds.train_labels[i])] = Scalar[
+            dtype
+        ](1.0)
     var train_img_dbuf = ctx.enqueue_create_buffer[dtype](MNIST.N_TRAIN * 784)
     var train_lbl_dbuf = ctx.enqueue_create_buffer[dtype](MNIST.N_TRAIN * 10)
     ctx.enqueue_copy(train_img_dbuf, train_img_host)
     ctx.enqueue_copy(train_lbl_dbuf, train_lbl_host)
 
-    var test_img_host = ctx.enqueue_create_host_buffer[dtype](MNIST.N_TEST * 784)
+    var test_img_host = ctx.enqueue_create_host_buffer[dtype](
+        MNIST.N_TEST * 784
+    )
     for i in range(MNIST.N_TEST * 784):
         test_img_host.unsafe_ptr()[i] = ds.test_images[i]
     var test_img_dbuf = ctx.enqueue_create_buffer[dtype](MNIST.N_TEST * 784)
@@ -407,40 +423,49 @@ def main() raises:
                 # Phase D: x_shared -= lr_x · (α_up·(ε_up_0 - z_up_1)
                 #                              + α_down·(ε_dn_0 - z_dn_1))
                 ctx.enqueue_function[k_dx, k_dx](
-                    x_shared_t, up_eps0_t, up_z1_t, dn_eps0_t, dn_z1_t,
-                    lr_x_s, alpha_up_s, alpha_down_s,
-                    grid_dim=(dx_blocks,), block_dim=(TPB,),
+                    x_shared_t,
+                    up_eps0_t,
+                    up_z1_t,
+                    dn_eps0_t,
+                    dn_z1_t,
+                    lr_x_s,
+                    alpha_up_s,
+                    alpha_down_s,
+                    grid_dim=(dx_blocks,),
+                    block_dim=(TPB,),
                 )
 
             # Weight grads (using post-inference ε)
-            UB0.weight_grad_gpu[BATCH, dtype](
-                ctx, up_eps0_t, up_a0_t, up_g0_t
-            )
-            UB1.weight_grad_gpu[BATCH, dtype](
-                ctx, up_eps1_t, up_a1_t, up_g1_t
-            )
-            DB0.weight_grad_gpu[BATCH, dtype](
-                ctx, dn_eps0_t, dn_a0_t, dn_g0_t
-            )
-            DB1.weight_grad_gpu[BATCH, dtype](
-                ctx, dn_eps1_t, dn_a1_t, dn_g1_t
-            )
+            UB0.weight_grad_gpu[BATCH, dtype](ctx, up_eps0_t, up_a0_t, up_g0_t)
+            UB1.weight_grad_gpu[BATCH, dtype](ctx, up_eps1_t, up_a1_t, up_g1_t)
+            DB0.weight_grad_gpu[BATCH, dtype](ctx, dn_eps0_t, dn_a0_t, dn_g0_t)
+            DB1.weight_grad_gpu[BATCH, dtype](ctx, dn_eps1_t, dn_a1_t, dn_g1_t)
 
             # Scale DOWN grads by alpha_down
             ctx.enqueue_function[k_scale, k_scale](
-                dn_grads_t, alpha_down_s,
-                grid_dim=(scale_blocks,), block_dim=(TPB,),
+                dn_grads_t,
+                alpha_down_s,
+                grid_dim=(scale_blocks,),
+                block_dim=(TPB,),
             )
 
             # Adam steps
             step_num += 1
             OPT.step_gpu[UP_PARAM_SIZE, dtype](
-                ctx, up_params_t, up_grads_t, up_opt_state_t,
-                up_opt_global_t, step_num,
+                ctx,
+                up_params_t,
+                up_grads_t,
+                up_opt_state_t,
+                up_opt_global_t,
+                step_num,
             )
             OPT.step_gpu[DOWN_PARAM_SIZE, dtype](
-                ctx, dn_params_t, dn_grads_t, dn_opt_state_t,
-                dn_opt_global_t, step_num,
+                ctx,
+                dn_params_t,
+                dn_grads_t,
+                dn_opt_state_t,
+                dn_opt_global_t,
+                step_num,
             )
 
         ctx.synchronize()
@@ -453,9 +478,9 @@ def main() raises:
 
     # ── Eval: classification accuracy via UP forward_eval_gpu ────────────────
     var pred_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * 10)
-    var pred_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, 10), MutAnyOrigin
-    ](pred_dbuf)
+    var pred_t = LayoutTensor[dtype, Layout.row_major(BATCH, 10), MutAnyOrigin](
+        pred_dbuf
+    )
     var up_eval_mu_dbuf = ctx.enqueue_create_buffer[dtype](
         BATCH * UP_NET.SCRATCH_OUT_DIM
     )
@@ -530,9 +555,8 @@ def main() raises:
 
     var class_diff: Float64 = 0
     for j in range(784):
-        var d = (
-            Float64(gen_image_host.unsafe_ptr()[0 * 784 + j])
-            - Float64(gen_image_host.unsafe_ptr()[9 * 784 + j])
+        var d = Float64(gen_image_host.unsafe_ptr()[0 * 784 + j]) - Float64(
+            gen_image_host.unsafe_ptr()[9 * 784 + j]
         )
         class_diff += d * d
     class_diff /= Float64(784)
@@ -540,7 +564,9 @@ def main() raises:
     var gen_mean_mag: Float64 = 0
     for c in range(10):
         for j in range(784):
-            gen_mean_mag += abs(Float64(gen_image_host.unsafe_ptr()[c * 784 + j]))
+            gen_mean_mag += abs(
+                Float64(gen_image_host.unsafe_ptr()[c * 784 + j])
+            )
     gen_mean_mag /= Float64(10 * 784)
 
     print("  Per-pixel MSE between class-0 and class-9:", class_diff)
@@ -549,7 +575,10 @@ def main() raises:
     if test_acc >= 0.50:
         print("\n  [PASS] bidirectional PC GPU: classifier reaches", test_acc)
         if class_diff < 0.005:
-            print("  (NOTE) decoder under-trained (matches CPU result — α_down low or budget short)")
+            print(
+                "  (NOTE) decoder under-trained (matches CPU result — α_down"
+                " low or budget short)"
+            )
     else:
         print("\n  [FAIL] classification too low")
         raise Error("bidirectional GPU test failed")
