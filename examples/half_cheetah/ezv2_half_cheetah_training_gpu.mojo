@@ -74,7 +74,12 @@ def main() raises:
         MAX_ACTION=1.0,            # ← DMC convention: actions ∈ [-1, 1]
         MIN_STD=0.1,               # ← paper default (Pendulum used 0.5)
         STD_MAGNIFICATION=3.0,
-        ENT_WEIGHT=5e-3,           # ← paper default
+        # Paper default 5e-3, but with simple-best NLL (ACT_DIM>1) and
+        # K_ROOT=16 it overpowers the policy loss → σ widens unboundedly
+        # → L_P → very negative → policy regresses (60k step run
+        # 2026-05-11, mean10 monotonically declines -333 → -548).
+        # Dropped 5x; can be tightened further or annealed if needed.
+        ENT_WEIGHT=1e-3,
         # Bootstrapped TD value target — the keystone fix from Pendulum.
         # Reference uses this for DMC state envs. See
         # `docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md`.
@@ -154,8 +159,13 @@ def main() raises:
         train_interval=1,
         sync_interval=50,
         target_sync_interval=200,
-        reanalyze_interval=200,
-        reanalyze_samples=32,
+        # 4× reanalyze: with CAP=50k and the previous (interval=200,
+        # samples=32) cadence, only ~1k buffer slots were refreshed
+        # over 60k env-steps — most stored MCTS targets were collected
+        # under stale online networks. Tighten so the policy fits
+        # targets that track the current target-net's Q.
+        reanalyze_interval=50,
+        reanalyze_samples=128,
         reanalyze_warmup=1000,
         warmup_random_steps=2_000,
         max_steps_per_episode=1_000,
