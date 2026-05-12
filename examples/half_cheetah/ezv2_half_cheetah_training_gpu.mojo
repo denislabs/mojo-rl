@@ -46,12 +46,12 @@ from mojo_rl.nn.constants import dtype
 
 def main() raises:
     print("=" * 72)
-    print("    EZ-V2 HalfCheetah — full GPU path (Phase 4, N_ENVS=8)")
+    print("    EZ-V2 HalfCheetah — full GPU path (Phase 4, N_ENVS=4)")
     print("=" * 72)
 
     # Paper budget for HalfCheetah first-convergence on DMC state.
     comptime NUM_ENV_STEPS = 100_000
-    comptime N_ENVS = 8
+    comptime N_ENVS = 4
 
     # Paper-spec network sizing (`references/EfficientZeroV2-main/ez/config/exp/dmc_state.yaml`).
     # Previous 128/128/256 pulse-check was undersized for HalfCheetah's
