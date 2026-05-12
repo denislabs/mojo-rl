@@ -1426,9 +1426,15 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 elif Self.Config.value_target_mode == VALUE_TARGET_SARSA:
                     v_target = td
                 else:  # VALUE_TARGET_MIXED
-                    v_target = MixedValueTarget[
-                        Self.Config.t_fresh, Self.Config.t_stale
-                    ].compute(sve, td, age)
+                    # Reference base.py:420: training-step gate. Pure TD
+                    # until train_step ≥ T_STALE (= start_use_mix_training_steps),
+                    # then per-sample blend (recent → TD, old → SVE).
+                    if self.train_step_count < Self.Config.t_stale:
+                        v_target = td
+                    else:
+                        v_target = MixedValueTarget[
+                            Self.Config.t_fresh, Self.Config.t_stale
+                        ].compute(sve, td, age)
                 encode_categorical[BINS](
                     scalar_transform(v_target),
                     self.v_min,
@@ -2466,9 +2472,15 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 elif Self.Config.value_target_mode == VALUE_TARGET_SARSA:
                     v_target = td
                 else:  # VALUE_TARGET_MIXED
-                    v_target = MixedValueTarget[
-                        Self.Config.t_fresh, Self.Config.t_stale
-                    ].compute(sve, td, age)
+                    # Reference base.py:420: training-step gate. Pure TD
+                    # until train_step ≥ T_STALE (= start_use_mix_training_steps),
+                    # then per-sample blend (recent → TD, old → SVE).
+                    if self.train_step_count < Self.Config.t_stale:
+                        v_target = td
+                    else:
+                        v_target = MixedValueTarget[
+                            Self.Config.t_fresh, Self.Config.t_stale
+                        ].compute(sve, td, age)
                 gpu.value_target_full_host[sampled * (K + 1) + k] = Scalar[
                     dtype
                 ](v_target)
@@ -3173,9 +3185,15 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 elif Self.Config.value_target_mode == VALUE_TARGET_SARSA:
                     v_target = td
                 else:  # VALUE_TARGET_MIXED
-                    v_target = MixedValueTarget[
-                        Self.Config.t_fresh, Self.Config.t_stale
-                    ].compute(sve, td, age)
+                    # Reference base.py:420: training-step gate. Pure TD
+                    # until train_step ≥ T_STALE (= start_use_mix_training_steps),
+                    # then per-sample blend (recent → TD, old → SVE).
+                    if self.train_step_count < Self.Config.t_stale:
+                        v_target = td
+                    else:
+                        v_target = MixedValueTarget[
+                            Self.Config.t_fresh, Self.Config.t_stale
+                        ].compute(sve, td, age)
                 encode_categorical[BINS](
                     scalar_transform(v_target),
                     self.v_min,

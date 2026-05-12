@@ -37,6 +37,7 @@ from mojo_rl.nn.model import (
     Linear,
     LinearReLU,
     LinearMish,
+    LinearBatchNormReLU,
     LayerNorm,
     MinMaxNorm,
     Sequential,
@@ -428,6 +429,11 @@ struct EZV2ContinuousMLPConfig[
     ACT_DIM: Int,
     LATENT: Int = 256,
     HIDDEN: Int = 256,
+    # Hidden width of the deep policy/value/reward heads (reference
+    # `dmc_state.yaml: pi_net_shape=[256,256], val_net_shape=[256,256],
+    # rew_net_shape=[256,256]`). Each head has 2 hidden layers of this
+    # width with BN+ReLU between, then a final Linear to the output dim.
+    HEAD_HIDDEN: Int = 256,
     PROJ: Int = 1024,
     # SimSiam projector inner-hidden width. Reference
     # (`dmc_state.yaml: proj_hid_shape=512`) expands then contracts:
@@ -446,19 +452,26 @@ struct EZV2ContinuousMLPConfig[
     # Critical for low-ACT_DIM envs (Pendulum, 1-dim) where the raw
     # action would otherwise have ~1.5% of dyn input variance.
     ACT_EMBED: Int = 64,
-    LR: Float64 = 1e-3,
-    WD: Float64 = 1e-4,
-    CAP: Int = 50000,
-    BS: Int = 64,
+    # Optimizer defaults match reference `dmc_state.yaml: lr=3e-4,
+    # weight_decay=2e-5`.
+    LR: Float64 = 3e-4,
+    WD: Float64 = 2e-5,
+    # Buffer + batch defaults match reference `buffer_size=100000,
+    # batch_size=256`.
+    CAP: Int = 100000,
+    BS: Int = 256,
     K_UNROLL: Int = 5,
     N_TD: Int = 5,
     SIMS: Int = 32,
     NODES: Int = 64,
     K_ROOT: Int = 16,
-    K_NON_ROOT: Int = 8,
+    # Reference `cy_mcts.py:134: leaf_num=2`. Was 8 (4× wider than ref).
+    K_NON_ROOT: Int = 2,
     LAMBDA_R: Float64 = 1.0,
     LAMBDA_P: Float64 = 1.0,
-    LAMBDA_V: Float64 = 0.25,
+    # Reference `dmc_state.yaml: value_loss_coeff=0.5` (was 0.25 here,
+    # 2× under-weighted vs reference).
+    LAMBDA_V: Float64 = 0.5,
     LAMBDA_G: Float64 = 2.0,
     ENT_WEIGHT: Float64 = 5e-3,
     # Squashed-Gaussian hyperparameters (paper App. G).
@@ -571,18 +584,40 @@ struct EZV2ContinuousMLPConfig[
                 Linear[Self.HIDDEN, Self.LATENT],
                 LayerNorm[Self.LATENT],
             ],
-            Linear[Self.HIDDEN, Self.BINS],
+            # Reward head: 2-hidden MLP with BN, matching reference
+            # `rew_net_shape=[256,256] use_bn=True` (`ez_dmc_state.py`
+            # RewardNetwork → mlp(input, [256,256], output, init_zero,
+            # use_bn=True)). Previously this was a single `Linear[HIDDEN,
+            # BINS]` which structurally couldn't fit state-conditional
+            # reward predictions — `L_R` plateaued at log(2) across
+            # every run regardless of encoder/dyn depth.
+            Sequential[
+                LinearBatchNormReLU[Self.HIDDEN, Self.HEAD_HIDDEN],
+                LinearBatchNormReLU[Self.HEAD_HIDDEN, Self.HEAD_HIDDEN],
+                Linear[Self.HEAD_HIDDEN, Self.BINS],
+            ],
         ],
     ]
 
     # Prediction f-net: latent → (μ_raw ‖ σ_raw ‖ value_logits).
     # The 2*ACT_DIM policy outputs feed the squashed-Gaussian — see
     # `kernels.ezv2_policy_loss_grad_continuous_kernel`.
+    #
+    # Reference (`ez_dmc_state.py:506` ValuePolicyNetwork +
+    # `dmc_state.yaml: pi_net_shape=[256,256] val_net_shape=[256,256]
+    # use_bn=True`): each head is a 2-hidden MLP with BN+ELU between
+    # layers. We use a SHARED 2-hidden trunk + Parallel for policy/value
+    # output (similar capacity, half the params). BN is critical for
+    # reference parity — it couples samples in batch and is the
+    # load-bearing collapse defence in SimSiam-pretrained encoders.
+    # ELU → ReLU substitution (we don't have ELU); should be ~equivalent
+    # in practice.
     comptime PredModel = Sequential[
-        LinearMish[Self.LATENT, Self.HIDDEN],
+        LinearBatchNormReLU[Self.LATENT, Self.HEAD_HIDDEN],
+        LinearBatchNormReLU[Self.HEAD_HIDDEN, Self.HEAD_HIDDEN],
         Parallel[
-            Linear[Self.HIDDEN, 2 * Self.ACT_DIM],
-            Linear[Self.HIDDEN, Self.BINS],
+            Linear[Self.HEAD_HIDDEN, 2 * Self.ACT_DIM],
+            Linear[Self.HEAD_HIDDEN, Self.BINS],
         ],
     ]
 
@@ -641,9 +676,16 @@ struct EZV2ContinuousMLPConfig[
     comptime lstm_mlp_hidden: Int = Self.LSTM_MLP_HIDDEN
 
     # ── init_zero head parameter ranges ──────────────────────────────────
-    # Same `Sequential[..., Parallel[A, B]]` shape as the discrete config
-    # — branch 0 of the trailing Parallel is the policy head, branch 1 is
-    # the value head (PredModel) / reward head (DynModel).
+    # PredModel trailing structure: `Sequential[LBNR, LBNR, Parallel[Linear,
+    # Linear]]`. Policy head = branch 0 of trailing Parallel; it's a bare
+    # `Linear` so its PARAM_SIZE is the whole branch param block.
+    # DynModel trailing structure: `Sequential[..., Parallel[Sequential[
+    # Linear,LN], Sequential[LBNR, LBNR, Linear]]]`. Reward head = branch
+    # 1 of trailing Parallel, which is a Sequential — we want init_zero
+    # to hit ONLY the last Linear inside that Sequential (not the BN/LBNR
+    # trunk, whose gradient is needed to train the encoder for state-
+    # conditional reward prediction). `_RewardBranch._param_offset[N-1]()`
+    # gives the offset to the last layer within the branch.
     comptime pred_policy_head_param_start: Int = (
         Self.PredModel._param_offset[Self.PredModel.N - 1]()
         + Self.PredModel.model_types[Self.PredModel.N - 1]._param_offset[0]()
@@ -651,10 +693,12 @@ struct EZV2ContinuousMLPConfig[
     comptime pred_policy_head_param_size: Int = (
         Self.PredModel.model_types[Self.PredModel.N - 1].branch_types[0].PARAM_SIZE
     )
+    comptime _DynParallel = Self.DynModel.model_types[Self.DynModel.N - 1]
+    comptime _RewardBranch = Self._DynParallel.branch_types[1]
+    comptime _RewardLast = Self._RewardBranch.model_types[Self._RewardBranch.N - 1]
     comptime dyn_reward_head_param_start: Int = (
         Self.DynModel._param_offset[Self.DynModel.N - 1]()
-        + Self.DynModel.model_types[Self.DynModel.N - 1]._param_offset[1]()
+        + Self._DynParallel._param_offset[1]()
+        + Self._RewardBranch._param_offset[Self._RewardBranch.N - 1]()
     )
-    comptime dyn_reward_head_param_size: Int = (
-        Self.DynModel.model_types[Self.DynModel.N - 1].branch_types[1].PARAM_SIZE
-    )
+    comptime dyn_reward_head_param_size: Int = Self._RewardLast.PARAM_SIZE

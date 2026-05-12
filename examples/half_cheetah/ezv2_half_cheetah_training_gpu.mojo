@@ -37,7 +37,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.deep_agents.efficient_zero_v2 import (
     EZV2ContinuousMLPConfig,
     GenericEZV2ContinuousAgent,
-    VALUE_TARGET_SARSA,
+    VALUE_TARGET_MIXED,
     run_ezv2_continuous_train_gpu,
 )
 from mojo_rl.envs.half_cheetah import HalfCheetah
@@ -68,71 +68,66 @@ def main() raises:
     # build state-discriminative latents to drive consistency down.
     # `PRED_BOTTLENECK=512` is kept — combined with `PROJ=128` this gives
     # the 128→512→128 predictor shape that matches reference exactly.
+    # 2026-05-13: sweeping audit aligned everything to reference
+    # `dmc_state.yaml`. See doc-update commit for the full diff table.
     comptime Config = EZV2ContinuousMLPConfig[
         OBS=17,
         ACT_DIM=6,
-        LATENT=256,
+        # LATENT = reference `hidden_shape: 128`. Was 256 (2× over-wide).
+        LATENT=128,
+        # HIDDEN = reference `rep_net_shape: 256` and `dyn_shape: 256`.
         HIDDEN=256,
+        # HEAD_HIDDEN = reference `pi_net_shape=val_net_shape=
+        # rew_net_shape=[256, 256]`.
+        HEAD_HIDDEN=256,
+        # Projector: 128 → 512 → 512 → 128 (ref `proj_hid_shape=512,
+        # proj_shape=128`). Predictor: 128 → 512 → 128 (ref
+        # `pred_hid_shape=512, pred_shape=128`).
         PROJ=128,
-        # Reference `dmc_state.yaml: proj_hid_shape=512` — projector
-        # internal hidden is wider than its 128-d output. Combined with
-        # `PRED_BOTTLENECK=512` for the predictor inner, this matches
-        # ref's `128→512→512→128` projector and `128→512→128` predictor
-        # exactly. Uniform PROJ=128 throughout was not enough capacity
-        # to hold a state-discriminative non-trivial cosine alignment —
-        # encoder kept regressing to log(2) after transient learning.
         PROJ_HID=512,
         PRED_BOTTLENECK=512,
         BINS=51,
-        BS=128,
+        # Reference `batch_size: 256` and `buffer_size: 100000` (these
+        # are also the new struct defaults, so the explicit overrides
+        # below are redundant — kept for clarity).
+        BS=256,
+        CAP=100000,
         K_UNROLL=5,
         N_TD=5,
         SIMS=32,
         NODES=128,
         K_ROOT=16,
-        K_NON_ROOT=8,
+        # Reference `cy_mcts.py: leaf_num=2`. Was 8.
+        K_NON_ROOT=2,
         MAX_ACTION=1.0,  # ← DMC convention: actions ∈ [-1, 1]
-        # MIN_STD=0.5 — raised from paper default 0.1 after 2026-05-13
-        # diagnostic. With MIN_STD=0.1, policy `μ` drifted toward
-        # saturated boundary actions (|a|≈0.95) under the policy-bias
-        # feedback loop. 0.5 keeps the action distribution wide enough
-        # to participate in MCTS even when `μ` has drifted. Revisit
-        # once the converging baseline is solid.
-        MIN_STD=0.5,
+        # Reference `dmc_state.yaml` policy MIN_STD = 0.1. Was raised to
+        # 0.5 during action-saturation debugging; now safe to revert with
+        # uniform-random root sampling providing exploration.
+        MIN_STD=0.1,
         STD_MAGNIFICATION=3.0,
-        # Reference DMC root sampling (`cy_mcts.py:127-128` +
-        # `dmc_state.yaml: policy_action_num=4, random_action_num=12`):
-        # 4 root candidates from policy `N(μ, σ)`, remaining 12 from
-        # `Uniform(-MAX_ACTION, MAX_ACTION)`. Decouples MCTS exploration
-        # from the current policy bias — without this, after a few
-        # train steps `μ` drifts toward whichever boundary won the early
-        # random-Q MCTS selections, and all 16 candidates cluster near
-        # that biased `μ` for the rest of training. Uniform random samples
-        # give MCTS the chance to find better actions even when policy
-        # has drifted badly. With `N_POLICY_AT_ROOT == K_ROOT` (default
-        # for Pendulum baseline preservation), legacy half-policy /
-        # half-magnified-policy mode runs instead.
+        # Reference DMC root sampling: 4 from policy, 12 uniform random.
         N_POLICY_AT_ROOT=4,
-        # Reference (`ez/config/exp/dmc_state.yaml:67`): entropy_coeff = 5e-2
-        # for ALL DMC envs (not Pendulum-specific). Previous reductions
-        # (1e-3, 5e-3) chased the wrong direction — strong entropy
-        # gradient (-ENT/σ per dim) is needed to prevent σ collapse to
-        # MIN_STD. Mismatch found 2026-05-13 audit of EfficientZeroV2-main/.
+        # Reference `dmc_state.yaml: entropy_coeff: 5e-2`.
         ENT_WEIGHT=5e-2,
-        # Reference default. Diagnostic 2026-05-13 (LAMBDA_G=0) proved
-        # the SimSiam consistency loss was NOT the cause of HalfCheetah
-        # collapse — encoder collapse was downstream of policy σ-collapse
-        # under MIN_STD=0.1 + degenerate exploration. Restored to ref.
+        # Reference `dmc_state.yaml: consistency_coeff: 2.0`.
         LAMBDA_G=2.0,
-        # Bootstrapped TD value target — the keystone fix from Pendulum.
-        # Reference uses this for DMC state envs. See
-        # `docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md`.
-        VALUE_TARGET_MODE=VALUE_TARGET_SARSA,
+        # Reference `dmc_state.yaml: value_loss_coeff: 0.5` (also matches
+        # the new struct default after the 2026-05-13 audit).
+        LAMBDA_V=0.5,
+        # Reference `dmc_state.yaml: value_target: 'mixed'`. Pure SARSA
+        # used target-net V from step 0 when target net is undertrained,
+        # producing biased targets. MIXED uses SVE (search-derived) for
+        # the first ~20k training steps, then linearly transitions to
+        # SARSA — same as reference's
+        # `start_use_mix_training_steps=4e4, mixed_value_threshold=2e4`.
+        VALUE_TARGET_MODE=VALUE_TARGET_MIXED,
     ]
 
     seed(2026)
     var agent = GenericEZV2ContinuousAgent[Config](
-        gamma=0.99,
+        # Reference `dmc_state.yaml: discount: 0.997`. Was 0.99 — effective
+        # horizon 100 steps vs ref 333 steps for 1000-step HC episodes.
+        gamma=0.997,
         # HalfCheetah V(s) range: random ≈ -50 to 0, trained ≈ +500-1000.
         # Transformed (h(x) = sign(x)·(√(|x|+1)-1) + 0.001·x):
         #   h(-50)  = -6.05
@@ -142,6 +137,7 @@ def main() raises:
         v_max=100.0,
         temperature=1.0,
         temperature_decay_steps=10_000_000,
+        # Reference `dmc_state.yaml: max_grad_norm: 5`.
         max_grad_norm=5.0,
         n_envs=N_ENVS,
     )
