@@ -161,14 +161,18 @@ def main() raises:
         # gpu_mcts_sampled.mojo at runtime to find the tree-state
         # divergence from `mcts_sampled.mojo`.
         use_gpu_mcts=False,
-        # Running obs-normalization (CleanRL VecNormalize semantics). Disabled for now to match the CPU baseline.
+        # Running obs-normalization (CleanRL VecNormalize semantics).
         # Reference (`EfficientZeroV2-main/ez/agents/ez_dmc_state.py:173-182`)
         # makes obs-norm part of the representation network — load-bearing
         # for DMC-state HalfCheetah where raw obs spans 17 dims with mixed
         # zero-/non-zero-mean and wide scales. We do the equivalent at the
         # env boundary so replay stores normalized obs and every consumer
         # (CPU MCTS, GPU MCTS, training, reanalyze) sees a consistent
-        # distribution.
-        obs_norm=False,
+        # distribution. Re-enabled 2026-05-13 after Bugs 1+2 alone weren't
+        # enough — the Xavier-initialized first encoder linear assumes
+        # unit-variance inputs and a few high-scale obs dims (qvel angular
+        # velocity ~ ±100) were dominating the pre-activation, leaving the
+        # encoder partially-collapsed and easy prey for the SimSiam pull.
+        obs_norm=True,
         verbose=True,
     )
