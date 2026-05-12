@@ -74,6 +74,14 @@ def main() raises:
         LATENT=256,
         HIDDEN=256,
         PROJ=128,
+        # Reference `dmc_state.yaml: proj_hid_shape=512` — projector
+        # internal hidden is wider than its 128-d output. Combined with
+        # `PRED_BOTTLENECK=512` for the predictor inner, this matches
+        # ref's `128→512→512→128` projector and `128→512→128` predictor
+        # exactly. Uniform PROJ=128 throughout was not enough capacity
+        # to hold a state-discriminative non-trivial cosine alignment —
+        # encoder kept regressing to log(2) after transient learning.
+        PROJ_HID=512,
         PRED_BOTTLENECK=512,
         BINS=51,
         BS=128,

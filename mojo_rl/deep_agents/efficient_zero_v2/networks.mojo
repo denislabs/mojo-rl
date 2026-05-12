@@ -98,11 +98,20 @@ comptime ActionEmbedding[
 # ProjectionMLP — SimSiam projector
 # ═════════════════════════════════════════════════════════════════════════
 #
-# Reference shape (`ez_dmc_state.py:518-527`):
+# Reference shape (`ez_dmc_state.py:518-527`,
+# `dmc_state.yaml: proj_hid_shape=512, proj_shape=128`):
 #
-#     Linear(HIDDEN, PROJ) → LN → ReLU
-#         → Linear(PROJ, PROJ) → LN → ReLU
-#         → Linear(PROJ, PROJ) → LN
+#     Linear(HIDDEN, PROJ_HID) → LN → ReLU
+#         → Linear(PROJ_HID, PROJ_HID) → LN → ReLU
+#         → Linear(PROJ_HID, PROJ) → LN
+#
+# Reference uses inner width `proj_hid=512` and output width `proj=128`
+# (expand-then-contract). Earlier "uniform PROJ" alone wasn't enough
+# collapse defence on HalfCheetah: even with per-layer LN, the encoder
+# transiently learned (`L_V` dropping to 0.41) then re-collapsed under
+# the consistency-loss pull, leaving `L_V` oscillating around log(2).
+# Adding the wider inner hidden gives the projector enough capacity to
+# carry a non-trivial cosine alignment that's also state-discriminative.
 #
 # Per-layer LayerNorm before every ReLU is **load-bearing for SimSiam
 # collapse defence**. The original SimSiam paper (Chen & He 2021, App.
@@ -117,14 +126,15 @@ comptime ActionEmbedding[
 comptime ProjectionMLP[
     HIDDEN: Int,
     PROJ: Int = 1024,
+    PROJ_HID: Int = PROJ,
 ] = Sequential[
-    Linear[HIDDEN, PROJ],
-    LayerNorm[PROJ],
-    ReLU[PROJ],
-    Linear[PROJ, PROJ],
-    LayerNorm[PROJ],
-    ReLU[PROJ],
-    Linear[PROJ, PROJ],
+    Linear[HIDDEN, PROJ_HID],
+    LayerNorm[PROJ_HID],
+    ReLU[PROJ_HID],
+    Linear[PROJ_HID, PROJ_HID],
+    LayerNorm[PROJ_HID],
+    ReLU[PROJ_HID],
+    Linear[PROJ_HID, PROJ],
     LayerNorm[PROJ],
 ]
 

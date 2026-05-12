@@ -417,6 +417,14 @@ struct EZV2ContinuousMLPConfig[
     LATENT: Int = 256,
     HIDDEN: Int = 256,
     PROJ: Int = 1024,
+    # SimSiam projector inner-hidden width. Reference
+    # (`dmc_state.yaml: proj_hid_shape=512`) expands then contracts:
+    # `LATENT → PROJ_HID → PROJ_HID → PROJ`. Defaults to `PROJ` (uniform
+    # width) to preserve the original Pendulum baseline behavior; override
+    # to ~512 on bigger envs (HalfCheetah) where the wider inner gives
+    # the projector enough capacity to carry a non-trivial cosine
+    # alignment that's also state-discriminative.
+    PROJ_HID: Int = PROJ,
     PRED_BOTTLENECK: Int = 512,
     BINS: Int = 51,
     # Action embedding width (paper App. G / ez_dmc_state.py). Reference
@@ -546,7 +554,7 @@ struct EZV2ContinuousMLPConfig[
 
     # ── EZ-V2-specific fields ────────────────────────────────────────────
     comptime ProjectorModel = ProjectionMLP[
-        HIDDEN=Self.LATENT, PROJ=Self.PROJ
+        HIDDEN=Self.LATENT, PROJ=Self.PROJ, PROJ_HID=Self.PROJ_HID
     ]
     comptime PredictorModel = PredictionMLP[
         PROJ=Self.PROJ, BOTTLENECK=Self.PRED_BOTTLENECK
