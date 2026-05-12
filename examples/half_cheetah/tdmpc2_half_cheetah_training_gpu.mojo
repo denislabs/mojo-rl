@@ -153,9 +153,7 @@ def main() raises:
             episode_length=HalfCheetahConfig.MAX_STEPS,  # dynamic gamma: 0.995
             rho=0.5,
             tau=0.01,
-            # 2× reference default to hold encoder against value-loss
-            # pull as Q grows; HC drift experiment 2026-05-11.
-            consistency_coef=40.0,
+            consistency_coef=20.0,
             reward_coef=0.1,  # Reference default
             value_coef=0.1,
             terminal_coef=1.0,

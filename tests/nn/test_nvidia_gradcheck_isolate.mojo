@@ -18,6 +18,7 @@ from mojo_rl.nn.optimizer import Adam
 from mojo_rl.nn.initializer import Xavier
 from mojo_rl.nn.model import (
     Model, Sequential, Parallel, Linear, LinearReLU, ReLU,
+    NormedLinear, LayerNorm, SimNorm, Mish, Dropout,
 )
 
 
@@ -274,6 +275,79 @@ def main() raises:
     comptime FusedResNet1 = AlphaZeroConnectFourFusedResNetConfig[NUM_BLOCKS=1].PredModel
     gradcheck[FusedResNet1, 4](ctx, "FusedResNet 1-block (full architecture)")
 
+    # ── TDMPC2 component gradchecks ───────────────────────────
+    # Hypothesis: HC TDMPC2 training shows encoder drift on NVIDIA. SAC works
+    # on NVIDIA but exercises a near-disjoint kernel set from TDMPC2
+    # (TDMPC2 adds NormedLinear+SimNorm+two-hot+BPTT chains). If any of the
+    # below FAIL on NVIDIA but PASS on Apple, the bug is in those kernels.
+    print("--- TDMPC2 component gradchecks ---")
+
+    # Level T1: NormedLinear standalone (Linear + LayerNorm + Mish + dW path)
+    gradcheck[NormedLinear[8, 16]](ctx, "NormedLinear[8,16]")
+    gradcheck[NormedLinear[16, 8]](ctx, "NormedLinear[16,8]")
+    gradcheck[NormedLinear[32, 32]](ctx, "NormedLinear[32,32]")
+
+    # Level T2: Linear → LayerNorm → SimNorm
+    # The exact tail of EncModel/DynModel after the LayerNorm fix (2026-05-06).
+    # Was NOT tested in existing tests — pre-fix DynModel went Linear→SimNorm.
+    gradcheck[
+        Sequential[Linear[16, 16], LayerNorm[16], SimNorm[16, 4]]
+    ](ctx, "Linear→LayerNorm→SimNorm[16, simplex=4] (encoder/dynamics tail)")
+    gradcheck[
+        Sequential[Linear[32, 32], LayerNorm[32], SimNorm[32, 8]]
+    ](ctx, "Linear→LayerNorm→SimNorm[32, simplex=8]")
+
+    # Level T3: Full EncModel at small dims
+    # Production: NormedLinear[OBS=17, ENC=256] → Linear[256,512] → LN[512] → SimNorm[512,8]
+    gradcheck[
+        Sequential[
+            NormedLinear[8, 12],
+            Linear[12, 16],
+            LayerNorm[16],
+            SimNorm[16, 4],
+        ]
+    ](ctx, "TDMPC2 EncModel (NormedLinear→Linear→LN→SimNorm)")
+
+    # Level T4: Full DynModel at small dims
+    # Production: NormedLinear[ZA, MLP] → NormedLinear[MLP, MLP] → Linear[MLP, LATENT]
+    #             → LN[LATENT] → SimNorm[LATENT, SIMPLEX]
+    gradcheck[
+        Sequential[
+            NormedLinear[18, 24],
+            NormedLinear[24, 24],
+            Linear[24, 16],
+            LayerNorm[16],
+            SimNorm[16, 4],
+        ]
+    ](ctx, "TDMPC2 DynModel (2×NormedLinear→Linear→LN→SimNorm)")
+
+    # Level T5: Q-net first layer (Linear+LayerNorm+Mish — Dropout omitted
+    # because it randomizes the mask between f(p+ε) and f(p-ε) forward
+    # passes, making FD invalid. Production path is identical at p=0.0
+    # dropout — the kernel-correctness signal we want is independent of
+    # the dropout layer.
+    gradcheck[
+        Sequential[
+            Linear[18, 24],
+            LayerNorm[24],
+            Mish[24],
+        ]
+    ](ctx, "TDMPC2 QFirstLayer no-dropout (Linear→LN→Mish)")
+
+    # Level T6: Full Q-net at small dims (also no dropout — same reasoning)
+    # Production: QFirstLayer[ZA, MLP] → NormedLinear[MLP, MLP] → Linear[MLP, NUM_BINS]
+    gradcheck[
+        Sequential[
+            Sequential[
+                Linear[18, 24],
+                LayerNorm[24],
+                Mish[24],
+            ],
+            NormedLinear[24, 24],
+            Linear[24, 11],
+        ]
+    ](ctx, "TDMPC2 QModel no-dropout (Linear→LN→Mish→NormedLinear→Linear)")
+
     # ── CPU vs GPU comparison ─────────────────────────────────
     print("--- CPU vs GPU forward comparison ---")
     cpu_vs_gpu_forward[
@@ -293,6 +367,25 @@ def main() raises:
             Parallel[Linear[128, 9], Linear[128, 1]],
         ]
     ](ctx, "TicTacToe MLP")
+
+    # TDMPC2 CPU vs GPU forward parity at production-shape ratios.
+    cpu_vs_gpu_forward[
+        Sequential[
+            NormedLinear[8, 12],
+            Linear[12, 16],
+            LayerNorm[16],
+            SimNorm[16, 4],
+        ]
+    ](ctx, "TDMPC2 EncModel forward")
+    cpu_vs_gpu_forward[
+        Sequential[
+            NormedLinear[18, 24],
+            NormedLinear[24, 24],
+            Linear[24, 16],
+            LayerNorm[16],
+            SimNorm[16, 4],
+        ]
+    ](ctx, "TDMPC2 DynModel forward")
 
     print("=== Done ===")
 
