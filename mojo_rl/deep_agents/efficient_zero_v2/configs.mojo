@@ -311,9 +311,19 @@ struct EZV2DiscreteMLPConfig[
         LinearMish[Self.DYN_IN, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
         Parallel[
+            # Latent branch: emits `delta_z` for the residual
+            # `next_z = hidden + delta_z` applied externally in
+            # `train_step_core` (see `ezv2_extract_hidden_after_dyn_kernel`).
+            # LayerNorm[LATENT] (was MinMaxNorm) keeps delta_z mean=0,
+            # std=1 so the K-step residual unroll has bounded magnitude
+            # growth (~sqrt(K)). Reference uses no output norm and
+            # ImproveResidualBlocks for stability — we use the simpler
+            # LN-output approach. MinMaxNorm was load-bearing for collapse
+            # (degenerate gradient near constant input + bounded [0,1]
+            # output incompatible with residual stacking).
             Sequential[
                 Linear[Self.HIDDEN, Self.LATENT],
-                MinMaxNorm[Self.LATENT],
+                LayerNorm[Self.LATENT],
             ],
             Linear[Self.HIDDEN, Self.BINS],
         ],
@@ -513,9 +523,19 @@ struct EZV2ContinuousMLPConfig[
         LinearMish[Self.LATENT + Self.ACT_EMBED, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
         Parallel[
+            # Latent branch: emits `delta_z` for the residual
+            # `next_z = hidden + delta_z` applied externally in
+            # `train_step_core` (see `ezv2_extract_hidden_after_dyn_kernel`).
+            # LayerNorm[LATENT] (was MinMaxNorm) keeps delta_z mean=0,
+            # std=1 so the K-step residual unroll has bounded magnitude
+            # growth (~sqrt(K)). Reference uses no output norm and
+            # ImproveResidualBlocks for stability — we use the simpler
+            # LN-output approach. MinMaxNorm was load-bearing for collapse
+            # (degenerate gradient near constant input + bounded [0,1]
+            # output incompatible with residual stacking).
             Sequential[
                 Linear[Self.HIDDEN, Self.LATENT],
-                MinMaxNorm[Self.LATENT],
+                LayerNorm[Self.LATENT],
             ],
             Linear[Self.HIDDEN, Self.BINS],
         ],

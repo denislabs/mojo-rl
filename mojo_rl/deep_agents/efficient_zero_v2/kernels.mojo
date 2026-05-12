@@ -106,7 +106,7 @@ def ezv2_build_dyn_input_kernel[
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# dyn_out[k][b, 0:LATENT] → hidden[k+1, b, :]
+# dyn_out[k][b, 0:LATENT] + hidden[k, b, :] → hidden[k+1, b, :]   (residual)
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -119,11 +119,22 @@ def ezv2_extract_hidden_after_dyn_kernel[
     dyn_out_step: LayoutTensor[
         dtype, Layout.row_major(BATCH * (LATENT + BINS)), MutAnyOrigin
     ],
+    hidden_k: LayoutTensor[
+        dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+    ],
     next_hidden: LayoutTensor[
         dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
     ],
 ) where dtype.is_floating_point():
-    """Copy `dyn_out_step[b, 0:LATENT]` → `next_hidden[b, :]`."""
+    """Compute `next_hidden[b, :] = dyn_out_step[b, :LATENT] + hidden_k[b, :]`.
+
+    The residual `hidden[k+1] = dyn(hidden[k], action[k]) + hidden[k]` matches
+    `ez_dmc_state.py:270` (`state = hidden + x`). At init with `delta ≈ 0`,
+    dyn ≈ identity, so the K-step latent rollout preserves state info and
+    the SimSiam consistency loss cannot trivially collapse both branches to
+    a constant. Without this, the trivial all-same-direction fixed point
+    is the easiest minimum of the consistency loss.
+    """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
         return
@@ -131,7 +142,9 @@ def ezv2_extract_hidden_after_dyn_kernel[
     var src_off = b * dyn_out_dim
     var dst_off = b * LATENT
     for d in range(LATENT):
-        next_hidden[dst_off + d] = dyn_out_step[src_off + d]
+        next_hidden[dst_off + d] = (
+            dyn_out_step[src_off + d] + hidden_k[dst_off + d]
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

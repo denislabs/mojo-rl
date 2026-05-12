@@ -335,7 +335,8 @@ def ezv2_train_step_gpu_core[
             gpu.workspace_buf,
         )
 
-        # Extract hidden part: dyn_out_buf[k][:, :LATENT] → hidden[k+1].
+        # Residual: hidden[k+1] = dyn_out_buf[k][:, :LATENT] + hidden[k].
+        # Matches reference `ez_dmc_state.py:270` (`state = hidden + x`).
         var dyn_out_k_flat = LayoutTensor[
             dtype,
             Layout.row_major(BATCH * DYN_OUT),
@@ -348,6 +349,7 @@ def ezv2_train_step_gpu_core[
         ](gpu.hidden_buf.unsafe_ptr() + (k + 1) * BATCH * LATENT)
         ctx.enqueue_function[extract_hidden](
             dyn_out_k_flat,
+            hidden_k_flat,
             hidden_kp1_flat,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
@@ -1504,6 +1506,22 @@ def ezv2_train_step_gpu_core[
             grad_dyn_in_step_flat,
             grad_hidden_k_flat,
             grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # Residual skip-path gradient: hidden[k+1] = dyn(hidden[k]) + hidden[k]
+        # → ∂L/∂hidden[k] picks up an extra +∂L/∂hidden[k+1] term beyond the
+        # through-dyn path handled above. `grad_hidden[k+1]` is fully
+        # accumulated by this point (used as input to `assemble_dyn_grad`
+        # at the top of this iteration; not read by any subsequent step in
+        # the reverse loop since k decreases), so it's safe to read here.
+        var grad_hidden_kp1_skip = LayoutTensor[
+            dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+        ](gpu.grad_hidden_buf.unsafe_ptr() + (k + 1) * BATCH * LATENT)
+        ctx.enqueue_function[add_kernel_lat](
+            grad_hidden_k_flat,
+            grad_hidden_kp1_skip,
+            grid_dim=(LATENT_BLOCKS,),
             block_dim=(TPB,),
         )
 
