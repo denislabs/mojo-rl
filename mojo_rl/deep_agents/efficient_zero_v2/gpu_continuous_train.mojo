@@ -88,6 +88,15 @@ def run_ezv2_continuous_train_gpu[
     ctx: DeviceContext,
     *,
     train_interval: Int = 1,
+    # Number of training steps to run per training-interval firing.
+    # Default 1 = legacy behavior (1 train per iteration). Set higher to
+    # raise the update-to-data ratio (UTD). Reference `dmc_state.yaml`
+    # runs UTD=1.0 (training_steps=100000, total_transitions=100000) —
+    # for `N_ENVS=4, train_interval=1` that means `train_steps_per_iter=4`
+    # (4 trains per iteration, since each iteration produces N_ENVS new
+    # transitions). With default 1 here we'd be at UTD=0.25 vs reference's
+    # 1.0 (under-training by 4×).
+    train_steps_per_iter: Int = 1,
     sync_interval: Int = 50,
     target_sync_interval: Int = 200,
     reanalyze_interval: Int = 200,
@@ -746,93 +755,100 @@ def run_ezv2_continuous_train_gpu[
             and stats.total_env_steps >= warmup_random_steps
             and (stats.total_env_steps // N_ENVS) % train_interval == 0
         ):
-            # Pre-train gpu_replay sync if using GPU sampling. The host-
-            # sampling path skips this — `train_step_gpu` reads from
-            # `agent.state` directly.
-            if use_gpu_sampling:
-                var first_train = stats.num_train_calls == 0
-                var sync_now = (
-                    first_train
-                    or stats.num_train_calls % sync_interval == 0
-                )
-                if sync_now:
-                    gpu_replay.upload_from_cpu(agent.state, ctx)
-                    gpu_replay.max_priority = agent.max_priority
-                    ctx.synchronize()
-                    stats.num_buffer_uploads += 1
-
-            var L_total: Float64
-            var L_R: Float64
-            var L_P: Float64
-            var L_V: Float64
-            var L_G: Float64
-            # `train_step_gpu_with_replay` for continuous comptime-
-            # asserts SEARCH-only (see continuous_agent.mojo:1092). Mojo
-            # walks both branches of a runtime `if` at compile time, so
-            # the call must be elided at the *comptime* level when the
-            # config is SARSA / MIXED. The earlier runtime guard catches
-            # `use_gpu_sampling=True` with a non-SEARCH config; this
-            # `comptime if` keeps the SARSA build path callable.
-            comptime SEARCH_MODE = (
-                Config.value_target_mode == VALUE_TARGET_SEARCH
-            )
-            comptime if SEARCH_MODE:
+            # UTD loop — run `train_steps_per_iter` gradient updates per
+            # training-interval firing. Each iteration of this loop is a
+            # full train step with its own batch sample, sync/target/
+            # reanalyze gating based on `num_train_calls`. Default 1
+            # preserves UTD=1/N_ENVS legacy behavior; set to N_ENVS to
+            # match reference UTD=1.0.
+            for _ in range(train_steps_per_iter):
+                # Pre-train gpu_replay sync if using GPU sampling. The host-
+                # sampling path skips this — `train_step_gpu` reads from
+                # `agent.state` directly.
                 if use_gpu_sampling:
-                    var t = agent.train_step_gpu_with_replay(
-                        gpu, gpu_replay, ctx, sample_seed
+                    var first_train = stats.num_train_calls == 0
+                    var sync_now = (
+                        first_train
+                        or stats.num_train_calls % sync_interval == 0
                     )
-                    L_total = t[0]
-                    L_R = t[1]
-                    L_P = t[2]
-                    L_V = t[3]
-                    L_G = t[4]
-                    sample_seed += UInt32(1)
+                    if sync_now:
+                        gpu_replay.upload_from_cpu(agent.state, ctx)
+                        gpu_replay.max_priority = agent.max_priority
+                        ctx.synchronize()
+                        stats.num_buffer_uploads += 1
+
+                var L_total: Float64
+                var L_R: Float64
+                var L_P: Float64
+                var L_V: Float64
+                var L_G: Float64
+                # `train_step_gpu_with_replay` for continuous comptime-
+                # asserts SEARCH-only (see continuous_agent.mojo:1092). Mojo
+                # walks both branches of a runtime `if` at compile time, so
+                # the call must be elided at the *comptime* level when the
+                # config is SARSA / MIXED. The earlier runtime guard catches
+                # `use_gpu_sampling=True` with a non-SEARCH config; this
+                # `comptime if` keeps the SARSA build path callable.
+                comptime SEARCH_MODE = (
+                    Config.value_target_mode == VALUE_TARGET_SEARCH
+                )
+                comptime if SEARCH_MODE:
+                    if use_gpu_sampling:
+                        var t = agent.train_step_gpu_with_replay(
+                            gpu, gpu_replay, ctx, sample_seed
+                        )
+                        L_total = t[0]
+                        L_R = t[1]
+                        L_P = t[2]
+                        L_V = t[3]
+                        L_G = t[4]
+                        sample_seed += UInt32(1)
+                    else:
+                        var t = agent.train_step_gpu(gpu, ctx)
+                        L_total = t[0]
+                        L_R = t[1]
+                        L_P = t[2]
+                        L_V = t[3]
+                        L_G = t[4]
                 else:
+                    # Non-SEARCH configs: CPU sampling only (the runtime
+                    # guard at the top of the function rejects
+                    # `use_gpu_sampling=True` here).
                     var t = agent.train_step_gpu(gpu, ctx)
                     L_total = t[0]
                     L_R = t[1]
                     L_P = t[2]
                     L_V = t[3]
                     L_G = t[4]
-            else:
-                # Non-SEARCH configs: CPU sampling only (the runtime
-                # guard at the top of the function rejects
-                # `use_gpu_sampling=True` here).
-                var t = agent.train_step_gpu(gpu, ctx)
-                L_total = t[0]
-                L_R = t[1]
-                L_P = t[2]
-                L_V = t[3]
-                L_G = t[4]
 
-            stats.num_train_calls += 1
-            stats.last_L_R = L_R
-            stats.last_L_P = L_P
-            stats.last_L_V = L_V
-            stats.last_L_G = L_G
-            if not _is_finite(L_total):
-                stats.any_nan_loss = True
+                stats.num_train_calls += 1
+                stats.last_L_R = L_R
+                stats.last_L_P = L_P
+                stats.last_L_V = L_V
+                stats.last_L_G = L_G
+                if not _is_finite(L_total):
+                    stats.any_nan_loss = True
 
-            # GPU → CPU network sync + optional buffer mirror.
-            if stats.num_train_calls % sync_interval == 0:
-                gpu.download_to(agent.state, ctx)
-                ctx.synchronize()
-                stats.num_gpu_syncs += 1
-
-                if not use_gpu_sampling:
-                    gpu_replay.upload_from_cpu(agent.state, ctx)
-                    gpu_replay.max_priority = agent.max_priority
+                # GPU → CPU network sync + optional buffer mirror.
+                if stats.num_train_calls % sync_interval == 0:
+                    gpu.download_to(agent.state, ctx)
                     ctx.synchronize()
-                    stats.num_buffer_uploads += 1
+                    stats.num_gpu_syncs += 1
 
-            # Hard-sync target ← online + reanalyze on CPU.
-            if stats.num_train_calls % target_sync_interval == 0:
-                agent.update_target_networks(tau=1.0)
-            if (
-                stats.num_train_calls >= reanalyze_warmup
-                and stats.num_train_calls % reanalyze_interval == 0
-            ):
-                _ = agent.reanalyze(num_samples=reanalyze_samples)
+                    if not use_gpu_sampling:
+                        gpu_replay.upload_from_cpu(agent.state, ctx)
+                        gpu_replay.max_priority = agent.max_priority
+                        ctx.synchronize()
+                        stats.num_buffer_uploads += 1
+
+                # Hard-sync target ← online + reanalyze on CPU.
+                if stats.num_train_calls % target_sync_interval == 0:
+                    agent.update_target_networks(tau=1.0)
+                if (
+                    stats.num_train_calls >= reanalyze_warmup
+                    and stats.num_train_calls % reanalyze_interval == 0
+                ):
+                    _ = agent.reanalyze(num_samples=reanalyze_samples)
 
         step_seed += 1
 

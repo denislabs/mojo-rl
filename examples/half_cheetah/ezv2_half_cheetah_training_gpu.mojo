@@ -162,6 +162,11 @@ def main() raises:
         agent,
         ctx,
         train_interval=1,
+        # UTD=1.0 (match reference `dmc_state.yaml: training_steps=100000,
+        # total_transitions=100000, num_envs=4` → 1 train per env-step =
+        # 4 trains per iteration of N_ENVS=4 envs). Default 1 = UTD=0.25
+        # which under-trains by 4× vs reference.
+        train_steps_per_iter=N_ENVS,
         sync_interval=50,
         target_sync_interval=200,
         # Paper defaults (`dmc_state.yaml:55`). Reverted from the 16×
