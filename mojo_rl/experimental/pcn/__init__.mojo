@@ -22,3 +22,8 @@ from .pc_dynamics_ensemble import PCDynamicsEnsemble
 from .pc_dynamics_ensemble_gpu import PCDynamicsEnsembleGPU
 from .pc_dynamics_ensemble_instance import PCDynamicsEnsembleInstanceCPU
 from .pc_dynamics_ensemble_instance_gpu import PCDynamicsEnsembleInstanceGPU
+from .sac_encoder_prefix import (
+    EncoderPrefixSACConfig,
+    inject_encoder_into_actor,
+    inject_encoder_into_critic,
+)
