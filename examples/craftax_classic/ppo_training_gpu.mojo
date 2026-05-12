@@ -1,18 +1,21 @@
 """PPO GPU Training on Craftax-Classic.
 
-First end-to-end training run for the Mojo port of Craftax-Classic.
-The agent is a feedforward MLP (no recurrence yet) — same baseline used
-by the official Craftax_Baselines PPO. The reference PPO scores ~11.9%
-of max reward (~26/226 in Craftax-1B, ~2.6/22 in Classic). For this
-smoke run we don't aim for that ceiling — we want to confirm:
+End-to-end PPO on the Mojo port of Craftax-Classic. Feedforward MLP
+(no recurrence) — same baseline used by Craftax_Baselines `ppo.py`.
 
-  - The env wires correctly into train_gpu without crashes
-  - Reward signal is non-zero (achievements actually trigger)
-  - Trajectories make progress over time
+Reference (paper / leaderboard, all on Craftax-Full not Classic):
+  - PPO     11.9%  of max=226  (≈ 2.6 per-episode return at 1B steps)
+  - PPO-RNN 15.3%
+  - Random   ~ 0
+
+On Classic (max return ≈ 22), our 20-update Apple smoke already hit
+AvgR(100) = 3.46 / Best = 9.1, so the env, reward, obs, and policy
+gradient are wired correctly. This config is sized for a serious GPU
+run (~16M env steps) — expect convergence well above smoke values.
 
 Run with:
-    pixi run -e apple  mojo run -I . examples/craftax_classic/ppo_training_gpu.mojo
     pixi run -e nvidia mojo run -I . examples/craftax_classic/ppo_training_gpu.mojo
+    pixi run -e apple  mojo run -I . examples/craftax_classic/ppo_training_gpu.mojo   # slow
 """
 
 from std.random import seed
@@ -34,14 +37,15 @@ comptime NUM_ACTIONS = CraftaxClassicEnv[DType.float32].NUM_ACTIONS  # 17
 # Network: wider than Pong because obs is mostly sparse one-hot.
 comptime HIDDEN_DIM = 256
 
-# PPO rollout shape. Craftax_Baselines uses very similar values.
+# PPO rollout shape — matches Craftax_Baselines defaults closely.
 comptime ROLLOUT_LEN = 128
-comptime N_ENVS = 64
-comptime GPU_MINIBATCH_SIZE = 1024
+comptime N_ENVS = 256              # parallel envs on GPU
+comptime GPU_MINIBATCH_SIZE = 2048
 
-# Smoke run length. 200 updates = ROLLOUT_LEN * N_ENVS * 200 = ~1.6M
-# transitions. Bump for serious training; published PPO uses 1e9.
-comptime NUM_UPDATES = 20  # smoke; bump to 200+ once we know it works
+# Run length. Each update = ROLLOUT_LEN * N_ENVS = 32,768 transitions.
+# 500 updates ≈ 16M transitions — comfortably above the 10M Phase-5
+# gate. Bump higher (e.g. 5000 → 160M) for a publication-grade run.
+comptime NUM_UPDATES = 500
 
 comptime dtype = DType.float32
 
@@ -108,7 +112,7 @@ def main() raises:
                 ctx,
                 num_updates=NUM_UPDATES,
                 verbose=True,
-                print_every=20,
+                print_every=10,
             )
 
             var end_time = perf_counter_ns()
