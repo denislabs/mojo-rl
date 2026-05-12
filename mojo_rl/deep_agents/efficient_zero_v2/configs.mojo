@@ -503,12 +503,22 @@ struct EZV2ContinuousMLPConfig[
     # Pred output: μ_raw ‖ σ_raw ‖ value_bins.
     comptime PRED_OUT: Int = 2 * Self.ACT_DIM + Self.BINS
 
-    # Representation: obs → latent. Same MinMaxNorm pattern as discrete.
+    # Representation: obs → latent.
+    #
+    # No output norm — matches reference `dmc_state.yaml: state_norm: False`
+    # (`ez_dmc_state.py:180-190` returns post-ResBlock output with no final
+    # squeeze). Earlier `MinMaxNorm[LATENT]` per-sample squashed obs into
+    # `[0,1]^LATENT` and caused SimSiam projector collapse: even when
+    # `L_V` showed encoder was state-discriminative (down to 0.28), the
+    # projector could still find a constant-direction mapping that
+    # satisfied SimSiam at cos≈1 (G → -1). Removing the output squash
+    # preserves magnitude+direction info that the projector now has to
+    # deliberately discard. Found 2026-05-13 after iterative SimSiam
+    # debugging on HalfCheetah.
     comptime RepModel = Sequential[
         LinearMish[Self.OBS, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
         Linear[Self.HIDDEN, Self.LATENT],
-        MinMaxNorm[Self.LATENT],
     ]
 
     # Dynamics: (latent, raw_action_vector) → (next_latent, reward_logits).
