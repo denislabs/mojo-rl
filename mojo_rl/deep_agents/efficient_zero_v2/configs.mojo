@@ -43,6 +43,7 @@ from mojo_rl.nn.model import (
     Parallel,
     Identity,
     ReLU,
+    Tanh,
 )
 from mojo_rl.nn.autodiff.combinators import SplitApply
 from mojo_rl.nn.optimizer import Optimizer, Adam
@@ -67,6 +68,7 @@ from mojo_rl.deep_agents.efficient_zero_v2.networks import (
     ProjectionMLP,
     PredictionMLP,
     ActionEmbedding,
+    ImproveResidualBlock,
 )
 from mojo_rl.deep_agents.efficient_zero_v2.action_space import (
     ActionSpace,
@@ -503,22 +505,29 @@ struct EZV2ContinuousMLPConfig[
     # Pred output: μ_raw ‖ σ_raw ‖ value_bins.
     comptime PRED_OUT: Int = 2 * Self.ACT_DIM + Self.BINS
 
-    # Representation: obs → latent.
+    # Representation: obs → latent. Reference parity
+    # (`ez_dmc_state.py:180-190`):
     #
-    # No output norm — matches reference `dmc_state.yaml: state_norm: False`
-    # (`ez_dmc_state.py:180-190` returns post-ResBlock output with no final
-    # squeeze). Earlier `MinMaxNorm[LATENT]` per-sample squashed obs into
-    # `[0,1]^LATENT` and caused SimSiam projector collapse: even when
-    # `L_V` showed encoder was state-discriminative (down to 0.28), the
-    # projector could still find a constant-direction mapping that
-    # satisfied SimSiam at cos≈1 (G → -1). Removing the output squash
-    # preserves magnitude+direction info that the projector now has to
-    # deliberately discard. Found 2026-05-13 after iterative SimSiam
-    # debugging on HalfCheetah.
+    #     Linear → LN → Tanh → ImproveResidualBlock × 2
+    #
+    # The trailing residual tower gives the encoder enough depth/capacity
+    # to build state-discriminative features at HIDDEN=256 dim. Earlier
+    # shallow encoder (`LinearMish → LinearMish → Linear`) hit a
+    # representation capacity ceiling: encoder briefly produced
+    # state-conditional latents (L_V flickered to 0.28) but couldn't
+    # sustain enough state info for value/reward heads to break past
+    # marginal-prediction over training (`best`/`recent_mean` plateaued).
+    # Adding the residual tower roughly doubles the encoder's
+    # representational depth, matching reference's working
+    # configuration. Found 2026-05-13 after fixing action saturation +
+    # projector collapse left this as the remaining bottleneck.
     comptime RepModel = Sequential[
         LinearMish[Self.OBS, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
         Linear[Self.HIDDEN, Self.LATENT],
+        Tanh[Self.LATENT],
+        ImproveResidualBlock[Self.LATENT],
+        ImproveResidualBlock[Self.LATENT],
     ]
 
     # Dynamics: (latent, raw_action_vector) → (next_latent, reward_logits).
@@ -539,17 +548,25 @@ struct EZV2ContinuousMLPConfig[
         ],
         LinearMish[Self.LATENT + Self.ACT_EMBED, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
+        # ImproveResidualBlock × 2 at HIDDEN dim — matches reference
+        # `ez_dmc_state.py:248-274` (num_blocks=2 from
+        # `dmc_state.yaml: num_blocks=2`). Reference applies the
+        # ResBlocks to the post-(initial residual) state at hidden_shape
+        # (LATENT in our naming). We apply them BEFORE the latent/reward
+        # Parallel split, at HIDDEN dim. Both placements add the same
+        # representational depth; ours keeps the reward head co-fed
+        # from the same intermediate features as the latent branch
+        # without restructuring the agent's two-headed dyn into separate
+        # latent + reward models. The external `next_z = hidden +
+        # delta_z` residual in `train_step_core` (see
+        # `ezv2_extract_hidden_after_dyn_kernel`) is preserved unchanged.
+        ImproveResidualBlock[Self.HIDDEN],
+        ImproveResidualBlock[Self.HIDDEN],
         Parallel[
             # Latent branch: emits `delta_z` for the residual
-            # `next_z = hidden + delta_z` applied externally in
-            # `train_step_core` (see `ezv2_extract_hidden_after_dyn_kernel`).
-            # LayerNorm[LATENT] (was MinMaxNorm) keeps delta_z mean=0,
-            # std=1 so the K-step residual unroll has bounded magnitude
-            # growth (~sqrt(K)). Reference uses no output norm and
-            # ImproveResidualBlocks for stability — we use the simpler
-            # LN-output approach. MinMaxNorm was load-bearing for collapse
-            # (degenerate gradient near constant input + bounded [0,1]
-            # output incompatible with residual stacking).
+            # `next_z = hidden + delta_z` applied externally.
+            # LayerNorm[LATENT] keeps delta_z mean=0, std=1 so the K-step
+            # residual unroll has bounded magnitude growth (~sqrt(K)).
             Sequential[
                 Linear[Self.HIDDEN, Self.LATENT],
                 LayerNorm[Self.LATENT],
