@@ -56,15 +56,14 @@ def main() raises:
     print("    EZ-V2 HalfCheetah — PROFILE BUILD (short run, nsys-ready)")
     print("=" * 72)
 
-    # Profile budget: enough iterations for steady-state kernel timing,
-    # short enough to fit in a single nsys capture window.
-    #   warmup = 256 env-steps (64 iters × N_ENVS) fills the BS=256 batch
-    #   total = 768 env-steps (192 iters × N_ENVS)
-    #         = 256 warmup + 512 train-eligible
-    #         = 256 warmup-iters / 4 + 128 train-iters
-    #         = 128 iterations × train_steps_per_iter=4 = 512 train calls
-    # → enough train-step kernels for solid steady-state timing.
-    comptime NUM_ENV_STEPS = 768
+    # Profile budget: ~30-60s of steady-state training kernels on most
+    # hardware. With BS=256 the buffer needs ~64 iters to fill before
+    # training fires (gated by `agent.state.is_ready()`); after that
+    # every iteration runs `train_steps_per_iter=N_ENVS` train calls.
+    #   total       = 3000 env-steps (750 iterations × N_ENVS)
+    #   buffer-fill = 64 iters (no training)
+    #   train-iters = 686 × train_steps_per_iter=4 = 2744 train calls
+    comptime NUM_ENV_STEPS = 3000
     comptime N_ENVS = 4
 
     # Identical to the training script — keep config in sync so profile
@@ -124,18 +123,17 @@ def main() raises:
         train_steps_per_iter=N_ENVS,
         sync_interval=50,
         target_sync_interval=200,
-        # Reanalyze fires at train_call=200 first. With UTD=4 + 128 train
-        # iters that's `train_call ∈ [4, 512]`, so reanalyze will fire
-        # ~2-3× during the profile — captures its kernel pattern too.
         reanalyze_interval=200,
         reanalyze_samples=32,
-        reanalyze_warmup=200,
-        # Minimum warmup to fill BS=256: 64 iters × N_ENVS=4 = 256
-        # env-steps. Going lower stalls training (is_ready()=False).
-        warmup_random_steps=256,
+        reanalyze_warmup=1000,
+        # No artificial warmup — training fires as soon as buffer fills
+        # (BS=256 → ~64 iterations of pre-training env stepping). The
+        # buffer-fill phase still uses policy/MCTS-derived actions (not
+        # pure-random), so the profile captures select_action MCTS cost
+        # from step 0.
+        warmup_random_steps=0,
         max_steps_per_episode=1_000,
-        # Tighter logging so we see structured progress during short run.
-        log_every=128,
+        log_every=2_000,
         rng_seed_base=UInt64(2026),
         use_gpu_sampling=False,
         use_gpu_mcts=False,
