@@ -463,6 +463,13 @@ struct EZV2ContinuousMLPConfig[
     MAX_ACTION: Float64 = 1.0,
     MIN_STD: Float64 = 0.1,
     STD_MAGNIFICATION: Float64 = 3.0,
+    # Sampled-Gumbel root sampling mode (see
+    # `SampledGumbelMCTS.N_POLICY_AT_ROOT`). Default `K_ROOT` preserves
+    # legacy magnified-policy behavior (Pendulum baseline). Set to e.g.
+    # 4 with `K_ROOT=16` to enable reference DMC root sampling (4 from
+    # policy + 12 uniform random in [-MAX_ACTION, MAX_ACTION]) which
+    # decouples exploration from the current policy bias.
+    N_POLICY_AT_ROOT: Int = K_ROOT,
     VALUE_TARGET_MODE: Int = VALUE_TARGET_SEARCH,
     T_FRESH: Int = 20000,
     T_STALE: Int = 40000,
@@ -587,6 +594,7 @@ struct EZV2ContinuousMLPConfig[
         Self.MAX_ACTION,
         Self.MIN_STD,
         Self.STD_MAGNIFICATION,
+        Self.N_POLICY_AT_ROOT,
     ]
 
     comptime lambda_reward: Float64 = Self.LAMBDA_R

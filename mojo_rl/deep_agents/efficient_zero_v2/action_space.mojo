@@ -82,6 +82,15 @@ trait ActionSpace:
     """σ multiplier for the second half of root candidates (continuous
     only — discrete supplies 0.0). Paper App. A default 3.0."""
 
+    comptime N_POLICY_AT_ROOT: Int
+    """Number of root candidates drawn from the policy `N(μ, σ)`. The
+    remaining `K_ROOT - N_POLICY_AT_ROOT` candidates come from
+    `Uniform(-MAX_ACTION, MAX_ACTION)` (reference DMC mode, `cy_mcts.py`
+    `policy_action_num=4, random_action_num=12`). When equal to
+    `K_ROOT`, the legacy magnified-policy mode runs instead (half from
+    `N(μ, σ)`, half from `N(μ, STD_MAGNIFICATION · σ)`). Discrete
+    supplies `K` (= K_ROOT) — no uniform-random branch."""
+
     @staticmethod
     def policy_loss_grad_gpu[
         BATCH: Int,
@@ -149,6 +158,9 @@ struct DiscreteActionSpace[ACT: Int, K: Int = 8](ActionSpace):
     comptime MAX_ACTION: Float64 = 0.0
     comptime MIN_STD: Float64 = 0.0
     comptime STD_MAGNIFICATION: Float64 = 0.0
+    # Discrete doesn't use continuous root sampling; set to K_ROOT so any
+    # downstream `comptime if N_POLICY_AT_ROOT == K_ROOT` evaluates True.
+    comptime N_POLICY_AT_ROOT: Int = Self.K
 
     @staticmethod
     def policy_loss_grad_gpu[
@@ -204,6 +216,10 @@ struct ContinuousActionSpace[
     MAX_ACTION_: Float64 = 1.0,
     MIN_STD_: Float64 = 0.1,
     STD_MAGNIFICATION_: Float64 = 3.0,
+    # Default `K` (all policy) preserves the legacy magnified-mode root
+    # sampling. Set < K to opt into reference DMC sampling (policy +
+    # uniform random) — see `SampledGumbelMCTS.N_POLICY_AT_ROOT`.
+    N_POLICY_AT_ROOT_: Int = K,
 ](ActionSpace):
     """Continuous-action implementation: squashed-Gaussian NLL + entropy
     bonus on the search-selected target action `a*` (paper Eq. 8/9).
@@ -240,6 +256,7 @@ struct ContinuousActionSpace[
     comptime MAX_ACTION: Float64 = Self.MAX_ACTION_
     comptime MIN_STD: Float64 = Self.MIN_STD_
     comptime STD_MAGNIFICATION: Float64 = Self.STD_MAGNIFICATION_
+    comptime N_POLICY_AT_ROOT: Int = Self.N_POLICY_AT_ROOT_
 
     @staticmethod
     def policy_loss_grad_gpu[

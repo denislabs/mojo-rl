@@ -256,6 +256,14 @@ struct SampledGumbelMCTS[
     MAX_ACTION: Float64 = 1.0,
     MIN_STD: Float64 = 0.1,
     STD_MAGNIFICATION: Float64 = 3.0,
+    # Number of root candidates drawn from the policy `N(μ, σ)`.
+    # The remaining `K_ROOT - N_POLICY_AT_ROOT` candidates come from
+    # `Uniform(-MAX_ACTION, MAX_ACTION)` (reference `cy_mcts.py:127-128`
+    # with `policy_action_num=4, random_action_num=12` for K_ROOT=16).
+    # Default `K_ROOT` (all policy) preserves the legacy magnified-policy
+    # behavior — when `N_POLICY_AT_ROOT == K_ROOT`, the second half of
+    # candidates uses `STD_MAGNIFICATION · σ` exactly as before.
+    N_POLICY_AT_ROOT: Int = K_ROOT,
 ](Movable):
     """Sampled-Gumbel MCTS for continuous actions.
 
@@ -264,15 +272,20 @@ struct SampledGumbelMCTS[
         LATENT_DIM: Hidden-state dimension (must match dynamics output).
         NUM_BINS: Categorical value/reward bin count.
         NUM_SIMULATIONS: Total simulation budget per `search()` call.
-        K_ROOT: Number of root candidates (paper default 16). Half drawn
-            from N(μ, σ), half from N(μ, STD_MAGNIFICATION · σ).
+        K_ROOT: Number of root candidates (paper default 16). When
+            `N_POLICY_AT_ROOT == K_ROOT`, half drawn from `N(μ, σ)` and
+            half from `N(μ, STD_MAGNIFICATION · σ)` (legacy magnified
+            mode). When `N_POLICY_AT_ROOT < K_ROOT`, the first
+            `N_POLICY_AT_ROOT` from `N(μ, σ)` and the remainder from
+            `Uniform(-MAX_ACTION, MAX_ACTION)` (reference DMC mode).
         K_NON_ROOT: Number of non-root candidates per node (paper default
             K_ROOT // 2 = 8, all from N(μ, σ)). Must be ≤ K_ROOT.
         MAX_NODES: Maximum tree node budget (root + expansions).
         MAX_ACTION: Action |a_d| upper bound (squashed-Gaussian param).
         MIN_STD: Floor on σ added after softplus (squashed-Gaussian param).
         STD_MAGNIFICATION: Multiplier applied to σ for the second half of
-            root candidates (paper App. A exploration boost).
+            root candidates (legacy magnified mode only).
+        N_POLICY_AT_ROOT: See module-level docstring above.
 
     The squashed-Gaussian hyperparameters must match the agent's
     `Config.ActSpace` impl so the loss kernel sees the same density at
@@ -437,33 +450,70 @@ struct SampledGumbelMCTS[
             root_mu[d] = Self.MAX_ACTION * tanh(mu_raw / Self.MAX_ACTION)
             root_sg[d] = _softplus(sg_raw) + Self.MIN_STD
 
-        # Half candidates from N(μ, σ), half from N(μ, STD_MAG · σ).
-        var half = Self.K_ROOT // 2
+        # Root candidate sampling. Two modes, selected by N_POLICY_AT_ROOT:
+        #   • Legacy magnified (N_POLICY_AT_ROOT == K_ROOT): half from
+        #     N(μ, σ), half from N(μ, STD_MAG · σ). Matches the original
+        #     Pendulum baseline.
+        #   • Reference DMC (N_POLICY_AT_ROOT < K_ROOT): first
+        #     N_POLICY_AT_ROOT from N(μ, σ), rest from
+        #     Uniform(-MAX_ACTION, MAX_ACTION). Matches `cy_mcts.py:127-128`
+        #     with `policy_action_num=4, random_action_num=12`. Uniform
+        #     samples decouple exploration from the policy's current
+        #     `μ`, breaking the action-saturation feedback loop where a
+        #     biased policy traps MCTS into evaluating only candidates
+        #     near the same biased μ.
+        # Both modes score every candidate under the policy density
+        # `N(μ, σ)` for `log_prior` so the Sequential-Halving prior is
+        # comparable across modes.
+        comptime LEGACY_MAGNIFIED = Self.N_POLICY_AT_ROOT == Self.K_ROOT
         for i in range(Self.K_ROOT):
-            var sg_eff = root_sg
-            if i >= half:
-                var sg_widened = InlineArray[Float64, Self.ACT_DIM](
-                    uninitialized=True
-                )
-                for d in range(Self.ACT_DIM):
-                    sg_widened[d] = (
-                        root_sg[d] * Self.STD_MAGNIFICATION
-                    )
-                sg_eff = sg_widened
+            var is_policy_sample: Bool
+            var is_magnified: Bool
+
+            comptime if LEGACY_MAGNIFIED:
+                # Legacy mode: every candidate from policy; second half magnified.
+                is_policy_sample = True
+                is_magnified = i >= Self.K_ROOT // 2
+            else:
+                is_policy_sample = i < Self.N_POLICY_AT_ROOT
+                is_magnified = False
+
             var lp = 0.0
-            for d in range(Self.ACT_DIM):
-                var a_d = _sample_squashed_gaussian_dim(
-                    root_mu[d], sg_eff[d], Self.MAX_ACTION
-                )
-                root.actions[i * Self.ACT_DIM + d] = a_d
-                # Always score under the *unmagnified* density —
-                # candidates from the widened N(μ, k·σ) are still fed
-                # to π(·|s) = N(μ, σ) for selection. Otherwise the
-                # widened candidates would be unfairly down-weighted
-                # twice.
-                lp += _logp_squashed_gaussian_dim(
-                    a_d, root_mu[d], root_sg[d], Self.MAX_ACTION
-                )
+            if is_policy_sample:
+                var sg_eff = root_sg
+                if is_magnified:
+                    var sg_widened = InlineArray[Float64, Self.ACT_DIM](
+                        uninitialized=True
+                    )
+                    for d in range(Self.ACT_DIM):
+                        sg_widened[d] = (
+                            root_sg[d] * Self.STD_MAGNIFICATION
+                        )
+                    sg_eff = sg_widened
+                for d in range(Self.ACT_DIM):
+                    var a_d = _sample_squashed_gaussian_dim(
+                        root_mu[d], sg_eff[d], Self.MAX_ACTION
+                    )
+                    root.actions[i * Self.ACT_DIM + d] = a_d
+                    # Score under the unmagnified policy density — widened
+                    # samples would otherwise be double-penalized for being
+                    # in the tail of `N(μ, σ)`.
+                    lp += _logp_squashed_gaussian_dim(
+                        a_d, root_mu[d], root_sg[d], Self.MAX_ACTION
+                    )
+            else:
+                # Uniform random in [-MAX_ACTION, MAX_ACTION] per dim.
+                # Score under the policy density `N(μ, σ)` so these tail
+                # samples still get a meaningful (typically low) log_prior
+                # vs the policy-centered ones.
+                for d in range(Self.ACT_DIM):
+                    var a_d = random_float64(
+                        -Self.MAX_ACTION, Self.MAX_ACTION
+                    )
+                    root.actions[i * Self.ACT_DIM + d] = a_d
+                    lp += _logp_squashed_gaussian_dim(
+                        a_d, root_mu[d], root_sg[d], Self.MAX_ACTION
+                    )
             root.log_prior[i] = lp
 
         pred_out_ptr.free()

@@ -93,17 +93,26 @@ def main() raises:
         K_NON_ROOT=8,
         MAX_ACTION=1.0,  # ← DMC convention: actions ∈ [-1, 1]
         # MIN_STD=0.5 — raised from paper default 0.1 after 2026-05-13
-        # diagnostic (LAMBDA_G=0 ablation). With MIN_STD=0.1, σ collapsed
-        # to MIN_STD within ~2000 train steps (L_P → -10, deterministic
-        # policy), the cheetah barely moved, sampled obs became near-
-        # identical, value/reward targets degenerated to marginals,
-        # L_R/L_V plateaued at log(2), and recent_mean regressed
-        # monotonically (-275 → -462 over 20k env-steps). 0.5 is the
-        # value that's been working for Pendulum — keeps the action
-        # distribution wide enough that exploration breaks the degenerate-
-        # data loop. Revisit once we have a converging baseline.
+        # diagnostic. With MIN_STD=0.1, policy `μ` drifted toward
+        # saturated boundary actions (|a|≈0.95) under the policy-bias
+        # feedback loop. 0.5 keeps the action distribution wide enough
+        # to participate in MCTS even when `μ` has drifted. Revisit
+        # once the converging baseline is solid.
         MIN_STD=0.5,
         STD_MAGNIFICATION=3.0,
+        # Reference DMC root sampling (`cy_mcts.py:127-128` +
+        # `dmc_state.yaml: policy_action_num=4, random_action_num=12`):
+        # 4 root candidates from policy `N(μ, σ)`, remaining 12 from
+        # `Uniform(-MAX_ACTION, MAX_ACTION)`. Decouples MCTS exploration
+        # from the current policy bias — without this, after a few
+        # train steps `μ` drifts toward whichever boundary won the early
+        # random-Q MCTS selections, and all 16 candidates cluster near
+        # that biased `μ` for the rest of training. Uniform random samples
+        # give MCTS the chance to find better actions even when policy
+        # has drifted badly. With `N_POLICY_AT_ROOT == K_ROOT` (default
+        # for Pendulum baseline preservation), legacy half-policy /
+        # half-magnified-policy mode runs instead.
+        N_POLICY_AT_ROOT=4,
         # Reference (`ez/config/exp/dmc_state.yaml:67`): entropy_coeff = 5e-2
         # for ALL DMC envs (not Pendulum-specific). Previous reductions
         # (1e-3, 5e-3) chased the wrong direction — strong entropy
