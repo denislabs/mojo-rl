@@ -708,36 +708,77 @@ comptime MANA_COST_ICEBALL: Int = 1
 
 
 # ============================================================================
-# Observation shape (derived)
+# Observation shape (derived) — matches Craftax reference exactly
 # ============================================================================
+#
+# Symbolic obs layout (per `render_craftax_symbolic` in the reference):
+#   - 9×11 tile grid centered on player, padded with OUT_OF_BOUNDS
+#   - 83 channels per tile:
+#       NUM_BLOCK_TYPES (37) one-hot
+#       NUM_ITEM_TYPES  (5)  one-hot
+#       OBS_MOB_CLASSES * OBS_MOB_TYPES_PER_CLASS (5*8=40) presence
+#         classes: 0=melee, 1=passive, 2=ranged, 3=mob_proj, 4=player_proj
+#       light channel (1)
+#   - 51-float scalar tail in this order (concat in reference):
+#       inventory     16
+#       potions        6
+#       intrinsics     9
+#       direction      4
+#       armour         4
+#       armour_enchs   4
+#       special        8
+#
+# Total OBS_DIM = 9*11*83 + 51 = 8217 + 51 = 8268.
 
-# Tile encoding for symbolic obs: block one-hot + item one-hot + 4 mob-cat
-# binary presence channels.
+# Mob class count used by the symbolic obs encoder (5 = melee, passive,
+# ranged, mob_projectile, player_projectile). Distinct from
+# NUM_MOB_CATEGORIES, which is the 4-way packing used by the mob_map state
+# section (passive/melee/ranged/projectile).
+comptime OBS_MOB_CLASSES: Int = 5
+comptime OBS_MOB_TYPES_PER_CLASS: Int = 8
+
+comptime OBS_MOB_CLASS_MELEE: Int = 0
+comptime OBS_MOB_CLASS_PASSIVE: Int = 1
+comptime OBS_MOB_CLASS_RANGED: Int = 2
+comptime OBS_MOB_CLASS_MOB_PROJ: Int = 3
+comptime OBS_MOB_CLASS_PLAYER_PROJ: Int = 4
+
 comptime TILE_CHANNELS: Int = (
-    NUM_BLOCK_TYPES + NUM_ITEM_TYPES + NUM_MOB_CATEGORIES
-)  # 37 + 5 + 4 = 46
-comptime OBS_VIEW_SIZE: Int = VIEW_SIZE * TILE_CHANNELS  # 99 * 46 = 4554
+    NUM_BLOCK_TYPES
+    + NUM_ITEM_TYPES
+    + OBS_MOB_CLASSES * OBS_MOB_TYPES_PER_CLASS
+    + 1  # light channel
+)  # 37 + 5 + 40 + 1 = 83
+comptime OBS_VIEW_SIZE: Int = VIEW_SIZE * TILE_CHANNELS  # 99 * 83 = 8217
 
-# Scalar tail of the symbolic obs (matches the order used by the renderer/test
-# fixtures): inventory (24) + intrinsics int (7) + intrinsics_f (5) +
-# attributes (4) + direction one-hot (4) + light_level + sleep flag +
-# floor_level (one-hot of NUM_FLOORS) + boss_progress + boss_timestep +
-# learned_spells (NUM_SPELLS) + sword_enchant + bow_enchant +
-# armour_enchants (4) + monsters_killed (NUM_FLOORS) + chests_opened (NUM_FLOORS).
-comptime OBS_SCALAR_SIZE: Int = (
-    NUM_INVENTORY      # 24
-    + NUM_INTRINSICS   # 7
-    + NUM_INTRINSICS_F # 5
-    + NUM_ATTRIBUTES   # 4
-    + NUM_DIRECTIONS   # 4
-    + 2                # light_level, is_sleeping
-    + NUM_FLOORS       # floor one-hot
-    + 2                # boss_progress, boss_timesteps_to_spawn
-    + NUM_SPELLS       # learned spells (2)
-    + 1 + 1            # sword_enchant, bow_enchant
-    + NUM_ARMOUR_ENCHANTS  # 4
-    + NUM_FLOORS       # monsters_killed
-    + NUM_FLOORS       # chests_opened
+# Channel offsets within a single tile.
+comptime OBS_CH_BLOCK_BASE: Int = 0
+comptime OBS_CH_ITEM_BASE: Int = NUM_BLOCK_TYPES
+comptime OBS_CH_MOB_BASE: Int = OBS_CH_ITEM_BASE + NUM_ITEM_TYPES
+comptime OBS_CH_LIGHT: Int = (
+    OBS_CH_MOB_BASE + OBS_MOB_CLASSES * OBS_MOB_TYPES_PER_CLASS
 )
 
-comptime OBS_DIM: Int = OBS_VIEW_SIZE + OBS_SCALAR_SIZE
+# Scalar tail (51 floats). Sub-section sizes mirror the reference renderer.
+comptime OBS_INV_SIZE: Int = 16
+comptime OBS_INTRINSICS_SIZE: Int = 9
+comptime OBS_DIRECTION_SIZE: Int = 4
+comptime OBS_ARMOUR_SIZE: Int = NUM_ARMOUR_ENCHANTS    # 4
+comptime OBS_ARMOUR_ENCH_SIZE: Int = NUM_ARMOUR_ENCHANTS  # 4
+comptime OBS_SPECIAL_SIZE: Int = 8
+comptime OBS_SCALAR_SIZE: Int = (
+    OBS_INV_SIZE         # 16
+    + NUM_POTIONS        #  6
+    + OBS_INTRINSICS_SIZE  #  9
+    + OBS_DIRECTION_SIZE   #  4
+    + OBS_ARMOUR_SIZE      #  4
+    + OBS_ARMOUR_ENCH_SIZE #  4
+    + OBS_SPECIAL_SIZE     #  8
+)  # = 51
+
+comptime OBS_DIM: Int = OBS_VIEW_SIZE + OBS_SCALAR_SIZE  # 8268
+
+# Light threshold above which a tile is considered "lit". A lit tile keeps
+# its block/item/mob channels; an unlit tile is zeroed except for the light
+# channel itself, which carries the binary visibility flag.
+comptime LIGHT_VISIBILITY_THRESHOLD: Float32 = 0.05

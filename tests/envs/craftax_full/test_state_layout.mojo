@@ -21,14 +21,7 @@ from mojo_rl.envs.craftax_full import (
     NUM_MOB_CATEGORIES,
     NUM_PROJECTILE_TYPES,
     NUM_INVENTORY,
-    NUM_INTRINSICS,
-    NUM_INTRINSICS_F,
-    NUM_ATTRIBUTES,
-    NUM_DIRECTIONS,
-    NUM_SPELLS,
     NUM_ACHIEVEMENTS,
-    NUM_POTIONS,
-    NUM_ARMOUR_ENCHANTS,
     OBS_VIEW_SIZE,
     OBS_SCALAR_SIZE,
     OBS_DIM,
@@ -146,18 +139,15 @@ def test_inventory_and_achievements_in_range(mut counts: List[Int]) raises:
 
 
 def test_obs_shape(mut counts: List[Int]) raises:
-    """Symbolic obs dimensions derived from constants."""
+    """Symbolic obs dimensions match Craftax reference (8268-D)."""
     print("test_obs_shape")
-    check(counts, "TILE_CHANNELS == 46", TILE_CHANNELS == 46)
-    check(counts, "OBS_VIEW_SIZE == 99 * 46 = 4554",
-          OBS_VIEW_SIZE == 4554)
-    check(counts, "OBS_SCALAR_SIZE matches breakdown",
-          OBS_SCALAR_SIZE == (
-              NUM_INVENTORY + NUM_INTRINSICS + NUM_INTRINSICS_F
-              + NUM_ATTRIBUTES + NUM_DIRECTIONS + 2 + NUM_FLOORS
-              + 2 + NUM_SPELLS + 2 + NUM_ARMOUR_ENCHANTS
-              + NUM_FLOORS + NUM_FLOORS
-          ))
+    # Reference tile encoding: 37 block + 5 item + 5*8 mob + 1 light = 83.
+    check(counts, "TILE_CHANNELS == 83", TILE_CHANNELS == 83)
+    check(counts, "OBS_VIEW_SIZE == 99 * 83 = 8217",
+          OBS_VIEW_SIZE == 8217)
+    # Reference scalar tail = 16 + 6 + 9 + 4 + 4 + 4 + 8 = 51.
+    check(counts, "OBS_SCALAR_SIZE == 51", OBS_SCALAR_SIZE == 51)
+    check(counts, "OBS_DIM == 8268", OBS_DIM == 8268)
     check(counts, "OBS_DIM == view + scalar",
           OBS_DIM == OBS_VIEW_SIZE + OBS_SCALAR_SIZE)
 

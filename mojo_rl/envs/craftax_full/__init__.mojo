@@ -52,3 +52,29 @@ from .world_gen import (
     generate_full_world,
     calculate_light_level,
 )
+from .game_logic import apply_step_inline
+from .symbolic_obs import encode_symbolic_obs
+from .craftax_full_sprites import (
+    build_sprite_sheet,
+    build_agent_atlas,
+    agent_atlas_size,
+    SPRITE_SIZE,
+    SHEET_WIDTH,
+    SHEET_HEIGHT,
+    SPRITE_BPP,
+    NUM_SPRITES,
+)
+from .craftax_full import (
+    CraftaxFullEnv,
+    CraftaxFullState,
+    CraftaxFullAction,
+)
+from .craftax_full_pixel import (
+    CraftaxFullPixelEnv,
+    BLOCK_PIXEL_SIZE,
+    INVENTORY_OBS_HEIGHT,
+    OBS_PIX_H,
+    OBS_PIX_W,
+    OBS_CHANNELS,
+    PIXEL_OBS_DIM,
+)
