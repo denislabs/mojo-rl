@@ -71,8 +71,8 @@ def main() raises:
         NODES=128,
         K_ROOT=16,
         K_NON_ROOT=8,
-        MAX_ACTION=1.0,            # ← DMC convention: actions ∈ [-1, 1]
-        MIN_STD=0.1,               # ← paper default (Pendulum used 0.5)
+        MAX_ACTION=1.0,  # ← DMC convention: actions ∈ [-1, 1]
+        MIN_STD=0.1,  # ← paper default (Pendulum used 0.5)
         STD_MAGNIFICATION=3.0,
         # Reference (`ez/config/exp/dmc_state.yaml:67`): entropy_coeff = 5e-2
         # for ALL DMC envs (not Pendulum-specific). Previous reductions
@@ -184,7 +184,7 @@ def main() raises:
         # gpu_mcts_sampled.mojo at runtime to find the tree-state
         # divergence from `mcts_sampled.mojo`.
         use_gpu_mcts=False,
-        # Running obs-normalization (CleanRL VecNormalize semantics).
+        # Running obs-normalization (CleanRL VecNormalize semantics). Disabled for now to match the CPU baseline.
         # Reference (`EfficientZeroV2-main/ez/agents/ez_dmc_state.py:173-182`)
         # makes obs-norm part of the representation network — load-bearing
         # for DMC-state HalfCheetah where raw obs spans 17 dims with mixed
@@ -192,6 +192,6 @@ def main() raises:
         # env boundary so replay stores normalized obs and every consumer
         # (CPU MCTS, GPU MCTS, training, reanalyze) sees a consistent
         # distribution.
-        obs_norm=True,
+        obs_norm=False,
         verbose=True,
     )
