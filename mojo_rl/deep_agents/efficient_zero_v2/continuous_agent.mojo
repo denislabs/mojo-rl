@@ -200,6 +200,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         temperature_decay_steps: Int = 50000,
         max_grad_norm: Float64 = 5.0,
         n_envs: Int = 1,
+        init_zero_heads: Bool = True,
     ):
         self.state = EZV2DiscreteCPUState[Self.Config]()
         self.mcts = SampledGumbelMCTS[
@@ -244,7 +245,13 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             self._episode_rewards.append(List[Float64]())
             self._episode_values.append(List[Float64]())
 
-        # Hard-sync target networks at startup.
+        # Paper init_zero on output heads (reference `dmc_state.yaml:120`).
+        # See `_init_zero_output_heads` docstring for details.
+        if init_zero_heads:
+            self._init_zero_output_heads()
+
+        # Hard-sync target networks at startup — must run AFTER any head
+        # zeroing so the target nets mirror the zeroed online nets.
         self.update_target_networks(tau=1.0)
 
     def __init__(out self, *, deinit take: Self):
@@ -627,6 +634,55 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             self.state.priorities[buf_idx] = Scalar[dtype](self.max_priority)
 
         self.reset_episode(env_id)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Output-head init_zero (paper Eq. 3 + continuous carve-out)
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _init_zero_output_heads(mut self):
+        """Zero the policy head and dynamics reward head — paper default.
+
+        Reference (`EfficientZeroV2-main/ez/config/exp/dmc_state.yaml:120`)
+        sets `init_zero=True` for the prediction and reward heads. With
+        W=b=0 the head's pre-activation is exactly 0 → softmax over BINS is
+        uniform → expected V/reward = mid-bin in transformed space. Stops
+        the multi-thousand-batch overestimation-correction window that
+        would otherwise land the policy in a bad local mode.
+
+        Continuous carve-out (`base_model.py:181`):
+            `init_zero=False if is_continuous else init_zero`
+        for the value head. With weights=0 on **both** pred heads, gradient
+        through `Linear` w.r.t. its input is `grad_out @ W^T = 0`, so the
+        encoder receives zero gradient from L_V and L_P at training start.
+        The only signal feeding the encoder is then SimSiam consistency —
+        which collapses to its trivial all-same-direction solution in
+        ~250 train steps (cos → +0.999, L_V/L_R pinned at log(2)=0.69, σ
+        collapses to MIN_STD). Keeping the value head random-initialized
+        lets L_V immediately pull the encoder toward state-discriminative
+        latents, defending against the collapse attractor. Found
+        2026-05-13 audit (`docs/EZV2_CONTINUOUS_OPEN_ISSUES.md`).
+
+        Network shapes (continuous, from `EZV2ContinuousMLPConfig`):
+            PredModel = Sequential[LinearMish, Parallel[PolicyHead, ValueHead]]
+                → zero only branch 0 (policy head) of the trailing Parallel.
+            DynModel  = Sequential[SplitApply, LinearMish, LinearMish,
+                                   Parallel[NextLatent, RewardHead]]
+                → zero only branch 1 (reward head) of the trailing Parallel.
+                  Zeroing NextLatent would collapse the latent representation.
+        """
+        # Offsets/sizes pre-computed by the concrete config (bypasses
+        # trait-erasure that hides `Sequential.model_types` / `_param_offset`
+        # when `PredModel` / `DynModel` are accessed through the
+        # `EZV2DiscreteConfig` trait constraint).
+        comptime PP_START = Self.Config.pred_policy_head_param_start
+        comptime PP_SIZE = Self.Config.pred_policy_head_param_size
+        for i in range(PP_START, PP_START + PP_SIZE):
+            self.state.prediction.params[i] = Scalar[dtype](0.0)
+
+        comptime DR_START = Self.Config.dyn_reward_head_param_start
+        comptime DR_SIZE = Self.Config.dyn_reward_head_param_size
+        for i in range(DR_START, DR_START + DR_SIZE):
+            self.state.dynamics.params[i] = Scalar[dtype](0.0)
 
     # ══════════════════════════════════════════════════════════════════════
     # Target-network sync (copy from discrete agent — action-agnostic)

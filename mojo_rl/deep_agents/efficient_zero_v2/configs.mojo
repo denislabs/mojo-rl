@@ -203,6 +203,32 @@ trait EZV2DiscreteConfig(MuZeroConfig):
     """Hidden dim of the post-LSTM MLP that maps h_lstm → reward-prefix
     logits. Paper App. G default 64."""
 
+    # ── init_zero head parameter ranges ──────────────────────────────────
+    # Computed from each config's concrete `PredModel` / `DynModel`
+    # structure (Sequential / Parallel offsets) — read as plain Ints by
+    # `GenericEZV2ContinuousAgent._init_zero_output_heads` to bypass the
+    # trait-erasure that hides `Sequential.model_types` / `_param_offset`
+    # when `PredModel` / `DynModel` are accessed through this trait.
+    comptime pred_policy_head_param_start: Int
+    """Index into `PredModel.params` where the policy head's params begin.
+    Continuous: branch 0 of the trailing `Parallel[PolicyHead, ValueHead]`.
+    """
+
+    comptime pred_policy_head_param_size: Int
+    """Length of the policy head's contiguous param slice in
+    `PredModel.params`. Continuous: `branch_types[0].PARAM_SIZE` of the
+    trailing Parallel."""
+
+    comptime dyn_reward_head_param_start: Int
+    """Index into `DynModel.params` where the reward head's params begin.
+    Both discrete and continuous: branch 1 of the trailing
+    `Parallel[NextLatent, RewardHead]`."""
+
+    comptime dyn_reward_head_param_size: Int
+    """Length of the reward head's contiguous param slice in
+    `DynModel.params`. `branch_types[1].PARAM_SIZE` of the trailing
+    Parallel."""
+
 
 # ═════════════════════════════════════════════════════════════════════════
 # MLP variant
@@ -348,6 +374,22 @@ struct EZV2DiscreteMLPConfig[
     comptime lstm_hidden: Int = Self.LSTM_HIDDEN
     comptime lstm_horizon_len: Int = Self.LSTM_HORIZON_LEN
     comptime lstm_mlp_hidden: Int = Self.LSTM_MLP_HIDDEN
+
+    # ── init_zero head parameter ranges ──────────────────────────────────
+    comptime pred_policy_head_param_start: Int = (
+        Self.PredModel._param_offset[Self.PredModel.N - 1]()
+        + Self.PredModel.model_types[Self.PredModel.N - 1]._param_offset[0]()
+    )
+    comptime pred_policy_head_param_size: Int = (
+        Self.PredModel.model_types[Self.PredModel.N - 1].branch_types[0].PARAM_SIZE
+    )
+    comptime dyn_reward_head_param_start: Int = (
+        Self.DynModel._param_offset[Self.DynModel.N - 1]()
+        + Self.DynModel.model_types[Self.DynModel.N - 1]._param_offset[1]()
+    )
+    comptime dyn_reward_head_param_size: Int = (
+        Self.DynModel.model_types[Self.DynModel.N - 1].branch_types[1].PARAM_SIZE
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -534,3 +576,22 @@ struct EZV2ContinuousMLPConfig[
     comptime lstm_hidden: Int = Self.LSTM_HIDDEN
     comptime lstm_horizon_len: Int = Self.LSTM_HORIZON_LEN
     comptime lstm_mlp_hidden: Int = Self.LSTM_MLP_HIDDEN
+
+    # ── init_zero head parameter ranges ──────────────────────────────────
+    # Same `Sequential[..., Parallel[A, B]]` shape as the discrete config
+    # — branch 0 of the trailing Parallel is the policy head, branch 1 is
+    # the value head (PredModel) / reward head (DynModel).
+    comptime pred_policy_head_param_start: Int = (
+        Self.PredModel._param_offset[Self.PredModel.N - 1]()
+        + Self.PredModel.model_types[Self.PredModel.N - 1]._param_offset[0]()
+    )
+    comptime pred_policy_head_param_size: Int = (
+        Self.PredModel.model_types[Self.PredModel.N - 1].branch_types[0].PARAM_SIZE
+    )
+    comptime dyn_reward_head_param_start: Int = (
+        Self.DynModel._param_offset[Self.DynModel.N - 1]()
+        + Self.DynModel.model_types[Self.DynModel.N - 1]._param_offset[1]()
+    )
+    comptime dyn_reward_head_param_size: Int = (
+        Self.DynModel.model_types[Self.DynModel.N - 1].branch_types[1].PARAM_SIZE
+    )

@@ -97,14 +97,33 @@ comptime ActionEmbedding[
 # ═════════════════════════════════════════════════════════════════════════
 # ProjectionMLP — SimSiam projector
 # ═════════════════════════════════════════════════════════════════════════
-
+#
+# Reference shape (`ez_dmc_state.py:518-527`):
+#
+#     Linear(HIDDEN, PROJ) → LN → ReLU
+#         → Linear(PROJ, PROJ) → LN → ReLU
+#         → Linear(PROJ, PROJ) → LN
+#
+# Per-layer LayerNorm before every ReLU is **load-bearing for SimSiam
+# collapse defence**. The original SimSiam paper (Chen & He 2021, App.
+# D) identifies BatchNorm/LayerNorm at every projector layer as the
+# critical structural defence against the trivial all-same-direction
+# fixed point. Earlier `LinearReLU` only had a single trailing LN, which
+# let the encoder collapse: `L_G → -0.999` within ~250 train steps on
+# HalfCheetah, dragging `L_V` / `L_R` to `log(2) = 0.69` (heads predicting
+# marginal of the two-hot target since latents carried no state info).
+# Found 2026-05-13.
 
 comptime ProjectionMLP[
     HIDDEN: Int,
     PROJ: Int = 1024,
 ] = Sequential[
-    LinearReLU[HIDDEN, PROJ],
-    LinearReLU[PROJ, PROJ],
+    Linear[HIDDEN, PROJ],
+    LayerNorm[PROJ],
+    ReLU[PROJ],
+    Linear[PROJ, PROJ],
+    LayerNorm[PROJ],
+    ReLU[PROJ],
     Linear[PROJ, PROJ],
     LayerNorm[PROJ],
 ]
@@ -113,13 +132,20 @@ comptime ProjectionMLP[
 # ═════════════════════════════════════════════════════════════════════════
 # PredictionMLP — SimSiam predictor (asymmetric bottleneck)
 # ═════════════════════════════════════════════════════════════════════════
-
+#
+# Reference shape (`ez_dmc_state.py:528-533`):
+#
+#     Linear(PROJ, BOTTLENECK) → LN → ReLU → Linear(BOTTLENECK, PROJ)
+#
+# Same per-layer LN rationale as ProjectionMLP above — landed 2026-05-13.
 
 comptime PredictionMLP[
     PROJ: Int = 1024,
     BOTTLENECK: Int = 512,
 ] = Sequential[
-    LinearReLU[PROJ, BOTTLENECK],
+    Linear[PROJ, BOTTLENECK],
+    LayerNorm[BOTTLENECK],
+    ReLU[BOTTLENECK],
     Linear[BOTTLENECK, PROJ],
 ]
 
