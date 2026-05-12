@@ -117,21 +117,32 @@ def main() raises:
     )
 
     # ── Paper init_zero on output heads ──────────────────────────────────
-    # Reference (`dmc_state.yaml:120`) sets init_zero=True on the
-    # prediction policy/value heads and the dynamics reward head. With
-    # W=b=0 the head's pre-activation is exactly 0 → softmax over BINS is
-    # uniform → expected V/reward = mid-bin in transformed space, which
-    # collapses the multi-thousand-batch overestimation-correction window
-    # that otherwise lands the policy in a bad local mode.
+    # Reference (`dmc_state.yaml:120`) sets init_zero=True. With W=b=0 the
+    # head's pre-activation is exactly 0 → softmax over BINS is uniform →
+    # expected V/reward = mid-bin in transformed space, collapsing the
+    # multi-thousand-batch overestimation-correction window that would
+    # otherwise land the policy in a bad local mode.
     # See `docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md` (Phase 4 blocker #1).
     #
+    # CONTINUOUS-only carve-out (reference `base_model.py:181`):
+    #     `init_zero=False if is_continuous else init_zero`
+    # for the value head. For continuous envs the value head is NOT
+    # zeroed — only the policy head and the dynamics reward head are.
+    # Why this matters: with W=0 on both pred heads, gradient through
+    # `Linear` w.r.t. its input is `grad_out @ W^T = 0`, so the encoder
+    # receives ZERO gradient from L_V and L_P at training start. The only
+    # signal feeding the encoder is then SimSiam consistency — which
+    # collapses to its trivial all-same-direction solution in ~250 train
+    # steps (cos → +0.999, L_V/L_R pinned at log(2)=0.69). Keeping the
+    # value head random-initialized lets L_V immediately pull the
+    # encoder toward state-discriminative latents, defending against the
+    # collapse attractor. Found 2026-05-13 audit.
+    #
     # PredModel = Sequential[LinearMish, Parallel[PolicyHead, ValueHead]]
-    #   → zero the whole trailing Parallel (last layer).
+    #   → zero only branch 0 (policy head) of the trailing Parallel.
     # DynModel  = Sequential[SplitApply, LinearMish, LinearMish,
     #                        Parallel[NextLatent, RewardHead]]
     #   → zero only branch 1 (reward head) of the trailing Parallel.
-    #     Zeroing the NextLatent branch would collapse the latent
-    #     representation.
     #
     # We can't bury this in a method on `GenericEZV2ContinuousAgent`
     # because the agent's `Config` is the `EZV2DiscreteConfig` trait,
@@ -139,8 +150,12 @@ def main() raises:
     # Sequential/Parallel-specific `_param_offset` and `model_types`
     # accessors are only visible when we hold the concrete struct type.
     comptime PRED_N = Config.PredModel.N
-    comptime PRED_HEADS_OFF = Config.PredModel._param_offset[PRED_N - 1]()
-    for i in range(PRED_HEADS_OFF, Config.PredModel.PARAM_SIZE):
+    comptime PredLast = Config.PredModel.model_types[PRED_N - 1]
+    comptime PRED_PARALLEL_OFF = Config.PredModel._param_offset[PRED_N - 1]()
+    comptime PRED_POLICY_OFF_IN_PARALLEL = PredLast._param_offset[0]()
+    comptime PRED_POLICY_PS = PredLast.branch_types[0].PARAM_SIZE
+    var _pred_policy_start = PRED_PARALLEL_OFF + PRED_POLICY_OFF_IN_PARALLEL
+    for i in range(_pred_policy_start, _pred_policy_start + PRED_POLICY_PS):
         agent.state.prediction.params[i] = Scalar[dtype](0.0)
 
     comptime DYN_N = Config.DynModel.N
