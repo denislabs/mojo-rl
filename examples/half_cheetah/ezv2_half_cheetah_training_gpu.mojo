@@ -146,13 +146,13 @@ def main() raises:
         train_interval=1,
         sync_interval=50,
         target_sync_interval=200,
-        # 4× reanalyze: with CAP=50k and the previous (interval=200,
-        # samples=32) cadence, only ~1k buffer slots were refreshed
-        # over 60k env-steps — most stored MCTS targets were collected
-        # under stale online networks. Tighten so the policy fits
-        # targets that track the current target-net's Q.
-        reanalyze_interval=50,
-        reanalyze_samples=128,
+        # Paper defaults (`dmc_state.yaml:55`). Reverted from the 16×
+        # aggressive `(50, 128)` cadence 2026-05-13 — diagnostic for
+        # whether aggressive reanalyze was propagating the SimSiam
+        # collapse into stored MCTS targets faster than fresh
+        # exploration could dilute it.
+        reanalyze_interval=200,
+        reanalyze_samples=32,
         reanalyze_warmup=1000,
         warmup_random_steps=2_000,
         max_steps_per_episode=1_000,
