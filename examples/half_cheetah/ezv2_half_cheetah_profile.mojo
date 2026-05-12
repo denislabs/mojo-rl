@@ -126,14 +126,19 @@ def main() raises:
         reanalyze_interval=200,
         reanalyze_samples=32,
         reanalyze_warmup=1000,
-        # No artificial warmup — training fires as soon as buffer fills
-        # (BS=256 → ~64 iterations of pre-training env stepping). The
-        # buffer-fill phase still uses policy/MCTS-derived actions (not
-        # pure-random), so the profile captures select_action MCTS cost
-        # from step 0.
+        # No artificial warmup — training fires as soon as buffer fills.
         warmup_random_steps=0,
-        max_steps_per_episode=1_000,
-        log_every=2_000,
+        # Profile-only: shorten episodes from 1000 to 100 so episodes
+        # complete within the budget and the replay buffer flushes (the
+        # buffer only flushes at `done`; with the production
+        # `max_steps=1000` no episode would finish in 3000 env-steps and
+        # training would never fire — leaving the profile capturing only
+        # env-step kernels). With `max_steps=100`, each of N_ENVS=4 envs
+        # completes a fresh episode every 25 iterations → first flush at
+        # iter 25 (≈100 env-steps); BS=256-buffer ready at iter ~64;
+        # steady-state training from iter ~64 onward.
+        max_steps_per_episode=100,
+        log_every=500,
         rng_seed_base=UInt64(2026),
         use_gpu_sampling=False,
         use_gpu_mcts=False,
