@@ -504,4 +504,54 @@ def main() raises:
         bwd_tol=5e-3,
     )
 
+    # ── TDMPC2 current architecture (with LayerNorm before SimNorm) ─
+    # Production EncModel/DynModel tails added a LayerNorm before SimNorm on
+    # 2026-05-06 (see project_tdmpc2_dynamics_layernorm_bug). The above
+    # TDMPC2_DynamicsHead predates that fix. Add the post-fix shapes so we
+    # exercise the exact kernel chain TDMPC2 HC training runs through —
+    # CPU backward here is ground truth and disambiguates the NVIDIA
+    # gradcheck failures (real kernel bug vs FD/TF32 noise).
+    print("--- TDMPC2 current architecture (post-LayerNorm fix) ---")
+
+    # Current EncModel: NormedLinear → Linear → LayerNorm → SimNorm
+    comptime TDMPC2_EncModel_Current = Sequential[
+        NormedLinear[8, 12],
+        Linear[12, 16],
+        LayerNorm[16],
+        SimNorm[16, 4],
+    ]
+    cpu_vs_gpu_check[TDMPC2_EncModel_Current](
+        ctx,
+        "TDMPC2 EncModel current arch (NormedLinear→Linear→LN→SimNorm)",
+        fwd_tol=1e-3,
+        bwd_tol=5e-3,
+    )
+
+    # Current DynModel: 2× NormedLinear → Linear → LayerNorm → SimNorm
+    comptime TDMPC2_DynModel_Current = Sequential[
+        NormedLinear[18, 24],
+        NormedLinear[24, 24],
+        Linear[24, 16],
+        LayerNorm[16],
+        SimNorm[16, 4],
+    ]
+    cpu_vs_gpu_check[TDMPC2_DynModel_Current](
+        ctx,
+        "TDMPC2 DynModel current arch (2×NormedLinear→Linear→LN→SimNorm)",
+        fwd_tol=1e-3,
+        bwd_tol=5e-3,
+    )
+
+    # Linear[128,1] — the case showing the exact 2.000× ratio under FD on
+    # NVIDIA (see TDMPC2_NVIDIA_GRADIENT_INVESTIGATION.md "2× ratio" section,
+    # rel=0.333 across many params). If GPU backward matches CPU here, the
+    # FD failure is FD/TF32 noise; if it diverges, the bug is real and the
+    # 2× ratio is a smoking gun (gradient written twice).
+    cpu_vs_gpu_check[Linear[128, 1]](
+        ctx,
+        "Linear[128,1] (FD-suspicious 2x-ratio case)",
+        fwd_tol=1e-3,
+        bwd_tol=5e-3,
+    )
+
     print("=== Done ===")
