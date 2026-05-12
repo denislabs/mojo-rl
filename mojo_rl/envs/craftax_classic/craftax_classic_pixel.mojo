@@ -435,7 +435,6 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
         self.inner = CraftaxClassicEnv[Self.DTYPE]()
         # Try to load the CPU atlas. Falls back silently to a black-screen
         # atlas if PIL/assets are unavailable (the env will still step).
-        self._atlas = UnsafePointer[Float32, MutAnyOrigin]()
         self._atlas_loaded = False
         try:
             self._atlas = build_agent_atlas(ASSET_DIR, BLOCK_PIXEL_SIZE)
@@ -443,13 +442,8 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
         except e:
             print("Craftax pixel env: atlas load failed (", String(e), ")")
             self._atlas = alloc[Float32](ATLAS_FLOATS)
-            memset(
-                rebind[UnsafePointer[UInt8, MutAnyOrigin]](
-                    self._atlas.bitcast[UInt8]()
-                ),
-                UInt8(0),
-                ATLAS_FLOATS * 4,
-            )
+            for i in range(ATLAS_FLOATS):
+                self._atlas[i] = Float32(0.0)
 
     def __del__(deinit self):
         if Int(self._atlas) != 0:

@@ -70,5 +70,6 @@ from .aliases import (
     DeepPPOAgent,
     DeepPPOContinuousAgent,
     DeepPPOCNNAgent,
+    DeepPPOCraftaxCNNAgent,
     MBPOSACAgent,
 )

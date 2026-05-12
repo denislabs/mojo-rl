@@ -21,10 +21,10 @@ from std.random import seed
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.core.agents import DeepPPOCNNAgent
+from mojo_rl.deep_agents.core.agents import DeepPPOCraftaxCNNAgent
 from mojo_rl.envs.craftax_classic import CraftaxClassicPixelEnv
 
-# Craftax-Classic: 17 discrete actions, 4×84×84 pixel obs
+# Craftax-Classic: 17 discrete actions, 3×90×90 RGB sprite pixel obs.
 comptime NUM_ACTIONS = 17
 
 # PPO hyperparameters — same shape as Pong pixel for consistency.
@@ -45,7 +45,7 @@ def main() raises:
     print("=" * 70)
 
     with DeviceContext() as ctx:
-        var agent = DeepPPOCNNAgent[
+        var agent = DeepPPOCraftaxCNNAgent[
             num_actions=NUM_ACTIONS,
             rollout_len=ROLLOUT_LEN,
             n_envs=N_ENVS,
@@ -67,8 +67,8 @@ def main() raises:
         )
 
         print("Environment: Craftax-Classic (GPU-batched, pixel)")
-        print("Agent: PPO-CNN (Nature DQN trunk)")
-        print("  Observation: 4 × 84 × 84 = 28224 (pixel frames)")
+        print("Agent: PPO-CNN (Craftax-spec trunk)")
+        print("  Observation: 3 × 90 × 90 = 24300 (RGB sprite single frame)")
         print("  Actions:", NUM_ACTIONS)
         print("  N envs (parallel):", N_ENVS)
         print("  Rollout length:", ROLLOUT_LEN)

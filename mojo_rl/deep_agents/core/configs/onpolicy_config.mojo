@@ -247,6 +247,60 @@ struct PPOCNNConfig[
     comptime USE_AUTODIFF_GRAD: Bool = True
 
 
+# =============================================================================
+# PPOCraftaxCNNConfig (Craftax-spec CNN for 3x90x90 sprite-RGB pixel obs)
+# =============================================================================
+
+
+struct PPOCraftaxCNNConfig[
+    ACT: Int,
+    ROLLOUT: Int = 128,
+    actor_lr: Float64 = 0.00025,
+    critic_lr: Float64 = 0.00025,
+](OnPolicyConfig):
+    """PPO with a Nature-style CNN for 3×90×90 RGB observations.
+
+    Matches the Craftax paper's pixel-obs format: single frame (no stack),
+    channel-first RGB at BLOCK_PIXEL_SIZE_AGENT=10 resolution. Layer dims
+    chosen so the downstream FC stage matches NatureDQN exactly (64×7×7 →
+    512 → ACT).
+
+    Spatial shape walk:
+      3×90×90 ─Conv(3→32, k=8, s=4)→ 32×21×21
+              ─Conv(32→64, k=4, s=2)→ 64×9×9
+              ─Conv(64→64, k=3, s=1)→ 64×7×7
+              ─Flatten→ 3136 ─Linear→ 512 ─Linear→ ACT
+    """
+
+    comptime obs_dim: Int = 3 * 90 * 90  # 24300
+    comptime num_actions: Int = Self.ACT
+    comptime rollout_len: Int = Self.ROLLOUT
+    comptime NAME: String = "PPO Craftax CNN"
+
+    comptime ActorModel = Sequential[
+        Conv2DReLU[3, 32, 8, 4, 0, 90, 90],
+        Conv2DReLU[32, 64, 4, 2, 0, 21, 21],
+        Conv2DReLU[64, 64, 3, 1, 0, 9, 9],
+        FlattenLayer[64 * 7 * 7],
+        LinearReLU[64 * 7 * 7, 512],
+        Linear[512, Self.ACT],
+    ]
+    comptime CriticModel = Sequential[
+        Conv2DReLU[3, 32, 8, 4, 0, 90, 90],
+        Conv2DReLU[32, 64, 4, 2, 0, 21, 21],
+        Conv2DReLU[64, 64, 3, 1, 0, 9, 9],
+        FlattenLayer[64 * 7 * 7],
+        LinearReLU[64 * 7 * 7, 512],
+        Linear[512, 1],
+    ]
+    comptime ActorOpt = Adam[Self.actor_lr]
+    comptime CriticOpt = Adam[Self.critic_lr]
+
+    comptime PolicyGrad = AutodiffClippedSurrogate[]
+    comptime EpochSched = MultiEpochMinibatch
+    comptime USE_AUTODIFF_GRAD: Bool = True
+
+
 # AutodiffPPOConfig is now just an alias for PPOConfig (which uses autodiff by default)
 comptime AutodiffPPOConfig = PPOConfig
 
