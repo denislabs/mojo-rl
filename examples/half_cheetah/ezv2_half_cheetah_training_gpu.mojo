@@ -92,31 +92,29 @@ def main() raises:
         K_ROOT=16,
         K_NON_ROOT=8,
         MAX_ACTION=1.0,  # ← DMC convention: actions ∈ [-1, 1]
-        MIN_STD=0.1,  # ← paper default (Pendulum used 0.5)
+        # MIN_STD=0.5 — raised from paper default 0.1 after 2026-05-13
+        # diagnostic (LAMBDA_G=0 ablation). With MIN_STD=0.1, σ collapsed
+        # to MIN_STD within ~2000 train steps (L_P → -10, deterministic
+        # policy), the cheetah barely moved, sampled obs became near-
+        # identical, value/reward targets degenerated to marginals,
+        # L_R/L_V plateaued at log(2), and recent_mean regressed
+        # monotonically (-275 → -462 over 20k env-steps). 0.5 is the
+        # value that's been working for Pendulum — keeps the action
+        # distribution wide enough that exploration breaks the degenerate-
+        # data loop. Revisit once we have a converging baseline.
+        MIN_STD=0.5,
         STD_MAGNIFICATION=3.0,
         # Reference (`ez/config/exp/dmc_state.yaml:67`): entropy_coeff = 5e-2
         # for ALL DMC envs (not Pendulum-specific). Previous reductions
-        # (1e-3, 5e-3) chased the wrong direction — with ACT_DIM=6 and
-        # simple-best NLL the policy collapses σ → MIN_STD=0.1 and
-        # L_P → very negative; strong entropy gradient (-ENT/σ per dim)
-        # is the load-bearing fix to prevent collapse. Mismatch found
-        # 2026-05-13 audit of EfficientZeroV2-main/.
+        # (1e-3, 5e-3) chased the wrong direction — strong entropy
+        # gradient (-ENT/σ per dim) is needed to prevent σ collapse to
+        # MIN_STD. Mismatch found 2026-05-13 audit of EfficientZeroV2-main/.
         ENT_WEIGHT=5e-2,
-        # DIAGNOSTIC 2026-05-13 — disable SimSiam consistency loss.
-        # All architectural fixes tried (per-layer LN in projector,
-        # PROJ_HID=512 ref-parity, init_zero carve-out, obs-norm, dyn
-        # residual + LayerNorm dyn output) failed to prevent projector
-        # collapse (`G → -0.999` within 500 train steps). This one-run
-        # ablation tells us whether SimSiam is the active blocker:
-        #   • If `L_V` stays below log(2) and `recent_mean` improves →
-        #     SimSiam is dominating; the projector finds the trivial
-        #     constant-output minimum regardless of LN. Next step:
-        #     heavy structural refactor (ResBlocks in rep+dyn + BN
-        #     heads) to match reference's full pipeline.
-        #   • If `L_V` still plateaus at log(2) and no learning → bug
-        #     elsewhere (value target / range / replay / reanalyze).
-        # Reference uses 2.0 — restore after diagnostic resolves.
-        LAMBDA_G=0.0,
+        # Reference default. Diagnostic 2026-05-13 (LAMBDA_G=0) proved
+        # the SimSiam consistency loss was NOT the cause of HalfCheetah
+        # collapse — encoder collapse was downstream of policy σ-collapse
+        # under MIN_STD=0.1 + degenerate exploration. Restored to ref.
+        LAMBDA_G=2.0,
         # Bootstrapped TD value target — the keystone fix from Pendulum.
         # Reference uses this for DMC state envs. See
         # `docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md`.
