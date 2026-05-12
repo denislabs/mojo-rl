@@ -102,6 +102,21 @@ def main() raises:
         # is the load-bearing fix to prevent collapse. Mismatch found
         # 2026-05-13 audit of EfficientZeroV2-main/.
         ENT_WEIGHT=5e-2,
+        # DIAGNOSTIC 2026-05-13 — disable SimSiam consistency loss.
+        # All architectural fixes tried (per-layer LN in projector,
+        # PROJ_HID=512 ref-parity, init_zero carve-out, obs-norm, dyn
+        # residual + LayerNorm dyn output) failed to prevent projector
+        # collapse (`G → -0.999` within 500 train steps). This one-run
+        # ablation tells us whether SimSiam is the active blocker:
+        #   • If `L_V` stays below log(2) and `recent_mean` improves →
+        #     SimSiam is dominating; the projector finds the trivial
+        #     constant-output minimum regardless of LN. Next step:
+        #     heavy structural refactor (ResBlocks in rep+dyn + BN
+        #     heads) to match reference's full pipeline.
+        #   • If `L_V` still plateaus at log(2) and no learning → bug
+        #     elsewhere (value target / range / replay / reanalyze).
+        # Reference uses 2.0 — restore after diagnostic resolves.
+        LAMBDA_G=0.0,
         # Bootstrapped TD value target — the keystone fix from Pendulum.
         # Reference uses this for DMC state envs. See
         # `docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md`.
