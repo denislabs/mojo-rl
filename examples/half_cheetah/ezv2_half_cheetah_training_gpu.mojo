@@ -56,12 +56,24 @@ def main() raises:
     # Paper-spec network sizing (`references/EfficientZeroV2-main/ez/config/exp/dmc_state.yaml`).
     # Previous 128/128/256 pulse-check was undersized for HalfCheetah's
     # 17D obs × 6D action representational demand.
+    #
+    # PROJ=128 (was 1024) — 2026-05-13 audit. Reference's
+    # `proj_shape=128` is 8× narrower than what we had. The previous
+    # PROJ=1024 caused SimSiam encoder collapse: `L_G` raced to -0.999
+    # within 10k env-steps (cosine ≈ +0.999 = trivial all-same-direction
+    # solution), `L_V`/`L_R` then pinned at log(2)=0.69 (heads predicting
+    # the marginal of the two-hot target since latents carry no state
+    # info), and `L_P` went deeply negative as σ collapsed to MIN_STD.
+    # Narrow PROJ constrains the projection manifold so the network must
+    # build state-discriminative latents to drive consistency down.
+    # `PRED_BOTTLENECK=512` is kept — combined with `PROJ=128` this gives
+    # the 128→512→128 predictor shape that matches reference exactly.
     comptime Config = EZV2ContinuousMLPConfig[
         OBS=17,
         ACT_DIM=6,
         LATENT=256,
         HIDDEN=256,
-        PROJ=1024,
+        PROJ=128,
         PRED_BOTTLENECK=512,
         BINS=51,
         BS=128,
