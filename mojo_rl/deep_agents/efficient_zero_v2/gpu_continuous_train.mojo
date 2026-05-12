@@ -40,6 +40,7 @@ from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.env_traits import GPUContinuousEnv
+from mojo_rl.core.obs_norm import ObsNormStats
 from mojo_rl.deep_agents.efficient_zero_v2.configs import (
     EZV2DiscreteConfig,
     VALUE_TARGET_SEARCH,
@@ -111,6 +112,7 @@ def run_ezv2_continuous_train_gpu[
     # the CPU MCTS is much slower per env-step than the batched GPU
     # search.
     use_gpu_mcts: Bool = True,
+    obs_norm: Bool = False,
     verbose: Bool = True,
 ) raises -> EZV2TrainStats:
     """Drive EZ-V2 continuous training fully on GPU (env + MCTS) with a
@@ -149,6 +151,12 @@ def run_ezv2_continuous_train_gpu[
             supports `VALUE_TARGET_SEARCH` today; passing True with a
             SARSA / MIXED config raises a runtime error. SARSA configs
             (HalfCheetah default) must keep this False.
+        obs_norm: When True, normalize the per-step `obs_buf` in place
+            using a running mean / variance tracker (CleanRL VecNormalize
+            semantics). Stats update from every env step; replay stores
+            the normalized obs. Off by default to preserve every existing
+            script's baseline. Enable on envs with non-zero-mean / wide-
+            scale obs (HalfCheetah, Humanoid, Ant, etc.).
         verbose: Print progress / config / summary.
 
     Returns:
@@ -328,6 +336,13 @@ def run_ezv2_continuous_train_gpu[
     # Only used by the GPU-sampling train path. For the default host-
     # sampling path it's allocated but never read.
     var gpu_replay = EZV2GPUReplayBuffer[CAP, OBS, ACT_DIM](ctx)
+
+    # ─── Running obs normalization (opt-in) ──────────────────────────────
+    # Always allocated so the local `obs_norm_stats` variable has a fixed
+    # type; the per-step update/apply calls are guarded by `obs_norm`.
+    # Memory cost when `obs_norm=False`: 2·OBS_DIM·sizeof(gpu_dtype) +
+    # 8 bytes — negligible vs the rest of the GPU state.
+    var obs_norm_stats = ObsNormStats[OBS_DIM](ctx)
     ctx.synchronize()
 
     # ─── Initial reset ──────────────────────────────────────────────────
@@ -337,6 +352,8 @@ def run_ezv2_continuous_train_gpu[
     Env.extract_obs_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM](
         ctx, states_buf, obs_buf
     )
+    if obs_norm:
+        obs_norm_stats.update_and_apply[N_ENVS](ctx, obs_buf)
     ctx.synchronize()
 
     if verbose:
@@ -632,6 +649,8 @@ def run_ezv2_continuous_train_gpu[
             rng_seed=step_seed,
             workspace_ptr=env_workspace.unsafe_ptr(),
         )
+        if obs_norm:
+            obs_norm_stats.update_and_apply[N_ENVS](ctx, obs_buf)
 
         ctx.enqueue_copy(host_reward.unsafe_ptr(), rewards_buf)
         ctx.enqueue_copy(host_done.unsafe_ptr(), dones_buf)
@@ -705,6 +724,14 @@ def run_ezv2_continuous_train_gpu[
             Env.extract_obs_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM](
                 ctx, states_buf, obs_buf
             )
+            if obs_norm:
+                # Apply without updating stats: extract_obs_kernel_gpu
+                # rewrites ALL N_ENVS rows from raw state (not just the
+                # reset rows), so a full update_and_apply here would
+                # double-count the non-reset envs' already-counted post-
+                # step obs. Reset-row obs end up in stats indirectly when
+                # the next step's update_and_apply fires.
+                obs_norm_stats.apply_only[N_ENVS](ctx, obs_buf)
 
         ctx.enqueue_copy(host_obs.unsafe_ptr(), obs_buf)
         ctx.synchronize()

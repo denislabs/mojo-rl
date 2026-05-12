@@ -48,6 +48,8 @@ from .linear_fa import (
 )
 
 
+from .obs_norm import ObsNormStats
+
 from .vec_env import (
     VecStepResult,
     simd_splat_f64,

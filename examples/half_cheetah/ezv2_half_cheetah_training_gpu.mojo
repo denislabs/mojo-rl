@@ -74,12 +74,14 @@ def main() raises:
         MAX_ACTION=1.0,            # ← DMC convention: actions ∈ [-1, 1]
         MIN_STD=0.1,               # ← paper default (Pendulum used 0.5)
         STD_MAGNIFICATION=3.0,
-        # Paper default 5e-3, but with simple-best NLL (ACT_DIM>1) and
-        # K_ROOT=16 it overpowers the policy loss → σ widens unboundedly
-        # → L_P → very negative → policy regresses (60k step run
-        # 2026-05-11, mean10 monotonically declines -333 → -548).
-        # Dropped 5x; can be tightened further or annealed if needed.
-        ENT_WEIGHT=1e-3,
+        # Reference (`ez/config/exp/dmc_state.yaml:67`): entropy_coeff = 5e-2
+        # for ALL DMC envs (not Pendulum-specific). Previous reductions
+        # (1e-3, 5e-3) chased the wrong direction — with ACT_DIM=6 and
+        # simple-best NLL the policy collapses σ → MIN_STD=0.1 and
+        # L_P → very negative; strong entropy gradient (-ENT/σ per dim)
+        # is the load-bearing fix to prevent collapse. Mismatch found
+        # 2026-05-13 audit of EfficientZeroV2-main/.
+        ENT_WEIGHT=5e-2,
         # Bootstrapped TD value target — the keystone fix from Pendulum.
         # Reference uses this for DMC state envs. See
         # `docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md`.
@@ -182,5 +184,14 @@ def main() raises:
         # gpu_mcts_sampled.mojo at runtime to find the tree-state
         # divergence from `mcts_sampled.mojo`.
         use_gpu_mcts=False,
+        # Running obs-normalization (CleanRL VecNormalize semantics).
+        # Reference (`EfficientZeroV2-main/ez/agents/ez_dmc_state.py:173-182`)
+        # makes obs-norm part of the representation network — load-bearing
+        # for DMC-state HalfCheetah where raw obs spans 17 dims with mixed
+        # zero-/non-zero-mean and wide scales. We do the equivalent at the
+        # env boundary so replay stores normalized obs and every consumer
+        # (CPU MCTS, GPU MCTS, training, reanalyze) sees a consistent
+        # distribution.
+        obs_norm=True,
         verbose=True,
     )
