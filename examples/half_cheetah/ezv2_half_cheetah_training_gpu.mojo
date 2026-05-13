@@ -191,7 +191,7 @@ def main() raises:
         # actually trains; remaining diagnostic work is to instrument
         # gpu_mcts_sampled.mojo at runtime to find the tree-state
         # divergence from `mcts_sampled.mojo`.
-        use_gpu_mcts=False,
+        use_gpu_mcts=True,
         # Running obs-normalization (CleanRL VecNormalize semantics).
         # Reference (`EfficientZeroV2-main/ez/agents/ez_dmc_state.py:173-182`)
         # makes obs-norm part of the representation network — load-bearing
