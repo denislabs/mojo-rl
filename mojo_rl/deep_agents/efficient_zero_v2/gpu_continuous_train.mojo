@@ -1318,85 +1318,84 @@ def run_ezv2_continuous_train_gpu[
 
             if logger_active:
                 var step = stats.total_env_steps
-                # Episode-level signals
+                var last_ep_reward = (
+                    recent[len(recent) - 1] if len(recent) > 0
+                    else Float64(0.0)
+                )
+
+                # ── Episode Reward group ──────────────────────────────
+                logger.value()[].log_scalar("avg_reward", recent_mean, step)
                 logger.value()[].log_scalar(
-                    "episode/mean_return_recent", recent_mean, step
+                    "episode_reward", last_ep_reward, step
+                )
+                # ── Training Progress group ───────────────────────────
+                logger.value()[].log_scalar("episodes", Float64(n_eps), step)
+                logger.value()[].log_scalar(
+                    "train_steps", Float64(stats.num_train_calls), step
+                )
+                # ── Loss group / specialized loss groups ──────────────
+                # Rolling means over the interval — smoother than the
+                # last-call snapshot used in the print line.
+                if diag_loss_count > 0:
+                    logger.value()[].log_scalar("loss", mean_L_total, step)
+                    # World Model Losses group
+                    logger.value()[].log_scalar("reward_loss", mean_L_R, step)
+                    # SimSiam consistency between predicted z and the
+                    # target-encoder z fits the "obs prediction" slot
+                    # semantically (Dreamer/MuZero analogue).
+                    logger.value()[].log_scalar("obs_loss", mean_L_G, step)
+                    # Critic Loss group
+                    logger.value()[].log_scalar("value_loss", mean_L_V, step)
+                    # Policy Loss group
+                    logger.value()[].log_scalar(
+                        "policy_loss", mean_L_P, step
+                    )
+                # ── Entropy group ─────────────────────────────────────
+                # Improved-policy entropy = entropy of the MCTS-derived
+                # target distribution over K root candidates.
+                logger.value()[].log_scalar(
+                    "entropy", mean_improved_entropy, step
+                )
+                # ── Exploration group ─────────────────────────────────
+                # EZ-V2's `temperature` plays the same MCTS-sampling
+                # role as ε-greedy's `explore_rate` for DQN.
+                logger.value()[].log_scalar(
+                    "explore_rate", agent.temperature, step
+                )
+                # ── TD Targets / Value Head group ─────────────────────
+                # MCTS-derived SVE is the value target the V head fits
+                # against — natural fit for the TD-targets group.
+                logger.value()[].log_scalar(
+                    "value_target_mean", mean_sve, step
+                )
+                # ── Extra (no exact KNOWN_GROUPS match) ───────────────
+                # `best_reward` extends Episode Reward. `action_*` track
+                # policy saturation (HC's MIN_STD collapse symptom).
+                # `buffer_size`, `gpu_syncs`, `buffer_uploads`, `wall_s`
+                # are runtime telemetry.
+                logger.value()[].log_scalar(
+                    "best_reward", stats.best_episode_return, step
                 )
                 logger.value()[].log_scalar(
-                    "episode/best_return", stats.best_episode_return, step
+                    "action_abs_mean", mean_abs_action, step
                 )
                 logger.value()[].log_scalar(
-                    "episode/count", Float64(n_eps), step
-                )
-                # Counters
-                logger.value()[].log_scalar(
-                    "counters/train_calls",
-                    Float64(stats.num_train_calls),
-                    step,
+                    "action_saturated_frac", frac_saturated, step
                 )
                 logger.value()[].log_scalar(
-                    "counters/gpu_syncs",
-                    Float64(stats.num_gpu_syncs),
-                    step,
-                )
-                logger.value()[].log_scalar(
-                    "counters/buffer_uploads",
-                    Float64(stats.num_buffer_uploads),
-                    step,
-                )
-                logger.value()[].log_scalar(
-                    "counters/buffer_size",
+                    "buffer_size",
                     Float64(agent.state.buffer.size),
                     step,
                 )
-                logger.value()[].log_scalar("counters/wall_s", wall_s, step)
-                # Loss (mean over interval — smoother than last-call).
-                if diag_loss_count > 0:
-                    logger.value()[].log_scalar(
-                        "loss/total", mean_L_total, step
-                    )
-                    logger.value()[].log_scalar("loss/reward", mean_L_R, step)
-                    logger.value()[].log_scalar("loss/policy", mean_L_P, step)
-                    logger.value()[].log_scalar("loss/value", mean_L_V, step)
-                    logger.value()[].log_scalar(
-                        "loss/consistency", mean_L_G, step
-                    )
-                # Last loss snapshot (per-call instability check).
                 logger.value()[].log_scalar(
-                    "loss/last_total",
-                    stats.last_L_R
-                    + stats.last_L_P
-                    + stats.last_L_V
-                    + stats.last_L_G,
+                    "gpu_syncs", Float64(stats.num_gpu_syncs), step
+                )
+                logger.value()[].log_scalar(
+                    "buffer_uploads",
+                    Float64(stats.num_buffer_uploads),
                     step,
                 )
-                logger.value()[].log_scalar(
-                    "loss/last_policy", stats.last_L_P, step
-                )
-                logger.value()[].log_scalar(
-                    "loss/last_value", stats.last_L_V, step
-                )
-                logger.value()[].log_scalar(
-                    "loss/last_consistency", stats.last_L_G, step
-                )
-                # Action / policy diagnostics
-                logger.value()[].log_scalar(
-                    "policy/mean_abs_action", mean_abs_action, step
-                )
-                logger.value()[].log_scalar(
-                    "policy/frac_saturated", frac_saturated, step
-                )
-                logger.value()[].log_scalar(
-                    "policy/improved_entropy",
-                    mean_improved_entropy,
-                    step,
-                )
-                # MCTS / value signals
-                logger.value()[].log_scalar("mcts/sve_mean", mean_sve, step)
-                # Optimizer state — temperature anneals over training.
-                logger.value()[].log_scalar(
-                    "policy/temperature", agent.temperature, step
-                )
+                logger.value()[].log_scalar("wall_s", wall_s, step)
 
             # Reset interval accumulators.
             diag_abs_action_sum = 0.0
@@ -1447,19 +1446,15 @@ def run_ezv2_continuous_train_gpu[
         for i in range(start_i, n_eps):
             recent.append(stats.ep_returns[i])
         logger.value()[].log_scalar(
-            "episode/mean_return_recent",
-            _mean(recent),
-            stats.total_env_steps,
+            "avg_reward", _mean(recent), stats.total_env_steps
         )
         logger.value()[].log_scalar(
-            "episode/best_return",
+            "best_reward",
             stats.best_episode_return,
             stats.total_env_steps,
         )
         logger.value()[].log_scalar(
-            "counters/wall_s",
-            stats.wall_time_s,
-            stats.total_env_steps,
+            "wall_s", stats.wall_time_s, stats.total_env_steps
         )
         logger.value()[].flush()
 
