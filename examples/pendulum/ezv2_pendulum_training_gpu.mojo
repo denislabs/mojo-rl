@@ -46,7 +46,7 @@ def main() raises:
     print("    EZ-V2 Pendulum — GPU driver regression test (N_ENVS=8)")
     print("=" * 72)
 
-    comptime NUM_ENV_STEPS = 30_000
+    comptime NUM_ENV_STEPS = 100_000
     comptime N_ENVS = 8
 
     comptime Config = EZV2ContinuousMLPConfig[
@@ -93,7 +93,7 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="EZ-V2 Pendulum GPU (SARSA, K_ROOT=16)",
+        run_name="EZ-V2 Pendulum GPU (SARSA)",
         buffer_size=64,
         api_key=api_key,
     )

@@ -34,7 +34,7 @@ particular), `EZV2GPUReplayBuffer` will need `mcts_sampled_actions` +
 to mirror them.
 """
 
-from collections.optional import Optional
+from std.collections.optional import Optional
 from std.math import exp, log
 from std.memory import UnsafePointer
 from std.random import random_float64
@@ -142,12 +142,16 @@ def run_ezv2_continuous_train_gpu[
         N_ENVS: Parallel envs (≥ 1). Trains every `train_interval`
             env-batches (not env-steps).
         NUM_ENV_STEPS: Total env-step transitions across all envs.
+        REANALYZE_SAMPLES: Number of samples to draw from the replay
+            buffer for reanalyze.
+        L: Logger type.
 
     Args:
         agent: Pre-constructed `GenericEZV2ContinuousAgent` (its
             `n_envs` must equal `N_ENVS`).
         ctx: GPU device context.
         train_interval: Train every Nth env-batch.
+        train_steps_per_iter: Number of training steps to run per training-interval firing.
         sync_interval: GPU → CPU network sync every Nth train.
         target_sync_interval: Hard-copy target nets every Nth train.
         reanalyze_interval: Reanalyze every Nth train post-warmup.
@@ -185,9 +189,8 @@ def run_ezv2_continuous_train_gpu[
     # Paper App. A: K_NON_ROOT = K_ROOT // 2 (matches the agent's CPU MCTS
     # default in `continuous_agent.mojo:140-145`). Floor to 1.
     comptime K_NON_ROOT = (
-        Config.num_root_candidates // 2
-        if Config.num_root_candidates // 2 >= 1
-        else 1
+        Config.num_root_candidates // 2 if Config.num_root_candidates // 2
+        >= 1 else 1
     )
     comptime CAP = 50000  # matches `EZV2DiscreteCPUState`'s default _CAP
 
@@ -212,9 +215,7 @@ def run_ezv2_continuous_train_gpu[
             " agree on the continuous-action vector width."
         )
     comptime if Config.obs_dim != Env.OBS_DIM:
-        comptime assert False, (
-            "Config.obs_dim does not match Env.OBS_DIM."
-        )
+        comptime assert False, "Config.obs_dim does not match Env.OBS_DIM."
 
     # Phase 3d (2026-05-13): `use_gpu_sampling=True` now supports
     # SARSA/MIXED via the GPU target-net forward + decode added in
@@ -227,25 +228,45 @@ def run_ezv2_continuous_train_gpu[
         print("    N_ENVS                =", N_ENVS)
         print("    train_interval        =", train_interval, "(per env-batch)")
         print("    sync_interval         =", sync_interval, "train_steps")
-        print("    target_sync_interval  =", target_sync_interval, "train_steps")
+        print(
+            "    target_sync_interval  =", target_sync_interval, "train_steps"
+        )
         print("    reanalyze_interval    =", reanalyze_interval, "train_steps")
-        print("    reanalyze_samples     =", REANALYZE_SAMPLES, "(comptime, GPU)")
+        print(
+            "    reanalyze_samples     =", REANALYZE_SAMPLES, "(comptime, GPU)"
+        )
         print("    reanalyze_warmup      =", reanalyze_warmup, "train_steps")
         print("    warmup_random_steps   =", warmup_random_steps)
         print("    max_steps_per_episode =", max_steps_per_episode)
         print(
-            "    Config: OBS=", OBS, " ACT_DIM=", ACT_DIM,
-            " LATENT=", LATENT, " BINS=", BINS,
+            "    Config: OBS=",
+            OBS,
+            " ACT_DIM=",
+            ACT_DIM,
+            " LATENT=",
+            LATENT,
+            " BINS=",
+            BINS,
         )
         print(
-            "            BS=", Config.batch_size,
-            " K_UNROLL=", Config.unroll_steps,
-            " SIMS=", SIMS, " K_ROOT=", K_ROOT, " K_NON_ROOT=", K_NON_ROOT,
+            "            BS=",
+            Config.batch_size,
+            " K_UNROLL=",
+            Config.unroll_steps,
+            " SIMS=",
+            SIMS,
+            " K_ROOT=",
+            K_ROOT,
+            " K_NON_ROOT=",
+            K_NON_ROOT,
         )
         print(
-            "            MAX_ACTION=", MAX_ACTION_F,
-            " MIN_STD=", MIN_STD_F,
-            " STD_MAG=", STD_MAG_F,
+            "            MAX_ACTION=",
+            MAX_ACTION_F,
+            " MIN_STD=",
+            MIN_STD_F,
+            " STD_MAG=",
+            STD_MAG_F,
         )
         print("    use_gpu_sampling      =", use_gpu_sampling)
         print()
@@ -281,9 +302,7 @@ def run_ezv2_continuous_train_gpu[
     var host_terminated = ctx.enqueue_create_host_buffer[dtype](N_ENVS)
 
     # ─── Env step workspace (no-op for envs with STEP_WS_SHARED == 0) ───
-    comptime ws_size_total = (
-        Env.STEP_WS_SHARED + N_ENVS * Env.STEP_WS_PER_ENV
-    )
+    comptime ws_size_total = (Env.STEP_WS_SHARED + N_ENVS * Env.STEP_WS_PER_ENV)
     comptime ws_alloc = ws_size_total if ws_size_total > 0 else 1
     var env_workspace = ctx.enqueue_create_buffer[dtype](ws_alloc)
     if Env.STEP_WS_SHARED + Env.STEP_WS_PER_ENV > 0:
@@ -336,9 +355,7 @@ def run_ezv2_continuous_train_gpu[
     var host_log_prior = ctx.enqueue_create_host_buffer[dtype](
         N_ENVS * NODES * K_ROOT
     )
-    var host_node_value = ctx.enqueue_create_host_buffer[dtype](
-        N_ENVS * NODES
-    )
+    var host_node_value = ctx.enqueue_create_host_buffer[dtype](N_ENVS * NODES)
     var host_node_total_visits = ctx.enqueue_create_host_buffer[dtype](
         N_ENVS * NODES
     )
@@ -372,9 +389,9 @@ def run_ezv2_continuous_train_gpu[
     var host_reanalyze_node_visit = ctx.enqueue_create_host_buffer[dtype](
         REANALYZE_SAMPLES * NODES * K_ROOT
     )
-    var host_reanalyze_node_total_value = ctx.enqueue_create_host_buffer[
-        dtype
-    ](REANALYZE_SAMPLES * NODES * K_ROOT)
+    var host_reanalyze_node_total_value = ctx.enqueue_create_host_buffer[dtype](
+        REANALYZE_SAMPLES * NODES * K_ROOT
+    )
     var host_reanalyze_node_actions = ctx.enqueue_create_host_buffer[dtype](
         REANALYZE_SAMPLES * NODES * K_ROOT * ACT_DIM
     )
@@ -490,9 +507,7 @@ def run_ezv2_continuous_train_gpu[
                         )
                     )
 
-                var sampled = List[Scalar[dtype]](
-                    capacity=K_ROOT * ACT_DIM
-                )
+                var sampled = List[Scalar[dtype]](capacity=K_ROOT * ACT_DIM)
                 var improved = List[Scalar[dtype]](capacity=K_ROOT)
                 for _ in range(K_ROOT * ACT_DIM):
                     sampled.append(Scalar[dtype](0.0))
@@ -518,9 +533,7 @@ def run_ezv2_continuous_train_gpu[
             # has `obs_per_env[e]` from the previous step's GPU obs
             # download, so no extra download is needed.
             for e in range(N_ENVS):
-                var sel = agent.select_action(
-                    obs_per_env[e], training=True
-                )
+                var sel = agent.select_action(obs_per_env[e], training=True)
                 var action = sel[0].copy()
                 var root_value = sel[1]
                 var sampled = sel[2].copy()
@@ -597,7 +610,9 @@ def run_ezv2_continuous_train_gpu[
                 var sum_value = Float64(0.0)
                 var sum_visits = 0
                 for i in range(K_ROOT):
-                    sum_value += Float64(host_node_total_value[root_slot_off + i])
+                    sum_value += Float64(
+                        host_node_total_value[root_slot_off + i]
+                    )
                     sum_visits += Int(
                         Float64(host_node_visit[root_slot_off + i])
                     )
@@ -615,9 +630,7 @@ def run_ezv2_continuous_train_gpu[
                 # K root candidate action vectors. Offset:
                 #   actions[e * NODES * K_ROOT * ACT_DIM + 0 .. + K_ROOT*ACT_DIM]
                 var act_off = e * NODES * K_ROOT * ACT_DIM
-                var sampled = List[Scalar[dtype]](
-                    capacity=K_ROOT * ACT_DIM
-                )
+                var sampled = List[Scalar[dtype]](capacity=K_ROOT * ACT_DIM)
                 for j in range(K_ROOT * ACT_DIM):
                     sampled.append(host_node_actions[act_off + j])
 
@@ -660,9 +673,9 @@ def run_ezv2_continuous_train_gpu[
                             )
                             weighted_q += w * qa
                     if sum_w > 1.0e-12:
-                        v_mix = (
-                            v_self + n_total * (weighted_q / sum_w)
-                        ) / (1.0 + n_total)
+                        v_mix = (v_self + n_total * (weighted_q / sum_w)) / (
+                            1.0 + n_total
+                        )
 
                 # σ scale: (c_visit + max_visit_at_root) · c_scale.
                 var max_visit = Float64(0.0)
@@ -681,8 +694,7 @@ def run_ezv2_continuous_train_gpu[
                     var qa2: Float64
                     if nva_f4 > 0.5:
                         qa2 = (
-                            Float64(host_node_total_value[nk_base + i])
-                            / nva_f4
+                            Float64(host_node_total_value[nk_base + i]) / nva_f4
                         )
                     else:
                         qa2 = v_mix
@@ -692,8 +704,7 @@ def run_ezv2_continuous_train_gpu[
                     else:
                         qn = qa2
                     var zi = (
-                        Float64(host_log_prior[nk_base + i])
-                        + sigma_scale_ * qn
+                        Float64(host_log_prior[nk_base + i]) + sigma_scale_ * qn
                     )
                     z.append(zi)
                     if zi > max_z:
@@ -779,9 +790,7 @@ def run_ezv2_continuous_train_gpu[
         for e in range(N_ENVS):
             var reward = Float64(host_reward[e])
             var native_done = host_done[e] > Scalar[dtype](0.5)
-            var natively_terminated = (
-                host_terminated[e] > Scalar[dtype](0.5)
-            )
+            var natively_terminated = host_terminated[e] > Scalar[dtype](0.5)
             ep_steps_per_env[e] += 1
             var truncated = ep_steps_per_env[e] >= max_steps_per_episode
             var done_or_trunc = native_done or truncated
@@ -962,9 +971,7 @@ def run_ezv2_continuous_train_gpu[
                     if buf_size > 0:
                         var buf_ptr = agent.state.buffer.ptr
                         var oldest = (buf_ptr - buf_size + CAP) % CAP
-                        var sampled_idx = List[Int](
-                            capacity=REANALYZE_SAMPLES
-                        )
+                        var sampled_idx = List[Int](capacity=REANALYZE_SAMPLES)
                         for s in range(REANALYZE_SAMPLES):
                             var rand_offset = Int(
                                 random_float64() * Float64(buf_size)
@@ -976,11 +983,9 @@ def run_ezv2_continuous_train_gpu[
                             var idx = (oldest + rand_offset) % CAP
                             sampled_idx.append(idx)
                             for d in range(OBS):
-                                host_reanalyze_obs[s * OBS + d] = (
-                                    agent.state.buffer.obs[
-                                        idx * OBS + d
-                                    ]
-                                )
+                                host_reanalyze_obs[
+                                    s * OBS + d
+                                ] = agent.state.buffer.obs[idx * OBS + d]
 
                         ctx.enqueue_copy(
                             reanalyze_obs_buf,
@@ -1108,9 +1113,7 @@ def run_ezv2_continuous_train_gpu[
                             var any_visited = False
                             for i in range(K_ROOT):
                                 var nva = Float64(
-                                    host_reanalyze_node_visit[
-                                        root_slot_off + i
-                                    ]
+                                    host_reanalyze_node_visit[root_slot_off + i]
                                 )
                                 if nva > 0.5:
                                     var lp = Float64(
@@ -1137,9 +1140,7 @@ def run_ezv2_continuous_train_gpu[
                                                 root_slot_off + i
                                             ]
                                         )
-                                        var w = exp(
-                                            lp2 - visited_logp_max
-                                        )
+                                        var w = exp(lp2 - visited_logp_max)
                                         sum_w += w
                                         var qa = (
                                             Float64(
@@ -1152,17 +1153,13 @@ def run_ezv2_continuous_train_gpu[
                                         weighted_q += w * qa
                                 if sum_w > 1.0e-12:
                                     v_mix = (
-                                        v_self
-                                        + n_total
-                                        * (weighted_q / sum_w)
+                                        v_self + n_total * (weighted_q / sum_w)
                                     ) / (1.0 + n_total)
 
                             var max_visit = Float64(0.0)
                             for i in range(K_ROOT):
                                 var nva3 = Float64(
-                                    host_reanalyze_node_visit[
-                                        root_slot_off + i
-                                    ]
+                                    host_reanalyze_node_visit[root_slot_off + i]
                                 )
                                 if nva3 > max_visit:
                                     max_visit = nva3
@@ -1175,9 +1172,7 @@ def run_ezv2_continuous_train_gpu[
                             var max_z = Float64(-1.0e18)
                             for i in range(K_ROOT):
                                 var nva4 = Float64(
-                                    host_reanalyze_node_visit[
-                                        root_slot_off + i
-                                    ]
+                                    host_reanalyze_node_visit[root_slot_off + i]
                                 )
                                 var qa2: Float64
                                 if nva4 > 0.5:
@@ -1220,20 +1215,14 @@ def run_ezv2_continuous_train_gpu[
                             for d in range(ACT_DIM):
                                 agent.state.mcts_policies[
                                     idx * ACT_DIM + d
-                                ] = host_reanalyze_chosen[
-                                    s * ACT_DIM + d
-                                ]
+                                ] = host_reanalyze_chosen[s * ACT_DIM + d]
                             var act_off = s * NODES * K_ROOT * ACT_DIM
                             for j in range(K_ROOT * ACT_DIM):
                                 agent.state.mcts_sampled_actions[
                                     idx * K_ROOT * ACT_DIM + j
-                                ] = host_reanalyze_node_actions[
-                                    act_off + j
-                                ]
+                                ] = host_reanalyze_node_actions[act_off + j]
                             if sum_exp <= 1.0e-12:
-                                var inv_k = Scalar[dtype](
-                                    1.0 / Float64(K_ROOT)
-                                )
+                                var inv_k = Scalar[dtype](1.0 / Float64(K_ROOT))
                                 for i in range(K_ROOT):
                                     agent.state.mcts_improved_policy[
                                         idx * K_ROOT + i
@@ -1242,12 +1231,8 @@ def run_ezv2_continuous_train_gpu[
                                 for i in range(K_ROOT):
                                     agent.state.mcts_improved_policy[
                                         idx * K_ROOT + i
-                                    ] = Scalar[dtype](
-                                        raw_probs[i] / sum_exp
-                                    )
-                            agent.state.mcts_values[idx] = Scalar[dtype](
-                                sve
-                            )
+                                    ] = Scalar[dtype](raw_probs[i] / sum_exp)
+                            agent.state.mcts_values[idx] = Scalar[dtype](sve)
                             agent.state.step_at_write[idx] = Scalar[
                                 DType.uint32
                             ](agent.train_step_count)
@@ -1274,23 +1259,21 @@ def run_ezv2_continuous_train_gpu[
             # Rolling diagnostics — mean over this interval.
             var mean_abs_action = Float64(0.0)
             if diag_action_count > 0:
-                mean_abs_action = (
-                    diag_abs_action_sum / Float64(diag_action_count)
+                mean_abs_action = diag_abs_action_sum / Float64(
+                    diag_action_count
                 )
             var frac_saturated = Float64(0.0)
             if diag_action_count > 0:
-                frac_saturated = (
-                    Float64(diag_action_saturated)
-                    / Float64(diag_action_count)
+                frac_saturated = Float64(diag_action_saturated) / Float64(
+                    diag_action_count
                 )
             var mean_sve = Float64(0.0)
             if diag_sve_count > 0:
                 mean_sve = diag_sve_sum / Float64(diag_sve_count)
             var mean_improved_entropy = Float64(0.0)
             if diag_improved_entropy_count > 0:
-                mean_improved_entropy = (
-                    diag_improved_entropy_sum
-                    / Float64(diag_improved_entropy_count)
+                mean_improved_entropy = diag_improved_entropy_sum / Float64(
+                    diag_improved_entropy_count
                 )
             var mean_L_total = Float64(0.0)
             var mean_L_R = Float64(0.0)
@@ -1307,17 +1290,30 @@ def run_ezv2_continuous_train_gpu[
 
             if verbose:
                 print(
-                    "[step ", stats.total_env_steps,
-                    " ep=", n_eps,
-                    " train=", stats.num_train_calls,
-                    " syncs=", stats.num_gpu_syncs,
-                    " wall=", wall_s, "s",
-                    "] recent_mean=", recent_mean,
-                    "  best=", stats.best_episode_return,
-                    "  L=(R", stats.last_L_R,
-                    ", P", stats.last_L_P,
-                    ", V", stats.last_L_V,
-                    ", G", stats.last_L_G, ")",
+                    "[step ",
+                    stats.total_env_steps,
+                    " ep=",
+                    n_eps,
+                    " train=",
+                    stats.num_train_calls,
+                    " syncs=",
+                    stats.num_gpu_syncs,
+                    " wall=",
+                    wall_s,
+                    "s",
+                    "] recent_mean=",
+                    recent_mean,
+                    "  best=",
+                    stats.best_episode_return,
+                    "  L=(R",
+                    stats.last_L_R,
+                    ", P",
+                    stats.last_L_P,
+                    ", V",
+                    stats.last_L_V,
+                    ", G",
+                    stats.last_L_G,
+                    ")",
                 )
 
             if logger_active:
@@ -1353,30 +1349,24 @@ def run_ezv2_continuous_train_gpu[
                     Float64(agent.state.buffer.size),
                     step,
                 )
-                logger.value()[].log_scalar(
-                    "counters/wall_s", wall_s, step
-                )
+                logger.value()[].log_scalar("counters/wall_s", wall_s, step)
                 # Loss (mean over interval — smoother than last-call).
                 if diag_loss_count > 0:
                     logger.value()[].log_scalar(
                         "loss/total", mean_L_total, step
                     )
-                    logger.value()[].log_scalar(
-                        "loss/reward", mean_L_R, step
-                    )
-                    logger.value()[].log_scalar(
-                        "loss/policy", mean_L_P, step
-                    )
-                    logger.value()[].log_scalar(
-                        "loss/value", mean_L_V, step
-                    )
+                    logger.value()[].log_scalar("loss/reward", mean_L_R, step)
+                    logger.value()[].log_scalar("loss/policy", mean_L_P, step)
+                    logger.value()[].log_scalar("loss/value", mean_L_V, step)
                     logger.value()[].log_scalar(
                         "loss/consistency", mean_L_G, step
                     )
                 # Last loss snapshot (per-call instability check).
                 logger.value()[].log_scalar(
                     "loss/last_total",
-                    stats.last_L_R + stats.last_L_P + stats.last_L_V
+                    stats.last_L_R
+                    + stats.last_L_P
+                    + stats.last_L_V
                     + stats.last_L_G,
                     step,
                 )
@@ -1402,9 +1392,7 @@ def run_ezv2_continuous_train_gpu[
                     step,
                 )
                 # MCTS / value signals
-                logger.value()[].log_scalar(
-                    "mcts/sve_mean", mean_sve, step
-                )
+                logger.value()[].log_scalar("mcts/sve_mean", mean_sve, step)
                 # Optimizer state — temperature anneals over training.
                 logger.value()[].log_scalar(
                     "policy/temperature", agent.temperature, step
