@@ -60,6 +60,7 @@ from mojo_rl.deep_agents.efficient_zero_v2.kernels import (
     ezv2_value_loss_grad_kernel,
     ezv2_reward_loss_grad_kernel,
     ezv2_cosine_loss_grad_kernel,
+    ezv2_decode_boot_v_kernel,
     ezv2_reduce_add_kernel,
     ezv2_add_kernel,
     ezv2_assemble_grad_dyn_step_kernel,
@@ -2302,96 +2303,104 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 gpu.cum_rewards_host[sampled * K + k] = Scalar[dtype](cum)
 
         # ── Fresh bootstrap values from target nets (Lever 1). ───────────
-        # Computed on host using the CPU target nets — only when the
-        # value-target mode actually consumes them. SEARCH skips the
-        # forward and zeroes `boot_v_host`; SARSA always uses it; MIXED
-        # may use it depending on age.
+        # Phase 3b (2026-05-13): replaces the host-side CPU target-net
+        # forward with K+1 GPU forwards + `decode_boot_v_kernel`. The
+        # result is downloaded back to `boot_v_host` so the unchanged
+        # host V-target decode (Phase 3c target) can consume it.
         var boot_v_host = alloc[Scalar[dtype]](BATCH * (K + 1))
         memset(boot_v_host, 0, BATCH * (K + 1))
+        # For discrete: value-bin offset = ACT (action logits then BINS).
+        comptime VALUE_OFF = Self.Config.ActSpace.POLICY_OUT_DIM
         comptime if Self.Config.value_target_mode != VALUE_TARGET_SEARCH:
-            var tgt_rep_input = alloc[Scalar[dtype]](BATCH * OBS)
-            var tgt_z = alloc[Scalar[dtype]](BATCH * LATENT)
-            var tgt_pred_out = alloc[Scalar[dtype]](BATCH * PRED_OUT)
-            var tgt_logits_dbl = alloc[Float64](BINS)
+            ctx.enqueue_copy(gpu.batch_obs_buf, gpu.batch_obs_host)
 
-            var tgt_rep_params = LayoutTensor[
+            comptime BATCH_BLOCKS_BV = (BATCH + TPB - 1) // TPB
+
+            var batch_obs_full_t = LayoutTensor[
                 dtype,
-                Layout.row_major(Self.Config.RepModel.PARAM_SIZE),
+                Layout.row_major(BATCH * (K + 1) * OBS),
                 MutAnyOrigin,
-            ](self.state.representation_target.params)
-            var tgt_rep_state = LayoutTensor[
+            ](gpu.batch_obs_buf.unsafe_ptr())
+            var tgt_rep_in_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH * OBS), MutAnyOrigin
+            ](gpu.tgt_rep_input_buf.unsafe_ptr())
+            var tgt_rep_in_2d = LayoutTensor[
                 dtype,
-                Layout.row_major(Self.Config.RepModel.STATE_SIZE),
+                Layout.row_major(BATCH, Self.Config.RepModel.IN_DIM),
                 MutAnyOrigin,
-            ](self.state.representation_target.model_state)
-            var tgt_pred_params = LayoutTensor[
+            ](gpu.tgt_rep_input_buf.unsafe_ptr())
+            var tgt_z_2d = LayoutTensor[
                 dtype,
-                Layout.row_major(Self.Config.PredModel.PARAM_SIZE),
+                Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
                 MutAnyOrigin,
-            ](self.state.prediction_target.params)
-            var tgt_pred_state = LayoutTensor[
+            ](gpu.tgt_z_buf.unsafe_ptr())
+            var tgt_pred_in_2d = LayoutTensor[
                 dtype,
-                Layout.row_major(Self.Config.PredModel.STATE_SIZE),
+                Layout.row_major(BATCH, Self.Config.PredModel.IN_DIM),
                 MutAnyOrigin,
-            ](self.state.prediction_target.model_state)
+            ](gpu.tgt_z_buf.unsafe_ptr())
+            var tgt_pred_out_2d = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredModel.OUT_DIM),
+                MutAnyOrigin,
+            ](gpu.tgt_pred_out_buf.unsafe_ptr())
+            var tgt_pred_out_flat = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH * PRED_OUT),
+                MutAnyOrigin,
+            ](gpu.tgt_pred_out_buf.unsafe_ptr())
+            var boot_v_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+            ](gpu.boot_v_buf.unsafe_ptr())
+
+            comptime gather_obs_d = ezv2_copy_obs_at_step_kernel[
+                BATCH, K + 1, OBS, dtype
+            ]
+            comptime decode_boot_v_d = ezv2_decode_boot_v_kernel[
+                BATCH, K + 1, PRED_OUT, BINS, VALUE_OFF, dtype
+            ]
 
             for k in range(K + 1):
-                for b in range(BATCH):
-                    for d in range(OBS):
-                        tgt_rep_input[b * OBS + d] = gpu.batch_obs_host[
-                            (b * (K + 1) + k) * OBS + d
-                        ]
-                var tgt_rep_in_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.Config.RepModel.IN_DIM),
-                    MutAnyOrigin,
-                ](tgt_rep_input)
-                var tgt_z_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
-                    MutAnyOrigin,
-                ](tgt_z)
-                Network[Self.Config.RepModel, Self.Config.OptType].forward[
-                    BATCH
-                ](
+                ctx.enqueue_function[gather_obs_d](
+                    batch_obs_full_t,
                     tgt_rep_in_t,
-                    tgt_z_t,
-                    tgt_rep_params,
-                    tgt_rep_state,
+                    k,
+                    grid_dim=BATCH_BLOCKS_BV,
+                    block_dim=TPB,
                 )
-                var tgt_pred_in_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.Config.PredModel.IN_DIM),
-                    MutAnyOrigin,
-                ](tgt_z)
-                var tgt_pred_out_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.Config.PredModel.OUT_DIM),
-                    MutAnyOrigin,
-                ](tgt_pred_out)
-                Network[Self.Config.PredModel, Self.Config.OptType].forward[
-                    BATCH
-                ](
-                    tgt_pred_in_t,
-                    tgt_pred_out_t,
-                    tgt_pred_params,
-                    tgt_pred_state,
+                Network[
+                    Self.Config.RepModel, Self.Config.OptType
+                ].forward_gpu[BATCH](
+                    ctx,
+                    tgt_rep_in_2d,
+                    tgt_z_2d,
+                    gpu.representation_target.params_view(),
+                    gpu.representation_target.model_state_view(),
+                    gpu.workspace_buf,
                 )
-                for b in range(BATCH):
-                    var off = b * PRED_OUT + ACT
-                    for i in range(BINS):
-                        tgt_logits_dbl[i] = Float64(tgt_pred_out[off + i])
-                    var v_raw = decode_categorical[BINS](
-                        tgt_logits_dbl, self.v_min, self.v_max
-                    )
-                    boot_v_host[b * (K + 1) + k] = Scalar[dtype](
-                        inverse_scalar_transform(v_raw)
-                    )
+                Network[
+                    Self.Config.PredModel, Self.Config.OptType
+                ].forward_gpu[BATCH](
+                    ctx,
+                    tgt_pred_in_2d,
+                    tgt_pred_out_2d,
+                    gpu.prediction_target.params_view(),
+                    gpu.prediction_target.model_state_view(),
+                    gpu.workspace_buf,
+                )
+                ctx.enqueue_function[decode_boot_v_d](
+                    tgt_pred_out_flat,
+                    boot_v_t,
+                    k,
+                    Scalar[dtype](self.v_min),
+                    Scalar[dtype](self.v_max),
+                    Scalar[dtype](0.001),
+                    grid_dim=BATCH_BLOCKS_BV,
+                    block_dim=TPB,
+                )
 
-            tgt_rep_input.free()
-            tgt_z.free()
-            tgt_pred_out.free()
-            tgt_logits_dbl.free()
+            ctx.enqueue_copy(boot_v_host, gpu.boot_v_buf)
+            ctx.synchronize()
 
         # ── Value target (SEARCH / SARSA / MIXED) precomputed on host
         # so the GPU side just sees a plain scalar tensor it can scalar-

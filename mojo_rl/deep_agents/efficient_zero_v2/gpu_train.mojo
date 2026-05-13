@@ -214,6 +214,9 @@ def run_ezv2_train_gpu[
     # ─── Allocate GPU state + initial upload ─────────────────────────────
     var gpu = EZV2GPUStateBase[Config](ctx)
     gpu.upload_from(agent.state, ctx)
+    # Phase 3: mirror CPU target nets onto GPU for the MIXED/SARSA boot-V
+    # forward.
+    gpu.upload_targets_from(agent.state, ctx)
     ctx.synchronize()
 
     # ─── GPU env buffers ─────────────────────────────────────────────────
@@ -539,6 +542,8 @@ def run_ezv2_train_gpu[
             # Hard-sync target ← online + reanalyze on CPU.
             if stats.num_train_calls % target_sync_interval == 0:
                 agent.update_target_networks(tau=1.0)
+                # Phase 3: mirror fresh CPU targets onto GPU.
+                gpu.upload_targets_from(agent.state, ctx)
             if (
                 stats.num_train_calls >= reanalyze_warmup
                 and stats.num_train_calls % reanalyze_interval == 0

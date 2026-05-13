@@ -786,6 +786,24 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         Self.Config.PredictorModel, Self.Config.OptType
     ]
 
+    # ── Target networks (Phase 3) ────────────────────────────────────────
+    # MIXED / SARSA value-target modes need a `target-net` forward to
+    # produce boot-V at every (sample, k); same-shape mirrors of the
+    # online rep/dyn/pred networks. Sync from CPU targets at the existing
+    # `target_sync_interval` cadence via `upload_targets_from`. `dyn` is
+    # included here for the Phase 4 GPU-batched reanalyze path; the
+    # MIXED boot-V forward only touches `representation_target` and
+    # `prediction_target`.
+    var representation_target: GPUNetworkState[
+        Self.Config.RepModel, Self.Config.OptType
+    ]
+    var dynamics_target: GPUNetworkState[
+        Self.Config.DynModel, Self.Config.OptType
+    ]
+    var prediction_target: GPUNetworkState[
+        Self.Config.PredModel, Self.Config.OptType
+    ]
+
     # ── Sampled batch (uploaded each train step) ─────────────────────────
     # Per-sample-time-major to match `compute_loss_components`'s scratch
     # layout: `batch_obs[(b * (K+1) + k) * OBS + d]`.
@@ -837,6 +855,17 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     var pred_dyn_caches_buf: DeviceBuffer[
         dtype
     ]  # [K * BATCH * PredictorModel.CACHE_SIZE]
+
+    # ── Target-net boot-V scratch (Phase 3b) ────────────────────────────
+    # Per-(sample) staging for `rep_target → pred_target → decode` chain,
+    # called K+1 times per train step (one per timestep k=0..K) under
+    # MIXED/SARSA value-target modes. All overwritten each k_step.
+    # `boot_v_buf` is per-sample-time-major so the Phase 3c kernel can
+    # read it the same way it reads `batch_mcts_val_buf`.
+    var tgt_rep_input_buf: DeviceBuffer[dtype]  # [BATCH * OBS]
+    var tgt_z_buf: DeviceBuffer[dtype]  # [BATCH * LATENT]
+    var tgt_pred_out_buf: DeviceBuffer[dtype]  # [BATCH * PRED_OUT]
+    var boot_v_buf: DeviceBuffer[dtype]  # [BATCH * (K+1)]
 
     # ── Per-output gradient buffers (upstream grads + accumulators) ─────
     var grad_pred_out_buf: DeviceBuffer[dtype]  # [(K+1) * BATCH * PRED_OUT]
@@ -1022,6 +1051,20 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
             Self.Config.PredictorModel, Self.Config.OptType
         ](ctx)
 
+        # ── Target networks (Phase 3) ───────────────────────────────────
+        # Fresh-allocated; first `upload_targets_from(cpu, ctx)` (called
+        # right after `gpu.upload_from(cpu, ctx)` at training start)
+        # overwrites the random init with CPU target params.
+        self.representation_target = GPUNetworkState[
+            Self.Config.RepModel, Self.Config.OptType
+        ](ctx)
+        self.dynamics_target = GPUNetworkState[
+            Self.Config.DynModel, Self.Config.OptType
+        ](ctx)
+        self.prediction_target = GPUNetworkState[
+            Self.Config.PredModel, Self.Config.OptType
+        ](ctx)
+
         # ── Sampled batch (TIME-MAJOR-PER-SAMPLE) ───────────────────────
         self.batch_obs_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH * (Self.K + 1) * Self.OBS
@@ -1070,6 +1113,20 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         )
         self.rep_obs_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH * Self.LATENT
+        )
+
+        # ── Target-net boot-V scratch (Phase 3b) ────────────────────────
+        self.tgt_rep_input_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.OBS
+        )
+        self.tgt_z_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.LATENT
+        )
+        self.tgt_pred_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.PRED_OUT
+        )
+        self.boot_v_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * (Self.K + 1)
         )
 
         # ── SimSiam scratch ─────────────────────────────────────────────
@@ -1375,6 +1432,9 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.prediction = take.prediction^
         self.projector = take.projector^
         self.predictor = take.predictor^
+        self.representation_target = take.representation_target^
+        self.dynamics_target = take.dynamics_target^
+        self.prediction_target = take.prediction_target^
         self.batch_obs_buf = take.batch_obs_buf^
         self.batch_actions_buf = take.batch_actions_buf^
         self.batch_rewards_buf = take.batch_rewards_buf^
@@ -1388,6 +1448,10 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.pred_out_buf = take.pred_out_buf^
         self.rep_input_buf = take.rep_input_buf^
         self.dyn_input_buf = take.dyn_input_buf^
+        self.tgt_rep_input_buf = take.tgt_rep_input_buf^
+        self.tgt_z_buf = take.tgt_z_buf^
+        self.tgt_pred_out_buf = take.tgt_pred_out_buf^
+        self.boot_v_buf = take.boot_v_buf^
         self.obs_step_buf = take.obs_step_buf^
         self.rep_obs_buf = take.rep_obs_buf^
         self.proj_dyn_buf = take.proj_dyn_buf^
@@ -1526,6 +1590,26 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.lstm_step_num = 0
 
         self.reward_prefix_mlp_gpu.upload_from(cpu.reward_prefix_mlp, ctx)
+
+    def upload_targets_from(
+        mut self,
+        cpu: EZV2DiscreteCPUState[Self.Config],
+        ctx: DeviceContext,
+    ) raises:
+        """Mirror the CPU target nets (`representation_target`,
+        `dynamics_target`, `prediction_target`) onto the GPU. Call at
+        training start (right after `upload_from`) and again at every
+        `target_sync_interval` step in the training loop — same cadence
+        as the CPU `update_target_networks(tau=1.0)` call that refreshes
+        the CPU targets.
+
+        Only the trainable params + optimizer state + model state are
+        copied; SimSiam projector/predictor have no target copy (paper:
+        target nets are rep/dyn/pred only).
+        """
+        self.representation_target.upload_from(cpu.representation_target, ctx)
+        self.dynamics_target.upload_from(cpu.dynamics_target, ctx)
+        self.prediction_target.upload_from(cpu.prediction_target, ctx)
 
     def download_to(
         mut self,

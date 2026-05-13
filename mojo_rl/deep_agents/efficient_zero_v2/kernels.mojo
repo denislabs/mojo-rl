@@ -1125,3 +1125,91 @@ def ezv2_reward_prefix_loss_grad_kernel[
         loss = loss + t_i * (log_z - l_i)
 
     per_sample_loss[b] = loss
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 3b: Decode boot-V from target prediction-net output
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Per (sample, k_step): softmax over the BINS value logits in the target
+# pred-net output, expectation in scalar-transformed space, then
+# `inverse_scalar_transform` → real value. Writes to
+# `boot_v[b * (K+1) + k_step]`. Replaces the host loop at
+# `continuous_agent.mojo:1062-1071` (and the discrete sibling).
+#
+# `VALUE_OFF` is the value-bin offset inside the per-sample pred-net
+# output — `ACT` for discrete, `2 * ACT_DIM` for continuous (the
+# `POLICY_OUT_DIM` width before the BINS slice). Threaded at comptime.
+
+
+def ezv2_decode_boot_v_kernel[
+    BATCH: Int,
+    K_PLUS_1: Int,
+    PRED_OUT: Int,
+    BINS: Int,
+    VALUE_OFF: Int,
+    dtype: DType,
+](
+    pred_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+    ],
+    boot_v: LayoutTensor[
+        dtype, Layout.row_major(BATCH * K_PLUS_1), MutAnyOrigin
+    ],
+    k_step: Int,
+    v_min: Scalar[dtype],
+    v_max: Scalar[dtype],
+    eps: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Decode target-net pred output → boot-V scalar (one thread per sample).
+
+    `pred_out[b, VALUE_OFF:VALUE_OFF+BINS]` are the value-bin logits.
+    Numerically-stable softmax, expectation over `[v_min, v_max]` support,
+    then `h^{-1}` (inverse MuZero scalar transform, `eps`=0.001).
+
+    The result lands in `boot_v[b, k_step]` (per-sample-time-major) so
+    Phase 3c's `compute_value_target_kernel` can consume it directly.
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+    var off = b * PRED_OUT + VALUE_OFF
+
+    # Numerically stable softmax + expectation in transformed space.
+    var max_val = rebind[Scalar[dtype]](pred_out[off])
+    for i in range(1, BINS):
+        var v = rebind[Scalar[dtype]](pred_out[off + i])
+        if v > max_val:
+            max_val = v
+
+    var sum_exp = Scalar[dtype](0.0)
+    for i in range(BINS):
+        sum_exp += exp(rebind[Scalar[dtype]](pred_out[off + i]) - max_val)
+
+    var step = (
+        (v_max - v_min) / Scalar[dtype](BINS - 1)
+        if BINS > 1 else Scalar[dtype](0.0)
+    )
+    var v_raw = Scalar[dtype](0.0)
+    for i in range(BINS):
+        var prob = exp(
+            rebind[Scalar[dtype]](pred_out[off + i]) - max_val
+        ) / sum_exp
+        var bin_val = v_min + Scalar[dtype](i) * step
+        v_raw += prob * bin_val
+
+    # Inverse MuZero scalar transform: closed-form quadratic inverse of
+    # h(x) = sign(x)*(sqrt(|x|+1)-1) + eps*x.
+    var sign = (
+        Scalar[dtype](1.0) if v_raw >= Scalar[dtype](0.0)
+        else Scalar[dtype](-1.0)
+    )
+    var abs_y = v_raw if v_raw >= Scalar[dtype](0.0) else -v_raw
+    var inner = sqrt(
+        Scalar[dtype](1.0)
+        + Scalar[dtype](4.0) * eps * (abs_y + Scalar[dtype](1.0) + eps)
+    )
+    var f = (inner - Scalar[dtype](1.0)) / (Scalar[dtype](2.0) * eps)
+    var v_real = sign * (f * f - Scalar[dtype](1.0))
+
+    boot_v[b * K_PLUS_1 + k_step] = v_real
