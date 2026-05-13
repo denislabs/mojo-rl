@@ -1,24 +1,18 @@
-"""EZ-V2 Pendulum — 15-min Apple budget A/B test: FULL GPU MCTS path.
+"""EZ-V2 Pendulum — UTD=1:1 A/B test: FULL GPU MCTS path.
 
 Companion to `ezv2_pendulum_15min_hybrid.mojo` — identical config except
 `use_gpu_mcts=True`. Together they form an A/B test for whether the GPU
-MCTS bug (open-issues item 2) still reproduces post-fixes.
+MCTS bug (open-issues item 2) still reproduces post-fixes at UTD=1.0.
 
-Search-engine parity has already been verified on both Apple and NVIDIA
-(`tests/deep_agents/test_ezv2_cpu_gpu_mcts_parity.mojo` — CPU and GPU
-trees agree statistically). This script checks whether end-to-end
-training convergence matches.
+Search-engine parity already verified on Apple and NVIDIA
+(`tests/deep_agents/test_ezv2_cpu_gpu_mcts_parity.mojo`). This script
+checks whether end-to-end training convergence matches the hybrid path
+under matched UTD.
 
-Pendulum is the canonical test because:
-  • The 5-bug-fix hybrid baseline converges reliably to ~ -212 by step
-    20k (`docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md`).
-  • The open-issues claim says full-GPU best stalled at -802 on this
-    same setup.
-  • If full-GPU MCTS now converges, the open-issues claim was rendered
-    stale by intervening fixes.
+UTD configuration: N_ENVS=8, train_interval=1, train_steps_per_iter=8 →
+UTD = 1.0 (matches DMC reference `dmc_state.yaml`).
 
-Budget: 20k env-steps. Full-GPU MCTS should be ≥ 2× faster than hybrid
-on Apple since CPU MCTS is the dominant wall-time cost in hybrid mode.
+Budget: 20k env-steps (~16k gradient steps). NVIDIA: 15-30 min.
 """
 
 from std.random import seed
@@ -35,7 +29,7 @@ from mojo_rl.nn.constants import dtype
 
 def main() raises:
     print("=" * 72)
-    print("    EZ-V2 Pendulum 15-min — FULL GPU MCTS")
+    print("    EZ-V2 Pendulum UTD=1:1 — FULL GPU MCTS")
     print("=" * 72)
 
     comptime NUM_ENV_STEPS = 20_000
@@ -85,6 +79,7 @@ def main() raises:
         agent,
         ctx,
         train_interval=1,
+        train_steps_per_iter=8,  # UTD = 1.0 (N_ENVS=8 transitions/iter → 8 grads/iter)
         sync_interval=50,
         target_sync_interval=200,
         reanalyze_interval=200,

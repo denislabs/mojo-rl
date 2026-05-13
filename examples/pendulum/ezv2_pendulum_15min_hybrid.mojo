@@ -1,20 +1,19 @@
-"""EZ-V2 Pendulum — 15-min Apple budget A/B test: HYBRID path baseline.
+"""EZ-V2 Pendulum — UTD=1:1 A/B test: HYBRID path.
 
 Companion to `ezv2_pendulum_15min_full_gpu_mcts.mojo` — identical config
 except `use_gpu_mcts=False`. Together they form an A/B test for whether
-the GPU MCTS bug (open-issues item 2) still reproduces post-fixes, or
-whether the search engine bug was incidentally resolved by recent
-patches (CPU↔GPU parity test passes on both Apple and NVIDIA — see
-`tests/deep_agents/test_ezv2_cpu_gpu_mcts_parity.mojo`).
+the GPU MCTS bug (open-issues item 2) still reproduces post-fixes.
 
-Config is the converging-baseline Pendulum config from
-`ezv2_pendulum_training_gpu.mojo` (5-bug-fix postmortem): MIN_STD=0.5,
+UTD configuration: N_ENVS=8, train_interval=1, train_steps_per_iter=8 →
+UTD = 1.0 (one gradient step per env transition), matching the DMC
+reference `dmc_state.yaml` (training_steps=100k, total_transitions=100k).
+
+Config is the converging-baseline Pendulum config: MIN_STD=0.5,
 ENT_WEIGHT=0.05, MAX_ACTION=2.0, VALUE_TARGET_SARSA, K_ROOT=16,
 K_NON_ROOT=8 (so full-π policy loss fires with ACT_DIM=1).
 
-Budget: 20k env-steps. Established convergence point on this config is
-~20k env-steps (mean10 ≈ -212 ≈ swing-up territory). On Apple with
-N_ENVS=8 the hybrid path should finish in ~10-13 min.
+Budget: 20k env-steps. At UTD=1.0 this is ~16k gradient steps total
+(vs ~2.25k at UTD=0.125). NVIDIA estimate: 15-30 min. Apple infeasible.
 """
 
 from std.random import seed
@@ -31,7 +30,7 @@ from mojo_rl.nn.constants import dtype
 
 def main() raises:
     print("=" * 72)
-    print("    EZ-V2 Pendulum 15-min — HYBRID (CPU MCTS + GPU env/train)")
+    print("    EZ-V2 Pendulum UTD=1:1 — HYBRID (CPU MCTS + GPU env/train)")
     print("=" * 72)
 
     comptime NUM_ENV_STEPS = 20_000
@@ -81,6 +80,7 @@ def main() raises:
         agent,
         ctx,
         train_interval=1,
+        train_steps_per_iter=8,  # UTD = 1.0 (N_ENVS=8 transitions/iter → 8 grads/iter)
         sync_interval=50,
         target_sync_interval=200,
         reanalyze_interval=200,
