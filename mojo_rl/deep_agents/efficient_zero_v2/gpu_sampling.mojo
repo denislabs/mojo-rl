@@ -42,12 +42,55 @@ from mojo_rl.nn.constants import dtype, TPB
 # ═════════════════════════════════════════════════════════════════════════
 
 
-def ezv2_cum_prio_scan_kernel[
+def ezv2_per_offset_priority_kernel[
     CAP: Int,
     K: Int,
 ](
     priorities: LayoutTensor[dtype, Layout.row_major(CAP), MutAnyOrigin],
     dones: LayoutTensor[dtype, Layout.row_major(CAP), MutAnyOrigin],
+    prio_out: LayoutTensor[dtype, Layout.row_major(CAP), MutAnyOrigin],
+    oldest: Int,
+    buf_size: Int,
+):
+    """Stage 1 (parallel — one thread per candidate window start).
+
+    For each `offset` in `[0, buf_size - K)`, validate the K-step window
+    `[idx, idx+K-1]` (mod CAP) by checking `dones`. If all zero, write
+    `max(priorities[idx], 1e-8)` to `prio_out[offset]`; otherwise write
+    `0.0`. The followup `ezv2_cum_prio_compact_kernel` reads this array
+    serially to build the compacted cumulative-priority array, skipping
+    zero entries.
+
+    Splitting the K-step done check off into a parallel kernel removes
+    the inner-loop work from the serial compact (Phase 3d optimization,
+    2026-05-13). At buf_size ~12k, K=5 the validate cost collapses from
+    ~340μs single-threaded to <30μs parallel.
+    """
+    var t = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if buf_size <= K or t >= buf_size - K:
+        return
+    var offset = t
+    var idx = (oldest + offset) % CAP
+    var valid = True
+    for k in range(K):
+        var iidx = (idx + k) % CAP
+        if rebind[Scalar[dtype]](dones[iidx]) > Scalar[dtype](0.5):
+            valid = False
+            break
+    if not valid:
+        prio_out[offset] = Scalar[dtype](0.0)
+    else:
+        var p = rebind[Scalar[dtype]](priorities[idx])
+        if p < Scalar[dtype](1.0e-8):
+            p = Scalar[dtype](1.0e-8)
+        prio_out[offset] = p
+
+
+def ezv2_cum_prio_compact_kernel[
+    CAP: Int,
+    K: Int,
+](
+    prio_in: LayoutTensor[dtype, Layout.row_major(CAP), MutAnyOrigin],
     cum_prio_out: LayoutTensor[
         dtype, Layout.row_major(CAP), MutAnyOrigin
     ],
@@ -63,11 +106,17 @@ def ezv2_cum_prio_scan_kernel[
     oldest: Int,
     buf_size: Int,
 ):
-    """Single-thread serial scan: identical algorithm to the CPU loop at
-    `efficient_zero_v2.mojo:2349-2366`. Validates each window start by
-    checking no done in [idx, idx+K-1], accumulates a cumulative
-    priority over valid starts, writes both `cum_prio` and `cand_starts`
-    arrays plus `n_valid` / `total_prio` scalars.
+    """Stage 2 (serial compaction + cumulative sum).
+
+    Walks `prio_in[0..buf_size-K)`, skips zeros, writes the running
+    cumulative sum into `cum_prio_out[n_valid]` and the source slot
+    index into `cand_starts_out[n_valid]`. Sets `n_valid_out[0]` and
+    `total_prio_out[0]` at the end.
+
+    `prio_in` and `cum_prio_out` may alias (same `cum_prio_buf` in the
+    driver). In-place is safe because writes at iter `offset` go to
+    `cum_prio_out[n_valid]` with `n_valid ≤ offset`, so writes never
+    clobber subsequent reads in a single-threaded sweep.
     """
     var t = Int(block_dim.x * block_idx.x + thread_idx.x)
     if t != 0:
@@ -77,22 +126,14 @@ def ezv2_cum_prio_scan_kernel[
     var total = Scalar[dtype](0.0)
     if buf_size > K:
         for offset in range(buf_size - K):
-            var idx = (oldest + offset) % CAP
-            var valid = True
-            for k in range(K):
-                var iidx = (idx + k) % CAP
-                if rebind[Scalar[dtype]](dones[iidx]) > Scalar[dtype](0.5):
-                    valid = False
-                    break
-            if not valid:
-                continue
-            var p = rebind[Scalar[dtype]](priorities[idx])
-            if p < Scalar[dtype](1.0e-8):
-                p = Scalar[dtype](1.0e-8)
-            total += p
-            cum_prio_out[n_valid] = total
-            cand_starts_out[n_valid] = Scalar[DType.int32](idx)
-            n_valid += 1
+            var p = rebind[Scalar[dtype]](prio_in[offset])
+            if p > Scalar[dtype](0.0):
+                total += p
+                cum_prio_out[n_valid] = total
+                cand_starts_out[n_valid] = Scalar[DType.int32](
+                    (oldest + offset) % CAP
+                )
+                n_valid += 1
 
     n_valid_out[0] = Scalar[DType.int32](n_valid)
     total_prio_out[0] = total
@@ -367,7 +408,8 @@ def ezv2_gpu_sample_and_gather[
     """Launches kernels 1 → 2 → 3 → 4 in sequence. After return,
     `dst_*` are populated and `batch_start_idx_buf` holds the picks
     needed by kernel 5 (priority writeback) post-train."""
-    comptime scan = ezv2_cum_prio_scan_kernel[CAP, K]
+    comptime validate = ezv2_per_offset_priority_kernel[CAP, K]
+    comptime compact = ezv2_cum_prio_compact_kernel[CAP, K]
     comptime sample = ezv2_sample_starts_kernel[BATCH, CAP]
     comptime gather = ezv2_gather_window_kernel[BATCH, K, OBS, ACT, CAP]
     comptime cumr = ezv2_cum_rewards_kernel[BATCH, K]
@@ -394,8 +436,20 @@ def ezv2_gpu_sample_and_gather[
         DType.int32, Layout.row_major(BATCH), MutAnyOrigin
     ](batch_start_idx_buf.unsafe_ptr())
 
-    ctx.enqueue_function[scan](
-        prio_t, dones_t, cum_t, cs_t, nv_t, tp_t, oldest, buf_size,
+    # Stage 1: parallel per-offset validate + priority write
+    # (`cum_prio_buf` repurposed as scratch — stage 2 then compacts
+    # in-place over the same buffer).
+    comptime validate_threads = CAP  # upper bound; kernel early-returns
+    # beyond `buf_size - K`. At CAP=50000, TPB=256 → 196 blocks.
+    comptime validate_blocks = (validate_threads + TPB - 1) // TPB
+    ctx.enqueue_function[validate](
+        prio_t, dones_t, cum_t, oldest, buf_size,
+        grid_dim=(validate_blocks,), block_dim=(TPB,),
+    )
+
+    # Stage 2: serial compaction (single thread).
+    ctx.enqueue_function[compact](
+        cum_t, cum_t, cs_t, nv_t, tp_t, oldest, buf_size,
         grid_dim=(1,), block_dim=(1,),
     )
 
