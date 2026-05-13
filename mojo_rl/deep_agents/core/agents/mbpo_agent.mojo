@@ -3495,34 +3495,8 @@ struct MBPOAgent[
         `alpha_host` is a size-1 host buffer pre-allocated by the training
         loop and reused across diagnostic calls (avoids per-call allocs).
         """
-        var prev_step = self.train_step_count
         self.train_step_count += steps
         self.update_count += steps
-
-        # Probe A: fire whenever we cross a diag_every boundary, so we see one
-        # line per scheduled diag tick — confirms _gpu_train_diagnostics is
-        # actually being called, what train_step_count is, and whether the
-        # gate's three predicates evaluate to True.
-        if (
-            self.diag_every > 0
-            and prev_step // self.diag_every
-            != self.train_step_count // self.diag_every
-        ):
-            var has_log = Bool(self.logger)
-            var mod_ok = self.train_step_count % self.diag_every == 0
-            print(
-                "[MBPO diag] entry: train_step_count=",
-                self.train_step_count,
-                " prev=",
-                prev_step,
-                " has_logger=",
-                Int(has_log),
-                " diag_every=",
-                self.diag_every,
-                " mod_ok=",
-                Int(mod_ok),
-                sep="",
-            )
 
         # GPU Diagnostic logging (periodic)
         comptime BS = Self.BATCH
@@ -3531,13 +3505,6 @@ struct MBPOAgent[
             and self.diag_every > 0
             and self.train_step_count % self.diag_every == 0
         ):
-            # Probe B: gate passed — block-entered. If we see Probe A but not B,
-            # the gate predicate is failing (most likely has_logger=False).
-            print(
-                "[MBPO diag] block ENTERED at step=",
-                self.train_step_count,
-                sep="",
-            )
             try:
                 ctx.enqueue_copy(gpu_state.diag_q_host, gpu_state.q_out)
                 ctx.enqueue_copy(gpu_state.diag_tgt_host, gpu_state.targets)
@@ -3895,6 +3862,10 @@ struct MBPOAgent[
         logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
     ) raises -> TrainingMetrics:
         """MBPO CPU training loop body. See `train()` and `run_mbpo_train`."""
+        # Same fix as GPU path: wire caller logger onto self.logger so the
+        # in-loop diagnostic block (uses self.logger) actually fires.
+        self.logger = logger
+
         var metrics = TrainingMetrics(
             algorithm_name="MBPO",
             environment_name=environment_name,
@@ -4068,6 +4039,14 @@ struct MBPOAgent[
         """MBPO GPU training loop body. See `train_gpu()` and `run_mbpo_train_gpu`."""
         comptime n_envs = Self.GPU_N_ENVS
 
+        # __init__ sets self.logger=None and nothing else ever assigns it, so
+        # the periodic _gpu_train_diagnostics block (which gates on
+        # Bool(self.logger)) silently never fires. Wire the caller's logger
+        # pointer onto self.logger so critic_loss / mean_q / mean_target /
+        # mean_reward / mean_abs_action and the *_nonfinite flags actually
+        # reach the dashboard.
+        self.logger = logger
+
         var metrics = TrainingMetrics(
             algorithm_name="MBPO-GPU",
             environment_name=environment_name,
@@ -4182,31 +4161,6 @@ struct MBPOAgent[
             progress_interval = n_envs
         var next_progress = progress_interval
 
-        # One-shot probes so we can see which SAC-update branch the loop
-        # actually takes. The synth-ready branch is the only one that calls
-        # _gpu_train_diagnostics; if we never see "first SYNTH-READY", the diag
-        # block is unreachable and no metrics or *_nonfinite flags will ever
-        # be produced.
-        var _seen_real_only: Bool = False
-        var _seen_synth_ready: Bool = False
-        var _seen_graph: Bool = False
-        var _seen_fallback: Bool = False
-
-        # Confirm caller passed a logger pointer.
-        print(
-            "[MBPO loop] starting GPU train. logger_set=",
-            Int(Bool(logger)),
-            " warmup_steps=",
-            warmup_steps,
-            " num_steps=",
-            num_steps,
-            " sac_updates_per_step=",
-            self.sac_updates_per_step,
-            " diag_every=",
-            self.diag_every,
-            sep="",
-        )
-
         while total_steps < num_steps:
 
             ctx.enqueue_copy(prev_obs_buf, obs_buf)
@@ -4286,22 +4240,7 @@ struct MBPOAgent[
 
             if gpu_state.gpu_buffer_is_ready():
                 if synth_buffer.is_ready[SYNTH_BS]():
-                    if not _seen_synth_ready:
-                        _seen_synth_ready = True
-                        print(
-                            "[MBPO loop] first SYNTH-READY at total_steps=",
-                            total_steps,
-                            " — diag block now reachable",
-                            sep="",
-                        )
                     comptime if USE_CUDA_GRAPH and has_nvidia_gpu_accelerator():
-                        if not _seen_graph:
-                            _seen_graph = True
-                            print(
-                                "[MBPO loop] first GRAPH branch at total_steps=",
-                                total_steps,
-                                sep="",
-                            )
                         if not _train_graph:
                             self._gpu_train_kernels(
                                 ctx, gpu_state, synth_buffer,
@@ -4331,14 +4270,6 @@ struct MBPOAgent[
                             ctx, gpu_state, self.sac_updates_per_step, alpha_host
                         )
                     else:
-                        if not _seen_fallback:
-                            _seen_fallback = True
-                            print(
-                                "[MBPO loop] first FALLBACK branch at total_steps=",
-                                total_steps,
-                                " (no CUDA graph) — diag called inside do_gpu_train_step",
-                                sep="",
-                            )
                         for _ in range(self.sac_updates_per_step):
                             self.do_gpu_train_step(
                                 ctx, gpu_state, synth_buffer,
@@ -4346,14 +4277,6 @@ struct MBPOAgent[
                             )
                             self.soft_update_targets_gpu(ctx, gpu_state)
                 else:
-                    if not _seen_real_only:
-                        _seen_real_only = True
-                        print(
-                            "[MBPO loop] first REAL-ONLY branch at total_steps=",
-                            total_steps,
-                            " — diag block NOT called from this path",
-                            sep="",
-                        )
                     for _ in range(self.sac_updates_per_step):
                         self.do_gpu_train_step_real_only(ctx, gpu_state)
                         self.soft_update_targets_gpu(ctx, gpu_state)
