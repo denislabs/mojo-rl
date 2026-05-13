@@ -3556,35 +3556,15 @@ struct MBPOAgent[
                 self.logger.value()[].log_scalar("mean_done", mean_done, step)
                 self.logger.value()[].log_scalar("mean_abs_action", mean_abs_act, step)
 
-                # Surface NaN/inf: RemoteLogger silently drops non-finite values,
-                # so the *_nonfinite flags below always reach the dashboard and
-                # tell us which metric first went bad (and when).
+                # RemoteLogger silently drops NaN/inf; emit a console tripwire
+                # so a real instability isn't invisible (only prints on bad
+                # ticks — no dashboard noise).
                 var nf_q = isnan(mean_q) or isinf(mean_q)
                 var nf_tgt = isnan(mean_tgt) or isinf(mean_tgt)
                 var nf_rew = isnan(mean_rew) or isinf(mean_rew)
                 var nf_nq = isnan(mean_nq) or isinf(mean_nq)
                 var nf_act = isnan(mean_abs_act) or isinf(mean_abs_act)
                 var nf_cl = isnan(critic_loss) or isinf(critic_loss)
-                self.logger.value()[].log_scalar(
-                    "mean_q_nonfinite", 1.0 if nf_q else 0.0, step
-                )
-                self.logger.value()[].log_scalar(
-                    "mean_target_nonfinite", 1.0 if nf_tgt else 0.0, step
-                )
-                self.logger.value()[].log_scalar(
-                    "mean_reward_nonfinite", 1.0 if nf_rew else 0.0, step
-                )
-                self.logger.value()[].log_scalar(
-                    "mean_next_q_nonfinite", 1.0 if nf_nq else 0.0, step
-                )
-                self.logger.value()[].log_scalar(
-                    "mean_abs_action_nonfinite",
-                    1.0 if nf_act else 0.0,
-                    step,
-                )
-                self.logger.value()[].log_scalar(
-                    "critic_loss_nonfinite", 1.0 if nf_cl else 0.0, step
-                )
                 if nf_q or nf_tgt or nf_rew or nf_nq or nf_act or nf_cl:
                     print(
                         "[MBPO diag] step ",
