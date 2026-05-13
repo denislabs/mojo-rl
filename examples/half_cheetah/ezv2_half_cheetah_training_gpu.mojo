@@ -33,7 +33,10 @@ budget per its sample-efficiency claim.
 """
 
 from std.random import seed
+from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.efficient_zero_v2 import (
     EZV2ContinuousMLPConfig,
     GenericEZV2ContinuousAgent,
@@ -149,6 +152,46 @@ def main() raises:
 
     var ctx = DeviceContext()
 
+    # Remote metrics logger — pulls server URL + API key from .env.
+    # No-ops if RL_MONITOR_URL is empty (RemoteLogger.is_active() returns
+    # False), so safe to keep enabled by default.
+    var env_vars = load_dotenv()
+    var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
+    var url = env_vars.get("RL_MONITOR_URL", "")
+
+    var logger = RemoteLogger(
+        server_url=url,
+        run_name="EZ-V2 HalfCheetah GPU (MIXED, paper-spec)",
+        buffer_size=64,
+        api_key=api_key,
+    )
+    logger.set_config("agent", "EZV2 Continuous")
+    logger.set_config("env", "HalfCheetah")
+    logger.set_config("obs_dim", String(17))
+    logger.set_config("action_dim", String(6))
+    logger.set_config("latent_dim", String(128))
+    logger.set_config("hidden_dim", String(256))
+    logger.set_config("head_hidden", String(256))
+    logger.set_config("proj_dim", String(128))
+    logger.set_config("proj_hidden", String(512))
+    logger.set_config("pred_bottleneck", String(512))
+    logger.set_config("batch_size", String(256))
+    logger.set_config("buffer_capacity", String(100000))
+    logger.set_config("num_simulations", String(32))
+    logger.set_config("k_root", String(16))
+    logger.set_config("k_non_root", String(2))
+    logger.set_config("n_envs", String(N_ENVS))
+    logger.set_config("value_target", "MIXED")
+    logger.set_config("gamma", "0.997")
+    logger.set_config("max_action", "1.0")
+    logger.set_config("min_std", "0.1")
+    logger.set_config("entropy_coeff", "5e-2")
+    logger.set_config("consistency_coeff", "2.0")
+    logger.set_config("value_coeff", "0.5")
+    logger.set_config("max_grad_norm", "5.0")
+    logger.set_config("num_env_steps", String(NUM_ENV_STEPS))
+    logger.set_config("obs_norm", "True")
+
     # `TERMINATE_ON_UNHEALTHY=False` — match SAC's setting. Lets episodes
     # run the full 1000 steps even if the cheetah falls; poor postures
     # are penalized via reward, not by truncation. Default True is good
@@ -158,6 +201,7 @@ def main() raises:
         Config,
         N_ENVS,
         NUM_ENV_STEPS,
+        L=RemoteLogger,
     ](
         agent,
         ctx,
@@ -204,5 +248,8 @@ def main() raises:
         # velocity ~ ±100) were dominating the pre-activation, leaving the
         # encoder partially-collapsed and easy prey for the SimSiam pull.
         obs_norm=True,
+        logger=UnsafePointer(to=logger),
         verbose=True,
     )
+
+    logger.close()

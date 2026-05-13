@@ -34,12 +34,15 @@ particular), `EZV2GPUReplayBuffer` will need `mcts_sampled_actions` +
 to mirror them.
 """
 
+from collections.optional import Optional
 from std.math import exp, log
+from std.memory import UnsafePointer
 from std.random import random_float64
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.env_traits import GPUContinuousEnv
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.core.obs_norm import ObsNormStats
 from mojo_rl.deep_agents.efficient_zero_v2.configs import (
     EZV2DiscreteConfig,
@@ -87,6 +90,7 @@ def run_ezv2_continuous_train_gpu[
     # state can be allocated up front. The runtime `reanalyze_samples`
     # kwarg is gone — pass via this template parameter instead.
     REANALYZE_SAMPLES: Int = 32,
+    L: Logger = NoOpLogger,
 ](
     mut agent: GenericEZV2ContinuousAgent[Config],
     ctx: DeviceContext,
@@ -122,6 +126,7 @@ def run_ezv2_continuous_train_gpu[
     # search.
     use_gpu_mcts: Bool = True,
     obs_norm: Bool = False,
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     verbose: Bool = True,
 ) raises -> EZV2TrainStats:
     """Drive EZ-V2 continuous training fully on GPU (env + MCTS) with a
@@ -439,6 +444,27 @@ def run_ezv2_continuous_train_gpu[
     var mcts_seed: UInt32 = UInt32(0)
     var sample_seed: UInt32 = UInt32(0)
 
+    # ─── Rolling diagnostics accumulators (since last log flush) ─────────
+    # Action stats give visibility into policy saturation / collapse —
+    # critical for diagnosing HC convergence failures where π_σ shrinks
+    # to MIN_STD and actions pin at ±MAX_ACTION. SVE mean tracks MCTS-
+    # backed value; improved-policy entropy tracks how concentrated MCTS
+    # search has become on a few candidates.
+    var diag_abs_action_sum: Float64 = 0.0
+    var diag_action_count: Int = 0
+    var diag_action_saturated: Int = 0
+    var diag_sve_sum: Float64 = 0.0
+    var diag_sve_count: Int = 0
+    var diag_improved_entropy_sum: Float64 = 0.0
+    var diag_improved_entropy_count: Int = 0
+    # Loss accumulators (mean across train steps since last log)
+    var diag_loss_total_sum: Float64 = 0.0
+    var diag_loss_R_sum: Float64 = 0.0
+    var diag_loss_P_sum: Float64 = 0.0
+    var diag_loss_V_sum: Float64 = 0.0
+    var diag_loss_G_sum: Float64 = 0.0
+    var diag_loss_count: Int = 0
+
     var t0 = perf_counter_ns()
 
     while stats.total_env_steps < NUM_ENV_STEPS:
@@ -694,6 +720,33 @@ def run_ezv2_continuous_train_gpu[
                 sampled_actions_per_env.append(sampled^)
                 improved_policy_per_env.append(improved^)
 
+        # Diagnostic accumulators (action saturation, SVE, MCTS entropy).
+        # These are cheap host-side scans — same data we just used to
+        # build the action / target tensors. Saturation threshold 0.95 ×
+        # MAX_ACTION matches CleanRL convention.
+        var sat_thresh = 0.95 * MAX_ACTION_F
+        for e in range(N_ENVS):
+            for d in range(ACT_DIM):
+                var a_val = Float64(actions_per_env[e][d])
+                var a_abs = a_val if a_val >= 0.0 else -a_val
+                diag_abs_action_sum += a_abs
+                diag_action_count += 1
+                if a_abs >= Float64(sat_thresh):
+                    diag_action_saturated += 1
+            diag_sve_sum += root_value_per_env[e]
+            diag_sve_count += 1
+            # Entropy H(π_improved) = -Σ p log p over K_ROOT — only
+            # meaningful outside the warmup branch where π_improved is a
+            # one-hot. Skip warmup entries.
+            if not in_warmup:
+                var ent = Float64(0.0)
+                for i in range(K_ROOT):
+                    var p = Float64(improved_policy_per_env[e][i])
+                    if p > 1.0e-12:
+                        ent -= p * log(p)
+                diag_improved_entropy_sum += ent
+                diag_improved_entropy_count += 1
+
         ctx.enqueue_copy(actions_buf, host_action.unsafe_ptr())
 
         # ── 3. GPU env step (batched across all envs) ───────────────────
@@ -861,6 +914,18 @@ def run_ezv2_continuous_train_gpu[
                 stats.last_L_G = L_G
                 if not _is_finite(L_total):
                     stats.any_nan_loss = True
+
+                if _is_finite(L_total):
+                    diag_loss_total_sum += L_total
+                if _is_finite(L_R):
+                    diag_loss_R_sum += L_R
+                if _is_finite(L_P):
+                    diag_loss_P_sum += L_P
+                if _is_finite(L_V):
+                    diag_loss_V_sum += L_V
+                if _is_finite(L_G):
+                    diag_loss_G_sum += L_G
+                diag_loss_count += 1
 
                 # GPU → CPU network sync + optional buffer mirror.
                 if stats.num_train_calls % sync_interval == 0:
@@ -1190,8 +1255,9 @@ def run_ezv2_continuous_train_gpu[
         step_seed += 1
 
         # ── 7. Logging ──────────────────────────────────────────────────
+        var logger_active = Bool(logger) and logger.value()[].is_active()
         if (
-            verbose
+            (verbose or logger_active)
             and stats.total_env_steps % log_every == 0
             and stats.total_env_steps != 0
         ):
@@ -1203,19 +1269,161 @@ def run_ezv2_continuous_train_gpu[
             var start_i = n_eps - window if n_eps > window else 0
             for i in range(start_i, n_eps):
                 recent.append(stats.ep_returns[i])
-            print(
-                "[step ", stats.total_env_steps,
-                " ep=", n_eps,
-                " train=", stats.num_train_calls,
-                " syncs=", stats.num_gpu_syncs,
-                " wall=", wall_s, "s",
-                "] recent_mean=", _mean(recent),
-                "  best=", stats.best_episode_return,
-                "  L=(R", stats.last_L_R,
-                ", P", stats.last_L_P,
-                ", V", stats.last_L_V,
-                ", G", stats.last_L_G, ")",
-            )
+            var recent_mean = _mean(recent)
+
+            # Rolling diagnostics — mean over this interval.
+            var mean_abs_action = Float64(0.0)
+            if diag_action_count > 0:
+                mean_abs_action = (
+                    diag_abs_action_sum / Float64(diag_action_count)
+                )
+            var frac_saturated = Float64(0.0)
+            if diag_action_count > 0:
+                frac_saturated = (
+                    Float64(diag_action_saturated)
+                    / Float64(diag_action_count)
+                )
+            var mean_sve = Float64(0.0)
+            if diag_sve_count > 0:
+                mean_sve = diag_sve_sum / Float64(diag_sve_count)
+            var mean_improved_entropy = Float64(0.0)
+            if diag_improved_entropy_count > 0:
+                mean_improved_entropy = (
+                    diag_improved_entropy_sum
+                    / Float64(diag_improved_entropy_count)
+                )
+            var mean_L_total = Float64(0.0)
+            var mean_L_R = Float64(0.0)
+            var mean_L_P = Float64(0.0)
+            var mean_L_V = Float64(0.0)
+            var mean_L_G = Float64(0.0)
+            if diag_loss_count > 0:
+                var inv = 1.0 / Float64(diag_loss_count)
+                mean_L_total = diag_loss_total_sum * inv
+                mean_L_R = diag_loss_R_sum * inv
+                mean_L_P = diag_loss_P_sum * inv
+                mean_L_V = diag_loss_V_sum * inv
+                mean_L_G = diag_loss_G_sum * inv
+
+            if verbose:
+                print(
+                    "[step ", stats.total_env_steps,
+                    " ep=", n_eps,
+                    " train=", stats.num_train_calls,
+                    " syncs=", stats.num_gpu_syncs,
+                    " wall=", wall_s, "s",
+                    "] recent_mean=", recent_mean,
+                    "  best=", stats.best_episode_return,
+                    "  L=(R", stats.last_L_R,
+                    ", P", stats.last_L_P,
+                    ", V", stats.last_L_V,
+                    ", G", stats.last_L_G, ")",
+                )
+
+            if logger_active:
+                var step = stats.total_env_steps
+                # Episode-level signals
+                logger.value()[].log_scalar(
+                    "episode/mean_return_recent", recent_mean, step
+                )
+                logger.value()[].log_scalar(
+                    "episode/best_return", stats.best_episode_return, step
+                )
+                logger.value()[].log_scalar(
+                    "episode/count", Float64(n_eps), step
+                )
+                # Counters
+                logger.value()[].log_scalar(
+                    "counters/train_calls",
+                    Float64(stats.num_train_calls),
+                    step,
+                )
+                logger.value()[].log_scalar(
+                    "counters/gpu_syncs",
+                    Float64(stats.num_gpu_syncs),
+                    step,
+                )
+                logger.value()[].log_scalar(
+                    "counters/buffer_uploads",
+                    Float64(stats.num_buffer_uploads),
+                    step,
+                )
+                logger.value()[].log_scalar(
+                    "counters/buffer_size",
+                    Float64(agent.state.buffer.size),
+                    step,
+                )
+                logger.value()[].log_scalar(
+                    "counters/wall_s", wall_s, step
+                )
+                # Loss (mean over interval — smoother than last-call).
+                if diag_loss_count > 0:
+                    logger.value()[].log_scalar(
+                        "loss/total", mean_L_total, step
+                    )
+                    logger.value()[].log_scalar(
+                        "loss/reward", mean_L_R, step
+                    )
+                    logger.value()[].log_scalar(
+                        "loss/policy", mean_L_P, step
+                    )
+                    logger.value()[].log_scalar(
+                        "loss/value", mean_L_V, step
+                    )
+                    logger.value()[].log_scalar(
+                        "loss/consistency", mean_L_G, step
+                    )
+                # Last loss snapshot (per-call instability check).
+                logger.value()[].log_scalar(
+                    "loss/last_total",
+                    stats.last_L_R + stats.last_L_P + stats.last_L_V
+                    + stats.last_L_G,
+                    step,
+                )
+                logger.value()[].log_scalar(
+                    "loss/last_policy", stats.last_L_P, step
+                )
+                logger.value()[].log_scalar(
+                    "loss/last_value", stats.last_L_V, step
+                )
+                logger.value()[].log_scalar(
+                    "loss/last_consistency", stats.last_L_G, step
+                )
+                # Action / policy diagnostics
+                logger.value()[].log_scalar(
+                    "policy/mean_abs_action", mean_abs_action, step
+                )
+                logger.value()[].log_scalar(
+                    "policy/frac_saturated", frac_saturated, step
+                )
+                logger.value()[].log_scalar(
+                    "policy/improved_entropy",
+                    mean_improved_entropy,
+                    step,
+                )
+                # MCTS / value signals
+                logger.value()[].log_scalar(
+                    "mcts/sve_mean", mean_sve, step
+                )
+                # Optimizer state — temperature anneals over training.
+                logger.value()[].log_scalar(
+                    "policy/temperature", agent.temperature, step
+                )
+
+            # Reset interval accumulators.
+            diag_abs_action_sum = 0.0
+            diag_action_count = 0
+            diag_action_saturated = 0
+            diag_sve_sum = 0.0
+            diag_sve_count = 0
+            diag_improved_entropy_sum = 0.0
+            diag_improved_entropy_count = 0
+            diag_loss_total_sum = 0.0
+            diag_loss_R_sum = 0.0
+            diag_loss_P_sum = 0.0
+            diag_loss_V_sum = 0.0
+            diag_loss_G_sum = 0.0
+            diag_loss_count = 0
 
     var t_end = perf_counter_ns()
     stats.wall_time_s = Float64(t_end - t0) / 1.0e9
@@ -1242,5 +1450,29 @@ def run_ezv2_continuous_train_gpu[
         print("        L_P =", stats.last_L_P)
         print("        L_V =", stats.last_L_V)
         print("        L_G =", stats.last_L_G)
+
+    if Bool(logger) and logger.value()[].is_active():
+        var window = 30
+        var n_eps = len(stats.ep_returns)
+        var recent = List[Float64]()
+        var start_i = n_eps - window if n_eps > window else 0
+        for i in range(start_i, n_eps):
+            recent.append(stats.ep_returns[i])
+        logger.value()[].log_scalar(
+            "episode/mean_return_recent",
+            _mean(recent),
+            stats.total_env_steps,
+        )
+        logger.value()[].log_scalar(
+            "episode/best_return",
+            stats.best_episode_return,
+            stats.total_env_steps,
+        )
+        logger.value()[].log_scalar(
+            "counters/wall_s",
+            stats.wall_time_s,
+            stats.total_env_steps,
+        )
+        logger.value()[].flush()
 
     return stats^

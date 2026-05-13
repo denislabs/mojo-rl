@@ -27,7 +27,10 @@ to be correct.
 """
 
 from std.random import seed
+from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.efficient_zero_v2 import (
     EZV2ContinuousMLPConfig,
     GenericEZV2ContinuousAgent,
@@ -81,11 +84,38 @@ def main() raises:
 
     var ctx = DeviceContext()
 
+    # Remote metrics logger — pulls server URL + API key from .env.
+    # No-ops if RL_MONITOR_URL is empty (RemoteLogger.is_active() returns
+    # False), so safe to keep enabled by default.
+    var env_vars = load_dotenv()
+    var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
+    var url = env_vars.get("RL_MONITOR_URL", "")
+
+    var logger = RemoteLogger(
+        server_url=url,
+        run_name="EZ-V2 Pendulum GPU (SARSA, K_ROOT=16)",
+        buffer_size=64,
+        api_key=api_key,
+    )
+    logger.set_config("agent", "EZV2 Continuous")
+    logger.set_config("env", "Pendulum")
+    logger.set_config("obs_dim", String(3))
+    logger.set_config("action_dim", String(1))
+    logger.set_config("latent_dim", String(64))
+    logger.set_config("hidden_dim", String(64))
+    logger.set_config("batch_size", String(128))
+    logger.set_config("num_simulations", String(32))
+    logger.set_config("k_root", String(16))
+    logger.set_config("n_envs", String(N_ENVS))
+    logger.set_config("value_target", "SARSA")
+    logger.set_config("num_env_steps", String(NUM_ENV_STEPS))
+
     var _stats = run_ezv2_continuous_train_gpu[
         PendulumV2[dtype],
         Config,
         N_ENVS,
         NUM_ENV_STEPS,
+        L=RemoteLogger,
     ](
         agent,
         ctx,
@@ -114,5 +144,8 @@ def main() raises:
         # -2.67 = solved). Restore use_gpu_mcts=True once gpu_mcts_sampled.mojo
         # is instrumented and the tree-state divergence is found.
         use_gpu_mcts=False,
+        logger=UnsafePointer(to=logger),
         verbose=True,
     )
+
+    logger.close()
