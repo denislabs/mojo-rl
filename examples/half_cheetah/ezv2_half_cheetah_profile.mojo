@@ -141,7 +141,7 @@ def main() raises:
         log_every=500,
         rng_seed_base=UInt64(2026),
         use_gpu_sampling=False,
-        use_gpu_mcts=True,
+        use_gpu_mcts=False,
         obs_norm=True,
         verbose=True,
     )
