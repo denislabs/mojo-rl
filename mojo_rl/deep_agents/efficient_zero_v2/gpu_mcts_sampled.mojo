@@ -281,6 +281,18 @@ def gs_init_root_kernel[
     K_ROOT: Int,
     K_PAD: Int,
     PRED_OUT: Int,
+    # Root sampling mode selector (mirrors CPU `SampledGumbelMCTS`):
+    #   • `N_POLICY_AT_ROOT == K_ROOT`: legacy magnified — half the
+    #     candidates from `N(μ, σ)`, half from `N(μ, std_mag · σ)`.
+    #   • `N_POLICY_AT_ROOT < K_ROOT`: reference DMC — first
+    #     `N_POLICY_AT_ROOT` from `N(μ, σ)`, rest from
+    #     `Uniform(-MAX_ACTION, MAX_ACTION)`. Matches
+    #     `cy_mcts.py:127-128` (policy_action_num=4, random_action_num=12
+    #     for K_ROOT=16). The uniform tail decouples exploration from a
+    #     potentially-biased policy μ.
+    # Always evaluate `log_prior` under unmagnified `N(μ, σ)` so
+    # Sequential-Halving scoring stays comparable across modes.
+    N_POLICY_AT_ROOT: Int,
     dtype: DType,
 ](
     actions: LayoutTensor[
@@ -416,35 +428,76 @@ def gs_init_root_kernel[
             + min_std
         )
 
-    # Sample K_ROOT candidates. Half from N(μ, σ), half from N(μ, std_mag·σ).
-    # log_prior is always evaluated under N(μ, σ) (unmagnified) to keep the
-    # downstream selection scoring consistent.
-    var half = K_ROOT // 2
+    # Root candidate sampling. Two modes selected at comptime by the
+    # relationship between `N_POLICY_AT_ROOT` and `K_ROOT` (mirrors CPU
+    # `mcts_sampled.SampledGumbelMCTS.search`, lines 453-517):
+    #
+    #   LEGACY_MAGNIFIED (N_POLICY_AT_ROOT == K_ROOT):
+    #       slot i < K_ROOT/2 → sample from N(μ, σ)
+    #       slot i ≥ K_ROOT/2 → sample from N(μ, std_mag · σ)
+    #
+    #   REFERENCE_DMC (N_POLICY_AT_ROOT < K_ROOT):
+    #       slot i < N_POLICY_AT_ROOT → sample from N(μ, σ)
+    #       slot i ≥ N_POLICY_AT_ROOT → uniform random in (-max_action, max_action)
+    #
+    # `log_prior` is always evaluated under the unmagnified `N(μ, σ)` so
+    # Sequential-Halving scoring remains comparable across modes (widened
+    # / uniform samples don't get double-penalized for living in the tail
+    # of `N(μ, σ)`).
+    comptime LEGACY_MAGNIFIED: Bool = N_POLICY_AT_ROOT == K_ROOT
+    comptime HALF_K: Int = K_ROOT // 2
     for i in range(K_ROOT):
-        var widen = i >= half
+        var is_policy_sample: Bool
+        var is_magnified: Bool
+        comptime if LEGACY_MAGNIFIED:
+            is_policy_sample = True
+            is_magnified = i >= HALF_K
+        else:
+            is_policy_sample = i < N_POLICY_AT_ROOT
+            is_magnified = False
+
         var lp = Scalar[dtype](0.0)
         for d in range(ACT_DIM):
-            # Box-Muller from two uniform draws.
+            # Box-Muller from two uniform draws — used by both the
+            # policy-sample path (z ~ N(0, 1)) and consumed unused for
+            # uniform samples (we still draw the same two uniforms so the
+            # Philox stream advance is identical across modes, easing
+            # future RNG accounting).
             var u1 = philox.step_uniform()
             var u2 = philox.step_uniform()
-            var u1f = Scalar[dtype](u1[0])
-            if u1f < Scalar[dtype](1e-9):
-                u1f = Scalar[dtype](1e-9)
-            var z = sqrt(
-                Scalar[dtype](-2.0) * log(u1f)
-            ) * cos(
-                Scalar[dtype](2.0) * Scalar[dtype](pi) * Scalar[dtype](
-                    u2[0]
+
+            var a_d: Scalar[dtype]
+            if is_policy_sample:
+                var u1f = Scalar[dtype](u1[0])
+                if u1f < Scalar[dtype](1e-9):
+                    u1f = Scalar[dtype](1e-9)
+                var z = sqrt(
+                    Scalar[dtype](-2.0) * log(u1f)
+                ) * cos(
+                    Scalar[dtype](2.0)
+                    * Scalar[dtype](pi)
+                    * Scalar[dtype](u2[0])
                 )
-            )
-            var sg_eff = sg[d]
-            if widen:
-                sg_eff = sg_eff * std_mag
-            var u_d = mu[d] + sg_eff * z
-            var a_d = max_action * tanh(u_d)
+                var sg_eff = sg[d]
+                if is_magnified:
+                    sg_eff = sg_eff * std_mag
+                var u_d = mu[d] + sg_eff * z
+                a_d = max_action * tanh(u_d)
+            else:
+                # Uniform draw in (-max_action, max_action). Re-use `u1`
+                # as the [0, 1) source — drawing one extra Box-Muller pair
+                # per dim keeps the Philox stream alignment identical to
+                # the policy-sample path so a future N_POLICY_AT_ROOT
+                # change doesn't perturb earlier slots' RNG.
+                var uf = Scalar[dtype](u1[0])
+                a_d = max_action * (
+                    Scalar[dtype](2.0) * uf - Scalar[dtype](1.0)
+                )
+
             actions[nka_off_root + i * ACT_DIM + d] = a_d
 
-            # log_prior under N(μ, σ) (unmagnified).
+            # log_prior under N(μ, σ) (unmagnified), same density for
+            # both policy-sample and uniform candidates.
             var c = a_d * inv_max
             var c_lo = Scalar[dtype](-0.999)
             var c_hi = Scalar[dtype](0.999)
@@ -1370,6 +1423,12 @@ def run_sampled_gumbel_search_gpu[
     RepOpt: Optimizer,
     DynOpt: Optimizer,
     PredOpt: Optimizer,
+    # Root sampling mode selector — see `gs_init_root_kernel` for the
+    # legacy-vs-DMC dispatch. Default `K_ROOT` preserves legacy magnified
+    # behavior so existing positional callers stay unchanged. Positioned
+    # at the end of the template list so the legacy positional ordering
+    # of the Model/Optimizer params keeps working.
+    N_POLICY_AT_ROOT: Int = K_ROOT,
 ](
     ctx: DeviceContext,
     mut state: EZV2GPUSampledMCTSState[
@@ -1492,7 +1551,8 @@ def run_sampled_gumbel_search_gpu[
     ](state.pred_output.unsafe_ptr())
 
     comptime run_init = gs_init_root_kernel[
-        N_ENVS, MAX_NODES, ACT_DIM, BINS, K_ROOT, K_PAD, PRED_OUT, dtype
+        N_ENVS, MAX_NODES, ACT_DIM, BINS, K_ROOT, K_PAD, PRED_OUT,
+        N_POLICY_AT_ROOT, dtype
     ]
     ctx.enqueue_function[run_init](
         act_t,

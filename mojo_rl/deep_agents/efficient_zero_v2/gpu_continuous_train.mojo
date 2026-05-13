@@ -473,6 +473,7 @@ def run_ezv2_continuous_train_gpu[
                 Config.OptType,
                 Config.OptType,
                 Config.OptType,
+                Config.ActSpace.N_POLICY_AT_ROOT,
             ](
                 ctx,
                 mcts_gpu,
