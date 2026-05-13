@@ -3022,6 +3022,7 @@ struct GenericMuZeroAgent[
             var sum_policy_entropy: Float64 = 0.0
             var sum_value_ce: Float64 = 0.0
             var sum_value_mean: Float64 = 0.0
+            var sum_value_target: Float64 = 0.0
 
             for b in range(BATCH):
                 var pred_off = b * PRED_OUT
@@ -3075,12 +3076,14 @@ struct GenericMuZeroAgent[
                 var diff = pred_val_scalar - tgt_scalar
                 sum_value_ce += diff * diff  # MSE; reuses sum_value_ce slot
                 sum_value_mean += pred_val_scalar
+                sum_value_target += tgt_scalar
 
             var n = Float64(BATCH)
             var policy_ce = sum_policy_ce / n
             var policy_entropy = sum_policy_entropy / n
             var value_ce = sum_value_ce / n
             var value_mean = sum_value_mean / n
+            var value_target_mean = sum_value_target / n
 
             # Clamp NaN/inf so logger doesn't silently drop
             if policy_ce != policy_ce or policy_ce > 1e10:
@@ -3089,17 +3092,26 @@ struct GenericMuZeroAgent[
                 value_ce = 0.0
             if value_mean != value_mean:
                 value_mean = 0.0
+            if value_target_mean != value_target_mean:
+                value_target_mean = 0.0
 
-            self.logger.value()[].log_scalar("loss/policy_ce", policy_ce, step)
+            # KNOWN_GROUPS alignment: drop "loss/" prefix on names that
+            # already match canonical group metrics.
+            # - policy_ce       → Policy Cross-Entropy group
+            # - entropy         → Entropy group
+            # - value_mse,
+            #   value_mean,
+            #   value_target_mean → Value Head group
+            # - loss            → Loss group (total = CE + MSE)
+            self.logger.value()[].log_scalar("policy_ce", policy_ce, step)
+            self.logger.value()[].log_scalar("entropy", policy_entropy, step)
+            self.logger.value()[].log_scalar("value_mse", value_ce, step)
+            self.logger.value()[].log_scalar("value_mean", value_mean, step)
             self.logger.value()[].log_scalar(
-                "loss/policy_entropy", policy_entropy, step
+                "value_target_mean", value_target_mean, step
             )
-            self.logger.value()[].log_scalar("loss/value_mse", value_ce, step)
             self.logger.value()[].log_scalar(
-                "loss/value_mean", value_mean, step
-            )
-            self.logger.value()[].log_scalar(
-                "loss/total", policy_ce + value_ce, step
+                "loss", policy_ce + value_ce, step
             )
 
         # ── Step 4.5: Global-L2 gradient clipping ────────────────────
@@ -5533,18 +5545,20 @@ struct GenericMuZeroAgent[
                     eval_r[2],
                 )
                 if Bool(self.logger):
+                    # Flat snake_case so each evaluator gets its own
+                    # series without nested slashes.
                     self.logger.value()[].log_scalar(
-                        "eval/" + GPUEval.NAME + "/wins",
+                        "eval_" + GPUEval.NAME + "_wins",
                         Float64(eval_r[0]),
                         iter,
                     )
                     self.logger.value()[].log_scalar(
-                        "eval/" + GPUEval.NAME + "/draws",
+                        "eval_" + GPUEval.NAME + "_draws",
                         Float64(eval_r[1]),
                         iter,
                     )
                     self.logger.value()[].log_scalar(
-                        "eval/" + GPUEval.NAME + "/losses",
+                        "eval_" + GPUEval.NAME + "_losses",
                         Float64(eval_r[2]),
                         iter,
                     )
@@ -5567,17 +5581,17 @@ struct GenericMuZeroAgent[
                 )
                 if Bool(self.logger):
                     self.logger.value()[].log_scalar(
-                        "eval/" + GPUEval2.NAME + "/wins",
+                        "eval_" + GPUEval2.NAME + "_wins",
                         Float64(eval_r2[0]),
                         iter,
                     )
                     self.logger.value()[].log_scalar(
-                        "eval/" + GPUEval2.NAME + "/draws",
+                        "eval_" + GPUEval2.NAME + "_draws",
                         Float64(eval_r2[1]),
                         iter,
                     )
                     self.logger.value()[].log_scalar(
-                        "eval/" + GPUEval2.NAME + "/losses",
+                        "eval_" + GPUEval2.NAME + "_losses",
                         Float64(eval_r2[2]),
                         iter,
                     )
@@ -5624,19 +5638,19 @@ struct GenericMuZeroAgent[
                 )
                 if Bool(self.logger):
                     self.logger.value()[].log_scalar(
-                        "arena/new_wins", Float64(ar[1]), iter
+                        "arena_new_wins", Float64(ar[1]), iter
                     )
                     self.logger.value()[].log_scalar(
-                        "arena/draws", Float64(ar[2]), iter
+                        "arena_draws", Float64(ar[2]), iter
                     )
                     self.logger.value()[].log_scalar(
-                        "arena/old_wins", Float64(ar[3]), iter
+                        "arena_old_wins", Float64(ar[3]), iter
                     )
                     self.logger.value()[].log_scalar(
-                        "arena/accepted", 1.0 if ar[0] else 0.0, iter
+                        "arena_accepted", 1.0 if ar[0] else 0.0, iter
                     )
                     self.logger.value()[].log_scalar(
-                        "arena/accept_rate",
+                        "arena_accept_rate",
                         Float64(arena_accepts)
                         / Float64(arena_accepts + arena_rejects),
                         iter,
@@ -5694,38 +5708,51 @@ struct GenericMuZeroAgent[
             # spotting weight runaway (we saw NVIDIA explode pre-MinMaxNorm
             # with pred_norm growing 25 → 297 over 6 iters before NaN).
             if Bool(self.logger):
+                # KNOWN_GROUPS alignment for iter-summary metrics:
+                # - param_norm (Parameter Norm) = sum of rep+dyn+pred
+                #   submodel norms. Per-subnet breakdown is kept as flat
+                #   metrics so the rep/dyn/pred runaway can still be
+                #   diagnosed (e.g. the historical NVIDIA pred_norm bug).
+                # - avg_reward (Episode Reward) for 2-player games is
+                #   {-1, 0, +1}-valued; trends toward +1 vs the eval pool.
+                # - episodes / train_steps (Training Progress) — `games`
+                #   == episodes here.
+                # - buffer_size (Runtime Throughput) for the replay.
                 self.logger.value()[].log_scalar(
-                    "param_norm/rep", last_rep_n, iter
+                    "param_norm", last_rep_n + last_dyn_n + last_pred_n, iter
                 )
                 self.logger.value()[].log_scalar(
-                    "param_norm/dyn", last_dyn_n, iter
+                    "param_norm_rep", last_rep_n, iter
                 )
                 self.logger.value()[].log_scalar(
-                    "param_norm/pred", last_pred_n, iter
+                    "param_norm_dyn", last_dyn_n, iter
                 )
                 self.logger.value()[].log_scalar(
-                    "param_norm/d_rep", d_rep, iter
+                    "param_norm_pred", last_pred_n, iter
                 )
                 self.logger.value()[].log_scalar(
-                    "param_norm/d_dyn", d_dyn, iter
+                    "param_norm_d_rep", d_rep, iter
                 )
                 self.logger.value()[].log_scalar(
-                    "param_norm/d_pred", d_pred, iter
+                    "param_norm_d_dyn", d_dyn, iter
                 )
                 self.logger.value()[].log_scalar(
-                    "train/avg_reward", avg_rew, iter
+                    "param_norm_d_pred", d_pred, iter
                 )
                 self.logger.value()[].log_scalar(
-                    "train/games", Float64(total_eps), iter
+                    "avg_reward", avg_rew, iter
                 )
                 self.logger.value()[].log_scalar(
-                    "train/total_steps", Float64(total_steps), iter
+                    "episodes", Float64(total_eps), iter
                 )
                 self.logger.value()[].log_scalar(
-                    "train/replay_size", Float64(replay_total), iter
+                    "env_steps", Float64(total_steps), iter
                 )
                 self.logger.value()[].log_scalar(
-                    "train/grad_steps_total",
+                    "buffer_size", Float64(replay_total), iter
+                )
+                self.logger.value()[].log_scalar(
+                    "train_steps",
                     Float64(self.train_step_count),
                     iter,
                 )
