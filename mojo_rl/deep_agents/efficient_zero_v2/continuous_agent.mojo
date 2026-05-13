@@ -1153,6 +1153,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             self.v_min,
             self.v_max,
             self.max_grad_norm,
+            rng_seed=UInt64(self.train_step_count),
         )
         var L_R = sums[0]
         var L_P = sums[1]
@@ -1403,6 +1404,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             self.v_min,
             self.v_max,
             self.max_grad_norm,
+            rng_seed=UInt64(self.train_step_count),
         )
         var L_R = sums[0]
         var L_P = sums[1]

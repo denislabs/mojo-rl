@@ -113,6 +113,7 @@ trait ActionSpace:
         ],
         loss_scale: Scalar[dtype],
         ent_scale: Scalar[dtype],
+        seed: UInt64,
     ) raises:
         """Forward + backward through the policy section of pred_out_step.
 
@@ -129,7 +130,9 @@ trait ActionSpace:
 
         `ent_scale` is the entropy-bonus weight (paper Eq. 9). Discrete
         impls may ignore it (entropy not currently part of discrete
-        loss); continuous impls fold it into the per-sample loss.
+        loss); continuous impls fold it into the per-sample loss via an
+        MC entropy estimator seeded by `seed` (each train-step caller
+        should pass a distinct seed; discrete impls ignore it).
         """
         ...
 
@@ -184,12 +187,14 @@ struct DiscreteActionSpace[ACT: Int, K: Int = 8](ActionSpace):
         ],
         loss_scale: Scalar[dtype],
         ent_scale: Scalar[dtype],
+        seed: UInt64,
     ) raises:
-        # Discrete: ent_scale ignored (the existing CE pipeline doesn't
-        # compute an entropy term here; entropy regularization for
-        # discrete EZ-V2 is handled at a higher loss-aggregation level
-        # if at all). The kernel's ACT parameter is bound to POL_TGT_DIM
-        # so the LayoutTensor layout types match the wrapper's signature.
+        # Discrete: ent_scale + seed ignored (the existing CE pipeline
+        # doesn't compute an entropy term here; entropy regularization
+        # for discrete EZ-V2 is handled at a higher loss-aggregation
+        # level if at all). The kernel's ACT parameter is bound to
+        # POL_TGT_DIM so the LayoutTensor layout types match the
+        # wrapper's signature.
         comptime kernel = ezv2_policy_loss_grad_kernel[
             BATCH, POL_TGT_DIM, PRED_OUT, dtype
         ]
@@ -280,6 +285,7 @@ struct ContinuousActionSpace[
         ],
         loss_scale: Scalar[dtype],
         ent_scale: Scalar[dtype],
+        seed: UInt64,
     ) raises:
         # `POL_TGT_DIM` arrives equal to `Self.ACT_DIM_` from the caller
         # (the BPTT core supplies `Config.ActSpace.POLICY_TARGET_DIM`),
@@ -299,6 +305,7 @@ struct ContinuousActionSpace[
             ent_scale,
             Scalar[dtype](Self.MAX_ACTION),
             Scalar[dtype](Self.MIN_STD),
+            seed,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )

@@ -20,7 +20,8 @@ specialization.
 
 from std.gpu import block_dim, block_idx, thread_idx
 from layout import Layout, LayoutTensor
-from std.math import exp, log, sqrt, tanh
+from std.math import cos, exp, log, sqrt, tanh
+from std.random.philox import Random as PhiloxRandom
 
 
 comptime TPB: Int = 256
@@ -242,12 +243,17 @@ def ezv2_policy_loss_grad_kernel[
 #     η_d         = (u*_d − μ_d) / σ_d
 #     nlp_d       = 0.5·η_d² + log σ_d + 0.5·log(2π) + log(1 − c_d²)
 #                       (last term is the tanh-squash log-det Jacobian)
-#     H_d         = log σ_d + 0.5·log(2πe)
+#     H_d         ≈ -mean_j[log p_squashed(y_j)]   (MC, K=1024, reference parity)
+#                  = mean_j[0.5·z_j² + log(1 − tanh²(u_j/MAX))] + log σ_d + 0.5·log(2π)
+#                  where u_j = μ_d + σ_d · z_j, z_j ~ N(0,1) via Philox(seed, b, d).
 #     loss[b]     = Σ_d (nlp_d − ent_scale · H_d)
 #
-# Backward (a* is constant ⇒ tanh-correction has zero grad):
+# Backward (a* is constant ⇒ NLL tanh-correction has zero grad on μ, σ;
+#  MC entropy gets reparameterized grad through u_j):
 #     ∂loss/∂μ_d        = (μ_d − u*_d) / σ_d²
-#     ∂loss/∂σ_d        = (1 − η_d² − ent_scale) / σ_d
+#                            + ent_scale · (2/MAX) · mean_j[tanh(u_j/MAX)]
+#     ∂loss/∂σ_d        = (1 − η_d²) / σ_d
+#                            - ent_scale · (1/σ_d - (2/MAX) · mean_j[z_j·tanh(u_j/MAX)])
 #     ∂μ_d/∂μ_raw_d     = 1 − tanh²(μ_raw_d / MAX_ACTION)
 #     ∂σ_d/∂σ_raw_d     = sigmoid(σ_raw_d)
 #
@@ -279,6 +285,7 @@ def ezv2_policy_loss_grad_continuous_kernel[
     ent_scale: Scalar[dtype],
     max_action: Scalar[dtype],
     min_std: Scalar[dtype],
+    seed: UInt64,
 ) where dtype.is_floating_point():
     """Squashed-Gaussian NLL + entropy bonus + grad on one time-slice.
 
@@ -291,6 +298,13 @@ def ezv2_policy_loss_grad_continuous_kernel[
     including the constant tanh-squash correction) goes into
     `per_sample_loss[b]`. `scale` is the loss-weight folded into the grad
     only, matching the discrete kernel convention.
+
+    Entropy `H[π]` is estimated by Monte Carlo with `MC_K=1024` reparameterized
+    samples per (b, d), matching the reference `loss.py:95-101`
+    (`entropy = -mean(log_prob(rsample(1024)))`). The estimator
+    implicitly includes the tanh log-det correction via the squashed
+    `log_prob`. `seed` selects the Philox stream; different train-step
+    callers should pass distinct seeds to decorrelate gradient noise.
     """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
@@ -300,10 +314,15 @@ def ezv2_policy_loss_grad_continuous_kernel[
     var pt_off = b * ACT_DIM
 
     var inv_max = Scalar[dtype](1.0) / max_action
-    # log(2π) ≈ 1.8378770664093453, log(2πe) = log(2π) + 1
+    # log(2π) ≈ 1.8378770664093453, log(2π·e) = log(2π) + 1
     var LOG_2PI = Scalar[dtype](1.8378770664093453)
     var HALF_LOG_2PI = Scalar[dtype](0.5) * LOG_2PI
-    var HALF_LOG_2PIE = Scalar[dtype](0.5) * (LOG_2PI + Scalar[dtype](1.0))
+    var LOG_2 = Scalar[dtype](0.6931471805599453)
+    var TWO_PI = Scalar[dtype](6.283185307179586)
+
+    # MC entropy with tanh correction (reference parity).
+    comptime MC_K: Int = 1024
+    var inv_K = Scalar[dtype](1.0) / Scalar[dtype](MC_K)
 
     var loss = Scalar[dtype](0.0)
 
@@ -351,15 +370,65 @@ def ezv2_policy_loss_grad_continuous_kernel[
             + HALF_LOG_2PI
             + corr_d
         )
-        var H_d = log_sg + HALF_LOG_2PIE
+
+        # ── MC entropy with tanh correction (reparameterized) ──────────
+        # Per-sample stream: distinct (b, d) ⇒ distinct Philox key.
+        var philox = PhiloxRandom(
+            seed=(seed * UInt64(0x9E3779B97F4A7C15))
+            + UInt64(b * 1664525 + 1013904223)
+            + UInt64(d * 2654435761),
+            offset=0,
+        )
+
+        var H_acc = Scalar[dtype](0.0)
+        var mean_tanh_u = Scalar[dtype](0.0)
+        var mean_z_tanh_u = Scalar[dtype](0.0)
+        var eps_lo = Scalar[dtype](1e-9)
+        for _ in range(MC_K):
+            # Box-Muller z ~ N(0, 1) from two Philox uniforms.
+            var u1 = philox.step_uniform()
+            var u2 = philox.step_uniform()
+            var u1f = Scalar[dtype](u1[0])
+            if u1f < eps_lo:
+                u1f = eps_lo
+            var r = sqrt(Scalar[dtype](-2.0) * log(u1f))
+            var z = r * cos(TWO_PI * Scalar[dtype](u2[0]))
+
+            # u_k = μ + σ·z_k; x_k = u_k / max_action.
+            var u_k = mu + sg * z
+            var x_k = u_k * inv_max
+            var th_uk = tanh(x_k)
+
+            # log(1 - tanh²(x)) = 2·(log 2 - |x| - softplus(-2|x|))
+            # stable form: |x| eliminates the sign branch on -2x.
+            var ax = x_k if x_k >= Scalar[dtype](0.0) else -x_k
+            var sp_term = log(Scalar[dtype](1.0) + exp(Scalar[dtype](-2.0) * ax))
+            var log_1_m_tanh2 = Scalar[dtype](2.0) * (LOG_2 - ax - sp_term)
+
+            # Per-sample squashed NLL (= -log_prob_squashed at u_k):
+            #   0.5·z² + log σ + 0.5·log(2π) + log(1 - tanh²(x_k))
+            # (the +log(1 - tanh²) term comes from −log|dy/du|).
+            H_acc = H_acc + Scalar[dtype](0.5) * z * z + log_1_m_tanh2
+            mean_tanh_u = mean_tanh_u + th_uk
+            mean_z_tanh_u = mean_z_tanh_u + z * th_uk
+
+        # H_d ≈ (1/K)·Σ(-log_prob_squashed(y_k)) plus the σ-only constants.
+        var H_d = H_acc * inv_K + log_sg + HALF_LOG_2PI
+        mean_tanh_u = mean_tanh_u * inv_K
+        mean_z_tanh_u = mean_z_tanh_u * inv_K
 
         loss = loss + nlp_d - ent_scale * H_d
 
-        # Grads on (μ, σ):
-        var d_loss_d_mu = (mu - u_star) * inv_sg * inv_sg
-        var d_loss_d_sg = (
-            Scalar[dtype](1.0) - eta * eta - ent_scale
-        ) * inv_sg
+        # ── Gradients on (μ, σ) ────────────────────────────────────────
+        # NLL contribution (a* constant ⇒ tanh-correction has zero grad):
+        var dnlp_dmu = (mu - u_star) * inv_sg * inv_sg
+        var dnlp_dsg = (Scalar[dtype](1.0) - eta * eta) * inv_sg
+        # Entropy correction terms (reparameterized) — see kernel docstring.
+        var two_inv_max = Scalar[dtype](2.0) * inv_max
+        var dH_dmu = -two_inv_max * mean_tanh_u
+        var dH_dsg = inv_sg - two_inv_max * mean_z_tanh_u
+        var d_loss_d_mu = dnlp_dmu - ent_scale * dH_dmu
+        var d_loss_d_sg = dnlp_dsg - ent_scale * dH_dsg
 
         # Chain through (μ_raw, σ_raw):
         var dmu_dmuraw = Scalar[dtype](1.0) - th * th
@@ -395,9 +464,12 @@ def ezv2_policy_loss_grad_continuous_kernel[
 # Gaussian-on-u entropy bonus, and π_target is the improved-policy distribution
 # returned by sampled-Gumbel MCTS.
 #
-# Backward — per dim, accumulated across K:
-#     ∂loss/∂μ_d = ( μ_d · Σ_k π_k  -  Σ_k π_k · u*_d^(k) ) / σ_d²
-#     ∂loss/∂σ_d = ( Σ_k π_k  -  Σ_k π_k · η_d^(k)²  -  ent_scale ) / σ_d
+# Backward — per dim, accumulated across K candidates + MC entropy term:
+#     ∂loss/∂μ_d = (μ_d · Σ_k π_k - Σ_k π_k · u*_d^(k)) / σ_d²
+#                     + ent_scale · (2/MAX) · mean_j[tanh(u_j/MAX)]
+#     ∂loss/∂σ_d = (Σ_k π_k - Σ_k π_k · η_d^(k)²) / σ_d
+#                     - ent_scale · (1/σ_d - (2/MAX) · mean_j[z_j · tanh(u_j/MAX)])
+# where u_j = μ + σ·z_j are the reparameterized MC samples used for H[π].
 # Chain to (μ_raw, σ_raw) is identical to the simple-best kernel.
 #
 # Reference: `ez/utils/loss.py:continuous_loss` (action_dim==1 branch) in
@@ -430,6 +502,7 @@ def ezv2_policy_loss_grad_continuous_fullpi_kernel[
     ent_scale: Scalar[dtype],
     max_action: Scalar[dtype],
     min_std: Scalar[dtype],
+    seed: UInt64,
 ) where dtype.is_floating_point():
     """Full-π squashed-Gaussian weighted-NLL + entropy bonus + grad.
 
@@ -438,6 +511,11 @@ def ezv2_policy_loss_grad_continuous_fullpi_kernel[
     (untouched here). Writes grad into the first 2·ACT_DIM elements
     of `grad_pred_out_step[b]`. `target_policy` row should sum to 1.0
     over the K candidates (the kernel doesn't normalize it).
+
+    Entropy `H[π]` matches `ezv2_policy_loss_grad_continuous_kernel` —
+    MC estimator with `MC_K=1024` reparameterized samples + tanh
+    log-det correction (reference `loss.py:95-101`). `seed` selects the
+    Philox stream.
     """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
@@ -450,7 +528,11 @@ def ezv2_policy_loss_grad_continuous_fullpi_kernel[
     var inv_max = Scalar[dtype](1.0) / max_action
     var LOG_2PI = Scalar[dtype](1.8378770664093453)
     var HALF_LOG_2PI = Scalar[dtype](0.5) * LOG_2PI
-    var HALF_LOG_2PIE = Scalar[dtype](0.5) * (LOG_2PI + Scalar[dtype](1.0))
+    var LOG_2 = Scalar[dtype](0.6931471805599453)
+    var TWO_PI = Scalar[dtype](6.283185307179586)
+
+    comptime MC_K: Int = 1024
+    var inv_K = Scalar[dtype](1.0) / Scalar[dtype](MC_K)
 
     var loss = Scalar[dtype](0.0)
 
@@ -504,7 +586,6 @@ def ezv2_policy_loss_grad_continuous_fullpi_kernel[
             sum_pi_eta_sq = sum_pi_eta_sq + pi_k * eta * eta
             weighted_corr = weighted_corr + pi_k * corr
 
-        var H_d = log_sg + HALF_LOG_2PIE
         # Per-dim weighted-NLL: Σ_k π_k · nlp_d^(k)
         #   = 0.5 · sum_pi_eta_sq + sum_pi · (log_sg + 0.5·log 2π) + weighted_corr
         var weighted_nlp_d = (
@@ -512,13 +593,54 @@ def ezv2_policy_loss_grad_continuous_fullpi_kernel[
             + sum_pi * (log_sg + HALF_LOG_2PI)
             + weighted_corr
         )
+
+        # ── MC entropy with tanh correction (reparameterized) ──────────
+        var philox = PhiloxRandom(
+            seed=(seed * UInt64(0x9E3779B97F4A7C15))
+            + UInt64(b * 1664525 + 1013904223)
+            + UInt64(d * 2654435761),
+            offset=0,
+        )
+
+        var H_acc = Scalar[dtype](0.0)
+        var mean_tanh_u = Scalar[dtype](0.0)
+        var mean_z_tanh_u = Scalar[dtype](0.0)
+        var eps_lo = Scalar[dtype](1e-9)
+        for _ in range(MC_K):
+            var u1 = philox.step_uniform()
+            var u2 = philox.step_uniform()
+            var u1f = Scalar[dtype](u1[0])
+            if u1f < eps_lo:
+                u1f = eps_lo
+            var r = sqrt(Scalar[dtype](-2.0) * log(u1f))
+            var z = r * cos(TWO_PI * Scalar[dtype](u2[0]))
+
+            var u_k = mu + sg * z
+            var x_k = u_k * inv_max
+            var th_uk = tanh(x_k)
+
+            var ax = x_k if x_k >= Scalar[dtype](0.0) else -x_k
+            var sp_term = log(Scalar[dtype](1.0) + exp(Scalar[dtype](-2.0) * ax))
+            var log_1_m_tanh2 = Scalar[dtype](2.0) * (LOG_2 - ax - sp_term)
+
+            H_acc = H_acc + Scalar[dtype](0.5) * z * z + log_1_m_tanh2
+            mean_tanh_u = mean_tanh_u + th_uk
+            mean_z_tanh_u = mean_z_tanh_u + z * th_uk
+
+        var H_d = H_acc * inv_K + log_sg + HALF_LOG_2PI
+        mean_tanh_u = mean_tanh_u * inv_K
+        mean_z_tanh_u = mean_z_tanh_u * inv_K
+
         loss = loss + weighted_nlp_d - ent_scale * H_d
 
-        # Gradients (accumulated across K):
-        var d_loss_d_mu = (mu * sum_pi - sum_pi_u) * inv_sg * inv_sg
-        var d_loss_d_sg = (
-            sum_pi - sum_pi_eta_sq - ent_scale
-        ) * inv_sg
+        # ── Gradients on (μ, σ) (NLL + MC entropy correction) ──────────
+        var dnlp_dmu = (mu * sum_pi - sum_pi_u) * inv_sg * inv_sg
+        var dnlp_dsg = (sum_pi - sum_pi_eta_sq) * inv_sg
+        var two_inv_max = Scalar[dtype](2.0) * inv_max
+        var dH_dmu = -two_inv_max * mean_tanh_u
+        var dH_dsg = inv_sg - two_inv_max * mean_z_tanh_u
+        var d_loss_d_mu = dnlp_dmu - ent_scale * dH_dmu
+        var d_loss_d_sg = dnlp_dsg - ent_scale * dH_dsg
 
         var dmu_dmuraw = Scalar[dtype](1.0) - th * th
         var sig_sg_raw: Scalar[dtype]

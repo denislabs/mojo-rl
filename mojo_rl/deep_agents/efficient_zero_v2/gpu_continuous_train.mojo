@@ -1318,16 +1318,22 @@ def run_ezv2_continuous_train_gpu[
 
             if logger_active:
                 var step = stats.total_env_steps
-                var last_ep_reward = (
-                    recent[len(recent) - 1] if len(recent) > 0
-                    else Float64(0.0)
-                )
 
                 # ── Episode Reward group ──────────────────────────────
-                logger.value()[].log_scalar("avg_reward", recent_mean, step)
-                logger.value()[].log_scalar(
-                    "episode_reward", last_ep_reward, step
-                )
+                # Skip while no episode has finished — `best_episode_return`
+                # is still the -1e308 sentinel and `recent_mean` is 0.0,
+                # both of which crush the chart's y-axis scale.
+                if n_eps > 0:
+                    var last_ep_reward = recent[len(recent) - 1]
+                    logger.value()[].log_scalar(
+                        "avg_reward", recent_mean, step
+                    )
+                    logger.value()[].log_scalar(
+                        "episode_reward", last_ep_reward, step
+                    )
+                    logger.value()[].log_scalar(
+                        "best_reward", stats.best_episode_return, step
+                    )
                 # ── Training Progress group ───────────────────────────
                 logger.value()[].log_scalar("episodes", Float64(n_eps), step)
                 logger.value()[].log_scalar(
@@ -1369,13 +1375,11 @@ def run_ezv2_continuous_train_gpu[
                     "value_target_mean", mean_sve, step
                 )
                 # ── Extra (no exact KNOWN_GROUPS match) ───────────────
-                # `best_reward` extends Episode Reward. `action_*` track
-                # policy saturation (HC's MIN_STD collapse symptom).
+                # `best_reward` is logged with the Episode Reward group
+                # above (gated on n_eps > 0). `action_*` track policy
+                # saturation (HC's MIN_STD collapse symptom).
                 # `buffer_size`, `gpu_syncs`, `buffer_uploads`, `wall_s`
                 # are runtime telemetry.
-                logger.value()[].log_scalar(
-                    "best_reward", stats.best_episode_return, step
-                )
                 logger.value()[].log_scalar(
                     "action_abs_mean", mean_abs_action, step
                 )

@@ -69,6 +69,7 @@ def ezv2_train_step_gpu_core[
     v_min: Float64,
     v_max: Float64,
     max_grad_norm: Float64,
+    rng_seed: UInt64 = 0,
 ) raises -> Tuple[Float64, Float64, Float64, Float64]:
     """Sections 2-9 of `train_step_gpu`: upload + zero accumulators +
     forward + (optional) LSTM forward + per-output gradients + backward
@@ -730,6 +731,12 @@ def ezv2_train_step_gpu_core[
         var grad_pred_out_k_flat = LayoutTensor[
             dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
         ](gpu.grad_pred_out_buf.unsafe_ptr() + k * BATCH * PRED_OUT)
+        # Mix `rng_seed` with the unroll-step index `k` so each per-slice
+        # MC entropy estimator gets a distinct Philox stream.
+        var policy_seed_k = (
+            rng_seed * UInt64(0x9E3779B97F4A7C15)
+            + UInt64(k) * UInt64(2862933555777941757)
+        )
         comptime if USE_FULLPI:
             ctx.enqueue_function[gather_fullpi](
                 batch_mcts_samp_act_t,
@@ -750,6 +757,7 @@ def ezv2_train_step_gpu_core[
                 Scalar[dtype](ent_scale),
                 max_action_s,
                 min_std_s,
+                policy_seed_k,
                 grid_dim=(BATCH_BLOCKS,),
                 block_dim=(TPB,),
             )
@@ -771,6 +779,7 @@ def ezv2_train_step_gpu_core[
                 per_sample_loss_t,
                 Scalar[dtype](lp_scale),
                 Scalar[dtype](ent_scale),
+                policy_seed_k,
             )
         ctx.enqueue_function[reduce_one](
             per_sample_loss_t,
