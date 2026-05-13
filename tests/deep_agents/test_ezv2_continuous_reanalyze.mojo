@@ -80,6 +80,8 @@ def _fill_canned_transitions[
         state.mcts_values[slot] = Scalar[dtype](-999.0)
         state.step_at_write[slot] = Scalar[DType.uint32](0)
         state.priorities[slot] = Scalar[dtype](1.0)
+        # Phase 1 (sum-tree PER): keep tree in sync with raw priorities.
+        state.on_flush_write(slot)
 
 
 def main() raises:

@@ -440,6 +440,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             # Default priority = max-seen so fresh transitions compete
             # for sampling with previously-seen high-priority windows.
             self.state.priorities[buf_idx] = Scalar[dtype](self.max_priority)
+            # Phase 1: maintain priority_tree alongside priorities. See
+            # state.on_flush_write docstring for invariants.
+            self.state.on_flush_write(buf_idx)
 
         self.reset_episode(env_id)
 
@@ -634,38 +637,12 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         memset(batch_age, 0, BATCH * (K + 1))
 
         var buf_size = self.state.buffer.size
-        var buf_ptr = self.state.buffer.ptr
         var current_train_step = self.train_step_count
-        var oldest = (buf_ptr - buf_size + CAP) % CAP
 
-        # Build cumulative-priority array over valid window starts. A
-        # window of length K is invalid if any of its K transitions has
-        # the episode-boundary `dones` flag set.
-        var n_cands_alloc = buf_size - K if buf_size > K else 1
-        var cum_prio = alloc[Float64](n_cands_alloc)
-        var cand_starts = alloc[Int](n_cands_alloc)
-        var n_valid = 0
-        var total_prio = Float64(0.0)
-        if buf_size > K:
-            for offset in range(buf_size - K):
-                var idx = (oldest + offset) % CAP
-                var valid = True
-                for k in range(K):
-                    var iidx = (idx + k) % CAP
-                    if Float64(self.state.buffer.dones[iidx]) > 0.5:
-                        valid = False
-                        break
-                if not valid:
-                    continue
-                var p = Float64(self.state.priorities[idx])
-                if p < 1e-8:
-                    p = 1e-8
-                total_prio += p
-                cum_prio[n_valid] = total_prio
-                cand_starts[n_valid] = idx
-                n_valid += 1
-
-        if n_valid < BATCH or total_prio < 1e-8:
+        # Phase 1: priority-weighted sampling via sum-tree.
+        # `priority_tree` mirrors `priorities` gated by K-window validity.
+        var total_prio = Float64(self.state.priority_tree.total_sum())
+        if buf_size <= K or total_prio < 1e-8:
             batch_obs.free()
             batch_actions.free()
             batch_rewards.free()
@@ -673,8 +650,6 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             batch_mcts_val.free()
             batch_age.free()
             batch_start_idx.free()
-            cum_prio.free()
-            cand_starts.free()
             return (
                 Float64(0.0),
                 Float64(0.0),
@@ -686,12 +661,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         # Sample BATCH window starts proportional to priority.
         for sampled in range(BATCH):
             var u = random_float64() * total_prio
-            var picked = 0
-            for i in range(n_valid):
-                if cum_prio[i] >= u:
-                    picked = i
-                    break
-            var start = cand_starts[picked]
+            var start = self.state.priority_tree.sample(Scalar[dtype](u))
             batch_start_idx[sampled] = start
 
             for k in range(K + 1):
@@ -722,9 +692,6 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 batch_rewards[sampled * K + k] = self.state.buffer.rewards[
                     (start + k) % CAP
                 ]
-
-        cum_prio.free()
-        cand_starts.free()
 
         # ── Param/state LayoutTensor views (bypass `.params_view()`) ────
         var rep_params = LayoutTensor[
@@ -1460,6 +1427,10 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     )
                     if new_p > self.max_priority:
                         self.max_priority = new_p
+                    # Phase 1: mirror onto priority_tree.
+                    self.state.on_priority_writeback(
+                        batch_start_idx[b], new_p
+                    )
                 # softmax + grad
                 var max_l = logits_dbl[0]
                 for i in range(1, BINS):
@@ -2259,37 +2230,11 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         # Mirrors `train_step`'s sampling block + the mixed-value-target
         # block, but emits the result into pinned host buffers.
         var buf_size = self.state.buffer.size
-        var buf_ptr = self.state.buffer.ptr
         var current_train_step = self.train_step_count
-        var oldest = (buf_ptr - buf_size + CAP) % CAP
 
-        var n_cands_alloc = buf_size - K if buf_size > K else 1
-        var cum_prio = alloc[Float64](n_cands_alloc)
-        var cand_starts = alloc[Int](n_cands_alloc)
-        var n_valid = 0
-        var total_prio = Float64(0.0)
-        if buf_size > K:
-            for offset in range(buf_size - K):
-                var idx = (oldest + offset) % CAP
-                var valid = True
-                for k in range(K):
-                    var iidx = (idx + k) % CAP
-                    if Float64(self.state.buffer.dones[iidx]) > 0.5:
-                        valid = False
-                        break
-                if not valid:
-                    continue
-                var p = Float64(self.state.priorities[idx])
-                if p < 1e-8:
-                    p = 1e-8
-                total_prio += p
-                cum_prio[n_valid] = total_prio
-                cand_starts[n_valid] = idx
-                n_valid += 1
-
-        if n_valid < BATCH or total_prio < 1e-8:
-            cum_prio.free()
-            cand_starts.free()
+        # Phase 1: priority-weighted sampling via sum-tree.
+        var total_prio = Float64(self.state.priority_tree.total_sum())
+        if buf_size <= K or total_prio < 1e-8:
             return (
                 Float64(0.0),
                 Float64(0.0),
@@ -2302,12 +2247,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         # Fill the upload host buffers in per-sample-time-major layout.
         for sampled in range(BATCH):
             var u = random_float64() * total_prio
-            var picked = 0
-            for i in range(n_valid):
-                if cum_prio[i] >= u:
-                    picked = i
-                    break
-            var start = cand_starts[picked]
+            var start = self.state.priority_tree.sample(Scalar[dtype](u))
             batch_start_idx[sampled] = start
 
             for k in range(K + 1):
@@ -2349,9 +2289,6 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             for k in range(K):
                 cum += Float64(gpu.batch_rewards_host[sampled * K + k])
                 gpu.cum_rewards_host[sampled * K + k] = Scalar[dtype](cum)
-
-        cum_prio.free()
-        cand_starts.free()
 
         # ── Fresh bootstrap values from target nets (Lever 1). ───────────
         # Computed on host using the CPU target nets — only when the
@@ -2510,6 +2447,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             self.state.priorities[batch_start_idx[b]] = Scalar[dtype](new_p)
             if new_p > self.max_priority:
                 self.max_priority = new_p
+            # Phase 1: mirror onto priority_tree.
+            self.state.on_priority_writeback(batch_start_idx[b], new_p)
 
         batch_start_idx.free()
 
@@ -2663,6 +2602,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             self.state.priorities[idx] = Scalar[dtype](new_p)
             if new_p > self.max_priority:
                 self.max_priority = new_p
+            # Phase 1: mirror onto priority_tree.
+            self.state.on_priority_writeback(idx, new_p)
 
         var L_total = (
             Self.Config.lambda_reward * L_R
@@ -2735,54 +2676,22 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         memset(batch_age, 0, BATCH * (K + 1))
 
         var buf_size = self.state.buffer.size
-        var buf_ptr = self.state.buffer.ptr
         var current_train_step = self.train_step_count
-        var oldest = (buf_ptr - buf_size + CAP) % CAP
 
-        # Build cumulative-priority array over valid window starts.
-        var n_cands_alloc = buf_size - K if buf_size > K else 1
-        var cum_prio = alloc[Float64](n_cands_alloc)
-        var cand_starts = alloc[Int](n_cands_alloc)
-        var n_valid = 0
-        var total_prio = Float64(0.0)
-        if buf_size > K:
-            for offset in range(buf_size - K):
-                var idx = (oldest + offset) % CAP
-                var valid = True
-                for k in range(K):
-                    var iidx = (idx + k) % CAP
-                    if Float64(self.state.buffer.dones[iidx]) > 0.5:
-                        valid = False
-                        break
-                if not valid:
-                    continue
-                var p = Float64(self.state.priorities[idx])
-                if p < 1e-8:
-                    p = 1e-8
-                total_prio += p
-                cum_prio[n_valid] = total_prio
-                cand_starts[n_valid] = idx
-                n_valid += 1
-
-        if n_valid < BATCH or total_prio < 1e-8:
+        # Phase 1: priority-weighted sampling via sum-tree.
+        var total_prio = Float64(self.state.priority_tree.total_sum())
+        if buf_size <= K or total_prio < 1e-8:
             batch_obs.free()
             batch_actions.free()
             batch_rewards.free()
             batch_mcts_pol.free()
             batch_mcts_val.free()
             batch_age.free()
-            cum_prio.free()
-            cand_starts.free()
             return (Float64(0.0), Float64(0.0), Float64(0.0), Float64(0.0))
 
         for sampled in range(BATCH):
             var u = random_float64() * total_prio
-            var picked = 0
-            for i in range(n_valid):
-                if cum_prio[i] >= u:
-                    picked = i
-                    break
-            var start = cand_starts[picked]
+            var start = self.state.priority_tree.sample(Scalar[dtype](u))
 
             for k in range(K + 1):
                 var idx = (start + k) % CAP
@@ -2813,8 +2722,6 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     (start + k) % CAP
                 ]
 
-        cum_prio.free()
-        cand_starts.free()
 
         # ── 2. K-step forward through rep + dyn + pred ───────────────────
         # Time-major scratch [(K+1) * BATCH * LATENT] / [(K+1) * BATCH * PRED_OUT]

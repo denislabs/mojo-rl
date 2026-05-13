@@ -634,6 +634,12 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                 self.train_step_count
             )
             self.state.priorities[buf_idx] = Scalar[dtype](self.max_priority)
+            # Phase 1: maintain priority_tree alongside priorities. Marks
+            # slot buf_idx as "leading edge" (tree weight 0) and matures
+            # slot (buf_idx - K + 1) if its window is now complete and
+            # done-free. Replaces the O(buf_size * BATCH) linear scan in
+            # `train_step_gpu` with O(BATCH * log _CAP) sum-tree sampling.
+            self.state.on_flush_write(buf_idx)
 
         self.reset_episode(env_id)
 
@@ -871,39 +877,16 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                 Float64(0.0),
             )
 
-        # Sampling: priority-weighted host-side. Same as discrete.
+        # Sampling: priority-weighted host-side via sum-tree (Phase 1).
+        # `priority_tree` mirrors `priorities` with validity gating —
+        # `tree.total_sum()` is the sum over slots whose K-step window is
+        # complete and done-free, matching the OLD linear-scan candidate
+        # pool. Each `tree.sample(u)` returns a slot in O(log _CAP).
         var buf_size = self.state.buffer.size
-        var buf_ptr = self.state.buffer.ptr
         var current_train_step = self.train_step_count
-        var oldest = (buf_ptr - buf_size + CAP) % CAP
 
-        var n_cands_alloc = buf_size - K if buf_size > K else 1
-        var cum_prio = alloc[Float64](n_cands_alloc)
-        var cand_starts = alloc[Int](n_cands_alloc)
-        var n_valid = 0
-        var total_prio = Float64(0.0)
-        if buf_size > K:
-            for offset in range(buf_size - K):
-                var idx = (oldest + offset) % CAP
-                var valid = True
-                for k in range(K):
-                    var iidx = (idx + k) % CAP
-                    if Float64(self.state.buffer.dones[iidx]) > 0.5:
-                        valid = False
-                        break
-                if not valid:
-                    continue
-                var p = Float64(self.state.priorities[idx])
-                if p < 1e-8:
-                    p = 1e-8
-                total_prio += p
-                cum_prio[n_valid] = total_prio
-                cand_starts[n_valid] = idx
-                n_valid += 1
-
-        if n_valid < BATCH or total_prio < 1e-8:
-            cum_prio.free()
-            cand_starts.free()
+        var total_prio = Float64(self.state.priority_tree.total_sum())
+        if buf_size <= K or total_prio < 1e-8:
             return (
                 Float64(0.0),
                 Float64(0.0),
@@ -915,12 +898,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         var batch_start_idx = alloc[Int](BATCH)
         for sampled in range(BATCH):
             var u = random_float64() * total_prio
-            var picked = 0
-            for i in range(n_valid):
-                if cum_prio[i] >= u:
-                    picked = i
-                    break
-            var start = cand_starts[picked]
+            var start = self.state.priority_tree.sample(Scalar[dtype](u))
             batch_start_idx[sampled] = start
 
             for k in range(K + 1):
@@ -976,9 +954,6 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             for k in range(K):
                 cum += Float64(gpu.batch_rewards_host[sampled * K + k])
                 gpu.cum_rewards_host[sampled * K + k] = Scalar[dtype](cum)
-
-        cum_prio.free()
-        cand_starts.free()
 
         # Boot-v target-net forward — only for SARSA/MIXED. Currently
         # off-limits for continuous (the value-bin offset bakes in the
@@ -1128,6 +1103,8 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             self.state.priorities[batch_start_idx[b]] = Scalar[dtype](new_p)
             if new_p > self.max_priority:
                 self.max_priority = new_p
+            # Phase 1: mirror onto priority_tree.
+            self.state.on_priority_writeback(batch_start_idx[b], new_p)
 
         batch_start_idx.free()
 
@@ -1257,6 +1234,8 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             self.state.priorities[idx] = Scalar[dtype](new_p)
             if new_p > self.max_priority:
                 self.max_priority = new_p
+            # Phase 1: mirror onto priority_tree.
+            self.state.on_priority_writeback(idx, new_p)
 
         var L_total = (
             Self.Config.lambda_reward * L_R

@@ -37,6 +37,7 @@ from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.initializer import Kaiming, Xavier
 from mojo_rl.nn.training import NetworkState, GPUNetworkState
 from mojo_rl.nn.model import LSTMCell
+from mojo_rl.core.sum_tree import SumTree
 from mojo_rl.deep_agents.core.replay.sequence_replay_buffer import (
     SequenceReplayBuffer,
 )
@@ -145,6 +146,16 @@ struct EZV2DiscreteCPUState[
     # so future samples bias toward the windows where the current model
     # is most uncertain.
     var priorities: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [_CAP]
+
+    # Sum-tree mirror of `priorities`, gated by K-step window validity:
+    # `priority_tree.get(j)` = max(priorities[j], 1e-8) when slot j is a
+    # valid K-step window start (not in the leading edge, no `done` in
+    # `dones[j..j+K-1]`), else 0. Lets `train_step_gpu` sample BATCH
+    # window starts in O(BATCH * log _CAP) instead of the O(_CAP * BATCH)
+    # cum_prio linear scan. Maintained incrementally by `on_flush_write`
+    # and the post-train priority writeback. See
+    # docs/EZV2_CONTINUOUS_TRAINING_PERF.md (Phase 1).
+    var priority_tree: SumTree[dtype]
 
     # ── K-step unroll scratch (dynamics branch) ──────────────────────────
     var _hidden_states: UnsafePointer[
@@ -349,6 +360,8 @@ struct EZV2DiscreteCPUState[
         self.priorities = alloc[Scalar[dtype]](Self._CAP)
         memset(self.priorities, 0, Self._CAP)
 
+        self.priority_tree = SumTree[dtype](capacity=Self._CAP)
+
         # ── K-step unroll scratch (dynamics branch) ──────────────────────
         comptime HIDDEN_SIZE = (Self.K + 1) * Self.BATCH * Self.LATENT
         self._hidden_states = alloc[Scalar[dtype]](HIDDEN_SIZE)
@@ -491,6 +504,7 @@ struct EZV2DiscreteCPUState[
         self.mcts_to_play = take.mcts_to_play
         self.step_at_write = take.step_at_write
         self.priorities = take.priorities
+        self.priority_tree = take.priority_tree^
         self._hidden_states = take._hidden_states
         self._pred_outputs = take._pred_outputs
         self._dyn_reward_logits = take._dyn_reward_logits
@@ -568,6 +582,100 @@ struct EZV2DiscreteCPUState[
         Config alias chain."""
         comptime needed = Self.K + Self.N + 1
         return self.buffer.size >= needed
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Priority-tree maintenance (Phase 1 of EZV2_CONTINUOUS_TRAINING_PERF)
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _window_is_valid(self, idx: Int) -> Bool:
+        """True iff the K-step window starting at `idx` has no `done` in
+        slots `idx..idx+K-1` (mod _CAP). Matches the linear-scan validity
+        rule in the OLD `train_step_gpu` sampling block — used by
+        `on_flush_write` to gate tree priorities."""
+        for k in range(Self.K):
+            var iidx = (idx + k) % Self._CAP
+            if Float64(self.buffer.dones[iidx]) > 0.5:
+                return False
+        return True
+
+    def on_flush_write(mut self, p: Int):
+        """Maintain `priority_tree` after a single `buffer.add_with_termination`
+        write at slot `p`. Must be called AFTER `priorities[p]` has been
+        set to `max_priority`.
+
+        Invariants enforced:
+          • `priority_tree.get(p) = 0` — slot p just entered the K-wide
+            "leading edge" (its window extends past the newest slot).
+          • `priority_tree.get(p-K+1)` = max(priorities[p-K+1], 1e-8) iff
+            slot `(p-K+1) mod _CAP` is a valid K-step start (no done in
+            `dones[p-K+1..p]`), else 0. This is the "newly maturing" slot
+            on each write — at the same distance K-1 from the new buffer
+            head that the old linear scan would have just included.
+
+        The 1e-8 floor mirrors the OLD scan's `if p < 1e-8: p = 1e-8`
+        guard.
+        """
+        # Slot p enters leading edge. Zero its tree weight (overwrites any
+        # stale priority left from the previous lap when the buffer wraps).
+        self.priority_tree.update(p, Scalar[dtype](0.0))
+
+        # Mature slot (p - K + 1) iff the buffer now has at least K
+        # transitions — fewer than K writes can't form a complete window.
+        if self.buffer.size >= Self.K:
+            var j = (p - Self.K + 1 + Self._CAP) % Self._CAP
+            if self._window_is_valid(j):
+                var pr = Float64(self.priorities[j])
+                if pr < 1e-8:
+                    pr = 1e-8
+                self.priority_tree.update(j, Scalar[dtype](pr))
+            # else: tree[j] already at 0 (set when slot j entered the
+            # leading edge K-1 writes ago); no update needed.
+
+    def on_priority_writeback(mut self, idx: Int, new_priority: Float64):
+        """Mirror a per-batch priority update onto the tree. `idx` is one
+        of the slots returned by `priority_tree.sample` during the
+        current train step — so it's known-valid by construction; no
+        re-validation needed. Floors below 1e-8 to mirror the OLD scan.
+        """
+        var pr = new_priority
+        if pr < 1e-8:
+            pr = 1e-8
+        self.priority_tree.update(idx, Scalar[dtype](pr))
+
+    def rebuild_priority_tree(mut self):
+        """Rebuild `priority_tree` from current `priorities` + `dones` +
+        `buffer.ptr` + `buffer.size`. O(_CAP * K) — for tests or callers
+        that pre-populate the buffer by directly mutating `priorities` /
+        `buffer.dones` without going through `_flush_episode`. The normal
+        training path uses incremental maintenance via `on_flush_write`
+        and `on_priority_writeback`.
+
+        Encodes the same validity rule as the OLD linear scan in
+        `train_step_gpu`:
+          • Slot j is sampleable iff j is at offset 0..buf_size-K-1 from
+            `oldest` (so [j..j+K-1] is fully within the buffered range),
+          • AND `dones[j..j+K-1]` are all 0.
+        """
+        var bsize = self.buffer.size
+        if bsize <= Self.K:
+            # No valid windows possible — zero every leaf.
+            for j in range(Self._CAP):
+                self.priority_tree.update(j, Scalar[dtype](0.0))
+            return
+
+        var oldest = (self.buffer.ptr - bsize + Self._CAP) % Self._CAP
+        # First, zero every slot — including those outside the
+        # buffered range and the K-wide leading edge.
+        for j in range(Self._CAP):
+            self.priority_tree.update(j, Scalar[dtype](0.0))
+        # Then mark every valid window start with its (floored) priority.
+        for offset in range(bsize - Self.K):
+            var j = (oldest + offset) % Self._CAP
+            if self._window_is_valid(j):
+                var pr = Float64(self.priorities[j])
+                if pr < 1e-8:
+                    pr = 1e-8
+                self.priority_tree.update(j, Scalar[dtype](pr))
 
 
 # ════════════════════════════════════════════════════════════════════════════
