@@ -64,7 +64,7 @@ def main() raises:
         NODES=128,
         K_ROOT=16,
         K_NON_ROOT=8,
-        MAX_ACTION=2.0,            # ← Pendulum torque ∈ [-2, 2]
+        MAX_ACTION=2.0,  # ← Pendulum torque ∈ [-2, 2]
         MIN_STD=0.5,
         STD_MAGNIFICATION=3.0,
         ENT_WEIGHT=0.05,
@@ -131,19 +131,11 @@ def main() raises:
         reanalyze_interval=200,
         reanalyze_warmup=1000,
         warmup_random_steps=2_000,
-        max_steps_per_episode=200,    # ← Pendulum episode length
+        max_steps_per_episode=200,  # ← Pendulum episode length
         log_every=2_000,
         rng_seed_base=UInt64(2026),
-        use_gpu_sampling=False,
-        # Hybrid path (`use_gpu_mcts=False`): CPU MCTS via
-        # `agent.select_action()`, GPU env + training. GPU MCTS has an
-        # unresolved bug that prevents learning even after c_scale fix,
-        # softmax-fallback fix, and smooth-improved_policy fix
-        # (2026-05-13 audit). Diagnostic confirmed CPU MCTS converges on
-        # this same env/agent/training in ~30k steps (best episode
-        # -2.67 = solved). Restore use_gpu_mcts=True once gpu_mcts_sampled.mojo
-        # is instrumented and the tree-state divergence is found.
-        use_gpu_mcts=False,
+        use_gpu_sampling=True,
+        use_gpu_mcts=True,
         logger=UnsafePointer(to=logger),
         verbose=True,
     )
