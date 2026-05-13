@@ -21,9 +21,16 @@ from mojo_rl.core import (
     State,
     Action,
     BoxDiscreteActionEnv,
+    GPUDiscreteEnv,
     RenderableEnv,
 )
+from mojo_rl.nn import dtype as gpu_dtype
+from layout import LayoutTensor, Layout
+from std.gpu import block_dim, block_idx, thread_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
+
+from .game_logic import apply_step_inline
 
 from .craftax_full import (
     CraftaxFullEnv,
@@ -576,6 +583,31 @@ def _render_view_tile_rgb(
 
 
 @always_inline
+def _render_pixel_rgb_from_state(
+    s: UnsafePointer[Float32, MutAnyOrigin],
+    atlas: UnsafePointer[Float32, MutAnyOrigin],
+    h: Int,
+    w: Int,
+) -> Tuple[Float32, Float32, Float32]:
+    """GPU-friendly top-level: each thread owns one (env, pixel) and pulls
+    floor / player_pos / boss-state / ladder-state out of the env's state
+    slice itself. Slightly redundant CPU-side but keeps the kernel
+    signature simple and avoids passing 5 extra args per thread."""
+    var floor = Int(s[S_PLAYER_LEVEL])
+    if floor < 0:
+        floor = 0
+    if floor >= NUM_FLOORS:
+        floor = NUM_FLOORS - 1
+    var py = Int(s[S_PLAYER_POS])
+    var px = Int(s[S_PLAYER_POS + 1])
+    var bossv = _is_boss_vulnerable(s)
+    var ladder = _ladder_open(s, floor)
+    return _render_pixel_rgb(
+        s, atlas, floor, py, px, bossv, ladder, h, w,
+    )
+
+
+@always_inline
 def _render_pixel_rgb(
     s: UnsafePointer[Float32, MutAnyOrigin],
     atlas: UnsafePointer[Float32, MutAnyOrigin],
@@ -622,15 +654,15 @@ def _render_pixel_rgb(
 
 
 struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
-    BoxDiscreteActionEnv & RenderableEnv
+    BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv
 ):
     """Craftax-Full with 3×130×110 RGB sprite-based pixel obs.
 
     Channel-first layout (C, H, W) flat row-major. Single frame, no stack —
     matches the reference `render_craftax_pixels` at `BLOCK_PIXEL_SIZE_AGENT`.
 
-    Physics + human-playable rendering delegate to `CraftaxFullEnv`. CPU-only;
-    GPU support follows the Classic pattern in a later pass.
+    Physics + human-playable rendering delegate to `CraftaxFullEnv`. GPU
+    kernels: reset/selective_reset/step/extract_obs all wired (#42).
     """
 
     comptime dtype = Self.DTYPE
@@ -640,6 +672,9 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
     comptime STATE_SIZE: Int = STATE_SIZE
     comptime OBS_DIM: Int = PIXEL_OBS_DIM
     comptime NUM_ACTIONS: Int = NUM_ACTIONS
+    comptime STEP_WS_SHARED: Int = ATLAS_FLOATS
+    comptime STEP_WS_PER_ENV: Int = 0
+    comptime TPB: Int = 256
 
     var inner: CraftaxFullEnv[Self.DTYPE]
     var _atlas: UnsafePointer[Float32, MutAnyOrigin]
@@ -783,3 +818,236 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
 
     def renderer_step_once(self) -> Bool:
         return False
+
+    # ------------------------------------------------------------------
+    # GPU kernels (#42) — physics delegates to inner, render is local.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt64 = 0,
+    ) raises:
+        """Delegate to the symbolic env's reset — pixel env shares the
+        underlying state buffer."""
+        CraftaxFullEnv[Self.DTYPE].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+            ctx, states_buf, rng_seed=rng_seed,
+        )
+
+    @staticmethod
+    def selective_reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        mut dones_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt64,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
+    ) raises:
+        CraftaxFullEnv[Self.DTYPE].selective_reset_kernel_gpu[
+            BATCH_SIZE, STATE_SIZE
+        ](
+            ctx,
+            states_buf,
+            dones_buf,
+            rng_seed=rng_seed,
+            workspace_ptr=workspace_ptr,
+            rng_counter_ptr=rng_counter_ptr,
+        )
+
+    def init_step_workspace_gpu_with_atlas[
+        BATCH_SIZE: Int,
+    ](
+        self,
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Copy the (already-built) CPU atlas into the shared region of the
+        GPU workspace. Layout: `[shared(ATLAS_FLOATS) | per-env padding(0)]`."""
+        ctx.enqueue_copy(workspace_buf, self._atlas)
+
+    @staticmethod
+    def init_step_workspace_gpu[
+        BATCH_SIZE: Int,
+    ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype],) raises:
+        """Static fallback: rebuild the atlas on host, upload, free."""
+        var host = build_agent_atlas(ASSET_DIR, BLOCK_PIXEL_SIZE)
+        ctx.enqueue_copy(workspace_buf, host)
+        ctx.synchronize()
+        host.free()
+
+    @staticmethod
+    def update_curriculum_gpu(
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[gpu_dtype],
+        curriculum_values: List[Scalar[gpu_dtype]],
+    ) raises:
+        pass
+
+    @staticmethod
+    def _render_kernel[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        states_buf: DeviceBuffer[gpu_dtype],
+        atlas_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """One thread per output pixel — writes (R, G, B) for that pixel."""
+        comptime PIX_TOTAL = BATCH_SIZE * OBS_PIX_H * OBS_PIX_W
+        comptime PIX_BLOCKS = (PIX_TOTAL + Self.TPB - 1) // Self.TPB
+        var states_ptr = states_buf.unsafe_ptr()
+        var obs_ptr = obs_buf.unsafe_ptr()
+
+        @parameter
+        @always_inline
+        def render_wrapper(
+            states_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+            atlas_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+            obs_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= PIX_TOTAL:
+                return
+            comptime HW = OBS_PIX_H * OBS_PIX_W
+            var env_idx = tid // HW
+            var pix = tid % HW
+            var h = pix // OBS_PIX_W
+            var w = pix % OBS_PIX_W
+
+            var state = states_ptr + env_idx * STATE_SIZE
+            var rgb = _render_pixel_rgb_from_state(state, atlas_ptr, h, w)
+            var env_obs = obs_ptr + env_idx * PIXEL_OBS_DIM
+            env_obs[0 * HW + pix] = rgb[0]
+            env_obs[1 * HW + pix] = rgb[1]
+            env_obs[2 * HW + pix] = rgb[2]
+
+        ctx.enqueue_function[render_wrapper](
+            states_ptr,
+            atlas_ptr,
+            obs_ptr,
+            grid_dim=(PIX_BLOCKS,),
+            block_dim=(Self.TPB,),
+        )
+
+    @staticmethod
+    def extract_obs_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        states_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Cold extract used after reset. Re-uploads the atlas to a temp
+        buffer — training paths use step_kernel_gpu with workspace_ptr."""
+        var atlas_buf = ctx.enqueue_create_buffer[gpu_dtype](ATLAS_FLOATS)
+        var host = build_agent_atlas(ASSET_DIR, BLOCK_PIXEL_SIZE)
+        ctx.enqueue_copy(atlas_buf, host)
+        ctx.synchronize()
+        host.free()
+
+        Self._render_kernel[BATCH_SIZE, STATE_SIZE](
+            ctx, states_buf, atlas_buf.unsafe_ptr(), obs_buf,
+        )
+
+    @staticmethod
+    def step_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        actions_buf: DeviceBuffer[gpu_dtype],
+        mut rewards_buf: DeviceBuffer[gpu_dtype],
+        mut dones_buf: DeviceBuffer[gpu_dtype],
+        mut terminated_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt64 = 0,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
+    ) raises:
+        """Physics step → render the pixel obs. Atlas lives in the shared
+        region of the workspace (offset 0)."""
+        var states_ptr = states_buf.unsafe_ptr()
+        var actions_ptr = actions_buf.unsafe_ptr()
+        var rewards_ptr = rewards_buf.unsafe_ptr()
+        var dones_ptr = dones_buf.unsafe_ptr()
+        var terminated_ptr = terminated_buf.unsafe_ptr()
+
+        comptime PHYS_BLOCKS = (
+            BATCH_SIZE + CraftaxFullEnv[Self.DTYPE].TPB - 1
+        ) // CraftaxFullEnv[Self.DTYPE].TPB
+        var seed_s = Scalar[DType.uint64](rng_seed)
+
+        @parameter
+        @always_inline
+        def physics_wrapper(
+            states_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+            actions_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+            rewards_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+            dones_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+            terminated_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+            seed: Scalar[DType.uint64],
+        ):
+            var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if e >= BATCH_SIZE:
+                return
+            var state = states_ptr + e * STATE_SIZE
+            var action = Int(actions_ptr[e])
+            var per_env_seed = (
+                UInt64(seed) * UInt64(BATCH_SIZE) + UInt64(e) + UInt64(1)
+            )
+            var rng = PhiloxRandom(seed=per_env_seed, offset=0)
+            var r_done = apply_step_inline(state, action, rng)
+            rewards_ptr[e] = Scalar[gpu_dtype](r_done[0])
+            if r_done[1]:
+                dones_ptr[e] = Scalar[gpu_dtype](1.0)
+            else:
+                dones_ptr[e] = Scalar[gpu_dtype](0.0)
+            terminated_ptr[e] = Scalar[gpu_dtype](0.0)
+
+        ctx.enqueue_function[physics_wrapper](
+            states_ptr,
+            actions_ptr,
+            rewards_ptr,
+            dones_ptr,
+            terminated_ptr,
+            seed_s,
+            grid_dim=(PHYS_BLOCKS,),
+            block_dim=(CraftaxFullEnv[Self.DTYPE].TPB,),
+        )
+
+        # Render pass.
+        if workspace_ptr:
+            var ws_ptr = workspace_ptr.value()
+            Self._render_kernel[BATCH_SIZE, STATE_SIZE](
+                ctx, states_buf, ws_ptr, obs_buf,
+            )
+        else:
+            # Fallback path: upload atlas to a temp buffer for this call.
+            var atlas_buf = ctx.enqueue_create_buffer[gpu_dtype](ATLAS_FLOATS)
+            var host = build_agent_atlas(ASSET_DIR, BLOCK_PIXEL_SIZE)
+            ctx.enqueue_copy(atlas_buf, host)
+            ctx.synchronize()
+            host.free()
+            Self._render_kernel[BATCH_SIZE, STATE_SIZE](
+                ctx, states_buf, atlas_buf.unsafe_ptr(), obs_buf,
+            )

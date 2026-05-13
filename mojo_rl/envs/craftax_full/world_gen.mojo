@@ -614,35 +614,28 @@ def _floor_is_dungeon(floor: Int) -> Bool:
     return floor == 1 or floor == 3 or floor == 4
 
 
-def generate_full_world(
+@always_inline
+def generate_full_world_inline(
     seed: UInt64,
     state_ptr: UnsafePointer[Float32, MutAnyOrigin],
+    water: UnsafePointer[Float32, MutAnyOrigin],
+    mountain: UnsafePointer[Float32, MutAnyOrigin],
+    path: UnsafePointer[Float32, MutAnyOrigin],
+    tree: UnsafePointer[Float32, MutAnyOrigin],
 ) -> Tuple[Int, Int]:
-    """Generate all 9 floors into the state buffer.
+    """GPU-safe core. Same world-gen as `generate_full_world` but takes
+    pre-allocated scratch (`water/mountain/path/tree`, each
+    `MAP_SIZE_PER_FLOOR` floats) so callers can stage workspaces in a
+    DeviceBuffer for batched runs. Returns (player_y, player_x).
 
-    Writes:
-      - 9 × (map / item_map / light_map) blocks (each 48×48 floats)
-      - down/up ladder coords per floor
-    Returns (player_y, player_x) — center tile of the overworld.
-
-    The caller is responsible for zeroing all other state regions (mobs,
-    inventory, etc.). World gen only touches the map slabs and ladder
-    coords.
+    Writes only the map / item_map / light_map slabs + down/up ladder
+    coords; the caller zeroes everything else.
     """
     var rng = PhiloxRandom(seed=seed, offset=0)
-
-    # Scratch buffers (reused across floors). Allocated on the heap to avoid
-    # blowing the stack frame; freed at end.
-    var water = alloc[Float32](MAP_SIZE_PER_FLOOR)
-    var mountain = alloc[Float32](MAP_SIZE_PER_FLOOR)
-    var path = alloc[Float32](MAP_SIZE_PER_FLOOR)
-    var tree = alloc[Float32](MAP_SIZE_PER_FLOOR)
 
     var player_y = MAP_H // 2
     var player_x = MAP_W // 2
 
-    # The reference picks the player position once, then uses it as the
-    # proximity anchor for every smoothgen floor.
     for floor in range(NUM_FLOORS):
         var map_off = s_map(floor, 0, 0)
         var item_off = s_item_map(floor, 0, 0)
@@ -694,9 +687,34 @@ def generate_full_world(
         state_ptr[s_up_ladder(floor, 0)] = Float32(ladders[2])
         state_ptr[s_up_ladder(floor, 1)] = Float32(ladders[3])
 
+    return (player_y, player_x)
+
+
+def generate_full_world(
+    seed: UInt64,
+    state_ptr: UnsafePointer[Float32, MutAnyOrigin],
+) -> Tuple[Int, Int]:
+    """CPU entry — allocates scratch on the heap, delegates to the inline
+    kernel, then frees.
+
+    Writes:
+      - 9 × (map / item_map / light_map) blocks (each 48×48 floats)
+      - down/up ladder coords per floor
+    Returns (player_y, player_x) — center tile of the overworld.
+
+    The caller is responsible for zeroing all other state regions (mobs,
+    inventory, etc.). World gen only touches the map slabs and ladder
+    coords.
+    """
+    var water = alloc[Float32](MAP_SIZE_PER_FLOOR)
+    var mountain = alloc[Float32](MAP_SIZE_PER_FLOOR)
+    var path = alloc[Float32](MAP_SIZE_PER_FLOOR)
+    var tree = alloc[Float32](MAP_SIZE_PER_FLOOR)
+    var spawn = generate_full_world_inline(
+        seed, state_ptr, water, mountain, path, tree,
+    )
     water.free()
     mountain.free()
     path.free()
     tree.free()
-
-    return (player_y, player_x)
+    return spawn

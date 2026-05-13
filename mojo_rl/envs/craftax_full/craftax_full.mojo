@@ -16,17 +16,24 @@ from std.memory import alloc
 from std.ffi import c_int, c_float
 from std.random.philox import Random as PhiloxRandom
 
+from layout import LayoutTensor, Layout
+from std.gpu import block_dim, block_idx, thread_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
+
 from mojo_rl.core import (
     State,
     Action,
     BoxDiscreteActionEnv,
+    GPUDiscreteEnv,
     RenderableEnv,
 )
+from mojo_rl.nn import dtype as gpu_dtype
 from mojo_rl.render import Renderer2D, SDL_Color
 
 from .constants import (
     MAP_H,
     MAP_W,
+    MAP_SIZE_PER_FLOOR,
     VIEW_H,
     VIEW_W,
     NUM_INTRINSICS,
@@ -128,7 +135,11 @@ from .state import (
     s_mob_projectile,
     s_player_projectile,
 )
-from .world_gen import generate_full_world, calculate_light_level
+from .world_gen import (
+    generate_full_world,
+    generate_full_world_inline,
+    calculate_light_level,
+)
 from .game_logic import apply_step_inline
 from .symbolic_obs import encode_symbolic_obs
 from .craftax_full_sprites import (
@@ -211,13 +222,20 @@ struct CraftaxFullAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
 
 struct CraftaxFullEnv[DTYPE: DType = DType.float32](
-    BoxDiscreteActionEnv & RenderableEnv
+    BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv
 ):
-    """Full Craftax env. CPU only for now (GPU + pixel obs land in #41)."""
+    """Full Craftax env. CPU + GPU batched kernels (#42)."""
 
     comptime dtype = Self.DTYPE
     comptime StateType = CraftaxFullState
     comptime ActionType = CraftaxFullAction
+
+    # GPUDiscreteEnv constants
+    comptime STATE_SIZE: Int = STATE_SIZE
+    comptime OBS_DIM: Int = OBS_DIM
+    comptime NUM_ACTIONS: Int = NUM_ACTIONS
+    comptime STEP_WS_SHARED: Int = 0
+    comptime STEP_WS_PER_ENV: Int = 0
 
     var state: InlineArray[Scalar[Self.dtype], STATE_SIZE]
     var done: Bool
@@ -380,6 +398,403 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         var result = self._step_impl(action)
         return (self.get_obs_list(), result[0], result[1])
+
+    # ========================================================================
+    # GPU kernels (#42) — batched reset / step / extract_obs on DeviceBuffer
+    # ========================================================================
+    #
+    # Per-env world-gen scratch is `4 × MAP_SIZE_PER_FLOOR` floats (water,
+    # mountain, path, tree noise fields). Mob arrays / inventory / RNG state
+    # all live inside the per-env state slice, so the only extra workspace
+    # we need is the noise scratch.
+
+    comptime TPB: Int = 64           # threads/block — modest because each
+                                     # thread does a lot of work per step
+                                     # (8268-D obs encode alone is hot).
+    comptime WORLD_GEN_WS_PER_ENV: Int = 4 * MAP_SIZE_PER_FLOOR  # 9216 floats
+
+    @staticmethod
+    def reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt64 = 0,
+    ) raises:
+        """Generate a fresh world for every env in the batch."""
+        var states = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+
+        var scratch_buf = ctx.enqueue_create_buffer[gpu_dtype](
+            BATCH_SIZE * Self.WORLD_GEN_WS_PER_ENV
+        )
+        var scratch = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE * Self.WORLD_GEN_WS_PER_ENV),
+            MutAnyOrigin,
+        ](scratch_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+        var seed_scalar = Scalar[DType.uint64](rng_seed)
+
+        @parameter
+        @always_inline
+        def reset_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            scratch: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE * Self.WORLD_GEN_WS_PER_ENV),
+                MutAnyOrigin,
+            ],
+            seed: Scalar[DType.uint64],
+        ):
+            var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if e >= BATCH_SIZE:
+                return
+
+            # Zero this env's state slice.
+            for s in range(STATE_SIZE):
+                states[e, s] = Scalar[gpu_dtype](0.0)
+
+            # Slice per-env scratch.
+            var ws_base = e * Self.WORLD_GEN_WS_PER_ENV
+            var scratch_ptr = scratch.ptr + ws_base
+            var water_ptr = scratch_ptr
+            var mountain_ptr = scratch_ptr + MAP_SIZE_PER_FLOOR
+            var path_ptr = scratch_ptr + 2 * MAP_SIZE_PER_FLOOR
+            var tree_ptr = scratch_ptr + 3 * MAP_SIZE_PER_FLOOR
+            var state_ptr = states.ptr + e * STATE_SIZE
+
+            var per_env_seed = UInt64(seed) * UInt64(BATCH_SIZE) + UInt64(e) + UInt64(1)
+            var spawn = generate_full_world_inline(
+                per_env_seed,
+                state_ptr,
+                water_ptr,
+                mountain_ptr,
+                path_ptr,
+                tree_ptr,
+            )
+
+            # Standard reset payload (mirror CPU `reset_with_seed`).
+            states[e, S_PLAYER_LEVEL] = Scalar[gpu_dtype](0)
+            states[e, S_PLAYER_POS] = Scalar[gpu_dtype](spawn[0])
+            states[e, S_PLAYER_POS + 1] = Scalar[gpu_dtype](spawn[1])
+            states[e, S_PLAYER_DIR] = Scalar[gpu_dtype](DIR_UP)
+            states[e, s_intrinsic(INTRINSIC_HEALTH)] = Scalar[gpu_dtype](INTRINSIC_MAX)
+            states[e, s_intrinsic(INTRINSIC_FOOD)] = Scalar[gpu_dtype](INTRINSIC_MAX)
+            states[e, s_intrinsic(INTRINSIC_DRINK)] = Scalar[gpu_dtype](INTRINSIC_MAX)
+            states[e, s_intrinsic(INTRINSIC_ENERGY)] = Scalar[gpu_dtype](INTRINSIC_MAX)
+            states[e, s_intrinsic(INTRINSIC_MANA)] = Scalar[gpu_dtype](INTRINSIC_MAX)
+            states[e, s_attribute(ATTR_DEXTERITY)] = Scalar[gpu_dtype](1)
+            states[e, s_attribute(ATTR_STRENGTH)] = Scalar[gpu_dtype](1)
+            states[e, s_attribute(ATTR_INTELLIGENCE)] = Scalar[gpu_dtype](1)
+            states[e, s_monsters_killed(0)] = Scalar[gpu_dtype](
+                MONSTERS_KILLED_TO_CLEAR_LEVEL + 2
+            )
+            for k in range(NUM_POTIONS):
+                states[e, s_potion_mapping(k)] = Scalar[gpu_dtype](k)
+            states[e, S_BOSS_TIMESTEPS] = Scalar[gpu_dtype](BOSS_FIGHT_SPAWN_TURNS)
+            states[e, S_LIGHT_LEVEL] = Scalar[gpu_dtype](calculate_light_level(0))
+            states[e, S_TIMESTEP] = Scalar[gpu_dtype](0.0)
+
+        ctx.enqueue_function[reset_wrapper](
+            states,
+            scratch,
+            seed_scalar,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
+        )
+
+    @staticmethod
+    def selective_reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        mut dones_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt64,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
+    ) raises:
+        """Reset only envs where done == 1."""
+        var states = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+        var dones = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+
+        var scratch_buf = ctx.enqueue_create_buffer[gpu_dtype](
+            BATCH_SIZE * Self.WORLD_GEN_WS_PER_ENV
+        )
+        var scratch = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE * Self.WORLD_GEN_WS_PER_ENV),
+            MutAnyOrigin,
+        ](scratch_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+        var seed_scalar = Scalar[DType.uint64](rng_seed)
+
+        @parameter
+        @always_inline
+        def selective_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            dones: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            scratch: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE * Self.WORLD_GEN_WS_PER_ENV),
+                MutAnyOrigin,
+            ],
+            seed: Scalar[DType.uint64],
+        ):
+            var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if e >= BATCH_SIZE:
+                return
+            if dones[e] <= Scalar[gpu_dtype](0.5):
+                return
+
+            for s in range(STATE_SIZE):
+                states[e, s] = Scalar[gpu_dtype](0.0)
+
+            var ws_base = e * Self.WORLD_GEN_WS_PER_ENV
+            var scratch_ptr = scratch.ptr + ws_base
+            var state_ptr = states.ptr + e * STATE_SIZE
+            var per_env_seed = UInt64(seed) * UInt64(BATCH_SIZE) + UInt64(e) + UInt64(1)
+            var spawn = generate_full_world_inline(
+                per_env_seed,
+                state_ptr,
+                scratch_ptr,
+                scratch_ptr + MAP_SIZE_PER_FLOOR,
+                scratch_ptr + 2 * MAP_SIZE_PER_FLOOR,
+                scratch_ptr + 3 * MAP_SIZE_PER_FLOOR,
+            )
+            states[e, S_PLAYER_LEVEL] = Scalar[gpu_dtype](0)
+            states[e, S_PLAYER_POS] = Scalar[gpu_dtype](spawn[0])
+            states[e, S_PLAYER_POS + 1] = Scalar[gpu_dtype](spawn[1])
+            states[e, S_PLAYER_DIR] = Scalar[gpu_dtype](DIR_UP)
+            states[e, s_intrinsic(INTRINSIC_HEALTH)] = Scalar[gpu_dtype](INTRINSIC_MAX)
+            states[e, s_intrinsic(INTRINSIC_FOOD)] = Scalar[gpu_dtype](INTRINSIC_MAX)
+            states[e, s_intrinsic(INTRINSIC_DRINK)] = Scalar[gpu_dtype](INTRINSIC_MAX)
+            states[e, s_intrinsic(INTRINSIC_ENERGY)] = Scalar[gpu_dtype](INTRINSIC_MAX)
+            states[e, s_intrinsic(INTRINSIC_MANA)] = Scalar[gpu_dtype](INTRINSIC_MAX)
+            states[e, s_attribute(ATTR_DEXTERITY)] = Scalar[gpu_dtype](1)
+            states[e, s_attribute(ATTR_STRENGTH)] = Scalar[gpu_dtype](1)
+            states[e, s_attribute(ATTR_INTELLIGENCE)] = Scalar[gpu_dtype](1)
+            states[e, s_monsters_killed(0)] = Scalar[gpu_dtype](
+                MONSTERS_KILLED_TO_CLEAR_LEVEL + 2
+            )
+            for k in range(NUM_POTIONS):
+                states[e, s_potion_mapping(k)] = Scalar[gpu_dtype](k)
+            states[e, S_BOSS_TIMESTEPS] = Scalar[gpu_dtype](BOSS_FIGHT_SPAWN_TURNS)
+            states[e, S_LIGHT_LEVEL] = Scalar[gpu_dtype](calculate_light_level(0))
+            states[e, S_TIMESTEP] = Scalar[gpu_dtype](0.0)
+            dones[e] = Scalar[gpu_dtype](0.0)
+
+        ctx.enqueue_function[selective_wrapper](
+            states,
+            dones,
+            scratch,
+            seed_scalar,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
+        )
+
+    @staticmethod
+    def step_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        actions_buf: DeviceBuffer[gpu_dtype],
+        mut rewards_buf: DeviceBuffer[gpu_dtype],
+        mut dones_buf: DeviceBuffer[gpu_dtype],
+        mut terminated_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt64 = 0,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
+    ) raises:
+        """Apply one step + symbolic obs encode for every env."""
+        var states = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+        var rewards = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+        var dones = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+        var terminated_out = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](terminated_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, OBS_DIM),
+            MutAnyOrigin,
+        ](obs_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+
+        var actions = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+        var seed_scalar = Scalar[DType.uint64](rng_seed)
+
+        @parameter
+        @always_inline
+        def step_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            actions: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
+            ],
+            rewards: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            dones: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            terminated_out: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            obs: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, OBS_DIM),
+                MutAnyOrigin,
+            ],
+            seed: Scalar[DType.uint64],
+        ):
+            var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if e >= BATCH_SIZE:
+                return
+
+            var action = Int(actions[e])
+            var per_env_seed = UInt64(seed) * UInt64(BATCH_SIZE) + UInt64(e) + UInt64(1)
+            var rng = PhiloxRandom(seed=per_env_seed, offset=0)
+            var state_ptr = states.ptr + e * STATE_SIZE
+            var result = apply_step_inline(state_ptr, action, rng)
+
+            rewards[e] = Scalar[gpu_dtype](result[0])
+            dones[e] = (
+                Scalar[gpu_dtype](1.0) if result[1] else Scalar[gpu_dtype](0.0)
+            )
+            terminated_out[e] = Scalar[gpu_dtype](0.0)
+
+            # Symbolic obs (8268-D). Reuses the same per-env CPU helper —
+            # all pointer arithmetic, no Python.
+            var obs_ptr = obs.ptr + e * OBS_DIM
+            encode_symbolic_obs(state_ptr, obs_ptr)
+
+        ctx.enqueue_function[step_wrapper](
+            states,
+            actions,
+            rewards,
+            dones,
+            terminated_out,
+            obs,
+            seed_scalar,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
+        )
+
+    @staticmethod
+    def extract_obs_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        states_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Encode the symbolic obs into `obs_buf` for every env."""
+        var states = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, OBS_DIM),
+            MutAnyOrigin,
+        ](obs_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+
+        @parameter
+        @always_inline
+        def extract_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            obs: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, OBS_DIM),
+                MutAnyOrigin,
+            ],
+        ):
+            var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if e >= BATCH_SIZE:
+                return
+            var state_ptr = states.ptr + e * STATE_SIZE
+            var obs_ptr = obs.ptr + e * OBS_DIM
+            encode_symbolic_obs(state_ptr, obs_ptr)
+
+        ctx.enqueue_function[extract_wrapper](
+            states,
+            obs,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
+        )
+
+    @staticmethod
+    def init_step_workspace_gpu[
+        BATCH_SIZE: Int,
+    ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype],) raises:
+        pass
+
+    @staticmethod
+    def update_curriculum_gpu(
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[gpu_dtype],
+        curriculum_values: List[Scalar[gpu_dtype]],
+    ) raises:
+        pass
 
     # ========================================================================
     # RenderableEnv — SDL3 sprite-based, player-centered 9×11 view + HUD
