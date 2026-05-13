@@ -124,7 +124,6 @@ def main() raises:
         sync_interval=50,
         target_sync_interval=200,
         reanalyze_interval=200,
-        reanalyze_samples=32,
         reanalyze_warmup=1000,
         # No artificial warmup — training fires as soon as buffer fills.
         warmup_random_steps=0,

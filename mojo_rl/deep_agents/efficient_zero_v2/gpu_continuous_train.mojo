@@ -83,6 +83,10 @@ def run_ezv2_continuous_train_gpu[
     Config: EZV2DiscreteConfig,
     N_ENVS: Int,
     NUM_ENV_STEPS: Int,
+    # Phase 4 (2026-05-13): reanalyze samples is comptime so the GPU MCTS
+    # state can be allocated up front. The runtime `reanalyze_samples`
+    # kwarg is gone — pass via this template parameter instead.
+    REANALYZE_SAMPLES: Int = 32,
 ](
     mut agent: GenericEZV2ContinuousAgent[Config],
     ctx: DeviceContext,
@@ -97,7 +101,6 @@ def run_ezv2_continuous_train_gpu[
     sync_interval: Int = 50,
     target_sync_interval: Int = 200,
     reanalyze_interval: Int = 200,
-    reanalyze_samples: Int = 32,
     reanalyze_warmup: Int = 1000,
     warmup_random_steps: Int = 2_000,
     max_steps_per_episode: Int = 1_000,
@@ -143,7 +146,6 @@ def run_ezv2_continuous_train_gpu[
         sync_interval: GPU → CPU network sync every Nth train.
         target_sync_interval: Hard-copy target nets every Nth train.
         reanalyze_interval: Reanalyze every Nth train post-warmup.
-        reanalyze_samples: How many windows per reanalyze call.
         reanalyze_warmup: Skip reanalyze until this many train calls.
         warmup_random_steps: Uniform-random actions for the first N
             env-step transitions (sparse-reward warmup). No GPU MCTS
@@ -222,6 +224,7 @@ def run_ezv2_continuous_train_gpu[
         print("    sync_interval         =", sync_interval, "train_steps")
         print("    target_sync_interval  =", target_sync_interval, "train_steps")
         print("    reanalyze_interval    =", reanalyze_interval, "train_steps")
+        print("    reanalyze_samples     =", REANALYZE_SAMPLES, "(comptime, GPU)")
         print("    reanalyze_warmup      =", reanalyze_warmup, "train_steps")
         print("    warmup_random_steps   =", warmup_random_steps)
         print("    max_steps_per_episode =", max_steps_per_episode)
@@ -336,6 +339,56 @@ def run_ezv2_continuous_train_gpu[
     )
     var host_min_q = ctx.enqueue_create_host_buffer[dtype](N_ENVS)
     var host_max_q = ctx.enqueue_create_host_buffer[dtype](N_ENVS)
+
+    # ─── GPU reanalyze state (Phase 4, 2026-05-13) ──────────────────────
+    # Dedicated GPU MCTS state + obs staging + workspace + host mirrors
+    # sized for `REANALYZE_SAMPLES`. The reanalyze GPU search runs against
+    # the *target* networks (`gpu.representation_target` etc.) — same
+    # semantics as `agent.reanalyze`, but batched across all samples in
+    # one GPU launch instead of N sequential CPU MCTS searches.
+    var reanalyze_mcts_gpu = EZV2GPUSampledMCTSState[
+        REANALYZE_SAMPLES, NODES, ACT_DIM, LATENT, BINS, K_ROOT, K_NON_ROOT
+    ](ctx)
+    var reanalyze_obs_buf = ctx.enqueue_create_buffer[dtype](
+        REANALYZE_SAMPLES * OBS
+    )
+    comptime REANALYZE_WS_TOTAL = (
+        REANALYZE_SAMPLES * MAX_WS if MAX_WS > 0 else 1
+    )
+    var reanalyze_workspace = ctx.enqueue_create_buffer[dtype](
+        REANALYZE_WS_TOTAL
+    )
+    var host_reanalyze_obs = ctx.enqueue_create_host_buffer[dtype](
+        REANALYZE_SAMPLES * OBS
+    )
+    var host_reanalyze_chosen = ctx.enqueue_create_host_buffer[dtype](
+        REANALYZE_SAMPLES * ACT_DIM
+    )
+    var host_reanalyze_node_visit = ctx.enqueue_create_host_buffer[dtype](
+        REANALYZE_SAMPLES * NODES * K_ROOT
+    )
+    var host_reanalyze_node_total_value = ctx.enqueue_create_host_buffer[
+        dtype
+    ](REANALYZE_SAMPLES * NODES * K_ROOT)
+    var host_reanalyze_node_actions = ctx.enqueue_create_host_buffer[dtype](
+        REANALYZE_SAMPLES * NODES * K_ROOT * ACT_DIM
+    )
+    var host_reanalyze_log_prior = ctx.enqueue_create_host_buffer[dtype](
+        REANALYZE_SAMPLES * NODES * K_ROOT
+    )
+    var host_reanalyze_node_value = ctx.enqueue_create_host_buffer[dtype](
+        REANALYZE_SAMPLES * NODES
+    )
+    var host_reanalyze_node_total_visits = ctx.enqueue_create_host_buffer[
+        dtype
+    ](REANALYZE_SAMPLES * NODES)
+    var host_reanalyze_min_q = ctx.enqueue_create_host_buffer[dtype](
+        REANALYZE_SAMPLES
+    )
+    var host_reanalyze_max_q = ctx.enqueue_create_host_buffer[dtype](
+        REANALYZE_SAMPLES
+    )
+    var reanalyze_seed: UInt32 = UInt32(0)
 
     # ─── GPU-resident replay buffer mirror ──────────────────────────────
     # Only used by the GPU-sampling train path. For the default host-
@@ -829,8 +882,310 @@ def run_ezv2_continuous_train_gpu[
                 if (
                     stats.num_train_calls >= reanalyze_warmup
                     and stats.num_train_calls % reanalyze_interval == 0
+                    and agent.state.is_ready()
                 ):
-                    _ = agent.reanalyze(num_samples=reanalyze_samples)
+                    # ── GPU reanalyze (Phase 4) ─────────────────────────
+                    # Replaces the CPU `agent.reanalyze` per-sample MCTS
+                    # loop with a single GPU MCTS launch over
+                    # REANALYZE_SAMPLES sampled buffer windows. Same
+                    # writeback semantics as the CPU path: overwrites
+                    # `mcts_policies` (simple-best chosen action),
+                    # `mcts_sampled_actions` (K root candidate vectors),
+                    # `mcts_improved_policy` (full-π weights),
+                    # `mcts_values` (SVE), `step_at_write` (freshness).
+                    var buf_size = agent.state.buffer.size
+                    if buf_size > 0:
+                        var buf_ptr = agent.state.buffer.ptr
+                        var oldest = (buf_ptr - buf_size + CAP) % CAP
+                        var sampled_idx = List[Int](
+                            capacity=REANALYZE_SAMPLES
+                        )
+                        for s in range(REANALYZE_SAMPLES):
+                            var rand_offset = Int(
+                                random_float64() * Float64(buf_size)
+                            )
+                            if rand_offset >= buf_size:
+                                rand_offset = buf_size - 1
+                            if rand_offset < 0:
+                                rand_offset = 0
+                            var idx = (oldest + rand_offset) % CAP
+                            sampled_idx.append(idx)
+                            for d in range(OBS):
+                                host_reanalyze_obs[s * OBS + d] = (
+                                    agent.state.buffer.obs[
+                                        idx * OBS + d
+                                    ]
+                                )
+
+                        ctx.enqueue_copy(
+                            reanalyze_obs_buf,
+                            host_reanalyze_obs.unsafe_ptr(),
+                        )
+
+                        # GPU MCTS against TARGET networks.
+                        # `deterministic=True` matches the CPU
+                        # reanalyze: argmax-visit pick for the simple-
+                        # best chosen-action target.
+                        run_sampled_gumbel_search_gpu[
+                            REANALYZE_SAMPLES,
+                            NODES,
+                            ACT_DIM,
+                            LATENT,
+                            BINS,
+                            K_ROOT,
+                            K_NON_ROOT,
+                            SIMS,
+                            Config.RepModel,
+                            Config.DynModel,
+                            Config.PredModel,
+                            Config.OptType,
+                            Config.OptType,
+                            Config.OptType,
+                            Config.ActSpace.N_POLICY_AT_ROOT,
+                        ](
+                            ctx,
+                            reanalyze_mcts_gpu,
+                            reanalyze_obs_buf,
+                            gpu.representation_target,
+                            gpu.dynamics_target,
+                            gpu.prediction_target,
+                            reanalyze_workspace,
+                            v_min=agent.v_min,
+                            v_max=agent.v_max,
+                            max_action=MAX_ACTION_F,
+                            min_std=MIN_STD_F,
+                            std_magnification=STD_MAG_F,
+                            c_visit=mcts_c_visit,
+                            c_scale=mcts_c_scale,
+                            gamma=agent.gamma,
+                            deterministic=True,
+                            rng_seed=reanalyze_seed,
+                        )
+                        reanalyze_seed += UInt32(1)
+
+                        ctx.enqueue_copy(
+                            host_reanalyze_chosen.unsafe_ptr(),
+                            reanalyze_mcts_gpu.chosen_actions,
+                        )
+                        ctx.enqueue_copy(
+                            host_reanalyze_node_visit.unsafe_ptr(),
+                            reanalyze_mcts_gpu.visit_count,
+                        )
+                        ctx.enqueue_copy(
+                            host_reanalyze_node_total_value.unsafe_ptr(),
+                            reanalyze_mcts_gpu.total_value,
+                        )
+                        ctx.enqueue_copy(
+                            host_reanalyze_node_actions.unsafe_ptr(),
+                            reanalyze_mcts_gpu.actions,
+                        )
+                        ctx.enqueue_copy(
+                            host_reanalyze_log_prior.unsafe_ptr(),
+                            reanalyze_mcts_gpu.log_prior,
+                        )
+                        ctx.enqueue_copy(
+                            host_reanalyze_node_value.unsafe_ptr(),
+                            reanalyze_mcts_gpu.node_value,
+                        )
+                        ctx.enqueue_copy(
+                            host_reanalyze_node_total_visits.unsafe_ptr(),
+                            reanalyze_mcts_gpu.total_visits,
+                        )
+                        ctx.enqueue_copy(
+                            host_reanalyze_min_q.unsafe_ptr(),
+                            reanalyze_mcts_gpu.min_q,
+                        )
+                        ctx.enqueue_copy(
+                            host_reanalyze_max_q.unsafe_ptr(),
+                            reanalyze_mcts_gpu.max_q,
+                        )
+                        ctx.synchronize()
+
+                        # ── Per-sample extract + writeback ─────────────
+                        # Same math as the acting extract block (lines
+                        # 513-643): SVE from root-slot visits/values,
+                        # improved-policy = softmax(log_prior + σ·Q).
+                        for s in range(REANALYZE_SAMPLES):
+                            var idx = sampled_idx[s]
+                            var root_slot_off = s * NODES * K_ROOT
+                            var ns_idx = s * NODES
+
+                            # SVE: Σ total_value(root, i) / Σ visits(root, i)
+                            var sum_value = Float64(0.0)
+                            var sum_visits = 0
+                            for i in range(K_ROOT):
+                                sum_value += Float64(
+                                    host_reanalyze_node_total_value[
+                                        root_slot_off + i
+                                    ]
+                                )
+                                sum_visits += Int(
+                                    Float64(
+                                        host_reanalyze_node_visit[
+                                            root_slot_off + i
+                                        ]
+                                    )
+                                )
+                            var sve = compute_sve(sum_value, sum_visits)
+
+                            # Improved-policy softmax — same recipe as
+                            # acting (mcts_sampled.mojo:695-726).
+                            var v_self = Float64(
+                                host_reanalyze_node_value[ns_idx]
+                            )
+                            var n_total = Float64(
+                                host_reanalyze_node_total_visits[ns_idx]
+                            )
+                            var mn = Float64(host_reanalyze_min_q[s])
+                            var mx = Float64(host_reanalyze_max_q[s])
+
+                            var visited_logp_max = Float64(-1.0e18)
+                            var any_visited = False
+                            for i in range(K_ROOT):
+                                var nva = Float64(
+                                    host_reanalyze_node_visit[
+                                        root_slot_off + i
+                                    ]
+                                )
+                                if nva > 0.5:
+                                    var lp = Float64(
+                                        host_reanalyze_log_prior[
+                                            root_slot_off + i
+                                        ]
+                                    )
+                                    if lp > visited_logp_max:
+                                        visited_logp_max = lp
+                                    any_visited = True
+                            var v_mix = v_self
+                            if any_visited:
+                                var sum_w = Float64(0.0)
+                                var weighted_q = Float64(0.0)
+                                for i in range(K_ROOT):
+                                    var nva2 = Float64(
+                                        host_reanalyze_node_visit[
+                                            root_slot_off + i
+                                        ]
+                                    )
+                                    if nva2 > 0.5:
+                                        var lp2 = Float64(
+                                            host_reanalyze_log_prior[
+                                                root_slot_off + i
+                                            ]
+                                        )
+                                        var w = exp(
+                                            lp2 - visited_logp_max
+                                        )
+                                        sum_w += w
+                                        var qa = (
+                                            Float64(
+                                                host_reanalyze_node_total_value[
+                                                    root_slot_off + i
+                                                ]
+                                            )
+                                            / nva2
+                                        )
+                                        weighted_q += w * qa
+                                if sum_w > 1.0e-12:
+                                    v_mix = (
+                                        v_self
+                                        + n_total
+                                        * (weighted_q / sum_w)
+                                    ) / (1.0 + n_total)
+
+                            var max_visit = Float64(0.0)
+                            for i in range(K_ROOT):
+                                var nva3 = Float64(
+                                    host_reanalyze_node_visit[
+                                        root_slot_off + i
+                                    ]
+                                )
+                                if nva3 > max_visit:
+                                    max_visit = nva3
+                            var sigma_scale_ = (
+                                mcts_c_visit + max_visit
+                            ) * mcts_c_scale
+                            var q_range = mx - mn
+
+                            var z = List[Float64](capacity=K_ROOT)
+                            var max_z = Float64(-1.0e18)
+                            for i in range(K_ROOT):
+                                var nva4 = Float64(
+                                    host_reanalyze_node_visit[
+                                        root_slot_off + i
+                                    ]
+                                )
+                                var qa2: Float64
+                                if nva4 > 0.5:
+                                    qa2 = (
+                                        Float64(
+                                            host_reanalyze_node_total_value[
+                                                root_slot_off + i
+                                            ]
+                                        )
+                                        / nva4
+                                    )
+                                else:
+                                    qa2 = v_mix
+                                var qn: Float64
+                                if q_range > 1.0e-8:
+                                    qn = (qa2 - mn) / q_range
+                                else:
+                                    qn = qa2
+                                var zi = (
+                                    Float64(
+                                        host_reanalyze_log_prior[
+                                            root_slot_off + i
+                                        ]
+                                    )
+                                    + sigma_scale_ * qn
+                                )
+                                z.append(zi)
+                                if zi > max_z:
+                                    max_z = zi
+
+                            var sum_exp = Float64(0.0)
+                            var raw_probs = List[Float64](capacity=K_ROOT)
+                            for i in range(K_ROOT):
+                                var ev = exp(z[i] - max_z)
+                                raw_probs.append(ev)
+                                sum_exp += ev
+
+                            # Writeback — chosen action, K candidates,
+                            # improved-policy, SVE, freshness stamp.
+                            for d in range(ACT_DIM):
+                                agent.state.mcts_policies[
+                                    idx * ACT_DIM + d
+                                ] = host_reanalyze_chosen[
+                                    s * ACT_DIM + d
+                                ]
+                            var act_off = s * NODES * K_ROOT * ACT_DIM
+                            for j in range(K_ROOT * ACT_DIM):
+                                agent.state.mcts_sampled_actions[
+                                    idx * K_ROOT * ACT_DIM + j
+                                ] = host_reanalyze_node_actions[
+                                    act_off + j
+                                ]
+                            if sum_exp <= 1.0e-12:
+                                var inv_k = Scalar[dtype](
+                                    1.0 / Float64(K_ROOT)
+                                )
+                                for i in range(K_ROOT):
+                                    agent.state.mcts_improved_policy[
+                                        idx * K_ROOT + i
+                                    ] = inv_k
+                            else:
+                                for i in range(K_ROOT):
+                                    agent.state.mcts_improved_policy[
+                                        idx * K_ROOT + i
+                                    ] = Scalar[dtype](
+                                        raw_probs[i] / sum_exp
+                                    )
+                            agent.state.mcts_values[idx] = Scalar[dtype](
+                                sve
+                            )
+                            agent.state.step_at_write[idx] = Scalar[
+                                DType.uint32
+                            ](agent.train_step_count)
 
         step_seed += 1
 

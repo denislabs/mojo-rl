@@ -84,7 +84,6 @@ def main() raises:
         sync_interval=50,
         target_sync_interval=200,
         reanalyze_interval=200,
-        reanalyze_samples=32,
         reanalyze_warmup=1000,
         warmup_random_steps=2_000,
         max_steps_per_episode=200,

@@ -175,7 +175,6 @@ def main() raises:
         # collapse into stored MCTS targets faster than fresh
         # exploration could dilute it.
         reanalyze_interval=200,
-        reanalyze_samples=32,
         reanalyze_warmup=1000,
         warmup_random_steps=2_000,
         max_steps_per_episode=1_000,

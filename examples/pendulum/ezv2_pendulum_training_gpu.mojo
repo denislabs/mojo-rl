@@ -99,7 +99,6 @@ def main() raises:
         # The HalfCheetah experiment's 4× aggressive reanalyze isn't
         # required for Pendulum and would muddy the regression test.
         reanalyze_interval=200,
-        reanalyze_samples=32,
         reanalyze_warmup=1000,
         warmup_random_steps=2_000,
         max_steps_per_episode=200,    # ← Pendulum episode length
