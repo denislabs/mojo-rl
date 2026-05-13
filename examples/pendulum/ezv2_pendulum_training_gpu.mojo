@@ -90,6 +90,9 @@ def main() raises:
         agent,
         ctx,
         train_interval=1,
+        # Pinned to preserve the postmortem -212 reference run, which
+        # predates the UTD=1.0 default (was effective UTD=0.125 here).
+        train_steps_per_iter=1,
         sync_interval=50,
         target_sync_interval=200,
         # Keep reanalyze cadence matching the converging CPU baseline.

@@ -79,7 +79,7 @@ def main() raises:
         agent,
         ctx,
         train_interval=1,
-        train_steps_per_iter=8,  # UTD = 1.0 (N_ENVS=8 transitions/iter → 8 grads/iter)
+        # train_steps_per_iter defaults to N_ENVS → UTD = 1.0
         sync_interval=50,
         target_sync_interval=200,
         reanalyze_interval=200,

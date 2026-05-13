@@ -89,14 +89,11 @@ def run_ezv2_continuous_train_gpu[
     *,
     train_interval: Int = 1,
     # Number of training steps to run per training-interval firing.
-    # Default 1 = legacy behavior (1 train per iteration). Set higher to
-    # raise the update-to-data ratio (UTD). Reference `dmc_state.yaml`
-    # runs UTD=1.0 (training_steps=100000, total_transitions=100000) —
-    # for `N_ENVS=4, train_interval=1` that means `train_steps_per_iter=4`
-    # (4 trains per iteration, since each iteration produces N_ENVS new
-    # transitions). With default 1 here we'd be at UTD=0.25 vs reference's
-    # 1.0 (under-training by 4×).
-    train_steps_per_iter: Int = 1,
+    # Defaults to `N_ENVS` → UTD = 1.0 (one grad step per env transition),
+    # matching the DMC reference `dmc_state.yaml` (training_steps=100000,
+    # total_transitions=100000). Override with a smaller value to under-
+    # train (faster wall clock) or a larger value for higher UTD.
+    train_steps_per_iter: Int = N_ENVS,
     sync_interval: Int = 50,
     target_sync_interval: Int = 200,
     reanalyze_interval: Int = 200,
