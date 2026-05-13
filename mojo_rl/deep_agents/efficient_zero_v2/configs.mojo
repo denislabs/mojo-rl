@@ -702,3 +702,222 @@ struct EZV2ContinuousMLPConfig[
         + Self._RewardBranch._param_offset[Self._RewardBranch.N - 1]()
     )
     comptime dyn_reward_head_param_size: Int = Self._RewardLast.PARAM_SIZE
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Shallow continuous MLP variant — May-11 postmortem -212 baseline replica
+# ═════════════════════════════════════════════════════════════════════════
+#
+# Exact replica of commit `ec5ab2b9` (2026-05-11) — the network shape that
+# converged Pendulum to mean10 = -212 at step 20.4k before the May-12 HC-
+# parity changes (ResBlocks on encoder + dynamics, BN-equipped policy /
+# value / reward heads, shared pred trunk) landed on the main struct and
+# silently regressed Pendulum. See `docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md`.
+#
+# Differences from `EZV2ContinuousMLPConfig` are confined to the three
+# networks:
+#   • RepModel:  drop trailing `Tanh → ImproveResBlock × 2`; keep
+#                `LinearMish → LinearMish → Linear → MinMaxNorm`.
+#   • DynModel:  drop interior `ImproveResBlock × 2`; reward branch is a
+#                bare `Linear[HIDDEN, BINS]` (not the 2-hidden BN MLP);
+#                latent branch keeps `MinMaxNorm[LATENT]` (not LayerNorm).
+#   • PredModel: single `LinearMish` trunk feeding `Parallel[Linear(2·ACT),
+#                Linear(BINS)]` — no BN, no shared 2-hidden trunk.
+#
+# All other config fields (loss weights, MCTS hyperparameters, value-
+# target modes, action embedding inside DynModel, init_zero offset
+# arithmetic) match the deep struct so the agent + GPU driver are
+# drop-in compatible.
+#
+# Use this for Pendulum (and any other low-ACT_DIM proprio env where the
+# heavier reference-style architecture causes the policy to fail to learn
+# a state-conditional swing-up policy). For HalfCheetah / Hopper / etc.
+# continue using the deep `EZV2ContinuousMLPConfig`.
+
+
+struct EZV2ContinuousMLPShallowConfig[
+    OBS: Int,
+    ACT_DIM: Int,
+    LATENT: Int = 256,
+    HIDDEN: Int = 256,
+    PROJ: Int = 1024,
+    PRED_BOTTLENECK: Int = 512,
+    BINS: Int = 51,
+    # Action embedding inside DynModel (paper App. G / ez_dmc_state.py
+    # `ActionEmbedding`). Critical for low-ACT_DIM envs where the raw
+    # action would otherwise account for ~1.5% of dyn input variance.
+    ACT_EMBED: Int = 64,
+    # Optimizer defaults match the May-11 baseline (NOT the reference's
+    # 3e-4 / 2e-5 — that change was part of the HC-parity sweep).
+    LR: Float64 = 1e-3,
+    WD: Float64 = 1e-4,
+    CAP: Int = 50000,
+    BS: Int = 64,
+    K_UNROLL: Int = 5,
+    N_TD: Int = 5,
+    SIMS: Int = 32,
+    NODES: Int = 64,
+    K_ROOT: Int = 16,
+    K_NON_ROOT: Int = 8,
+    LAMBDA_R: Float64 = 1.0,
+    LAMBDA_P: Float64 = 1.0,
+    # May-11 baseline used 0.25; reference uses 0.5 — kept at 0.25 for
+    # exact replica fidelity. Bump on a per-script basis if needed.
+    LAMBDA_V: Float64 = 0.25,
+    LAMBDA_G: Float64 = 2.0,
+    ENT_WEIGHT: Float64 = 5e-3,
+    MAX_ACTION: Float64 = 1.0,
+    MIN_STD: Float64 = 0.1,
+    STD_MAGNIFICATION: Float64 = 3.0,
+    # Same N_POLICY_AT_ROOT behavior as May-11: default to K_ROOT, which
+    # selects `LEGACY_MAGNIFIED` mode in `SampledGumbelMCTS` (half of K
+    # from `N(μ, σ)`, half from `N(μ, STD_MAGNIFICATION · σ)`). Reference
+    # DMC sampling (4 policy + 12 random) is opt-in via N_POLICY_AT_ROOT < K.
+    N_POLICY_AT_ROOT: Int = K_ROOT,
+    VALUE_TARGET_MODE: Int = VALUE_TARGET_SEARCH,
+    T_FRESH: Int = 20000,
+    T_STALE: Int = 40000,
+    USE_REWARD_PREFIX: Bool = False,
+    LSTM_HIDDEN: Int = 64,
+    LSTM_HORIZON_LEN: Int = 5,
+    LSTM_MLP_HIDDEN: Int = 64,
+](EZV2DiscreteConfig):
+    """May-11 postmortem -212 architecture for continuous EZ-V2.
+
+    Use for Pendulum / low-ACT_DIM continuous envs. The deeper reference-
+    style `EZV2ContinuousMLPConfig` is retained for HalfCheetah / Hopper /
+    etc. See module docstring above.
+    """
+
+    # ── MuZeroConfig fields ──────────────────────────────────────────────
+    comptime NAME: String = "EZV2-MLP-Continuous-Shallow"
+
+    comptime obs_dim: Int = Self.OBS
+    comptime action_dim: Int = Self.ACT_DIM
+    comptime latent_dim: Int = Self.LATENT
+    comptime num_bins: Int = Self.BINS
+    comptime DYN_IN: Int = Self.LATENT + Self.ACT_DIM
+    comptime DYN_OUT: Int = Self.LATENT + Self.BINS
+    comptime PRED_OUT: Int = 2 * Self.ACT_DIM + Self.BINS
+
+    # Representation: `LinearMish → LinearMish → Linear → MinMaxNorm`.
+    # Same MinMaxNorm pattern as discrete EZ-V2 (Phase G post-mortem
+    # 2026-05-04 — autograd-aware bounded scaling lets pre-scale activations
+    # stay finite). No Tanh + ResBlock tower (that was the HC-parity port
+    # which regressed Pendulum on the main struct).
+    comptime RepModel = Sequential[
+        LinearMish[Self.OBS, Self.HIDDEN],
+        LinearMish[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, Self.LATENT],
+        MinMaxNorm[Self.LATENT],
+    ]
+
+    # Dynamics: action embedding inside via SplitApply, then two LinearMish
+    # layers, then Parallel[next_latent (Linear → MinMaxNorm), reward
+    # (Linear → BINS)]. Reward head is intentionally bare — the May-11
+    # baseline converged with this minimal head. The BN-equipped 2-hidden
+    # head was added later (HC parity) and is excluded here.
+    comptime DynModel = Sequential[
+        SplitApply[
+            Identity[Self.LATENT],
+            ActionEmbedding[Self.ACT_DIM, Self.ACT_EMBED],
+            Self.LATENT,
+        ],
+        LinearMish[Self.LATENT + Self.ACT_EMBED, Self.HIDDEN],
+        LinearMish[Self.HIDDEN, Self.HIDDEN],
+        Parallel[
+            Sequential[
+                Linear[Self.HIDDEN, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
+    ]
+
+    # Prediction f-net: single `LinearMish` trunk → Parallel[policy, value].
+    # No BN, no shared 2-hidden trunk. Policy head emits (μ_raw ‖ σ_raw)
+    # for the squashed-Gaussian; value head emits BINS logits.
+    comptime PredModel = Sequential[
+        LinearMish[Self.LATENT, Self.HIDDEN],
+        Parallel[
+            Linear[Self.HIDDEN, 2 * Self.ACT_DIM],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
+    ]
+
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=Self.WD]
+
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+    comptime unroll_steps: Int = Self.K_UNROLL
+    comptime td_steps: Int = Self.N_TD
+
+    comptime num_simulations: Int = Self.SIMS
+    comptime max_nodes: Int = Self.NODES
+
+    comptime Search = LearnedDynamics
+    comptime Encoding = CategoricalEncoding
+    comptime Scaling = MinMaxScale
+    comptime Noise = DirichletNoise[0.25, 0.25]
+    comptime PUCT = AlphaGoPUCT[1.0]
+    comptime Backup = NStepBootstrap
+    comptime Players = SinglePlayer
+
+    comptime USE_REANALYZE: Bool = True
+
+    # ── EZ-V2-specific fields ────────────────────────────────────────────
+    # Projector matches May-11 (no PROJ_HID expansion — that landed with
+    # the HC-parity sweep). Pendulum converged with the uniform-width
+    # projector.
+    comptime ProjectorModel = ProjectionMLP[
+        HIDDEN=Self.LATENT, PROJ=Self.PROJ
+    ]
+    comptime PredictorModel = PredictionMLP[
+        PROJ=Self.PROJ, BOTTLENECK=Self.PRED_BOTTLENECK
+    ]
+    comptime proj_dim: Int = Self.PROJ
+    comptime num_root_candidates: Int = Self.K_ROOT
+    comptime ActSpace = ContinuousActionSpace[
+        Self.ACT_DIM,
+        Self.K_ROOT,
+        Self.MAX_ACTION,
+        Self.MIN_STD,
+        Self.STD_MAGNIFICATION,
+        Self.N_POLICY_AT_ROOT,
+    ]
+
+    comptime lambda_reward: Float64 = Self.LAMBDA_R
+    comptime lambda_policy: Float64 = Self.LAMBDA_P
+    comptime lambda_value: Float64 = Self.LAMBDA_V
+    comptime lambda_consistency: Float64 = Self.LAMBDA_G
+    comptime entropy_weight: Float64 = Self.ENT_WEIGHT
+
+    comptime value_target_mode: Int = Self.VALUE_TARGET_MODE
+    comptime t_fresh: Int = Self.T_FRESH
+    comptime t_stale: Int = Self.T_STALE
+
+    comptime use_reward_prefix: Bool = Self.USE_REWARD_PREFIX
+    comptime lstm_hidden: Int = Self.LSTM_HIDDEN
+    comptime lstm_horizon_len: Int = Self.LSTM_HORIZON_LEN
+    comptime lstm_mlp_hidden: Int = Self.LSTM_MLP_HIDDEN
+
+    # ── init_zero head parameter ranges ──────────────────────────────────
+    # Shallow PredModel trailing structure: `Sequential[LinearMish,
+    # Parallel[Linear, Linear]]`. Policy = branch 0 (bare Linear).
+    # Shallow DynModel trailing structure: `Sequential[..., Parallel[
+    # Sequential[Linear, MinMaxNorm], Linear]]`. Reward = branch 1 (bare
+    # Linear) — formula matches the discrete style (single-layer branch).
+    comptime pred_policy_head_param_start: Int = (
+        Self.PredModel._param_offset[Self.PredModel.N - 1]()
+        + Self.PredModel.model_types[Self.PredModel.N - 1]._param_offset[0]()
+    )
+    comptime pred_policy_head_param_size: Int = (
+        Self.PredModel.model_types[Self.PredModel.N - 1].branch_types[0].PARAM_SIZE
+    )
+    comptime dyn_reward_head_param_start: Int = (
+        Self.DynModel._param_offset[Self.DynModel.N - 1]()
+        + Self.DynModel.model_types[Self.DynModel.N - 1]._param_offset[1]()
+    )
+    comptime dyn_reward_head_param_size: Int = (
+        Self.DynModel.model_types[Self.DynModel.N - 1].branch_types[1].PARAM_SIZE
+    )

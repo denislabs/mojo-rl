@@ -1,29 +1,25 @@
-"""EZ-V2 Pendulum — full GPU path regression test.
+"""EZ-V2 Pendulum — full GPU path regression test (shallow config).
 
-Same config as the known-converging CPU-stepping baseline
+Same config family as the known-converging CPU-stepping baseline
 (`ezv2_pendulum_training_multienv_kroot16.mojo`, mean10=-212 at step
-20400) but routed through the new `run_ezv2_continuous_train_gpu`
-driver. Purpose: validate that the GPU driver itself is correct.
+20400) but routed through `run_ezv2_continuous_train_gpu` and using
+the May-11 network shape via `EZV2ContinuousMLPShallowConfig`.
 
-This is the strongest diagnostic for the HalfCheetah regression — if
-Pendulum reaches mean10 ≤ -300 (well into swing-up) within 30k env-
-steps, the driver is healthy and HalfCheetah's failure is environment-
-hard. If Pendulum stays in random-policy territory (mean10 around
--1000), there's a bug in the driver / GPU MCTS plumbing.
+The deeper `EZV2ContinuousMLPConfig` (HC reference-style: BN-equipped
+shared pred trunk + ImproveResBlock × 2 on rep & dyn) regressed Pendulum
+when it landed on 2026-05-12 as part of the HC-parity sweep. Audit
+2026-05-13 traced the regression to (a) an analytic entropy term that
+overrewarded large σ → action saturation (fixed in
+`kernels.ezv2_policy_loss_grad_continuous_kernel*` via MC entropy with
+tanh correction) and (b) the architecture mutation itself. This script
+uses the shallow config for (b). See `docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md`.
 
-Config matches the 5-bug-fix converging baseline:
-  • v_min=-50 (was -20 in pre-fix scripts; required for Pendulum V(s)
-    range to fit in the BINS support).
-  • MIN_STD=0.5 + ENT_WEIGHT=0.05 (exploration knobs that paired with
-    full-π NLL).
+Knobs matching the 5-bug-fix converging baseline:
+  • v_min=-50 (Pendulum V(s) range under h-transform fits in BINS).
+  • MIN_STD=0.5 + ENT_WEIGHT=0.05.
   • MAX_ACTION=2.0 (Pendulum torque range).
   • VALUE_TARGET_SARSA — the keystone fix.
   • K_ROOT=16, K_NON_ROOT=8 → ACT_DIM=1 → full-π policy loss fires.
-
-`init_zero_output_heads` not used here — the converging baseline didn't
-have it. Keeping the diff to baseline minimal so we isolate driver-vs-
-script differences. Can be added back if the GPU driver path is shown
-to be correct.
 """
 
 from std.random import seed
@@ -32,7 +28,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.efficient_zero_v2 import (
-    EZV2ContinuousMLPConfig,
+    EZV2ContinuousMLPShallowConfig,
     GenericEZV2ContinuousAgent,
     VALUE_TARGET_SARSA,
     run_ezv2_continuous_train_gpu,
@@ -49,7 +45,7 @@ def main() raises:
     comptime NUM_ENV_STEPS = 100_000
     comptime N_ENVS = 8
 
-    comptime Config = EZV2ContinuousMLPConfig[
+    comptime Config = EZV2ContinuousMLPShallowConfig[
         OBS=3,
         ACT_DIM=1,
         LATENT=64,

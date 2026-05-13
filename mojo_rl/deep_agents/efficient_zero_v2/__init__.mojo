@@ -36,6 +36,7 @@ from .configs import (
     EZV2DiscreteConfig,
     EZV2DiscreteMLPConfig,
     EZV2ContinuousMLPConfig,
+    EZV2ContinuousMLPShallowConfig,
     VALUE_TARGET_SEARCH,
     VALUE_TARGET_SARSA,
     VALUE_TARGET_MIXED,
