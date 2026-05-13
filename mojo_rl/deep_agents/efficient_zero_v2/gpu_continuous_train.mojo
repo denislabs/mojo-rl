@@ -779,38 +779,21 @@ def run_ezv2_continuous_train_gpu[
                 var L_P: Float64
                 var L_V: Float64
                 var L_G: Float64
-                # `train_step_gpu_with_replay` for continuous comptime-
-                # asserts SEARCH-only (see continuous_agent.mojo:1092). Mojo
-                # walks both branches of a runtime `if` at compile time, so
-                # the call must be elided at the *comptime* level when the
-                # config is SARSA / MIXED. The earlier runtime guard catches
-                # `use_gpu_sampling=True` with a non-SEARCH config; this
-                # `comptime if` keeps the SARSA build path callable.
-                comptime SEARCH_MODE = (
-                    Config.value_target_mode == VALUE_TARGET_SEARCH
-                )
-                comptime if SEARCH_MODE:
-                    if use_gpu_sampling:
-                        var t = agent.train_step_gpu_with_replay(
-                            gpu, gpu_replay, ctx, sample_seed
-                        )
-                        L_total = t[0]
-                        L_R = t[1]
-                        L_P = t[2]
-                        L_V = t[3]
-                        L_G = t[4]
-                        sample_seed += UInt32(1)
-                    else:
-                        var t = agent.train_step_gpu(gpu, ctx)
-                        L_total = t[0]
-                        L_R = t[1]
-                        L_P = t[2]
-                        L_V = t[3]
-                        L_G = t[4]
+                # Phase 3d (2026-05-13): SEARCH-only gate dropped — the
+                # GPU target-net forward + V-target decode (Phase 3b+3c)
+                # now back `train_step_gpu_with_replay` for all modes, so
+                # `use_gpu_sampling=True` works under SARSA/MIXED too.
+                if use_gpu_sampling:
+                    var t = agent.train_step_gpu_with_replay(
+                        gpu, gpu_replay, ctx, sample_seed
+                    )
+                    L_total = t[0]
+                    L_R = t[1]
+                    L_P = t[2]
+                    L_V = t[3]
+                    L_G = t[4]
+                    sample_seed += UInt32(1)
                 else:
-                    # Non-SEARCH configs: CPU sampling only (the runtime
-                    # guard at the top of the function rejects
-                    # `use_gpu_sampling=True` here).
                     var t = agent.train_step_gpu(gpu, ctx)
                     L_total = t[0]
                     L_R = t[1]
