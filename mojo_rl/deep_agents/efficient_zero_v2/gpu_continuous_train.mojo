@@ -209,14 +209,9 @@ def run_ezv2_continuous_train_gpu[
             "Config.obs_dim does not match Env.OBS_DIM."
         )
 
-    # Runtime sanity: GPU sampling for continuous is SEARCH-mode-only.
-    if use_gpu_sampling and Config.value_target_mode != VALUE_TARGET_SEARCH:
-        raise Error(
-            "use_gpu_sampling=True is only supported with"
-            " VALUE_TARGET_MODE=VALUE_TARGET_SEARCH for continuous EZ-V2."
-            " SARSA / MIXED require a GPU target-net forward that isn't"
-            " ported yet; use train_step_gpu (use_gpu_sampling=False)."
-        )
+    # Phase 3d (2026-05-13): `use_gpu_sampling=True` now supports
+    # SARSA/MIXED via the GPU target-net forward + decode added in
+    # Phase 3b/3c. The old SEARCH-only assertion has been dropped.
 
     if verbose:
         print()

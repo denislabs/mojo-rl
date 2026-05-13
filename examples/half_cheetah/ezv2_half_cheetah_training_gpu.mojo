@@ -181,7 +181,7 @@ def main() raises:
         max_steps_per_episode=1_000,
         log_every=2_000,
         rng_seed_base=UInt64(2026),
-        use_gpu_sampling=False,  # ← SARSA path requires CPU sampling
+        use_gpu_sampling=True,  # ← SARSA path requires CPU sampling
         # Hybrid path: GPU env stepping + GPU training + CPU MCTS via
         # `agent.select_action()`. The GPU MCTS itself has an unresolved
         # bug — Pendulum regression test 2026-05-13 confirmed GPU MCTS

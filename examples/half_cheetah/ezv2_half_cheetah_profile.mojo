@@ -140,7 +140,7 @@ def main() raises:
         max_steps_per_episode=100,
         log_every=500,
         rng_seed_base=UInt64(2026),
-        use_gpu_sampling=False,
+        use_gpu_sampling=True,
         use_gpu_mcts=True,
         obs_norm=True,
         verbose=True,

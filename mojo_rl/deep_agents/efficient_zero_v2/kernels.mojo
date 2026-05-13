@@ -1213,3 +1213,94 @@ def ezv2_decode_boot_v_kernel[
     var v_real = sign * (f * f - Scalar[dtype](1.0))
 
     boot_v[b * K_PLUS_1 + k_step] = v_real
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 3c: Compute V-target on GPU
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Replaces the host loop at `continuous_agent.mojo:1102-1132` (and the
+# discrete sibling). One thread per (b, k) computes the per-mode value
+# target:
+#   SEARCH: v = sve
+#   SARSA : v = Σ_j γ^j r_{k+j}  +  γ^n_eff · boot_v[k + n_eff]
+#   MIXED : age < T_FRESH ? TD : SVE   (see `MixedValueTarget.compute`)
+#
+# Comptime-specialised on `VALUE_TARGET_MODE` so each variant compiles
+# down to its minimal body — SEARCH skips the boot_v reads entirely.
+# `VALUE_TARGET_MODE` constants must match `configs.mojo`:
+# SEARCH=0, SARSA=1, MIXED=2.
+
+
+def ezv2_compute_value_target_kernel[
+    BATCH: Int,
+    K_PLUS_1: Int,
+    K_UNROLL: Int,
+    N_TD: Int,
+    VALUE_TARGET_MODE: Int,
+    T_FRESH: Int,
+    dtype: DType,
+](
+    batch_mcts_val: LayoutTensor[
+        dtype, Layout.row_major(BATCH * K_PLUS_1), MutAnyOrigin
+    ],
+    batch_rewards: LayoutTensor[
+        dtype, Layout.row_major(BATCH * K_UNROLL), MutAnyOrigin
+    ],
+    batch_age: LayoutTensor[
+        DType.int32, Layout.row_major(BATCH * K_PLUS_1), MutAnyOrigin
+    ],
+    boot_v: LayoutTensor[
+        dtype, Layout.row_major(BATCH * K_PLUS_1), MutAnyOrigin
+    ],
+    value_target_full: LayoutTensor[
+        dtype, Layout.row_major(BATCH * K_PLUS_1), MutAnyOrigin
+    ],
+    gamma: Scalar[dtype],
+    mixed_use_age_blend: Scalar[DType.int32],
+) where dtype.is_floating_point():
+    """Per-(b, k) V-target. One thread per element. Total threads =
+    `BATCH * K_PLUS_1`. `K_PLUS_1` should equal `K_UNROLL + 1`.
+
+    `mixed_use_age_blend` only matters under VALUE_TARGET_MIXED
+    (0 = false, 1 = true; `Bool` isn't `DevicePassable` so we encode):
+      • 0 ⇒ pure TD (mirrors discrete agent's pre-`T_STALE` gate from
+        `base.py:420`: pure TD until `train_step_count >= T_STALE`).
+      • 1 ⇒ per-sample age-based blend (`age < T_FRESH ? td : sve`).
+    Continuous agent passes 1 unconditionally (it doesn't apply the
+    train-step gate today; matches its existing host-side path).
+    """
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= BATCH * K_PLUS_1:
+        return
+    var b = idx // K_PLUS_1
+    var k = idx % K_PLUS_1
+
+    var sve = rebind[Scalar[dtype]](batch_mcts_val[idx])
+
+    comptime if VALUE_TARGET_MODE == 0:  # SEARCH
+        value_target_full[idx] = sve
+        return
+
+    # SARSA or MIXED: build n-step TD return.
+    var k_remaining = K_UNROLL - k
+    var n_eff = N_TD if N_TD < k_remaining else k_remaining
+
+    var td = Scalar[dtype](0.0)
+    var disc = Scalar[dtype](1.0)
+    for j in range(n_eff):
+        td += disc * rebind[Scalar[dtype]](batch_rewards[b * K_UNROLL + k + j])
+        disc *= gamma
+    td += disc * rebind[Scalar[dtype]](boot_v[b * K_PLUS_1 + k + n_eff])
+
+    comptime if VALUE_TARGET_MODE == 1:  # SARSA
+        value_target_full[idx] = td
+    else:  # MIXED — `MixedValueTarget.compute` semantics
+        if Int(mixed_use_age_blend) == 0:
+            value_target_full[idx] = td
+            return
+        var age = Int(rebind[Scalar[DType.int32]](batch_age[idx]))
+        if age < T_FRESH:
+            value_target_full[idx] = td
+        else:
+            value_target_full[idx] = sve

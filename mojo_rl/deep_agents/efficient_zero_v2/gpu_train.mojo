@@ -172,12 +172,9 @@ def run_ezv2_train_gpu[
             train_steps as before, so the GPU sees up to that many
             train_steps of stale priorities/transitions between syncs —
             tighten `sync_interval` (or both env-step counts × N_ENVS)
-            for fresher data. Requires
-            `Config.value_target_mode == VALUE_TARGET_SEARCH` (compile-
-            time assert in the agent method); SARSA / MIXED still need
-            the host target-net forward (deferred work item 5 in
-            `EZV2_FULL_GPU_PLAN.md`). Apple-side perf upside is small;
-            the win is on NVIDIA where the host-roundtrip dominates.
+            for fresher data. Phase 3d (2026-05-13): SARSA / MIXED now
+            supported via GPU target-net forward + decode (Phase 3a-c);
+            the old SEARCH-only restriction is gone.
         verbose: Print progress / config / summary.
 
     Returns:

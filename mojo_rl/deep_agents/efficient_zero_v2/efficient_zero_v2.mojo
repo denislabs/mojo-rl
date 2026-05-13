@@ -61,6 +61,7 @@ from mojo_rl.deep_agents.efficient_zero_v2.kernels import (
     ezv2_reward_loss_grad_kernel,
     ezv2_cosine_loss_grad_kernel,
     ezv2_decode_boot_v_kernel,
+    ezv2_compute_value_target_kernel,
     ezv2_reduce_add_kernel,
     ezv2_add_kernel,
     ezv2_assemble_grad_dyn_step_kernel,
@@ -2302,18 +2303,31 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 cum += Float64(gpu.batch_rewards_host[sampled * K + k])
                 gpu.cum_rewards_host[sampled * K + k] = Scalar[dtype](cum)
 
+        # ── Phase 3c (2026-05-13): all uploads happen here, then both
+        # the boot-V forward (3b) and the V-target compute (3c) live on
+        # GPU. The downstream `ezv2_train_step_gpu_core` is called with
+        # `SKIP_UPLOAD=True`.
+        ctx.enqueue_copy(gpu.batch_obs_buf, gpu.batch_obs_host)
+        ctx.enqueue_copy(gpu.batch_actions_buf, gpu.batch_actions_host)
+        ctx.enqueue_copy(gpu.batch_rewards_buf, gpu.batch_rewards_host)
+        ctx.enqueue_copy(gpu.batch_mcts_pol_buf, gpu.batch_mcts_pol_host)
+        ctx.enqueue_copy(gpu.batch_mcts_val_buf, gpu.batch_mcts_val_host)
+        ctx.enqueue_copy(gpu.batch_age_buf, gpu.batch_age_host)
+        ctx.enqueue_copy(
+            gpu.batch_mcts_samp_act_buf, gpu.batch_mcts_samp_act_host
+        )
+        ctx.enqueue_copy(
+            gpu.batch_mcts_imp_pi_buf, gpu.batch_mcts_imp_pi_host
+        )
+        comptime if Self.Config.use_reward_prefix:
+            ctx.enqueue_copy(gpu.cum_rewards_buf, gpu.cum_rewards_host)
+
         # ── Fresh bootstrap values from target nets (Lever 1). ───────────
-        # Phase 3b (2026-05-13): replaces the host-side CPU target-net
-        # forward with K+1 GPU forwards + `decode_boot_v_kernel`. The
-        # result is downloaded back to `boot_v_host` so the unchanged
-        # host V-target decode (Phase 3c target) can consume it.
-        var boot_v_host = alloc[Scalar[dtype]](BATCH * (K + 1))
-        memset(boot_v_host, 0, BATCH * (K + 1))
+        # Phase 3b: GPU target-net forward writes `boot_v_buf` on device.
+        # No download — Phase 3c's kernel reads `boot_v_buf` directly.
         # For discrete: value-bin offset = ACT (action logits then BINS).
         comptime VALUE_OFF = Self.Config.ActSpace.POLICY_OUT_DIM
         comptime if Self.Config.value_target_mode != VALUE_TARGET_SEARCH:
-            ctx.enqueue_copy(gpu.batch_obs_buf, gpu.batch_obs_host)
-
             comptime BATCH_BLOCKS_BV = (BATCH + TPB - 1) // TPB
 
             var batch_obs_full_t = LayoutTensor[
@@ -2399,55 +2413,61 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     block_dim=TPB,
                 )
 
-            ctx.enqueue_copy(boot_v_host, gpu.boot_v_buf)
-            ctx.synchronize()
+        # No download — `boot_v_buf` stays on device for Phase 3c.
 
-        # ── Value target (SEARCH / SARSA / MIXED) precomputed on host
-        # so the GPU side just sees a plain scalar tensor it can scalar-
-        # transform + two-hot-encode per k.
-        for sampled in range(BATCH):
-            for k in range(K + 1):
-                var sve = Float64(
-                    gpu.batch_mcts_val_host[sampled * (K + 1) + k]
-                )
-                var n_eff = N_TD if N_TD < K - k else K - k
-                var td = Float64(0.0)
-                comptime if Self.Config.value_target_mode != VALUE_TARGET_SEARCH:
-                    var disc = Float64(1.0)
-                    for j in range(n_eff):
-                        td += disc * Float64(
-                            gpu.batch_rewards_host[sampled * K + k + j]
-                        )
-                        disc *= self.gamma
-                    td += disc * Float64(
-                        boot_v_host[sampled * (K + 1) + k + n_eff]
-                    )
-                var age = Int(gpu.batch_age_host[sampled * (K + 1) + k])
-                var v_target: Float64
-                comptime if Self.Config.value_target_mode == VALUE_TARGET_SEARCH:
-                    v_target = sve
-                elif Self.Config.value_target_mode == VALUE_TARGET_SARSA:
-                    v_target = td
-                else:  # VALUE_TARGET_MIXED
-                    # Reference base.py:420: training-step gate. Pure TD
-                    # until train_step ≥ T_STALE (= start_use_mix_training_steps),
-                    # then per-sample blend (recent → TD, old → SVE).
-                    if self.train_step_count < Self.Config.t_stale:
-                        v_target = td
-                    else:
-                        v_target = MixedValueTarget[
-                            Self.Config.t_fresh, Self.Config.t_stale
-                        ].compute(sve, td, age)
-                gpu.value_target_full_host[sampled * (K + 1) + k] = Scalar[
-                    dtype
-                ](v_target)
+        # Phase 3c: compute V-target on device. Reference `base.py:420`
+        # training-step gate (pure TD until `train_step ≥ T_STALE`, then
+        # per-sample age blend) is honored by passing
+        # `mixed_use_age_blend = train_step_count >= T_STALE` to the
+        # kernel.
+        comptime BATCH_K_BLOCKS = (BATCH * (K + 1) + TPB - 1) // TPB
 
-        boot_v_host.free()
+        var batch_mcts_val_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+        ](gpu.batch_mcts_val_buf.unsafe_ptr())
+        var batch_rewards_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH * K), MutAnyOrigin
+        ](gpu.batch_rewards_buf.unsafe_ptr())
+        var batch_age_t = LayoutTensor[
+            DType.int32, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+        ](gpu.batch_age_buf.unsafe_ptr())
+        var boot_v_t_3c = LayoutTensor[
+            dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+        ](gpu.boot_v_buf.unsafe_ptr())
+        var value_target_full_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+        ](gpu.value_target_full_buf.unsafe_ptr())
+
+        comptime compute_v_target = ezv2_compute_value_target_kernel[
+            BATCH,
+            K + 1,
+            K,
+            N_TD,
+            Self.Config.value_target_mode,
+            Self.Config.t_fresh,
+            dtype,
+        ]
+        var use_age_blend = Scalar[DType.int32](
+            1 if self.train_step_count >= Self.Config.t_stale else 0
+        )
+        ctx.enqueue_function[compute_v_target](
+            batch_mcts_val_t,
+            batch_rewards_t,
+            batch_age_t,
+            boot_v_t_3c,
+            value_target_full_t,
+            Scalar[dtype](self.gamma),
+            use_age_blend,
+            grid_dim=BATCH_K_BLOCKS,
+            block_dim=TPB,
+        )
 
         # ── Sections 2-9 — extracted to train_step_core.mojo ──────────────
         # The action-space dispatch (Config.ActSpace.policy_loss_grad_gpu)
         # fires inside this call at section 5.1.
-        var sums = ezv2_train_step_gpu_core[Self.Config](
+        var sums = ezv2_train_step_gpu_core[
+            Self.Config, SKIP_UPLOAD=True
+        ](
             gpu,
             ctx,
             self.v_min,
@@ -2537,19 +2557,12 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         """
         comptime BATCH = Self.Config.batch_size
         comptime K = Self.Config.unroll_steps
+        comptime N_TD = Self.Config.td_steps
         comptime OBS = Self.Config.obs_dim
         comptime ACT = Self.Config.action_dim
+        comptime BINS = Self.Config.num_bins
+        comptime PRED_OUT = ACT + BINS
         comptime CAP = 50000
-        comptime VTM = Self.Config.value_target_mode
-
-        comptime if VTM != VALUE_TARGET_SEARCH:
-            comptime assert False, (
-                "train_step_gpu_with_replay only supports"
-                " VALUE_TARGET_MODE == VALUE_TARGET_SEARCH today; SARSA"
-                " and MIXED need a GPU target-net forward (deferred work"
-                " item 5 in docs/EZV2_FULL_GPU_PLAN.md). Use"
-                " train_step_gpu for SARSA/MIXED."
-            )
 
         if not self.state.is_ready():
             return (
@@ -2590,10 +2603,135 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             rng_seed=rng_seed,
         )
 
-        # SEARCH mode: value target = stored MCTS root value at every
-        # window position. Just memcpy the gathered MCTS values into
-        # the value-target buffer the core consumes.
-        ctx.enqueue_copy(gpu.value_target_full_buf, gpu.batch_mcts_val_buf)
+        # Phase 3b: GPU target-net forward → `boot_v_buf` (SARSA/MIXED only).
+        comptime VALUE_OFF = Self.Config.ActSpace.POLICY_OUT_DIM
+        comptime TPB_3D: Int = 256
+        comptime BATCH_BLOCKS_BV = (BATCH + TPB_3D - 1) // TPB_3D
+        comptime BATCH_K_BLOCKS = (BATCH * (K + 1) + TPB_3D - 1) // TPB_3D
+        comptime if Self.Config.value_target_mode != VALUE_TARGET_SEARCH:
+            var batch_obs_full_t = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH * (K + 1) * OBS),
+                MutAnyOrigin,
+            ](gpu.batch_obs_buf.unsafe_ptr())
+            var tgt_rep_in_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH * OBS), MutAnyOrigin
+            ](gpu.tgt_rep_input_buf.unsafe_ptr())
+            var tgt_rep_in_2d = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.RepModel.IN_DIM),
+                MutAnyOrigin,
+            ](gpu.tgt_rep_input_buf.unsafe_ptr())
+            var tgt_z_2d = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
+                MutAnyOrigin,
+            ](gpu.tgt_z_buf.unsafe_ptr())
+            var tgt_pred_in_2d = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredModel.IN_DIM),
+                MutAnyOrigin,
+            ](gpu.tgt_z_buf.unsafe_ptr())
+            var tgt_pred_out_2d = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredModel.OUT_DIM),
+                MutAnyOrigin,
+            ](gpu.tgt_pred_out_buf.unsafe_ptr())
+            var tgt_pred_out_flat = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH * PRED_OUT),
+                MutAnyOrigin,
+            ](gpu.tgt_pred_out_buf.unsafe_ptr())
+            var boot_v_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+            ](gpu.boot_v_buf.unsafe_ptr())
+
+            comptime gather_obs_d = ezv2_copy_obs_at_step_kernel[
+                BATCH, K + 1, OBS, dtype
+            ]
+            comptime decode_boot_v_d = ezv2_decode_boot_v_kernel[
+                BATCH, K + 1, PRED_OUT, BINS, VALUE_OFF, dtype
+            ]
+
+            for k in range(K + 1):
+                ctx.enqueue_function[gather_obs_d](
+                    batch_obs_full_t,
+                    tgt_rep_in_t,
+                    k,
+                    grid_dim=BATCH_BLOCKS_BV,
+                    block_dim=TPB_3D,
+                )
+                Network[
+                    Self.Config.RepModel, Self.Config.OptType
+                ].forward_gpu[BATCH](
+                    ctx,
+                    tgt_rep_in_2d,
+                    tgt_z_2d,
+                    gpu.representation_target.params_view(),
+                    gpu.representation_target.model_state_view(),
+                    gpu.workspace_buf,
+                )
+                Network[
+                    Self.Config.PredModel, Self.Config.OptType
+                ].forward_gpu[BATCH](
+                    ctx,
+                    tgt_pred_in_2d,
+                    tgt_pred_out_2d,
+                    gpu.prediction_target.params_view(),
+                    gpu.prediction_target.model_state_view(),
+                    gpu.workspace_buf,
+                )
+                ctx.enqueue_function[decode_boot_v_d](
+                    tgt_pred_out_flat,
+                    boot_v_t,
+                    k,
+                    Scalar[dtype](self.v_min),
+                    Scalar[dtype](self.v_max),
+                    Scalar[dtype](0.001),
+                    grid_dim=BATCH_BLOCKS_BV,
+                    block_dim=TPB_3D,
+                )
+
+        # Phase 3c: compute_value_target on device.
+        var batch_mcts_val_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+        ](gpu.batch_mcts_val_buf.unsafe_ptr())
+        var batch_rewards_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH * K), MutAnyOrigin
+        ](gpu.batch_rewards_buf.unsafe_ptr())
+        var batch_age_t = LayoutTensor[
+            DType.int32, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+        ](gpu.batch_age_buf.unsafe_ptr())
+        var boot_v_t_3c = LayoutTensor[
+            dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+        ](gpu.boot_v_buf.unsafe_ptr())
+        var value_target_full_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+        ](gpu.value_target_full_buf.unsafe_ptr())
+
+        comptime compute_v_target = ezv2_compute_value_target_kernel[
+            BATCH,
+            K + 1,
+            K,
+            N_TD,
+            Self.Config.value_target_mode,
+            Self.Config.t_fresh,
+            dtype,
+        ]
+        var use_age_blend = Scalar[DType.int32](
+            1 if self.train_step_count >= Self.Config.t_stale else 0
+        )
+        ctx.enqueue_function[compute_v_target](
+            batch_mcts_val_t,
+            batch_rewards_t,
+            batch_age_t,
+            boot_v_t_3c,
+            value_target_full_t,
+            Scalar[dtype](self.gamma),
+            use_age_blend,
+            grid_dim=BATCH_K_BLOCKS,
+            block_dim=TPB_3D,
+        )
 
         # ── Sections 2-9 — shared core, with section 2 (host upload)
         # elided since the GPU sampler wrote the device buffers directly.
