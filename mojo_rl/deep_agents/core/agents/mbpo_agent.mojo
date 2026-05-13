@@ -3614,8 +3614,18 @@ struct MBPOAgent[
                     )
                 else:
                     self.logger.value()[].log_scalar("alpha", self.alpha, step)
-            except:
-                pass
+            except e:
+                # Surface the exception instead of swallowing it. If we never
+                # see *_nonfinite ticks AND the run hits this print, the diag
+                # block aborted before any log_scalar (e.g. a GPU sync raises
+                # because an earlier kernel poisoned device state).
+                print(
+                    "[MBPO diag] step ",
+                    self.train_step_count,
+                    " diagnostics raised: ",
+                    e,
+                    sep="",
+                )
 
     def do_gpu_train_step_real_only(
         mut self,
