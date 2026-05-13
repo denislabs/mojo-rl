@@ -30,7 +30,7 @@ The reward-prefix LSTM head (paper App. G) is intentionally absent —
 risk register defers it until after CartPole converges.
 """
 
-from std.memory import alloc, memset
+from std.memory import alloc, memset, memcpy
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from mojo_rl.nn.constants import dtype
@@ -47,6 +47,52 @@ from mojo_rl.deep_agents.efficient_zero_v2.gpu_mcts import (
     EZV2GPUMCTSState,
     run_gumbel_search_gpu,
 )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 2 staging helper (EZV2_CONTINUOUS_TRAINING_PERF.md)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def copy_window_dtype[
+    ELEM: Int
+](
+    dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    src: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    start: Int,
+    n_rows: Int,
+    capacity: Int,
+):
+    """Copy `n_rows` consecutive ELEM-wide rows from a circular source
+    array (`src`, capacity `capacity` rows) to a packed destination.
+
+    Source row k starts at `src[((start + k) % capacity) * ELEM]`.
+    Destination row k starts at `dst[k * ELEM]`.
+
+    Splits into two memcpys when start + n_rows > capacity (wraparound).
+    Replaces the per-(sample, k, d) scalar copy loops in the
+    `train_step_gpu` staging block (Phase 2). For OBS=17, K_ROOT*ACT=96,
+    K+1=6 rows per sample × 256 samples, this collapses ~210k scalar
+    reads/writes into a few hundred memcpys.
+    """
+    var pre_wrap = capacity - start
+    if pre_wrap >= n_rows:
+        memcpy(
+            dest=dst,
+            src=src + start * ELEM,
+            count=n_rows * ELEM,
+        )
+    else:
+        memcpy(
+            dest=dst,
+            src=src + start * ELEM,
+            count=pre_wrap * ELEM,
+        )
+        memcpy(
+            dest=dst + pre_wrap * ELEM,
+            src=src,
+            count=(n_rows - pre_wrap) * ELEM,
+        )
 
 
 struct EZV2DiscreteCPUState[

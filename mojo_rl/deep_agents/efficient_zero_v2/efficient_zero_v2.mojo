@@ -36,6 +36,7 @@ from mojo_rl.deep_agents.efficient_zero_v2.networks import RewardPrefixHeadMLP
 from mojo_rl.deep_agents.efficient_zero_v2.state import (
     EZV2DiscreteCPUState,
     EZV2GPUStateBase,
+    copy_window_dtype,
 )
 from mojo_rl.deep_agents.efficient_zero_v2.train_step_core import (
     ezv2_train_step_gpu_core,
@@ -664,34 +665,40 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             var start = self.state.priority_tree.sample(Scalar[dtype](u))
             batch_start_idx[sampled] = start
 
+            # Phase 2: bulk memcpys (vs OLD per-(sample,k,d) scalar loops).
+            copy_window_dtype[OBS](
+                batch_obs + sampled * (K + 1) * OBS,
+                self.state.buffer.obs.unsafe_ptr(),
+                start, K + 1, CAP,
+            )
+            copy_window_dtype[ACT](
+                batch_mcts_pol + sampled * (K + 1) * ACT,
+                self.state.mcts_policies,
+                start, K + 1, CAP,
+            )
+            copy_window_dtype[1](
+                batch_mcts_val + sampled * (K + 1),
+                self.state.mcts_values,
+                start, K + 1, CAP,
+            )
             for k in range(K + 1):
                 var idx = (start + k) % CAP
-                for d in range(OBS):
-                    batch_obs[
-                        (sampled * (K + 1) + k) * OBS + d
-                    ] = self.state.buffer.obs[idx * OBS + d]
-                for a in range(ACT):
-                    batch_mcts_pol[
-                        (sampled * (K + 1) + k) * ACT + a
-                    ] = self.state.mcts_policies[idx * ACT + a]
-                batch_mcts_val[sampled * (K + 1) + k] = self.state.mcts_values[
-                    idx
-                ]
                 var age = current_train_step - Int(
                     self.state.step_at_write[idx]
                 )
                 if age < 0:
                     age = 0
                 batch_age[sampled * (K + 1) + k] = Scalar[DType.int32](age)
-            for k in range(K):
-                var idx = (start + k) % CAP
-                for a in range(ACT):
-                    batch_actions[
-                        (sampled * K + k) * ACT + a
-                    ] = self.state.buffer.actions[idx * ACT + a]
-                batch_rewards[sampled * K + k] = self.state.buffer.rewards[
-                    (start + k) % CAP
-                ]
+            copy_window_dtype[ACT](
+                batch_actions + sampled * K * ACT,
+                self.state.buffer.actions.unsafe_ptr(),
+                start, K, CAP,
+            )
+            copy_window_dtype[1](
+                batch_rewards + sampled * K,
+                self.state.buffer.rewards.unsafe_ptr(),
+                start, K, CAP,
+            )
 
         # ── Param/state LayoutTensor views (bypass `.params_view()`) ────
         var rep_params = LayoutTensor[
@@ -2250,19 +2257,24 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             var start = self.state.priority_tree.sample(Scalar[dtype](u))
             batch_start_idx[sampled] = start
 
+            # Phase 2: bulk memcpys (vs OLD per-(sample,k,d) scalar loops).
+            copy_window_dtype[OBS](
+                gpu.batch_obs_host.unsafe_ptr() + sampled * (K + 1) * OBS,
+                self.state.buffer.obs.unsafe_ptr(),
+                start, K + 1, CAP,
+            )
+            copy_window_dtype[ACT](
+                gpu.batch_mcts_pol_host.unsafe_ptr() + sampled * (K + 1) * ACT,
+                self.state.mcts_policies,
+                start, K + 1, CAP,
+            )
+            copy_window_dtype[1](
+                gpu.batch_mcts_val_host.unsafe_ptr() + sampled * (K + 1),
+                self.state.mcts_values,
+                start, K + 1, CAP,
+            )
             for k in range(K + 1):
                 var idx = (start + k) % CAP
-                for d in range(OBS):
-                    gpu.batch_obs_host[
-                        (sampled * (K + 1) + k) * OBS + d
-                    ] = self.state.buffer.obs[idx * OBS + d]
-                for a in range(ACT):
-                    gpu.batch_mcts_pol_host[
-                        (sampled * (K + 1) + k) * ACT + a
-                    ] = self.state.mcts_policies[idx * ACT + a]
-                gpu.batch_mcts_val_host[
-                    sampled * (K + 1) + k
-                ] = self.state.mcts_values[idx]
                 var age = current_train_step - Int(
                     self.state.step_at_write[idx]
                 )
@@ -2271,20 +2283,19 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 gpu.batch_age_host[sampled * (K + 1) + k] = Scalar[DType.int32](
                     age
                 )
-            for k in range(K):
-                var idx = (start + k) % CAP
-                for a in range(ACT):
-                    gpu.batch_actions_host[
-                        (sampled * K + k) * ACT + a
-                    ] = self.state.buffer.actions[idx * ACT + a]
-                gpu.batch_rewards_host[
-                    sampled * K + k
-                ] = self.state.buffer.rewards[(start + k) % CAP]
+            copy_window_dtype[ACT](
+                gpu.batch_actions_host.unsafe_ptr() + sampled * K * ACT,
+                self.state.buffer.actions.unsafe_ptr(),
+                start, K, CAP,
+            )
+            copy_window_dtype[1](
+                gpu.batch_rewards_host.unsafe_ptr() + sampled * K,
+                self.state.buffer.rewards.unsafe_ptr(),
+                start, K, CAP,
+            )
 
             # Cumulative-reward target for the reward-prefix LSTM head
-            # (paper App. G). Computed even when use_reward_prefix=False
-            # so the upload path stays the same; the kernel just doesn't
-            # consume it then.
+            # (paper App. G). Sequential dependency — stays scalar.
             var cum = Float64(0.0)
             for k in range(K):
                 cum += Float64(gpu.batch_rewards_host[sampled * K + k])
@@ -2693,34 +2704,40 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             var u = random_float64() * total_prio
             var start = self.state.priority_tree.sample(Scalar[dtype](u))
 
+            # Phase 2: bulk memcpys (vs OLD per-(sample,k,d) scalar loops).
+            copy_window_dtype[OBS](
+                batch_obs + sampled * (K + 1) * OBS,
+                self.state.buffer.obs.unsafe_ptr(),
+                start, K + 1, CAP,
+            )
+            copy_window_dtype[ACT](
+                batch_mcts_pol + sampled * (K + 1) * ACT,
+                self.state.mcts_policies,
+                start, K + 1, CAP,
+            )
+            copy_window_dtype[1](
+                batch_mcts_val + sampled * (K + 1),
+                self.state.mcts_values,
+                start, K + 1, CAP,
+            )
             for k in range(K + 1):
                 var idx = (start + k) % CAP
-                for d in range(OBS):
-                    batch_obs[
-                        (sampled * (K + 1) + k) * OBS + d
-                    ] = self.state.buffer.obs[idx * OBS + d]
-                for a in range(ACT):
-                    batch_mcts_pol[
-                        (sampled * (K + 1) + k) * ACT + a
-                    ] = self.state.mcts_policies[idx * ACT + a]
-                batch_mcts_val[sampled * (K + 1) + k] = self.state.mcts_values[
-                    idx
-                ]
                 var age = current_train_step - Int(
                     self.state.step_at_write[idx]
                 )
                 if age < 0:
                     age = 0
                 batch_age[sampled * (K + 1) + k] = Scalar[DType.int32](age)
-            for k in range(K):
-                var idx = (start + k) % CAP
-                for a in range(ACT):
-                    batch_actions[
-                        (sampled * K + k) * ACT + a
-                    ] = self.state.buffer.actions[idx * ACT + a]
-                batch_rewards[sampled * K + k] = self.state.buffer.rewards[
-                    (start + k) % CAP
-                ]
+            copy_window_dtype[ACT](
+                batch_actions + sampled * K * ACT,
+                self.state.buffer.actions.unsafe_ptr(),
+                start, K, CAP,
+            )
+            copy_window_dtype[1](
+                batch_rewards + sampled * K,
+                self.state.buffer.rewards.unsafe_ptr(),
+                start, K, CAP,
+            )
 
 
         # ── 2. K-step forward through rep + dyn + pred ───────────────────

@@ -61,6 +61,7 @@ from mojo_rl.deep_agents.efficient_zero_v2.networks import (
 from mojo_rl.deep_agents.efficient_zero_v2.state import (
     EZV2DiscreteCPUState,
     EZV2GPUStateBase,
+    copy_window_dtype,
 )
 from mojo_rl.deep_agents.efficient_zero_v2.train_step_core import (
     ezv2_train_step_gpu_core,
@@ -895,43 +896,52 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                 Float64(0.0),
             )
 
+        comptime K_ROOT_C = Self.Config.num_root_candidates
         var batch_start_idx = alloc[Int](BATCH)
         for sampled in range(BATCH):
             var u = random_float64() * total_prio
             var start = self.state.priority_tree.sample(Scalar[dtype](u))
             batch_start_idx[sampled] = start
 
+            # Phase 2: bulk memcpys (vs OLD per-(sample,k,d) scalar loops).
+            # Each `copy_window_dtype[N]` copies (K+1) or K contiguous
+            # ELEM-wide rows from the circular CPU buffer into the host
+            # upload buffer, splitting at the CAP wrap when needed.
+            copy_window_dtype[OBS](
+                gpu.batch_obs_host.unsafe_ptr() + sampled * (K + 1) * OBS,
+                self.state.buffer.obs.unsafe_ptr(),
+                start, K + 1, CAP,
+            )
+            # mcts_policies: per-slot `[ACT]` (chosen-action vector for
+            # continuous; visit distribution for discrete — same layout).
+            copy_window_dtype[ACT](
+                gpu.batch_mcts_pol_host.unsafe_ptr() + sampled * (K + 1) * ACT,
+                self.state.mcts_policies,
+                start, K + 1, CAP,
+            )
+            # Full-π targets (paper Eq. 6): K candidate actions +
+            # improved-policy weights per slot.
+            copy_window_dtype[K_ROOT_C * ACT](
+                gpu.batch_mcts_samp_act_host.unsafe_ptr()
+                + sampled * (K + 1) * K_ROOT_C * ACT,
+                self.state.mcts_sampled_actions,
+                start, K + 1, CAP,
+            )
+            copy_window_dtype[K_ROOT_C](
+                gpu.batch_mcts_imp_pi_host.unsafe_ptr()
+                + sampled * (K + 1) * K_ROOT_C,
+                self.state.mcts_improved_policy,
+                start, K + 1, CAP,
+            )
+            copy_window_dtype[1](
+                gpu.batch_mcts_val_host.unsafe_ptr() + sampled * (K + 1),
+                self.state.mcts_values,
+                start, K + 1, CAP,
+            )
+            # Age: needs current_train_step - step_at_write[idx], so it
+            # stays scalar (uint32 → int32 with non-negative clamp).
             for k in range(K + 1):
                 var idx = (start + k) % CAP
-                for d in range(OBS):
-                    gpu.batch_obs_host[
-                        (sampled * (K + 1) + k) * OBS + d
-                    ] = self.state.buffer.obs[idx * OBS + d]
-                # mcts_policies stores per-slot `[ACT]` floats — for
-                # discrete this is the visit distribution; for continuous
-                # it's the chosen-action vector. Identical layout, so
-                # this loop is the same for both.
-                for a in range(ACT):
-                    gpu.batch_mcts_pol_host[
-                        (sampled * (K + 1) + k) * ACT + a
-                    ] = self.state.mcts_policies[idx * ACT + a]
-                # Full-π targets (paper Eq. 6): K candidate actions +
-                # improved-policy weights per slot. Time-major upload
-                # matches the kernel's expected layout.
-                comptime K_ROOT_C = Self.Config.num_root_candidates
-                for j in range(K_ROOT_C * ACT):
-                    gpu.batch_mcts_samp_act_host[
-                        (sampled * (K + 1) + k) * K_ROOT_C * ACT + j
-                    ] = self.state.mcts_sampled_actions[
-                        idx * K_ROOT_C * ACT + j
-                    ]
-                for i in range(K_ROOT_C):
-                    gpu.batch_mcts_imp_pi_host[
-                        (sampled * (K + 1) + k) * K_ROOT_C + i
-                    ] = self.state.mcts_improved_policy[idx * K_ROOT_C + i]
-                gpu.batch_mcts_val_host[
-                    sampled * (K + 1) + k
-                ] = self.state.mcts_values[idx]
                 var age = current_train_step - Int(
                     self.state.step_at_write[idx]
                 )
@@ -940,16 +950,19 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                 gpu.batch_age_host[sampled * (K + 1) + k] = Scalar[DType.int32](
                     age
                 )
-            for k in range(K):
-                var idx = (start + k) % CAP
-                for a in range(ACT):
-                    gpu.batch_actions_host[
-                        (sampled * K + k) * ACT + a
-                    ] = self.state.buffer.actions[idx * ACT + a]
-                gpu.batch_rewards_host[
-                    sampled * K + k
-                ] = self.state.buffer.rewards[(start + k) % CAP]
+            # K-wide rows: actions + rewards.
+            copy_window_dtype[ACT](
+                gpu.batch_actions_host.unsafe_ptr() + sampled * K * ACT,
+                self.state.buffer.actions.unsafe_ptr(),
+                start, K, CAP,
+            )
+            copy_window_dtype[1](
+                gpu.batch_rewards_host.unsafe_ptr() + sampled * K,
+                self.state.buffer.rewards.unsafe_ptr(),
+                start, K, CAP,
+            )
 
+            # Cumulative rewards: sequential dependency, stays scalar.
             var cum = Float64(0.0)
             for k in range(K):
                 cum += Float64(gpu.batch_rewards_host[sampled * K + k])
