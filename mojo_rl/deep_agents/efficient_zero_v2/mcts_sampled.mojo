@@ -357,6 +357,8 @@ struct SampledGumbelMCTS[
         pred_state: NetworkState[PredModel, PredOpt],
         v_min: Float64,
         v_max: Float64,
+        reward_min: Float64 = -0.732_050_807_568_877_3,
+        reward_max: Float64 = 0.732_050_807_568_877_3,
         deterministic: Bool = False,
     ) -> Tuple[
         InlineArray[Float64, Self.ACT_DIM],
@@ -381,6 +383,11 @@ struct SampledGumbelMCTS[
             pred_state: Prediction network state.
             v_min: Minimum value-support bin.
             v_max: Maximum value-support bin.
+            reward_min: Minimum reward-support bin. Decouples reward decode
+                from the value range to match the reference (paper uses
+                separate `reward_support` and `value_support`). Default is
+                reference DMC `h(-2) ≈ -0.732`.
+            reward_max: Maximum reward-support bin. Default `h(2) ≈ 0.732`.
             deterministic: If True, pick the argmax-visit candidate
                 (eval mode). If False, draw weighted by visit counts
                 (training mode).
@@ -568,6 +575,8 @@ struct SampledGumbelMCTS[
                         pred_state,
                         v_min,
                         v_max,
+                        reward_min,
+                        reward_max,
                     )
                     sims_used += 1
 
@@ -589,6 +598,8 @@ struct SampledGumbelMCTS[
                 pred_state,
                 v_min,
                 v_max,
+                reward_min,
+                reward_max,
             )
             sims_used += 1
 
@@ -813,6 +824,8 @@ struct SampledGumbelMCTS[
         pred_state: NetworkState[PredModel, PredOpt],
         v_min: Float64,
         v_max: Float64,
+        reward_min: Float64,
+        reward_max: Float64,
     ):
         """One simulation: take root candidate `root_cand_idx`, traverse
         the non-root subtree by visit-balance until an unexpanded leaf,
@@ -851,6 +864,8 @@ struct SampledGumbelMCTS[
             pred_state,
             v_min,
             v_max,
+            reward_min,
+            reward_max,
         )
         self._backup(search_path, cand_path, leaf_value)
 
@@ -868,6 +883,8 @@ struct SampledGumbelMCTS[
         pred_state: NetworkState[PredModel, PredOpt],
         v_min: Float64,
         v_max: Float64,
+        reward_min: Float64,
+        reward_max: Float64,
     ) -> Float64:
         comptime B: Int = 1
         comptime DYN_IN = DynModel.IN_DIM
@@ -907,8 +924,12 @@ struct SampledGumbelMCTS[
         var child_h_offset = child_hidden_idx * Self.LATENT_DIM
         for i in range(Self.LATENT_DIM):
             (self.hidden_states + child_h_offset + i)[] = dyn_output_ptr[i]
+        # Reward decode uses the reward support (paper `dmc_state.yaml`
+        # carries a separate `reward_support: range=[-2, 2]`). Sharing
+        # `v_min/v_max` with the value head left MCTS reading rewards
+        # ~100× too coarse on DMC envs.
         var reward = self._decode_value(
-            dyn_output_ptr + Self.LATENT_DIM, v_min, v_max
+            dyn_output_ptr + Self.LATENT_DIM, reward_min, reward_max
         )
 
         dyn_input_ptr.free()

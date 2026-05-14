@@ -162,6 +162,12 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
     var gamma: Float64
     var v_min: Float64
     var v_max: Float64
+    # Reward-head two-hot support, in TRANSFORMED scalar space (after
+    # `scalar_transform`). Reference DMC: raw `[-2, 2]` → transformed
+    # `[h(-2), h(2)] ≈ [-0.732, +0.732]`, ~100× finer step than re-using
+    # the value support. Decoupled from `v_min/v_max` 2026-05-14.
+    var reward_min: Float64
+    var reward_max: Float64
     var temperature: Float64
     var temperature_decay_steps: Int
     var max_grad_norm: Float64
@@ -205,6 +211,11 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         gamma: Float64 = 0.997,
         v_min: Float64 = -50.0,
         v_max: Float64 = 50.0,
+        # Reward-head support in transformed space; defaults to reference
+        # DMC: `h(±2) ≈ ±0.732`. Pass narrower for envs whose per-step
+        # reward never exceeds a tighter range.
+        reward_min: Float64 = -0.732_050_807_568_877_3,
+        reward_max: Float64 = 0.732_050_807_568_877_3,
         temperature: Float64 = 1.0,
         temperature_decay_steps: Int = 50000,
         max_grad_norm: Float64 = 5.0,
@@ -233,6 +244,8 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         self.gamma = gamma
         self.v_min = v_min
         self.v_max = v_max
+        self.reward_min = reward_min
+        self.reward_max = reward_max
         self.temperature = temperature
         self.temperature_decay_steps = temperature_decay_steps
         self.max_grad_norm = max_grad_norm
@@ -272,6 +285,8 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         self.gamma = take.gamma
         self.v_min = take.v_min
         self.v_max = take.v_max
+        self.reward_min = take.reward_min
+        self.reward_max = take.reward_max
         self.temperature = take.temperature
         self.temperature_decay_steps = take.temperature_decay_steps
         self.max_grad_norm = take.max_grad_norm
@@ -330,6 +345,8 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             self.state.prediction,
             self.v_min,
             self.v_max,
+            reward_min=self.reward_min,
+            reward_max=self.reward_max,
             deterministic=not training,
         )
         var chosen = result[0]
@@ -794,6 +811,8 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                 self.state.prediction_target,
                 self.v_min,
                 self.v_max,
+                reward_min=self.reward_min,
+                reward_max=self.reward_max,
                 deterministic=True,
             )
             var chosen = result[0]
@@ -1157,6 +1176,8 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             self.v_min,
             self.v_max,
             self.max_grad_norm,
+            reward_min=self.reward_min,
+            reward_max=self.reward_max,
             rng_seed=UInt64(self.train_step_count),
         )
         var L_R = sums[0]
@@ -1408,6 +1429,8 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             self.v_min,
             self.v_max,
             self.max_grad_norm,
+            reward_min=self.reward_min,
+            reward_max=self.reward_max,
             rng_seed=UInt64(self.train_step_count),
         )
         var L_R = sums[0]

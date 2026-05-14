@@ -149,6 +149,12 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
     var gamma: Float64
     var v_min: Float64
     var v_max: Float64
+    # Reward-head two-hot support, in TRANSFORMED scalar space. Defaults
+    # to reference DMC `h(±2) ≈ ±0.732`; override for atari/board games.
+    # Decoupled from `v_min/v_max` 2026-05-14 — sharing them with the
+    # value support left the reward CE pinned at `log(2)` on DMC envs.
+    var reward_min: Float64
+    var reward_max: Float64
     var temperature: Float64
     var temperature_decay_steps: Int
     var max_grad_norm: Float64
@@ -186,6 +192,11 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         gamma: Float64 = 0.997,
         v_min: Float64 = -50.0,
         v_max: Float64 = 50.0,
+        # Reward-head support in transformed space; defaults to reference
+        # DMC: `h(±2) ≈ ±0.732`. Pass narrower for envs whose per-step
+        # reward never exceeds a tighter range.
+        reward_min: Float64 = -0.732_050_807_568_877_3,
+        reward_max: Float64 = 0.732_050_807_568_877_3,
         temperature: Float64 = 1.0,
         temperature_decay_steps: Int = 50000,
         max_grad_norm: Float64 = 5.0,
@@ -203,6 +214,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         self.gamma = gamma
         self.v_min = v_min
         self.v_max = v_max
+        self.reward_min = reward_min
+        self.reward_max = reward_max
         self.temperature = temperature
         self.temperature_decay_steps = temperature_decay_steps
         self.max_grad_norm = max_grad_norm
@@ -242,6 +255,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         self.gamma = take.gamma
         self.v_min = take.v_min
         self.v_max = take.v_max
+        self.reward_min = take.reward_min
+        self.reward_max = take.reward_max
         self.temperature = take.temperature
         self.temperature_decay_steps = take.temperature_decay_steps
         self.max_grad_norm = take.max_grad_norm
@@ -283,7 +298,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             self.state.prediction,
             self.v_min,
             self.v_max,
-            legal_mask,
+            reward_min=self.reward_min,
+            reward_max=self.reward_max,
+            legal_mask=legal_mask,
         )
 
         # SVE = Σ_a total_value(root, a) / Σ_a visit_count(root, a).
@@ -528,7 +545,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 self.state.prediction_target,
                 self.v_min,
                 self.v_max,
-                List[Bool](),
+                reward_min=self.reward_min,
+                reward_max=self.reward_max,
+                legal_mask=List[Bool](),
             )
 
             # Fresh SVE root value from the search.
@@ -1475,8 +1494,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     var rew = Float64(batch_rewards[b * K + k])
                     encode_categorical[BINS](
                         scalar_transform(rew),
-                        self.v_min,
-                        self.v_max,
+                        self.reward_min,
+                        self.reward_max,
                         two_hot_target,
                     )
                     var off = k * BATCH * DYN_OUT + b * DYN_OUT + LATENT
@@ -1510,8 +1529,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     var cum = Float64(self.state._cum_rewards[b * K + k])
                     encode_categorical[BINS](
                         scalar_transform(cum),
-                        self.v_min,
-                        self.v_max,
+                        self.reward_min,
+                        self.reward_max,
                         two_hot_target,
                     )
                     var off = (k * BATCH + b) * BINS
@@ -2473,6 +2492,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             self.v_min,
             self.v_max,
             self.max_grad_norm,
+            reward_min=self.reward_min,
+            reward_max=self.reward_max,
         )
         var L_R = sums[0]
         var L_P = sums[1]
@@ -2741,6 +2762,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             self.v_min,
             self.v_max,
             self.max_grad_norm,
+            reward_min=self.reward_min,
+            reward_max=self.reward_max,
         )
         var L_R = sums[0]
         var L_P = sums[1]
@@ -3117,8 +3140,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 var rew = Float64(batch_rewards[b * K + k])
                 encode_categorical[BINS](
                     scalar_transform(rew),
-                    self.v_min,
-                    self.v_max,
+                    self.reward_min,
+                    self.reward_max,
                     two_hot_target,
                 )
                 # Reward logits live at dyn_out[k, b, LATENT:LATENT+BINS]

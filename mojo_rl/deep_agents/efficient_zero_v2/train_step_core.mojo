@@ -69,6 +69,14 @@ def ezv2_train_step_gpu_core[
     v_min: Float64,
     v_max: Float64,
     max_grad_norm: Float64,
+    # Reward-head support, in TRANSFORMED scalar space (same convention as
+    # `v_min/v_max`). Reference `dmc_state.yaml` carries a separate
+    # `reward_support: range=[-2, 2]` with the same `scalar_transform`
+    # applied, giving step ≈ 0.029 over `[-h(2), +h(2)] ≈ ±0.732` — ~100×
+    # finer than re-using the value range, which is what kept HalfCheetah
+    # `L_R` pinned at `log(2)`. Defaults match the reference DMC values.
+    reward_min: Float64 = -0.732_050_807_568_877_3,
+    reward_max: Float64 = 0.732_050_807_568_877_3,
     rng_seed: UInt64 = 0,
 ) raises -> Tuple[Float64, Float64, Float64, Float64]:
     """Sections 2-9 of `train_step_gpu`: upload + zero accumulators +
@@ -940,8 +948,8 @@ def ezv2_train_step_gpu_core[
             ctx.enqueue_function[th_kernel](
                 reward_target_dist_t,
                 reward_target_scalar_t,
-                Scalar[dtype](v_min),
-                Scalar[dtype](v_max),
+                Scalar[dtype](reward_min),
+                Scalar[dtype](reward_max),
                 grid_dim=(BINS_BLOCKS,),
                 block_dim=(TPB,),
             )
@@ -992,8 +1000,8 @@ def ezv2_train_step_gpu_core[
             ctx.enqueue_function[th_kernel](
                 rew_pref_target_dist_t,
                 reward_target_scalar_t,
-                Scalar[dtype](v_min),
-                Scalar[dtype](v_max),
+                Scalar[dtype](reward_min),
+                Scalar[dtype](reward_max),
                 grid_dim=(BINS_BLOCKS,),
                 block_dim=(TPB,),
             )

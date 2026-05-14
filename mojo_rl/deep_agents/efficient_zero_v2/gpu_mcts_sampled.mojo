@@ -876,6 +876,8 @@ def gs_expand_kernel[
     leaf_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     v_min: Scalar[dtype],
     v_max: Scalar[dtype],
+    reward_min: Scalar[dtype],
+    reward_max: Scalar[dtype],
     max_action: Scalar[dtype],
     min_std: Scalar[dtype],
     soft_clamp: Scalar[dtype],
@@ -935,7 +937,12 @@ def gs_expand_kernel[
                 )
                 - r_max
             )
-        var r_step = (v_max - v_min) / Scalar[dtype](NUM_REW_BINS - 1)
+        # Reward decode uses the reward support (separate from the value
+        # support — paper `dmc_state.yaml` carries `reward_support:
+        # range=[-2, 2]` and `value_support: range=[-299, 299]`).
+        var r_step = (reward_max - reward_min) / Scalar[dtype](
+            NUM_REW_BINS - 1
+        )
         var r_expected = Scalar[dtype](0.0)
         for i in range(NUM_REW_BINS):
             var p = (
@@ -947,7 +954,7 @@ def gs_expand_kernel[
                 )
                 / r_sum
             )
-            r_expected += p * (v_min + Scalar[dtype](i) * r_step)
+            r_expected += p * (reward_min + Scalar[dtype](i) * r_step)
         var sgn_r = (
             Scalar[dtype](1.0)
             if r_expected >= Scalar[dtype](0.0)
@@ -1452,6 +1459,12 @@ def run_sampled_gumbel_search_gpu[
     workspace_buf: DeviceBuffer[dtype],
     v_min: Float64,
     v_max: Float64,
+    # Separate reward-head support, in TRANSFORMED scalar space (paper
+    # `dmc_state.yaml: reward_support: range=[-2, 2]`, transformed via h
+    # gives ≈ ±0.732). Decoupled from `v_min/v_max` 2026-05-14; the prior
+    # shared range left MCTS reading decoded rewards ~100× too coarse.
+    reward_min: Float64 = -0.732_050_807_568_877_3,
+    reward_max: Float64 = 0.732_050_807_568_877_3,
     max_action: Float64 = 1.0,
     min_std: Float64 = 0.1,
     std_magnification: Float64 = 3.0,
@@ -1635,6 +1648,8 @@ def run_sampled_gumbel_search_gpu[
                     slot,
                     v_min,
                     v_max,
+                    reward_min,
+                    reward_max,
                     max_action,
                     min_std,
                     soft_clamp,
@@ -1708,6 +1723,8 @@ def run_sampled_gumbel_search_gpu[
             0,
             v_min,
             v_max,
+            reward_min,
+            reward_max,
             max_action,
             min_std,
             soft_clamp,
@@ -1769,6 +1786,8 @@ def _run_one_sim_gpu[
     slot: Int,
     v_min: Float64,
     v_max: Float64,
+    reward_min: Float64,
+    reward_max: Float64,
     max_action: Float64,
     min_std: Float64,
     soft_clamp: Float64,
@@ -1956,6 +1975,8 @@ def _run_one_sim_gpu[
         lv_t,
         Scalar[dtype](v_min),
         Scalar[dtype](v_max),
+        Scalar[dtype](reward_min),
+        Scalar[dtype](reward_max),
         Scalar[dtype](max_action),
         Scalar[dtype](min_std),
         Scalar[dtype](soft_clamp),

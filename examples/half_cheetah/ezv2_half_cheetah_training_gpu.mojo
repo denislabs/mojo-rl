@@ -143,13 +143,24 @@ def main() raises:
         # Reference `dmc_state.yaml: discount: 0.997`. Was 0.99 — effective
         # horizon 100 steps vs ref 333 steps for 1000-step HC episodes.
         gamma=0.997,
-        # HalfCheetah V(s) range: random ≈ -50 to 0, trained ≈ +500-1000.
-        # Transformed (h(x) = sign(x)·(√(|x|+1)-1) + 0.001·x):
-        #   h(-50)  = -6.05
-        #   h(1000) = +30.7
-        # [-50, +100] in transformed space comfortably covers actual V.
-        v_min=-50.0,
-        v_max=100.0,
+        # Value support — reference `dmc_state.yaml: value_support: range=
+        # [-299, 299], bins=51, type=support`. The reference applies
+        # `transform_one` (= our `scalar_transform`) to the raw range, so
+        # the bins live at `[h(-299), h(299)] ≈ [-16.62, +16.62]` in
+        # transformed space (step ≈ 0.665).
+        # SYMMETRY MATTERS: prior `[-50, +100]` mid-bin in transformed
+        # space was +25 → `h⁻¹(+25) ≈ +640` raw → random-init V decoded to
+        # ~+640, and TD self-bootstrap kept value targets stuck at
+        # +2000–3000 throughout training while real returns were ≈ -200.
+        v_min=-16.620_185_174_601_966,  # h(-299)
+        v_max=16.620_185_174_601_966,   # h(+299)
+        # Reward support — reference `reward_support: range=[-2, 2]`,
+        # transformed to ≈ `[-0.732, +0.732]` (step ≈ 0.029). Previously
+        # the reward head shared the value support's coarse step (3.0
+        # transformed), so all per-step rewards in `[-2, +2]` raw landed
+        # in the same 1–2 bins and `L_R` got pinned at `log(2)`.
+        reward_min=-0.732_050_807_568_877_3,  # h(-2)
+        reward_max=0.732_050_807_568_877_3,   # h(+2)
         temperature=1.0,
         temperature_decay_steps=10_000_000,
         # Reference `dmc_state.yaml: max_grad_norm: 5`.
