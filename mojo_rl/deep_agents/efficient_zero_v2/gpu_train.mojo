@@ -303,7 +303,7 @@ def run_ezv2_train_gpu[
     )
 
     # ─── GPU-resident replay buffer mirror ──────────────────────────────
-    var gpu_replay = EZV2GPUReplayBuffer[CAP, OBS, ACT](ctx)
+    var gpu_replay = EZV2GPUReplayBuffer[CAP, OBS, ACT, MAX_K](ctx)
     ctx.synchronize()
 
     # ─── Initial reset ──────────────────────────────────────────────────

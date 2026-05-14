@@ -2543,7 +2543,10 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         mut self,
         mut gpu: EZV2GPUStateBase[Self.Config],
         mut gpu_replay: EZV2GPUReplayBuffer[
-            50000, Self.Config.obs_dim, Self.Config.action_dim
+            50000,
+            Self.Config.obs_dim,
+            Self.Config.action_dim,
+            Self.Config.num_root_candidates,
         ],
         ctx: DeviceContext,
         rng_seed: UInt32,
@@ -2595,8 +2598,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             )
 
         # ── Section 1: GPU priority sampling + window gather (kernels 1-4)
+        comptime _K_ROOT = Self.Config.num_root_candidates
         var oldest = (gpu_replay.ptr - gpu_replay.size + CAP) % CAP
-        ezv2_gpu_sample_and_gather[CAP, BATCH, K, OBS, ACT](
+        ezv2_gpu_sample_and_gather[CAP, BATCH, K, OBS, ACT, _K_ROOT](
             ctx,
             gpu_replay.priorities,
             gpu_replay.dones,
@@ -2606,6 +2610,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             gpu_replay.mcts_policies,
             gpu_replay.mcts_values,
             gpu_replay.step_at_write,
+            gpu_replay.mcts_sampled_actions,
+            gpu_replay.mcts_improved_policy,
             gpu.cum_prio_buf,
             gpu.cand_starts_buf,
             gpu.n_valid_buf,
@@ -2618,6 +2624,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             gpu.batch_mcts_val_buf,
             gpu.batch_age_buf,
             gpu.cum_rewards_buf,
+            gpu.batch_mcts_samp_act_buf,
+            gpu.batch_mcts_imp_pi_buf,
             oldest=oldest,
             buf_size=gpu_replay.size,
             current_train_step=UInt32(self.train_step_count),

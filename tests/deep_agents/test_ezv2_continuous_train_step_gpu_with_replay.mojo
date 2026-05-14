@@ -142,7 +142,10 @@ def main() raises:
     var gpu = EZV2GPUStateBase[Config](ctx)
     gpu.upload_from(agent.state, ctx)
     var gpu_replay = EZV2GPUReplayBuffer[
-        50000, Config.obs_dim, Config.action_dim
+        50000,
+        Config.obs_dim,
+        Config.action_dim,
+        Config.num_root_candidates,
     ](ctx)
     gpu_replay.upload_from_cpu(agent.state, ctx)
     gpu_replay.max_priority = agent.max_priority

@@ -431,7 +431,7 @@ def run_ezv2_continuous_train_gpu[
     # ─── GPU-resident replay buffer mirror ──────────────────────────────
     # Only used by the GPU-sampling train path. For the default host-
     # sampling path it's allocated but never read.
-    var gpu_replay = EZV2GPUReplayBuffer[CAP, OBS, ACT_DIM](ctx)
+    var gpu_replay = EZV2GPUReplayBuffer[CAP, OBS, ACT_DIM, K_ROOT](ctx)
 
     # ─── Running obs normalization (opt-in) ──────────────────────────────
     # Always allocated so the local `obs_norm_stats` variable has a fixed

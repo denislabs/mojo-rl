@@ -208,6 +208,7 @@ def ezv2_gather_window_kernel[
     K: Int,
     OBS: Int,
     ACT: Int,
+    K_ROOT: Int,
     CAP: Int,
 ](
     batch_start_idx: LayoutTensor[
@@ -230,6 +231,12 @@ def ezv2_gather_window_kernel[
     src_step_at_write: LayoutTensor[
         DType.uint32, Layout.row_major(CAP), MutAnyOrigin
     ],
+    src_mcts_samp_act: LayoutTensor[
+        dtype, Layout.row_major(CAP * K_ROOT * ACT), MutAnyOrigin
+    ],
+    src_mcts_imp_pi: LayoutTensor[
+        dtype, Layout.row_major(CAP * K_ROOT), MutAnyOrigin
+    ],
     # Destination: per-train_step batch buffers (per-sample-time-major)
     dst_obs: LayoutTensor[
         dtype, Layout.row_major(BATCH * (K + 1) * OBS), MutAnyOrigin
@@ -249,13 +256,31 @@ def ezv2_gather_window_kernel[
     dst_age: LayoutTensor[
         DType.int32, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
     ],
+    dst_mcts_samp_act: LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH * (K + 1) * K_ROOT * ACT),
+        MutAnyOrigin,
+    ],
+    dst_mcts_imp_pi: LayoutTensor[
+        dtype, Layout.row_major(BATCH * (K + 1) * K_ROOT), MutAnyOrigin
+    ],
     current_train_step: UInt32,
 ):
     """One thread per (sample, k) slot. K+1 slots wide for obs / mcts_*
-    / age; K slots wide for actions / rewards (skipped at k == K).
+    / age / fullpi targets; K slots wide for actions / rewards
+    (skipped at k == K).
 
     Layout of destination buffers matches the host fill at
     `efficient_zero_v2.mojo:2391-2417` (per-sample-time-major).
+
+    The fullpi target writes (`dst_mcts_samp_act` + `dst_mcts_imp_pi`)
+    are required by `ezv2_policy_loss_grad_continuous_fullpi_kernel`
+    when `ACT_DIM==1`. Before 2026-05-14 these were not gathered on
+    the GPU-sampling path, so the fullpi kernel read zero-initialized
+    targets and produced `L_P ≈ -ent_scale·H_d`, zero policy gradient.
+    Discrete + ACT_DIM>1 configs still get the writes (uniform cost,
+    no overhead vs the kernel's other K+1 reads); their simple-best
+    loss path just doesn't read these buffers.
     """
     var t = Int(block_dim.x * block_idx.x + thread_idx.x)
     if t >= BATCH * (K + 1):
@@ -283,6 +308,20 @@ def ezv2_gather_window_kernel[
     if age64 < 0:
         age64 = 0
     dst_age[b * (K + 1) + k] = Scalar[DType.int32](age64)
+
+    # Fullpi targets (K_ROOT slots per (b, k)).
+    var src_samp_off = idx * K_ROOT * ACT
+    var dst_samp_off = (b * (K + 1) + k) * K_ROOT * ACT
+    for j in range(K_ROOT * ACT):
+        dst_mcts_samp_act[dst_samp_off + j] = src_mcts_samp_act[
+            src_samp_off + j
+        ]
+    var src_pi_off = idx * K_ROOT
+    var dst_pi_off = (b * (K + 1) + k) * K_ROOT
+    for i in range(K_ROOT):
+        dst_mcts_imp_pi[dst_pi_off + i] = src_mcts_imp_pi[
+            src_pi_off + i
+        ]
 
     # K-only fields (k = 0..K-1)
     if k < K:
@@ -373,6 +412,7 @@ def ezv2_gpu_sample_and_gather[
     K: Int,
     OBS: Int,
     ACT: Int,
+    K_ROOT: Int,
 ](
     ctx: DeviceContext,
     # GPU replay buffer (read-only inputs)
@@ -384,6 +424,8 @@ def ezv2_gpu_sample_and_gather[
     src_mcts_policies: DeviceBuffer[dtype],
     src_mcts_values: DeviceBuffer[dtype],
     src_step_at_write: DeviceBuffer[DType.uint32],
+    src_mcts_samp_act: DeviceBuffer[dtype],
+    src_mcts_imp_pi: DeviceBuffer[dtype],
     # Scratch (same lifetime as caller — kernel 1 fills, kernel 2 reads)
     cum_prio_buf: DeviceBuffer[dtype],
     cand_starts_buf: DeviceBuffer[DType.int32],
@@ -399,6 +441,8 @@ def ezv2_gpu_sample_and_gather[
     dst_mcts_val: DeviceBuffer[dtype],
     dst_age: DeviceBuffer[DType.int32],
     dst_cum_rewards: DeviceBuffer[dtype],
+    dst_mcts_samp_act: DeviceBuffer[dtype],
+    dst_mcts_imp_pi: DeviceBuffer[dtype],
     # Scalars
     oldest: Int,
     buf_size: Int,
@@ -407,11 +451,19 @@ def ezv2_gpu_sample_and_gather[
 ) raises:
     """Launches kernels 1 → 2 → 3 → 4 in sequence. After return,
     `dst_*` are populated and `batch_start_idx_buf` holds the picks
-    needed by kernel 5 (priority writeback) post-train."""
+    needed by kernel 5 (priority writeback) post-train.
+
+    `src_mcts_samp_act` + `src_mcts_imp_pi` mirror the CPU state's
+    full-π targets (paper Eq. 6); the gather kernel writes per-(b, k)
+    windows into `dst_mcts_samp_act` + `dst_mcts_imp_pi`. Required
+    for the ACT_DIM==1 fullpi loss path; harmless for other configs
+    (simple-best path doesn't read these dst buffers)."""
     comptime validate = ezv2_per_offset_priority_kernel[CAP, K]
     comptime compact = ezv2_cum_prio_compact_kernel[CAP, K]
     comptime sample = ezv2_sample_starts_kernel[BATCH, CAP]
-    comptime gather = ezv2_gather_window_kernel[BATCH, K, OBS, ACT, CAP]
+    comptime gather = ezv2_gather_window_kernel[
+        BATCH, K, OBS, ACT, K_ROOT, CAP
+    ]
     comptime cumr = ezv2_cum_rewards_kernel[BATCH, K]
 
     var prio_t = LayoutTensor[
@@ -477,6 +529,12 @@ def ezv2_gpu_sample_and_gather[
     var ssw_t = LayoutTensor[
         DType.uint32, Layout.row_major(CAP), MutAnyOrigin
     ](src_step_at_write.unsafe_ptr())
+    var ssa_t = LayoutTensor[
+        dtype, Layout.row_major(CAP * K_ROOT * ACT), MutAnyOrigin
+    ](src_mcts_samp_act.unsafe_ptr())
+    var sip_t = LayoutTensor[
+        dtype, Layout.row_major(CAP * K_ROOT), MutAnyOrigin
+    ](src_mcts_imp_pi.unsafe_ptr())
     var dob_t = LayoutTensor[
         dtype, Layout.row_major(BATCH * (K + 1) * OBS), MutAnyOrigin
     ](dst_obs.unsafe_ptr())
@@ -498,13 +556,21 @@ def ezv2_gpu_sample_and_gather[
     var dcr_t = LayoutTensor[
         dtype, Layout.row_major(BATCH * K), MutAnyOrigin
     ](dst_cum_rewards.unsafe_ptr())
+    var dsa_t = LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH * (K + 1) * K_ROOT * ACT),
+        MutAnyOrigin,
+    ](dst_mcts_samp_act.unsafe_ptr())
+    var dip_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH * (K + 1) * K_ROOT), MutAnyOrigin
+    ](dst_mcts_imp_pi.unsafe_ptr())
 
     comptime gather_threads = BATCH * (K + 1)
     comptime gather_blocks = (gather_threads + TPB - 1) // TPB
     ctx.enqueue_function[gather](
         bsi_t,
-        sob_t, sac_t, sr_t, smp_t, smv_t, ssw_t,
-        dob_t, dac_t, drw_t, dmp_t, dmv_t, dag_t,
+        sob_t, sac_t, sr_t, smp_t, smv_t, ssw_t, ssa_t, sip_t,
+        dob_t, dac_t, drw_t, dmp_t, dmv_t, dag_t, dsa_t, dip_t,
         current_train_step,
         grid_dim=(gather_blocks,), block_dim=(TPB,),
     )
