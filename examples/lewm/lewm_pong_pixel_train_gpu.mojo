@@ -38,11 +38,9 @@ def main() raises:
     # =========================================================================
     # Scaled config — change `BATCH=8` if Apple Metal OOMs.
     # =========================================================================
-    # NOTE on DEPTH: defaults to 1 below (single dual-branch cond_block).
-    # To test paper-aligned multi-layer predictor, append `DEPTH=N` after
-    # PRED_FF=256 (N=2 ~doubles param count + compile time; paper uses 6).
-    # Cold-build time scales roughly linearly with DEPTH (3 min at D=1,
-    # ~5-7 min at D=2 on Apple M1 Pro).
+    # DEPTH=6 matches the paper (`predictor.depth: 6` in
+    # `references/le-wm-main/config/train/lewm.yaml`). Drop to DEPTH=2 if
+    # cold-build time becomes a problem; DEPTH=1 disables the stack.
     train_lewm_offline_gpu[
         BATCH=16, T=6, H=4, N_PREDS=1,
         IN_CH=4, IMG=84, PATCH=14, N_PATCHES=36,
@@ -50,6 +48,7 @@ def main() raises:
         EMB=96, PROJ_H=256,
         ACT=3, SMOOTHED=32,
         PRED_HEADS=4, PRED_FF=256,
+        DEPTH=6,
     ](
         buffer_path=String("/tmp/lewm_pong_buffer.bin"),
         num_steps=8000,
