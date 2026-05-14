@@ -33,10 +33,13 @@ from mojo_rl.experimental.lewm.pong_buffer import (
 # ============================================================================
 
 comptime dtype = DType.float32
-comptime NUM_EPISODES: Int = 16
+comptime NUM_EPISODES: Int = 64
 comptime MAX_STEPS: Int = 256
 comptime BUFFER_CAPACITY: Int = NUM_EPISODES * MAX_STEPS
-comptime EPS_RANDOM: Float64 = 0.3
+# Per-episode epsilon is randomised in [EPS_MIN, EPS_MAX] for policy
+# diversity (some episodes pure-scripted, some near-pure-random).
+comptime EPS_MIN: Float64 = 0.0
+comptime EPS_MAX: Float64 = 1.0
 comptime OUTPUT_PATH: String = "/tmp/lewm_pong_buffer.bin"
 comptime SEED: Int = 0xC0DE
 
@@ -61,8 +64,8 @@ def _follow_ball_action(env: PongPixelEnv[dtype]) -> Int:
 
 
 @always_inline
-def _mixed_action(env: PongPixelEnv[dtype]) -> Int:
-    if random_float64() < EPS_RANDOM:
+def _mixed_action(env: PongPixelEnv[dtype], eps: Float64) -> Int:
+    if random_float64() < eps:
         return Int(random_float64() * 3.0) % 3
     return _follow_ball_action(env)
 
@@ -79,7 +82,7 @@ def main() raises:
     print("=" * 70)
     print("Episodes:     ", NUM_EPISODES)
     print("Max steps/ep: ", MAX_STEPS)
-    print("Epsilon-rand: ", EPS_RANDOM)
+    print("Epsilon-rand: ", EPS_MIN, "to", EPS_MAX, "(per-episode)")
     print("Output:       ", OUTPUT_PATH)
     print()
 
@@ -93,6 +96,8 @@ def main() raises:
     for ep in range(NUM_EPISODES):
         _ = env.reset()
         var obs = env.get_obs_list()
+        # Per-episode epsilon sampled uniformly in [EPS_MIN, EPS_MAX].
+        var ep_eps = EPS_MIN + random_float64() * (EPS_MAX - EPS_MIN)
         # Record the initial frame so that (s_t, a_t) → s_{t+1} pairs are
         # well-defined for predictor training. We record obs_t alongside
         # the action taken from that observation, then step the env.
@@ -100,7 +105,7 @@ def main() raises:
         var ep_steps: Int = 0
 
         for _ in range(MAX_STEPS):
-            var a = _mixed_action(env)
+            var a = _mixed_action(env, ep_eps)
             var result = env.step_obs(a)
             var reward = result[1]
             var done = result[2]
@@ -122,17 +127,19 @@ def main() raises:
                 break
 
         total_reward += ep_reward
-        if (ep + 1) % 4 == 0 or ep == NUM_EPISODES - 1:
+        if (ep + 1) % 8 == 0 or ep == NUM_EPISODES - 1:
             print(
                 "  ep",
                 ep + 1,
                 "/",
                 NUM_EPISODES,
-                "steps=",
+                "  eps=",
+                ep_eps,
+                "  steps=",
                 ep_steps,
-                "reward=",
+                "  reward=",
                 Float64(ep_reward),
-                "n_frames=",
+                "  n_frames=",
                 buf.n_frames,
             )
 

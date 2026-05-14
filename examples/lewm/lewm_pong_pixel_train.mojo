@@ -21,7 +21,8 @@ def main() raises:
         PRED_HEADS=2, PRED_FF=64,
     ](
         buffer_path=String("/tmp/lewm_pong_buffer.bin"),
-        num_steps=200,
-        log_every=20,
+        num_steps=1000,
+        log_every=100,
         rng_seed=0xCAFE,
+        lambda_sigreg=0.09,
     )
