@@ -258,13 +258,15 @@ def mpc_score_kernel[
     var local_sum: Scalar[dtype] = 0.0
     if b < BATCH:
         for d in range(EMB):
-            var diff = (
-                emb_seq[b, goal_pos * EMB + d] - emb_goal[b, d]
+            var ev = rebind[Scalar[dtype]](
+                emb_seq[b, goal_pos * EMB + d]
             )
+            var gv = rebind[Scalar[dtype]](emb_goal[b, d])
+            var diff = ev - gv
             local_sum += diff * diff
     var block_sum = block.sum[block_size=BATCH](local_sum)
     if thread_idx.x == 0:
-        score_out[0] = block_sum
+        score_out[0] = rebind[score_out.element_type](block_sum)
 
 
 # =============================================================================
@@ -2688,15 +2690,18 @@ def train_lewm_offline_gpu[
             ctx.enqueue_copy(emb_host, emb_buf)
             ctx.synchronize()
 
-            # Extract start (frame 0) + goal (frame T-1) per batch row.
+            # Extract start (frame 0) + goal (frame T-1) per batch row,
+            # upload both to device.
             for b in range(BATCH):
                 for d in range(EMB):
-                    emb_start_host_buf[b * EMB + d] = (
+                    emb_start_stage_host[b * EMB + d] = (
                         emb_host[b * T * EMB + d]
                     )
-                    emb_goal_host_buf[b * EMB + d] = (
+                    emb_goal_stage_host[b * EMB + d] = (
                         emb_host[b * T * EMB + (T - 1) * EMB + d]
                     )
+            ctx.enqueue_copy(emb_start_dev_buf, emb_start_stage_host)
+            ctx.enqueue_copy(emb_goal_dev_buf, emb_goal_stage_host)
 
             var expert_loss_mpc: Float64 = 0.0
             var random_mean_mpc: Float64 = 0.0
@@ -2704,9 +2709,8 @@ def train_lewm_offline_gpu[
             var better_count_mpc: Int = 0
 
             for s in range(1 + eval_samples):
-                # Build action plan (BATCH, needed_actions, ACT).
+                # Build action plan (BATCH, needed_actions, ACT) on host.
                 if s == 0:
-                    # Expert: take first needed_actions actions from buffer.
                     for b in range(BATCH):
                         for ti in range(needed_actions):
                             for k in range(ACT):
@@ -2733,16 +2737,36 @@ def train_lewm_offline_gpu[
                                     else Scalar[dtype](0.0)
                                 )
 
+                # Stage action_plan to (BATCH, T, ACT) layout (positions
+                # [needed_actions..T-1] zero-padded; slide_actions_window
+                # only reads up to k+H-1 ≤ needed_actions-1).
+                for b in range(BATCH):
+                    for ti in range(needed_actions):
+                        for k in range(ACT):
+                            action_plan_stage_host[
+                                b * T * ACT + ti * ACT + k
+                            ] = action_plan_host_buf[
+                                b * needed_actions * ACT + ti * ACT + k
+                            ]
+                    for t_pad in range(T - needed_actions):
+                        for k in range(ACT):
+                            action_plan_stage_host[
+                                b * T * ACT
+                                + (needed_actions + t_pad) * ACT + k
+                            ] = Scalar[dtype](0.0)
+                ctx.enqueue_copy(
+                    action_plan_dev_buf, action_plan_stage_host
+                )
+
                 var l = _run_mpc_shot[
                     BATCH, T, H, EMB, ACT, SMOOTHED, PROJ_H,
                     PRED_HEADS, PRED_FF, DEPTH,
                 ](
                     ctx,
                     mpc_horizon, needed_actions,
-                    emb_start_host_buf, emb_goal_host_buf,
-                    action_plan_host_buf, emb_seq_host_buf,
-                    emb_host, actions_host, pred_host,
-                    emb_buf, actions_buf, pred_out_buf,
+                    emb_start_dev_t, emb_goal_dev_t,
+                    emb_seq_dev_t, action_plan_dev_t,
+                    score_dev_t, score_dev_buf, score_host_buf,
                     ae_state.params_view(), ae_state.model_state_view(),
                     actions_t, act_emb_t,
                     ae_cache_t, ae_ws_buf,
@@ -2804,13 +2828,14 @@ def train_lewm_offline_gpu[
                     ctx,
                     mpc_horizon, needed_actions,
                     cem_iters, cem_samples, cem_topk, cem_smoothing,
-                    emb_start_host_buf, emb_goal_host_buf,
                     action_dist_host_buf, action_plan_host_buf,
                     sample_actions_host_buf, sample_scores_host_buf,
                     elite_indices_host_buf,
-                    emb_seq_host_buf,
-                    emb_host, actions_host, pred_host,
-                    emb_buf, actions_buf, pred_out_buf,
+                    emb_start_dev_t, emb_goal_dev_t,
+                    emb_seq_dev_t, action_plan_dev_t,
+                    action_plan_dev_buf,
+                    score_dev_t, score_dev_buf, score_host_buf,
+                    action_plan_stage_host,
                     ae_state.params_view(), ae_state.model_state_view(),
                     actions_t, act_emb_t,
                     ae_cache_t, ae_ws_buf,
@@ -2909,7 +2934,6 @@ def train_lewm_offline_gpu[
                 " (want > 0.5 — CEM finds better-than-random plans)",
             )
 
-        emb_seq_host_buf.free()
         emb_start_host_buf.free()
         emb_goal_host_buf.free()
         action_plan_host_buf.free()
