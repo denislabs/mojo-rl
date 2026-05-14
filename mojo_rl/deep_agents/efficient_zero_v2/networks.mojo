@@ -57,6 +57,7 @@ from mojo_rl.nn.model import (
     Linear,
     LinearReLU,
     LayerNorm,
+    BatchNorm1D,
     ReLU,
     Residual,
 )
@@ -101,9 +102,9 @@ comptime ActionEmbedding[
 # Reference shape (`ez_dmc_state.py:518-527`,
 # `dmc_state.yaml: proj_hid_shape=512, proj_shape=128`):
 #
-#     Linear(HIDDEN, PROJ_HID) → LN → ReLU
-#         → Linear(PROJ_HID, PROJ_HID) → LN → ReLU
-#         → Linear(PROJ_HID, PROJ) → LN
+#     Linear(HIDDEN, PROJ_HID) → BN → ReLU
+#         → Linear(PROJ_HID, PROJ_HID) → BN → ReLU
+#         → Linear(PROJ_HID, PROJ) → BN
 #
 # Reference uses inner width `proj_hid=512` and output width `proj=128`
 # (expand-then-contract). Earlier "uniform PROJ" alone wasn't enough
@@ -113,15 +114,14 @@ comptime ActionEmbedding[
 # Adding the wider inner hidden gives the projector enough capacity to
 # carry a non-trivial cosine alignment that's also state-discriminative.
 #
-# Per-layer LayerNorm before every ReLU is **load-bearing for SimSiam
-# collapse defence**. The original SimSiam paper (Chen & He 2021, App.
-# D) identifies BatchNorm/LayerNorm at every projector layer as the
-# critical structural defence against the trivial all-same-direction
-# fixed point. Earlier `LinearReLU` only had a single trailing LN, which
-# let the encoder collapse: `L_G → -0.999` within ~250 train steps on
-# HalfCheetah, dragging `L_V` / `L_R` to `log(2) = 0.69` (heads predicting
-# marginal of the two-hot target since latents carried no state info).
-# Found 2026-05-13.
+# **BatchNorm at every projector layer is load-bearing for SimSiam.**
+# (Chen & He 2021, App. D explicitly identifies BN1d at every projector
+# stage as the critical defence against the trivial all-same-direction
+# fixed point — LayerNorm normalizes per-sample and admits the trivial
+# solution.) Switched from LN→BN on 2026-05-14 after HalfCheetah obs_loss
+# pinned at -0.99 from step 6k onward despite the 2026-05-13 PROJ=128
+# narrowing. Reference `ProjectionNetwork` uses `BatchNorm1d`; matching
+# it directly removes one degree of freedom from collapse diagnosis.
 
 comptime ProjectionMLP[
     HIDDEN: Int,
@@ -129,13 +129,13 @@ comptime ProjectionMLP[
     PROJ_HID: Int = PROJ,
 ] = Sequential[
     Linear[HIDDEN, PROJ_HID],
-    LayerNorm[PROJ_HID],
+    BatchNorm1D[PROJ_HID],
     ReLU[PROJ_HID],
     Linear[PROJ_HID, PROJ_HID],
-    LayerNorm[PROJ_HID],
+    BatchNorm1D[PROJ_HID],
     ReLU[PROJ_HID],
     Linear[PROJ_HID, PROJ],
-    LayerNorm[PROJ],
+    BatchNorm1D[PROJ],
 ]
 
 
@@ -145,16 +145,18 @@ comptime ProjectionMLP[
 #
 # Reference shape (`ez_dmc_state.py:528-533`):
 #
-#     Linear(PROJ, BOTTLENECK) → LN → ReLU → Linear(BOTTLENECK, PROJ)
+#     Linear(PROJ, BOTTLENECK) → BN → ReLU → Linear(BOTTLENECK, PROJ)
 #
-# Same per-layer LN rationale as ProjectionMLP above — landed 2026-05-13.
+# Reference `ProjectionHeadNetwork` uses `BatchNorm1d` between the linear
+# and the ReLU (no trailing BN on the output, unlike ProjectionMLP).
+# Switched from LN→BN 2026-05-14 alongside the ProjectionMLP swap.
 
 comptime PredictionMLP[
     PROJ: Int = 1024,
     BOTTLENECK: Int = 512,
 ] = Sequential[
     Linear[PROJ, BOTTLENECK],
-    LayerNorm[BOTTLENECK],
+    BatchNorm1D[BOTTLENECK],
     ReLU[BOTTLENECK],
     Linear[BOTTLENECK, PROJ],
 ]
