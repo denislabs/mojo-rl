@@ -53,7 +53,7 @@ from ...nn.autodiff.primitives import BiasAdd
 # need). Same wiring as the canonical ViT path.
 # =============================================================================
 
-comptime _LeWMPatchEmbed[
+comptime LeWMPatchEmbed[
     in_channels: Int,
     img_h: Int,
     img_w: Int,
@@ -61,7 +61,9 @@ comptime _LeWMPatchEmbed[
     hidden_dim: Int,
     n_patches: Int,
 ] = Sequential[
-    Conv2DLayer[in_channels, hidden_dim, patch_size, patch_size, 0, img_h, img_w],
+    Conv2DLayer[
+        in_channels, hidden_dim, patch_size, patch_size, 0, img_h, img_w
+    ],
     Transpose2D[hidden_dim, n_patches],
 ]
 
@@ -76,7 +78,7 @@ comptime _LeWMPatchEmbed[
 # we use the encoder as a goal-image cost model in MPC.
 # =============================================================================
 
-comptime _LeWMProjector[
+comptime LeWMProjector[
     hidden_dim: Int,
     projector_hidden: Int,
     embed_dim: Int,
@@ -120,14 +122,18 @@ comptime LeWMEncoder[
     ff_mult: Int = 4,
     projector_hidden: Int = 2048,
 ] = Sequential[
-    _LeWMPatchEmbed[in_channels, img_h, img_w, patch_size, hidden_dim, n_patches],
+    LeWMPatchEmbed[
+        in_channels, img_h, img_w, patch_size, hidden_dim, n_patches
+    ],
     AutoDiffChain[BiasAdd[n_patches * hidden_dim]],
     Repeat[
         n_layers,
-        TransformerBlock[hidden_dim, n_heads, n_patches, ff_mult * hidden_dim, False],
+        TransformerBlock[
+            hidden_dim, n_heads, n_patches, ff_mult * hidden_dim, False
+        ],
         False,
     ],
     Tokenwise[n_patches, LayerNorm[hidden_dim]],
     TokenMean[n_patches, hidden_dim],
-    _LeWMProjector[hidden_dim, projector_hidden, embed_dim],
+    LeWMProjector[hidden_dim, projector_hidden, embed_dim],
 ]
