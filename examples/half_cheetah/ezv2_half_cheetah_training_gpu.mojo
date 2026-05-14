@@ -45,6 +45,7 @@ from mojo_rl.deep_agents.efficient_zero_v2 import (
 )
 from mojo_rl.envs.half_cheetah import HalfCheetah
 from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.training.scheduler import LinearWarmupSchedule
 
 
 def main() raises:
@@ -95,6 +96,16 @@ def main() raises:
         # below are redundant — kept for clarity).
         BS=256,
         CAP=100000,
+        # Reference `dmc_state.yaml: lr=3e-4, weight_decay=2e-5`. The
+        # `EZV2ContinuousMLPConfig` defaults are `LR=1e-3, WD=1e-4` —
+        # ~3.3× / 5× more aggressive than reference. With Adam + the
+        # `softplus(σ_raw + INIT_STD) + MIN_STD` policy parameterisation
+        # the higher LR collapses σ toward MIN_STD before the encoder
+        # has built state-discriminative features, locking the policy
+        # into a moderate-action attractor (see 2026-05-14 HC analysis).
+        # Pair with the 1000-step `LinearWarmupSchedule` below.
+        LR=3e-4,
+        WD=2e-5,
         K_UNROLL=5,
         N_TD=5,
         SIMS=32,
@@ -225,6 +236,15 @@ def main() raises:
         N_ENVS,
         NUM_ENV_STEPS,
         L=RemoteLogger,
+        # Reference `dmc_state.yaml: lr_warm_up: 0.01` = 1% of
+        # `training_steps=100000` = 1000 train-step linear warmup, then
+        # flat at LR. `LinearWarmupSchedule[1000]` does exactly this —
+        # the scheduler returns `(epoch+1)/WARMUP_EPOCHS` for the first
+        # 1000 train calls, then 1.0 thereafter. Total train steps with
+        # `train_steps_per_iter=N_ENVS=4` and `NUM_ENV_STEPS=100000`
+        # works out to 100000, so warmup is the first 1% of training —
+        # exactly the reference recipe.
+        SCHEDULER=LinearWarmupSchedule[WARMUP_EPOCHS=1000],
     ](
         agent,
         ctx,

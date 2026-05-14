@@ -62,6 +62,7 @@ from mojo_rl.deep_agents.efficient_zero_v2.gpu_replay import (
 from mojo_rl.deep_agents.efficient_zero_v2.gpu_train import EZV2TrainStats
 from mojo_rl.deep_agents.efficient_zero_v2.strategies import compute_sve
 from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.training.scheduler import Scheduler, ConstantSchedule
 
 
 def _is_finite(x: Float64) -> Bool:
@@ -91,6 +92,15 @@ def run_ezv2_continuous_train_gpu[
     # kwarg is gone — pass via this template parameter instead.
     REANALYZE_SAMPLES: Int = 32,
     L: Logger = NoOpLogger,
+    # LR scheduler applied once per train_step. Default `ConstantSchedule`
+    # = no schedule. Override e.g. `LinearWarmupSchedule[WARMUP_EPOCHS=1000]`
+    # to match the reference `dmc_state.yaml: lr_warm_up=0.01` (= 1% of
+    # `training_steps=100000` = 1000 train-step linear warmup, then flat).
+    # The scheduler reads (train_step, total_train_steps) where the latter
+    # is computed from `NUM_ENV_STEPS * train_steps_per_iter / N_ENVS` at
+    # call time. The lr_scale is broadcast to all 5 networks (rep / dyn /
+    # pred / projector / predictor) via `GPUNetworkState.set_lr_scale`.
+    SCHEDULER: Scheduler = ConstantSchedule,
 ](
     mut agent: GenericEZV2ContinuousAgent[Config],
     ctx: DeviceContext,
@@ -145,6 +155,10 @@ def run_ezv2_continuous_train_gpu[
         REANALYZE_SAMPLES: Number of samples to draw from the replay
             buffer for reanalyze.
         L: Logger type.
+        SCHEDULER: LR-scaler applied once per train step. Default
+            `ConstantSchedule` is a no-op. Pass `LinearWarmupSchedule[N]`
+            for reference-parity warmup. The schedule is broadcast to all
+            5 networks (rep / dyn / pred / projector / predictor).
 
     Args:
         agent: Pre-constructed `GenericEZV2ContinuousAgent` (its
@@ -462,6 +476,19 @@ def run_ezv2_continuous_train_gpu[
     var step_seed: UInt64 = rng_seed_base + 1
     var mcts_seed: UInt32 = UInt32(0)
     var sample_seed: UInt32 = UInt32(0)
+
+    # Total train steps the scheduler is parameterised over. Matches the
+    # iteration count produced by `NUM_ENV_STEPS` env-steps under the
+    # current `train_steps_per_iter` / `N_ENVS` ratio (UTD≈train_steps_
+    # per_iter/N_ENVS). Default reference DMC config has UTD=1 →
+    # total = NUM_ENV_STEPS.
+    var total_train_steps: Int = (
+        NUM_ENV_STEPS * train_steps_per_iter // N_ENVS
+    )
+    # Host shadow of the device `lr_scale` slot — avoids re-launching the
+    # 1-thread write kernel when the scheduler returns the same value
+    # (e.g. `ConstantSchedule` returns 1.0 every step).
+    var last_lr_scale: Float64 = -1.0
 
     # ─── Rolling diagnostics accumulators (since last log flush) ─────────
     # Action stats give visibility into policy saturation / collapse —
@@ -894,6 +921,24 @@ def run_ezv2_continuous_train_gpu[
                         gpu_replay.max_priority = agent.max_priority
                         ctx.synchronize()
                         stats.num_buffer_uploads += 1
+
+                # LR-scheduler hook (host, runs once per train step).
+                # `lr_scale_at(num_train_calls, total_train_steps)` returns a
+                # multiplier in [0, 1]; broadcast to every optimizer-bearing
+                # network's `opt_global_state` slot. `ConstantSchedule` is
+                # a no-op; only re-write the device slot when the scale
+                # actually changed (skips 5 device launches per step on the
+                # constant default).
+                var lr_scale = SCHEDULER.lr_scale_at(
+                    stats.num_train_calls, total_train_steps
+                )
+                if lr_scale != last_lr_scale:
+                    gpu.representation.set_lr_scale(lr_scale, ctx)
+                    gpu.dynamics.set_lr_scale(lr_scale, ctx)
+                    gpu.prediction.set_lr_scale(lr_scale, ctx)
+                    gpu.projector.set_lr_scale(lr_scale, ctx)
+                    gpu.predictor.set_lr_scale(lr_scale, ctx)
+                    last_lr_scale = lr_scale
 
                 var L_total: Float64
                 var L_R: Float64
