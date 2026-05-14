@@ -923,6 +923,13 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     var L_P_buf: DeviceBuffer[dtype]
     var L_V_buf: DeviceBuffer[dtype]
     var L_G_buf: DeviceBuffer[dtype]
+    # Diagnostics — written once per train step by `ezv2_z_feature_var_kernel`
+    # / `ezv2_v_pred_var_kernel` on the k=0 outputs of the encoder + value
+    # head. Used to detect SimSiam encoder collapse (z_var ≈ 0) and value-
+    # head state-collapse (v_pred_var ≈ 0) without re-running forwards on
+    # the host. 1 scalar each.
+    var z_var_buf: DeviceBuffer[dtype]
+    var v_pred_var_buf: DeviceBuffer[dtype]
     var per_sample_loss_scratch_buf: DeviceBuffer[
         dtype
     ]  # [BATCH] reused per kernel
@@ -956,6 +963,9 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     var L_V_host: HostBuffer[dtype]
     var L_G_host: HostBuffer[dtype]
     var priorities_out_host: HostBuffer[dtype]
+    # Diagnostics host mirrors (read once per train step from the driver).
+    var z_var_host: HostBuffer[dtype]
+    var v_pred_var_host: HostBuffer[dtype]
 
     # ── Reward-prefix LSTM head — GPU buffers (always allocated) ─────────
     # Mirrors the CPU state's LSTM/MLP head fields. Used only when
@@ -1247,6 +1257,9 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.L_P_buf = ctx.enqueue_create_buffer[dtype](1)
         self.L_V_buf = ctx.enqueue_create_buffer[dtype](1)
         self.L_G_buf = ctx.enqueue_create_buffer[dtype](1)
+        # Diagnostics (overwritten each train step — no pre-zero needed).
+        self.z_var_buf = ctx.enqueue_create_buffer[dtype](1)
+        self.v_pred_var_buf = ctx.enqueue_create_buffer[dtype](1)
         self.per_sample_loss_scratch_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH
         )
@@ -1336,6 +1349,8 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.priorities_out_host = ctx.enqueue_create_host_buffer[dtype](
             Self.BATCH
         )
+        self.z_var_host = ctx.enqueue_create_host_buffer[dtype](1)
+        self.v_pred_var_host = ctx.enqueue_create_host_buffer[dtype](1)
 
         # ── Reward-prefix LSTM head GPU buffers ─────────────────────────
         comptime LSTM_PS = Self._LSTM_PS
@@ -1510,6 +1525,8 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.L_P_buf = take.L_P_buf^
         self.L_V_buf = take.L_V_buf^
         self.L_G_buf = take.L_G_buf^
+        self.z_var_buf = take.z_var_buf^
+        self.v_pred_var_buf = take.v_pred_var_buf^
         self.per_sample_loss_scratch_buf = take.per_sample_loss_scratch_buf^
         self.per_sample_v_loss_k0_buf = take.per_sample_v_loss_k0_buf^
         self.priorities_out_buf = take.priorities_out_buf^
@@ -1529,6 +1546,8 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.L_V_host = take.L_V_host^
         self.L_G_host = take.L_G_host^
         self.priorities_out_host = take.priorities_out_host^
+        self.z_var_host = take.z_var_host^
+        self.v_pred_var_host = take.v_pred_var_host^
         self.lstm_params_buf = take.lstm_params_buf^
         self.lstm_grads_buf = take.lstm_grads_buf^
         self.lstm_opt_state_buf = take.lstm_opt_state_buf^

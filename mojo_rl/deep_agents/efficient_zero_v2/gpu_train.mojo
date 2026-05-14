@@ -60,6 +60,30 @@ struct EZV2TrainStats(Movable):
     var last_L_V: Float64
     var last_L_G: Float64
 
+    # Diagnostics (added 2026-05-14 to track SimSiam-collapse / MCTS-no-
+    # signal / unreachable-reward failure modes that hyperparam tuning
+    # alone wasn't isolating on HalfCheetah). Updated by the driver:
+    #   • `last_*` mirrors the most recent value (last train step / search
+    #     / env step).
+    #   • `*_sum` + `*_count` (or *_n for the windowed counter) carry the
+    #     running aggregate within a log window so we can print the mean.
+    var last_z_var: Float64
+    var z_var_sum: Float64
+    var z_var_n: Int
+
+    var last_v_pred_var: Float64
+    var v_pred_var_sum: Float64
+    var v_pred_var_n: Int
+
+    var last_mcts_visit_entropy: Float64
+    var mcts_visit_entropy_sum: Float64
+    var mcts_visit_entropy_n: Int
+
+    # Running max of any per-step reward observed across all envs. NOT
+    # reset per log window — the question this answers ("did the agent
+    # ever visit a high-reward state?") is monotonic.
+    var buf_reward_max: Float64
+
     def __init__(out self):
         self.wall_time_s = 0.0
         self.total_env_steps = 0
@@ -76,6 +100,16 @@ struct EZV2TrainStats(Movable):
         self.last_L_P = 0.0
         self.last_L_V = 0.0
         self.last_L_G = 0.0
+        self.last_z_var = 0.0
+        self.z_var_sum = 0.0
+        self.z_var_n = 0
+        self.last_v_pred_var = 0.0
+        self.v_pred_var_sum = 0.0
+        self.v_pred_var_n = 0
+        self.last_mcts_visit_entropy = 0.0
+        self.mcts_visit_entropy_sum = 0.0
+        self.mcts_visit_entropy_n = 0
+        self.buf_reward_max = Float64(-1.0e308)
 
     def __init__(out self, *, deinit take: Self):
         self.wall_time_s = take.wall_time_s
@@ -91,6 +125,16 @@ struct EZV2TrainStats(Movable):
         self.last_L_P = take.last_L_P
         self.last_L_V = take.last_L_V
         self.last_L_G = take.last_L_G
+        self.last_z_var = take.last_z_var
+        self.z_var_sum = take.z_var_sum
+        self.z_var_n = take.z_var_n
+        self.last_v_pred_var = take.last_v_pred_var
+        self.v_pred_var_sum = take.v_pred_var_sum
+        self.v_pred_var_n = take.v_pred_var_n
+        self.last_mcts_visit_entropy = take.last_mcts_visit_entropy
+        self.mcts_visit_entropy_sum = take.mcts_visit_entropy_sum
+        self.mcts_visit_entropy_n = take.mcts_visit_entropy_n
+        self.buf_reward_max = take.buf_reward_max
 
 
 def _is_finite(x: Float64) -> Bool:

@@ -634,6 +634,27 @@ def run_ezv2_continuous_train_gpu[
             ctx.enqueue_copy(host_max_q.unsafe_ptr(), mcts_gpu.max_q)
             ctx.synchronize()
 
+            # MCTS root-visit entropy: average over envs of
+            # `−Σᵢ p[i] log p[i]` where p is the normalized visit
+            # distribution at the root. Uniform = ln(K_ROOT) (≈ 2.77 for
+            # K_ROOT=16) → MCTS found no Q-value signal in this state.
+            # Near zero ⇒ MCTS concentrated all visits on one candidate
+            # (either healthy convergence or visit-policy collapse).
+            var entropy_sum = Float64(0.0)
+            for e in range(N_ENVS):
+                var ent = Float64(0.0)
+                var k_off = e * K_ROOT
+                for i in range(K_ROOT):
+                    var p = Float64(host_root_visits[k_off + i])
+                    if p > 1.0e-12:
+                        ent -= p * log(p)
+                entropy_sum += ent
+            var mean_entropy = entropy_sum / Float64(N_ENVS)
+            if _is_finite(mean_entropy):
+                stats.last_mcts_visit_entropy = mean_entropy
+                stats.mcts_visit_entropy_sum += mean_entropy
+                stats.mcts_visit_entropy_n += 1
+
             # ── 2. Per-env extract: SVE, chosen action, K-candidates ──
             for e in range(N_ENVS):
                 # Root candidate visits + values live at node 0:
@@ -822,6 +843,12 @@ def run_ezv2_continuous_train_gpu[
         var any_truncation = False
         for e in range(N_ENVS):
             var reward = Float64(host_reward[e])
+            # Diagnostic: track the max per-step reward we've ever seen
+            # across all envs. Answers "did the agent ever visit a high-
+            # reward state?" — if buf_reward_max stays ≤ ~0.5 over 100k
+            # steps, it's an exploration failure, not a learning failure.
+            if reward > stats.buf_reward_max:
+                stats.buf_reward_max = reward
             var native_done = host_done[e] > Scalar[dtype](0.5)
             var natively_terminated = host_terminated[e] > Scalar[dtype](0.5)
             ep_steps_per_env[e] += 1
@@ -986,6 +1013,20 @@ def run_ezv2_continuous_train_gpu[
                 if _is_finite(L_G):
                     diag_loss_G_sum += L_G
                 diag_loss_count += 1
+
+                # Diagnostics — `train_step_core.mojo` section 4.5 wrote
+                # these scalars to device + section 9 already downloaded
+                # them on the same `ctx.synchronize()`. Cheap host read.
+                var z_var_v = Float64(gpu.z_var_host[0])
+                var v_pred_var_v = Float64(gpu.v_pred_var_host[0])
+                if _is_finite(z_var_v):
+                    stats.last_z_var = z_var_v
+                    stats.z_var_sum += z_var_v
+                    stats.z_var_n += 1
+                if _is_finite(v_pred_var_v):
+                    stats.last_v_pred_var = v_pred_var_v
+                    stats.v_pred_var_sum += v_pred_var_v
+                    stats.v_pred_var_n += 1
 
                 # GPU → CPU network sync + optional buffer mirror.
                 if stats.num_train_calls % sync_interval == 0:
@@ -1343,6 +1384,26 @@ def run_ezv2_continuous_train_gpu[
                 mean_L_V = diag_loss_V_sum * inv
                 mean_L_G = diag_loss_G_sum * inv
 
+            # Diagnostics windowed means (2026-05-14: SimSiam collapse /
+            # value-head collapse / MCTS no-signal hunt). All four answer
+            # different "is the bug here?" questions, so we always log
+            # them, even when the underlying counter never advanced
+            # (default 0 is itself diagnostic).
+            var mean_z_var = Float64(0.0)
+            if stats.z_var_n > 0:
+                mean_z_var = stats.z_var_sum / Float64(stats.z_var_n)
+            var mean_v_pred_var = Float64(0.0)
+            if stats.v_pred_var_n > 0:
+                mean_v_pred_var = (
+                    stats.v_pred_var_sum / Float64(stats.v_pred_var_n)
+                )
+            var mean_visit_entropy = Float64(0.0)
+            if stats.mcts_visit_entropy_n > 0:
+                mean_visit_entropy = (
+                    stats.mcts_visit_entropy_sum
+                    / Float64(stats.mcts_visit_entropy_n)
+                )
+
             if verbose:
                 print(
                     "[step ",
@@ -1368,6 +1429,15 @@ def run_ezv2_continuous_train_gpu[
                     stats.last_L_V,
                     ", G",
                     stats.last_L_G,
+                    ")",
+                    "  diag=(z_var",
+                    mean_z_var,
+                    ", v_pred_var",
+                    mean_v_pred_var,
+                    ", visit_H",
+                    mean_visit_entropy,
+                    ", r_max",
+                    stats.buf_reward_max,
                     ")",
                 )
 
@@ -1456,6 +1526,22 @@ def run_ezv2_continuous_train_gpu[
                 )
                 logger.value()[].log_scalar("wall_s", wall_s, step)
 
+                # ── Collapse-hunt diagnostics (2026-05-14) ────────────
+                # Decisive metrics for the four dominant failure modes
+                # I haven't been able to rule out via hyperparam tuning.
+                # See `train_step_core.mojo:4.5` and the MCTS-entropy /
+                # buf_reward_max hooks earlier in this driver.
+                logger.value()[].log_scalar("z_var", mean_z_var, step)
+                logger.value()[].log_scalar(
+                    "v_pred_var", mean_v_pred_var, step
+                )
+                logger.value()[].log_scalar(
+                    "mcts_visit_entropy", mean_visit_entropy, step
+                )
+                logger.value()[].log_scalar(
+                    "buf_reward_max", stats.buf_reward_max, step
+                )
+
             # Reset interval accumulators.
             diag_abs_action_sum = 0.0
             diag_action_count = 0
@@ -1470,6 +1556,17 @@ def run_ezv2_continuous_train_gpu[
             diag_loss_V_sum = 0.0
             diag_loss_G_sum = 0.0
             diag_loss_count = 0
+            # Collapse-hunt diagnostics: reset the per-window aggregates
+            # (kept on `stats` since these are per-train-step / per-MCTS,
+            # not per-env-step like the others above). `buf_reward_max`
+            # is intentionally NOT reset — it's a monotonic high-water
+            # mark across the entire run.
+            stats.z_var_sum = 0.0
+            stats.z_var_n = 0
+            stats.v_pred_var_sum = 0.0
+            stats.v_pred_var_n = 0
+            stats.mcts_visit_entropy_sum = 0.0
+            stats.mcts_visit_entropy_n = 0
 
     var t_end = perf_counter_ns()
     stats.wall_time_s = Float64(t_end - t0) / 1.0e9

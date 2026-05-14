@@ -49,6 +49,8 @@ from mojo_rl.deep_agents.efficient_zero_v2.kernels import (
     ezv2_priority_from_v_loss_kernel,
     ezv2_copy_lstm_input_kernel,
     ezv2_reward_prefix_loss_grad_kernel,
+    ezv2_z_feature_var_kernel,
+    ezv2_v_pred_var_kernel,
 )
 from mojo_rl.deep_agents.muzero.kernels import (
     scalar_transform_kernel,
@@ -681,6 +683,49 @@ def ezv2_train_step_gpu_core[
                 mlp_cache_t,
                 gpu.workspace_buf,
             )
+
+    # ── 4.5 Diagnostics: encoder feature-variance + value-pred variance
+    #        (single-thread kernels, fired once on the k=0 forwards). These
+    #        are pure telemetry — they don't gate training and don't enter
+    #        the backward graph. Target the two dominant collapse failure
+    #        modes:
+    #          - z_var ≈ 0  ⇒  SimSiam encoder collapse (latents constant
+    #                          across batch). All downstream V/π predictions
+    #                          become state-agnostic.
+    #          - v_pred_var ≈ 0 ⇒ value head produces same V regardless of z
+    #                          (either V head dead, or z already collapsed).
+    comptime z_var_kernel = ezv2_z_feature_var_kernel[BATCH, LATENT, dtype]
+    var hidden0_flat = LayoutTensor[
+        dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+    ](gpu.hidden_buf.unsafe_ptr())
+    var z_var_out_t = LayoutTensor[
+        dtype, Layout.row_major(1), MutAnyOrigin
+    ](gpu.z_var_buf.unsafe_ptr())
+    ctx.enqueue_function[z_var_kernel](
+        hidden0_flat,
+        z_var_out_t,
+        grid_dim=(1,),
+        block_dim=(1,),
+    )
+
+    comptime v_pred_var_kernel = ezv2_v_pred_var_kernel[
+        BATCH, PRED_OUT, BINS, VALUE_OFF, dtype
+    ]
+    var pred_out0_flat = LayoutTensor[
+        dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+    ](gpu.pred_out_buf.unsafe_ptr())
+    var v_pred_var_out_t = LayoutTensor[
+        dtype, Layout.row_major(1), MutAnyOrigin
+    ](gpu.v_pred_var_buf.unsafe_ptr())
+    ctx.enqueue_function[v_pred_var_kernel](
+        pred_out0_flat,
+        v_pred_var_out_t,
+        Scalar[dtype](v_min),
+        Scalar[dtype](v_max),
+        Scalar[dtype](0.001),
+        grid_dim=(1,),
+        block_dim=(1,),
+    )
 
     # ── 5. Per-output upstream gradients + per-sample loss reductions ─
 
@@ -1790,6 +1835,9 @@ def ezv2_train_step_gpu_core[
     ctx.enqueue_copy(gpu.L_V_host, gpu.L_V_buf)
     ctx.enqueue_copy(gpu.L_G_host, gpu.L_G_buf)
     ctx.enqueue_copy(gpu.priorities_out_host, gpu.priorities_out_buf)
+    # Diagnostics — single-scalar each, written in section 4.5.
+    ctx.enqueue_copy(gpu.z_var_host, gpu.z_var_buf)
+    ctx.enqueue_copy(gpu.v_pred_var_host, gpu.v_pred_var_buf)
     ctx.synchronize()
 
     var L_R_sum = Float64(gpu.L_R_host[0])

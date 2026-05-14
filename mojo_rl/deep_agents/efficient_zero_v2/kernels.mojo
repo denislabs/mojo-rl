@@ -1440,3 +1440,129 @@ def ezv2_compute_value_target_kernel[
             value_target_full[idx] = td
         else:
             value_target_full[idx] = sve
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Diagnostics: encoder-feature variance + value-prediction variance
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Both run single-threaded (BATCH ≤ 256, FEATURE_DIM ≤ 256, BINS ≤ 51 → at
+# most ~30k ops per kernel). Used purely for telemetry so the cost is
+# acceptable. The two metrics target the two dominant failure modes:
+#
+#   • z_feature_var: mean over latent features of `var(z[:, j])` across
+#     the batch. Near zero ⇒ SimSiam collapse (encoder collapsed to a
+#     near-constant vector). Healthy ≥ ~0.05 for MinMaxNorm'd latents.
+#
+#   • v_pred_var: variance of the decoded scalar V(z) across the batch
+#     (after softmax over bins → expectation → inverse scalar transform).
+#     Near zero ⇒ value head state-agnostic — either V head dead, or z
+#     collapsed (so V has no state to discriminate on).
+
+
+def ezv2_z_feature_var_kernel[
+    BATCH: Int,
+    FEATURE_DIM: Int,
+    dtype: DType,
+](
+    z: LayoutTensor[
+        dtype, Layout.row_major(BATCH * FEATURE_DIM), MutAnyOrigin
+    ],
+    var_out: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+) where dtype.is_floating_point():
+    """Single-thread reduction: mean over features of cross-batch variance
+    of `z[BATCH, FEATURE_DIM]` (row-major).
+
+    `var_out[0] = (1/F) Σ_j (1/B) Σ_b (z[b,j] − mean_j)²`
+    """
+    var t = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if t != 0:
+        return
+    var inv_b = Scalar[dtype](1.0) / Scalar[dtype](BATCH)
+    var inv_f = Scalar[dtype](1.0) / Scalar[dtype](FEATURE_DIM)
+    var sum_var = Scalar[dtype](0.0)
+    for j in range(FEATURE_DIM):
+        var mean_j = Scalar[dtype](0.0)
+        for b in range(BATCH):
+            mean_j += rebind[Scalar[dtype]](z[b * FEATURE_DIM + j])
+        mean_j *= inv_b
+        var var_j = Scalar[dtype](0.0)
+        for b in range(BATCH):
+            var d = rebind[Scalar[dtype]](z[b * FEATURE_DIM + j]) - mean_j
+            var_j += d * d
+        var_j *= inv_b
+        sum_var += var_j
+    var_out[0] = sum_var * inv_f
+
+
+def ezv2_v_pred_var_kernel[
+    BATCH: Int,
+    PRED_OUT: Int,
+    BINS: Int,
+    VALUE_OFF: Int,
+    dtype: DType,
+](
+    pred_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+    ],
+    var_out: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+    v_min: Scalar[dtype],
+    v_max: Scalar[dtype],
+    eps: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Variance of decoded V across the batch (single-thread).
+
+    `pred_out[b, VALUE_OFF:VALUE_OFF+BINS]` holds value-bin logits. Decode
+    each sample to a scalar V via numerically-stable softmax expectation
+    over `[v_min, v_max]` + closed-form `h^{-1}` (matching
+    `ezv2_decode_boot_v_kernel`). Then compute the batch variance.
+
+    Uses single-pass (E[V²] − E[V]²) to avoid a scratch buffer.
+    """
+    var t = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if t != 0:
+        return
+    var step = (
+        (v_max - v_min) / Scalar[dtype](BINS - 1)
+        if BINS > 1 else Scalar[dtype](0.0)
+    )
+    var inv_b = Scalar[dtype](1.0) / Scalar[dtype](BATCH)
+    var sum_v = Scalar[dtype](0.0)
+    var sum_v2 = Scalar[dtype](0.0)
+
+    for b in range(BATCH):
+        var off = b * PRED_OUT + VALUE_OFF
+        var max_val = rebind[Scalar[dtype]](pred_out[off])
+        for i in range(1, BINS):
+            var v = rebind[Scalar[dtype]](pred_out[off + i])
+            if v > max_val:
+                max_val = v
+        var sum_exp = Scalar[dtype](0.0)
+        for i in range(BINS):
+            sum_exp += exp(
+                rebind[Scalar[dtype]](pred_out[off + i]) - max_val
+            )
+        var v_raw = Scalar[dtype](0.0)
+        for i in range(BINS):
+            var prob = exp(
+                rebind[Scalar[dtype]](pred_out[off + i]) - max_val
+            ) / sum_exp
+            var bin_val = v_min + Scalar[dtype](i) * step
+            v_raw += prob * bin_val
+        # Inverse MuZero scalar transform.
+        var sign_v = (
+            Scalar[dtype](1.0) if v_raw >= Scalar[dtype](0.0)
+            else Scalar[dtype](-1.0)
+        )
+        var abs_y = v_raw if v_raw >= Scalar[dtype](0.0) else -v_raw
+        var inner = sqrt(
+            Scalar[dtype](1.0)
+            + Scalar[dtype](4.0) * eps * (abs_y + Scalar[dtype](1.0) + eps)
+        )
+        var f = (inner - Scalar[dtype](1.0)) / (Scalar[dtype](2.0) * eps)
+        var v_real = sign_v * (f * f - Scalar[dtype](1.0))
+        sum_v += v_real
+        sum_v2 += v_real * v_real
+
+    var mean_v = sum_v * inv_b
+    var_out[0] = sum_v2 * inv_b - mean_v * mean_v
