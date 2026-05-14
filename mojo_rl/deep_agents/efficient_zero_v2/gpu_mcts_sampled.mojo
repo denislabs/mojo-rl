@@ -325,6 +325,8 @@ def gs_init_root_kernel[
     max_action: Scalar[dtype],
     min_std: Scalar[dtype],
     std_mag: Scalar[dtype],
+    soft_clamp: Scalar[dtype],
+    init_std: Scalar[dtype],
     rng_seed: Scalar[DType.uint32],
 ) where dtype.is_floating_point():
     """Initialize the root node:
@@ -407,20 +409,23 @@ def gs_init_root_kernel[
     var mu = InlineArray[Scalar[dtype], ACT_DIM](uninitialized=True)
     var sg = InlineArray[Scalar[dtype], ACT_DIM](uninitialized=True)
     var inv_max = Scalar[dtype](1.0) / max_action
+    var inv_soft = Scalar[dtype](1.0) / soft_clamp
     for d in range(ACT_DIM):
         var mu_raw = rebind[Scalar[dtype]](pred_output[pred_off + d])
         var sg_raw = rebind[Scalar[dtype]](
             pred_output[pred_off + ACT_DIM + d]
         )
-        mu[d] = max_action * tanh(mu_raw * inv_max)
-        # softplus(σ_raw) + min_std, numerically stable.
+        # μ = soft_clamp · tanh(μ_raw / soft_clamp), reference Dreamer-v3 soft clamp.
+        mu[d] = soft_clamp * tanh(mu_raw * inv_soft)
+        # σ = softplus(σ_raw + init_std) + min_std, numerically stable.
+        var sg_pre = sg_raw + init_std
         var sp_neg_abs: Scalar[dtype]
         var sp_pos: Scalar[dtype]
-        if sg_raw > Scalar[dtype](0.0):
-            sp_neg_abs = -sg_raw
-            sp_pos = sg_raw
+        if sg_pre > Scalar[dtype](0.0):
+            sp_neg_abs = -sg_pre
+            sp_pos = sg_pre
         else:
-            sp_neg_abs = sg_raw
+            sp_neg_abs = sg_pre
             sp_pos = Scalar[dtype](0.0)
         sg[d] = (
             sp_pos
@@ -873,6 +878,8 @@ def gs_expand_kernel[
     v_max: Scalar[dtype],
     max_action: Scalar[dtype],
     min_std: Scalar[dtype],
+    soft_clamp: Scalar[dtype],
+    init_std: Scalar[dtype],
     rng_seed: Scalar[DType.uint32],
     sim_index: Scalar[DType.uint32],
 ) where dtype.is_floating_point():
@@ -977,6 +984,7 @@ def gs_expand_kernel[
     )
 
     var inv_max = Scalar[dtype](1.0) / max_action
+    var inv_soft = Scalar[dtype](1.0) / soft_clamp
     var mu = InlineArray[Scalar[dtype], ACT_DIM](uninitialized=True)
     var sg = InlineArray[Scalar[dtype], ACT_DIM](uninitialized=True)
     for d in range(ACT_DIM):
@@ -986,14 +994,17 @@ def gs_expand_kernel[
         var sg_raw = rebind[Scalar[dtype]](
             pred_output[pred_off + ACT_DIM + d]
         )
-        mu[d] = max_action * tanh(mu_raw * inv_max)
+        # μ = soft_clamp · tanh(μ_raw / soft_clamp), reference Dreamer-v3 soft clamp.
+        mu[d] = soft_clamp * tanh(mu_raw * inv_soft)
+        # σ = softplus(σ_raw + init_std) + min_std, numerically stable.
+        var sg_pre = sg_raw + init_std
         var sp_neg_abs: Scalar[dtype]
         var sp_pos: Scalar[dtype]
-        if sg_raw > Scalar[dtype](0.0):
-            sp_neg_abs = -sg_raw
-            sp_pos = sg_raw
+        if sg_pre > Scalar[dtype](0.0):
+            sp_neg_abs = -sg_pre
+            sp_pos = sg_pre
         else:
-            sp_neg_abs = sg_raw
+            sp_neg_abs = sg_pre
             sp_pos = Scalar[dtype](0.0)
         sg[d] = (
             sp_pos
@@ -1444,6 +1455,10 @@ def run_sampled_gumbel_search_gpu[
     max_action: Float64 = 1.0,
     min_std: Float64 = 0.1,
     std_magnification: Float64 = 3.0,
+    # Dreamer-v3 soft clamp on μ_pre and softplus bias on σ_raw — must
+    # match the training loss kernel and CPU MCTS (reference 5.0 / 1.0).
+    soft_clamp: Float64 = 5.0,
+    init_std: Float64 = 1.0,
     c_visit: Float64 = 50.0,
     c_scale: Float64 = 0.1,
     gamma: Float64 = 0.997,
@@ -1570,6 +1585,8 @@ def run_sampled_gumbel_search_gpu[
         Scalar[dtype](max_action),
         Scalar[dtype](min_std),
         Scalar[dtype](std_magnification),
+        Scalar[dtype](soft_clamp),
+        Scalar[dtype](init_std),
         rng_seed,
         grid_dim=(ENV_BLOCKS,),
         block_dim=(TPB,),
@@ -1935,6 +1952,8 @@ def _run_one_sim_gpu[
         Scalar[dtype](v_max),
         Scalar[dtype](max_action),
         Scalar[dtype](min_std),
+        Scalar[dtype](soft_clamp),
+        Scalar[dtype](init_std),
         rng_seed,
         sim_index,
         grid_dim=(ENV_BLOCKS,),

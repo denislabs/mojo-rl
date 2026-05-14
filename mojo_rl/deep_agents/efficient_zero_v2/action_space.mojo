@@ -91,6 +91,17 @@ trait ActionSpace:
     `N(μ, σ)`, half from `N(μ, STD_MAGNIFICATION · σ)`). Discrete
     supplies `K` (= K_ROOT) — no uniform-random branch."""
 
+    comptime SOFT_CLAMP: Float64
+    """Dreamer-v3 soft clamp on the policy mean: `μ = SOFT_CLAMP ·
+    tanh(μ_raw / SOFT_CLAMP)` (continuous only — discrete supplies 5.0
+    as a no-op placeholder). Reference (`ez_dmc_state.py:421`) hard-codes
+    5.0; it is **not** the action range."""
+
+    comptime INIT_STD: Float64
+    """Bias inside softplus on σ_raw: `σ = softplus(σ_raw + INIT_STD) +
+    MIN_STD` (continuous only — discrete supplies 1.0 as a placeholder).
+    Reference (`ez_dmc_state.py:422`) uses 1.0."""
+
     @staticmethod
     def policy_loss_grad_gpu[
         BATCH: Int,
@@ -164,6 +175,11 @@ struct DiscreteActionSpace[ACT: Int, K: Int = 8](ActionSpace):
     # Discrete doesn't use continuous root sampling; set to K_ROOT so any
     # downstream `comptime if N_POLICY_AT_ROOT == K_ROOT` evaluates True.
     comptime N_POLICY_AT_ROOT: Int = Self.K
+    # Continuous-only — placeholders match the `ContinuousActionSpace`
+    # defaults so any code that comptime-reads through the trait gets
+    # consistent constants.
+    comptime SOFT_CLAMP: Float64 = 5.0
+    comptime INIT_STD: Float64 = 1.0
 
     @staticmethod
     def policy_loss_grad_gpu[
@@ -225,14 +241,30 @@ struct ContinuousActionSpace[
     # sampling. Set < K to opt into reference DMC sampling (policy +
     # uniform random) — see `SampledGumbelMCTS.N_POLICY_AT_ROOT`.
     N_POLICY_AT_ROOT_: Int = K,
+    # Dreamer-v3 soft-clamp on the policy mean. The reference EZ-V2 DMC
+    # agent hard-codes 5.0 (`ez_dmc_state.py:421`):
+    #     mu_pre = 5 · tanh(mu_raw / 5)
+    # The "5" is a fixed Dreamer-v3 carve-out — **not** the action range.
+    # Tying it to MAX_ACTION (the old buggy path) caps the pre-squash
+    # mean at ±MAX_ACTION, which after the trailing `a = MAX·tanh(u)`
+    # squash bounds the action mean at ±0.76·MAX — exploration cannot
+    # reach saturation. Keep this constant unless you know why.
+    SOFT_CLAMP_: Float64 = 5.0,
+    # Bias added inside softplus on σ_raw (reference `ez_dmc_state.py:422`):
+    #     sigma = softplus(sg_raw + INIT_STD) + MIN_STD
+    # With INIT_STD=1.0 the pre-training σ starts at softplus(1)+0.1 ≈ 1.4
+    # instead of softplus(0)+0.1 ≈ 0.79, restoring the broader exploration
+    # the reference initializes with. Reference value is 1.0.
+    INIT_STD_: Float64 = 1.0,
 ](ActionSpace):
     """Continuous-action implementation: squashed-Gaussian NLL + entropy
     bonus on the search-selected target action `a*` (paper Eq. 8/9).
 
     Wraps `ezv2_policy_loss_grad_continuous_kernel`. The pred net's policy
     section emits `(μ_raw, σ_raw)` per dim, which the kernel forwards
-    through `μ = MAX·tanh(μ_raw/MAX)` and `σ = softplus(σ_raw) + MIN_STD`
-    before evaluating `−log π(a*) − ent_scale · H[π]`.
+    through `μ = SOFT_CLAMP·tanh(μ_raw/SOFT_CLAMP)` and
+    `σ = softplus(σ_raw + INIT_STD) + MIN_STD` before evaluating
+    `−log π(a*) − ent_scale · H[π]`.
 
     Parameters:
         ACT_DIM_: Real action vector dimension. Becomes `ACT_DIM`,
@@ -240,9 +272,9 @@ struct ContinuousActionSpace[
             (μ ‖ σ_raw).
         K: Number of root candidates the sampled-Gumbel MCTS keeps
             (paper App. A default 16 for proprio).
-        MAX_ACTION_: Action vector |a*_d| upper bound. The squash uses
-            `MAX·tanh(·/MAX)`; the kernel atanh-clamps `a*/MAX` to ±0.999
-            for numerical stability.
+        MAX_ACTION_: Action vector |a*_d| upper bound. After the squashed
+            Gaussian samples `u`, the action is `MAX·tanh(u)`; the kernel
+            atanh-clamps `a*/MAX` to ±0.999 for numerical stability.
         MIN_STD_: Floor on σ; bounds `1/σ` from above so pre-training
             (σ_raw ≈ 0) the gradient stays well-conditioned. Paper App. G
             default 0.1.
@@ -251,6 +283,12 @@ struct ContinuousActionSpace[
             `N(μ, STD_MAGNIFICATION·σ)` for exploration). The training
             kernel here ignores it; lives on the trait so the agent can
             read it via `Config.ActSpace.STD_MAGNIFICATION` at sample time.
+        SOFT_CLAMP_: Dreamer-v3-style soft-clamp on the policy mean
+            (`mu = SOFT_CLAMP · tanh(mu_raw / SOFT_CLAMP)`). Reference
+            value 5.0. See parameter-level comment above for why this is
+            **not** the action range.
+        INIT_STD_: Bias added inside softplus on σ_raw. Reference value
+            1.0. See parameter-level comment above.
     """
 
     comptime ACT_DIM: Int = Self.ACT_DIM_
@@ -262,6 +300,8 @@ struct ContinuousActionSpace[
     comptime MIN_STD: Float64 = Self.MIN_STD_
     comptime STD_MAGNIFICATION: Float64 = Self.STD_MAGNIFICATION_
     comptime N_POLICY_AT_ROOT: Int = Self.N_POLICY_AT_ROOT_
+    comptime SOFT_CLAMP: Float64 = Self.SOFT_CLAMP_
+    comptime INIT_STD: Float64 = Self.INIT_STD_
 
     @staticmethod
     def policy_loss_grad_gpu[
@@ -305,6 +345,8 @@ struct ContinuousActionSpace[
             ent_scale,
             Scalar[dtype](Self.MAX_ACTION),
             Scalar[dtype](Self.MIN_STD),
+            Scalar[dtype](Self.SOFT_CLAMP),
+            Scalar[dtype](Self.INIT_STD),
             seed,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),

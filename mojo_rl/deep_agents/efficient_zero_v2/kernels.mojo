@@ -235,9 +235,9 @@ def ezv2_policy_loss_grad_kernel[
 # the same slice. The trailing BINS value-logit slots are left untouched
 # (the value-loss kernel owns them).
 #
-# Forward:
-#     μ_d         = MAX_ACTION · tanh(μ_raw_d / MAX_ACTION)
-#     σ_d         = softplus(σ_raw_d) + MIN_STD
+# Forward (reference parity, `ez_dmc_state.py:421-423`):
+#     μ_d         = SOFT_CLAMP · tanh(μ_raw_d / SOFT_CLAMP)   (Dreamer-v3 soft clamp)
+#     σ_d         = softplus(σ_raw_d + INIT_STD) + MIN_STD
 #     c_d         = clamp(a*_d / MAX_ACTION, ±0.999)
 #     u*_d        = atanh(c_d) = 0.5 · log((1+c_d) / (1-c_d))
 #     η_d         = (u*_d − μ_d) / σ_d
@@ -254,8 +254,8 @@ def ezv2_policy_loss_grad_kernel[
 #                            + ent_scale · (2/MAX) · mean_j[tanh(u_j/MAX)]
 #     ∂loss/∂σ_d        = (1 − η_d²) / σ_d
 #                            - ent_scale · (1/σ_d - (2/MAX) · mean_j[z_j·tanh(u_j/MAX)])
-#     ∂μ_d/∂μ_raw_d     = 1 − tanh²(μ_raw_d / MAX_ACTION)
-#     ∂σ_d/∂σ_raw_d     = sigmoid(σ_raw_d)
+#     ∂μ_d/∂μ_raw_d     = 1 − tanh²(μ_raw_d / SOFT_CLAMP)
+#     ∂σ_d/∂σ_raw_d     = sigmoid(σ_raw_d + INIT_STD)
 #
 # Numerical notes:
 #     - softplus uses the max(x,0) + log(1+exp(-|x|)) form for stability.
@@ -285,6 +285,8 @@ def ezv2_policy_loss_grad_continuous_kernel[
     ent_scale: Scalar[dtype],
     max_action: Scalar[dtype],
     min_std: Scalar[dtype],
+    soft_clamp: Scalar[dtype],
+    init_std: Scalar[dtype],
     seed: UInt64,
 ) where dtype.is_floating_point():
     """Squashed-Gaussian NLL + entropy bonus + grad on one time-slice.
@@ -314,6 +316,7 @@ def ezv2_policy_loss_grad_continuous_kernel[
     var pt_off = b * ACT_DIM
 
     var inv_max = Scalar[dtype](1.0) / max_action
+    var inv_soft = Scalar[dtype](1.0) / soft_clamp
     # log(2π) ≈ 1.8378770664093453, log(2π·e) = log(2π) + 1
     var LOG_2PI = Scalar[dtype](1.8378770664093453)
     var HALF_LOG_2PI = Scalar[dtype](0.5) * LOG_2PI
@@ -333,16 +336,17 @@ def ezv2_policy_loss_grad_continuous_kernel[
         )
         var a_star = rebind[Scalar[dtype]](policy_target_step[pt_off + d])
 
-        # μ = max_action · tanh(μ_raw / max_action)
-        var th = tanh(mu_raw * inv_max)
-        var mu = max_action * th
+        # μ = soft_clamp · tanh(μ_raw / soft_clamp)  (reference Dreamer-v3 soft clamp).
+        var th = tanh(mu_raw * inv_soft)
+        var mu = soft_clamp * th
 
-        # σ = softplus(σ_raw) + min_std, numerically stable softplus.
-        var sg_raw_neg_abs = -sg_raw if sg_raw > Scalar[dtype](0.0) else sg_raw
-        var sp_pos = sg_raw if sg_raw > Scalar[dtype](0.0) else Scalar[dtype](
+        # σ = softplus(σ_raw + init_std) + min_std, numerically stable softplus.
+        var sg_pre = sg_raw + init_std
+        var sg_pre_neg_abs = -sg_pre if sg_pre > Scalar[dtype](0.0) else sg_pre
+        var sp_pos = sg_pre if sg_pre > Scalar[dtype](0.0) else Scalar[dtype](
             0.0
         )
-        var sp = sp_pos + log(Scalar[dtype](1.0) + exp(sg_raw_neg_abs))
+        var sp = sp_pos + log(Scalar[dtype](1.0) + exp(sg_pre_neg_abs))
         var sg = sp + min_std
 
         # u* = atanh(clamp(a*/max_action, ±0.999))
@@ -430,15 +434,18 @@ def ezv2_policy_loss_grad_continuous_kernel[
         var d_loss_d_mu = dnlp_dmu - ent_scale * dH_dmu
         var d_loss_d_sg = dnlp_dsg - ent_scale * dH_dsg
 
-        # Chain through (μ_raw, σ_raw):
+        # Chain through (μ_raw, σ_raw).
+        # μ = soft_clamp · tanh(μ_raw / soft_clamp) ⇒ dμ/dμ_raw = 1 − tanh²(·)
+        # (the soft_clamp factor and 1/soft_clamp cancel — same as before, just
+        # with `th` now defined off `μ_raw/soft_clamp` instead of `μ_raw/MAX`).
         var dmu_dmuraw = Scalar[dtype](1.0) - th * th
-        # sigmoid(σ_raw) — d softplus / d σ_raw
+        # σ = softplus(σ_raw + init_std) + min_std ⇒ dσ/dσ_raw = sigmoid(σ_raw + init_std).
         var sig_sg_raw: Scalar[dtype]
-        if sg_raw > Scalar[dtype](0.0):
-            var e_neg = exp(-sg_raw)
+        if sg_pre > Scalar[dtype](0.0):
+            var e_neg = exp(-sg_pre)
             sig_sg_raw = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + e_neg)
         else:
-            var e_pos = exp(sg_raw)
+            var e_pos = exp(sg_pre)
             sig_sg_raw = e_pos / (Scalar[dtype](1.0) + e_pos)
 
         grad_pred_out_step[po_off + d] = scale * d_loss_d_mu * dmu_dmuraw
@@ -502,6 +509,8 @@ def ezv2_policy_loss_grad_continuous_fullpi_kernel[
     ent_scale: Scalar[dtype],
     max_action: Scalar[dtype],
     min_std: Scalar[dtype],
+    soft_clamp: Scalar[dtype],
+    init_std: Scalar[dtype],
     seed: UInt64,
 ) where dtype.is_floating_point():
     """Full-π squashed-Gaussian weighted-NLL + entropy bonus + grad.
@@ -526,6 +535,7 @@ def ezv2_policy_loss_grad_continuous_fullpi_kernel[
     var tp_off = b * K_ROOT
 
     var inv_max = Scalar[dtype](1.0) / max_action
+    var inv_soft = Scalar[dtype](1.0) / soft_clamp
     var LOG_2PI = Scalar[dtype](1.8378770664093453)
     var HALF_LOG_2PI = Scalar[dtype](0.5) * LOG_2PI
     var LOG_2 = Scalar[dtype](0.6931471805599453)
@@ -542,16 +552,19 @@ def ezv2_policy_loss_grad_continuous_fullpi_kernel[
             pred_out_step[po_off + ACT_DIM + d]
         )
 
-        var th = tanh(mu_raw * inv_max)
-        var mu = max_action * th
+        # μ = soft_clamp · tanh(μ_raw / soft_clamp)  (reference Dreamer-v3 soft clamp).
+        var th = tanh(mu_raw * inv_soft)
+        var mu = soft_clamp * th
 
-        var sg_raw_neg_abs = -sg_raw if sg_raw > Scalar[dtype](
+        # σ = softplus(σ_raw + init_std) + min_std, numerically stable softplus.
+        var sg_pre = sg_raw + init_std
+        var sg_pre_neg_abs = -sg_pre if sg_pre > Scalar[dtype](
             0.0
-        ) else sg_raw
-        var sp_pos = sg_raw if sg_raw > Scalar[dtype](
+        ) else sg_pre
+        var sp_pos = sg_pre if sg_pre > Scalar[dtype](
             0.0
         ) else Scalar[dtype](0.0)
-        var sp = sp_pos + log(Scalar[dtype](1.0) + exp(sg_raw_neg_abs))
+        var sp = sp_pos + log(Scalar[dtype](1.0) + exp(sg_pre_neg_abs))
         var sg = sp + min_std
 
         var inv_sg = Scalar[dtype](1.0) / sg
@@ -642,13 +655,14 @@ def ezv2_policy_loss_grad_continuous_fullpi_kernel[
         var d_loss_d_mu = dnlp_dmu - ent_scale * dH_dmu
         var d_loss_d_sg = dnlp_dsg - ent_scale * dH_dsg
 
+        # dμ/dμ_raw = 1 − tanh²(μ_raw/soft_clamp); dσ/dσ_raw = sigmoid(σ_raw + init_std).
         var dmu_dmuraw = Scalar[dtype](1.0) - th * th
         var sig_sg_raw: Scalar[dtype]
-        if sg_raw > Scalar[dtype](0.0):
-            var e_neg = exp(-sg_raw)
+        if sg_pre > Scalar[dtype](0.0):
+            var e_neg = exp(-sg_pre)
             sig_sg_raw = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + e_neg)
         else:
-            var e_pos = exp(sg_raw)
+            var e_pos = exp(sg_pre)
             sig_sg_raw = e_pos / (Scalar[dtype](1.0) + e_pos)
 
         grad_pred_out_step[po_off + d] = scale * d_loss_d_mu * dmu_dmuraw

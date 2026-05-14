@@ -485,6 +485,18 @@ struct EZV2ContinuousMLPConfig[
     # policy + 12 uniform random in [-MAX_ACTION, MAX_ACTION]) which
     # decouples exploration from the current policy bias.
     N_POLICY_AT_ROOT: Int = K_ROOT,
+    # Dreamer-v3 soft clamp on the policy mean: `mu = SOFT_CLAMP ·
+    # tanh(mu_raw / SOFT_CLAMP)`. Reference (`ez_dmc_state.py:421`)
+    # hard-codes 5.0 — this is a fixed Dreamer-v3 carve-out, NOT the
+    # action range. Tying it to MAX_ACTION caps the pre-squash mean at
+    # ±MAX_ACTION which combined with the trailing tanh squash on
+    # samples bounds actions at ±0.76·MAX, so the policy can't reach
+    # saturation. Keep the default.
+    SOFT_CLAMP: Float64 = 5.0,
+    # Bias inside softplus on σ_raw: `sigma = softplus(sg_raw + INIT_STD)
+    # + MIN_STD`. Reference (`ez_dmc_state.py:422`) uses 1.0 → initial σ
+    # ≈ 1.4 instead of 0.79, restoring exploration breadth at init.
+    INIT_STD: Float64 = 1.0,
     VALUE_TARGET_MODE: Int = VALUE_TARGET_SEARCH,
     T_FRESH: Int = 20000,
     T_STALE: Int = 40000,
@@ -657,6 +669,8 @@ struct EZV2ContinuousMLPConfig[
         Self.MIN_STD,
         Self.STD_MAGNIFICATION,
         Self.N_POLICY_AT_ROOT,
+        Self.SOFT_CLAMP,
+        Self.INIT_STD,
     ]
 
     comptime lambda_reward: Float64 = Self.LAMBDA_R
@@ -774,6 +788,14 @@ struct EZV2ContinuousMLPShallowConfig[
     # from `N(μ, σ)`, half from `N(μ, STD_MAGNIFICATION · σ)`). Reference
     # DMC sampling (4 policy + 12 random) is opt-in via N_POLICY_AT_ROOT < K.
     N_POLICY_AT_ROOT: Int = K_ROOT,
+    # Dreamer-v3 soft clamp on the policy mean and softplus bias on σ_raw.
+    # Match the reference DMC defaults (`ez_dmc_state.py:421-422`). See
+    # `EZV2ContinuousMLPConfig` doc for full rationale; these defaults
+    # may shift the Pendulum May-11 baseline since prior runs used the
+    # buggy `mu = MAX·tanh(μ_raw/MAX)` parameterization (effectively
+    # SOFT_CLAMP=MAX_ACTION, INIT_STD=0).
+    SOFT_CLAMP: Float64 = 5.0,
+    INIT_STD: Float64 = 1.0,
     VALUE_TARGET_MODE: Int = VALUE_TARGET_SEARCH,
     T_FRESH: Int = 20000,
     T_STALE: Int = 40000,
@@ -884,6 +906,8 @@ struct EZV2ContinuousMLPShallowConfig[
         Self.MIN_STD,
         Self.STD_MAGNIFICATION,
         Self.N_POLICY_AT_ROOT,
+        Self.SOFT_CLAMP,
+        Self.INIT_STD,
     ]
 
     comptime lambda_reward: Float64 = Self.LAMBDA_R

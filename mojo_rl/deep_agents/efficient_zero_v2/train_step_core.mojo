@@ -713,17 +713,25 @@ def ezv2_train_step_gpu_core[
     var n_P = Float64(BATCH * (K + 1))
     var lp_scale = Config.lambda_policy / n_P
     var ent_scale = Config.entropy_weight / n_P
-    # `MAX_ACTION` / `MIN_STD` live on `ContinuousActionSpace` only —
-    # bind them at comptime so the discrete path doesn't try to resolve
-    # them on `DiscreteActionSpace`.
+    # `MAX_ACTION` / `MIN_STD` / `SOFT_CLAMP` / `INIT_STD` live on
+    # `ContinuousActionSpace` only — bind them at comptime so the discrete
+    # path doesn't try to resolve them on `DiscreteActionSpace`.
     comptime MAX_ACTION_F: Float64 = (
         Config.ActSpace.MAX_ACTION if USE_FULLPI else Float64(0.0)
     )
     comptime MIN_STD_F: Float64 = (
         Config.ActSpace.MIN_STD if USE_FULLPI else Float64(0.0)
     )
+    comptime SOFT_CLAMP_F: Float64 = (
+        Config.ActSpace.SOFT_CLAMP if USE_FULLPI else Float64(5.0)
+    )
+    comptime INIT_STD_F: Float64 = (
+        Config.ActSpace.INIT_STD if USE_FULLPI else Float64(1.0)
+    )
     var max_action_s = Scalar[dtype](MAX_ACTION_F)
     var min_std_s = Scalar[dtype](MIN_STD_F)
+    var soft_clamp_s = Scalar[dtype](SOFT_CLAMP_F)
+    var init_std_s = Scalar[dtype](INIT_STD_F)
     for k in range(K + 1):
         var pred_out_k_flat = LayoutTensor[
             dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
@@ -757,6 +765,8 @@ def ezv2_train_step_gpu_core[
                 Scalar[dtype](ent_scale),
                 max_action_s,
                 min_std_s,
+                soft_clamp_s,
+                init_std_s,
                 policy_seed_k,
                 grid_dim=(BATCH_BLOCKS,),
                 block_dim=(TPB,),

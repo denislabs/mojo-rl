@@ -201,6 +201,8 @@ def run_ezv2_continuous_train_gpu[
     comptime MAX_ACTION_F = Config.ActSpace.MAX_ACTION
     comptime MIN_STD_F = Config.ActSpace.MIN_STD
     comptime STD_MAG_F = Config.ActSpace.STD_MAGNIFICATION
+    comptime SOFT_CLAMP_F = Config.ActSpace.SOFT_CLAMP
+    comptime INIT_STD_F = Config.ActSpace.INIT_STD
 
     # Compile-time sanity checks.
     comptime if not Config.ActSpace.IS_CONTINUOUS:
@@ -575,6 +577,8 @@ def run_ezv2_continuous_train_gpu[
                 max_action=MAX_ACTION_F,
                 min_std=MIN_STD_F,
                 std_magnification=STD_MAG_F,
+                soft_clamp=SOFT_CLAMP_F,
+                init_std=INIT_STD_F,
                 c_visit=mcts_c_visit,
                 c_scale=mcts_c_scale,
                 gamma=agent.gamma,
@@ -1025,6 +1029,8 @@ def run_ezv2_continuous_train_gpu[
                             max_action=MAX_ACTION_F,
                             min_std=MIN_STD_F,
                             std_magnification=STD_MAG_F,
+                            soft_clamp=SOFT_CLAMP_F,
+                            init_std=INIT_STD_F,
                             c_visit=mcts_c_visit,
                             c_scale=mcts_c_scale,
                             gamma=agent.gamma,

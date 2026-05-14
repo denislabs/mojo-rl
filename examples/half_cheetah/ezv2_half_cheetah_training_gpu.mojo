@@ -108,6 +108,18 @@ def main() raises:
         # uniform-random root sampling providing exploration.
         MIN_STD=0.1,
         STD_MAGNIFICATION=3.0,
+        # SOFT_CLAMP=5.0 and INIT_STD=1.0 are the reference Dreamer-v3
+        # parameterization (`ez_dmc_state.py:421-422`); they're the
+        # `ContinuousActionSpace` defaults so they don't strictly need
+        # to be set here, but listing them makes the action-policy
+        # parameterization (μ = SOFT_CLAMP·tanh(μ_raw/SOFT_CLAMP); σ =
+        # softplus(σ_raw + INIT_STD) + MIN_STD) explicit. Before the
+        # 2026-05-14 fix the soft-clamp was tied to MAX_ACTION=1.0,
+        # capping the pre-squash mean at ±1 and the post-squash action
+        # mean at ±0.76 — HC could not learn to drive actions to
+        # saturation. See `docs/EZV2_CONTINUOUS_OPEN_ISSUES.md`.
+        SOFT_CLAMP=5.0,
+        INIT_STD=1.0,
         # Reference DMC root sampling: 4 from policy, 12 uniform random.
         N_POLICY_AT_ROOT=4,
         # Reference `dmc_state.yaml: entropy_coeff: 5e-2`.

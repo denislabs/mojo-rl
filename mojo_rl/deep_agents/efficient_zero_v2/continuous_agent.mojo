@@ -154,6 +154,8 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         Self.Config.ActSpace.MIN_STD,
         Self.Config.ActSpace.STD_MAGNIFICATION,
         Self.Config.ActSpace.N_POLICY_AT_ROOT,
+        Self.Config.ActSpace.SOFT_CLAMP,
+        Self.Config.ActSpace.INIT_STD,
     ]
 
     # Hyperparameters
@@ -225,6 +227,8 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             Self.Config.ActSpace.MIN_STD,
             Self.Config.ActSpace.STD_MAGNIFICATION,
             Self.Config.ActSpace.N_POLICY_AT_ROOT,
+            Self.Config.ActSpace.SOFT_CLAMP,
+            Self.Config.ActSpace.INIT_STD,
         ](gamma=gamma, c_scale=1.0)
         self.gamma = gamma
         self.v_min = v_min

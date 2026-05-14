@@ -14,8 +14,8 @@ Algorithm (paper App. A, Wang et al. 2024):
     The squashed-Gaussian parameterization matches
     `ezv2_policy_loss_grad_continuous_kernel`:
 
-        μ      = MAX_ACTION · tanh(μ_raw / MAX_ACTION)
-        σ      = softplus(σ_raw) + MIN_STD
+        μ      = SOFT_CLAMP · tanh(μ_raw / SOFT_CLAMP)   (Dreamer-v3, ref. 5.0)
+        σ      = softplus(σ_raw + INIT_STD) + MIN_STD    (ref. INIT_STD=1.0)
         u      = μ + σ · ε              (ε ~ N(0, 1))
         a      = MAX_ACTION · tanh(u)
 
@@ -114,9 +114,10 @@ def _sample_squashed_gaussian_dim(
         u = mu_d + sigma_d * eps,     eps ~ N(0, 1)
         a = max_action * tanh(u)
 
-    The mean `mu_d` is the post-squash policy mean
-        mu_d = max_action * tanh(mu_raw_d / max_action)
-    so the sampled `a` lies in (−max_action, max_action).
+    The mean `mu_d` is the soft-clamped policy mean
+        mu_d = SOFT_CLAMP * tanh(mu_raw_d / SOFT_CLAMP)
+    (Dreamer-v3 soft clamp, reference `ez_dmc_state.py:421`) so the sampled
+    `a` lies in (−max_action, max_action).
     """
     var eps = _stdnormal()
     var u = mu_d + sigma_d * eps
@@ -264,6 +265,13 @@ struct SampledGumbelMCTS[
     # behavior — when `N_POLICY_AT_ROOT == K_ROOT`, the second half of
     # candidates uses `STD_MAGNIFICATION · σ` exactly as before.
     N_POLICY_AT_ROOT: Int = K_ROOT,
+    # Dreamer-v3 soft clamp on μ_pre (reference `ez_dmc_state.py:421`).
+    # MUST match the value used in the training loss kernel and acting-side
+    # GPU MCTS, otherwise train/act densities diverge.
+    SOFT_CLAMP: Float64 = 5.0,
+    # Bias inside softplus on σ_raw (reference `ez_dmc_state.py:422`).
+    # Same parity caveat as SOFT_CLAMP.
+    INIT_STD: Float64 = 1.0,
 ](Movable):
     """Sampled-Gumbel MCTS for continuous actions.
 
@@ -447,8 +455,8 @@ struct SampledGumbelMCTS[
             var sg_raw = Float64(
                 rebind[Scalar[dtype]](pred_out_t[0, Self.ACT_DIM + d])
             )
-            root_mu[d] = Self.MAX_ACTION * tanh(mu_raw / Self.MAX_ACTION)
-            root_sg[d] = _softplus(sg_raw) + Self.MIN_STD
+            root_mu[d] = Self.SOFT_CLAMP * tanh(mu_raw / Self.SOFT_CLAMP)
+            root_sg[d] = _softplus(sg_raw + Self.INIT_STD) + Self.MIN_STD
 
         # Root candidate sampling. Two modes, selected by N_POLICY_AT_ROOT:
         #   • Legacy magnified (N_POLICY_AT_ROOT == K_ROOT): half from
@@ -943,8 +951,8 @@ struct SampledGumbelMCTS[
             var sg_raw = Float64(
                 rebind[Scalar[dtype]](pred_out_t[0, Self.ACT_DIM + d])
             )
-            child_mu[d] = Self.MAX_ACTION * tanh(mu_raw / Self.MAX_ACTION)
-            child_sg[d] = _softplus(sg_raw) + Self.MIN_STD
+            child_mu[d] = Self.SOFT_CLAMP * tanh(mu_raw / Self.SOFT_CLAMP)
+            child_sg[d] = _softplus(sg_raw + Self.INIT_STD) + Self.MIN_STD
 
         for i in range(Self.K_NON_ROOT):
             var lp = 0.0
