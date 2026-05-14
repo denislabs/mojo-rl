@@ -567,6 +567,19 @@ def run_ezv2_continuous_train_gpu[
                 var root_value = sel[1]
                 var sampled = sel[2].copy()
                 var improved = sel[3].copy()
+                # Diagnostic probe: dump root stats every 12000 env steps
+                # for env_id=0 — mirrors the kroot16 baseline's per-3000-
+                # batch inspect_root. Lets us check whether MCTS Q-values
+                # in the driver path concentrate on a candidate or stay
+                # uniform vs the converging CPU-stepping baseline.
+                if (
+                    e == 0
+                    and stats.total_env_steps > 0
+                    and stats.total_env_steps % 12000 == 0
+                ):
+                    agent.inspect_root(
+                        tag=String("env_step=") + String(stats.total_env_steps)
+                    )
                 for d in range(ACT_DIM):
                     host_action[e * ACT_DIM + d] = action[d]
                 actions_per_env.append(action^)

@@ -1,15 +1,22 @@
-"""EZ-V2 Pendulum multi-env — experiment: K_ROOT = 16 (vs default 8).
+"""EZ-V2 Pendulum baseline loop — but with PendulumV2's CPU methods.
 
-Same as `ezv2_pendulum_training_multienv.mojo` but doubles the number of
-root candidates sampled at the start of each MCTS search. Tests the
-hypothesis that with only 8 candidates around the (poorly-trained)
-prior μ, MCTS can't differentiate good actions and `a*` is dominated by
-prior noise — so the squashed-Gaussian NLL toward `a*` provides no real
-learning signal.
+Isolating experiment: identical to `ezv2_pendulum_training_multienv_kroot16.mojo`
+except for the env type (`PendulumEnv` → `PendulumV2`). V2's CPU
+`reset_obs_list` and `step_continuous_vec` use `std.random` exactly like
+V1's, so the RNG sequence advances identically across env init + warmup
++ MCTS sampling. Only the physics implementation differs (V2 uses
+dtype-native `sin/cos` in fp32; V1 wraps Float64 sin and casts back).
 
-K_NON_ROOT also doubled to 8 to keep the per-non-root expansion ratio
-the same. Compare against the K_ROOT=8 baseline in
-`logs/ezv2_pendulum_multienv_v1.log`.
+Three possible outcomes vs the V1-CPU baseline (which converges to ≈-570):
+  • This variant ALSO converges → V2 physics is fine; the GPU-driver
+    failure is loop-specific (something the driver does that this loop
+    doesn't).
+  • This variant fails like the GPU driver → V2 physics itself drives
+    the divergence (fp precision or a real bug).
+  • Slower convergence but eventually solves → it's data-sensitivity;
+    multi-seed runs needed.
+
+Diff vs the V1 baseline: literally the import line + the env type.
 """
 
 from std.memory import UnsafePointer, alloc
@@ -22,7 +29,7 @@ from mojo_rl.deep_agents.efficient_zero_v2 import (
     GenericEZV2ContinuousAgent,
     VALUE_TARGET_SARSA,
 )
-from mojo_rl.envs.pendulum import PendulumEnv
+from mojo_rl.envs.pendulum import PendulumV2
 from mojo_rl.nn.constants import dtype
 
 
@@ -45,7 +52,7 @@ def _mean(xs: List[Float64]) -> Float64:
 
 def main() raises:
     print("=" * 72)
-    print("    EZ-V2 Pendulum — multi-env, K_ROOT=16 experiment")
+    print("    EZ-V2 Pendulum — multi-env baseline w/ PendulumV2 CPU methods")
     print("=" * 72)
 
     comptime NUM_ENV_STEPS = 30_000
@@ -71,16 +78,12 @@ def main() raises:
         N_TD=5,
         SIMS=32,
         NODES=128,
-        K_ROOT=16,  # ← experiment knob (was 8)
-        K_NON_ROOT=8,  # ← also doubled
+        K_ROOT=16,
+        K_NON_ROOT=8,
         MAX_ACTION=2.0,
-        MIN_STD=0.5,  # ← exploration fix (was 0.1)
+        MIN_STD=0.5,
         STD_MAGNIFICATION=3.0,
-        ENT_WEIGHT=0.05,  # ← exploration fix (was 0.005, 10×)
-        # Use bootstrapped TD value targets (reference's choice for DMC
-        # state envs). SVE-based SEARCH targets caused value-head
-        # overestimation feedback — see
-        # `docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md`.
+        ENT_WEIGHT=0.05,
         VALUE_TARGET_MODE=VALUE_TARGET_SARSA,
     ]
 
@@ -97,17 +100,16 @@ def main() raises:
     var ctx = DeviceContext()
     var gpu = EZV2GPUStateBase[Config](ctx)
     gpu.upload_from(agent.state, ctx)
-    # Phase 3: mirror CPU target nets onto GPU for MIXED/SARSA boot-V.
     gpu.upload_targets_from(agent.state, ctx)
     ctx.synchronize()
 
-    var envs = List[UnsafePointer[PendulumEnv[dtype], MutAnyOrigin]]()
+    var envs = List[UnsafePointer[PendulumV2[dtype], MutAnyOrigin]]()
     var obs_list = List[List[Scalar[dtype]]]()
     var ep_returns_per_env = List[Float64]()
     var ep_steps_per_env = List[Int]()
     for _ in range(N_ENVS):
-        var p = alloc[PendulumEnv[dtype]](1)
-        p.init_pointee_move(PendulumEnv[dtype]())
+        var p = alloc[PendulumV2[dtype]](1)
+        p.init_pointee_move(PendulumV2[dtype]())
         envs.append(p)
         ep_returns_per_env.append(Float64(0.0))
         ep_steps_per_env.append(0)
@@ -116,12 +118,12 @@ def main() raises:
 
     print()
     print("--- Run config ---")
+    print("    Env                   = PendulumV2 (CPU methods)")
     print("    N_ENVS                =", N_ENVS)
     print("    NUM_ENV_STEPS         =", NUM_ENV_STEPS, "(across all envs)")
     print(
         "    K_ROOT                =",
         Config.num_root_candidates,
-        "(experiment)",
     )
     print(
         "    BS=",
@@ -167,10 +169,6 @@ def main() raises:
                     action_vec.append(
                         Scalar[dtype](random_float64(-1.0, 1.0) * 2.0)
                     )
-                # Random-action warmup: one-hot improved policy on the
-                # chosen action so the full-π kernel reduces to simple-
-                # best NLL on it (zero candidate variance is fine for
-                # warmup — value head is the dominant signal there).
                 for _ in range(K_ROOT_C * Config.action_dim):
                     sampled_actions_vec.append(Scalar[dtype](0.0))
                 for _ in range(K_ROOT_C):
@@ -184,9 +182,6 @@ def main() raises:
                 root_value = sel[1]
                 sampled_actions_vec = sel[2].copy()
                 improved_policy_vec = sel[3].copy()
-                # Diagnostic probe: dump root stats every ~3000 batches
-                # for env_id=0 so we can see whether MCTS Q-values
-                # differentiate candidates or stay uniform.
                 if env_id == 0 and (batch + 1) % 3000 == 0:
                     agent.inspect_root(tag=String("batch=") + String(batch + 1))
 
@@ -241,7 +236,6 @@ def main() raises:
 
             if num_train_calls % TARGET_SYNC_INTERVAL == 0:
                 agent.update_target_networks(tau=1.0)
-                # Phase 3: mirror fresh CPU targets onto GPU.
                 gpu.upload_targets_from(agent.state, ctx)
 
         if (batch + 1) % LOG_EVERY_BATCHES == 0:
@@ -288,7 +282,7 @@ def main() raises:
 
     print()
     print("=" * 72)
-    print("    Training complete (K_ROOT=16)")
+    print("    Training complete (PendulumV2 CPU methods)")
     print("=" * 72)
     print("    total_transitions :", total_transitions)
     print("    episodes_finished :", len(ep_returns))

@@ -42,8 +42,8 @@ def main() raises:
     print("    EZ-V2 Pendulum — GPU driver regression test (N_ENVS=8)")
     print("=" * 72)
 
-    comptime NUM_ENV_STEPS = 100_000
-    comptime N_ENVS = 8
+    comptime NUM_ENV_STEPS = 30_000
+    comptime N_ENVS = 4
 
     comptime Config = EZV2ContinuousMLPShallowConfig[
         OBS=3,
@@ -64,6 +64,9 @@ def main() raises:
         MIN_STD=0.5,
         STD_MAGNIFICATION=3.0,
         ENT_WEIGHT=0.05,
+        # Dreamer-v3 hardcodes SOFT_CLAMP=5.0; set explicitly here for
+        # visibility (matches the EZV2ContinuousMLPShallowConfig default).
+        SOFT_CLAMP=5.0,
         VALUE_TARGET_MODE=VALUE_TARGET_SARSA,
     ]
 
@@ -121,17 +124,20 @@ def main() raises:
         train_steps_per_iter=1,
         sync_interval=50,
         target_sync_interval=200,
-        # Keep reanalyze cadence matching the converging CPU baseline.
-        # The HalfCheetah experiment's 4× aggressive reanalyze isn't
-        # required for Pendulum and would muddy the regression test.
+        # Reanalyze disabled for this regression test: it runs GPU MCTS
+        # (`run_sampled_gumbel_search_gpu`) to overwrite stored targets
+        # in the replay buffer regardless of the `use_gpu_mcts` flag,
+        # which acting-time controls. The kroot16 CPU baseline never
+        # reanalyzes, so this isolates whether the GPU-driver regression
+        # is in the act/train path or in GPU-MCTS reanalyze.
         reanalyze_interval=200,
-        reanalyze_warmup=1000,
+        reanalyze_warmup=10_000_000,
         warmup_random_steps=2_000,
         max_steps_per_episode=200,  # ← Pendulum episode length
-        log_every=2_000,
+        log_every=500,
         rng_seed_base=UInt64(2026),
-        use_gpu_sampling=True,
-        use_gpu_mcts=True,
+        use_gpu_sampling=False,
+        use_gpu_mcts=False,
         logger=UnsafePointer(to=logger),
         verbose=True,
     )

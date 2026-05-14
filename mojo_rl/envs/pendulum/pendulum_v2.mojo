@@ -9,7 +9,10 @@ A frictionless pendulum starts from a random position and the goal is to
 swing it up and keep it balanced upright.
 
 State observation: [cos(θ), sin(θ), θ_dot] (3D)
-Action: torque in [-2.0, 2.0] (1D continuous)
+Action: torque in [-2.0, 2.0] (1D continuous) — interpreted as raw torque
+        (matches PendulumEnv V1 and Gymnasium Pendulum-v1). Callers whose
+        policy emits a different range (e.g. tanh-squashed [-1, +1]) must
+        scale on their side; out-of-range values are clamped.
 Reward: -(θ² + 0.1*θ_dot² + 0.001*torque²)
 
 Episode never terminates naturally (always runs for max_steps=200).
@@ -630,11 +633,13 @@ struct PendulumV2[DTYPE: DType](
             states[env, META_OFF + META_TOTAL_REWARD]
         )
 
-        # Get action and scale from [-1, 1] to [-MAX_TORQUE, MAX_TORQUE]
-        # PPO continuous outputs actions in [-1, 1] after tanh squashing
-        var raw_action = rebind[Scalar[dtype]](actions[env, 0])
-        var u = raw_action * MAX_TORQUE
-        # Clamp just in case action is slightly out of bounds
+        # Action is interpreted as raw torque, clamped to ±MAX_TORQUE.
+        # Matches PendulumEnv (V1) and Gymnasium Pendulum-v1's contract:
+        # callers emit actions in the env's natural torque range
+        # [-MAX_TORQUE, +MAX_TORQUE]. Agents whose policy outputs a
+        # different range (e.g. tanh-squashed [-1, +1]) must scale on
+        # their side before calling this kernel.
+        var u = rebind[Scalar[dtype]](actions[env, 0])
         if u > MAX_TORQUE:
             u = MAX_TORQUE
         elif u < -MAX_TORQUE:
@@ -813,15 +818,13 @@ struct PendulumV2[DTYPE: DType](
     ) -> Tuple[List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool]:
         """Take continuous action and return (obs, reward, done).
 
-        Action is expected in [-1, 1] range (normalized).
-        This method scales it by MAX_TORQUE to match GPU behavior.
+        Action is interpreted as raw torque in [-MAX_TORQUE, +MAX_TORQUE],
+        matching PendulumEnv (V1) and Gymnasium Pendulum-v1. Out-of-range
+        values are clamped inside `_step_with_torque`.
         """
-        var raw_action = Scalar[Self.dtype](action[0]) if len(
+        var torque = Scalar[Self.dtype](action[0]) if len(
             action
         ) > 0 else Scalar[Self.dtype](0.0)
-        # Scale action from [-1, 1] to [-MAX_TORQUE, MAX_TORQUE]
-        # This matches the GPU step kernel behavior
-        var torque = raw_action * self.max_torque
         var result = self._step_with_torque(torque)
         var obs = List[Scalar[DTYPE_VEC]](capacity=3)
         obs.append(Scalar[DTYPE_VEC](cos(Float64(self.theta))))

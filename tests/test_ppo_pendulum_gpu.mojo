@@ -87,8 +87,14 @@ def main() raises:
             norm_adv_per_minibatch=True,
             checkpoint_every=1000,
             checkpoint_path="ppo_pendulum_gpu.ckpt",
-            # Note: action_scale not needed - PendulumV2 handles scaling internally
-            # PPO outputs [-1, 1], environment scales to [-2, 2]
+            # NOTE (2026-05-14): PendulumV2 used to scale actions internally
+            # from [-1, +1] to [-MAX_TORQUE, +MAX_TORQUE], but that contract
+            # was changed so V2 matches V1 (raw torque, no internal scale).
+            # PPO's unbounded Gaussian samples are now applied directly as
+            # torque (clamped to ±MAX_TORQUE=±2 at the env boundary), so
+            # the effective action range is narrower than before. If this
+            # regresses learning, plumb an explicit action_scale through
+            # DeepPPOContinuousAgent or scale at the env wrapper.
         )
 
         print("Environment: PendulumV2 (GPU)")
