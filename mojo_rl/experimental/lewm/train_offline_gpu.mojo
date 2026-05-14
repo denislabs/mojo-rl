@@ -521,7 +521,6 @@ def train_lewm_offline_gpu[
         ](act_emb_buf)
         ctx.enqueue_function[
             slice_h_kernel[BATCH, T, H, EMB],
-            slice_h_kernel[BATCH, T, H, EMB],
         ](
             emb_t, x_prev_t,
             grid_dim=(
@@ -532,7 +531,6 @@ def train_lewm_offline_gpu[
             block_dim=(TPB_X, TPB_Y, TPB_Z),
         )
         ctx.enqueue_function[
-            slice_h_kernel[BATCH, T, H, EMB],
             slice_h_kernel[BATCH, T, H, EMB],
         ](
             act_emb_bt_t, c_in_t,
@@ -711,7 +709,6 @@ def train_lewm_offline_gpu[
         ](grad_act_emb_buf)
         ctx.enqueue_function[
             scatter_h_kernel[BATCH, T, H, EMB],
-            scatter_h_kernel[BATCH, T, H, EMB],
         ](
             grad_x_prev_t, grad_emb_bte_to_bt,
             grid_dim=(
@@ -722,7 +719,6 @@ def train_lewm_offline_gpu[
             block_dim=(TPB_X, TPB_Y, TPB_Z),
         )
         ctx.enqueue_function[
-            scatter_h_kernel[BATCH, T, H, EMB],
             scatter_h_kernel[BATCH, T, H, EMB],
         ](
             grad_c_t, grad_act_emb_bte_to_bt,

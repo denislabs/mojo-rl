@@ -469,7 +469,7 @@ def cond_block_forward_gpu[
 
     comptime TPB_X = 16
     comptime TPB_Y = 16
-    ctx.enqueue_function[pack_mod_inp_kernel, pack_mod_inp_kernel](
+    ctx.enqueue_function[pack_mod_inp_kernel](
         ln_out_buf_t,
         raw_mod_t,
         mod_inp_buf_t,
@@ -520,7 +520,7 @@ def cond_block_forward_gpu[
             gate_inp[b, D + d_idx] = raw_mod[b, 2 * D + d_idx]
             gate_inp[b, 2 * D + d_idx] = attn_out[b, d_idx]
 
-    ctx.enqueue_function[pack_gate_inp_kernel, pack_gate_inp_kernel](
+    ctx.enqueue_function[pack_gate_inp_kernel](
         x_prev_t,
         raw_mod_t,
         attn_out_buf_t,
@@ -666,7 +666,7 @@ def cond_block_backward_gpu[
             sgrm[b, 2 * D + d_idx] = sgg[b, D + d_idx]
             sgao[b, d_idx] = sgg[b, 2 * D + d_idx]
 
-    ctx.enqueue_function[split_gate_grad_kernel, split_gate_grad_kernel](
+    ctx.enqueue_function[split_gate_grad_kernel](
         sgg_t,
         grad_x_prev_t,
         sgrm_t,
@@ -719,7 +719,7 @@ def cond_block_backward_gpu[
             sgrm[b, D + d_idx] = sgmi[b, D + d_idx]
             sgrm[b, d_idx] = sgmi[b, 2 * D + d_idx]
 
-    ctx.enqueue_function[split_mod_grad_kernel, split_mod_grad_kernel](
+    ctx.enqueue_function[split_mod_grad_kernel](
         sgmi_t,
         sglnout_t,
         sgrm_t,
@@ -748,7 +748,7 @@ def cond_block_backward_gpu[
         if b < BT and d_idx < D:
             grad_x_prev[b, d_idx] = grad_x_prev[b, d_idx] + sglnin[b, d_idx]
 
-    ctx.enqueue_function[accum_lnin_kernel, accum_lnin_kernel](
+    ctx.enqueue_function[accum_lnin_kernel](
         grad_x_prev_t,
         sglnin_t,
         grid_dim=(ceildiv(BT, TPB_X), ceildiv(D, TPB_Y)),
