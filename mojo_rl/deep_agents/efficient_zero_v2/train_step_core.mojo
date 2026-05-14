@@ -463,7 +463,17 @@ def ezv2_train_step_gpu_core[
             gpu.workspace_buf,
         )
 
-        # Target branch (no cache, no gradient).
+        # Target branch (stop-grad, no backward — but uses TRAINING-MODE
+        # forward so BN normalizes by batch stats just like the online
+        # branch. Matches PyTorch reference SimSiam (both branches in
+        # `train()` mode; only `.detach()` stops gradient on the target).
+        # With LN→BN in the projector (2026-05-14), running-stats BN on
+        # the target left the trivial constant-output collapse path open
+        # early in training because running_mean=0/var=1 init doesn't
+        # subtract the batch mean of the constant. Batch-stat BN here
+        # kills the constant collapse symmetrically. Cache writes to
+        # `rep_obs_cache_buf` / `proj_obs_cache_buf` are scratch — no
+        # backward consumes them.
         # Gather batch_obs[:, k, :] → obs_step.
         ctx.enqueue_function[gather_obs](
             batch_obs_t,
@@ -473,32 +483,44 @@ def ezv2_train_step_gpu_core[
             block_dim=(TPB,),
         )
 
-        # rep(obs_step) → rep_obs (no cache; stop-grad target)
+        # rep(obs_step) → rep_obs — train-mode BN, throw-away cache.
+        var rep_obs_cache_w = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Config.RepModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](gpu.rep_obs_cache_buf.unsafe_ptr())
         Network[
             Config.RepModel, Config.OptType
-        ].forward_gpu[BATCH](
+        ].forward_gpu_with_cache[BATCH](
             ctx,
             obs_step_t_in,
             rep_obs_t_out,
             gpu.representation.params_view(),
             gpu.representation.model_state_view(),
+            rep_obs_cache_w,
             gpu.workspace_buf,
         )
 
-        # projector(rep_obs) → proj_obs[k_offset] (no cache)
+        # projector(rep_obs) → proj_obs[k_offset] — train-mode BN.
         var proj_obs_k_in = LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Config.ProjectorModel.OUT_DIM),
             MutAnyOrigin,
         ](gpu.proj_obs_buf.unsafe_ptr() + k_offset * BATCH * PROJ)
+        var proj_obs_cache_w = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Config.ProjectorModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](gpu.proj_obs_cache_buf.unsafe_ptr())
         Network[
             Config.ProjectorModel, Config.OptType
-        ].forward_gpu[BATCH](
+        ].forward_gpu_with_cache[BATCH](
             ctx,
             rep_obs_t_in_proj,
             proj_obs_k_in,
             gpu.projector.params_view(),
             gpu.projector.model_state_view(),
+            proj_obs_cache_w,
             gpu.workspace_buf,
         )
 

@@ -856,6 +856,21 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         dtype
     ]  # [K * BATCH * PredictorModel.CACHE_SIZE]
 
+    # Target-branch scratch caches (SimSiam stop-grad).
+    # Used so that the target rep + projector forward can run in
+    # *training-mode* (batch-stat BN), matching the PyTorch reference
+    # where both branches use `train()` mode. The cache writes are wasted
+    # (no backward through the target), but BN normalization stays
+    # consistent between the online and target branches and the trivial
+    # constant-output collapse path is properly killed at every step.
+    # One-slice buffer reused across k=1..K.
+    var rep_obs_cache_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * RepModel.CACHE_SIZE], target rep scratch
+    var proj_obs_cache_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * ProjectorModel.CACHE_SIZE], target proj scratch
+
     # ── Target-net boot-V scratch (Phase 3b) ────────────────────────────
     # Per-(sample) staging for `rep_target → pred_target → decode` chain,
     # called K+1 times per train step (one per timestep k=0..K) under
@@ -1161,6 +1176,13 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.pred_dyn_caches_buf = ctx.enqueue_create_buffer[dtype](
             Self.K * Self.BATCH * PREDR_CS if PREDR_CS > 0 else 1
         )
+        # Target-branch scratch caches (single slice, reused per k).
+        self.rep_obs_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * REP_CS if REP_CS > 0 else 1
+        )
+        self.proj_obs_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * PROJ_CS if PROJ_CS > 0 else 1
+        )
 
         # ── Gradient buffers ────────────────────────────────────────────
         self.grad_pred_out_buf = ctx.enqueue_create_buffer[dtype](
@@ -1462,6 +1484,8 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.pred_caches_buf = take.pred_caches_buf^
         self.proj_dyn_caches_buf = take.proj_dyn_caches_buf^
         self.pred_dyn_caches_buf = take.pred_dyn_caches_buf^
+        self.rep_obs_cache_buf = take.rep_obs_cache_buf^
+        self.proj_obs_cache_buf = take.proj_obs_cache_buf^
         self.grad_pred_out_buf = take.grad_pred_out_buf^
         self.grad_dyn_out_buf = take.grad_dyn_out_buf^
         self.grad_pred_dyn_buf = take.grad_pred_dyn_buf^
