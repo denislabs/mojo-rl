@@ -25,4 +25,15 @@ def main() raises:
         log_every=50,
         rng_seed=0xCAFE,
         lambda_sigreg=0.09,
+        # Phase 4b: 3 iters x 8 random shots, autoregressive MPC horizon=2.
+        # Smoke config T=4, H=3 -> max mpc_horizon = T - H + 1 = 2.
+        eval_steps=3,
+        eval_samples=8,
+        eval_seed=0xBEEF,
+        mpc_horizon=2,
+        # Phase 4c: CEM with 2 iters x 16 samples, top-4.
+        cem_iters=2,
+        cem_samples=16,
+        cem_topk=4,
+        cem_smoothing=0.5,
     )

@@ -54,6 +54,18 @@ def main() raises:
         num_steps=8000,
         log_every=200,
         rng_seed=0xCAFE,
+        # Phase 4b: autoregressive MPC eval after training.
+        # T=6, H=4 -> max mpc_horizon = T - H + 1 = 3. Goal frame = sampled
+        # window frame T-1 (= 2 frames after the last context frame).
+        eval_steps=10,
+        eval_samples=32,
+        eval_seed=0xBEEF,
+        mpc_horizon=3,
+        # Phase 4c: CEM with 5 iters x 64 samples, top-8.
+        cem_iters=5,
+        cem_samples=64,
+        cem_topk=8,
+        cem_smoothing=0.5,
     )
 
     # =========================================================================

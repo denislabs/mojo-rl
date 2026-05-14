@@ -21,9 +21,10 @@ host-samples (pixels, actions) and `enqueue_copy`s them to device.
 
 from std.math import abs, sqrt, ceildiv
 from std.memory import alloc
-from std.random import seed as _set_seed
+from std.random import seed as _set_seed, random_float64
 from std.time import perf_counter_ns
-from std.gpu import global_idx
+from std.gpu import global_idx, thread_idx
+from std.gpu.primitives import block
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
@@ -139,6 +140,131 @@ def accumulate_emb_kernel[
     var i = Int(global_idx.y)
     if b < BATCH and i < T * EMB:
         dst[b, i] = dst[b, i] + src[b, i]
+
+
+# =============================================================================
+# Phase 4 GPU-side rollout kernels — keep emb_seq, action_plan, score on device.
+# Eliminates per-step host->device of BATCH*T*EMB + the corresponding pred
+# download. Each kernel works on plain (BATCH, ROLL_T, EMB/ACT) layouts.
+# =============================================================================
+
+
+# Initialize emb_seq[b, 0..H-1, :] = emb_start[b, :], zero rest.
+def replicate_start_emb_kernel[
+    BATCH: Int, H: Int, EMB: Int, ROLL_T: Int,
+](
+    emb_start: LayoutTensor[
+        dtype, Layout.row_major(BATCH, EMB), MutAnyOrigin
+    ],
+    emb_seq: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ROLL_T * EMB), MutAnyOrigin
+    ],
+):
+    var b = Int(global_idx.x)
+    var p = Int(global_idx.y)
+    var d = Int(global_idx.z)
+    if b < BATCH and p < ROLL_T and d < EMB:
+        if p < H:
+            emb_seq[b, p * EMB + d] = emb_start[b, d]
+        else:
+            emb_seq[b, p * EMB + d] = Scalar[dtype](0.0)
+
+
+# Slide H-position window from emb_seq[k..k+H-1] -> emb_buf[0..H-1].
+# Pad emb_buf[H..T-1] with zeros (slice_h_kernel only reads first H).
+def slide_emb_window_kernel[
+    BATCH: Int, T: Int, H: Int, EMB: Int, ROLL_T: Int,
+](
+    emb_seq: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ROLL_T * EMB), MutAnyOrigin
+    ],
+    emb_buf: LayoutTensor[
+        dtype, Layout.row_major(BATCH * T, EMB), MutAnyOrigin
+    ],
+    k: Int,
+):
+    var b = Int(global_idx.x)
+    var p = Int(global_idx.y)
+    var d = Int(global_idx.z)
+    if b < BATCH and p < T and d < EMB:
+        if p < H:
+            emb_buf[b * T + p, d] = emb_seq[b, (k + p) * EMB + d]
+        else:
+            emb_buf[b * T + p, d] = Scalar[dtype](0.0)
+
+
+# Slide H-position window from action_plan[k..k+H-1] -> actions_buf[0..H-1].
+# Pad actions_buf[H..T-1] with zeros.
+def slide_actions_window_kernel[
+    BATCH: Int, T: Int, H: Int, ACT: Int, NEEDED_ACTIONS: Int,
+](
+    action_plan: LayoutTensor[
+        dtype, Layout.row_major(BATCH, NEEDED_ACTIONS * ACT), MutAnyOrigin
+    ],
+    actions_buf: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * ACT), MutAnyOrigin
+    ],
+    k: Int,
+):
+    var b = Int(global_idx.x)
+    var p = Int(global_idx.y)
+    var a = Int(global_idx.z)
+    if b < BATCH and p < T and a < ACT:
+        if p < H:
+            actions_buf[b, p * ACT + a] = (
+                action_plan[b, (k + p) * ACT + a]
+            )
+        else:
+            actions_buf[b, p * ACT + a] = Scalar[dtype](0.0)
+
+
+# Store pred[:, H-1, :] into emb_seq[:, k+H, :].
+def store_pred_last_kernel[
+    BATCH: Int, H: Int, EMB: Int, ROLL_T: Int,
+](
+    pred: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    emb_seq: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ROLL_T * EMB), MutAnyOrigin
+    ],
+    k: Int,
+):
+    var b = Int(global_idx.x)
+    var d = Int(global_idx.y)
+    if b < BATCH and d < EMB:
+        emb_seq[b, (k + H) * EMB + d] = pred[b, (H - 1) * EMB + d]
+
+
+# Compute MSE(emb_seq[:, GOAL_POS, :], emb_goal[:, :]) summed across
+# BATCH × EMB; thread 0 writes the sum to score_out[0].
+# Caller divides by BATCH * EMB on host (or just inspects raw sum).
+# Single block of BATCH threads (BATCH ≤ 256 in our configs).
+def mpc_score_kernel[
+    BATCH: Int, EMB: Int, ROLL_T: Int,
+](
+    emb_seq: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ROLL_T * EMB), MutAnyOrigin
+    ],
+    emb_goal: LayoutTensor[
+        dtype, Layout.row_major(BATCH, EMB), MutAnyOrigin
+    ],
+    score_out: LayoutTensor[
+        dtype, Layout.row_major(1), MutAnyOrigin
+    ],
+    goal_pos: Int,
+):
+    var b = Int(thread_idx.x)
+    var local_sum: Scalar[dtype] = 0.0
+    if b < BATCH:
+        for d in range(EMB):
+            var diff = (
+                emb_seq[b, goal_pos * EMB + d] - emb_goal[b, d]
+            )
+            local_sum += diff * diff
+    var block_sum = block.sum[block_size=BATCH](local_sum)
+    if thread_idx.x == 0:
+        score_out[0] = block_sum
 
 
 # =============================================================================
@@ -462,6 +588,939 @@ def run_cond_layer_backward[
     )
 
 
+# =============================================================================
+# Phase 4 eval helper — one shot of the action-conditioned forward pipeline.
+#
+# Does: AE.forward -> slice_h x2 -> POS.forward -> DEPTH × run_cond_layer_forward
+#       -> PROJ.forward
+#
+# Extracted to module scope so the trainer body doesn't double the inline
+# forward path (training already has one copy). Same pattern as
+# `run_cond_layer_forward` — keeps Mojo's comptime inliner from blowing up.
+#
+# Caller is responsible for: encoder forward (runs once per eval iter),
+# action upload, pred download + MSE scoring.
+# =============================================================================
+def _run_eval_shot_forward[
+    BATCH: Int, T: Int, H: Int, EMB: Int, ACT: Int,
+    SMOOTHED: Int, PROJ_H: Int,
+    PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
+](
+    ctx: DeviceContext,
+    # AE.
+    ae_params: LayoutTensor[
+        dtype,
+        Layout.row_major(ActionEmbedder[T, ACT, SMOOTHED, EMB].PARAM_SIZE),
+        MutAnyOrigin,
+    ],
+    ae_state: LayoutTensor[
+        dtype,
+        Layout.row_major(ActionEmbedder[T, ACT, SMOOTHED, EMB].STATE_SIZE),
+        MutAnyOrigin,
+    ],
+    actions_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * ACT), MutAnyOrigin
+    ],
+    mut act_emb_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * EMB), MutAnyOrigin
+    ],
+    mut ae_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH, ActionEmbedder[T, ACT, SMOOTHED, EMB].CACHE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    ae_ws_buf: DeviceBuffer[dtype],
+    # Slice IO. emb_t supplied by caller (encoder output, unchanged across
+    # shots); act_emb_buf is the same DeviceBuffer that backs act_emb_t —
+    # we re-view it as (BT, EMB) inside.
+    emb_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * T, EMB), MutAnyOrigin
+    ],
+    act_emb_buf: DeviceBuffer[dtype],
+    mut x_prev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut c_in_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    # POS.
+    pos_params: LayoutTensor[
+        dtype,
+        Layout.row_major(AutoDiffChain[BiasAdd[H * EMB]].PARAM_SIZE),
+        MutAnyOrigin,
+    ],
+    pos_state: LayoutTensor[
+        dtype,
+        Layout.row_major(AutoDiffChain[BiasAdd[H * EMB]].STATE_SIZE),
+        MutAnyOrigin,
+    ],
+    x_prev_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut x_prev_pe_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut pos_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH, AutoDiffChain[BiasAdd[H * EMB]].CACHE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    pos_ws_buf: DeviceBuffer[dtype],
+    # DEPTH stack — per-layer state lists (caller indexes inside).
+    mut adaln_states: List[GPUNetworkState[AdaLNMod[EMB], Adam[]]],
+    mut msa_states: List[
+        GPUNetworkState[
+            MultiHeadAttention[EMB, PRED_HEADS, H, True], Adam[]
+        ]
+    ],
+    mut mlp_states: List[GPUNetworkState[CondMLP[EMB, PRED_FF], Adam[]]],
+    # Base DeviceBuffers consumed by run_cond_layer_forward.
+    x_prev_pe_buf: DeviceBuffer[dtype],
+    x_inter_buf: DeviceBuffer[dtype],
+    pred_raw_buf: DeviceBuffer[dtype],
+    # Cache buffers — sliced per-layer inside run_cond_layer_forward.
+    silu_cache_buf: DeviceBuffer[dtype],
+    adaln_cache_buf: DeviceBuffer[dtype],
+    ln1_cache_buf: DeviceBuffer[dtype],
+    mod1_cache_buf: DeviceBuffer[dtype],
+    msa_cache_buf: DeviceBuffer[dtype],
+    gate1_cache_buf: DeviceBuffer[dtype],
+    ln2_cache_buf: DeviceBuffer[dtype],
+    mod2_cache_buf: DeviceBuffer[dtype],
+    mlp_cache_buf: DeviceBuffer[dtype],
+    gate2_cache_buf: DeviceBuffer[dtype],
+    raw_mod_buf: DeviceBuffer[dtype],
+    x_mid_buf_d: DeviceBuffer[dtype],
+    # Scratch tensors shared across layers (mut for run_cond_layer_forward).
+    mut silu_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut ln_out_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut mod_inp_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, 3 * EMB), MutAnyOrigin
+    ],
+    mut mod_x_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut branch_out_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut gate_inp_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, 3 * EMB), MutAnyOrigin
+    ],
+    adaln_ws_buf: DeviceBuffer[dtype],
+    msa_ws_buf: DeviceBuffer[dtype],
+    mlp_ws_buf: DeviceBuffer[dtype],
+    # PROJ — Tokenwise[H, Sequential[Linear, BatchNorm1D, GELU, Linear]].
+    proj_params: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].PARAM_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    proj_state: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].STATE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    mut proj_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH,
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].CACHE_SIZE,
+        ),
+        MutAnyOrigin,
+    ],
+    proj_ws_buf: DeviceBuffer[dtype],
+    pred_raw_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut pred_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+) raises:
+    comptime AE = ActionEmbedder[T, ACT, SMOOTHED, EMB]
+    comptime POS = AutoDiffChain[BiasAdd[H * EMB]]
+    comptime _PredProjPerToken = Sequential[
+        Linear[EMB, PROJ_H],
+        BatchNorm1D[PROJ_H],
+        GELU[PROJ_H],
+        Linear[PROJ_H, EMB],
+    ]
+    comptime PROJ = Tokenwise[H, _PredProjPerToken]
+
+    # AE: actions (BATCH, T*ACT) -> act_emb (BATCH, T*EMB).
+    AE.forward_gpu[BATCH, dtype](
+        ctx, act_emb_t, actions_t,
+        ae_params, ae_state,
+        ae_cache_t, ae_ws_buf,
+    )
+
+    # Re-view act_emb_buf as (BT, EMB) for slicing.
+    var act_emb_bt_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH * T, EMB), MutAnyOrigin
+    ](act_emb_buf.unsafe_ptr())
+
+    # Slice first H tokens of emb + act_emb.
+    ctx.enqueue_function[
+        slice_h_kernel[BATCH, T, H, EMB],
+    ](
+        emb_t, x_prev_t,
+        grid_dim=(
+            ceildiv(BATCH, TPB_X),
+            ceildiv(H, TPB_Y),
+            ceildiv(EMB, TPB_Z),
+        ),
+        block_dim=(TPB_X, TPB_Y, TPB_Z),
+    )
+    ctx.enqueue_function[
+        slice_h_kernel[BATCH, T, H, EMB],
+    ](
+        act_emb_bt_t, c_in_t,
+        grid_dim=(
+            ceildiv(BATCH, TPB_X),
+            ceildiv(H, TPB_Y),
+            ceildiv(EMB, TPB_Z),
+        ),
+        block_dim=(TPB_X, TPB_Y, TPB_Z),
+    )
+
+    # POS: x_prev_pe = x_prev + pos_bias.
+    POS.forward_gpu[BATCH, dtype](
+        ctx, x_prev_pe_bh_t, x_prev_bh_t,
+        pos_params, pos_state,
+        pos_cache_t, pos_ws_buf,
+    )
+
+    # DEPTH × cond_block forward.
+    for d in range(DEPTH):
+        run_cond_layer_forward[BATCH, H, EMB, PRED_HEADS, PRED_FF](
+            ctx, d, DEPTH,
+            x_prev_pe_buf, x_inter_buf, pred_raw_buf,
+            c_in_t,
+            adaln_states[d].params_view(),
+            adaln_states[d].model_state_view(),
+            msa_states[d].params_view(),
+            msa_states[d].model_state_view(),
+            mlp_states[d].params_view(),
+            mlp_states[d].model_state_view(),
+            silu_cache_buf, adaln_cache_buf,
+            ln1_cache_buf, mod1_cache_buf,
+            msa_cache_buf, gate1_cache_buf,
+            ln2_cache_buf, mod2_cache_buf,
+            mlp_cache_buf, gate2_cache_buf,
+            raw_mod_buf, x_mid_buf_d,
+            silu_buf_t, ln_out_buf_t, mod_inp_buf_t,
+            mod_x_buf_t, branch_out_buf_t, gate_inp_buf_t,
+            adaln_ws_buf, msa_ws_buf, mlp_ws_buf,
+        )
+
+    # PROJ: per-token Linear+BN+GELU+Linear over (BATCH, H*EMB).
+    PROJ.forward_gpu[BATCH, dtype](
+        ctx, pred_t, pred_raw_bh_t,
+        proj_params, proj_state,
+        proj_cache_t, proj_ws_buf,
+    )
+
+
+# =============================================================================
+# Phase 4b MPC shot — one rollout of mpc_horizon autoregressive steps.
+#
+# Extracted to module scope to keep train_lewm_offline_gpu's body small
+# (otherwise inline kernel call count past ~90 def-raises explodes compile time).
+#
+# Per step k ∈ [0, mpc_horizon):
+#   1. Build emb window from emb_seq_host[k..k+H] -> upload to emb_buf.
+#   2. Build action window from action_plan_host[k..k+H] -> upload to actions_buf.
+#   3. Call _run_eval_shot_forward.
+#   4. Download pred, take pred[:, H-1, :] as new emb, store in emb_seq_host[k+H].
+#
+# Returns: MSE(emb_seq_host[H+mpc_horizon-1], emb_goal_host) over BATCH × EMB.
+# =============================================================================
+def _run_mpc_shot[
+    BATCH: Int, T: Int, H: Int, EMB: Int, ACT: Int,
+    SMOOTHED: Int, PROJ_H: Int,
+    PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
+](
+    ctx: DeviceContext,
+    mpc_horizon: Int,
+    needed_actions: Int,
+    # GPU-resident rollout state (caller pre-allocates + uploads).
+    emb_start_dev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, EMB), MutAnyOrigin
+    ],
+    emb_goal_dev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, EMB), MutAnyOrigin
+    ],
+    mut emb_seq_dev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, (T + 1) * EMB), MutAnyOrigin
+    ],
+    action_plan_dev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * ACT), MutAnyOrigin
+    ],
+    mut score_dev_t: LayoutTensor[
+        dtype, Layout.row_major(1), MutAnyOrigin
+    ],
+    score_dev_buf: DeviceBuffer[dtype],
+    mut score_host_buf: HostBuffer[dtype],
+    # All args passed through to _run_eval_shot_forward.
+    ae_params: LayoutTensor[
+        dtype,
+        Layout.row_major(ActionEmbedder[T, ACT, SMOOTHED, EMB].PARAM_SIZE),
+        MutAnyOrigin,
+    ],
+    ae_state: LayoutTensor[
+        dtype,
+        Layout.row_major(ActionEmbedder[T, ACT, SMOOTHED, EMB].STATE_SIZE),
+        MutAnyOrigin,
+    ],
+    actions_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * ACT), MutAnyOrigin
+    ],
+    mut act_emb_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * EMB), MutAnyOrigin
+    ],
+    mut ae_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH, ActionEmbedder[T, ACT, SMOOTHED, EMB].CACHE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    ae_ws_buf: DeviceBuffer[dtype],
+    emb_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * T, EMB), MutAnyOrigin
+    ],
+    act_emb_buf: DeviceBuffer[dtype],
+    mut x_prev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut c_in_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    pos_params: LayoutTensor[
+        dtype,
+        Layout.row_major(AutoDiffChain[BiasAdd[H * EMB]].PARAM_SIZE),
+        MutAnyOrigin,
+    ],
+    pos_state: LayoutTensor[
+        dtype,
+        Layout.row_major(AutoDiffChain[BiasAdd[H * EMB]].STATE_SIZE),
+        MutAnyOrigin,
+    ],
+    x_prev_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut x_prev_pe_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut pos_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH, AutoDiffChain[BiasAdd[H * EMB]].CACHE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    pos_ws_buf: DeviceBuffer[dtype],
+    mut adaln_states: List[GPUNetworkState[AdaLNMod[EMB], Adam[]]],
+    mut msa_states: List[
+        GPUNetworkState[
+            MultiHeadAttention[EMB, PRED_HEADS, H, True], Adam[]
+        ]
+    ],
+    mut mlp_states: List[GPUNetworkState[CondMLP[EMB, PRED_FF], Adam[]]],
+    x_prev_pe_buf: DeviceBuffer[dtype],
+    x_inter_buf: DeviceBuffer[dtype],
+    pred_raw_buf: DeviceBuffer[dtype],
+    silu_cache_buf: DeviceBuffer[dtype],
+    adaln_cache_buf: DeviceBuffer[dtype],
+    ln1_cache_buf: DeviceBuffer[dtype],
+    mod1_cache_buf: DeviceBuffer[dtype],
+    msa_cache_buf: DeviceBuffer[dtype],
+    gate1_cache_buf: DeviceBuffer[dtype],
+    ln2_cache_buf: DeviceBuffer[dtype],
+    mod2_cache_buf: DeviceBuffer[dtype],
+    mlp_cache_buf: DeviceBuffer[dtype],
+    gate2_cache_buf: DeviceBuffer[dtype],
+    raw_mod_buf: DeviceBuffer[dtype],
+    x_mid_buf_d: DeviceBuffer[dtype],
+    mut silu_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut ln_out_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut mod_inp_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, 3 * EMB), MutAnyOrigin
+    ],
+    mut mod_x_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut branch_out_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut gate_inp_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, 3 * EMB), MutAnyOrigin
+    ],
+    adaln_ws_buf: DeviceBuffer[dtype],
+    msa_ws_buf: DeviceBuffer[dtype],
+    mlp_ws_buf: DeviceBuffer[dtype],
+    proj_params: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].PARAM_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    proj_state: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].STATE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    mut proj_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH,
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].CACHE_SIZE,
+        ),
+        MutAnyOrigin,
+    ],
+    proj_ws_buf: DeviceBuffer[dtype],
+    pred_raw_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut pred_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+) raises -> Float64:
+    # ROLL_T = T + 1 (max emb_seq positions). emb_seq_t / action_plan_t /
+    # emb_start_t / emb_goal_t / score_t live entirely on device; this
+    # function does no per-step host<->device copy.
+
+    # Init: emb_seq[b, 0..H-1] = emb_start[b]; rest zero.
+    var tpb_rep = (4, 4, 16)
+    ctx.enqueue_function[
+        replicate_start_emb_kernel[BATCH, H, EMB, T + 1],
+    ](
+        emb_start_dev_t, emb_seq_dev_t,
+        grid_dim=(
+            ceildiv(BATCH, tpb_rep[0]),
+            ceildiv(T + 1, tpb_rep[1]),
+            ceildiv(EMB, tpb_rep[2]),
+        ),
+        block_dim=tpb_rep,
+    )
+
+    # Rollout: mpc_horizon GPU forward passes.
+    for k in range(mpc_horizon):
+        # Build emb window (positions 0..H-1) + zero rest.
+        ctx.enqueue_function[
+            slide_emb_window_kernel[BATCH, T, H, EMB, T + 1],
+        ](
+            emb_seq_dev_t, emb_t, k,
+            grid_dim=(
+                ceildiv(BATCH, tpb_rep[0]),
+                ceildiv(T, tpb_rep[1]),
+                ceildiv(EMB, tpb_rep[2]),
+            ),
+            block_dim=tpb_rep,
+        )
+        # Build action window (positions 0..H-1) + zero rest.
+        ctx.enqueue_function[
+            slide_actions_window_kernel[BATCH, T, H, ACT, T],
+        ](
+            action_plan_dev_t, actions_t, k,
+            grid_dim=(
+                ceildiv(BATCH, tpb_rep[0]),
+                ceildiv(T, tpb_rep[1]),
+                ceildiv(ACT, tpb_rep[2]),
+            ),
+            block_dim=tpb_rep,
+        )
+
+        _run_eval_shot_forward[
+            BATCH, T, H, EMB, ACT, SMOOTHED, PROJ_H,
+            PRED_HEADS, PRED_FF, DEPTH,
+        ](
+            ctx,
+            ae_params, ae_state,
+            actions_t, act_emb_t,
+            ae_cache_t, ae_ws_buf,
+            emb_t, act_emb_buf,
+            x_prev_t, c_in_t,
+            pos_params, pos_state,
+            x_prev_bh_t, x_prev_pe_bh_t,
+            pos_cache_t, pos_ws_buf,
+            adaln_states, msa_states, mlp_states,
+            x_prev_pe_buf, x_inter_buf, pred_raw_buf,
+            silu_cache_buf, adaln_cache_buf,
+            ln1_cache_buf, mod1_cache_buf,
+            msa_cache_buf, gate1_cache_buf,
+            ln2_cache_buf, mod2_cache_buf,
+            mlp_cache_buf, gate2_cache_buf,
+            raw_mod_buf, x_mid_buf_d,
+            silu_buf_t, ln_out_buf_t, mod_inp_buf_t,
+            mod_x_buf_t, branch_out_buf_t, gate_inp_buf_t,
+            adaln_ws_buf, msa_ws_buf, mlp_ws_buf,
+            proj_params, proj_state,
+            proj_cache_t, proj_ws_buf,
+            pred_raw_bh_t, pred_t,
+        )
+
+        # Store pred[:, H-1, :] into emb_seq[:, k+H, :].
+        ctx.enqueue_function[
+            store_pred_last_kernel[BATCH, H, EMB, T + 1],
+        ](
+            pred_t, emb_seq_dev_t, k,
+            grid_dim=(ceildiv(BATCH, 16), ceildiv(EMB, 16)),
+            block_dim=(16, 16),
+        )
+
+    # Score on device: MSE summed across BATCH × EMB → score_dev_t[0].
+    # `needed_actions` (runtime) used in eval block for buffer sizing, no
+    # use inside the helper itself.
+    _ = needed_actions
+    ctx.enqueue_function[
+        mpc_score_kernel[BATCH, EMB, T + 1],
+    ](
+        emb_seq_dev_t, emb_goal_dev_t, score_dev_t,
+        H + mpc_horizon - 1,
+        grid_dim=1,
+        block_dim=BATCH,
+    )
+    ctx.enqueue_copy(score_host_buf, score_dev_buf)
+    ctx.synchronize()
+    return Float64(score_host_buf[0]) / Float64(BATCH * EMB)
+
+
+# =============================================================================
+# Phase 4c CEM eval — cross-entropy method over discrete action sequences.
+#
+# For each eval iter:
+#   1. Initialize per-step categorical distribution to uniform.
+#   2. For cem_iters CEM iterations:
+#      a. Sample cem_samples plans from current distribution.
+#      b. Score each via _run_mpc_shot (full autoregressive rollout to goal).
+#      c. Pick top-K elites (lowest MSE).
+#      d. Refit per-step categorical to elite frequencies with smoothing.
+#   3. Return final best score across all CEM iters.
+#
+# All host-side state management (distribution, samples, scores, elite
+# selection, refit). Per-step _run_mpc_shot does the GPU forward.
+#
+# Extracted as a module helper from the start — adds many def-raises
+# (cem_iters × cem_samples = 80+ helper calls per eval iter) which would
+# blow up train_lewm_offline_gpu's inline body otherwise.
+# =============================================================================
+def _run_cem_eval_iter[
+    BATCH: Int, T: Int, H: Int, EMB: Int, ACT: Int,
+    SMOOTHED: Int, PROJ_H: Int,
+    PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
+](
+    ctx: DeviceContext,
+    mpc_horizon: Int, needed_actions: Int,
+    cem_iters: Int, cem_samples: Int, cem_topk: Int,
+    cem_smoothing: Float64,
+    # Host scratch — distribution + samples + scores + elites stay on host.
+    action_dist_host_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        # (BATCH, needed_actions, ACT) — per-step categorical probs.
+    action_plan_host_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        # (BATCH, needed_actions, ACT) — one-hot plan staged for upload.
+    sample_actions_host_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        # (cem_samples, BATCH, needed_actions, ACT) — sampled plans.
+    sample_scores_host_buf: UnsafePointer[Float64, MutAnyOrigin],
+        # (cem_samples,) — MSE for each sample.
+    elite_indices_host_buf: UnsafePointer[Int, MutAnyOrigin],
+        # (cem_topk,) — indices of top-K samples by lowest score.
+    # Device-side rollout state (caller pre-allocates; emb_start_dev_t and
+    # emb_goal_dev_t already filled by trainer's encode step).
+    emb_start_dev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, EMB), MutAnyOrigin
+    ],
+    emb_goal_dev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, EMB), MutAnyOrigin
+    ],
+    mut emb_seq_dev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, (T + 1) * EMB), MutAnyOrigin
+    ],
+    mut action_plan_dev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * ACT), MutAnyOrigin
+    ],
+    mut action_plan_dev_buf: DeviceBuffer[dtype],
+    mut score_dev_t: LayoutTensor[
+        dtype, Layout.row_major(1), MutAnyOrigin
+    ],
+    score_dev_buf: DeviceBuffer[dtype],
+    mut score_host_buf: HostBuffer[dtype],
+    # Staging HostBuffer for action_plan upload (size BATCH * T * ACT).
+    mut action_plan_stage_host: HostBuffer[dtype],
+    # All args passed through to _run_mpc_shot -> _run_eval_shot_forward.
+    ae_params: LayoutTensor[
+        dtype,
+        Layout.row_major(ActionEmbedder[T, ACT, SMOOTHED, EMB].PARAM_SIZE),
+        MutAnyOrigin,
+    ],
+    ae_state: LayoutTensor[
+        dtype,
+        Layout.row_major(ActionEmbedder[T, ACT, SMOOTHED, EMB].STATE_SIZE),
+        MutAnyOrigin,
+    ],
+    actions_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * ACT), MutAnyOrigin
+    ],
+    mut act_emb_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * EMB), MutAnyOrigin
+    ],
+    mut ae_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH, ActionEmbedder[T, ACT, SMOOTHED, EMB].CACHE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    ae_ws_buf: DeviceBuffer[dtype],
+    emb_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * T, EMB), MutAnyOrigin
+    ],
+    act_emb_buf: DeviceBuffer[dtype],
+    mut x_prev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut c_in_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    pos_params: LayoutTensor[
+        dtype,
+        Layout.row_major(AutoDiffChain[BiasAdd[H * EMB]].PARAM_SIZE),
+        MutAnyOrigin,
+    ],
+    pos_state: LayoutTensor[
+        dtype,
+        Layout.row_major(AutoDiffChain[BiasAdd[H * EMB]].STATE_SIZE),
+        MutAnyOrigin,
+    ],
+    x_prev_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut x_prev_pe_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut pos_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH, AutoDiffChain[BiasAdd[H * EMB]].CACHE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    pos_ws_buf: DeviceBuffer[dtype],
+    mut adaln_states: List[GPUNetworkState[AdaLNMod[EMB], Adam[]]],
+    mut msa_states: List[
+        GPUNetworkState[
+            MultiHeadAttention[EMB, PRED_HEADS, H, True], Adam[]
+        ]
+    ],
+    mut mlp_states: List[GPUNetworkState[CondMLP[EMB, PRED_FF], Adam[]]],
+    x_prev_pe_buf: DeviceBuffer[dtype],
+    x_inter_buf: DeviceBuffer[dtype],
+    pred_raw_buf: DeviceBuffer[dtype],
+    silu_cache_buf: DeviceBuffer[dtype],
+    adaln_cache_buf: DeviceBuffer[dtype],
+    ln1_cache_buf: DeviceBuffer[dtype],
+    mod1_cache_buf: DeviceBuffer[dtype],
+    msa_cache_buf: DeviceBuffer[dtype],
+    gate1_cache_buf: DeviceBuffer[dtype],
+    ln2_cache_buf: DeviceBuffer[dtype],
+    mod2_cache_buf: DeviceBuffer[dtype],
+    mlp_cache_buf: DeviceBuffer[dtype],
+    gate2_cache_buf: DeviceBuffer[dtype],
+    raw_mod_buf: DeviceBuffer[dtype],
+    x_mid_buf_d: DeviceBuffer[dtype],
+    mut silu_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut ln_out_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut mod_inp_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, 3 * EMB), MutAnyOrigin
+    ],
+    mut mod_x_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut branch_out_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut gate_inp_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, 3 * EMB), MutAnyOrigin
+    ],
+    adaln_ws_buf: DeviceBuffer[dtype],
+    msa_ws_buf: DeviceBuffer[dtype],
+    mlp_ws_buf: DeviceBuffer[dtype],
+    proj_params: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].PARAM_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    proj_state: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].STATE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    mut proj_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH,
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].CACHE_SIZE,
+        ),
+        MutAnyOrigin,
+    ],
+    proj_ws_buf: DeviceBuffer[dtype],
+    pred_raw_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut pred_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+) raises -> Float64:
+    # Initialize uniform per-step categorical.
+    var inv_act = Scalar[dtype](1.0 / Float64(ACT))
+    for b in range(BATCH):
+        for t in range(needed_actions):
+            for a in range(ACT):
+                action_dist_host_buf[
+                    b * needed_actions * ACT + t * ACT + a
+                ] = inv_act
+
+    var best_overall: Float64 = 1.0e30
+
+    for cem_it in range(cem_iters):
+        # ---- Sample cem_samples plans, score each. ----
+        for s in range(cem_samples):
+            # Sample plan for each batch row.
+            for b in range(BATCH):
+                for t in range(needed_actions):
+                    var r = random_float64()
+                    var cumul: Float64 = 0.0
+                    var picked = ACT - 1
+                    for a in range(ACT):
+                        cumul += Float64(
+                            action_dist_host_buf[
+                                b * needed_actions * ACT + t * ACT + a
+                            ]
+                        )
+                        if r < cumul:
+                            picked = a
+                            break
+                    # Store one-hot into both sample storage and per-call plan.
+                    for a in range(ACT):
+                        var v = (
+                            Scalar[dtype](1.0)
+                            if a == picked
+                            else Scalar[dtype](0.0)
+                        )
+                        sample_actions_host_buf[
+                            (s * BATCH + b) * needed_actions * ACT
+                            + t * ACT + a
+                        ] = v
+                        action_plan_host_buf[
+                            b * needed_actions * ACT + t * ACT + a
+                        ] = v
+
+            # Upload this action plan to device (BATCH * T * ACT).
+            # Pad positions [needed_actions..T-1] with zeros (slide kernel
+            # ignores them).
+            for b in range(BATCH):
+                for t in range(needed_actions):
+                    for a in range(ACT):
+                        action_plan_stage_host[
+                            b * T * ACT + t * ACT + a
+                        ] = action_plan_host_buf[
+                            b * needed_actions * ACT + t * ACT + a
+                        ]
+                for t_pad in range(T - needed_actions):
+                    for a in range(ACT):
+                        action_plan_stage_host[
+                            b * T * ACT + (needed_actions + t_pad) * ACT
+                            + a
+                        ] = Scalar[dtype](0.0)
+            ctx.enqueue_copy(action_plan_dev_buf, action_plan_stage_host)
+
+            # Score this plan (fully GPU rollout + score, 1 scalar back).
+            var score = _run_mpc_shot[
+                BATCH, T, H, EMB, ACT, SMOOTHED, PROJ_H,
+                PRED_HEADS, PRED_FF, DEPTH,
+            ](
+                ctx, mpc_horizon, needed_actions,
+                emb_start_dev_t, emb_goal_dev_t,
+                emb_seq_dev_t, action_plan_dev_t,
+                score_dev_t, score_dev_buf, score_host_buf,
+                ae_params, ae_state,
+                actions_t, act_emb_t,
+                ae_cache_t, ae_ws_buf,
+                emb_t, act_emb_buf,
+                x_prev_t, c_in_t,
+                pos_params, pos_state,
+                x_prev_bh_t, x_prev_pe_bh_t,
+                pos_cache_t, pos_ws_buf,
+                adaln_states, msa_states, mlp_states,
+                x_prev_pe_buf, x_inter_buf, pred_raw_buf,
+                silu_cache_buf, adaln_cache_buf,
+                ln1_cache_buf, mod1_cache_buf,
+                msa_cache_buf, gate1_cache_buf,
+                ln2_cache_buf, mod2_cache_buf,
+                mlp_cache_buf, gate2_cache_buf,
+                raw_mod_buf, x_mid_buf_d,
+                silu_buf_t, ln_out_buf_t, mod_inp_buf_t,
+                mod_x_buf_t, branch_out_buf_t, gate_inp_buf_t,
+                adaln_ws_buf, msa_ws_buf, mlp_ws_buf,
+                proj_params, proj_state,
+                proj_cache_t, proj_ws_buf,
+                pred_raw_bh_t, pred_t,
+            )
+            sample_scores_host_buf[s] = score
+            if score < best_overall:
+                best_overall = score
+
+        # ---- Pick top-K elites by lowest score. ----
+        # Mark used; greedy pick min.
+        for k in range(cem_topk):
+            elite_indices_host_buf[k] = -1
+        for k in range(cem_topk):
+            var best_idx: Int = -1
+            var best_score: Float64 = 1.0e30
+            for s in range(cem_samples):
+                # Skip already-picked.
+                var already_picked = False
+                for kk in range(k):
+                    if elite_indices_host_buf[kk] == s:
+                        already_picked = True
+                        break
+                if not already_picked and sample_scores_host_buf[s] < best_score:
+                    best_score = sample_scores_host_buf[s]
+                    best_idx = s
+            elite_indices_host_buf[k] = best_idx
+
+        # ---- Refit per-step categorical from elites with smoothing. ----
+        # action_dist[b, t, a] = (count[b, t, a] + smoothing) / (topk + ACT * smoothing)
+        var denom = Float64(cem_topk) + Float64(ACT) * cem_smoothing
+        for b in range(BATCH):
+            for t in range(needed_actions):
+                # Reset counts.
+                for a in range(ACT):
+                    action_dist_host_buf[
+                        b * needed_actions * ACT + t * ACT + a
+                    ] = Scalar[dtype](cem_smoothing / denom)
+                # Add elite counts.
+                for k in range(cem_topk):
+                    var e = elite_indices_host_buf[k]
+                    for a in range(ACT):
+                        var v = sample_actions_host_buf[
+                            (e * BATCH + b) * needed_actions * ACT
+                            + t * ACT + a
+                        ]
+                        if v > Scalar[dtype](0.5):
+                            action_dist_host_buf[
+                                b * needed_actions * ACT + t * ACT + a
+                            ] += Scalar[dtype](1.0 / denom)
+                            break
+
+        # Iter best for logging.
+        var iter_best: Float64 = 1.0e30
+        for s in range(cem_samples):
+            if sample_scores_host_buf[s] < iter_best:
+                iter_best = sample_scores_host_buf[s]
+        print("    cem iter", cem_it, " best=", iter_best)
+
+    return best_overall
+
+
 def train_lewm_offline_gpu[
     BATCH: Int,
     T: Int,
@@ -489,6 +1548,14 @@ def train_lewm_offline_gpu[
     log_every: Int = 100,
     rng_seed: Int = 0xCAFE,
     lambda_sigreg: Float64 = 0.09,
+    eval_steps: Int = 0,
+    eval_samples: Int = 32,
+    eval_seed: Int = 0xBEEF,
+    mpc_horizon: Int = 0,
+    cem_iters: Int = 0,
+    cem_samples: Int = 64,
+    cem_topk: Int = 8,
+    cem_smoothing: Float64 = 0.5,
 ) raises:
     """GPU offline JEPA trainer with SIGReg + full end-to-end gradient flow.
 
@@ -1335,6 +2402,521 @@ def train_lewm_offline_gpu[
     print("  var_min  =", var_min_ema, " (want > 0.1)")
     print("  var_mean =", var_mean_ema)
     print("  gram_off =", gram_ema, " (want < ~0.5)")
+
+    # ------------------------------------------------------------------
+    # Phase 4 eval — random action shooter (teacher-forced)
+    #
+    # For each eval iteration:
+    #   1. Sample fresh batch.
+    #   2. Forward with EXPERT actions -> expert_loss = MSE(pred, real_emb[1:H+1]).
+    #   3. For S random samples, replace actions with random one-hot and
+    #      re-run AE + POS + DEPTH + PROJ (encoder unchanged).
+    #   4. Report ratio expert/random — if << 1, model is action-aware.
+    #
+    # This is a "teacher-forced" shooter — it scores action sequences against
+    # the actual observed next-frame embeddings (NOT a goal frame). True
+    # autoregressive MPC with a goal frame is Phase 4b.
+    # ------------------------------------------------------------------
+    if eval_steps > 0 and mpc_horizon == 0:
+        print()
+        print("==== Phase 4 eval: random action shooter (teacher-forced) ====")
+        _set_seed(eval_seed)
+
+        var mse_div = Float64(BATCH * H * EMB)
+        var sum_expert: Float64 = 0.0
+        var sum_random_mean: Float64 = 0.0
+        var sum_random_min: Float64 = 0.0
+        var sum_better_frac: Float64 = 0.0
+
+        for eval_iter in range(eval_steps):
+            # Sample a fresh batch on host, copy to device.
+            buf.sample_batch_fp32(BATCH, T, pixels_sample, actions_sample)
+            for i in range(BT * IMG_DIM):
+                pixels_host[i] = pixels_sample[i]
+            for i in range(BATCH * T * ACT):
+                actions_host[i] = actions_sample[i]
+            ctx.enqueue_copy(pixels_buf, pixels_host)
+            ctx.enqueue_copy(actions_buf, actions_host)
+
+            # Encoder runs once per eval iter (pixels unchanged across S).
+            ENC.forward_gpu[BT, dtype](
+                ctx, emb_t, pixels_t,
+                enc_state.params_view(), enc_state.model_state_view(),
+                enc_cache_t, enc_ws_buf,
+            )
+
+            # Download emb once — used as target for all S shots.
+            ctx.enqueue_copy(emb_host, emb_buf)
+            ctx.synchronize()
+
+            var expert_loss: Float64 = 0.0
+            var random_mean: Float64 = 0.0
+            var random_min: Float64 = 1e30
+            var better_count: Int = 0
+
+            # s == 0 -> expert actions (already in actions_buf).
+            # s >= 1 -> random one-hot actions.
+            for s in range(1 + eval_samples):
+                if s > 0:
+                    # Generate random one-hot actions (BATCH, T, ACT).
+                    for b in range(BATCH):
+                        for tt in range(T):
+                            var r_act = Int(random_float64() * Float64(ACT))
+                            if r_act >= ACT:
+                                r_act = ACT - 1
+                            for k in range(ACT):
+                                actions_host[b * T * ACT + tt * ACT + k] = (
+                                    Scalar[dtype](1.0)
+                                    if k == r_act
+                                    else Scalar[dtype](0.0)
+                                )
+                    ctx.enqueue_copy(actions_buf, actions_host)
+
+                # One shot through AE + slice + POS + DEPTH × cond_block + PROJ.
+                _run_eval_shot_forward[
+                    BATCH, T, H, EMB, ACT, SMOOTHED, PROJ_H,
+                    PRED_HEADS, PRED_FF, DEPTH,
+                ](
+                    ctx,
+                    ae_state.params_view(), ae_state.model_state_view(),
+                    actions_t, act_emb_t,
+                    ae_cache_t, ae_ws_buf,
+                    emb_t, act_emb_buf,
+                    x_prev_t, c_in_t,
+                    pos_state.params_view(), pos_state.model_state_view(),
+                    x_prev_bh_t, x_prev_pe_bh_t,
+                    pos_cache_t, pos_ws_buf,
+                    adaln_states, msa_states, mlp_states,
+                    x_prev_pe_buf, x_inter_buf, pred_raw_buf,
+                    silu_cache_buf, adaln_cache_buf,
+                    ln1_cache_buf, mod1_cache_buf,
+                    msa_cache_buf, gate1_cache_buf,
+                    ln2_cache_buf, mod2_cache_buf,
+                    mlp_cache_buf, gate2_cache_buf,
+                    raw_mod_buf, x_mid_buf_d,
+                    silu_buf_t, ln_out_buf_t, mod_inp_buf_t,
+                    mod_x_buf_t, branch_out_buf_t, gate_inp_buf_t,
+                    adaln_ws_buf, msa_ws_buf, mlp_ws_buf,
+                    proj_state.params_view(), proj_state.model_state_view(),
+                    proj_cache_t, proj_ws_buf,
+                    pred_raw_bh_t, pred_t,
+                )
+
+                # Download pred, score MSE against emb[N_PREDS:N_PREDS+H].
+                ctx.enqueue_copy(pred_host, pred_out_buf)
+                ctx.synchronize()
+                var l: Float64 = 0.0
+                for b in range(BATCH):
+                    for i in range(H * EMB):
+                        var p = Float64(pred_host[b * H * EMB + i])
+                        var tgt = Float64(
+                            emb_host[b * T * EMB + N_PREDS * EMB + i]
+                        )
+                        var diff = p - tgt
+                        l += diff * diff
+                l /= mse_div
+
+                if s == 0:
+                    expert_loss = l
+                else:
+                    random_mean += l
+                    if l < random_min:
+                        random_min = l
+                    if l > expert_loss:
+                        better_count += 1
+
+            random_mean /= Float64(eval_samples)
+            var better_frac = (
+                Float64(better_count) / Float64(eval_samples)
+            )
+            sum_expert += expert_loss
+            sum_random_mean += random_mean
+            sum_random_min += random_min
+            sum_better_frac += better_frac
+
+            print(
+                "  eval", eval_iter,
+                " expert=", expert_loss,
+                " rand_mean=", random_mean,
+                " rand_min=", random_min,
+                " ratio=", expert_loss / (random_mean + 1e-12),
+                " frac_random_worse=", better_frac,
+            )
+
+        var avg_expert = sum_expert / Float64(eval_steps)
+        var avg_rand_mean = sum_random_mean / Float64(eval_steps)
+        var avg_rand_min = sum_random_min / Float64(eval_steps)
+        var avg_better = sum_better_frac / Float64(eval_steps)
+        print()
+        print("Phase 4 eval summary (",
+            eval_steps, "iters x ", eval_samples, "random samples):"
+        )
+        print("  expert MSE         =", avg_expert)
+        print("  random MSE (mean)  =", avg_rand_mean)
+        print("  random MSE (min)   =", avg_rand_min)
+        print(
+            "  expert/random_mean =", avg_expert / (avg_rand_mean + 1e-12),
+            " (want < 1.0 — model is action-aware)",
+        )
+        print(
+            "  expert/random_min  =", avg_expert / (avg_rand_min + 1e-12),
+        )
+        print(
+            "  frac_random_worse  =", avg_better,
+            " (want > 0.5 — most random plans are worse than expert)",
+        )
+
+    # ------------------------------------------------------------------
+    # Phase 4b eval — autoregressive MPC against a goal frame.
+    #
+    # For each eval iter:
+    #   1. Sample BATCH windows of length T. Use frame 0 as start, frame
+    #      T-1 as goal. Encode the full window once via ENC.
+    #   2. For each shot (1 expert + S random):
+    #        a. Build action plan of length mpc_horizon + H - 1. The first
+    #           H actions form the initial window; subsequent actions
+    #           advance the window by 1 per rollout step.
+    #        b. Initialize emb_seq[b, 0..H-1] = emb_start replicated H
+    #           times. (We have no real history; we pad with start.)
+    #        c. For k = 0..mpc_horizon-1:
+    #           - Upload emb_seq[b, k..k+H-1] -> emb_buf positions 0..H-1.
+    #           - Upload action_plan[b, k..k+H-1] -> actions_buf positions 0..H-1.
+    #           - Run _run_eval_shot_forward.
+    #           - Download pred; take pred[:, H-1, :] as new emb.
+    #           - Store at emb_seq[b, k+H].
+    #        d. Score: MSE(emb_seq[b, H+mpc_horizon-1], emb_goal[b]).
+    #   3. Aggregate expert vs random over shots.
+    #
+    # mpc_horizon ≤ T - H + 1 (limited by sampled action window length).
+    # ------------------------------------------------------------------
+    if eval_steps > 0 and mpc_horizon > 0:
+        # mpc_horizon validation — need H + mpc_horizon - 1 ≤ T actions.
+        var needed_actions = H + mpc_horizon - 1
+        if needed_actions > T:
+            raise Error(
+                "mpc_horizon too large: H + mpc_horizon - 1 > T"
+                " (need bigger T or smaller horizon)"
+            )
+
+        print()
+        print(
+            "==== Phase 4b eval: autoregressive MPC (horizon=",
+            mpc_horizon, ") ===="
+        )
+        _set_seed(eval_seed)
+
+        # Host scratch — start/goal/action_plan staged on host before
+        # upload; sample storage for CEM elites stays on host.
+        var emb_start_host_buf = alloc[Scalar[dtype]](BATCH * EMB)
+        var emb_goal_host_buf = alloc[Scalar[dtype]](BATCH * EMB)
+        var action_plan_host_buf = alloc[Scalar[dtype]](
+            BATCH * needed_actions * ACT
+        )
+        # CEM-specific host scratch.
+        var cem_active = cem_iters > 0
+        var _cs = cem_samples if cem_active else 1
+        var _ck = cem_topk if cem_active else 1
+        var action_dist_host_buf = alloc[Scalar[dtype]](
+            BATCH * needed_actions * ACT
+        )
+        var sample_actions_host_buf = alloc[Scalar[dtype]](
+            _cs * BATCH * needed_actions * ACT
+        )
+        var sample_scores_host_buf = alloc[Float64](_cs)
+        var elite_indices_host_buf = alloc[Int](_ck)
+
+        # GPU-resident rollout state — emb_seq sized for ROLL_T_MAX = T + 1
+        # positions (worst case H + mpc_horizon ≤ T + 1).
+        var emb_start_dev_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH * EMB
+        )
+        var emb_goal_dev_buf = ctx.enqueue_create_buffer[dtype](BATCH * EMB)
+        var emb_seq_dev_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH * (T + 1) * EMB
+        )
+        var action_plan_dev_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH * T * ACT
+        )
+        var score_dev_buf = ctx.enqueue_create_buffer[dtype](1)
+        var score_host_buf = ctx.enqueue_create_host_buffer[dtype](1)
+        var emb_start_stage_host = ctx.enqueue_create_host_buffer[dtype](
+            BATCH * EMB
+        )
+        var emb_goal_stage_host = ctx.enqueue_create_host_buffer[dtype](
+            BATCH * EMB
+        )
+        var action_plan_stage_host = ctx.enqueue_create_host_buffer[dtype](
+            BATCH * T * ACT
+        )
+
+        var emb_start_dev_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, EMB), MutAnyOrigin
+        ](emb_start_dev_buf.unsafe_ptr())
+        var emb_goal_dev_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, EMB), MutAnyOrigin
+        ](emb_goal_dev_buf.unsafe_ptr())
+        var emb_seq_dev_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, (T + 1) * EMB), MutAnyOrigin
+        ](emb_seq_dev_buf.unsafe_ptr())
+        var action_plan_dev_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, T * ACT), MutAnyOrigin
+        ](action_plan_dev_buf.unsafe_ptr())
+        var score_dev_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](score_dev_buf.unsafe_ptr())
+
+        var sum_expert_mpc: Float64 = 0.0
+        var sum_random_mean_mpc: Float64 = 0.0
+        var sum_random_min_mpc: Float64 = 0.0
+        var sum_better_frac_mpc: Float64 = 0.0
+        var sum_cem: Float64 = 0.0
+        var cem_better_expert: Int = 0
+        var cem_better_random_min: Int = 0
+
+        for eval_iter in range(eval_steps):
+            # Sample fresh batch, copy to device, encode.
+            buf.sample_batch_fp32(BATCH, T, pixels_sample, actions_sample)
+            for i in range(BT * IMG_DIM):
+                pixels_host[i] = pixels_sample[i]
+            ctx.enqueue_copy(pixels_buf, pixels_host)
+
+            ENC.forward_gpu[BT, dtype](
+                ctx, emb_t, pixels_t,
+                enc_state.params_view(), enc_state.model_state_view(),
+                enc_cache_t, enc_ws_buf,
+            )
+            ctx.enqueue_copy(emb_host, emb_buf)
+            ctx.synchronize()
+
+            # Extract start (frame 0) + goal (frame T-1) per batch row.
+            for b in range(BATCH):
+                for d in range(EMB):
+                    emb_start_host_buf[b * EMB + d] = (
+                        emb_host[b * T * EMB + d]
+                    )
+                    emb_goal_host_buf[b * EMB + d] = (
+                        emb_host[b * T * EMB + (T - 1) * EMB + d]
+                    )
+
+            var expert_loss_mpc: Float64 = 0.0
+            var random_mean_mpc: Float64 = 0.0
+            var random_min_mpc: Float64 = 1e30
+            var better_count_mpc: Int = 0
+
+            for s in range(1 + eval_samples):
+                # Build action plan (BATCH, needed_actions, ACT).
+                if s == 0:
+                    # Expert: take first needed_actions actions from buffer.
+                    for b in range(BATCH):
+                        for ti in range(needed_actions):
+                            for k in range(ACT):
+                                action_plan_host_buf[
+                                    b * needed_actions * ACT + ti * ACT + k
+                                ] = actions_sample[
+                                    b * T * ACT + ti * ACT + k
+                                ]
+                else:
+                    for b in range(BATCH):
+                        for ti in range(needed_actions):
+                            var r_act = Int(
+                                random_float64() * Float64(ACT)
+                            )
+                            if r_act >= ACT:
+                                r_act = ACT - 1
+                            for k in range(ACT):
+                                action_plan_host_buf[
+                                    b * needed_actions * ACT
+                                    + ti * ACT + k
+                                ] = (
+                                    Scalar[dtype](1.0)
+                                    if k == r_act
+                                    else Scalar[dtype](0.0)
+                                )
+
+                var l = _run_mpc_shot[
+                    BATCH, T, H, EMB, ACT, SMOOTHED, PROJ_H,
+                    PRED_HEADS, PRED_FF, DEPTH,
+                ](
+                    ctx,
+                    mpc_horizon, needed_actions,
+                    emb_start_host_buf, emb_goal_host_buf,
+                    action_plan_host_buf, emb_seq_host_buf,
+                    emb_host, actions_host, pred_host,
+                    emb_buf, actions_buf, pred_out_buf,
+                    ae_state.params_view(), ae_state.model_state_view(),
+                    actions_t, act_emb_t,
+                    ae_cache_t, ae_ws_buf,
+                    emb_t, act_emb_buf,
+                    x_prev_t, c_in_t,
+                    pos_state.params_view(), pos_state.model_state_view(),
+                    x_prev_bh_t, x_prev_pe_bh_t,
+                    pos_cache_t, pos_ws_buf,
+                    adaln_states, msa_states, mlp_states,
+                    x_prev_pe_buf, x_inter_buf, pred_raw_buf,
+                    silu_cache_buf, adaln_cache_buf,
+                    ln1_cache_buf, mod1_cache_buf,
+                    msa_cache_buf, gate1_cache_buf,
+                    ln2_cache_buf, mod2_cache_buf,
+                    mlp_cache_buf, gate2_cache_buf,
+                    raw_mod_buf, x_mid_buf_d,
+                    silu_buf_t, ln_out_buf_t, mod_inp_buf_t,
+                    mod_x_buf_t, branch_out_buf_t, gate_inp_buf_t,
+                    adaln_ws_buf, msa_ws_buf, mlp_ws_buf,
+                    proj_state.params_view(), proj_state.model_state_view(),
+                    proj_cache_t, proj_ws_buf,
+                    pred_raw_bh_t, pred_t,
+                )
+
+                if s == 0:
+                    expert_loss_mpc = l
+                else:
+                    random_mean_mpc += l
+                    if l < random_min_mpc:
+                        random_min_mpc = l
+                    if l > expert_loss_mpc:
+                        better_count_mpc += 1
+
+            random_mean_mpc /= Float64(eval_samples)
+            var better_frac_mpc = (
+                Float64(better_count_mpc) / Float64(eval_samples)
+            )
+            sum_expert_mpc += expert_loss_mpc
+            sum_random_mean_mpc += random_mean_mpc
+            sum_random_min_mpc += random_min_mpc
+            sum_better_frac_mpc += better_frac_mpc
+
+            print(
+                "  mpc eval", eval_iter,
+                " expert=", expert_loss_mpc,
+                " rand_mean=", random_mean_mpc,
+                " rand_min=", random_min_mpc,
+                " ratio=", expert_loss_mpc / (random_mean_mpc + 1e-12),
+                " frac_random_worse=", better_frac_mpc,
+            )
+
+            # ---- CEM eval for this iter (optional). ----
+            if cem_active:
+                print("  -- CEM eval iter", eval_iter, "--")
+                var cem_score = _run_cem_eval_iter[
+                    BATCH, T, H, EMB, ACT, SMOOTHED, PROJ_H,
+                    PRED_HEADS, PRED_FF, DEPTH,
+                ](
+                    ctx,
+                    mpc_horizon, needed_actions,
+                    cem_iters, cem_samples, cem_topk, cem_smoothing,
+                    emb_start_host_buf, emb_goal_host_buf,
+                    action_dist_host_buf, action_plan_host_buf,
+                    sample_actions_host_buf, sample_scores_host_buf,
+                    elite_indices_host_buf,
+                    emb_seq_host_buf,
+                    emb_host, actions_host, pred_host,
+                    emb_buf, actions_buf, pred_out_buf,
+                    ae_state.params_view(), ae_state.model_state_view(),
+                    actions_t, act_emb_t,
+                    ae_cache_t, ae_ws_buf,
+                    emb_t, act_emb_buf,
+                    x_prev_t, c_in_t,
+                    pos_state.params_view(), pos_state.model_state_view(),
+                    x_prev_bh_t, x_prev_pe_bh_t,
+                    pos_cache_t, pos_ws_buf,
+                    adaln_states, msa_states, mlp_states,
+                    x_prev_pe_buf, x_inter_buf, pred_raw_buf,
+                    silu_cache_buf, adaln_cache_buf,
+                    ln1_cache_buf, mod1_cache_buf,
+                    msa_cache_buf, gate1_cache_buf,
+                    ln2_cache_buf, mod2_cache_buf,
+                    mlp_cache_buf, gate2_cache_buf,
+                    raw_mod_buf, x_mid_buf_d,
+                    silu_buf_t, ln_out_buf_t, mod_inp_buf_t,
+                    mod_x_buf_t, branch_out_buf_t, gate_inp_buf_t,
+                    adaln_ws_buf, msa_ws_buf, mlp_ws_buf,
+                    proj_state.params_view(), proj_state.model_state_view(),
+                    proj_cache_t, proj_ws_buf,
+                    pred_raw_bh_t, pred_t,
+                )
+                sum_cem += cem_score
+                if cem_score < expert_loss_mpc:
+                    cem_better_expert += 1
+                if cem_score < random_min_mpc:
+                    cem_better_random_min += 1
+                print(
+                    "  cem eval", eval_iter, " best=", cem_score,
+                    " vs expert=", expert_loss_mpc,
+                    " vs rand_min=", random_min_mpc,
+                    " cem/expert=", cem_score / (expert_loss_mpc + 1e-12),
+                    " cem/rand_min=", cem_score / (random_min_mpc + 1e-12),
+                )
+
+        var avg_expert_mpc = sum_expert_mpc / Float64(eval_steps)
+        var avg_rand_mean_mpc = (
+            sum_random_mean_mpc / Float64(eval_steps)
+        )
+        var avg_rand_min_mpc = sum_random_min_mpc / Float64(eval_steps)
+        var avg_better_mpc = sum_better_frac_mpc / Float64(eval_steps)
+        print()
+        print("Phase 4b MPC eval summary (",
+            eval_steps, "iters x ", eval_samples, "shots, horizon=",
+            mpc_horizon, "):"
+        )
+        print("  expert MSE         =", avg_expert_mpc)
+        print("  random MSE (mean)  =", avg_rand_mean_mpc)
+        print("  random MSE (min)   =", avg_rand_min_mpc)
+        print(
+            "  expert/random_mean =",
+            avg_expert_mpc / (avg_rand_mean_mpc + 1e-12),
+            " (want < 1.0)",
+        )
+        print(
+            "  expert/random_min  =",
+            avg_expert_mpc / (avg_rand_min_mpc + 1e-12),
+            " (want < 1.0 — paper exit criterion 0.5)",
+        )
+        print(
+            "  frac_random_worse  =", avg_better_mpc,
+            " (want > 0.5)",
+        )
+
+        if cem_active:
+            var avg_cem = sum_cem / Float64(eval_steps)
+            var cem_vs_expert_frac = (
+                Float64(cem_better_expert) / Float64(eval_steps)
+            )
+            var cem_vs_rmin_frac = (
+                Float64(cem_better_random_min) / Float64(eval_steps)
+            )
+            print()
+            print("Phase 4c CEM eval summary (",
+                eval_steps, "iters x ", cem_iters, "CEM iters x ",
+                cem_samples, "samples, top", cem_topk, "):"
+            )
+            print("  cem MSE (best)     =", avg_cem)
+            print(
+                "  cem/expert         =",
+                avg_cem / (avg_expert_mpc + 1e-12),
+                " (want < 1.0 — CEM beats expert in latent)",
+            )
+            print(
+                "  cem/random_min     =",
+                avg_cem / (avg_rand_min_mpc + 1e-12),
+                " (want < 1.0 — CEM beats best random)",
+            )
+            print(
+                "  cem_better_expert  =", cem_vs_expert_frac,
+                " (want > 0.5)",
+            )
+            print(
+                "  cem_better_rmin    =", cem_vs_rmin_frac,
+                " (want > 0.5 — CEM finds better-than-random plans)",
+            )
+
+        emb_seq_host_buf.free()
+        emb_start_host_buf.free()
+        emb_goal_host_buf.free()
+        action_plan_host_buf.free()
+        action_dist_host_buf.free()
+        sample_actions_host_buf.free()
+        sample_scores_host_buf.free()
+        elite_indices_host_buf.free()
 
     pixels_sample.free()
     actions_sample.free()
