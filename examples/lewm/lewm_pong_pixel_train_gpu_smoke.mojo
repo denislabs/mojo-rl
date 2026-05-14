@@ -17,7 +17,7 @@ def main() raises:
         HIDDEN=32, ENC_HEADS=2, ENC_LAYERS=1, EMB=32, PROJ_H=64,
         ACT=3, SMOOTHED=16,
         PRED_HEADS=2, PRED_FF=64,
-        DEPTH=1,
+        DEPTH=2,
         SIG_NUM_PROJ=64, SIG_KNOTS=5,
     ](
         buffer_path=String("/tmp/lewm_pong_buffer.bin"),

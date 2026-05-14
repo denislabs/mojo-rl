@@ -38,6 +38,11 @@ def main() raises:
     # =========================================================================
     # Scaled config — change `BATCH=8` if Apple Metal OOMs.
     # =========================================================================
+    # NOTE on DEPTH: defaults to 1 below (single dual-branch cond_block).
+    # To test paper-aligned multi-layer predictor, append `DEPTH=N` after
+    # PRED_FF=256 (N=2 ~doubles param count + compile time; paper uses 6).
+    # Cold-build time scales roughly linearly with DEPTH (3 min at D=1,
+    # ~5-7 min at D=2 on Apple M1 Pro).
     train_lewm_offline_gpu[
         BATCH=16, T=6, H=4, N_PREDS=1,
         IN_CH=4, IMG=84, PATCH=14, N_PATCHES=36,

@@ -45,6 +45,7 @@ from .cond_block import (
     CondMLP,
     cond_block_forward_gpu,
     cond_block_backward_gpu,
+    cb_accum_kernel,
 )
 from .pong_buffer import (
     PongBuffer,
@@ -140,6 +141,327 @@ def accumulate_emb_kernel[
         dst[b, i] = dst[b, i] + src[b, i]
 
 
+# =============================================================================
+# Per-layer cond_block orchestration (DEPTH-stacked predictor).
+#
+# These helpers exist to isolate compilation: putting the per-layer cache
+# slicing + cond_block_forward/backward call directly in the trainer's
+# main function body triggered a Mojo compile-time explosion (5GB+ RAM,
+# 3+ min). Each helper is its own function with comptime params, so it
+# compiles once. The trainer's for-d loop body is then just one helper
+# call per iteration.
+# =============================================================================
+
+
+def run_cond_layer_forward[
+    BATCH: Int, T: Int, D: Int, HEADS: Int, FF: Int,
+](
+    ctx: DeviceContext,
+    d: Int,
+    DEPTH_VAL: Int,
+    # Base x buffers (helper picks x_in/x_out based on d, DEPTH_VAL).
+    x_prev_pe_buf: DeviceBuffer[dtype],
+    x_inter_buf: DeviceBuffer[dtype],
+    pred_raw_buf: DeviceBuffer[dtype],
+    # Shared c input (same across all layers).
+    c_in_t: LayoutTensor[dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin],
+    # Per-layer params + state (caller passes adaln_states[d].params_view() etc.).
+    adaln_params: LayoutTensor[
+        dtype, Layout.row_major(AdaLNMod[D].PARAM_SIZE), MutAnyOrigin
+    ],
+    adaln_state: LayoutTensor[
+        dtype, Layout.row_major(AdaLNMod[D].STATE_SIZE), MutAnyOrigin
+    ],
+    msa_params: LayoutTensor[
+        dtype,
+        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].PARAM_SIZE),
+        MutAnyOrigin,
+    ],
+    msa_state: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            MultiHeadAttention[D, HEADS, T, True].STATE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    mlp_params: LayoutTensor[
+        dtype, Layout.row_major(CondMLP[D, FF].PARAM_SIZE), MutAnyOrigin
+    ],
+    mlp_state: LayoutTensor[
+        dtype, Layout.row_major(CondMLP[D, FF].STATE_SIZE), MutAnyOrigin
+    ],
+    # Base cache buffers (helper slices to layer d).
+    silu_cache_buf: DeviceBuffer[dtype],
+    adaln_cache_buf: DeviceBuffer[dtype],
+    ln1_cache_buf: DeviceBuffer[dtype],
+    mod1_cache_buf: DeviceBuffer[dtype],
+    msa_cache_buf: DeviceBuffer[dtype],
+    gate1_cache_buf: DeviceBuffer[dtype],
+    ln2_cache_buf: DeviceBuffer[dtype],
+    mod2_cache_buf: DeviceBuffer[dtype],
+    mlp_cache_buf: DeviceBuffer[dtype],
+    gate2_cache_buf: DeviceBuffer[dtype],
+    raw_mod_buf: DeviceBuffer[dtype],
+    x_mid_buf_d: DeviceBuffer[dtype],
+    # Scratch (reused across layers).
+    mut silu_buf_t: LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ],
+    mut ln_out_buf_t: LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ],
+    mut mod_inp_buf_t: LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), 3 * D), MutAnyOrigin
+    ],
+    mut mod_x_buf_t: LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ],
+    mut branch_out_buf_t: LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ],
+    mut gate_inp_buf_t: LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), 3 * D), MutAnyOrigin
+    ],
+    # Workspaces.
+    adaln_workspace: DeviceBuffer[dtype],
+    msa_workspace: DeviceBuffer[dtype],
+    mlp_workspace: DeviceBuffer[dtype],
+) raises:
+    # x_in: x_prev_pe at layer 0; intermediate slice otherwise.
+    var x_in_t = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ](
+        x_prev_pe_buf.unsafe_ptr() if d == 0
+        else x_inter_buf.unsafe_ptr() + (d - 1) * (BATCH * T) * D
+    )
+    # x_out: pred_raw at layer DEPTH-1; intermediate slice otherwise.
+    var x_out_t = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ](
+        pred_raw_buf.unsafe_ptr() if d == DEPTH_VAL - 1
+        else x_inter_buf.unsafe_ptr() + d * (BATCH * T) * D
+    )
+    # Per-layer cache slices.
+    var silu_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ](silu_cache_buf.unsafe_ptr() + d * (BATCH * T) * D)
+    var adaln_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), AdaLNMod[D].CACHE_SIZE), MutAnyOrigin
+    ](adaln_cache_buf.unsafe_ptr() + d * (BATCH * T) * AdaLNMod[D].CACHE_SIZE)
+    var ln1_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D + 1), MutAnyOrigin
+    ](ln1_cache_buf.unsafe_ptr() + d * (BATCH * T) * (D + 1))
+    var mod1_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), 2 * D), MutAnyOrigin
+    ](mod1_cache_buf.unsafe_ptr() + d * (BATCH * T) * 2 * D)
+    var msa_cache_d = LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH, MultiHeadAttention[D, HEADS, T, True].CACHE_SIZE),
+        MutAnyOrigin,
+    ](
+        msa_cache_buf.unsafe_ptr()
+        + d * BATCH * MultiHeadAttention[D, HEADS, T, True].CACHE_SIZE
+    )
+    var gate1_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), 2 * D), MutAnyOrigin
+    ](gate1_cache_buf.unsafe_ptr() + d * (BATCH * T) * 2 * D)
+    var ln2_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D + 1), MutAnyOrigin
+    ](ln2_cache_buf.unsafe_ptr() + d * (BATCH * T) * (D + 1))
+    var mod2_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), 2 * D), MutAnyOrigin
+    ](mod2_cache_buf.unsafe_ptr() + d * (BATCH * T) * 2 * D)
+    var mlp_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), CondMLP[D, FF].CACHE_SIZE), MutAnyOrigin
+    ](mlp_cache_buf.unsafe_ptr() + d * (BATCH * T) * CondMLP[D, FF].CACHE_SIZE)
+    var gate2_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), 2 * D), MutAnyOrigin
+    ](gate2_cache_buf.unsafe_ptr() + d * (BATCH * T) * 2 * D)
+    var raw_mod_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), 6 * D), MutAnyOrigin
+    ](raw_mod_buf.unsafe_ptr() + d * (BATCH * T) * 6 * D)
+    var x_mid_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ](x_mid_buf_d.unsafe_ptr() + d * (BATCH * T) * D)
+
+    cond_block_forward_gpu[BATCH, T, D, HEADS, FF](
+        ctx, x_in_t, c_in_t,
+        adaln_params, adaln_state,
+        msa_params, msa_state,
+        mlp_params, mlp_state,
+        x_out_t,
+        silu_cache_d, adaln_cache_d,
+        ln1_cache_d, mod1_cache_d, msa_cache_d, gate1_cache_d,
+        ln2_cache_d, mod2_cache_d, mlp_cache_d, gate2_cache_d,
+        raw_mod_d, x_mid_d,
+        silu_buf_t, ln_out_buf_t, mod_inp_buf_t,
+        mod_x_buf_t, branch_out_buf_t, gate_inp_buf_t,
+        adaln_workspace, msa_workspace, mlp_workspace,
+    )
+
+
+def run_cond_layer_backward[
+    BATCH: Int, T: Int, D: Int, HEADS: Int, FF: Int,
+](
+    ctx: DeviceContext,
+    d: Int,
+    DEPTH_VAL: Int,
+    # Base grad_x buffers (helper picks grad_x_next/grad_x_prev based on d).
+    grad_pred_raw_buf: DeviceBuffer[dtype],
+    grad_x_inter_buf: DeviceBuffer[dtype],
+    grad_x_prev_pe_buf: DeviceBuffer[dtype],
+    # Per-layer params + state.
+    adaln_params: LayoutTensor[
+        dtype, Layout.row_major(AdaLNMod[D].PARAM_SIZE), MutAnyOrigin
+    ],
+    adaln_state: LayoutTensor[
+        dtype, Layout.row_major(AdaLNMod[D].STATE_SIZE), MutAnyOrigin
+    ],
+    msa_params: LayoutTensor[
+        dtype,
+        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].PARAM_SIZE),
+        MutAnyOrigin,
+    ],
+    msa_state: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            MultiHeadAttention[D, HEADS, T, True].STATE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    mlp_params: LayoutTensor[
+        dtype, Layout.row_major(CondMLP[D, FF].PARAM_SIZE), MutAnyOrigin
+    ],
+    mlp_state: LayoutTensor[
+        dtype, Layout.row_major(CondMLP[D, FF].STATE_SIZE), MutAnyOrigin
+    ],
+    # Base cache buffers (sliced per layer).
+    silu_cache_buf: DeviceBuffer[dtype],
+    adaln_cache_buf: DeviceBuffer[dtype],
+    ln1_cache_buf: DeviceBuffer[dtype],
+    mod1_cache_buf: DeviceBuffer[dtype],
+    msa_cache_buf: DeviceBuffer[dtype],
+    gate1_cache_buf: DeviceBuffer[dtype],
+    ln2_cache_buf: DeviceBuffer[dtype],
+    mod2_cache_buf: DeviceBuffer[dtype],
+    mlp_cache_buf: DeviceBuffer[dtype],
+    gate2_cache_buf: DeviceBuffer[dtype],
+    x_mid_buf_d: DeviceBuffer[dtype],
+    # Per-layer grad outputs.
+    mut grad_c_layer_t: LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ],
+    # Per-layer param grads.
+    mut g_adaln: LayoutTensor[
+        dtype, Layout.row_major(AdaLNMod[D].PARAM_SIZE), MutAnyOrigin
+    ],
+    mut g_msa: LayoutTensor[
+        dtype,
+        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].PARAM_SIZE),
+        MutAnyOrigin,
+    ],
+    mut g_mlp: LayoutTensor[
+        dtype, Layout.row_major(CondMLP[D, FF].PARAM_SIZE), MutAnyOrigin
+    ],
+    # Scratch grads (reused across layers).
+    mut sgg_t: LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), 3 * D), MutAnyOrigin
+    ],
+    mut sgbo_t: LayoutTensor[dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin],
+    mut sgmx_t: LayoutTensor[dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin],
+    mut sgmi_t: LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), 3 * D), MutAnyOrigin
+    ],
+    mut sglnout_t: LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ],
+    mut sglnin_t: LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ],
+    mut sgrm_t: LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), 6 * D), MutAnyOrigin
+    ],
+    mut sgsc_t: LayoutTensor[dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin],
+    mut grad_x_mid_t: LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ],
+    # Workspaces.
+    adaln_workspace: DeviceBuffer[dtype],
+    msa_workspace: DeviceBuffer[dtype],
+    mlp_workspace: DeviceBuffer[dtype],
+) raises:
+    # grad_x_next: grad_pred_raw at layer DEPTH-1; intermediate slice otherwise.
+    var grad_x_next_t = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ](
+        grad_pred_raw_buf.unsafe_ptr() if d == DEPTH_VAL - 1
+        else grad_x_inter_buf.unsafe_ptr() + d * (BATCH * T) * D
+    )
+    # grad_x_prev: grad_x_prev_pe at layer 0; intermediate slice otherwise.
+    var grad_x_prev_t = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ](
+        grad_x_prev_pe_buf.unsafe_ptr() if d == 0
+        else grad_x_inter_buf.unsafe_ptr() + (d - 1) * (BATCH * T) * D
+    )
+    # Per-layer cache slices (same as forward).
+    var silu_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ](silu_cache_buf.unsafe_ptr() + d * (BATCH * T) * D)
+    var adaln_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), AdaLNMod[D].CACHE_SIZE), MutAnyOrigin
+    ](adaln_cache_buf.unsafe_ptr() + d * (BATCH * T) * AdaLNMod[D].CACHE_SIZE)
+    var ln1_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D + 1), MutAnyOrigin
+    ](ln1_cache_buf.unsafe_ptr() + d * (BATCH * T) * (D + 1))
+    var mod1_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), 2 * D), MutAnyOrigin
+    ](mod1_cache_buf.unsafe_ptr() + d * (BATCH * T) * 2 * D)
+    var msa_cache_d = LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH, MultiHeadAttention[D, HEADS, T, True].CACHE_SIZE),
+        MutAnyOrigin,
+    ](
+        msa_cache_buf.unsafe_ptr()
+        + d * BATCH * MultiHeadAttention[D, HEADS, T, True].CACHE_SIZE
+    )
+    var gate1_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), 2 * D), MutAnyOrigin
+    ](gate1_cache_buf.unsafe_ptr() + d * (BATCH * T) * 2 * D)
+    var ln2_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D + 1), MutAnyOrigin
+    ](ln2_cache_buf.unsafe_ptr() + d * (BATCH * T) * (D + 1))
+    var mod2_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), 2 * D), MutAnyOrigin
+    ](mod2_cache_buf.unsafe_ptr() + d * (BATCH * T) * 2 * D)
+    var mlp_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), CondMLP[D, FF].CACHE_SIZE), MutAnyOrigin
+    ](mlp_cache_buf.unsafe_ptr() + d * (BATCH * T) * CondMLP[D, FF].CACHE_SIZE)
+    var gate2_cache_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), 2 * D), MutAnyOrigin
+    ](gate2_cache_buf.unsafe_ptr() + d * (BATCH * T) * 2 * D)
+    var x_mid_d = LayoutTensor[
+        dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
+    ](x_mid_buf_d.unsafe_ptr() + d * (BATCH * T) * D)
+
+    cond_block_backward_gpu[BATCH, T, D, HEADS, FF](
+        ctx, grad_x_next_t,
+        adaln_params, adaln_state,
+        msa_params, msa_state,
+        mlp_params, mlp_state,
+        silu_cache_d, adaln_cache_d,
+        ln1_cache_d, mod1_cache_d, msa_cache_d, gate1_cache_d,
+        ln2_cache_d, mod2_cache_d, mlp_cache_d, gate2_cache_d,
+        x_mid_d,
+        grad_x_prev_t, grad_c_layer_t,
+        g_adaln, g_msa, g_mlp,
+        sgg_t, sgbo_t, sgmx_t, sgmi_t,
+        sglnout_t, sglnin_t, sgrm_t, sgsc_t,
+        grad_x_mid_t,
+        adaln_workspace, msa_workspace, mlp_workspace,
+    )
+
+
 def train_lewm_offline_gpu[
     BATCH: Int,
     T: Int,
@@ -179,15 +501,7 @@ def train_lewm_offline_gpu[
     (`scatter_target_neg_kernel`) so gradients flow through both sides of
     the MSE — SIGReg is the only thing preventing collapse.
     """
-    # NOTE: DEPTH>1 is exposed in the API but not yet implemented in this
-    # trainer — the for-loop-per-layer infrastructure triggered a Mojo
-    # compile-time regression (3+ min at toy config vs 50s for DEPTH=1
-    # fixed). The dual-branch (MSA+MLP) implementation IS in place; depth
-    # support is a follow-up. For now we assert DEPTH == 1 at comptime.
-    comptime assert DEPTH == 1, (
-        "DEPTH > 1 not yet supported (see TODO in train_offline_gpu.mojo)."
-        " MLP branch + AdaLNMod 6D are in place; depth stacking pending."
-    )
+    comptime assert DEPTH >= 1, "DEPTH must be >= 1"
 
     comptime IMG_DIM: Int = IN_CH * IMG * IMG
     comptime BT: Int = BATCH * T
@@ -246,39 +560,57 @@ def train_lewm_offline_gpu[
     # ------------------------------------------------------------------
     # Init on CPU, upload to GPU.
     # ------------------------------------------------------------------
+    # Shared (single-instance) models.
     var cpu_enc = NetworkState[ENC, Adam[]]()
     var cpu_ae = NetworkState[AE, Adam[]]()
     var cpu_pos = NetworkState[POS, Adam[]]()
-    var cpu_adaln = NetworkState[ADALN, Adam[]]()
-    var cpu_msa = NetworkState[MSA, Adam[]]()
-    var cpu_mlp = NetworkState[MLP, Adam[]]()
     var cpu_proj = NetworkState[PROJ, Adam[]]()
     cpu_enc.initialize[Xavier[]]()
     cpu_ae.initialize[Xavier[]]()
     cpu_pos.initialize[Xavier[]]()
-    cpu_adaln.initialize[Xavier[]]()
-    cpu_msa.initialize[Xavier[]]()
-    cpu_mlp.initialize[Xavier[]]()
     cpu_proj.initialize[Xavier[]]()
-    for i in range(ADALN.PARAM_SIZE):
-        cpu_adaln.params[i] = Scalar[dtype](0)
     for i in range(POS.PARAM_SIZE):
         cpu_pos.params[i] = Scalar[dtype](0)
 
     var enc_state = GPUNetworkState[ENC, Adam[]](ctx)
     var ae_state = GPUNetworkState[AE, Adam[]](ctx)
     var pos_state = GPUNetworkState[POS, Adam[]](ctx)
-    var adaln_state = GPUNetworkState[ADALN, Adam[]](ctx)
-    var msa_state = GPUNetworkState[MSA, Adam[]](ctx)
-    var mlp_state = GPUNetworkState[MLP, Adam[]](ctx)
     var proj_state = GPUNetworkState[PROJ, Adam[]](ctx)
     enc_state.upload_from(cpu_enc, ctx)
     ae_state.upload_from(cpu_ae, ctx)
     pos_state.upload_from(cpu_pos, ctx)
-    adaln_state.upload_from(cpu_adaln, ctx)
-    msa_state.upload_from(cpu_msa, ctx)
-    mlp_state.upload_from(cpu_mlp, ctx)
     proj_state.upload_from(cpu_proj, ctx)
+
+    # Per-layer cond_block models — DEPTH copies of ADALN, MSA, MLP.
+    var cpu_adalns = List[NetworkState[ADALN, Adam[]]](capacity=DEPTH)
+    var cpu_msas = List[NetworkState[MSA, Adam[]]](capacity=DEPTH)
+    var cpu_mlps = List[NetworkState[MLP, Adam[]]](capacity=DEPTH)
+    for _ in range(DEPTH):
+        var ca = NetworkState[ADALN, Adam[]]()
+        ca.initialize[Xavier[]]()
+        for i in range(ADALN.PARAM_SIZE):
+            ca.params[i] = Scalar[dtype](0)  # AdaLN-zero
+        cpu_adalns.append(ca^)
+        var cm = NetworkState[MSA, Adam[]]()
+        cm.initialize[Xavier[]]()
+        cpu_msas.append(cm^)
+        var cf = NetworkState[MLP, Adam[]]()
+        cf.initialize[Xavier[]]()
+        cpu_mlps.append(cf^)
+
+    var adaln_states = List[GPUNetworkState[ADALN, Adam[]]](capacity=DEPTH)
+    var msa_states = List[GPUNetworkState[MSA, Adam[]]](capacity=DEPTH)
+    var mlp_states = List[GPUNetworkState[MLP, Adam[]]](capacity=DEPTH)
+    for layer_idx in range(DEPTH):
+        var ga = GPUNetworkState[ADALN, Adam[]](ctx)
+        ga.upload_from(cpu_adalns[layer_idx], ctx)
+        adaln_states.append(ga^)
+        var gm = GPUNetworkState[MSA, Adam[]](ctx)
+        gm.upload_from(cpu_msas[layer_idx], ctx)
+        msa_states.append(gm^)
+        var gf = GPUNetworkState[MLP, Adam[]](ctx)
+        gf.upload_from(cpu_mlps[layer_idx], ctx)
+        mlp_states.append(gf^)
 
     # ------------------------------------------------------------------
     # Allocate device buffers for activations / caches / grads / scratch.
@@ -316,23 +648,30 @@ def train_lewm_offline_gpu[
         _max_int(1, BATCH * PROJ.WORKSPACE_SIZE_PER_SAMPLE)
     )
 
-    # cond_block caches — MSA branch.
-    var silu_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * EMB)
-    var adaln_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * ADALN.CACHE_SIZE)
-    var ln1_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * (EMB + 1))
-    var mod1_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * 2 * EMB)
-    var msa_cache_buf = ctx.enqueue_create_buffer[dtype](BATCH * MSA.CACHE_SIZE)
-    var gate1_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * 2 * EMB)
-    # cond_block caches — MLP branch (new for dual-branch ConditionalBlock).
-    var ln2_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * (EMB + 1))
-    var mod2_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * 2 * EMB)
-    var mlp_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * MLP.CACHE_SIZE)
-    var gate2_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * 2 * EMB)
-    # AdaLN output (6D wide: shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp).
-    var raw_mod_buf = ctx.enqueue_create_buffer[dtype](BTH * 6 * EMB)
-    # x_mid_buf: holds x_prev + gate_msa * attn_out (MSA branch output) — needed
-    # for backward through gate2 + ln2.
-    var x_mid_buf_d = ctx.enqueue_create_buffer[dtype](BTH * EMB)
+    # cond_block caches — DEPTH-fold (sliced per layer in helpers).
+    var silu_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * EMB * DEPTH)
+    var adaln_cache_buf = ctx.enqueue_create_buffer[dtype](
+        BTH * ADALN.CACHE_SIZE * DEPTH
+    )
+    var ln1_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * (EMB + 1) * DEPTH)
+    var mod1_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * 2 * EMB * DEPTH)
+    var msa_cache_buf = ctx.enqueue_create_buffer[dtype](
+        BATCH * MSA.CACHE_SIZE * DEPTH
+    )
+    var gate1_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * 2 * EMB * DEPTH)
+    var ln2_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * (EMB + 1) * DEPTH)
+    var mod2_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * 2 * EMB * DEPTH)
+    var mlp_cache_buf = ctx.enqueue_create_buffer[dtype](
+        BTH * MLP.CACHE_SIZE * DEPTH
+    )
+    var gate2_cache_buf = ctx.enqueue_create_buffer[dtype](BTH * 2 * EMB * DEPTH)
+    var raw_mod_buf = ctx.enqueue_create_buffer[dtype](BTH * 6 * EMB * DEPTH)
+    var x_mid_buf_d = ctx.enqueue_create_buffer[dtype](BTH * EMB * DEPTH)
+    # Intermediate x flow between layers. (DEPTH-1) slots since layer 0 reads
+    # x_prev_pe and layer DEPTH-1 writes pred_raw directly.
+    var x_inter_buf = ctx.enqueue_create_buffer[dtype](
+        _max_int(1, BTH * EMB * (DEPTH - 1))
+    )
 
     # cond_block forward scratch (reused across MSA and MLP branches).
     var silu_buf_d = ctx.enqueue_create_buffer[dtype](BTH * EMB)
@@ -353,7 +692,7 @@ def train_lewm_offline_gpu[
         _max_int(1, BTH * MLP.WORKSPACE_SIZE_PER_SAMPLE)
     )
 
-    # cond_block backward scratch.
+    # cond_block backward scratch (reused across all DEPTH layers).
     var sgg_buf = ctx.enqueue_create_buffer[dtype](BTH * 3 * EMB)
     var sgbo_buf = ctx.enqueue_create_buffer[dtype](BTH * EMB)
     var sgmx_buf = ctx.enqueue_create_buffer[dtype](BTH * EMB)
@@ -363,6 +702,13 @@ def train_lewm_offline_gpu[
     var sgrm_buf = ctx.enqueue_create_buffer[dtype](BTH * 6 * EMB)
     var sgsc_buf = ctx.enqueue_create_buffer[dtype](BTH * EMB)
     var grad_x_mid_buf = ctx.enqueue_create_buffer[dtype](BTH * EMB)
+    # Backward intermediate grad_x flow between layers (DEPTH-1 slots).
+    var grad_x_inter_buf = ctx.enqueue_create_buffer[dtype](
+        _max_int(1, BTH * EMB * (DEPTH - 1))
+    )
+    # Per-layer grad_c output (single buffer, reused per layer; accumulated
+    # into grad_c_buf via cb_accum_kernel).
+    var grad_c_layer_buf = ctx.enqueue_create_buffer[dtype](BTH * EMB)
 
     # SIGReg buffers (forward + backward).
     var sigreg_out_buf = ctx.enqueue_create_buffer[dtype](BATCH * SIG.OUT_DIM)
@@ -468,42 +814,11 @@ def train_lewm_offline_gpu[
         dtype, Layout.row_major(BATCH, PROJ.CACHE_SIZE), MutAnyOrigin
     ](proj_cache_buf)
 
-    var silu_cache_t = LayoutTensor[
+    # Per-layer cache LayoutTensor views are created inside the
+    # run_cond_layer_forward/backward helpers (one slice per layer d).
+    var grad_c_layer_t = LayoutTensor[
         dtype, Layout.row_major(BTH, EMB), MutAnyOrigin
-    ](silu_cache_buf)
-    var adaln_cache_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, ADALN.CACHE_SIZE), MutAnyOrigin
-    ](adaln_cache_buf)
-    var ln1_cache_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, EMB + 1), MutAnyOrigin
-    ](ln1_cache_buf)
-    var mod1_cache_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, 2 * EMB), MutAnyOrigin
-    ](mod1_cache_buf)
-    var msa_cache_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, MSA.CACHE_SIZE), MutAnyOrigin
-    ](msa_cache_buf)
-    var gate1_cache_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, 2 * EMB), MutAnyOrigin
-    ](gate1_cache_buf)
-    var ln2_cache_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, EMB + 1), MutAnyOrigin
-    ](ln2_cache_buf)
-    var mod2_cache_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, 2 * EMB), MutAnyOrigin
-    ](mod2_cache_buf)
-    var mlp_cache_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, MLP.CACHE_SIZE), MutAnyOrigin
-    ](mlp_cache_buf)
-    var gate2_cache_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, 2 * EMB), MutAnyOrigin
-    ](gate2_cache_buf)
-    var raw_mod_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, 6 * EMB), MutAnyOrigin
-    ](raw_mod_buf)
-    var x_mid_buf_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, EMB), MutAnyOrigin
-    ](x_mid_buf_d)
+    ](grad_c_layer_buf)
 
     var silu_buf_t = LayoutTensor[
         dtype, Layout.row_major(BTH, EMB), MutAnyOrigin
@@ -650,10 +965,11 @@ def train_lewm_offline_gpu[
         enc_state.zero_grads(ctx)
         ae_state.zero_grads(ctx)
         pos_state.zero_grads(ctx)
-        adaln_state.zero_grads(ctx)
-        msa_state.zero_grads(ctx)
-        mlp_state.zero_grads(ctx)
         proj_state.zero_grads(ctx)
+        for layer_idx in range(DEPTH):
+            adaln_states[layer_idx].zero_grads(ctx)
+            msa_states[layer_idx].zero_grads(ctx)
+            mlp_states[layer_idx].zero_grads(ctx)
 
         # Encoder forward.
         ENC.forward_gpu[BT, dtype](
@@ -702,24 +1018,26 @@ def train_lewm_offline_gpu[
             pos_cache_t, pos_ws_buf,
         )
 
-        # cond_block: x_prev_pe + c → pred_raw (dual-branch: MSA + MLP).
-        # DEPTH==1 currently; the stack-loop with per-layer slicing caused a
-        # Mojo compile-time regression and is deferred (see TODO above).
-        cond_block_forward_gpu[BATCH, H, EMB, PRED_HEADS, PRED_FF](
-            ctx,
-            x_prev_pe_t, c_in_t,
-            adaln_state.params_view(), adaln_state.model_state_view(),
-            msa_state.params_view(), msa_state.model_state_view(),
-            mlp_state.params_view(), mlp_state.model_state_view(),
-            pred_raw_t,
-            silu_cache_t, adaln_cache_t,
-            ln1_cache_t, mod1_cache_t, msa_cache_t, gate1_cache_t,
-            ln2_cache_t, mod2_cache_t, mlp_cache_t, gate2_cache_t,
-            raw_mod_t, x_mid_buf_t,
-            silu_buf_t, ln_out_buf_t, mod_inp_buf_t,
-            mod_x_buf_t, branch_out_buf_t, gate_inp_buf_t,
-            adaln_ws_buf, msa_ws_buf, mlp_ws_buf,
-        )
+        # cond_block stack: DEPTH dual-branch (MSA + MLP) layers via helper.
+        for d in range(DEPTH):
+            run_cond_layer_forward[BATCH, H, EMB, PRED_HEADS, PRED_FF](
+                ctx, d, DEPTH,
+                x_prev_pe_buf, x_inter_buf, pred_raw_buf,
+                c_in_t,
+                adaln_states[d].params_view(),
+                adaln_states[d].model_state_view(),
+                msa_states[d].params_view(),
+                msa_states[d].model_state_view(),
+                mlp_states[d].params_view(),
+                mlp_states[d].model_state_view(),
+                silu_cache_buf, adaln_cache_buf,
+                ln1_cache_buf, mod1_cache_buf, msa_cache_buf, gate1_cache_buf,
+                ln2_cache_buf, mod2_cache_buf, mlp_cache_buf, gate2_cache_buf,
+                raw_mod_buf, x_mid_buf_d,
+                silu_buf_t, ln_out_buf_t, mod_inp_buf_t,
+                mod_x_buf_t, branch_out_buf_t, gate_inp_buf_t,
+                adaln_ws_buf, msa_ws_buf, mlp_ws_buf,
+            )
 
         # PredProj: (BATCH, H*EMB) → (BATCH, H*EMB).
         PROJ.forward_gpu[BATCH, dtype](
@@ -835,9 +1153,6 @@ def train_lewm_offline_gpu[
         var enc_g = enc_state.grads_view()
         var ae_g = ae_state.grads_view()
         var pos_g = pos_state.grads_view()
-        var adaln_g = adaln_state.grads_view()
-        var msa_g = msa_state.grads_view()
-        var mlp_g = mlp_state.grads_view()
         var proj_g = proj_state.grads_view()
 
         # PROJ.backward
@@ -847,23 +1162,43 @@ def train_lewm_offline_gpu[
             proj_cache_t, proj_g, proj_ws_buf,
         )
 
-        # cond_block backward (dual-branch). DEPTH==1 only — see TODO above.
-        cond_block_backward_gpu[BATCH, H, EMB, PRED_HEADS, PRED_FF](
-            ctx, grad_pred_raw_t,
-            adaln_state.params_view(), adaln_state.model_state_view(),
-            msa_state.params_view(), msa_state.model_state_view(),
-            mlp_state.params_view(), mlp_state.model_state_view(),
-            silu_cache_t, adaln_cache_t,
-            ln1_cache_t, mod1_cache_t, msa_cache_t, gate1_cache_t,
-            ln2_cache_t, mod2_cache_t, mlp_cache_t, gate2_cache_t,
-            x_mid_buf_t,
-            grad_x_prev_pe_t, grad_c_t,
-            adaln_g, msa_g, mlp_g,
-            sgg_t, sgbo_t, sgmx_t, sgmi_t,
-            sglnout_t, sglnin_t, sgrm_t, sgsc_t,
-            grad_x_mid_t,
-            adaln_ws_buf, msa_ws_buf, mlp_ws_buf,
-        )
+        # cond_block stack backward — reverse depth loop via helper.
+        # grad_c is accumulated across layers (c is shared input).
+        ctx.enqueue_memset(grad_c_buf, 0)
+        for d_rev in range(DEPTH):
+            var d = DEPTH - 1 - d_rev
+            # Bind per-layer grad views to vars (mut args can't take temps).
+            var adaln_g_d = adaln_states[d].grads_view()
+            var msa_g_d = msa_states[d].grads_view()
+            var mlp_g_d = mlp_states[d].grads_view()
+            run_cond_layer_backward[BATCH, H, EMB, PRED_HEADS, PRED_FF](
+                ctx, d, DEPTH,
+                grad_pred_raw_buf, grad_x_inter_buf, grad_x_prev_pe_buf,
+                adaln_states[d].params_view(),
+                adaln_states[d].model_state_view(),
+                msa_states[d].params_view(),
+                msa_states[d].model_state_view(),
+                mlp_states[d].params_view(),
+                mlp_states[d].model_state_view(),
+                silu_cache_buf, adaln_cache_buf,
+                ln1_cache_buf, mod1_cache_buf, msa_cache_buf, gate1_cache_buf,
+                ln2_cache_buf, mod2_cache_buf, mlp_cache_buf, gate2_cache_buf,
+                x_mid_buf_d,
+                grad_c_layer_t,
+                adaln_g_d, msa_g_d, mlp_g_d,
+                sgg_t, sgbo_t, sgmx_t, sgmi_t,
+                sglnout_t, sglnin_t, sgrm_t, sgsc_t,
+                grad_x_mid_t,
+                adaln_ws_buf, msa_ws_buf, mlp_ws_buf,
+            )
+            # Accumulate this layer's grad_c into the shared grad_c_t.
+            comptime TPB_GC_X = 16
+            comptime TPB_GC_Y = 16
+            ctx.enqueue_function[cb_accum_kernel[BTH, EMB]](
+                grad_c_t, grad_c_layer_t,
+                grid_dim=(ceildiv(BTH, TPB_GC_X), ceildiv(EMB, TPB_GC_Y)),
+                block_dim=(TPB_GC_X, TPB_GC_Y),
+            )
 
         # POS.backward
         POS.backward_gpu[BATCH, dtype](
@@ -957,14 +1292,15 @@ def train_lewm_offline_gpu[
             enc_cache_t, enc_g, enc_ws_buf,
         )
 
-        # Optimizer step on all 7 groups (added MLP for dual-branch cond_block).
+        # Optimizer step — shared models + per-layer (ADALN/MSA/MLP × DEPTH).
         enc_state.optimizer_step(ctx)
         ae_state.optimizer_step(ctx)
         pos_state.optimizer_step(ctx)
-        adaln_state.optimizer_step(ctx)
-        msa_state.optimizer_step(ctx)
-        mlp_state.optimizer_step(ctx)
         proj_state.optimizer_step(ctx)
+        for layer_idx in range(DEPTH):
+            adaln_states[layer_idx].optimizer_step(ctx)
+            msa_states[layer_idx].optimizer_step(ctx)
+            mlp_states[layer_idx].optimizer_step(ctx)
 
         # Periodic logging — download emb for probes was done inline above.
         if step % log_every == 0 or step == num_steps - 1:
