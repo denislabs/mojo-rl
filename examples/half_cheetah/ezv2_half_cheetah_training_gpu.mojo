@@ -268,7 +268,17 @@ def main() raises:
         # exploration could dilute it.
         reanalyze_interval=200,
         reanalyze_warmup=1000,
-        warmup_random_steps=2_000,
+        # 2026-05-14: bumped from 2_000 → 20_000 after diagnostics pulse.
+        # Diagnostics showed buf_reward_max ≈ 2.1 over the first 16k env
+        # steps — the agent never visited any fast-running state. Gym HC
+        # reward is `1.0·v_x − 0.1·||a||²` (NOT dm_control's shaped
+        # tolerance reward), so random-uniform actions produce ≈ 0 net
+        # forward velocity → per-step reward ≈ −0.15, no positive learning
+        # signal. With 2k steps ÷ N_ENVS=4 = 500 steps per env of random
+        # warmup, the world-model + value head start training on a buffer
+        # of essentially "lying still hurts a little". 20k = 5k per env
+        # gives the buffer at least some momentum-bearing trajectories.
+        warmup_random_steps=20_000,
         max_steps_per_episode=1_000,
         log_every=2_000,
         rng_seed_base=UInt64(2026),

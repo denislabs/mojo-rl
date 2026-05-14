@@ -1452,7 +1452,15 @@ def ezv2_compute_value_target_kernel[
 #
 #   • z_feature_var: mean over latent features of `var(z[:, j])` across
 #     the batch. Near zero ⇒ SimSiam collapse (encoder collapsed to a
-#     near-constant vector). Healthy ≥ ~0.05 for MinMaxNorm'd latents.
+#     near-constant vector). Healthy band depends on the encoder's
+#     output topology:
+#       - MinMaxNorm'd latents (e.g. EZV2DiscreteMLPConfig, the shallow
+#         continuous config): output ∈ [0, 1] per sample → max per-feature
+#         variance ≤ 0.25. Healthy ≈ 0.05.
+#       - Tanh + ResBlock-tower latents (EZV2ContinuousMLPConfig, used
+#         for HalfCheetah): output unbounded by the residual deltas;
+#         typical healthy variance ~0.5–5.
+#     The collapse signature (near-zero) is unambiguous either way.
 #
 #   • v_pred_var: variance of the decoded scalar V(z) across the batch
 #     (after softmax over bins → expectation → inverse scalar transform).
