@@ -42,7 +42,8 @@ CACHE_SIZE = T * num_proj  (stores z[b, t, p] per sample)
 from ...constants import dtype, TPB
 from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
-from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu import thread_idx, block_idx, block_dim, global_idx
+from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
 from std.math import sin, cos, sqrt, log, exp, pi
 from std.random.philox import Random as PhiloxRandom
@@ -62,7 +63,66 @@ struct SIGRegOp[
     comptime OUT_DIM: Int = 1
     comptime PARAM_SIZE: Int = 0
     comptime CACHE_SIZE: Int = Self.seq_len * Self.num_proj
+    # Per-sample workspace is awkward here — most scratch (A, cm, sm,
+    # partials) is batch-independent. Callers use `workspace_size_for[BATCH]`
+    # to allocate the total workspace once and pass its pointer; setting
+    # OP_WORKSPACE_PER_SAMPLE to 0 keeps Sequential/AutoFused compositions
+    # unaffected (they never use SIGReg directly).
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
+
+    # Workspace layout (eval and vjp share the prefix; vjp uses the tail
+    # too). Offsets in elements (Scalar[dtype]):
+    #   [0,                       D*P)                A (D × num_proj)
+    #   [D*P,                     D*P + T*P*K)        cm (T × P × K)
+    #   [D*P + T*P*K,             D*P + 2*T*P*K)      sm (T × P × K)
+    #   [D*P + 2*T*P*K,           D*P + 2*T*P*K + Np) partials (#blocks)
+    #   [+ Np,                    + Np + 1)           stat scalar (eval) /
+    #                                                  g scalar (vjp)
+    #   [+ 1, + 1 + BATCH*T*P)                        dLdz (vjp only)
+
+    @always_inline
+    @staticmethod
+    def _n_partials() -> Int:
+        return (Self.seq_len * Self.num_proj * Self.knots + TPB - 1) // TPB
+
+    @always_inline
+    @staticmethod
+    def _ws_off_a() -> Int:
+        return 0
+
+    @always_inline
+    @staticmethod
+    def _ws_off_cm() -> Int:
+        return Self.dim * Self.num_proj
+
+    @always_inline
+    @staticmethod
+    def _ws_off_sm() -> Int:
+        return Self._ws_off_cm() + Self.seq_len * Self.num_proj * Self.knots
+
+    @always_inline
+    @staticmethod
+    def _ws_off_partials() -> Int:
+        return Self._ws_off_sm() + Self.seq_len * Self.num_proj * Self.knots
+
+    @always_inline
+    @staticmethod
+    def _ws_off_scalar() -> Int:
+        return Self._ws_off_partials() + Self._n_partials()
+
+    @always_inline
+    @staticmethod
+    def _ws_off_dLdz() -> Int:
+        return Self._ws_off_scalar() + 1
+
+    @always_inline
+    @staticmethod
+    def workspace_size_for[BATCH: Int]() -> Int:
+        """Total workspace size (in elements) the caller must allocate.
+
+        Sized for vjp (the larger consumer); reusing for eval is safe.
+        """
+        return Self._ws_off_dLdz() + BATCH * Self.seq_len * Self.num_proj
 
     def __init__(out self):
         pass
@@ -336,14 +396,23 @@ struct SIGRegOp[
                     grad_input[b, t * Self.dim + d] = g
 
     # =========================================================================
-    # GPU eval / vjp — Phase 1 stub: delegates to CPU via host roundtrip.
+    # GPU eval / vjp
     # =========================================================================
-    # SIGReg is a regularizer (not a hot path) and the multi-stage reduction
-    # (A generation → projection → cm/sm aggregation → statistic) is awkward
-    # to express as a single kernel. Phase 1 ships a host-side CPU fallback
-    # that round-trips through map_to_host so the GPU autodiff chain stays
-    # type-consistent. A real GPU implementation is deferred to Phase 3 once
-    # we have a profiler reading on the regularizer's share of step time.
+    # Strategy:
+    #   1. Generate A (D, P) inside scratch DeviceBuffer (deterministic from
+    #      cache.ptr seed — same as CPU): Box-Muller in one kernel, column
+    #      L2-normalize in second kernel.
+    #   2. Project: z[b,t,p] = sum_d input[b,t*D+d] * A[d,p] → cache.
+    #   3. cm/sm reduction over B → cm_t, sm_t. Per-block stat partial via
+    #      block.sum, then a single-block final-reduce kernel collapses
+    #      partials into the scalar stat.
+    #   4. Broadcast scaled stat to output[b, 0].
+    # vjp is symmetric: regen A, recompute cm/sm, reduce G via block.sum
+    # (BATCH ≤ TPB so single block), compute dLdz, matmul with A.
+    #
+    # Numeric note: kernels accumulate in Scalar[dtype] (Float32 by default,
+    # Metal-compat). CPU uses Float64. Expect ~1e-3 relative tolerance, not
+    # bit-exact.
 
     @staticmethod
     def eval_gpu[
@@ -364,10 +433,68 @@ struct SIGRegOp[
         ],
         workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
-        # Phase 1: not implemented on GPU. Callers should run SIGReg on CPU
-        # outputs OR await Phase 3 GPU implementation.
-        raise Error(
-            "SIGRegOp.eval_gpu not implemented in Phase 1 — use CPU eval"
+        """Workspace must be at least `Self.workspace_size_for[BATCH]()`."""
+        comptime D = Self.dim
+        comptime T = Self.seq_len
+        comptime P = Self.num_proj
+        comptime K = Self.knots
+        comptime N_PARTIALS = Self._n_partials()
+
+        # Carve workspace.
+        var a_ptr = workspace + Self._ws_off_a()
+        var cm_ptr = workspace + Self._ws_off_cm()
+        var sm_ptr = workspace + Self._ws_off_sm()
+        var partials_ptr = workspace + Self._ws_off_partials()
+        var stat_ptr = workspace + Self._ws_off_scalar()
+
+        var a_t = LayoutTensor[dtype, Layout.row_major(D, P), MutAnyOrigin](
+            a_ptr
+        )
+        var cm_t = LayoutTensor[
+            dtype, Layout.row_major(T, P * K), MutAnyOrigin
+        ](cm_ptr)
+        var sm_t = LayoutTensor[
+            dtype, Layout.row_major(T, P * K), MutAnyOrigin
+        ](sm_ptr)
+
+        var seed = UInt64(Int(cache.ptr))
+
+        # 1. Box-Muller into A.
+        var grid_a = (D * P + TPB - 1) // TPB
+        ctx.enqueue_function[gen_a_unnorm_kernel[D, P, dtype]](
+            a_t, seed,
+            grid_dim=(grid_a,), block_dim=(TPB,),
+        )
+        # 2. Column L2-normalize.
+        var grid_norm = (P + TPB - 1) // TPB
+        ctx.enqueue_function[norm_a_kernel[D, P, dtype]](
+            a_t,
+            grid_dim=(grid_norm,), block_dim=(TPB,),
+        )
+        # 3. Project: z = input @ A.
+        var grid_proj = (BATCH * T * P + TPB - 1) // TPB
+        ctx.enqueue_function[project_kernel[BATCH, T, D, P, dtype]](
+            input, a_t, cache,
+            grid_dim=(grid_proj,), block_dim=(TPB,),
+        )
+        # 4. cm/sm + per-block partial stat via block.sum.
+        ctx.enqueue_function[
+            cm_sm_kernel[BATCH, T, P, K, dtype, True]
+        ](
+            cache, cm_t, sm_t, partials_ptr,
+            grid_dim=(N_PARTIALS,), block_dim=(TPB,),
+        )
+        # 5. Final reduce: collapse N_PARTIALS scalars into stat
+        #    using a single block (grid-stride loop inside the kernel).
+        ctx.enqueue_function[final_reduce_kernel[N_PARTIALS, dtype]](
+            partials_ptr, stat_ptr,
+            grid_dim=(1,), block_dim=(TPB,),
+        )
+        # 6. Broadcast scaled stat to all output[b, 0].
+        var grid_bcast = (BATCH + TPB - 1) // TPB
+        ctx.enqueue_function[broadcast_stat_kernel[BATCH, T, P, dtype]](
+            stat_ptr, output,
+            grid_dim=(grid_bcast,), block_dim=(TPB,),
         )
 
     @staticmethod
@@ -392,6 +519,336 @@ struct SIGRegOp[
         ],
         workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
-        raise Error(
-            "SIGRegOp.vjp_gpu not implemented in Phase 1 — use CPU vjp"
+        """Workspace must be at least `Self.workspace_size_for[BATCH]()`."""
+        comptime D = Self.dim
+        comptime T = Self.seq_len
+        comptime P = Self.num_proj
+        comptime K = Self.knots
+        comptime N_PARTIALS = Self._n_partials()
+
+        # Carve workspace (same layout as eval; reuses scalar slot for G).
+        var a_ptr = workspace + Self._ws_off_a()
+        var cm_ptr = workspace + Self._ws_off_cm()
+        var sm_ptr = workspace + Self._ws_off_sm()
+        var partials_ptr = workspace + Self._ws_off_partials()
+        var g_ptr = workspace + Self._ws_off_scalar()
+        var dLdz_ptr = workspace + Self._ws_off_dLdz()
+
+        var a_t = LayoutTensor[dtype, Layout.row_major(D, P), MutAnyOrigin](
+            a_ptr
         )
+        var cm_t = LayoutTensor[
+            dtype, Layout.row_major(T, P * K), MutAnyOrigin
+        ](cm_ptr)
+        var sm_t = LayoutTensor[
+            dtype, Layout.row_major(T, P * K), MutAnyOrigin
+        ](sm_ptr)
+        var dLdz_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin
+        ](dLdz_ptr)
+
+        var seed = UInt64(Int(cache.ptr))
+
+        # 1. Regen A from same seed.
+        var grid_a = (D * P + TPB - 1) // TPB
+        ctx.enqueue_function[gen_a_unnorm_kernel[D, P, dtype]](
+            a_t, seed,
+            grid_dim=(grid_a,), block_dim=(TPB,),
+        )
+        var grid_norm = (P + TPB - 1) // TPB
+        ctx.enqueue_function[norm_a_kernel[D, P, dtype]](
+            a_t,
+            grid_dim=(grid_norm,), block_dim=(TPB,),
+        )
+        # 2. Recompute cm/sm (no stat needed in backward).
+        ctx.enqueue_function[
+            cm_sm_kernel[BATCH, T, P, K, dtype, False]
+        ](
+            cache, cm_t, sm_t, partials_ptr,
+            grid_dim=(N_PARTIALS,), block_dim=(TPB,),
+        )
+        # 3. Reduce G = sum_b grad_output[b, 0]. BATCH typically ≤ TPB
+        #    so this fits in a single block via block.sum.
+        ctx.enqueue_function[reduce_g_kernel[BATCH, dtype]](
+            grad_output, g_ptr,
+            grid_dim=(1,), block_dim=(TPB,),
+        )
+        # 4. dLdz[b,t,p] using cached z + cm/sm.
+        var grid_dLdz = (BATCH * T * P + TPB - 1) // TPB
+        ctx.enqueue_function[dLdz_kernel[BATCH, T, P, K, dtype]](
+            cache, cm_t, sm_t, dLdz_t, g_ptr,
+            grid_dim=(grid_dLdz,), block_dim=(TPB,),
+        )
+        # 5. grad_input = dLdz @ A^T.
+        var grid_mm = (BATCH * T * D + TPB - 1) // TPB
+        ctx.enqueue_function[matmul_a_kernel[BATCH, T, D, P, dtype]](
+            dLdz_t, a_t, grad_input,
+            grid_dim=(grid_mm,), block_dim=(TPB,),
+        )
+
+
+# ============================================================================
+# Module-level GPU kernels (parameterised on dimensions + dtype).
+#
+# Reductions use block.sum (no Atomic — atomics on GPU floats are awkward and
+# the codebase already standardises on block ops for reductions).
+# Box-Muller in `gen_a_unnorm_kernel` uses Float32 directly because Philox's
+# `step_uniform()` returns Float32 natively; every other kernel arithmetic
+# happens in Scalar[dtype] so swapping the project-wide dtype Just Works.
+# ============================================================================
+
+
+def gen_a_unnorm_kernel[
+    D: Int, P: Int, dtype: DType
+](
+    a_t: LayoutTensor[dtype, Layout.row_major(D, P), MutAnyOrigin],
+    seed: UInt64,
+):
+    """One thread per A[d, p]; Box-Muller from Philox(seed, idx)."""
+    var idx = Int(global_idx.x)
+    if idx >= D * P:
+        return
+    var d_idx = idx // P
+    var p_idx = idx % P
+    var philox = PhiloxRandom(seed=seed, offset=UInt64(idx))
+    var rand_vals = philox.step_uniform()
+    # Philox returns Float32 natively — kept as-is here.
+    var u1 = Float32(rand_vals[0]) + Float32(1e-8)
+    var u2 = Float32(rand_vals[1])
+    var mag = sqrt(Float32(-2.0) * log(u1))
+    var g = mag * cos(u2 * Float32(6.283185307179586))
+    a_t[d_idx, p_idx] = Scalar[dtype](g)
+
+
+def norm_a_kernel[
+    D: Int, P: Int, dtype: DType
+](
+    a_t: LayoutTensor[dtype, Layout.row_major(D, P), MutAnyOrigin],
+):
+    """One thread per column; L2-normalise A[:, p]."""
+    comptime assert dtype.is_floating_point(), "dtype must be FP"
+    var p_idx = Int(global_idx.x)
+    if p_idx >= P:
+        return
+    var sum_sq = Scalar[dtype](0)
+    for d in range(D):
+        var v = rebind[Scalar[dtype]](a_t[d, p_idx])
+        sum_sq += v * v
+    var inv_norm = Scalar[dtype](1) / (sqrt(sum_sq) + Scalar[dtype](1e-12))
+    for d in range(D):
+        var v = rebind[Scalar[dtype]](a_t[d, p_idx])
+        a_t[d, p_idx] = v * inv_norm
+
+
+def project_kernel[
+    BATCH: Int, T: Int, D: Int, P: Int, dtype: DType
+](
+    input_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * D), MutAnyOrigin
+    ],
+    a_t: LayoutTensor[dtype, Layout.row_major(D, P), MutAnyOrigin],
+    cache_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin
+    ],
+):
+    """One thread per (b, t, p); z = sum_d input[b, t*D+d] * A[d, p]."""
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * T * P:
+        return
+    var p_idx = idx % P
+    var t_idx = (idx // P) % T
+    var b = idx // (T * P)
+    var z = Scalar[dtype](0)
+    for d in range(D):
+        var xi = rebind[Scalar[dtype]](input_t[b, t_idx * D + d])
+        var aval = rebind[Scalar[dtype]](a_t[d, p_idx])
+        z += xi * aval
+    cache_t[b, t_idx * P + p_idx] = z
+
+
+def cm_sm_kernel[
+    BATCH: Int, T: Int, P: Int, K: Int, dtype: DType, INCLUDE_STAT: Bool
+](
+    cache_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin
+    ],
+    cm_t: LayoutTensor[dtype, Layout.row_major(T, P * K), MutAnyOrigin],
+    sm_t: LayoutTensor[dtype, Layout.row_major(T, P * K), MutAnyOrigin],
+    partials_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+):
+    """One thread per (t, p, k); reduce over B → cm/sm; block.sum partial."""
+    comptime assert dtype.is_floating_point(), "dtype must be FP"
+    var idx = Int(global_idx.x)
+
+    # Knot grid + window weights (comptime-constant deltas, runtime k).
+    var dt = Scalar[dtype](3.0 / Float64(K - 1))
+    var inv_b = Scalar[dtype](1.0 / Float64(BATCH))
+
+    var contrib = Scalar[dtype](0)
+    if idx < T * P * K:
+        var k_idx = idx % K
+        var p_idx = (idx // K) % P
+        var t_idx = idx // (K * P)
+        var tk = dt * Scalar[dtype](k_idx)
+        var phi = exp(Scalar[dtype](-0.5) * tk * tk)
+
+        # Reduce over B (accumulate raw, divide at end for stability).
+        var cm_sum = Scalar[dtype](0)
+        var sm_sum = Scalar[dtype](0)
+        for b in range(BATCH):
+            var z = rebind[Scalar[dtype]](cache_t[b, t_idx * P + p_idx])
+            var arg = z * tk
+            cm_sum += cos(arg)
+            sm_sum += sin(arg)
+        var cm = cm_sum * inv_b
+        var sm = sm_sum * inv_b
+
+        cm_t[t_idx, p_idx * K + k_idx] = cm
+        sm_t[t_idx, p_idx * K + k_idx] = sm
+
+        comptime if INCLUDE_STAT:
+            var trap = (
+                dt if (k_idx == 0 or k_idx == K - 1)
+                else dt * Scalar[dtype](2.0)
+            )
+            var wk = trap * phi
+            var diff = cm - phi
+            var err = diff * diff + sm * sm
+            contrib = wk * err
+
+    # All threads (including OOB) must participate in block.sum.
+    comptime if INCLUDE_STAT:
+        var partial = block.sum[block_size=TPB, broadcast=False](
+            val=SIMD[dtype, 1](contrib)
+        )
+        if thread_idx.x == 0:
+            partials_ptr[Int(block_idx.x)] = partial[0]
+
+
+def final_reduce_kernel[
+    N_PARTIALS: Int, dtype: DType
+](
+    partials_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    out_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+):
+    """Single block; grid-stride loop summing all partials into out_ptr[0]."""
+    var tid = Int(thread_idx.x)
+    var v = Scalar[dtype](0)
+    var i = tid
+    while i < N_PARTIALS:
+        v += partials_ptr[i]
+        i += TPB
+    var total = block.sum[block_size=TPB, broadcast=False](
+        val=SIMD[dtype, 1](v)
+    )
+    if tid == 0:
+        out_ptr[0] = total[0]
+
+
+def broadcast_stat_kernel[
+    BATCH: Int, T: Int, P: Int, dtype: DType
+](
+    stat_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    output_t: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+):
+    """Replicate scaled stat to every output[b, 0]."""
+    var b = Int(global_idx.x)
+    if b >= BATCH:
+        return
+    var prefactor = Scalar[dtype](Float64(BATCH) / Float64(T * P))
+    var stat = stat_ptr[0]
+    output_t[b, 0] = stat * prefactor
+
+
+def reduce_g_kernel[
+    BATCH: Int, dtype: DType
+](
+    grad_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+    ],
+    g_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+):
+    """Single block; block.sum of grad_output[b, 0] into g_ptr[0].
+
+    Assumes BATCH ≤ TPB. Each thread either owns one b or contributes 0.
+    """
+    var b = Int(thread_idx.x)
+    var v = Scalar[dtype](0)
+    if b < BATCH:
+        v = rebind[Scalar[dtype]](grad_output[b, 0])
+    var total = block.sum[block_size=TPB, broadcast=False](
+        val=SIMD[dtype, 1](v)
+    )
+    if b == 0:
+        g_ptr[0] = total[0]
+
+
+def dLdz_kernel[
+    BATCH: Int, T: Int, P: Int, K: Int, dtype: DType
+](
+    cache_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin
+    ],
+    cm_t: LayoutTensor[dtype, Layout.row_major(T, P * K), MutAnyOrigin],
+    sm_t: LayoutTensor[dtype, Layout.row_major(T, P * K), MutAnyOrigin],
+    dLdz_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin
+    ],
+    g_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+):
+    """One thread per (b, t, p); chain rule through cos/sin to dLdz."""
+    comptime assert dtype.is_floating_point(), "dtype must be FP"
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * T * P:
+        return
+    var p_idx = idx % P
+    var t_idx = (idx // P) % T
+    var b = idx // (T * P)
+    var z = rebind[Scalar[dtype]](cache_t[b, t_idx * P + p_idx])
+    var dt = Scalar[dtype](3.0 / Float64(K - 1))
+
+    var acc = Scalar[dtype](0)
+    for k in range(K):
+        var tk = dt * Scalar[dtype](k)
+        var phi = exp(Scalar[dtype](-0.5) * tk * tk)
+        var trap = (
+            dt if (k == 0 or k == K - 1) else dt * Scalar[dtype](2.0)
+        )
+        var wk = trap * phi
+        var cm = rebind[Scalar[dtype]](cm_t[t_idx, p_idx * K + k])
+        var sm = rebind[Scalar[dtype]](sm_t[t_idx, p_idx * K + k])
+        var arg = z * tk
+        var s_arg = sin(arg)
+        var c_arg = cos(arg)
+        var bracket = -(cm - phi) * s_arg + sm * c_arg
+        acc += wk * tk * bracket
+
+    var G = g_ptr[0]
+    var coef = G * Scalar[dtype](2.0 / Float64(T * P))
+    dLdz_t[b, t_idx * P + p_idx] = coef * acc
+
+
+def matmul_a_kernel[
+    BATCH: Int, T: Int, D: Int, P: Int, dtype: DType
+](
+    dLdz_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin
+    ],
+    a_t: LayoutTensor[dtype, Layout.row_major(D, P), MutAnyOrigin],
+    grad_input_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * D), MutAnyOrigin
+    ],
+):
+    """grad_input[b, t*D+d] = sum_p A[d, p] * dLdz[b, t, p]."""
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * T * D:
+        return
+    var d_idx = idx % D
+    var t_idx = (idx // D) % T
+    var b = idx // (T * D)
+    var acc = Scalar[dtype](0)
+    for p in range(P):
+        var dL = rebind[Scalar[dtype]](dLdz_t[b, t_idx * P + p])
+        var aval = rebind[Scalar[dtype]](a_t[d_idx, p])
+        acc += aval * dL
+    grad_input_t[b, t_idx * D + d_idx] = acc

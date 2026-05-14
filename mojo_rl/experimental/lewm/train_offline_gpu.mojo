@@ -37,7 +37,7 @@ from ...nn.model import (
 from ...nn.model.autodiff_layers import GELU
 from ...nn.composites import TransformerBlock, MultiHeadAttention
 from ...nn.autodiff import AutoDiffChain
-from ...nn.autodiff.primitives import BiasAdd
+from ...nn.autodiff.primitives import BiasAdd, SIGRegOp
 from .encoder import LeWMEncoder
 from .action_embedder import ActionEmbedder
 from .cond_block import (
@@ -101,6 +101,44 @@ def scatter_h_kernel[
         dst[b * T + t_idx, d_idx] = src[b * H + t_idx, d_idx]
 
 
+# Scatter -grad_pred into the target slice of grad_emb so the target path is
+# no longer stop-grad. Math: pred_loss = (pred - tgt)^2/N → d/d tgt = -grad_pred.
+# The H "target tokens" inside emb live at b * T*EMB + N_PREDS*EMB + i for
+# i in [0, H*EMB).
+def scatter_target_neg_kernel[
+    BATCH: Int, T: Int, H: Int, N_PREDS: Int, EMB: Int,
+](
+    grad_pred_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    grad_emb_bt_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * EMB), MutAnyOrigin
+    ],
+):
+    var b = Int(global_idx.x)
+    var i = Int(global_idx.y)
+    if b < BATCH and i < H * EMB:
+        var v = grad_pred_bh_t[b, i]
+        grad_emb_bt_t[b, N_PREDS * EMB + i] = -v
+
+
+# Elementwise: dst[b, i] += src[b, i]. Used to fold SIGReg's vjp into grad_emb.
+def accumulate_emb_kernel[
+    BATCH: Int, T: Int, EMB: Int,
+](
+    src: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * EMB), MutAnyOrigin
+    ],
+    dst: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * EMB), MutAnyOrigin
+    ],
+):
+    var b = Int(global_idx.x)
+    var i = Int(global_idx.y)
+    if b < BATCH and i < T * EMB:
+        dst[b, i] = dst[b, i] + src[b, i]
+
+
 def train_lewm_offline_gpu[
     BATCH: Int,
     T: Int,
@@ -119,13 +157,22 @@ def train_lewm_offline_gpu[
     SMOOTHED: Int,
     PRED_HEADS: Int,
     PRED_FF: Int,  # unused but kept for API parity with CPU trainer
+    SIG_NUM_PROJ: Int = 1024,
+    SIG_KNOTS: Int = 17,
 ](
     buffer_path: String,
     num_steps: Int,
     log_every: Int = 100,
     rng_seed: Int = 0xCAFE,
+    lambda_sigreg: Float64 = 0.09,
 ) raises:
-    """GPU offline JEPA trainer. SIGReg disabled; probes log every `log_every`."""
+    """GPU offline JEPA trainer with SIGReg + full end-to-end gradient flow.
+
+    Defaults match the LeWM paper: SIG_NUM_PROJ=1024, SIG_KNOTS=17,
+    lambda_sigreg=0.09. With these on, target stop-grad is dropped
+    (`scatter_target_neg_kernel`) so gradients flow through both sides of
+    the MSE — SIGReg is the only thing preventing collapse.
+    """
 
     comptime IMG_DIM: Int = IN_CH * IMG * IMG
     comptime BT: Int = BATCH * T
@@ -146,6 +193,8 @@ def train_lewm_offline_gpu[
         Linear[PROJ_H, EMB],
     ]
     comptime PROJ = Tokenwise[H, _PredProjPerToken]
+    comptime SIG = SIGRegOp[EMB, T, SIG_NUM_PROJ, SIG_KNOTS]
+    comptime SIG_WS_SIZE = SIG.workspace_size_for[BATCH]()
 
     _set_seed(rng_seed)
 
@@ -280,6 +329,29 @@ def train_lewm_offline_gpu[
     var sgrm_buf = ctx.enqueue_create_buffer[dtype](BTH * 3 * EMB)
     var sgsc_buf = ctx.enqueue_create_buffer[dtype](BTH * EMB)
 
+    # SIGReg buffers (forward + backward).
+    var sigreg_out_buf = ctx.enqueue_create_buffer[dtype](BATCH * SIG.OUT_DIM)
+    var sigreg_cache_buf = ctx.enqueue_create_buffer[dtype](
+        BATCH * SIG.CACHE_SIZE
+    )
+    var sigreg_grad_out_buf = ctx.enqueue_create_buffer[dtype](
+        BATCH * SIG.OUT_DIM
+    )
+    var sigreg_grad_emb_buf = ctx.enqueue_create_buffer[dtype](
+        BATCH * T * EMB
+    )
+    var sigreg_ws_buf = ctx.enqueue_create_buffer[dtype](SIG_WS_SIZE)
+    # Seed grad_output = λ/B (constant across all steps; chain rule produces
+    # an effective G = λ at the SIGReg dLdz step). See CPU trainer line 735.
+    var sigreg_grad_out_host = ctx.enqueue_create_host_buffer[dtype](
+        BATCH * SIG.OUT_DIM
+    )
+    for i in range(BATCH * SIG.OUT_DIM):
+        sigreg_grad_out_host[i] = Scalar[dtype](
+            lambda_sigreg / Float64(BATCH)
+        )
+    ctx.enqueue_copy(sigreg_grad_out_buf, sigreg_grad_out_host)
+
     # Gradient buffers (device).
     var grad_pred_buf = ctx.enqueue_create_buffer[dtype](BATCH * H * EMB)
     var grad_pred_raw_buf = ctx.enqueue_create_buffer[dtype](BTH * EMB)
@@ -298,6 +370,9 @@ def train_lewm_offline_gpu[
     var target_host = ctx.enqueue_create_host_buffer[dtype](BATCH * H * EMB)
     var grad_pred_host = ctx.enqueue_create_host_buffer[dtype](
         BATCH * H * EMB
+    )
+    var sigreg_out_host = ctx.enqueue_create_host_buffer[dtype](
+        BATCH * SIG.OUT_DIM
     )
     # emb on device has shape (BT, EMB) — aliased as (BATCH, T*EMB) for the
     # target slice. Same memory, single host buffer.
@@ -464,6 +539,29 @@ def train_lewm_offline_gpu[
         dtype, Layout.row_major(BT, IMG_DIM), MutAnyOrigin
     ](grad_pixels_buf)
 
+    # SIGReg views (treat emb / grad_emb as (BATCH, T*EMB) — same memory).
+    var emb_bte_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * EMB), MutAnyOrigin
+    ](emb_buf)
+    var sigreg_out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, SIG.OUT_DIM), MutAnyOrigin
+    ](sigreg_out_buf)
+    var sigreg_cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, SIG.CACHE_SIZE), MutAnyOrigin
+    ](sigreg_cache_buf)
+    var sigreg_grad_out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, SIG.OUT_DIM), MutAnyOrigin
+    ](sigreg_grad_out_buf)
+    var sigreg_grad_emb_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * EMB), MutAnyOrigin
+    ](sigreg_grad_emb_buf)
+    var empty_params = LayoutTensor[
+        dtype, Layout.row_major(SIG.PARAM_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    var empty_grad_params = LayoutTensor[
+        dtype, Layout.row_major(SIG.PARAM_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
     # ------------------------------------------------------------------
     # Host-side scratch for batch sampling (reused per step).
     # ------------------------------------------------------------------
@@ -472,6 +570,7 @@ def train_lewm_offline_gpu[
 
     var loss_ema: Float64 = 0.0
     var pred_ema: Float64 = 0.0
+    var sigreg_ema: Float64 = 0.0
     var var_min_ema: Float64 = 0.0
     var var_mean_ema: Float64 = 0.0
     var gram_ema: Float64 = 0.0
@@ -571,12 +670,21 @@ def train_lewm_offline_gpu[
             proj_cache_t, proj_ws_buf,
         )
 
+        # SIGReg forward over emb viewed as (BATCH, T*EMB). Output is the
+        # statistic replicated across BATCH slots (we read [0] for logging).
+        SIG.eval_gpu[BATCH, dtype](
+            ctx, sigreg_out_t, emb_bte_t,
+            empty_params, sigreg_cache_t, sigreg_ws_buf.unsafe_ptr(),
+        )
+
         # --------------------------------------------------------------
         # Loss + grad_pred on host (small round-trip).
         # --------------------------------------------------------------
         ctx.enqueue_copy(pred_host, pred_out_buf)
         # Download all of emb (BT, EMB) — used for both target slice and probes.
         ctx.enqueue_copy(emb_host, emb_buf)
+        # Download SIGReg stat (tiny — BATCH floats) for logging.
+        ctx.enqueue_copy(sigreg_out_host, sigreg_out_buf)
         ctx.synchronize()
 
         var pred_loss: Float64 = 0.0
@@ -595,13 +703,18 @@ def train_lewm_offline_gpu[
                 )
         pred_loss /= loss_scale
 
+        # Read SIGReg stat (replicated across BATCH, take [0]).
+        var sigreg_stat = Float64(sigreg_out_host[0])
+
         if loss_first < 0.0:
             loss_first = pred_loss
             loss_ema = pred_loss
             pred_ema = pred_loss
+            sigreg_ema = sigreg_stat
         else:
             loss_ema = 0.95 * loss_ema + 0.05 * pred_loss
             pred_ema = 0.95 * pred_ema + 0.05 * pred_loss
+            sigreg_ema = 0.95 * sigreg_ema + 0.05 * sigreg_stat
         loss_last = pred_loss
 
         # Upload grad_pred back to device.
@@ -697,7 +810,7 @@ def train_lewm_offline_gpu[
         )
 
         # Route grad_x_prev → grad_emb's first H tokens, grad_c → grad_act_emb's.
-        # Detached target slice contributes zero gradient (rest of buffer).
+        # Target slice gradient is FILLED below (no stop-grad — paper recipe).
         ctx.enqueue_memset(grad_emb_buf, 0)
         ctx.enqueue_memset(grad_act_emb_buf, 0)
 
@@ -728,6 +841,43 @@ def train_lewm_offline_gpu[
                 ceildiv(EMB, TPB_Z),
             ),
             block_dim=(TPB_X, TPB_Y, TPB_Z),
+        )
+
+        # Drop stop-grad: scatter -grad_pred into target slice of grad_emb.
+        # Math: pred_loss = (pred - tgt)^2 / N → d/d tgt = -grad_pred.
+        # Target tokens live at b * T*EMB + N_PREDS*EMB + [0..H*EMB).
+        comptime TPB_TS_X = 4
+        comptime TPB_TS_Y = 64
+        ctx.enqueue_function[
+            scatter_target_neg_kernel[BATCH, T, H, N_PREDS, EMB],
+        ](
+            grad_pred_t, grad_emb_t,
+            grid_dim=(
+                ceildiv(BATCH, TPB_TS_X),
+                ceildiv(H * EMB, TPB_TS_Y),
+            ),
+            block_dim=(TPB_TS_X, TPB_TS_Y),
+        )
+
+        # SIGReg vjp: produces sigreg_grad_emb (BATCH, T*EMB) from
+        # `sigreg_grad_out_t` seed = λ/B (set once at init).
+        SIG.vjp_gpu[BATCH, dtype](
+            ctx, sigreg_grad_out_t, sigreg_grad_emb_t,
+            empty_params, sigreg_cache_t, empty_grad_params,
+            sigreg_ws_buf.unsafe_ptr(),
+        )
+        # Accumulate sigreg's grad into grad_emb additively.
+        comptime TPB_AC_X = 4
+        comptime TPB_AC_Y = 64
+        ctx.enqueue_function[
+            accumulate_emb_kernel[BATCH, T, EMB],
+        ](
+            sigreg_grad_emb_t, grad_emb_t,
+            grid_dim=(
+                ceildiv(BATCH, TPB_AC_X),
+                ceildiv(T * EMB, TPB_AC_Y),
+            ),
+            block_dim=(TPB_AC_X, TPB_AC_Y),
         )
 
         # AE.backward
@@ -761,6 +911,7 @@ def train_lewm_offline_gpu[
                 "  step", step,
                 " L=", pred_loss,
                 " ema=", pred_ema,
+                " sig=", sigreg_ema,
                 " var_min=", var_min_ema,
                 " var_mean=", var_mean_ema,
                 " gram=", gram_ema,
