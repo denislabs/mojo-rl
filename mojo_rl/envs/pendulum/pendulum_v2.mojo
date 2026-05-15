@@ -22,7 +22,6 @@ from std.math import sqrt, cos, sin, pi
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
-from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from std.memory import alloc
 
@@ -133,6 +132,15 @@ struct PendulumV2[DTYPE: DType](
     var num_bins_angle: Int
     var num_bins_velocity: Int
 
+    # Deterministic Philox RNG state (replaces std.random.random_float64 in
+    # reset_obs_list). Per-instance so multiple envs can be seeded
+    # independently; counter advances on each reset so subsequent resets of
+    # the same env produce different but reproducible initial states.
+    # Mirrors the V2 GPU reset path (which also uses Philox) so CPU-vs-GPU
+    # parity is no longer confounded by RNG-source mismatch.
+    var rng_seed: UInt64
+    var rng_counter: UInt64
+
     # Renderer (RenderableEnv)
     var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
     var _renderer_initialized: Bool
@@ -142,13 +150,19 @@ struct PendulumV2[DTYPE: DType](
     # =========================================================================
 
     def __init__(
-        out self, num_bins_angle: Int = 15, num_bins_velocity: Int = 15
+        out self,
+        num_bins_angle: Int = 15,
+        num_bins_velocity: Int = 15,
+        seed: UInt64 = 0,
     ):
         """Initialize Pendulum with default physics parameters.
 
         Args:
             num_bins_angle: Number of bins for angle discretization.
             num_bins_velocity: Number of bins for velocity discretization.
+            seed: Per-instance Philox seed for `reset_obs_list`. Pass a
+                unique value per env when running multi-env CPU baselines so
+                each env explores a different initial-state distribution.
         """
         # Physics constants from Gymnasium
         self.max_speed = Scalar[Self.dtype](PConstants.MAX_SPEED)
@@ -173,6 +187,10 @@ struct PendulumV2[DTYPE: DType](
         self.num_bins_angle = num_bins_angle
         self.num_bins_velocity = num_bins_velocity
 
+        # Philox RNG state (replaces std.random.random_float64).
+        self.rng_seed = seed
+        self.rng_counter = 0
+
         # Renderer
         self._renderer = None
         self._renderer_initialized = False
@@ -194,6 +212,8 @@ struct PendulumV2[DTYPE: DType](
         self.last_torque = copy.last_torque
         self.num_bins_angle = copy.num_bins_angle
         self.num_bins_velocity = copy.num_bins_velocity
+        self.rng_seed = copy.rng_seed
+        self.rng_counter = copy.rng_counter
         # Do not copy renderer — reset to null
         self._renderer = None
         self._renderer_initialized = False
@@ -215,6 +235,8 @@ struct PendulumV2[DTYPE: DType](
         self.last_torque = take.last_torque
         self.num_bins_angle = take.num_bins_angle
         self.num_bins_velocity = take.num_bins_velocity
+        self.rng_seed = take.rng_seed
+        self.rng_counter = take.rng_counter
         # Transfer renderer ownership
         self._renderer = take._renderer
         self._renderer_initialized = take._renderer_initialized
@@ -777,11 +799,31 @@ struct PendulumV2[DTYPE: DType](
     # =========================================================================
 
     def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
-        """Reset environment and return initial observation as list."""
+        """Reset environment and return initial observation as list.
+
+        Uses the per-instance Philox stream (seed=`self.rng_seed`,
+        offset=`self.rng_counter`) to sample (θ, θ_dot) deterministically,
+        then advances the counter. This replaces the previous
+        `random_float64()` calls so the V2 CPU path no longer depends on
+        the global `std.random` state, matching the V2 GPU `_reset_env_gpu`
+        path which also uses Philox.
+
+        To get distinct initial states across multiple envs, construct each
+        env with a unique `seed=` (e.g. `PendulumV2(seed=2026 + env_id)`).
+        """
+        var rng = PhiloxRandom(seed=self.rng_seed, offset=self.rng_counter)
+        var rand_vals = rng.step_uniform()
+        self.rng_counter += 1
+
+        # PhiloxRandom.step_uniform() returns Float32; cast to Self.dtype.
+        var u0 = Scalar[Self.dtype](rand_vals[0])
+        var u1 = Scalar[Self.dtype](rand_vals[1])
+
+        var PI = Scalar[Self.dtype](pi)
         # Random initial angle in [-π, π]
-        self.theta = Scalar[Self.dtype]((random_float64() * 2.0 - 1.0) * pi)
+        self.theta = (u0 * Scalar[Self.dtype](2.0) - Scalar[Self.dtype](1.0)) * PI
         # Random initial angular velocity in [-1, 1]
-        self.theta_dot = Scalar[Self.dtype](random_float64() * 2.0 - 1.0)
+        self.theta_dot = u1 * Scalar[Self.dtype](2.0) - Scalar[Self.dtype](1.0)
 
         self.steps = 0
         self.done = False
@@ -918,6 +960,16 @@ struct PendulumV2[DTYPE: DType](
 
         self.last_torque = u
 
+        # Reward computed from PRE-step state (Gymnasium Pendulum-v1 order).
+        # Older V2 CPU computed reward POST-step using the updated θ/θ_dot,
+        # which diverged from V1 / V2 GPU / Gymnasium and made the env
+        # materially harder for value-based agents. Fixed 2026-05-15.
+        var reward = -(
+            self.theta * self.theta
+            + Scalar[Self.dtype](0.1) * self.theta_dot * self.theta_dot
+            + Scalar[Self.dtype](0.001) * u * u
+        )
+
         # Physics: θ'' = (3g/2L) * sin(θ) + (3/mL²) * u
         var sin_theta = Scalar[Self.dtype](sin(Float64(self.theta)))
         var theta_acc = (Scalar[Self.dtype](3.0) * self.g) / (
@@ -926,27 +978,21 @@ struct PendulumV2[DTYPE: DType](
             Scalar[Self.dtype](3.0) / (self.m * self.l * self.l)
         ) * u
 
-        # Euler integration
+        # Euler integration — Gymnasium clips θ_dot BEFORE the θ update.
+        # Older V2 CPU updated θ first and then clamped θ_dot, which let
+        # over-MAX_SPEED velocity propagate into θ for one step.
+        # Fixed 2026-05-15.
         self.theta_dot = self.theta_dot + theta_acc * self.dt
-        self.theta = self.theta + self.theta_dot * self.dt
-
-        # Clip angular velocity
         if self.theta_dot > self.max_speed:
             self.theta_dot = self.max_speed
         elif self.theta_dot < -self.max_speed:
             self.theta_dot = -self.max_speed
+        self.theta = self.theta + self.theta_dot * self.dt
 
         # Normalize angle to [-π, π]
         self.theta = self._angle_normalize(self.theta)
 
         self.steps += 1
-
-        # Compute reward: -(θ² + 0.1*θ_dot² + 0.001*u²)
-        var reward = -(
-            self.theta * self.theta
-            + Scalar[Self.dtype](0.1) * self.theta_dot * self.theta_dot
-            + Scalar[Self.dtype](0.001) * u * u
-        )
         self.total_reward += reward
 
         # Pendulum never terminates early, only truncates at max_steps
