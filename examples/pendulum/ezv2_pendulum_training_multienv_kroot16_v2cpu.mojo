@@ -1,22 +1,12 @@
 """EZ-V2 Pendulum baseline loop — but with PendulumV2's CPU methods.
 
 Isolating experiment: identical to `ezv2_pendulum_training_multienv_kroot16.mojo`
-except for the env type (`PendulumEnv` → `PendulumV2`). V2's CPU
-`reset_obs_list` and `step_continuous_vec` use `std.random` exactly like
-V1's, so the RNG sequence advances identically across env init + warmup
-+ MCTS sampling. Only the physics implementation differs (V2 uses
-dtype-native `sin/cos` in fp32; V1 wraps Float64 sin and casts back).
-
-Three possible outcomes vs the V1-CPU baseline (which converges to ≈-570):
-  • This variant ALSO converges → V2 physics is fine; the GPU-driver
-    failure is loop-specific (something the driver does that this loop
-    doesn't).
-  • This variant fails like the GPU driver → V2 physics itself drives
-    the divergence (fp precision or a real bug).
-  • Slower convergence but eventually solves → it's data-sensitivity;
-    multi-seed runs needed.
-
-Diff vs the V1 baseline: literally the import line + the env type.
+except the env type (`PendulumEnv` → `PendulumV2`). After 2026-05-15:
+V2 CPU `reset_obs_list` now uses a per-instance Philox stream (not
+`std.random`), matching the V2 GPU `_reset_env_gpu` path. We give each
+env a unique seed (`2026 + env_id`) so the 4 envs reset to distinct
+trajectories. This rules out RNG-source as a confound when comparing
+V2 CPU vs V2 GPU.
 """
 
 from std.memory import UnsafePointer, alloc
@@ -107,9 +97,18 @@ def main() raises:
     var obs_list = List[List[Scalar[dtype]]]()
     var ep_returns_per_env = List[Float64]()
     var ep_steps_per_env = List[Int]()
-    for _ in range(N_ENVS):
+    for i in range(N_ENVS):
         var p = alloc[PendulumV2[dtype]](1)
-        p.init_pointee_move(PendulumV2[dtype]())
+        # Per-env Philox seed using the SAME mixing formula as V2 GPU's
+        # `selective_reset_kernel_gpu`: `seed * 2654435761 + env * 12345`.
+        # Adjacent integer seeds (2026, 2027, ...) can have correlated
+        # low-bits under Philox; the large-prime + per-env stride
+        # decorrelates them, matching what the GPU path does.
+        var mixed_seed = (
+            UInt64(2026) * UInt64(2654435761)
+            + UInt64(i) * UInt64(12345)
+        )
+        p.init_pointee_move(PendulumV2[dtype](seed=mixed_seed))
         envs.append(p)
         ep_returns_per_env.append(Float64(0.0))
         ep_steps_per_env.append(0)

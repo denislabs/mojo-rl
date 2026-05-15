@@ -42,7 +42,7 @@ def main() raises:
     print("    EZ-V2 Pendulum — GPU driver regression test (N_ENVS=8)")
     print("=" * 72)
 
-    comptime NUM_ENV_STEPS = 30_000
+    comptime NUM_ENV_STEPS = 60_000
     comptime N_ENVS = 4
 
     comptime Config = EZV2ContinuousMLPShallowConfig[
