@@ -38,7 +38,9 @@ from .constants import (
     SHAPE_POLYGON,
     SHAPE_CIRCLE,
     SHAPE_EDGE,
+    SHAPE_COMPOUND,
     MAX_POLYGON_VERTS,
+    MAX_COMPOUND_SUBSHAPES,
     CONTACT_BODY_A,
     CONTACT_BODY_B,
     CONTACT_POINT_X,
@@ -95,6 +97,8 @@ from .collision import (
     FlatTerrainCollision,
     EdgeTerrainCollision,
     MAX_TERRAIN_EDGES,
+    CirclePolygonCollision,
+    detect_circle_vs_body_pair,
 )
 from .solvers import ImpulseSolver, UnifiedConstraintSolver
 from .joints import RevoluteJointSolver
