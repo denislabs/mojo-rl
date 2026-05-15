@@ -24,7 +24,7 @@ from std.memory import alloc
 from std.random import seed as _set_seed, random_float64
 from std.time import perf_counter_ns
 from std.gpu import global_idx, thread_idx
-from std.gpu.primitives import block
+from std.gpu.primitives import block, warp
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
@@ -254,6 +254,9 @@ def mpc_score_kernel[
     ],
     goal_pos: Int,
 ):
+    # BATCH ≤ warp_size (32 NVIDIA / Apple) in all our configs, so a single
+    # warp.sum suffices. Block launched with block_dim=32 (warp width);
+    # threads with idx ≥ BATCH contribute 0.
     var b = Int(thread_idx.x)
     var local_sum: Scalar[dtype] = 0.0
     if b < BATCH:
@@ -264,9 +267,9 @@ def mpc_score_kernel[
             var gv = rebind[Scalar[dtype]](emb_goal[b, d])
             var diff = ev - gv
             local_sum += diff * diff
-    var block_sum = block.sum[block_size=BATCH](local_sum)
+    var warp_sum = warp.sum(local_sum)
     if thread_idx.x == 0:
-        score_out[0] = rebind[score_out.element_type](block_sum)
+        score_out[0] = rebind[score_out.element_type](warp_sum)
 
 
 # =============================================================================
@@ -1141,13 +1144,15 @@ def _run_mpc_shot[
     # `needed_actions` (runtime) used in eval block for buffer sizing, no
     # use inside the helper itself.
     _ = needed_actions
+    # Block of 32 threads (warp width). BATCH ≤ 32 in all our configs;
+    # threads idx ≥ BATCH read nothing and contribute 0 to warp.sum.
     ctx.enqueue_function[
         mpc_score_kernel[BATCH, EMB, T + 1],
     ](
         emb_seq_dev_t, emb_goal_dev_t, score_dev_t,
         H + mpc_horizon - 1,
         grid_dim=1,
-        block_dim=BATCH,
+        block_dim=32,
     )
     ctx.enqueue_copy(score_host_buf, score_dev_buf)
     ctx.synchronize()
