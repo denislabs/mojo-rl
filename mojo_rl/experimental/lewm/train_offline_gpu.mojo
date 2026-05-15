@@ -862,6 +862,302 @@ def _run_eval_shot_forward[
 
 
 # =============================================================================
+# H6 — action-conditioning diagnostic.
+#
+# Hypothesis: if the model is action-blind (just smoothing temporally), then
+# replacing real actions with a random *permutation across the batch dimension*
+# should not change the teacher-forced MSE materially. The permutation
+# preserves the action *marginal distribution* exactly but breaks every
+# (state, action) correlation. Compare expert MSE to shuffled MSE; ratio
+# close to 1.0 ⇒ action-blind, << 1.0 ⇒ action-aware.
+#
+# This helper runs ONE eval iteration: 1 expert pass + S shuffled passes.
+# Caller is responsible for sampling pixels/actions, running ENC, downloading
+# emb_host (the target). Helper handles action shuffling, _run_eval_shot_forward,
+# pred download + scoring.
+#
+# Extracted to module scope to keep train_lewm_offline_gpu's body small
+# (compile-time inliner explodes past ~90 def-raises in one function — see
+# memory: feedback_lewm_eval_block_compile_explosion.md).
+#
+# Returns SIMD[DType.float64, 4]: (expert_mse, shuffled_mean, shuffled_min,
+# better_frac) where better_frac is the fraction of shuffled passes with MSE
+# > expert (want close to 1.0 if model is action-aware).
+# =============================================================================
+def _run_h6_diag_shots[
+    BATCH: Int, T: Int, H: Int, N_PREDS: Int, EMB: Int, ACT: Int,
+    SMOOTHED: Int, PROJ_H: Int,
+    PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
+](
+    ctx: DeviceContext,
+    eval_samples: Int,
+    # Action data: actions_sample = real one-hot actions on host (BATCH*T*ACT).
+    # perm_buf = scratch for within-batch permutation (size BATCH).
+    actions_sample: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    perm_buf: UnsafePointer[Int, MutAnyOrigin],
+    # Host/device action staging (caller uploaded expert actions before
+    # calling; helper overwrites on shuffled passes).
+    actions_host: HostBuffer[dtype],
+    actions_buf: DeviceBuffer[dtype],
+    # Target embedding (caller downloaded it from emb_buf already).
+    emb_host: HostBuffer[dtype],
+    # Pred output staging.
+    pred_host: HostBuffer[dtype],
+    pred_out_buf: DeviceBuffer[dtype],
+    # All `_run_eval_shot_forward` args, passed through.
+    ae_params: LayoutTensor[
+        dtype,
+        Layout.row_major(ActionEmbedder[T, ACT, SMOOTHED, EMB].PARAM_SIZE),
+        MutAnyOrigin,
+    ],
+    ae_state: LayoutTensor[
+        dtype,
+        Layout.row_major(ActionEmbedder[T, ACT, SMOOTHED, EMB].STATE_SIZE),
+        MutAnyOrigin,
+    ],
+    actions_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * ACT), MutAnyOrigin
+    ],
+    mut act_emb_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * EMB), MutAnyOrigin
+    ],
+    mut ae_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH, ActionEmbedder[T, ACT, SMOOTHED, EMB].CACHE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    ae_ws_buf: DeviceBuffer[dtype],
+    emb_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * T, EMB), MutAnyOrigin
+    ],
+    act_emb_buf: DeviceBuffer[dtype],
+    mut x_prev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut c_in_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    pos_params: LayoutTensor[
+        dtype,
+        Layout.row_major(AutoDiffChain[BiasAdd[H * EMB]].PARAM_SIZE),
+        MutAnyOrigin,
+    ],
+    pos_state: LayoutTensor[
+        dtype,
+        Layout.row_major(AutoDiffChain[BiasAdd[H * EMB]].STATE_SIZE),
+        MutAnyOrigin,
+    ],
+    x_prev_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut x_prev_pe_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut pos_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH, AutoDiffChain[BiasAdd[H * EMB]].CACHE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    pos_ws_buf: DeviceBuffer[dtype],
+    mut adaln_states: List[GPUNetworkState[AdaLNMod[EMB], Adam[]]],
+    mut msa_states: List[
+        GPUNetworkState[
+            MultiHeadAttention[EMB, PRED_HEADS, H, True], Adam[]
+        ]
+    ],
+    mut mlp_states: List[GPUNetworkState[CondMLP[EMB, PRED_FF], Adam[]]],
+    x_prev_pe_buf: DeviceBuffer[dtype],
+    x_inter_buf: DeviceBuffer[dtype],
+    pred_raw_buf: DeviceBuffer[dtype],
+    silu_cache_buf: DeviceBuffer[dtype],
+    adaln_cache_buf: DeviceBuffer[dtype],
+    ln1_cache_buf: DeviceBuffer[dtype],
+    mod1_cache_buf: DeviceBuffer[dtype],
+    msa_cache_buf: DeviceBuffer[dtype],
+    gate1_cache_buf: DeviceBuffer[dtype],
+    ln2_cache_buf: DeviceBuffer[dtype],
+    mod2_cache_buf: DeviceBuffer[dtype],
+    mlp_cache_buf: DeviceBuffer[dtype],
+    gate2_cache_buf: DeviceBuffer[dtype],
+    raw_mod_buf: DeviceBuffer[dtype],
+    x_mid_buf_d: DeviceBuffer[dtype],
+    mut silu_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut ln_out_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut mod_inp_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, 3 * EMB), MutAnyOrigin
+    ],
+    mut mod_x_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut branch_out_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut gate_inp_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, 3 * EMB), MutAnyOrigin
+    ],
+    adaln_ws_buf: DeviceBuffer[dtype],
+    msa_ws_buf: DeviceBuffer[dtype],
+    mlp_ws_buf: DeviceBuffer[dtype],
+    proj_params: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].PARAM_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    proj_state: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].STATE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    mut proj_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH,
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].CACHE_SIZE,
+        ),
+        MutAnyOrigin,
+    ],
+    proj_ws_buf: DeviceBuffer[dtype],
+    pred_raw_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut pred_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+) raises -> SIMD[DType.float64, 4]:
+    """Run 1 expert pass + eval_samples shuffled passes; return stats SIMD."""
+    var mse_div: Float64 = Float64(BATCH * H * EMB)
+
+    var expert_loss: Float64 = 0.0
+    var shuffled_sum: Float64 = 0.0
+    var shuffled_min: Float64 = 1.0e30
+    var better_count: Int = 0
+
+    for s in range(1 + eval_samples):
+        if s > 0:
+            # Within-batch row permutation: action[b][:] ← actions_sample[perm[b]][:].
+            # Fisher-Yates on perm_buf.
+            for b in range(BATCH):
+                perm_buf[b] = b
+            for b in range(BATCH - 1, 0, -1):
+                var j = Int(random_float64() * Float64(b + 1))
+                if j > b:
+                    j = b
+                var tmp = perm_buf[b]
+                perm_buf[b] = perm_buf[j]
+                perm_buf[j] = tmp
+            for b in range(BATCH):
+                var src = perm_buf[b]
+                for tt in range(T):
+                    for k in range(ACT):
+                        actions_host[
+                            b * T * ACT + tt * ACT + k
+                        ] = actions_sample[
+                            src * T * ACT + tt * ACT + k
+                        ]
+            ctx.enqueue_copy(actions_buf, actions_host)
+
+        _run_eval_shot_forward[
+            BATCH, T, H, EMB, ACT, SMOOTHED, PROJ_H,
+            PRED_HEADS, PRED_FF, DEPTH,
+        ](
+            ctx,
+            ae_params, ae_state,
+            actions_t, act_emb_t,
+            ae_cache_t, ae_ws_buf,
+            emb_t, act_emb_buf,
+            x_prev_t, c_in_t,
+            pos_params, pos_state,
+            x_prev_bh_t, x_prev_pe_bh_t,
+            pos_cache_t, pos_ws_buf,
+            adaln_states, msa_states, mlp_states,
+            x_prev_pe_buf, x_inter_buf, pred_raw_buf,
+            silu_cache_buf, adaln_cache_buf,
+            ln1_cache_buf, mod1_cache_buf,
+            msa_cache_buf, gate1_cache_buf,
+            ln2_cache_buf, mod2_cache_buf,
+            mlp_cache_buf, gate2_cache_buf,
+            raw_mod_buf, x_mid_buf_d,
+            silu_buf_t, ln_out_buf_t, mod_inp_buf_t,
+            mod_x_buf_t, branch_out_buf_t, gate_inp_buf_t,
+            adaln_ws_buf, msa_ws_buf, mlp_ws_buf,
+            proj_params, proj_state,
+            proj_cache_t, proj_ws_buf,
+            pred_raw_bh_t, pred_t,
+        )
+
+        ctx.enqueue_copy(pred_host, pred_out_buf)
+        ctx.synchronize()
+        var l: Float64 = 0.0
+        for b in range(BATCH):
+            for i in range(H * EMB):
+                var p = Float64(pred_host[b * H * EMB + i])
+                var tgt = Float64(
+                    emb_host[b * T * EMB + N_PREDS * EMB + i]
+                )
+                var diff = p - tgt
+                l += diff * diff
+        l /= mse_div
+
+        if s == 0:
+            expert_loss = l
+        else:
+            shuffled_sum += l
+            if l < shuffled_min:
+                shuffled_min = l
+            if l > expert_loss:
+                better_count += 1
+
+    var shuffled_mean: Float64 = (
+        shuffled_sum / Float64(eval_samples) if eval_samples > 0 else 0.0
+    )
+    var better_frac: Float64 = (
+        Float64(better_count) / Float64(eval_samples)
+        if eval_samples > 0
+        else 0.0
+    )
+
+    return SIMD[DType.float64, 4](
+        expert_loss, shuffled_mean, shuffled_min, better_frac
+    )
+
+
+# =============================================================================
 # Phase 4b MPC shot — one rollout of mpc_horizon autoregressive steps.
 #
 # Extracted to module scope to keep train_lewm_offline_gpu's body small
@@ -1563,6 +1859,7 @@ def train_lewm_offline_gpu[
     cem_samples: Int = 64,
     cem_topk: Int = 8,
     cem_smoothing: Float64 = 0.5,
+    eval_shuffle_diag: Bool = True,
 ) raises:
     """GPU offline JEPA trainer with SIGReg + full end-to-end gradient flow.
 
@@ -2409,6 +2706,129 @@ def train_lewm_offline_gpu[
     print("  var_min  =", var_min_ema, " (want > 0.1)")
     print("  var_mean =", var_mean_ema)
     print("  gram_off =", gram_ema, " (want < ~0.5)")
+
+    # ------------------------------------------------------------------
+    # H6 — action-conditioning diagnostic (action-blind sanity check).
+    #
+    # For each eval iter: encode a batch, then run 1 expert pass + S
+    # shuffled passes where actions are permuted within the batch
+    # dimension (same action marginal, broken state-action pairing).
+    # If ratio expert/shuffled_mean ≈ 1.0 the model is action-blind.
+    # Independent of mpc_horizon: always runs when eval_steps > 0 and
+    # eval_shuffle_diag is True.
+    # ------------------------------------------------------------------
+    if eval_steps > 0 and eval_shuffle_diag:
+        print()
+        print("==== H6: action-shuffle diagnostic (teacher-forced) ====")
+        _set_seed(eval_seed)
+
+        var perm_buf = alloc[Int](BATCH)
+
+        var h6_sum_expert: Float64 = 0.0
+        var h6_sum_shuf_mean: Float64 = 0.0
+        var h6_sum_shuf_min: Float64 = 0.0
+        var h6_sum_better: Float64 = 0.0
+
+        for h6_iter in range(eval_steps):
+            buf.sample_batch_fp32(
+                BATCH, T, pixels_sample, actions_sample
+            )
+            for i in range(BT * IMG_DIM):
+                pixels_host[i] = pixels_sample[i]
+            for i in range(BATCH * T * ACT):
+                actions_host[i] = actions_sample[i]
+            ctx.enqueue_copy(pixels_buf, pixels_host)
+            ctx.enqueue_copy(actions_buf, actions_host)
+
+            ENC.forward_gpu[BT, dtype](
+                ctx, emb_t, pixels_t,
+                enc_state.params_view(), enc_state.model_state_view(),
+                enc_cache_t, enc_ws_buf,
+            )
+
+            ctx.enqueue_copy(emb_host, emb_buf)
+            ctx.synchronize()
+
+            var stats = _run_h6_diag_shots[
+                BATCH, T, H, N_PREDS, EMB, ACT, SMOOTHED, PROJ_H,
+                PRED_HEADS, PRED_FF, DEPTH,
+            ](
+                ctx,
+                eval_samples,
+                actions_sample,
+                perm_buf,
+                actions_host, actions_buf,
+                emb_host,
+                pred_host, pred_out_buf,
+                ae_state.params_view(), ae_state.model_state_view(),
+                actions_t, act_emb_t,
+                ae_cache_t, ae_ws_buf,
+                emb_t, act_emb_buf,
+                x_prev_t, c_in_t,
+                pos_state.params_view(), pos_state.model_state_view(),
+                x_prev_bh_t, x_prev_pe_bh_t,
+                pos_cache_t, pos_ws_buf,
+                adaln_states, msa_states, mlp_states,
+                x_prev_pe_buf, x_inter_buf, pred_raw_buf,
+                silu_cache_buf, adaln_cache_buf,
+                ln1_cache_buf, mod1_cache_buf,
+                msa_cache_buf, gate1_cache_buf,
+                ln2_cache_buf, mod2_cache_buf,
+                mlp_cache_buf, gate2_cache_buf,
+                raw_mod_buf, x_mid_buf_d,
+                silu_buf_t, ln_out_buf_t, mod_inp_buf_t,
+                mod_x_buf_t, branch_out_buf_t, gate_inp_buf_t,
+                adaln_ws_buf, msa_ws_buf, mlp_ws_buf,
+                proj_state.params_view(), proj_state.model_state_view(),
+                proj_cache_t, proj_ws_buf,
+                pred_raw_bh_t, pred_t,
+            )
+
+            var expert_loss = stats[0]
+            var shuf_mean = stats[1]
+            var shuf_min = stats[2]
+            var better_frac = stats[3]
+            h6_sum_expert += expert_loss
+            h6_sum_shuf_mean += shuf_mean
+            h6_sum_shuf_min += shuf_min
+            h6_sum_better += better_frac
+
+            print(
+                "  h6", h6_iter,
+                " expert=", expert_loss,
+                " shuf_mean=", shuf_mean,
+                " shuf_min=", shuf_min,
+                " ratio=", expert_loss / (shuf_mean + 1e-12),
+                " frac_shuf_worse=", better_frac,
+            )
+
+        var avg_expert = h6_sum_expert / Float64(eval_steps)
+        var avg_shuf_mean = h6_sum_shuf_mean / Float64(eval_steps)
+        var avg_shuf_min = h6_sum_shuf_min / Float64(eval_steps)
+        var avg_better = h6_sum_better / Float64(eval_steps)
+        print()
+        print(
+            "H6 summary (", eval_steps,
+            "iters x ", eval_samples, "shuffled samples):",
+        )
+        print("  expert MSE           =", avg_expert)
+        print("  shuffled MSE (mean)  =", avg_shuf_mean)
+        print("  shuffled MSE (min)   =", avg_shuf_min)
+        print(
+            "  expert/shuffled_mean =",
+            avg_expert / (avg_shuf_mean + 1e-12),
+            " (want < 1.0 — model is action-aware)",
+        )
+        print(
+            "  expert/shuffled_min  =",
+            avg_expert / (avg_shuf_min + 1e-12),
+        )
+        print(
+            "  frac_shuffled_worse  =", avg_better,
+            " (want > 0.5 — most shuffles are worse than expert)",
+        )
+
+        perm_buf.free()
 
     # ------------------------------------------------------------------
     # Phase 4 eval — random action shooter (teacher-forced)
