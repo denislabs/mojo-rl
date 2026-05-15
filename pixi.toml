@@ -48,6 +48,11 @@ mujoco = ">=3.6.0,<4"    # for gymnasium MuJoCo envs (HalfCheetah, Ant, Humanoid
 imageio = ">=2.37.0,<3"
 imageio-ffmpeg = ">=0.6.0,<0.7"
 shaderc = ">=2026.2,<2027"  # for GLSL->SPIR-V shader compilation (cross-platform rendering)
+hdf5 = ">=1.14,<2"             # libhdf5 C library, FFI target for mojo_rl/io/hdf5
+hdf5plugin = ">=4,<6"          # Blosc/LZ4/ZSTD chunk-compression filters loaded via HDF5_PLUGIN_PATH
+h5py = ">=3.10,<4"             # used by inspection script + parity test (not by the Mojo loader)
+huggingface_hub = ">=0.20,<1"  # first-run dataset download
+zstandard = ">=0.22,<1"        # first-run decompression of .h5.zst envelope
 
 [package]
 name = "mojo_rl"
