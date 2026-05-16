@@ -44,7 +44,7 @@ Typical usage::
         # buf.state   → [num_steps, state_dim] f32
 """
 
-from std.memory import alloc
+from std.memory import alloc, memcpy
 from std.python import Python, PythonObject
 
 from mojo_rl.io.hdf5 import (
@@ -136,6 +136,13 @@ struct LewmPushTWindow(Movable):
 
     var pixels: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]
     """``[num_steps, H, W, 3]`` — native HDF5 layout; HWC."""
+    var pixels_dense: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]
+    """``[num_steps * frameskip, H, W, 3]`` — scratch buffer for one
+    dense HDF5 read. ``H5Sselect_hyperslab`` with ``stride>1`` is
+    pathologically slow (~15× a contiguous read of the same chunk),
+    so ``sample_window`` reads the dense span into this buffer and
+    memcpys every ``frameskip``-th frame into ``pixels``.
+    """
     var action: UnsafePointer[Scalar[DType.float32], MutAnyOrigin]
     """``[num_steps, frameskip * action_dim]`` — dense actions, reshaped."""
     var proprio: UnsafePointer[Scalar[DType.float32], MutAnyOrigin]
@@ -164,6 +171,8 @@ struct LewmPushTWindow(Movable):
 
         var n_pixels = num_steps * 3 * pixel_h * pixel_w
         self.pixels = alloc[Scalar[DType.uint8]](n_pixels)
+        var n_pixels_dense = num_steps * frameskip * 3 * pixel_h * pixel_w
+        self.pixels_dense = alloc[Scalar[DType.uint8]](n_pixels_dense)
         self.action = alloc[Scalar[DType.float32]](
             num_steps * frameskip * action_dim
         )
@@ -174,6 +183,7 @@ struct LewmPushTWindow(Movable):
 
     def __del__(deinit self):
         self.pixels.free()
+        self.pixels_dense.free()
         self.action.free()
         self.proprio.free()
         self.state.free()
@@ -408,14 +418,25 @@ struct LewmPushTExpert(Movable, Sized):
         var start_in_ep = Int(self.clip_start[idx])
         var g_start = Int(self.ep_offset[ep_idx]) + start_in_ep
 
-        # ── pixels: strided read directly into into.pixels (HWC uint8) ────
-        # Reads exactly num_steps frames at offsets {g_start + k*frameskip}.
+        # ── pixels: dense read then strided memcpy ───────────────────────
+        # `H5Sselect_hyperslab` with stride>1 is pathologically slow in
+        # libhdf5 (~15× the cost of a contiguous read of the same chunk
+        # range, measured on the PushT 100-frame chunks). So we read the
+        # full ``num_steps * frameskip`` dense span into a scratch buffer
+        # and copy every ``frameskip``-th frame into ``into.pixels``.
         # Output layout is HWC (num_steps, H, W, 3) — native HDF5 layout.
         # The HWC→CHW permute + uint8→fp32 normalize is deferred to a GPU
         # kernel (see `pixels_uint8_to_fp32_kernel`).
-        self._dset_pixels.read_strided[DType.uint8](
-            g_start, self.num_steps, self.frameskip, into.pixels
+        self._dset_pixels.read_range[DType.uint8](
+            g_start, g_start + self.span, into.pixels_dense
         )
+        var pix_per_frame = self.pixel_h * self.pixel_w * 3
+        for k in range(self.num_steps):
+            memcpy(
+                dest=into.pixels + k * pix_per_frame,
+                src=into.pixels_dense + k * self.frameskip * pix_per_frame,
+                count=pix_per_frame,
+            )
 
         # ── action: copy DENSE span from flat host buffer ──────────────
         # Output shape: (num_steps, frameskip * action_dim) — same data
