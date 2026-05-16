@@ -94,6 +94,52 @@ comptime TPB_Y = 4
 comptime TPB_Z = 16
 
 
+# =============================================================================
+# Pixel conversion kernel: uint8 (HWC or CHW) -> fp32 CHW + /255 normalize.
+#
+# Replaces the host-side scalar HWC->CHW permute + uint8->fp32 conversion
+# loops with one GPU kernel pass. One thread per output element. Source
+# layout is selected at compile time via INPUT_LAYOUT_HWC (true for the
+# PushT HDF5 path, false for the Pong replay buffer).
+# =============================================================================
+
+
+def pixels_uint8_to_fp32_kernel[
+    BT: Int, IN_CH: Int, IMG: Int, INPUT_LAYOUT_HWC: Bool,
+](
+    src_u8: LayoutTensor[
+        DType.uint8,
+        Layout.row_major(BT, IN_CH * IMG * IMG),
+        MutAnyOrigin,
+    ],
+    dst_fp32: LayoutTensor[
+        dtype,
+        Layout.row_major(BT, IN_CH * IMG * IMG),
+        MutAnyOrigin,
+    ],
+):
+    var bt = Int(global_idx.x)
+    var c = Int(global_idx.y)
+    var hw = Int(global_idx.z)
+    if bt >= BT or c >= IN_CH or hw >= IMG * IMG:
+        return
+
+    var h = hw // IMG
+    var w = hw - h * IMG
+
+    var src_offset_in_frame: Int
+    comptime if INPUT_LAYOUT_HWC:
+        src_offset_in_frame = h * (IMG * IN_CH) + w * IN_CH + c
+    else:
+        src_offset_in_frame = c * (IMG * IMG) + h * IMG + w
+
+    var dst_offset_in_frame = c * (IMG * IMG) + h * IMG + w
+    var byte_val = src_u8[bt, src_offset_in_frame]
+    dst_fp32[bt, dst_offset_in_frame] = (
+        Scalar[dtype](Int(byte_val)) * Scalar[dtype](1.0 / 255.0)
+    )
+
+
 struct LeWMGPUState[
     BATCH: Int,
     T: Int,
@@ -247,7 +293,11 @@ struct LeWMGPUState[
     var grad_pixels_buf: DeviceBuffer[dtype]
 
     # Pinned host buffers for sampled data + per-step loss compute.
-    var pixels_host: HostBuffer[dtype]
+    # `pixels_u8_host` + `pixels_u8_buf` carry uint8 pixels (HWC or CHW per
+    # buf.INPUT_LAYOUT_HWC); the GPU `pixels_uint8_to_fp32_kernel` does the
+    # permute + /255 cast, writing the fp32 result to `pixels_buf`.
+    var pixels_u8_host: HostBuffer[DType.uint8]
+    var pixels_u8_buf: DeviceBuffer[DType.uint8]
     var actions_host: HostBuffer[dtype]
     var pred_host: HostBuffer[dtype]
     var target_host: HostBuffer[dtype]
@@ -451,7 +501,14 @@ struct LeWMGPUState[
         self.grad_pixels_buf = ctx.enqueue_create_buffer[dtype](Self.BT * Self.IMG_DIM)
 
         # Pinned host buffers for sampled data + per-step loss compute.
-        self.pixels_host = ctx.enqueue_create_host_buffer[dtype](Self.BT * Self.IMG_DIM)
+        # Uint8 staging: pixels_u8_host (host) -> pixels_u8_buf (device, uint8)
+        # -> pixels_uint8_to_fp32_kernel -> pixels_buf (device, fp32).
+        self.pixels_u8_host = ctx.enqueue_create_host_buffer[DType.uint8](
+            Self.BT * Self.IMG_DIM
+        )
+        self.pixels_u8_buf = ctx.enqueue_create_buffer[DType.uint8](
+            Self.BT * Self.IMG_DIM
+        )
         self.actions_host = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.T * Self.ACT)
         self.pred_host = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.H * Self.EMB)
         self.target_host = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.H * Self.EMB)
@@ -699,6 +756,51 @@ struct LeWMTrainer[
         self.loss_scale = Float64(Self.BATCH * Self.H * Self.EMB)
         self.inv_scale = Scalar[dtype](2.0 / self.loss_scale)
 
+    def _sample_and_upload_pixels(
+        mut self,
+        mut state: Self.GPUState,
+        ctx: DeviceContext,
+    ) raises:
+        """Sample a batch of pixels+actions into pinned host buffers,
+        upload uint8 pixels to device, run the GPU conversion kernel to
+        produce fp32 CHW pixels in `pixels_buf`.
+
+        Actions land in `actions_host` (fp32) but are NOT uploaded to
+        `actions_buf` — caller decides whether/when. This separation
+        matters for MPC (overwrites actions with CEM samples) and H6
+        (snapshots actions before shuffle).
+        """
+        self.buf.sample_batch_uint8(
+            Self.BATCH,
+            Self.T,
+            state.pixels_u8_host.unsafe_ptr(),
+            state.actions_host.unsafe_ptr(),
+        )
+        ctx.enqueue_copy(state.pixels_u8_buf, state.pixels_u8_host)
+
+        comptime BT = Self.GPUState.BT
+        comptime IMG_DIM = Self.GPUState.IMG_DIM
+        var src_u8_t = LayoutTensor[
+            DType.uint8, Layout.row_major(BT, IMG_DIM), MutAnyOrigin,
+        ](state.pixels_u8_buf)
+        var dst_fp32_t = LayoutTensor[
+            dtype, Layout.row_major(BT, IMG_DIM), MutAnyOrigin,
+        ](state.pixels_buf)
+        ctx.enqueue_function[
+            pixels_uint8_to_fp32_kernel[
+                BT, Self.IN_CH, Self.IMG, Self.BUF.INPUT_LAYOUT_HWC,
+            ],
+        ](
+            src_u8_t,
+            dst_fp32_t,
+            grid_dim=(
+                ceildiv(BT, TPB_X),
+                ceildiv(Self.IN_CH, TPB_Y),
+                ceildiv(Self.IMG * Self.IMG, TPB_Z),
+            ),
+            block_dim=(TPB_X, TPB_Y, TPB_Z),
+        )
+
     def train_step(
         mut self,
         mut state: Self.GPUState,
@@ -887,17 +989,39 @@ struct LeWMTrainer[
             dtype, Layout.row_major(SIG.PARAM_SIZE), MutAnyOrigin
         ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-        # Sample batch directly into pinned host buffers, then upload to device.
+        # Sample uint8 pixels into pinned host buffer, upload + convert on GPU.
         var ts_sample_start = perf_counter_ns()
-        self.buf.sample_batch_fp32(
+        self.buf.sample_batch_uint8(
             Self.BATCH,
             Self.T,
-            state.pixels_host.unsafe_ptr(),
+            state.pixels_u8_host.unsafe_ptr(),
             state.actions_host.unsafe_ptr(),
         )
         var ts_sample_end = perf_counter_ns()
-        ctx.enqueue_copy(state.pixels_buf, state.pixels_host)
+        ctx.enqueue_copy(state.pixels_u8_buf, state.pixels_u8_host)
         ctx.enqueue_copy(state.actions_buf, state.actions_host)
+        comptime BT_LOCAL = Self.GPUState.BT
+        comptime IMG_DIM_LOCAL = Self.GPUState.IMG_DIM
+        var src_u8_t = LayoutTensor[
+            DType.uint8, Layout.row_major(BT_LOCAL, IMG_DIM_LOCAL), MutAnyOrigin,
+        ](state.pixels_u8_buf)
+        var dst_fp32_t = LayoutTensor[
+            dtype, Layout.row_major(BT_LOCAL, IMG_DIM_LOCAL), MutAnyOrigin,
+        ](state.pixels_buf)
+        ctx.enqueue_function[
+            pixels_uint8_to_fp32_kernel[
+                BT_LOCAL, Self.IN_CH, Self.IMG, Self.BUF.INPUT_LAYOUT_HWC,
+            ],
+        ](
+            src_u8_t,
+            dst_fp32_t,
+            grid_dim=(
+                ceildiv(BT_LOCAL, TPB_X),
+                ceildiv(Self.IN_CH, TPB_Y),
+                ceildiv(Self.IMG * Self.IMG, TPB_Z),
+            ),
+            block_dim=(TPB_X, TPB_Y, TPB_Z),
+        )
         var ts_h2d_end = perf_counter_ns()
 
         # Zero grads on all 6 groups.
@@ -1395,15 +1519,9 @@ struct LeWMTrainer[
             # H6 permutes actions_host in-place via _run_h6_diag_shots, so we
             # snapshot expert actions to actions_sample (small, ~few KB) for
             # the unshuffled MSE reference.
-            self.buf.sample_batch_fp32(
-                Self.BATCH,
-                Self.T,
-                state.pixels_host.unsafe_ptr(),
-                state.actions_host.unsafe_ptr(),
-            )
+            self._sample_and_upload_pixels(state, ctx)
             for i in range(Self.BATCH * Self.T * Self.ACT):
                 state.actions_sample[i] = state.actions_host[i]
-            ctx.enqueue_copy(state.pixels_buf, state.pixels_host)
             ctx.enqueue_copy(state.actions_buf, state.actions_host)
 
             ENC.forward_gpu[BT, dtype](
@@ -1596,14 +1714,8 @@ struct LeWMTrainer[
         var sum_better_frac: Float64 = 0.0
 
         for eval_iter in range(self.eval_steps):
-            # Sample a fresh batch directly into pinned host buffers.
-            self.buf.sample_batch_fp32(
-                Self.BATCH,
-                Self.T,
-                state.pixels_host.unsafe_ptr(),
-                state.actions_host.unsafe_ptr(),
-            )
-            ctx.enqueue_copy(state.pixels_buf, state.pixels_host)
+            # Sample uint8 pixels + actions; convert pixels on GPU.
+            self._sample_and_upload_pixels(state, ctx)
             ctx.enqueue_copy(state.actions_buf, state.actions_host)
 
             # Encoder runs once per eval iter (pixels unchanged across S).
@@ -1916,16 +2028,10 @@ struct LeWMTrainer[
         var cem_better_random_min: Int = 0
 
         for eval_iter in range(self.eval_steps):
-            # Sample fresh batch directly into pinned host buffers, upload pixels.
-            # (Actions get overwritten by CEM samples below; MPC ignores expert actions
-            #  but the sampler still writes them into actions_host — cheap, no extra copy.)
-            self.buf.sample_batch_fp32(
-                Self.BATCH,
-                Self.T,
-                state.pixels_host.unsafe_ptr(),
-                state.actions_host.unsafe_ptr(),
-            )
-            ctx.enqueue_copy(state.pixels_buf, state.pixels_host)
+            # Sample uint8 pixels + actions; convert pixels on GPU.
+            # Actions stay in actions_host (read later for shot s=0 expert plan)
+            # but are NOT uploaded to actions_buf — MPC's CEM shots overwrite it.
+            self._sample_and_upload_pixels(state, ctx)
 
             ENC.forward_gpu[BT, dtype](
                 ctx, emb_t, pixels_t,
@@ -2329,14 +2435,8 @@ struct LeWMTrainer[
         var mse_div = Float64(Self.BATCH * Self.EMB)
 
         for eval_iter in range(self.eval_steps):
-            # ---- 1. Sample directly into pinned host buffers, encode all T frames ----
-            self.buf.sample_batch_fp32(
-                Self.BATCH,
-                Self.T,
-                state.pixels_host.unsafe_ptr(),
-                state.actions_host.unsafe_ptr(),
-            )
-            ctx.enqueue_copy(state.pixels_buf, state.pixels_host)
+            # ---- 1. Sample uint8 pixels + actions; convert pixels on GPU ----
+            self._sample_and_upload_pixels(state, ctx)
             ctx.enqueue_copy(state.actions_buf, state.actions_host)
 
             ENC.forward_gpu[BT, dtype](

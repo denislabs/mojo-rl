@@ -101,6 +101,10 @@ struct PongBuffer(Movable, LeWMBuffer):
     Not thread-safe. Single-producer, single-consumer (collection then training).
     """
 
+    # Frames are stored as (C, H, W) so we deliver CHW uint8 to the GPU
+    # conversion kernel; the kernel does the layout-aware indexing.
+    comptime INPUT_LAYOUT_HWC: Bool = False
+
     var capacity: Int
     var n_frames: Int
     var frames: UnsafePointer[UInt8, MutAnyOrigin]
@@ -198,23 +202,26 @@ struct PongBuffer(Movable, LeWMBuffer):
                 return False
         return True
 
-    def sample_batch_fp32(
+    def sample_batch_uint8(
         mut self,
         B: Int,
         T: Int,
-        pixels_out: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
+        pixels_out: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
         actions_out: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
     ) raises:
-        """Sample B contiguous-T windows. Caller owns the output buffers.
+        """Sample B contiguous-T windows into a uint8 pixel buffer.
 
         Output layouts:
-          pixels_out:  (B, T, PONG_FRAME_BYTES) fp32 in [0, 1].
+          pixels_out:  (B, T, PONG_FRAME_BYTES) uint8 in [0, 255] — CHW per frame.
           actions_out: (B, T, PONG_NUM_ACTIONS) fp32 one-hot.
+
+        The fp32 normalize + (no-op) permute happens on GPU via
+        `pixels_uint8_to_fp32_kernel` after the uint8 DMA.
 
         Raises if buffer doesn't contain at least one valid window.
         """
         if self.n_frames < T:
-            raise Error("PongBuffer.sample_batch_fp32: buffer too small")
+            raise Error("PongBuffer.sample_batch_uint8: buffer too small")
 
         var sample_pix_stride = T * PONG_FRAME_BYTES
         var sample_act_stride = T * PONG_NUM_ACTIONS
@@ -239,20 +246,17 @@ struct PongBuffer(Movable, LeWMBuffer):
                         break
             if start < 0:
                 raise Error(
-                    "PongBuffer.sample_batch_fp32: no valid windows"
+                    "PongBuffer.sample_batch_uint8: no valid windows"
                 )
 
-            # Copy pixels for this window.
+            # Bulk uint8 copy of (T, C, H, W) frames for this window.
             var pix_dst = pixels_out + b * sample_pix_stride
             var pix_src_base = start * PONG_FRAME_BYTES
             for t in range(T):
                 var src_off = pix_src_base + t * PONG_FRAME_BYTES
                 var dst_off = t * PONG_FRAME_BYTES
                 for i in range(PONG_FRAME_BYTES):
-                    pix_dst[dst_off + i] = (
-                        Scalar[DType.float32](Int(self.frames[src_off + i]))
-                        / 255.0
-                    )
+                    pix_dst[dst_off + i] = self.frames[src_off + i]
 
             # Expand actions to one-hot for this window.
             var act_dst = actions_out + b * sample_act_stride

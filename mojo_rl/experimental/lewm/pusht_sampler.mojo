@@ -1,28 +1,25 @@
-"""LeWM PushT sampler — adapts `LewmPushTExpert` to the PongBuffer batch API.
+"""LeWM PushT sampler — adapts `LewmPushTExpert` to the LeWMBuffer uint8 API.
 
-The LeWM trainer (`trainer_struct.mojo`) is generic on its buffer type and only
-requires:
+The LeWM trainer (`trainer_struct.mojo`) is generic on its buffer type
+and requires (per `lewm_buffer.LeWMBuffer`):
 
-    .sample_batch_fp32(B, T, pixels_out, actions_out) raises
-    .n_frames: Int
+    .INPUT_LAYOUT_HWC: Bool   (comptime)
+    .sample_batch_uint8(B, T, pixels_out_u8, actions_out_fp32) raises
 
-This module wraps the HDF5-backed `LewmPushTExpert` (which delivers one clip
-per `sample_window` call) into that shape:
+This module wraps the HDF5-backed `LewmPushTExpert` (which delivers one
+clip per `sample_window` call as HWC uint8) into the trainer's batch
+shape. The HWC→CHW permute + uint8→fp32 normalize is deferred to a GPU
+kernel (`pixels_uint8_to_fp32_kernel`), so this sampler is essentially a
+bulk uint8 memcpy per batch element.
 
-- Random clip indices each batch row (uniform over the dataset's clip list).
-- `pixels` uint8 (T, 3, H, W) -> fp32 (B, T, 3*H*W) in [0, 1].
-- `action` f32 (T, frameskip * action_dim) -> copied verbatim into
-  (B, T, ACT) — caller guarantees `ACT == frameskip * action_dim` at the
-  comptime level when instantiating the trainer.
-
-Constructor takes the same dataset args as `LewmPushTExpert` (`frameskip`,
-`num_steps`, optional `path` for fixture tests). Owns a single
-`LewmPushTWindow` scratch buffer that's reused across all batch elements.
+Constructor takes the same dataset args as `LewmPushTExpert`
+(`frameskip`, `num_steps`, optional `path` for fixture tests). Owns a
+single `LewmPushTWindow` scratch buffer reused across all batch elements.
 
 Typical usage::
 
-    var sampler = LewmPushTSampler(frameskip=5, num_steps=6)
-    sampler.sample_batch_fp32(BATCH=16, T=6, pixels_out, actions_out)
+    var sampler = LewmPushTSampler(frameskip=5, num_steps=4)
+    sampler.sample_batch_uint8(BATCH=16, T=4, pixels_u8_out, actions_fp32_out)
 """
 
 from std.random import random_float64
@@ -32,7 +29,11 @@ from .lewm_buffer import LeWMBuffer
 
 
 struct LewmPushTSampler(Movable, LeWMBuffer):
-    """Batch sampler for LeWM PushT clips, matching PongBuffer's contract."""
+    """Batch sampler for LeWM PushT clips, conforming to the LeWMBuffer trait."""
+
+    # HDF5 stores PushT pixels as (H, W, C) — deliver them as-is to the
+    # GPU conversion kernel, which handles the permute on-device.
+    comptime INPUT_LAYOUT_HWC: Bool = True
 
     var dataset: LewmPushTExpert
     var window: LewmPushTWindow
@@ -84,30 +85,27 @@ struct LewmPushTSampler(Movable, LeWMBuffer):
         self.window = take.window^
         self.n_frames = take.n_frames
 
-    def sample_batch_fp32(
+    def sample_batch_uint8(
         mut self,
         B: Int,
         T: Int,
-        pixels_out: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
+        pixels_out: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
         actions_out: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
     ) raises:
-        """Fill `pixels_out` / `actions_out` with B random clips.
+        """Fill `pixels_out` (uint8 HWC) / `actions_out` (fp32) with B clips.
 
-        Output layouts (must match the trainer's expectations):
+        Output layouts:
 
-        - ``pixels_out``: ``(B, T, 3 * H * W)`` fp32 in ``[0, 1]``.
-        - ``actions_out``: ``(B, T, frameskip * action_dim)`` fp32 (verbatim).
-
-        The trainer treats ``ACT = frameskip * action_dim`` as a single
-        per-step action vector, matching the LeWM paper's
-        ``effective_act_dim`` reshape.
+        - ``pixels_out``: ``(B, T, H, W, 3)`` uint8 in ``[0, 255]``.
+          The GPU conversion kernel does the HWC→CHW permute + /255.
+        - ``actions_out``: ``(B, T, frameskip * action_dim)`` fp32.
 
         Raises if ``T`` doesn't match the dataset's ``num_steps`` (the
         window buffer is sized for one specific T).
         """
         if T != self.dataset.num_steps:
             raise Error(
-                "LewmPushTSampler.sample_batch_fp32: T="
+                "LewmPushTSampler.sample_batch_uint8: T="
                 + String(T)
                 + " doesn't match dataset.num_steps="
                 + String(self.dataset.num_steps)
@@ -116,18 +114,17 @@ struct LewmPushTSampler(Movable, LeWMBuffer):
         var n_clips = len(self.dataset)
         if n_clips <= 0:
             raise Error(
-                "LewmPushTSampler.sample_batch_fp32: dataset has zero"
+                "LewmPushTSampler.sample_batch_uint8: dataset has zero"
                 " valid clips — check frameskip/num_steps vs episode"
                 " lengths."
             )
 
         var H = self.dataset.pixel_h
         var W = self.dataset.pixel_w
-        var pix_per_step = 3 * H * W
+        var pix_per_step = H * W * 3
         var pix_per_sample = T * pix_per_step
         var act_per_step = self.dataset.frameskip * self.dataset.action_dim
         var act_per_sample = T * act_per_step
-        var inv_255 = Float32(1.0 / 255.0)
 
         for b in range(B):
             var r = random_float64() * Float64(n_clips)
@@ -139,14 +136,12 @@ struct LewmPushTSampler(Movable, LeWMBuffer):
 
             self.dataset.sample_window(clip_idx, self.window)
 
-            # pixels uint8 -> fp32 [0, 1]
+            # Bulk uint8 HWC copy (window.pixels is already HWC).
             var pix_dst = pixels_out + b * pix_per_sample
             for i in range(pix_per_sample):
-                pix_dst[i] = (
-                    Float32(Int(self.window.pixels[i])) * inv_255
-                )
+                pix_dst[i] = self.window.pixels[i]
 
-            # actions: dense f32 copy
+            # Actions: dense f32 copy.
             var act_dst = actions_out + b * act_per_sample
             for i in range(act_per_sample):
                 act_dst[i] = self.window.action[i]

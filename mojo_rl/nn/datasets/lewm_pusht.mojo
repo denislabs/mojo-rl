@@ -116,13 +116,14 @@ struct LewmPushTWindow(Movable):
 
     Buffer shapes:
 
-    - ``pixels``  → ``[num_steps, 3, H, W]`` uint8
+    - ``pixels``  → ``[num_steps, H, W, 3]`` uint8 (HWC, no permute)
     - ``action``  → ``[num_steps, frameskip * action_dim]`` float32
     - ``proprio`` → ``[num_steps, proprio_dim]`` float32
     - ``state``   → ``[num_steps, state_dim]`` float32
 
-    A scratch pixel buffer of shape ``[num_steps, H, W, 3]`` lives inside
-    this struct too — used as the HWC staging area before HWC→CHW permute.
+    Pixels are kept in the HWC layout that HDF5 stores natively — the
+    HWC→CHW permute + uint8→fp32 normalize happens on the GPU via
+    ``pixels_uint8_to_fp32_kernel`` after the host→device DMA.
     """
 
     var num_steps: Int
@@ -134,16 +135,13 @@ struct LewmPushTWindow(Movable):
     var state_dim: Int
 
     var pixels: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]
-    """``[num_steps, 3, H, W]`` — permuted to CHW."""
+    """``[num_steps, H, W, 3]`` — native HDF5 layout; HWC."""
     var action: UnsafePointer[Scalar[DType.float32], MutAnyOrigin]
     """``[num_steps, frameskip * action_dim]`` — dense actions, reshaped."""
     var proprio: UnsafePointer[Scalar[DType.float32], MutAnyOrigin]
     """``[num_steps, proprio_dim]`` — subsampled by frameskip."""
     var state: UnsafePointer[Scalar[DType.float32], MutAnyOrigin]
     """``[num_steps, state_dim]`` — subsampled by frameskip."""
-
-    var _scratch_hwc: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]
-    """Scratch buffer ``[num_steps, H, W, 3]`` for HWC pixel staging."""
 
     def __init__(
         out self,
@@ -166,7 +164,6 @@ struct LewmPushTWindow(Movable):
 
         var n_pixels = num_steps * 3 * pixel_h * pixel_w
         self.pixels = alloc[Scalar[DType.uint8]](n_pixels)
-        self._scratch_hwc = alloc[Scalar[DType.uint8]](n_pixels)
         self.action = alloc[Scalar[DType.float32]](
             num_steps * frameskip * action_dim
         )
@@ -177,7 +174,6 @@ struct LewmPushTWindow(Movable):
 
     def __del__(deinit self):
         self.pixels.free()
-        self._scratch_hwc.free()
         self.action.free()
         self.proprio.free()
         self.state.free()
@@ -412,24 +408,14 @@ struct LewmPushTExpert(Movable, Sized):
         var start_in_ep = Int(self.clip_start[idx])
         var g_start = Int(self.ep_offset[ep_idx]) + start_in_ep
 
-        # ── pixels: strided read into HWC scratch, then permute to CHW ─
+        # ── pixels: strided read directly into into.pixels (HWC uint8) ────
         # Reads exactly num_steps frames at offsets {g_start + k*frameskip}.
+        # Output layout is HWC (num_steps, H, W, 3) — native HDF5 layout.
+        # The HWC→CHW permute + uint8→fp32 normalize is deferred to a GPU
+        # kernel (see `pixels_uint8_to_fp32_kernel`).
         self._dset_pixels.read_strided[DType.uint8](
-            g_start, self.num_steps, self.frameskip, into._scratch_hwc
+            g_start, self.num_steps, self.frameskip, into.pixels
         )
-        # HWC scratch shape: (num_steps, H, W, 3). Permute → (num_steps, 3, H, W).
-        var H = self.pixel_h
-        var W = self.pixel_w
-        var hwc_stride = H * W * 3
-        var chw_stride = 3 * H * W
-        for n in range(self.num_steps):
-            var src = into._scratch_hwc + n * hwc_stride
-            var dst = into.pixels + n * chw_stride
-            for h in range(H):
-                for w in range(W):
-                    var src_off = (h * W + w) * 3
-                    for c in range(3):
-                        dst[c * H * W + h * W + w] = src[src_off + c]
 
         # ── action: copy DENSE span from flat host buffer ──────────────
         # Output shape: (num_steps, frameskip * action_dim) — same data
