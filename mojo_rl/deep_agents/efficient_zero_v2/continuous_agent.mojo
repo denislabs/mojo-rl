@@ -135,7 +135,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
 
     comptime ACT_DIM: Int = Self.Config.action_dim
 
-    var state: EZV2DiscreteCPUState[Self.Config]
+    var state: EZV2DiscreteCPUState[Self.Config, Self.Config.buffer_capacity]
 
     # Sampled-Gumbel CPU MCTS (re-used across calls; resets internally each
     # search). K_NON_ROOT defaults to K_ROOT // 2 per paper App. A.
@@ -222,7 +222,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         n_envs: Int = 1,
         init_zero_heads: Bool = True,
     ):
-        self.state = EZV2DiscreteCPUState[Self.Config]()
+        self.state = EZV2DiscreteCPUState[Self.Config, Self.Config.buffer_capacity]()
         self.mcts = SampledGumbelMCTS[
             Self.ACT_DIM,
             Self.Config.latent_dim,
@@ -659,7 +659,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                 is_terminated,
             )
 
-            comptime CAP = 50000
+            comptime CAP = Self.Config.buffer_capacity
             comptime K_ROOT = Self.Config.num_root_candidates
             var buf_idx = (self.state.buffer.ptr - 1 + CAP) % CAP
             # Continuous: mcts_policies stores the chosen-action vector
@@ -810,7 +810,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         if not self.state.is_ready():
             return 0
 
-        comptime CAP = 50000
+        comptime CAP = Self.Config.buffer_capacity
         var buf_size = self.state.buffer.size
         var buf_ptr = self.state.buffer.ptr
         var oldest = (buf_ptr - buf_size + CAP) % CAP
@@ -924,7 +924,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         comptime PRED_OUT = (
             2 * ACT + BINS if Self.Config.ActSpace.IS_CONTINUOUS else ACT + BINS
         )
-        comptime CAP = 50000
+        comptime CAP = Self.Config.buffer_capacity
 
         if not self.state.is_ready():
             return (
@@ -1257,7 +1257,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         mut self,
         mut gpu: EZV2GPUStateBase[Self.Config],
         mut gpu_replay: EZV2GPUReplayBuffer[
-            50000,
+            Self.Config.buffer_capacity,
             Self.Config.obs_dim,
             Self.Config.action_dim,
             Self.Config.num_root_candidates,
@@ -1281,7 +1281,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             if Self.Config.ActSpace.IS_CONTINUOUS
             else ACT + BINS
         )
-        comptime CAP = 50000
+        comptime CAP = Self.Config.buffer_capacity
 
         if not self.state.is_ready():
             return (

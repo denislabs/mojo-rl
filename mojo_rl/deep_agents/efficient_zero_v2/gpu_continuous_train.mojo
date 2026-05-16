@@ -210,7 +210,7 @@ def run_ezv2_continuous_train_gpu[
         Config.num_root_candidates // 2 if Config.num_root_candidates // 2
         >= 1 else 1
     )
-    comptime CAP = 50000  # matches `EZV2DiscreteCPUState`'s default _CAP
+    comptime CAP = Config.buffer_capacity
 
     comptime STATE_SIZE = Env.STATE_SIZE
     comptime OBS_DIM = Env.OBS_DIM

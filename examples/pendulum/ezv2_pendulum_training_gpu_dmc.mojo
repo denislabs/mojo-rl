@@ -57,7 +57,11 @@ Knob alignment with HC (so the comparison is clean):
     (= `lr_warm_up: 0.01` × 100k training_steps).
   • N_POLICY_AT_ROOT=4 (4 policy + 12 random root candidates).
   • ENT_WEIGHT=5e-2, LAMBDA_G=2.0, LAMBDA_V=0.5.
-  • VALUE_TARGET_MIXED (reference behavior — SVE early, SARSA after).
+  • VALUE_TARGET_SARSA from step 0 (keystone fix per
+    `[project_ezv2_continuous_pendulum_bugs]`; MIXED's SVE warmup was
+    poisoning the value head in the previous DMC-Pendulum attempt).
+  • CAP=30000 (overrides the previously-ignored config; bug fix
+    2026-05-16 — replay capacity was hardcoded to 50k regardless).
   • init_zero on policy + reward heads (applied automatically).
   • UTD=1.0 via `train_steps_per_iter=N_ENVS`.
 
@@ -83,7 +87,7 @@ from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.efficient_zero_v2 import (
     EZV2ContinuousMLPConfig,
     GenericEZV2ContinuousAgent,
-    VALUE_TARGET_MIXED,
+    VALUE_TARGET_SARSA,
     run_ezv2_continuous_train_gpu,
 )
 from mojo_rl.envs.pendulum import PendulumV2
@@ -114,7 +118,13 @@ def main() raises:
         PRED_BOTTLENECK=512,
         BINS=51,
         BS=256,
-        CAP=100000,
+        # CAP threading bug fixed 2026-05-16 (this Config.CAP was previously
+        # ignored; the agent + GPU replay state used a hardcoded _CAP=50000).
+        # Pendulum converges in ~20-40K env_steps with the shallow config, so
+        # 30k is plenty. Smaller buffer also forces eviction of early-training
+        # transitions (including any SVE-poisoned ones if MIXED is re-enabled)
+        # which helps freshness for off-policy learning.
+        CAP=30000,
         LR=3e-4,
         WD=2e-5,
         K_UNROLL=5,
@@ -132,7 +142,16 @@ def main() raises:
         ENT_WEIGHT=5e-2,
         LAMBDA_G=2.0,
         LAMBDA_V=0.5,
-        VALUE_TARGET_MODE=VALUE_TARGET_MIXED,
+        # SARSA from step 0 (vs MIXED which uses SVE for first T_FRESH=20K
+        # train steps then switches). Memory [project_ezv2_continuous_
+        # pendulum_bugs] identified VALUE_TARGET_SARSA as the keystone fix
+        # for Pendulum — SVE overestimates V → critic collapse → world
+        # model hallucination, exactly what we observed in the previous
+        # MIXED run (v_pred_var collapsed 9187 → 289 at step 12K, then
+        # SARSA transition recovered it at step 22K but the world model
+        # was already poisoned and predicted -26 returns while reality
+        # gave -855).
+        VALUE_TARGET_MODE=VALUE_TARGET_SARSA,
     ]
 
     seed(2026)

@@ -152,7 +152,7 @@ struct EZV2GPUReplayBuffer[
         Config: EZV2DiscreteConfig
     ](
         mut self,
-        cpu: EZV2DiscreteCPUState[Config],
+        cpu: EZV2DiscreteCPUState[Config, Config.buffer_capacity],
         ctx: DeviceContext,
     ) raises:
         """Bulk-mirror the entire CPU state's buffer + parallel arrays
@@ -190,7 +190,7 @@ struct EZV2GPUReplayBuffer[
         Config: EZV2DiscreteConfig
     ](
         mut self,
-        mut cpu: EZV2DiscreteCPUState[Config],
+        mut cpu: EZV2DiscreteCPUState[Config, Config.buffer_capacity],
         ctx: DeviceContext,
     ) raises:
         """Mirror the GPU buffer back to a CPU state. Use for end-of-run

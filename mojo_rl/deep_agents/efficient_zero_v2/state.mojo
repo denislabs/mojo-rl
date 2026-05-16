@@ -1588,7 +1588,7 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
 
     def upload_from(
         mut self,
-        cpu: EZV2DiscreteCPUState[Self.Config],
+        cpu: EZV2DiscreteCPUState[Self.Config, Self.Config.buffer_capacity],
         ctx: DeviceContext,
     ) raises:
         """Copy network params/optimizer state/model state from the
@@ -1636,7 +1636,7 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
 
     def upload_targets_from(
         mut self,
-        cpu: EZV2DiscreteCPUState[Self.Config],
+        cpu: EZV2DiscreteCPUState[Self.Config, Self.Config.buffer_capacity],
         ctx: DeviceContext,
     ) raises:
         """Mirror the CPU target nets (`representation_target`,
@@ -1656,7 +1656,7 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
 
     def download_to(
         mut self,
-        mut cpu: EZV2DiscreteCPUState[Self.Config],
+        mut cpu: EZV2DiscreteCPUState[Self.Config, Self.Config.buffer_capacity],
         ctx: DeviceContext,
     ) raises:
         """Mirror the GPU networks back to the CPU state. Used after a
