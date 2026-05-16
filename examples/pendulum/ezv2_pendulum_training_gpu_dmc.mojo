@@ -1,4 +1,4 @@
-"""EZ-V2 Pendulum — full-reference DMC-config diagnostic (CPU MCTS).
+"""EZ-V2 Pendulum — full-reference DMC-config diagnostic (GPU MCTS).
 
 Same `EZV2ContinuousMLPConfig` (deep / BN-equipped / paper-spec) that
 HalfCheetah uses, just with Pendulum dims + Pendulum-appropriate value
@@ -7,45 +7,47 @@ and reward ranges. The Pendulum-shallow example
 -212 with the simpler `EZV2ContinuousMLPShallowConfig`.
 
 This script is the **#2 diagnostic** in the 2026-05-16 GPU-MCTS
-investigation: after multiple single-knob tweaks on the shallow config
+investigation. After multiple single-knob tweaks on the shallow config
 (c_scale, N_POLICY_AT_ROOT=4) failed to fix the GPU-MCTS non-convergence,
-the plan was to first establish whether the reference EZ-V2 setup
-converges on Pendulum at all, using the proven CPU MCTS path. The
-purpose is to bisect "does the reference algorithm work on Pendulum?"
-from "is the GPU MCTS kernel broken?". Hence the explicit
-`use_gpu_mcts=False`, `use_gpu_sampling=False`, and disabled reanalyze
-(`reanalyze_warmup=10_000_000`) below — only ONE variable changes vs the
-shallow CPU-MCTS converging run, namely the config family + paper
-hyperparams as a single bundle.
+the plan was to establish whether the reference EZ-V2 setup converges
+on Pendulum at all. The original plan ran CPU MCTS for a clean
+bisection, but at deep-config + UTD=1.0 + N_ENVS=8 + 100k env_steps
+that was projecting to ~25-50h wall, so we switched to **Option B**
+(2026-05-16): run on GPU MCTS to get tractable wall time (~2-3h),
+accepting that the bisection is now two-variable (config bundle AND
+GPU-MCTS path together).
+
+Reanalyze stays disabled (`reanalyze_warmup=10_000_000`) so we don't
+fold a THIRD variable in. So vs the shallow CPU-MCTS converging run,
+this flips exactly two switches: config family + acting-time MCTS
+path. The inspect_root_gpu instrumentation will tell us whether any
+failure mode matches the shallow-GPU saturation pattern.
 
 Three possible outcomes and what each tells us:
 
-  • Converges to good policy (≤ -200): the full reference setup is
-    healthy on Pendulum with CPU MCTS. The GPU-MCTS non-convergence is
-    NOT a reference-config issue — it's a kernel/plumbing bug we now
-    have to chase in isolation. Bring this same config up to GPU MCTS
-    next as the cleanest comparison.
+  • Converges to good policy (≤ -200): deep config + GPU MCTS works.
+    The shallow-GPU failure was specific to the shallow config's
+    candidate-saturation regime (MIN_STD=0.5 + bang-bang μ → identical
+    samples → MCTS can't differentiate). Deep config's MIN_STD=0.1 +
+    bigger nets sidestep it. We adopt the DMC config as the production
+    Pendulum config and the original investigation closes.
 
-  • Trains but plateaus or oscillates (like the N_POLICY_AT_ROOT=4 +
-    shallow run from earlier in this session, which peaked at best=-506
-    then regressed): the off-policy distribution shift from the uniform-
-    random root candidates is a real algo-level issue; the deeper
-    architecture didn't rescue it. Investigation pivots to that.
+  • Doesn't converge AND inspect_root_gpu shows the same saturation
+    pattern (log_prior clamped, mean_v indistinguishable, visit_H
+    near log K): same root cause as shallow-GPU. The deeper arch
+    didn't rescue it. Investigation pivots to fundamental algo/kernel
+    issues in GPU MCTS at fp32.
 
-  • Doesn't train at all: the deep config has a genuine Pendulum
-    regression (matches the audit note in `[project_ezv2_continuous_
-    pendulum_bugs]` that flagged "the architecture mutation itself" as
-    an unresolved factor). Pendulum isn't a clean test for the DMC
-    config and we pick a different DMC env (Cartpole/Reacher) as the
-    GPU-MCTS baseline.
+  • Doesn't converge but the failure mode is DIFFERENT (e.g. NaN, BN
+    train/eval mismatch, gradient explosion): we've at least ruled out
+    the shallow-saturation hypothesis; new failure-mode-specific
+    investigation begins.
 
 The shallow Pendulum example is kept untouched as the regression
 anchor.
 
-(Earlier docstring framed this as an HC-diagnostic. It now serves
-double duty — the deep-config-on-Pendulum question is the same in
-either framing, but the immediate motivation in this session is the
-GPU-MCTS bisection.)
+(Original docstring framed this as an HC-diagnostic; that question is
+still answerable from the same run.)
 
 Knob alignment with HC (so the comparison is clean):
   • LATENT=128, HIDDEN=256, HEAD_HIDDEN=256, PROJ=128, PROJ_HID=512,
@@ -91,7 +93,7 @@ from mojo_rl.nn.training.scheduler import LinearWarmupSchedule
 
 def main() raises:
     print("=" * 72)
-    print("    EZ-V2 Pendulum — DMC-config diagnostic (CPU MCTS, N_ENVS=8)")
+    print("    EZ-V2 Pendulum — DMC-config diagnostic (GPU MCTS, N_ENVS=8)")
     print("=" * 72)
 
     comptime NUM_ENV_STEPS = 100_000
@@ -167,7 +169,7 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="EZ-V2 Pendulum (DMC config, CPU MCTS bisection)",
+        run_name="EZ-V2 Pendulum (DMC config, GPU MCTS, reanalyze off)",
         buffer_size=64,
         api_key=api_key,
     )
@@ -220,14 +222,17 @@ def main() raises:
         max_steps_per_episode=200,
         log_every=2_000,
         rng_seed_base=UInt64(2026),
-        # CPU MCTS path: forces `agent.select_action()` (the converging
-        # path from the shallow baseline). This is the bisection: same
-        # MCTS code path as the working shallow-CPU run, only the config
-        # family changes. If this run converges, the GPU-MCTS kernel is
-        # the lone remaining suspect for the GPU non-convergence we've
-        # been chasing.
-        use_gpu_sampling=False,
-        use_gpu_mcts=False,
+        # GPU MCTS path: CPU MCTS at deep-config + UTD=1.0 + N_ENVS=8 was
+        # taking 10-20× the wall time of the shallow CPU-MCTS run. Option B
+        # (2026-05-16) accepts the confounded bisection (config bundle +
+        # GPU MCTS change together) in exchange for tractable wall time
+        # (~2-3h). Reanalyze stays disabled below so only TWO variables
+        # are flipped vs the shallow CPU-MCTS converging run: config
+        # family and acting-time MCTS path. Reading the inspect_root_gpu
+        # dumps will tell us whether the failure mode (if any) matches
+        # the shallow-GPU saturation pattern.
+        use_gpu_sampling=True,
+        use_gpu_mcts=True,
         # Pendulum's 3D obs is already well-scaled; obs_norm not needed
         # (and could hurt — the shallow config doesn't use it).
         obs_norm=False,
