@@ -1238,7 +1238,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
         # Create texture from sprite pixels (recreated each frame for simplicity)
         var has_texture = False
-        var texture = UnsafePointer[Texture, MutAnyOrigin](_unsafe_null=())
+        var texture = UnsafePointer[Texture, MutAnyOrigin](unsafe_from_address=0)
         if self._has_sprites:
             try:
                 var surface = create_surface_from(

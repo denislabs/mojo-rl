@@ -83,7 +83,7 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
     algorithm_name: String = "GPUAgentCPUEnv",
     reward_scale: Float64 = 1.0,
     eval_env: UnsafePointer[E, MutAnyOrigin] = UnsafePointer[E, MutAnyOrigin](
-        _unsafe_null=()
+        unsafe_from_address=0
     ),
     eval_every: Int = 0,
     eval_episodes: Int = 5,

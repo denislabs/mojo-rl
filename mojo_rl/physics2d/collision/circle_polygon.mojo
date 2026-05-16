@@ -72,8 +72,7 @@ def _transform_local_to_world(
     cos_a: Scalar[dtype],
     sin_a: Scalar[dtype],
 ) -> Tuple[Scalar[dtype], Scalar[dtype]]:
-    """Apply body transform (rotation + translation) to a local-frame point.
-    """
+    """Apply body transform (rotation + translation) to a local-frame point."""
     var wx = body_x + local_x * cos_a - local_y * sin_a
     var wy = body_y + local_x * sin_a + local_y * cos_a
     return (wx, wy)
@@ -151,7 +150,9 @@ def _circle_vs_convex_polygon(
         # Closest point on this edge segment
         var t = Scalar[dtype](0.0)
         if elen_sq > Scalar[dtype](1.0e-12):
-            t = ((circle_world_x - v0x) * ex + (circle_world_y - v0y) * ey) / elen_sq
+            t = (
+                (circle_world_x - v0x) * ex + (circle_world_y - v0y) * ey
+            ) / elen_sq
             if t < Scalar[dtype](0.0):
                 t = Scalar[dtype](0.0)
             elif t > Scalar[dtype](1.0):
@@ -190,8 +191,8 @@ def _circle_vs_convex_polygon(
                 Scalar[dtype](0.0),
             )
         # Contact: normal from polygon-surface point toward circle center
-        var nx = Scalar[dtype](0.0)
-        var ny = Scalar[dtype](0.0)
+        var nx: Scalar[dtype]
+        var ny: Scalar[dtype]
         if dist > Scalar[dtype](1.0e-9):
             nx = (circle_world_x - best_px) / dist
             ny = (circle_world_y - best_py) / dist
@@ -241,7 +242,10 @@ def _write_contact[
 
 @always_inline
 def detect_circle_vs_body_pair[
-    BATCH: Int, NUM_SHAPES: Int, MAX_CONTACTS: Int, STATE_SIZE: Int,
+    BATCH: Int,
+    NUM_SHAPES: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
 ](
     state: LayoutTensor[
         dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -324,8 +328,12 @@ def detect_circle_vs_body_pair[
             n_verts = MAX_POLYGON_VERTS
 
         # Transform sub-polygon vertices to world frame
-        var wx = InlineArray[Scalar[dtype], MAX_POLYGON_VERTS](fill=Scalar[dtype](0.0))
-        var wy = InlineArray[Scalar[dtype], MAX_POLYGON_VERTS](fill=Scalar[dtype](0.0))
+        var wx = InlineArray[Scalar[dtype], MAX_POLYGON_VERTS](
+            fill=Scalar[dtype](0.0)
+        )
+        var wy = InlineArray[Scalar[dtype], MAX_POLYGON_VERTS](
+            fill=Scalar[dtype](0.0)
+        )
         for v in range(n_verts):
             var lx = rebind[Scalar[dtype]](shapes[sub_idx, 2 + v * 2])
             var ly = rebind[Scalar[dtype]](shapes[sub_idx, 3 + v * 2])
@@ -388,11 +396,11 @@ struct CirclePolygonCollision(Movable & ImplicitlyCopyable):
         poly_body_idx: Int,
     ):
         """Args:
-            circle_body_off: Absolute offset (within an env row) to the
-                circle body's state slot (i.e., BODIES_OFFSET + ci*BODY_STATE_SIZE).
-            poly_body_off: Absolute offset to the polygon body's state slot.
-            circle_body_idx: Body index value to record in CONTACT_BODY_A.
-            poly_body_idx: Body index value to record in CONTACT_BODY_B.
+        circle_body_off: Absolute offset (within an env row) to the
+            circle body's state slot (i.e., BODIES_OFFSET + ci*BODY_STATE_SIZE).
+        poly_body_off: Absolute offset to the polygon body's state slot.
+        circle_body_idx: Body index value to record in CONTACT_BODY_A.
+        poly_body_idx: Body index value to record in CONTACT_BODY_B.
         """
         self.circle_body_off = circle_body_off
         self.poly_body_off = poly_body_off
@@ -413,7 +421,10 @@ struct CirclePolygonCollision(Movable & ImplicitlyCopyable):
 
     # CPU detection — appends contacts for each env (does not reset counts).
     def detect[
-        BATCH: Int, NUM_SHAPES: Int, MAX_CONTACTS: Int, STATE_SIZE: Int,
+        BATCH: Int,
+        NUM_SHAPES: Int,
+        MAX_CONTACTS: Int,
+        STATE_SIZE: Int,
     ](
         self,
         state: LayoutTensor[
@@ -452,7 +463,10 @@ struct CirclePolygonCollision(Movable & ImplicitlyCopyable):
     @always_inline
     @staticmethod
     def detect_kernel[
-        BATCH: Int, NUM_SHAPES: Int, MAX_CONTACTS: Int, STATE_SIZE: Int,
+        BATCH: Int,
+        NUM_SHAPES: Int,
+        MAX_CONTACTS: Int,
+        STATE_SIZE: Int,
     ](
         state: LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin

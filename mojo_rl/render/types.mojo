@@ -12,7 +12,7 @@ struct SDLHandle(ImplicitlyCopyable, Movable):
     var ptr: UnsafePointer[UInt8, MutAnyOrigin]
 
     def __init__(out self):
-        self.ptr = UnsafePointer[UInt8, MutAnyOrigin](_unsafe_null=())
+        self.ptr = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0)
 
     def __init__(out self, ptr: UnsafePointer[UInt8, MutAnyOrigin]):
         self.ptr = ptr

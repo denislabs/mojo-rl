@@ -107,7 +107,8 @@ comptime S_PLAYER_PROJECTILES_BASE: Int = (
 )
 
 comptime S_PLANTS_BASE: Int = (
-    S_PLAYER_PROJECTILES_BASE + NUM_FLOORS * MAX_PLAYER_PROJECTILES * PROJ_FIELDS
+    S_PLAYER_PROJECTILES_BASE
+    + NUM_FLOORS * MAX_PLAYER_PROJECTILES * PROJ_FIELDS
 )
 comptime S_PLANT_MASK_BASE: Int = (
     S_PLANTS_BASE + MAX_GROWING_PLANTS * PLANT_FIELDS
@@ -141,6 +142,7 @@ comptime STATE_SIZE: Int = S_RNG_BASE + S_RNG_WORDS
 # y * MAP_W + x` so floor 0 is contiguous, then floor 1, etc.
 # Same convention for item_map / mob_map / light_map.
 
+
 @always_inline
 def s_map(floor: Int, y: Int, x: Int) -> Int:
     return S_MAP_BASE + floor * MAP_SIZE_PER_FLOOR + y * MAP_W + x
@@ -163,7 +165,7 @@ def s_light_map(floor: Int, y: Int, x: Int) -> Int:
 
 @always_inline
 def s_down_ladder(floor: Int, axis: Int) -> Int:
-    """axis: 0 = y, 1 = x."""
+    """Axis: 0 = y, 1 = x."""
     return S_DOWN_LADDERS_BASE + floor * 2 + axis
 
 

@@ -945,7 +945,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
 
         # Upload the sprite sheet as one SDL3 texture for this frame.
         var has_texture = False
-        var texture = UnsafePointer[Texture, MutAnyOrigin](_unsafe_null=())
+        var texture = UnsafePointer[Texture, MutAnyOrigin](unsafe_from_address=0)
         if self._has_sprites:
             try:
                 var surface = create_surface_from(

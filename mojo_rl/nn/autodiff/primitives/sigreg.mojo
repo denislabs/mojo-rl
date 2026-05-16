@@ -49,9 +49,7 @@ from std.math import sin, cos, sqrt, log, exp, pi
 from std.random.philox import Random as PhiloxRandom
 
 
-struct SIGRegOp[
-    dim: Int, seq_len: Int, num_proj: Int, knots: Int
-](DiffOp):
+struct SIGRegOp[dim: Int, seq_len: Int, num_proj: Int, knots: Int](DiffOp):
     """Epps-Pulley Gaussianity regularizer.
 
     Input shape  : (BATCH, seq_len * dim)            — interpreted as (B, T, D)
@@ -159,7 +157,8 @@ struct SIGRegOp[
     @always_inline
     @staticmethod
     def _w_k(k: Int) -> Float64:
-        """Effective weight: trapezoidal · phi (matches `self.weights` in ref)."""
+        """Effective weight: trapezoidal · phi (matches `self.weights` in ref).
+        """
         var dt = Self._t_step()
         var trap = dt if (k == 0 or k == Self.knots - 1) else 2.0 * dt
         return trap * Self._phi_k(k)
@@ -169,10 +168,9 @@ struct SIGRegOp[
     # =========================================================================
 
     @staticmethod
-    def _generate_a[dtype: DType](
-        seed: UInt64,
-        a_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    ):
+    def _generate_a[
+        dtype: DType
+    ](seed: UInt64, a_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],):
         """Fill a_ptr[0 .. dim*num_proj] with column-normalized Gaussian.
 
         Layout: row-major (dim, num_proj). A[d, p] = a_ptr[d * num_proj + p].
@@ -181,12 +179,8 @@ struct SIGRegOp[
         for d in range(Self.dim):
             for p in range(Self.num_proj):
                 var idx = d * Self.num_proj + p
-                var rng1 = PhiloxRandom(
-                    seed=seed, offset=UInt64(2 * idx)
-                )
-                var rng2 = PhiloxRandom(
-                    seed=seed, offset=UInt64(2 * idx + 1)
-                )
+                var rng1 = PhiloxRandom(seed=seed, offset=UInt64(2 * idx))
+                var rng2 = PhiloxRandom(seed=seed, offset=UInt64(2 * idx + 1))
                 var u1 = Float64(rng1.step_uniform()[0])
                 var u2 = Float64(rng2.step_uniform()[0])
                 if u1 < 1e-10:
@@ -226,7 +220,9 @@ struct SIGRegOp[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
 
         # Generate A (D, num_proj) deterministically from cache pointer.
         var seed = UInt64(Int(cache.ptr))
@@ -251,12 +247,12 @@ struct SIGRegOp[
 
         # Aggregate cm[t, p, k] and sm[t, p, k] over batch.
         var n_tpk = Self.seq_len * Self.num_proj * Self.knots
-        var cm = InlineArray[Scalar[dtype], Self.seq_len * Self.num_proj * Self.knots](
-            uninitialized=True
-        )
-        var sm = InlineArray[Scalar[dtype], Self.seq_len * Self.num_proj * Self.knots](
-            uninitialized=True
-        )
+        var cm = InlineArray[
+            Scalar[dtype], Self.seq_len * Self.num_proj * Self.knots
+        ](uninitialized=True)
+        var sm = InlineArray[
+            Scalar[dtype], Self.seq_len * Self.num_proj * Self.knots
+        ](uninitialized=True)
         for i in range(n_tpk):
             cm[i] = Scalar[dtype](0)
             sm[i] = Scalar[dtype](0)
@@ -317,7 +313,9 @@ struct SIGRegOp[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         # Regenerate A from same seed (cache pointer unchanged across fwd/bwd).
         var seed = UInt64(Int(cache.ptr))
         var a_storage = InlineArray[Scalar[dtype], Self.dim * Self.num_proj](
@@ -327,12 +325,12 @@ struct SIGRegOp[
 
         # Recompute cm, sm (batch-aggregated; we cached only per-sample z).
         var n_tpk = Self.seq_len * Self.num_proj * Self.knots
-        var cm = InlineArray[Scalar[dtype], Self.seq_len * Self.num_proj * Self.knots](
-            uninitialized=True
-        )
-        var sm = InlineArray[Scalar[dtype], Self.seq_len * Self.num_proj * Self.knots](
-            uninitialized=True
-        )
+        var cm = InlineArray[
+            Scalar[dtype], Self.seq_len * Self.num_proj * Self.knots
+        ](uninitialized=True)
+        var sm = InlineArray[
+            Scalar[dtype], Self.seq_len * Self.num_proj * Self.knots
+        ](uninitialized=True)
         for i in range(n_tpk):
             cm[i] = Scalar[dtype](0)
             sm[i] = Scalar[dtype](0)
@@ -381,9 +379,7 @@ struct SIGRegOp[
                         var arg = z * tk
                         var s_arg = sin(arg)
                         var c_arg = cos(arg)
-                        var bracket = (
-                            -(cm[idx] - phi) * s_arg + sm[idx] * c_arg
-                        )
+                        var bracket = -(cm[idx] - phi) * s_arg + sm[idx] * c_arg
                         acc += wk * tk * bracket
                     dLdz[p] = coef * acc
 
@@ -462,39 +458,51 @@ struct SIGRegOp[
         # 1. Box-Muller into A.
         var grid_a = (D * P + TPB - 1) // TPB
         ctx.enqueue_function[gen_a_unnorm_kernel[D, P, dtype]](
-            a_t, seed,
-            grid_dim=(grid_a,), block_dim=(TPB,),
+            a_t,
+            seed,
+            grid_dim=(grid_a,),
+            block_dim=(TPB,),
         )
         # 2. Column L2-normalize.
         var grid_norm = (P + TPB - 1) // TPB
         ctx.enqueue_function[norm_a_kernel[D, P, dtype]](
             a_t,
-            grid_dim=(grid_norm,), block_dim=(TPB,),
+            grid_dim=(grid_norm,),
+            block_dim=(TPB,),
         )
         # 3. Project: z = input @ A.
         var grid_proj = (BATCH * T * P + TPB - 1) // TPB
         ctx.enqueue_function[project_kernel[BATCH, T, D, P, dtype]](
-            input, a_t, cache,
-            grid_dim=(grid_proj,), block_dim=(TPB,),
+            input,
+            a_t,
+            cache,
+            grid_dim=(grid_proj,),
+            block_dim=(TPB,),
         )
         # 4. cm/sm + per-block partial stat via block.sum.
-        ctx.enqueue_function[
-            cm_sm_kernel[BATCH, T, P, K, dtype, True]
-        ](
-            cache, cm_t, sm_t, partials_ptr,
-            grid_dim=(N_PARTIALS,), block_dim=(TPB,),
+        ctx.enqueue_function[cm_sm_kernel[BATCH, T, P, K, dtype, True]](
+            cache,
+            cm_t,
+            sm_t,
+            partials_ptr,
+            grid_dim=(N_PARTIALS,),
+            block_dim=(TPB,),
         )
         # 5. Final reduce: collapse N_PARTIALS scalars into stat
         #    using a single block (grid-stride loop inside the kernel).
         ctx.enqueue_function[final_reduce_kernel[N_PARTIALS, dtype]](
-            partials_ptr, stat_ptr,
-            grid_dim=(1,), block_dim=(TPB,),
+            partials_ptr,
+            stat_ptr,
+            grid_dim=(1,),
+            block_dim=(TPB,),
         )
         # 6. Broadcast scaled stat to all output[b, 0].
         var grid_bcast = (BATCH + TPB - 1) // TPB
         ctx.enqueue_function[broadcast_stat_kernel[BATCH, T, P, dtype]](
-            stat_ptr, output,
-            grid_dim=(grid_bcast,), block_dim=(TPB,),
+            stat_ptr,
+            output,
+            grid_dim=(grid_bcast,),
+            block_dim=(TPB,),
         )
 
     @staticmethod
@@ -552,38 +560,53 @@ struct SIGRegOp[
         # 1. Regen A from same seed.
         var grid_a = (D * P + TPB - 1) // TPB
         ctx.enqueue_function[gen_a_unnorm_kernel[D, P, dtype]](
-            a_t, seed,
-            grid_dim=(grid_a,), block_dim=(TPB,),
+            a_t,
+            seed,
+            grid_dim=(grid_a,),
+            block_dim=(TPB,),
         )
         var grid_norm = (P + TPB - 1) // TPB
         ctx.enqueue_function[norm_a_kernel[D, P, dtype]](
             a_t,
-            grid_dim=(grid_norm,), block_dim=(TPB,),
+            grid_dim=(grid_norm,),
+            block_dim=(TPB,),
         )
         # 2. Recompute cm/sm (no stat needed in backward).
-        ctx.enqueue_function[
-            cm_sm_kernel[BATCH, T, P, K, dtype, False]
-        ](
-            cache, cm_t, sm_t, partials_ptr,
-            grid_dim=(N_PARTIALS,), block_dim=(TPB,),
+        ctx.enqueue_function[cm_sm_kernel[BATCH, T, P, K, dtype, False]](
+            cache,
+            cm_t,
+            sm_t,
+            partials_ptr,
+            grid_dim=(N_PARTIALS,),
+            block_dim=(TPB,),
         )
         # 3. Reduce G = sum_b grad_output[b, 0]. BATCH typically ≤ TPB
         #    so this fits in a single block via block.sum.
         ctx.enqueue_function[reduce_g_kernel[BATCH, dtype]](
-            grad_output, g_ptr,
-            grid_dim=(1,), block_dim=(TPB,),
+            grad_output,
+            g_ptr,
+            grid_dim=(1,),
+            block_dim=(TPB,),
         )
         # 4. dLdz[b,t,p] using cached z + cm/sm.
         var grid_dLdz = (BATCH * T * P + TPB - 1) // TPB
         ctx.enqueue_function[dLdz_kernel[BATCH, T, P, K, dtype]](
-            cache, cm_t, sm_t, dLdz_t, g_ptr,
-            grid_dim=(grid_dLdz,), block_dim=(TPB,),
+            cache,
+            cm_t,
+            sm_t,
+            dLdz_t,
+            g_ptr,
+            grid_dim=(grid_dLdz,),
+            block_dim=(TPB,),
         )
         # 5. grad_input = dLdz @ A^T.
         var grid_mm = (BATCH * T * D + TPB - 1) // TPB
         ctx.enqueue_function[matmul_a_kernel[BATCH, T, D, P, dtype]](
-            dLdz_t, a_t, grad_input,
-            grid_dim=(grid_mm,), block_dim=(TPB,),
+            dLdz_t,
+            a_t,
+            grad_input,
+            grid_dim=(grid_mm,),
+            block_dim=(TPB,),
         )
 
 
@@ -622,9 +645,7 @@ def gen_a_unnorm_kernel[
 
 def norm_a_kernel[
     D: Int, P: Int, dtype: DType
-](
-    a_t: LayoutTensor[dtype, Layout.row_major(D, P), MutAnyOrigin],
-):
+](a_t: LayoutTensor[dtype, Layout.row_major(D, P), MutAnyOrigin],):
     """One thread per column; L2-normalise A[:, p]."""
     comptime assert dtype.is_floating_point(), "dtype must be FP"
     var p_idx = Int(global_idx.x)
@@ -643,13 +664,9 @@ def norm_a_kernel[
 def project_kernel[
     BATCH: Int, T: Int, D: Int, P: Int, dtype: DType
 ](
-    input_t: LayoutTensor[
-        dtype, Layout.row_major(BATCH, T * D), MutAnyOrigin
-    ],
+    input_t: LayoutTensor[dtype, Layout.row_major(BATCH, T * D), MutAnyOrigin],
     a_t: LayoutTensor[dtype, Layout.row_major(D, P), MutAnyOrigin],
-    cache_t: LayoutTensor[
-        dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin
-    ],
+    cache_t: LayoutTensor[dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin],
 ):
     """One thread per (b, t, p); z = sum_d input[b, t*D+d] * A[d, p]."""
     var idx = Int(global_idx.x)
@@ -669,9 +686,7 @@ def project_kernel[
 def cm_sm_kernel[
     BATCH: Int, T: Int, P: Int, K: Int, dtype: DType, INCLUDE_STAT: Bool
 ](
-    cache_t: LayoutTensor[
-        dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin
-    ],
+    cache_t: LayoutTensor[dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin],
     cm_t: LayoutTensor[dtype, Layout.row_major(T, P * K), MutAnyOrigin],
     sm_t: LayoutTensor[dtype, Layout.row_major(T, P * K), MutAnyOrigin],
     partials_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -707,10 +722,9 @@ def cm_sm_kernel[
         sm_t[t_idx, p_idx * K + k_idx] = sm
 
         comptime if INCLUDE_STAT:
-            var trap = (
-                dt if (k_idx == 0 or k_idx == K - 1)
-                else dt * Scalar[dtype](2.0)
-            )
+            var trap = dt if (k_idx == 0 or k_idx == K - 1) else dt * Scalar[
+                dtype
+            ](2.0)
             var wk = trap * phi
             var diff = cm - phi
             var err = diff * diff + sm * sm
@@ -763,9 +777,7 @@ def broadcast_stat_kernel[
 def reduce_g_kernel[
     BATCH: Int, dtype: DType
 ](
-    grad_output: LayoutTensor[
-        dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-    ],
+    grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
     g_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
 ):
     """Single block; block.sum of grad_output[b, 0] into g_ptr[0].
@@ -786,14 +798,10 @@ def reduce_g_kernel[
 def dLdz_kernel[
     BATCH: Int, T: Int, P: Int, K: Int, dtype: DType
 ](
-    cache_t: LayoutTensor[
-        dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin
-    ],
+    cache_t: LayoutTensor[dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin],
     cm_t: LayoutTensor[dtype, Layout.row_major(T, P * K), MutAnyOrigin],
     sm_t: LayoutTensor[dtype, Layout.row_major(T, P * K), MutAnyOrigin],
-    dLdz_t: LayoutTensor[
-        dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin
-    ],
+    dLdz_t: LayoutTensor[dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin],
     g_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
 ):
     """One thread per (b, t, p); chain rule through cos/sin to dLdz."""
@@ -811,9 +819,7 @@ def dLdz_kernel[
     for k in range(K):
         var tk = dt * Scalar[dtype](k)
         var phi = exp(Scalar[dtype](-0.5) * tk * tk)
-        var trap = (
-            dt if (k == 0 or k == K - 1) else dt * Scalar[dtype](2.0)
-        )
+        var trap = dt if (k == 0 or k == K - 1) else dt * Scalar[dtype](2.0)
         var wk = trap * phi
         var cm = rebind[Scalar[dtype]](cm_t[t_idx, p_idx * K + k])
         var sm = rebind[Scalar[dtype]](sm_t[t_idx, p_idx * K + k])
@@ -831,15 +837,13 @@ def dLdz_kernel[
 def matmul_a_kernel[
     BATCH: Int, T: Int, D: Int, P: Int, dtype: DType
 ](
-    dLdz_t: LayoutTensor[
-        dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin
-    ],
+    dLdz_t: LayoutTensor[dtype, Layout.row_major(BATCH, T * P), MutAnyOrigin],
     a_t: LayoutTensor[dtype, Layout.row_major(D, P), MutAnyOrigin],
     grad_input_t: LayoutTensor[
         dtype, Layout.row_major(BATCH, T * D), MutAnyOrigin
     ],
 ):
-    """grad_input[b, t*D+d] = sum_p A[d, p] * dLdz[b, t, p]."""
+    """Formula: grad_input[b, t*D+d] = sum_p A[d, p] * dLdz[b, t, p]."""
     var idx = Int(global_idx.x)
     if idx >= BATCH * T * D:
         return

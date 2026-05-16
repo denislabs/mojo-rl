@@ -71,12 +71,12 @@ from .world_gen_configs import (
 # For 48×48 → (3,3), (6,24), (12,12).
 # ============================================================================
 
-comptime RES_SMALL_H: Int = MAP_H // 16   # 3
-comptime RES_SMALL_W: Int = MAP_W // 16   # 3
-comptime RES_PATH_H: Int = MAP_H // 8     # 6
-comptime RES_PATH_W: Int = MAP_W // 2     # 24
-comptime RES_LARGER_H: Int = MAP_H // 4   # 12
-comptime RES_LARGER_W: Int = MAP_W // 4   # 12
+comptime RES_SMALL_H: Int = MAP_H // 16  # 3
+comptime RES_SMALL_W: Int = MAP_W // 16  # 3
+comptime RES_PATH_H: Int = MAP_H // 8  # 6
+comptime RES_PATH_W: Int = MAP_W // 2  # 24
+comptime RES_LARGER_H: Int = MAP_H // 4  # 12
+comptime RES_LARGER_W: Int = MAP_W // 4  # 12
 
 # Mountain threshold is a constant in the reference (not per-config).
 comptime MOUNTAIN_THRESHOLD: Float32 = 0.7
@@ -87,12 +87,16 @@ comptime MOUNTAIN_THRESHOLD: Float32 = 0.7
 # Mirrors `calculate_light_level` from the reference's game_logic.py.
 # ============================================================================
 
+
 @always_inline
 def calculate_light_level(timestep: Int) -> Float32:
-    """light = 1 - |cos(π * progress)|^3 with progress = (t/day) + 0.3."""
-    var progress = (Float32(timestep) / Float32(DAY_LENGTH)) - Float32(
-        Int(timestep // DAY_LENGTH)
-    ) + Float32(0.3)
+    """Formula: light = 1 - |cos(π * progress)|^3 with progress = (t/day) + 0.3.
+    """
+    var progress = (
+        (Float32(timestep) / Float32(DAY_LENGTH))
+        - Float32(Int(timestep // DAY_LENGTH))
+        + Float32(0.3)
+    )
     var c = math_cos(Float32(3.14159265) * progress)
     var ac = c if c >= Float32(0.0) else -c
     return Float32(1.0) - ac * ac * ac
@@ -101,6 +105,7 @@ def calculate_light_level(timestep: Int) -> Float32:
 # ============================================================================
 # Helpers
 # ============================================================================
+
 
 @always_inline
 def _abs_int(v: Int) -> Int:
@@ -142,6 +147,7 @@ def _pick_random_block(
 # Smoothworld floor generator
 # ============================================================================
 
+
 def _generate_smoothworld_floor(
     mut rng: PhiloxRandom,
     config: SmoothGenConfig,
@@ -166,9 +172,9 @@ def _generate_smoothworld_floor(
     generate_fractal_noise_2d_normalized[
         MAP_H, MAP_W, RES_SMALL_H, RES_SMALL_W
     ](rng, mountain)
-    generate_fractal_noise_2d_normalized[
-        MAP_H, MAP_W, RES_PATH_H, RES_PATH_W
-    ](rng, path)
+    generate_fractal_noise_2d_normalized[MAP_H, MAP_W, RES_PATH_H, RES_PATH_W](
+        rng, path
+    )
     generate_fractal_noise_2d_normalized[
         MAP_H, MAP_W, RES_LARGER_H, RES_LARGER_W
     ](rng, tree)
@@ -425,12 +431,8 @@ def _generate_dungeon_floor(
         var cx = chunk_id % CHUNKS_PER_AXIS
 
         var u_off = rng.step_uniform()
-        var off_y = Int(
-            Float32(u_off[0]) * Float32(CHUNK_SIZE - MIN_ROOM_SIZE)
-        )
-        var off_x = Int(
-            Float32(u_off[1]) * Float32(CHUNK_SIZE - MIN_ROOM_SIZE)
-        )
+        var off_y = Int(Float32(u_off[0]) * Float32(CHUNK_SIZE - MIN_ROOM_SIZE))
+        var off_x = Int(Float32(u_off[1]) * Float32(CHUNK_SIZE - MIN_ROOM_SIZE))
         var py = cy * CHUNK_SIZE + off_y
         var px = cx * CHUNK_SIZE + off_x
         # Clamp to fit the room within bounds (no padding).
@@ -452,48 +454,34 @@ def _generate_dungeon_floor(
 
         # Torches in 4 corners.
         item_map_out[py * MAP_W + px] = Float32(ITEM_TORCH)
-        item_map_out[
-            (py + room_h[r] - 1) * MAP_W + px
-        ] = Float32(ITEM_TORCH)
-        item_map_out[
-            py * MAP_W + (px + room_w[r] - 1)
-        ] = Float32(ITEM_TORCH)
+        item_map_out[(py + room_h[r] - 1) * MAP_W + px] = Float32(ITEM_TORCH)
+        item_map_out[py * MAP_W + (px + room_w[r] - 1)] = Float32(ITEM_TORCH)
         item_map_out[
             (py + room_h[r] - 1) * MAP_W + (px + room_w[r] - 1)
         ] = Float32(ITEM_TORCH)
 
         # Chest at a random interior cell.
         var u_chest = rng.step_uniform()
-        var cy_in = 1 + Int(
-            Float32(u_chest[0]) * Float32(room_h[r] - 2)
-        )
-        var cx_in = 1 + Int(
-            Float32(u_chest[1]) * Float32(room_w[r] - 2)
-        )
+        var cy_in = 1 + Int(Float32(u_chest[0]) * Float32(room_h[r] - 2))
+        var cx_in = 1 + Int(Float32(u_chest[1]) * Float32(room_w[r] - 2))
         if cy_in >= room_h[r] - 1:
             cy_in = room_h[r] - 2
         if cx_in >= room_w[r] - 1:
             cx_in = room_w[r] - 2
-        map_out[
-            (py + cy_in) * MAP_W + (px + cx_in)
-        ] = Float32(BLOCK_CHEST)
+        map_out[(py + cy_in) * MAP_W + (px + cx_in)] = Float32(BLOCK_CHEST)
 
         # Fountain at a random interior cell (50% chance).
         var u_fn = rng.step_uniform()
         if Float32(u_fn[0]) > Float32(0.5):
-            var fy_in = 1 + Int(
-                Float32(u_fn[1]) * Float32(room_h[r] - 2)
-            )
-            var fx_in = 1 + Int(
-                Float32(u_fn[2]) * Float32(room_w[r] - 2)
-            )
+            var fy_in = 1 + Int(Float32(u_fn[1]) * Float32(room_h[r] - 2))
+            var fx_in = 1 + Int(Float32(u_fn[2]) * Float32(room_w[r] - 2))
             if fy_in >= room_h[r] - 1:
                 fy_in = room_h[r] - 2
             if fx_in >= room_w[r] - 1:
                 fx_in = room_w[r] - 2
-            map_out[
-                (py + fy_in) * MAP_W + (px + fx_in)
-            ] = Float32(config.fountain_block)
+            map_out[(py + fy_in) * MAP_W + (px + fx_in)] = Float32(
+                config.fountain_block
+            )
 
     # Connect rooms: room[i] → random of included; initially included = {last}.
     var included = InlineArray[Bool, NUM_ROOMS](fill=False)
@@ -609,6 +597,7 @@ def _generate_dungeon_floor(
 # Top-level: fill the full state buffer
 # ============================================================================
 
+
 @always_inline
 def _floor_is_dungeon(floor: Int) -> Bool:
     return floor == 1 or floor == 3 or floor == 4
@@ -646,10 +635,8 @@ def generate_full_world_inline(
 
         var ladders: Tuple[Int, Int, Int, Int]
         if _floor_is_dungeon(floor):
-            var dcfg = (
-                dungeon_config()
-                if floor == 1
-                else (sewer_config() if floor == 3 else vaults_config())
+            var dcfg = dungeon_config() if floor == 1 else (
+                sewer_config() if floor == 3 else vaults_config()
             )
             ladders = _generate_dungeon_floor(
                 rng, dcfg, map_ptr, item_ptr, light_ptr
@@ -711,7 +698,12 @@ def generate_full_world(
     var path = alloc[Float32](MAP_SIZE_PER_FLOOR)
     var tree = alloc[Float32](MAP_SIZE_PER_FLOOR)
     var spawn = generate_full_world_inline(
-        seed, state_ptr, water, mountain, path, tree,
+        seed,
+        state_ptr,
+        water,
+        mountain,
+        path,
+        tree,
     )
     water.free()
     mountain.free()

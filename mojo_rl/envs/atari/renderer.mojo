@@ -396,7 +396,7 @@ struct AtariRenderer(Movable):
 
             # Upload pixels to texture
             update_texture(self.texture.value(),
-                Ptr[Rect, ImmutAnyOrigin](_unsafe_null=()),  # NULL = entire texture
+                Ptr[Rect, ImmutAnyOrigin](unsafe_from_address=0),  # NULL = entire texture
                 rebind[Ptr[NoneType, ImmutAnyOrigin]](
                     Ptr[UInt8, ImmutAnyOrigin](self.pixel_buf)
                 ),
@@ -412,7 +412,7 @@ struct AtariRenderer(Movable):
             )
             render_texture(self.sdl_renderer.value(),
                 self.texture.value(),
-                Ptr[FRect, ImmutAnyOrigin](_unsafe_null=()),  # NULL = full source
+                Ptr[FRect, ImmutAnyOrigin](unsafe_from_address=0),  # NULL = full source
                 rebind[Ptr[FRect, ImmutAnyOrigin]](Ptr(to=dst)),
             )
         except:
@@ -472,7 +472,7 @@ struct AtariRenderer(Movable):
         try:
             # Capture frame for recording before present
             if self.recorder.is_recording:
-                var surf = render_read_pixels(self.sdl_renderer.value(), Ptr[Rect, ImmutAnyOrigin](_unsafe_null=())
+                var surf = render_read_pixels(self.sdl_renderer.value(), Ptr[Rect, ImmutAnyOrigin](unsafe_from_address=0)
                 )
                 var pixels = surf[].pixels
                 self.recorder.add_frame_bgra(
