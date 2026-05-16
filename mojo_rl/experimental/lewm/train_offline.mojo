@@ -46,7 +46,10 @@ from ...nn.training import NetworkState
 from ...nn.optimizer import Adam
 from ...nn.initializer import Xavier
 from ...nn.model import (
-    Sequential, Linear, BatchNorm1D, Tokenwise,
+    Sequential,
+    Linear,
+    BatchNorm1D,
+    Tokenwise,
 )
 from ...nn.model.autodiff_layers import GELU
 from ...nn.composites import TransformerBlock, MultiHeadAttention
@@ -142,8 +145,17 @@ def train_lewm_offline[
     comptime BT: Int = BATCH * T
 
     comptime ENC = LeWMEncoder[
-        IN_CH, IMG, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, N_PATCHES,
-        EMB, 2, PROJ_H,
+        IN_CH,
+        IMG,
+        IMG,
+        PATCH,
+        HIDDEN,
+        ENC_HEADS,
+        ENC_LAYERS,
+        N_PATCHES,
+        EMB,
+        2,
+        PROJ_H,
     ]
     comptime AE = ActionEmbedder[T, ACT, SMOOTHED, EMB]
     # Position embedding: per-token learnable bias on the H-token context.
@@ -252,8 +264,11 @@ def train_lewm_offline[
     var mod_cache = alloc[Scalar[dtype]](BTH * 2 * EMB)
     var msa_cache = alloc[Scalar[dtype]](BATCH * MSA.CACHE_SIZE)
     var gate_cache = alloc[Scalar[dtype]](BTH * 2 * EMB)
-    # cond_block intermediate (kept across forward/backward).
-    var raw_mod = alloc[Scalar[dtype]](BTH * 3 * EMB)
+    # cond_block intermediate (kept across forward/backward). 6D = full AdaLN
+    # output (MSA scale/shift/gate + MLP scale/shift/gate). CPU trainer only
+    # writes the MSA half ([0:3D]); the MLP half is left zero (see comment at
+    # cond_block_backward call below).
+    var raw_mod = alloc[Scalar[dtype]](BTH * 6 * EMB)
     # cond_block forward scratch.
     var silu_buf = alloc[Scalar[dtype]](BTH * EMB)
     var ln_out_buf = alloc[Scalar[dtype]](BTH * EMB)
@@ -268,7 +283,10 @@ def train_lewm_offline[
     var sgmi = alloc[Scalar[dtype]](BTH * 3 * EMB)
     var sglnout = alloc[Scalar[dtype]](BTH * EMB)
     var sglnin = alloc[Scalar[dtype]](BTH * EMB)
-    var sgrm = alloc[Scalar[dtype]](BTH * 3 * EMB)
+    # sgrm = grad of raw_mod (6D wide). MLP slots [3D:6D] must be zeroed each
+    # step so the LayerNorm vjp inside cond_block_backward doesn't see stale
+    # values from the previous iteration.
+    var sgrm = alloc[Scalar[dtype]](BTH * 6 * EMB)
     var sgsc = alloc[Scalar[dtype]](BTH * EMB)
 
     var grad_pred = alloc[Scalar[dtype]](BATCH * H * EMB)
@@ -297,9 +315,9 @@ def train_lewm_offline[
         dtype, Layout.row_major(BATCH, T * ACT), MutAnyOrigin
     ](actions)
 
-    var emb_t = LayoutTensor[
-        dtype, Layout.row_major(BT, EMB), MutAnyOrigin
-    ](emb)
+    var emb_t = LayoutTensor[dtype, Layout.row_major(BT, EMB), MutAnyOrigin](
+        emb
+    )
     var emb_bte_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, T * EMB), MutAnyOrigin
     ](emb)
@@ -331,9 +349,9 @@ def train_lewm_offline[
     var pos_cache_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, POS.CACHE_SIZE), MutAnyOrigin
     ](pos_cache)
-    var c_in_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, EMB), MutAnyOrigin
-    ](c_in)
+    var c_in_t = LayoutTensor[dtype, Layout.row_major(BTH, EMB), MutAnyOrigin](
+        c_in
+    )
     # pred_raw is the cond_block output; viewed both (BTH, EMB) and (B, H*EMB).
     var pred_raw_t = LayoutTensor[
         dtype, Layout.row_major(BTH, EMB), MutAnyOrigin
@@ -368,7 +386,7 @@ def train_lewm_offline[
         dtype, Layout.row_major(BTH, 2 * EMB), MutAnyOrigin
     ](gate_cache)
     var raw_mod_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, 3 * EMB), MutAnyOrigin
+        dtype, Layout.row_major(BTH, 6 * EMB), MutAnyOrigin
     ](raw_mod)
 
     # cond_block forward scratch views.
@@ -395,12 +413,12 @@ def train_lewm_offline[
     var sgg_t = LayoutTensor[
         dtype, Layout.row_major(BTH, 3 * EMB), MutAnyOrigin
     ](sgg)
-    var sgao_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, EMB), MutAnyOrigin
-    ](sgao)
-    var sgmx_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, EMB), MutAnyOrigin
-    ](sgmx)
+    var sgao_t = LayoutTensor[dtype, Layout.row_major(BTH, EMB), MutAnyOrigin](
+        sgao
+    )
+    var sgmx_t = LayoutTensor[dtype, Layout.row_major(BTH, EMB), MutAnyOrigin](
+        sgmx
+    )
     var sgmi_t = LayoutTensor[
         dtype, Layout.row_major(BTH, 3 * EMB), MutAnyOrigin
     ](sgmi)
@@ -411,11 +429,11 @@ def train_lewm_offline[
         dtype, Layout.row_major(BTH, EMB), MutAnyOrigin
     ](sglnin)
     var sgrm_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, 3 * EMB), MutAnyOrigin
+        dtype, Layout.row_major(BTH, 6 * EMB), MutAnyOrigin
     ](sgrm)
-    var sgsc_t = LayoutTensor[
-        dtype, Layout.row_major(BTH, EMB), MutAnyOrigin
-    ](sgsc)
+    var sgsc_t = LayoutTensor[dtype, Layout.row_major(BTH, EMB), MutAnyOrigin](
+        sgsc
+    )
 
     var grad_pred_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
@@ -468,9 +486,9 @@ def train_lewm_offline[
     ](sigreg_grad_emb)
 
     # Empty params view for SIGReg (PARAM_SIZE = 0).
-    var empty_params = LayoutTensor[
-        dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    var empty_params = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
     var empty_grad_params = LayoutTensor[
         dtype, Layout.row_major(0), MutAnyOrigin
     ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
@@ -586,9 +604,7 @@ def train_lewm_offline[
         for b in range(BATCH):
             for i in range(H * EMB):
                 var p = rebind[Scalar[dtype]](pred_t[b, i])
-                var tgt = rebind[Scalar[dtype]](
-                    emb_bte_t[b, N_PREDS * EMB + i]
-                )
+                var tgt = rebind[Scalar[dtype]](emb_bte_t[b, N_PREDS * EMB + i])
                 var diff = p - tgt
                 pred_loss += Float64(diff * diff)
                 grad_pred[b * H * EMB + i] = inv_scale * diff
@@ -680,6 +696,12 @@ def train_lewm_offline[
         )
 
         # AdaLN-zero block backward → grad_x_prev_pe (BTH, EMB).
+        # Pre-zero MLP slots [3D:6D] of sgrm: CPU backward only writes MSA
+        # slots, so the MLP half would otherwise carry stale grads from the
+        # previous step into the LayerNorm vjp.
+        for b in range(BTH):
+            for i in range(3 * EMB):
+                sgrm_t[b, 3 * EMB + i] = Scalar[dtype](0)
         cond_block_backward[BATCH, H, EMB, PRED_HEADS](
             grad_pred_raw_t,
             adaln_state.params_view(),

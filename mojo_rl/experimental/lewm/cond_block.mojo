@@ -82,14 +82,13 @@ comptime CondMLP[D: Int, FF: Int] = Sequential[
 # Forward (CPU — backward-compat, MSA branch only)
 # =============================================================================
 def cond_block_forward[
-    BATCH: Int, T: Int, D: Int, HEADS: Int,
+    BATCH: Int,
+    T: Int,
+    D: Int,
+    HEADS: Int,
 ](
-    x_prev_t: LayoutTensor[
-        dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin
-    ],
-    c_t: LayoutTensor[
-        dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin
-    ],
+    x_prev_t: LayoutTensor[dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin],
+    c_t: LayoutTensor[dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin],
     adaln_params: LayoutTensor[
         dtype, Layout.row_major(AdaLNMod[D].PARAM_SIZE), MutAnyOrigin
     ],
@@ -103,9 +102,7 @@ def cond_block_forward[
     ],
     msa_state: LayoutTensor[
         dtype,
-        Layout.row_major(
-            MultiHeadAttention[D, HEADS, T, True].STATE_SIZE
-        ),
+        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].STATE_SIZE),
         MutAnyOrigin,
     ],
     mut x_next_t: LayoutTensor[
@@ -157,9 +154,9 @@ def cond_block_forward[
         dtype, Layout.row_major(BATCH * T, 3 * D), MutAnyOrigin
     ],
 ) raises:
-    var empty_p = LayoutTensor[
-        dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    var empty_p = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
     SwishOp[D].eval[BATCH * T](c_t, silu_buf_t, empty_p, silu_cache_t)
     AdaLNMod[D].forward[BATCH * T](
@@ -190,16 +187,17 @@ def cond_block_forward[
             gate_inp_buf_t[b, i] = x_prev_t[b, i]
             gate_inp_buf_t[b, D + i] = raw_mod_t[b, 2 * D + i]
             gate_inp_buf_t[b, 2 * D + i] = attn_out_buf_t[b, i]
-    GateOp[D].eval[BATCH * T](
-        gate_inp_buf_t, x_next_t, empty_p, gate_cache_t
-    )
+    GateOp[D].eval[BATCH * T](gate_inp_buf_t, x_next_t, empty_p, gate_cache_t)
 
 
 # =============================================================================
 # Backward (CPU — backward-compat, MSA branch only)
 # =============================================================================
 def cond_block_backward[
-    BATCH: Int, T: Int, D: Int, HEADS: Int,
+    BATCH: Int,
+    T: Int,
+    D: Int,
+    HEADS: Int,
 ](
     grad_x_next_t: LayoutTensor[
         dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin
@@ -217,9 +215,7 @@ def cond_block_backward[
     ],
     msa_state: LayoutTensor[
         dtype,
-        Layout.row_major(
-            MultiHeadAttention[D, HEADS, T, True].STATE_SIZE
-        ),
+        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].STATE_SIZE),
         MutAnyOrigin,
     ],
     silu_cache_t: LayoutTensor[
@@ -288,12 +284,12 @@ def cond_block_backward[
         dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin
     ],
 ) raises:
-    var empty_p = LayoutTensor[
-        dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
-    var empty_gp = LayoutTensor[
-        dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    var empty_p = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
+    var empty_gp = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
     GateOp[D].vjp[BATCH * T](
         grad_x_next_t, sgg_t, empty_p, gate_cache_t, empty_gp
@@ -319,9 +315,7 @@ def cond_block_backward[
         g_msa_params,
     )
 
-    ModulateOp[D].vjp[BATCH * T](
-        sgmx_t, sgmi_t, empty_p, mod_cache_t, empty_gp
-    )
+    ModulateOp[D].vjp[BATCH * T](sgmx_t, sgmi_t, empty_p, mod_cache_t, empty_gp)
     for b in range(BATCH * T):
         for i in range(D):
             sglnout_t[b, i] = sgmi_t[b, i]
@@ -343,9 +337,7 @@ def cond_block_backward[
         adaln_cache_t,
         g_adaln_params,
     )
-    SwishOp[D].vjp[BATCH * T](
-        sgsc_t, grad_c_t, empty_p, silu_cache_t, empty_gp
-    )
+    SwishOp[D].vjp[BATCH * T](sgsc_t, grad_c_t, empty_p, silu_cache_t, empty_gp)
 
 
 # =============================================================================
@@ -356,19 +348,17 @@ def cond_block_backward[
 
 
 def cb_pack_mod_inp_kernel[
-    BT: Int, D: Int, OFFSET: Int,
+    BT: Int,
+    D: Int,
+    OFFSET: Int,
 ](
     ln_out: LayoutTensor[dtype, Layout.row_major(BT, D), MutAnyOrigin],
-    raw_mod: LayoutTensor[
-        dtype, Layout.row_major(BT, 6 * D), MutAnyOrigin
-    ],
-    mod_inp: LayoutTensor[
-        dtype, Layout.row_major(BT, 3 * D), MutAnyOrigin
-    ],
+    raw_mod: LayoutTensor[dtype, Layout.row_major(BT, 6 * D), MutAnyOrigin],
+    mod_inp: LayoutTensor[dtype, Layout.row_major(BT, 3 * D), MutAnyOrigin],
 ):
     """Pack mod_inp = [ln_out | scale | shift].
     scale = raw_mod[:, OFFSET+D : OFFSET+2D]
-    shift = raw_mod[:, OFFSET   : OFFSET+D]
+    shift = raw_mod[:, OFFSET   : OFFSET+D].
     """
     var b = Int(global_idx.x)
     var d_idx = Int(global_idx.y)
@@ -379,21 +369,17 @@ def cb_pack_mod_inp_kernel[
 
 
 def cb_pack_gate_inp_kernel[
-    BT: Int, D: Int, OFFSET: Int,
+    BT: Int,
+    D: Int,
+    OFFSET: Int,
 ](
     x_in: LayoutTensor[dtype, Layout.row_major(BT, D), MutAnyOrigin],
-    raw_mod: LayoutTensor[
-        dtype, Layout.row_major(BT, 6 * D), MutAnyOrigin
-    ],
-    branch_out: LayoutTensor[
-        dtype, Layout.row_major(BT, D), MutAnyOrigin
-    ],
-    gate_inp: LayoutTensor[
-        dtype, Layout.row_major(BT, 3 * D), MutAnyOrigin
-    ],
+    raw_mod: LayoutTensor[dtype, Layout.row_major(BT, 6 * D), MutAnyOrigin],
+    branch_out: LayoutTensor[dtype, Layout.row_major(BT, D), MutAnyOrigin],
+    gate_inp: LayoutTensor[dtype, Layout.row_major(BT, 3 * D), MutAnyOrigin],
 ):
     """Pack gate_inp = [x | gate | branch_out].
-    gate = raw_mod[:, OFFSET+2D : OFFSET+3D]
+    gate = raw_mod[:, OFFSET+2D : OFFSET+3D].
     """
     var b = Int(global_idx.x)
     var d_idx = Int(global_idx.y)
@@ -404,18 +390,14 @@ def cb_pack_gate_inp_kernel[
 
 
 def cb_split_gate_grad_kernel[
-    BT: Int, D: Int, OFFSET: Int,
+    BT: Int,
+    D: Int,
+    OFFSET: Int,
 ](
     sgg: LayoutTensor[dtype, Layout.row_major(BT, 3 * D), MutAnyOrigin],
-    grad_x_residual: LayoutTensor[
-        dtype, Layout.row_major(BT, D), MutAnyOrigin
-    ],
-    sgrm: LayoutTensor[
-        dtype, Layout.row_major(BT, 6 * D), MutAnyOrigin
-    ],
-    grad_branch_out: LayoutTensor[
-        dtype, Layout.row_major(BT, D), MutAnyOrigin
-    ],
+    grad_x_residual: LayoutTensor[dtype, Layout.row_major(BT, D), MutAnyOrigin],
+    sgrm: LayoutTensor[dtype, Layout.row_major(BT, 6 * D), MutAnyOrigin],
+    grad_branch_out: LayoutTensor[dtype, Layout.row_major(BT, D), MutAnyOrigin],
 ):
     """Split sgg = grad of [x | gate | branch_out] → 3 outputs.
     sgrm[:, OFFSET+2D : OFFSET+3D] receives the gate gradient.
@@ -429,17 +411,17 @@ def cb_split_gate_grad_kernel[
 
 
 def cb_split_mod_grad_kernel[
-    BT: Int, D: Int, OFFSET: Int,
+    BT: Int,
+    D: Int,
+    OFFSET: Int,
 ](
     sgmi: LayoutTensor[dtype, Layout.row_major(BT, 3 * D), MutAnyOrigin],
     sglnout: LayoutTensor[dtype, Layout.row_major(BT, D), MutAnyOrigin],
-    sgrm: LayoutTensor[
-        dtype, Layout.row_major(BT, 6 * D), MutAnyOrigin
-    ],
+    sgrm: LayoutTensor[dtype, Layout.row_major(BT, 6 * D), MutAnyOrigin],
 ):
     """Split sgmi = grad of [ln_out | scale | shift] → 3 outputs.
     sgrm[:, OFFSET+D : OFFSET+2D] ← scale gradient
-    sgrm[:, OFFSET   : OFFSET+D]  ← shift gradient
+    sgrm[:, OFFSET   : OFFSET+D]  ← shift gradient.
     """
     var b = Int(global_idx.x)
     var d_idx = Int(global_idx.y)
@@ -450,12 +432,13 @@ def cb_split_mod_grad_kernel[
 
 
 def cb_accum_kernel[
-    BT: Int, D: Int,
+    BT: Int,
+    D: Int,
 ](
     dst: LayoutTensor[dtype, Layout.row_major(BT, D), MutAnyOrigin],
     src: LayoutTensor[dtype, Layout.row_major(BT, D), MutAnyOrigin],
 ):
-    """dst[b, d] += src[b, d]."""
+    """Formula: dst[b, d] += src[b, d]."""
     var b = Int(global_idx.x)
     var d_idx = Int(global_idx.y)
     if b < BT and d_idx < D:
@@ -466,15 +449,15 @@ def cb_accum_kernel[
 # GPU forward — dual branch (MSA + MLP)
 # =============================================================================
 def cond_block_forward_gpu[
-    BATCH: Int, T: Int, D: Int, HEADS: Int, FF: Int,
+    BATCH: Int,
+    T: Int,
+    D: Int,
+    HEADS: Int,
+    FF: Int,
 ](
     ctx: DeviceContext,
-    x_prev_t: LayoutTensor[
-        dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin
-    ],
-    c_t: LayoutTensor[
-        dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin
-    ],
+    x_prev_t: LayoutTensor[dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin],
+    c_t: LayoutTensor[dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin],
     # Params + states
     adaln_params: LayoutTensor[
         dtype, Layout.row_major(AdaLNMod[D].PARAM_SIZE), MutAnyOrigin
@@ -489,9 +472,7 @@ def cond_block_forward_gpu[
     ],
     msa_state: LayoutTensor[
         dtype,
-        Layout.row_major(
-            MultiHeadAttention[D, HEADS, T, True].STATE_SIZE
-        ),
+        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].STATE_SIZE),
         MutAnyOrigin,
     ],
     mlp_params: LayoutTensor[
@@ -578,36 +559,58 @@ def cond_block_forward_gpu[
     comptime BT: Int = BATCH * T
     comptime TPB_X = 16
     comptime TPB_Y = 16
-    var empty_p = LayoutTensor[
-        dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    var empty_p = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
     var op_ws = UnsafePointer[Scalar[dtype], MutAnyOrigin](
         unsafe_from_address=0
     )
 
     # ---- Shared head: c → Swish → AdaLNMod → raw_mod (BT, 6D) ----
     SwishOp[D].eval_gpu[BT, dtype](
-        ctx, silu_buf_t, c_t, empty_p, silu_cache_t, op_ws,
+        ctx,
+        silu_buf_t,
+        c_t,
+        empty_p,
+        silu_cache_t,
+        op_ws,
     )
     AdaLNMod[D].forward_gpu[BT, dtype](
-        ctx, raw_mod_t, silu_buf_t,
-        adaln_params, adaln_state, adaln_cache_t, adaln_workspace,
+        ctx,
+        raw_mod_t,
+        silu_buf_t,
+        adaln_params,
+        adaln_state,
+        adaln_cache_t,
+        adaln_workspace,
     )
 
     # ============================== MSA branch ==============================
     # LN1(x_prev) → ln_out_buf
     LayerNormNoAffineOp[D].eval_gpu[BT, dtype](
-        ctx, ln_out_buf_t, x_prev_t, empty_p, ln1_cache_t, op_ws,
+        ctx,
+        ln_out_buf_t,
+        x_prev_t,
+        empty_p,
+        ln1_cache_t,
+        op_ws,
     )
     # pack mod_inp from MSA slots (OFFSET=0)
     ctx.enqueue_function[cb_pack_mod_inp_kernel[BT, D, 0]](
-        ln_out_buf_t, raw_mod_t, mod_inp_buf_t,
+        ln_out_buf_t,
+        raw_mod_t,
+        mod_inp_buf_t,
         grid_dim=(ceildiv(BT, TPB_X), ceildiv(D, TPB_Y)),
         block_dim=(TPB_X, TPB_Y),
     )
     # Modulate
     ModulateOp[D].eval_gpu[BT, dtype](
-        ctx, mod_x_buf_t, mod_inp_buf_t, empty_p, mod1_cache_t, op_ws,
+        ctx,
+        mod_x_buf_t,
+        mod_inp_buf_t,
+        empty_p,
+        mod1_cache_t,
+        op_ws,
     )
     # MSA over (BATCH, T*D) view
     var mod_x_btd_t = LayoutTensor[
@@ -617,49 +620,87 @@ def cond_block_forward_gpu[
         dtype, Layout.row_major(BATCH, T * D), MutAnyOrigin
     ](branch_out_buf_t.ptr)
     MultiHeadAttention[D, HEADS, T, True].forward_gpu[BATCH, dtype](
-        ctx, attn_btd_t, mod_x_btd_t,
-        msa_params, msa_state, msa_cache_t, msa_workspace,
+        ctx,
+        attn_btd_t,
+        mod_x_btd_t,
+        msa_params,
+        msa_state,
+        msa_cache_t,
+        msa_workspace,
     )
     # pack gate_inp from MSA gate slot (OFFSET=0; gate at raw_mod[2D:3D])
     ctx.enqueue_function[cb_pack_gate_inp_kernel[BT, D, 0]](
-        x_prev_t, raw_mod_t, branch_out_buf_t, gate_inp_buf_t,
+        x_prev_t,
+        raw_mod_t,
+        branch_out_buf_t,
+        gate_inp_buf_t,
         grid_dim=(ceildiv(BT, TPB_X), ceildiv(D, TPB_Y)),
         block_dim=(TPB_X, TPB_Y),
     )
     # Gate1: x_mid = x_prev + gate_msa * attn_out
     GateOp[D].eval_gpu[BT, dtype](
-        ctx, x_mid_buf_t, gate_inp_buf_t, empty_p, gate1_cache_t, op_ws,
+        ctx,
+        x_mid_buf_t,
+        gate_inp_buf_t,
+        empty_p,
+        gate1_cache_t,
+        op_ws,
     )
 
     # ============================== MLP branch ==============================
     # LN2(x_mid) → ln_out_buf  (REUSE scratch — ln_cache_t is separate)
     LayerNormNoAffineOp[D].eval_gpu[BT, dtype](
-        ctx, ln_out_buf_t, x_mid_buf_t, empty_p, ln2_cache_t, op_ws,
+        ctx,
+        ln_out_buf_t,
+        x_mid_buf_t,
+        empty_p,
+        ln2_cache_t,
+        op_ws,
     )
     # pack mod_inp from MLP slots (OFFSET=3*D)
     ctx.enqueue_function[cb_pack_mod_inp_kernel[BT, D, 3 * D]](
-        ln_out_buf_t, raw_mod_t, mod_inp_buf_t,
+        ln_out_buf_t,
+        raw_mod_t,
+        mod_inp_buf_t,
         grid_dim=(ceildiv(BT, TPB_X), ceildiv(D, TPB_Y)),
         block_dim=(TPB_X, TPB_Y),
     )
     # Modulate
     ModulateOp[D].eval_gpu[BT, dtype](
-        ctx, mod_x_buf_t, mod_inp_buf_t, empty_p, mod2_cache_t, op_ws,
+        ctx,
+        mod_x_buf_t,
+        mod_inp_buf_t,
+        empty_p,
+        mod2_cache_t,
+        op_ws,
     )
     # MLP: per-token Linear→GELU→Linear (no T-mixing). Input/output as (BT, D).
     CondMLP[D, FF].forward_gpu[BT, dtype](
-        ctx, branch_out_buf_t, mod_x_buf_t,
-        mlp_params, mlp_state, mlp_cache_t, mlp_workspace,
+        ctx,
+        branch_out_buf_t,
+        mod_x_buf_t,
+        mlp_params,
+        mlp_state,
+        mlp_cache_t,
+        mlp_workspace,
     )
     # pack gate_inp from MLP gate slot (OFFSET=3*D; gate at raw_mod[5D:6D])
     ctx.enqueue_function[cb_pack_gate_inp_kernel[BT, D, 3 * D]](
-        x_mid_buf_t, raw_mod_t, branch_out_buf_t, gate_inp_buf_t,
+        x_mid_buf_t,
+        raw_mod_t,
+        branch_out_buf_t,
+        gate_inp_buf_t,
         grid_dim=(ceildiv(BT, TPB_X), ceildiv(D, TPB_Y)),
         block_dim=(TPB_X, TPB_Y),
     )
     # Gate2: x_next = x_mid + gate_mlp * mlp_out
     GateOp[D].eval_gpu[BT, dtype](
-        ctx, x_next_t, gate_inp_buf_t, empty_p, gate2_cache_t, op_ws,
+        ctx,
+        x_next_t,
+        gate_inp_buf_t,
+        empty_p,
+        gate2_cache_t,
+        op_ws,
     )
 
 
@@ -667,7 +708,11 @@ def cond_block_forward_gpu[
 # GPU backward — dual branch (MLP first, then MSA)
 # =============================================================================
 def cond_block_backward_gpu[
-    BATCH: Int, T: Int, D: Int, HEADS: Int, FF: Int,
+    BATCH: Int,
+    T: Int,
+    D: Int,
+    HEADS: Int,
+    FF: Int,
 ](
     ctx: DeviceContext,
     grad_x_next_t: LayoutTensor[
@@ -687,9 +732,7 @@ def cond_block_backward_gpu[
     ],
     msa_state: LayoutTensor[
         dtype,
-        Layout.row_major(
-            MultiHeadAttention[D, HEADS, T, True].STATE_SIZE
-        ),
+        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].STATE_SIZE),
         MutAnyOrigin,
     ],
     mlp_params: LayoutTensor[
@@ -797,12 +840,12 @@ def cond_block_backward_gpu[
     comptime BT: Int = BATCH * T
     comptime TPB_X = 16
     comptime TPB_Y = 16
-    var empty_p = LayoutTensor[
-        dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
-    var empty_gp = LayoutTensor[
-        dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    var empty_p = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
+    var empty_gp = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
     var op_ws = UnsafePointer[Scalar[dtype], MutAnyOrigin](
         unsafe_from_address=0
     )
@@ -810,36 +853,66 @@ def cond_block_backward_gpu[
     # ============================== MLP branch backward =====================
     # Gate2.vjp: grad_x_next → sgg = [grad_x_mid_resid | grad_gate_mlp | grad_mlp_out]
     GateOp[D].vjp_gpu[BT, dtype](
-        ctx, grad_x_next_t, sgg_t, empty_p, gate2_cache_t, empty_gp, op_ws,
+        ctx,
+        grad_x_next_t,
+        sgg_t,
+        empty_p,
+        gate2_cache_t,
+        empty_gp,
+        op_ws,
     )
     # Split: residual → grad_x_mid; gate slot → sgrm[5D:6D]; branch_out grad → sgbo
     ctx.enqueue_function[cb_split_gate_grad_kernel[BT, D, 3 * D]](
-        sgg_t, grad_x_mid_t, sgrm_t, sgbo_t,
+        sgg_t,
+        grad_x_mid_t,
+        sgrm_t,
+        sgbo_t,
         grid_dim=(ceildiv(BT, TPB_X), ceildiv(D, TPB_Y)),
         block_dim=(TPB_X, TPB_Y),
     )
     # MLP.backward: grad_mlp_out → grad_mod_x_mlp (sgmx_t)
     CondMLP[D, FF].backward_gpu[BT, dtype](
-        ctx, sgmx_t, sgbo_t,
-        mlp_params, mlp_state, mlp_cache_t, g_mlp_params, mlp_workspace,
+        ctx,
+        sgmx_t,
+        sgbo_t,
+        mlp_params,
+        mlp_state,
+        mlp_cache_t,
+        g_mlp_params,
+        mlp_workspace,
     )
     # Modulate2.vjp: sgmx → sgmi
     ModulateOp[D].vjp_gpu[BT, dtype](
-        ctx, sgmx_t, sgmi_t, empty_p, mod2_cache_t, empty_gp, op_ws,
+        ctx,
+        sgmx_t,
+        sgmi_t,
+        empty_p,
+        mod2_cache_t,
+        empty_gp,
+        op_ws,
     )
     # Split sgmi → sglnout, sgrm[4D:5D] (scale_mlp), sgrm[3D:4D] (shift_mlp)
     ctx.enqueue_function[cb_split_mod_grad_kernel[BT, D, 3 * D]](
-        sgmi_t, sglnout_t, sgrm_t,
+        sgmi_t,
+        sglnout_t,
+        sgrm_t,
         grid_dim=(ceildiv(BT, TPB_X), ceildiv(D, TPB_Y)),
         block_dim=(TPB_X, TPB_Y),
     )
     # LN2.vjp: sglnout → sglnin
     LayerNormNoAffineOp[D].vjp_gpu[BT, dtype](
-        ctx, sglnout_t, sglnin_t, empty_p, ln2_cache_t, empty_gp, op_ws,
+        ctx,
+        sglnout_t,
+        sglnin_t,
+        empty_p,
+        ln2_cache_t,
+        empty_gp,
+        op_ws,
     )
     # Accumulate sglnin into grad_x_mid (residual already there).
     ctx.enqueue_function[cb_accum_kernel[BT, D]](
-        grad_x_mid_t, sglnin_t,
+        grad_x_mid_t,
+        sglnin_t,
         grid_dim=(ceildiv(BT, TPB_X), ceildiv(D, TPB_Y)),
         block_dim=(TPB_X, TPB_Y),
     )
@@ -847,11 +920,20 @@ def cond_block_backward_gpu[
     # ============================== MSA branch backward =====================
     # Gate1.vjp: grad_x_mid → sgg = [grad_x_prev_resid | grad_gate_msa | grad_attn_out]
     GateOp[D].vjp_gpu[BT, dtype](
-        ctx, grad_x_mid_t, sgg_t, empty_p, gate1_cache_t, empty_gp, op_ws,
+        ctx,
+        grad_x_mid_t,
+        sgg_t,
+        empty_p,
+        gate1_cache_t,
+        empty_gp,
+        op_ws,
     )
     # Split: residual → grad_x_prev; gate slot → sgrm[2D:3D]; branch_out grad → sgbo
     ctx.enqueue_function[cb_split_gate_grad_kernel[BT, D, 0]](
-        sgg_t, grad_x_prev_t, sgrm_t, sgbo_t,
+        sgg_t,
+        grad_x_prev_t,
+        sgrm_t,
+        sgbo_t,
         grid_dim=(ceildiv(BT, TPB_X), ceildiv(D, TPB_Y)),
         block_dim=(TPB_X, TPB_Y),
     )
@@ -863,26 +945,47 @@ def cond_block_backward_gpu[
         dtype, Layout.row_major(BATCH, T * D), MutAnyOrigin
     ](sgmx_t.ptr)
     MultiHeadAttention[D, HEADS, T, True].backward_gpu[BATCH, dtype](
-        ctx, sgmx_btd_t, sgbo_btd_t,
-        msa_params, msa_state, msa_cache_t, g_msa_params, msa_workspace,
+        ctx,
+        sgmx_btd_t,
+        sgbo_btd_t,
+        msa_params,
+        msa_state,
+        msa_cache_t,
+        g_msa_params,
+        msa_workspace,
     )
     # Modulate1.vjp: sgmx → sgmi
     ModulateOp[D].vjp_gpu[BT, dtype](
-        ctx, sgmx_t, sgmi_t, empty_p, mod1_cache_t, empty_gp, op_ws,
+        ctx,
+        sgmx_t,
+        sgmi_t,
+        empty_p,
+        mod1_cache_t,
+        empty_gp,
+        op_ws,
     )
     # Split sgmi → sglnout, sgrm[D:2D] (scale_msa), sgrm[0:D] (shift_msa)
     ctx.enqueue_function[cb_split_mod_grad_kernel[BT, D, 0]](
-        sgmi_t, sglnout_t, sgrm_t,
+        sgmi_t,
+        sglnout_t,
+        sgrm_t,
         grid_dim=(ceildiv(BT, TPB_X), ceildiv(D, TPB_Y)),
         block_dim=(TPB_X, TPB_Y),
     )
     # LN1.vjp: sglnout → sglnin
     LayerNormNoAffineOp[D].vjp_gpu[BT, dtype](
-        ctx, sglnout_t, sglnin_t, empty_p, ln1_cache_t, empty_gp, op_ws,
+        ctx,
+        sglnout_t,
+        sglnin_t,
+        empty_p,
+        ln1_cache_t,
+        empty_gp,
+        op_ws,
     )
     # Accumulate sglnin into grad_x_prev (residual already there).
     ctx.enqueue_function[cb_accum_kernel[BT, D]](
-        grad_x_prev_t, sglnin_t,
+        grad_x_prev_t,
+        sglnin_t,
         grid_dim=(ceildiv(BT, TPB_X), ceildiv(D, TPB_Y)),
         block_dim=(TPB_X, TPB_Y),
     )
@@ -890,11 +993,22 @@ def cond_block_backward_gpu[
     # ============================== Shared tail =============================
     # AdaLNMod.backward: sgrm (6D, fully populated) → sgsc, accumulating g_adaln_params
     AdaLNMod[D].backward_gpu[BT, dtype](
-        ctx, sgsc_t, sgrm_t,
-        adaln_params, adaln_state, adaln_cache_t, g_adaln_params,
+        ctx,
+        sgsc_t,
+        sgrm_t,
+        adaln_params,
+        adaln_state,
+        adaln_cache_t,
+        g_adaln_params,
         adaln_workspace,
     )
     # Swish.vjp: sgsc → grad_c
     SwishOp[D].vjp_gpu[BT, dtype](
-        ctx, sgsc_t, grad_c_t, empty_p, silu_cache_t, empty_gp, op_ws,
+        ctx,
+        sgsc_t,
+        grad_c_t,
+        empty_p,
+        silu_cache_t,
+        empty_gp,
+        op_ws,
     )

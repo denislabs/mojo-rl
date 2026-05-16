@@ -99,7 +99,7 @@ struct H5Dataset(Movable):
         _ = h5s_get_simple_extent_dims(
             space_id,
             dims_buf,
-            UnsafePointer[hsize_t, MutAnyOrigin](_unsafe_null=()),
+            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
         )
         _ = h5s_close(space_id)
 
@@ -217,9 +217,9 @@ struct H5Dataset(Movable):
             file_space,
             H5S_SELECT_SET,
             start_arr,
-            UnsafePointer[hsize_t, MutAnyOrigin](_unsafe_null=()),
+            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
             count_arr,
-            UnsafePointer[hsize_t, MutAnyOrigin](_unsafe_null=()),
+            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
         )
         if sel_ret < 0:
             _ = h5s_close(file_space)
@@ -230,7 +230,7 @@ struct H5Dataset(Movable):
         var mem_space = h5s_create_simple(
             c_int(ndims),
             count_arr,
-            UnsafePointer[hsize_t, MutAnyOrigin](_unsafe_null=()),
+            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
         )
         if mem_space < 0:
             _ = h5s_close(file_space)
@@ -336,7 +336,7 @@ struct H5Dataset(Movable):
         var mem_space = h5s_create_simple(
             c_int(ndims),
             mem_dims,
-            UnsafePointer[hsize_t, MutAnyOrigin](_unsafe_null=()),
+            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
         )
         if mem_space < 0:
             _ = h5s_close(file_space)

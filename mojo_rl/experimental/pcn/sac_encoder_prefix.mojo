@@ -156,10 +156,10 @@ def inject_encoder_into_actor[
         starts at offset gpu_align(layer-0 size).
 
     Args:
-      actor_params:      raw pointer to the actor's flat param buffer
+      actor_params:      Raw pointer to the actor's flat param buffer
                          (e.g. agent.state.actor.online.params).
-      enc_params:        raw pointer to the encoder's flat param buffer.
-      obs_slice_offset:  row in encoder W1 where obs columns begin
+      enc_params:        Raw pointer to the encoder's flat param buffer.
+      obs_slice_offset:  Row in encoder W1 where obs columns begin
                          (typically ENC_IN - OBS for `[prev_z, action, obs]`).
     """
     var l0_size = OBS * HID + HID
@@ -226,9 +226,7 @@ def inject_encoder_into_critic[
         var enc_row_offset = (obs_slice_offset + i) * HID
         var crit_row_offset = i * HID
         for j in range(HID):
-            critic_params[crit_row_offset + j] = enc_params[
-                enc_row_offset + j
-            ]
+            critic_params[crit_row_offset + j] = enc_params[enc_row_offset + j]
 
     # Inject b1 into critic layer 0 bias.
     var enc_b1 = _enc_b1_offset(ENC_IN, HID)

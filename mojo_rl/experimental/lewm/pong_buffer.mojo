@@ -31,6 +31,8 @@ Layout in fp32 sample tensors:
 from std.memory import alloc
 from std.random import random_float64
 
+from .lewm_buffer import LeWMBuffer
+
 comptime PONG_OBS_C: Int = 4
 comptime PONG_OBS_H: Int = 84
 comptime PONG_OBS_W: Int = 84
@@ -85,7 +87,7 @@ def _read_uint64_le(data: List[UInt8], pos: Int) -> UInt64:
 # ============================================================================
 
 
-struct PongBuffer(Movable):
+struct PongBuffer(Movable, LeWMBuffer):
     """Flat replay buffer for Pong pixel trajectories.
 
     Owns three parallel uint8 arrays:
@@ -197,7 +199,7 @@ struct PongBuffer(Movable):
         return True
 
     def sample_batch_fp32(
-        self,
+        mut self,
         B: Int,
         T: Int,
         pixels_out: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
