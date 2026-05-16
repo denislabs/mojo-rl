@@ -67,6 +67,19 @@ def main() raises:
         # Dreamer-v3 hardcodes SOFT_CLAMP=5.0; set explicitly here for
         # visibility (matches the EZV2ContinuousMLPShallowConfig default).
         SOFT_CLAMP=5.0,
+        # Switched from default K_ROOT (=16, LEGACY_MAGNIFIED: all samples
+        # from N(μ, σ), half magnified) to the reference DMC pattern
+        # (`cy_mcts.py:127-128`: policy_action_num=4, random_action_num=12).
+        # Diagnosed 2026-05-16: with the legacy default the policy
+        # saturates μ → ±MAX_ACTION early, all 16 N(μ, σ) samples
+        # collapse to near-duplicates of ±MAX_ACTION, log_priors clamp
+        # identically at c=±0.999, world-model rollouts give Q-spreads
+        # below the fp32 noise floor → MCTS can't differentiate the
+        # candidates → improved-policy target rotates randomly across
+        # duplicates → policy can't refine. With N_POLICY_AT_ROOT=4 the
+        # 12 uniform-in-[-MAX, +MAX] candidates always span the action
+        # range so MCTS has informative options even at saturation.
+        N_POLICY_AT_ROOT=4,
         VALUE_TARGET_MODE=VALUE_TARGET_SARSA,
     ]
 

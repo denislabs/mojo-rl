@@ -121,16 +121,11 @@ def run_ezv2_continuous_train_gpu[
     log_every: Int = 2_000,
     rng_seed_base: UInt64 = UInt64(2026),
     use_gpu_sampling: Bool = False,
-    # PUCT / Q-normalization constants for the GPU MCTS. Defaults
-    # match the reference EZ-V2 DMC config (`dmc_state.yaml`:
-    # c_visit=50, c_scale=0.1). Project previously used c_scale=1.0;
-    # tuned down to 0.1 on 2026-05-16 after `inspect_root_gpu` showed
-    # the Q-dominated regime was preventing improved-policy commitment
-    # (sigma_scale=54 vs log_prior range ~8 → noisy single-rollout Q
-    # spreads jerk the target around). See `continuous_agent.mojo:243`
-    # for the matching CPU-side change.
+    # PUCT / Q-normalization constants for the GPU MCTS. Defaults match
+    # the converging CPU-side `SampledGumbelMCTS` in `continuous_agent.mojo:219`
+    # (`c_scale=1.0` overrides the GPU MCTS signature's `0.1` default).
     mcts_c_visit: Float64 = 50.0,
-    mcts_c_scale: Float64 = 0.1,
+    mcts_c_scale: Float64 = 1.0,
     # Hybrid diagnostic: when False, replace the GPU MCTS with the
     # agent's CPU `SampledGumbelMCTS` (one search per env, sequential).
     # Useful for isolating GPU-MCTS bugs from env/training-driver bugs

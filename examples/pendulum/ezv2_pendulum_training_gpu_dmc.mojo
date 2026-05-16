@@ -1,4 +1,4 @@
-"""EZ-V2 Pendulum — DMC-config diagnostic.
+"""EZ-V2 Pendulum — full-reference DMC-config diagnostic (CPU MCTS).
 
 Same `EZV2ContinuousMLPConfig` (deep / BN-equipped / paper-spec) that
 HalfCheetah uses, just with Pendulum dims + Pendulum-appropriate value
@@ -6,23 +6,46 @@ and reward ranges. The Pendulum-shallow example
 (`ezv2_pendulum_training_gpu.mojo`) is the known-converging anchor at
 -212 with the simpler `EZV2ContinuousMLPShallowConfig`.
 
-This script exists to settle a forked hypothesis on the HC training
-plateau:
+This script is the **#2 diagnostic** in the 2026-05-16 GPU-MCTS
+investigation: after multiple single-knob tweaks on the shallow config
+(c_scale, N_POLICY_AT_ROOT=4) failed to fix the GPU-MCTS non-convergence,
+the plan was to first establish whether the reference EZ-V2 setup
+converges on Pendulum at all, using the proven CPU MCTS path. The
+purpose is to bisect "does the reference algorithm work on Pendulum?"
+from "is the GPU MCTS kernel broken?". Hence the explicit
+`use_gpu_mcts=False`, `use_gpu_sampling=False`, and disabled reanalyze
+(`reanalyze_warmup=10_000_000`) below — only ONE variable changes vs the
+shallow CPU-MCTS converging run, namely the config family + paper
+hyperparams as a single bundle.
 
-  • If Pendulum-DMC converges → the deep config (BN projector, deep
-    BN heads, ImproveResBlock × 2 rep+dyn, init_zero heads, LR warmup,
-    LR=3e-4/WD=2e-5) is healthy across the algorithm. HC's failure is
-    HC-specific — exploration / reward sparsity / chicken-and-egg
-    bootstrap, not a code regression.
+Three possible outcomes and what each tells us:
 
-  • If Pendulum-DMC fails → one of our recent changes (BN swap in
-    projector+predictor, SimSiam target branch BN training-mode fix,
-    init_zero on heads, LR scheduler integration, etc.) regressed the
-    algorithm itself. We then have a real bug to find rather than
-    knobs to tune.
+  • Converges to good policy (≤ -200): the full reference setup is
+    healthy on Pendulum with CPU MCTS. The GPU-MCTS non-convergence is
+    NOT a reference-config issue — it's a kernel/plumbing bug we now
+    have to chase in isolation. Bring this same config up to GPU MCTS
+    next as the cleanest comparison.
 
-Either result is decisive. The shallow Pendulum example is kept
-untouched as the regression anchor.
+  • Trains but plateaus or oscillates (like the N_POLICY_AT_ROOT=4 +
+    shallow run from earlier in this session, which peaked at best=-506
+    then regressed): the off-policy distribution shift from the uniform-
+    random root candidates is a real algo-level issue; the deeper
+    architecture didn't rescue it. Investigation pivots to that.
+
+  • Doesn't train at all: the deep config has a genuine Pendulum
+    regression (matches the audit note in `[project_ezv2_continuous_
+    pendulum_bugs]` that flagged "the architecture mutation itself" as
+    an unresolved factor). Pendulum isn't a clean test for the DMC
+    config and we pick a different DMC env (Cartpole/Reacher) as the
+    GPU-MCTS baseline.
+
+The shallow Pendulum example is kept untouched as the regression
+anchor.
+
+(Earlier docstring framed this as an HC-diagnostic. It now serves
+double duty — the deep-config-on-Pendulum question is the same in
+either framing, but the immediate motivation in this session is the
+GPU-MCTS bisection.)
 
 Knob alignment with HC (so the comparison is clean):
   • LATENT=128, HIDDEN=256, HEAD_HIDDEN=256, PROJ=128, PROJ_HID=512,
@@ -68,7 +91,7 @@ from mojo_rl.nn.training.scheduler import LinearWarmupSchedule
 
 def main() raises:
     print("=" * 72)
-    print("    EZ-V2 Pendulum — DMC-config diagnostic (N_ENVS=8)")
+    print("    EZ-V2 Pendulum — DMC-config diagnostic (CPU MCTS, N_ENVS=8)")
     print("=" * 72)
 
     comptime NUM_ENV_STEPS = 100_000
@@ -144,7 +167,7 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="EZ-V2 Pendulum GPU (DMC config diagnostic)",
+        run_name="EZ-V2 Pendulum (DMC config, CPU MCTS bisection)",
         buffer_size=64,
         api_key=api_key,
     )
@@ -182,7 +205,12 @@ def main() raises:
         sync_interval=50,
         target_sync_interval=200,
         reanalyze_interval=200,
-        reanalyze_warmup=1000,
+        # Reanalyze disabled: it runs `run_sampled_gumbel_search_gpu`
+        # (GPU MCTS) regardless of `use_gpu_mcts`, which would
+        # contaminate replay-buffer targets via the very kernel we're
+        # trying to bisect out of the picture. Keep at the same sentinel
+        # value the shallow CPU-MCTS converging run used.
+        reanalyze_warmup=10_000_000,
         # Pendulum converges fast — no need for a long random warmup.
         # The exploration problem that drove HC to 20k doesn't apply here:
         # the agent's initial policy already produces full-range torques
@@ -192,8 +220,14 @@ def main() raises:
         max_steps_per_episode=200,
         log_every=2_000,
         rng_seed_base=UInt64(2026),
-        use_gpu_sampling=True,
-        use_gpu_mcts=True,
+        # CPU MCTS path: forces `agent.select_action()` (the converging
+        # path from the shallow baseline). This is the bisection: same
+        # MCTS code path as the working shallow-CPU run, only the config
+        # family changes. If this run converges, the GPU-MCTS kernel is
+        # the lone remaining suspect for the GPU non-convergence we've
+        # been chasing.
+        use_gpu_sampling=False,
+        use_gpu_mcts=False,
         # Pendulum's 3D obs is already well-scaled; obs_norm not needed
         # (and could hurt — the shallow config doesn't use it).
         obs_norm=False,

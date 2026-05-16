@@ -240,16 +240,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             Self.Config.ActSpace.N_POLICY_AT_ROOT,
             Self.Config.ActSpace.SOFT_CLAMP,
             Self.Config.ActSpace.INIT_STD,
-        # c_scale=0.1 matches the reference EZ-V2 DMC config
-        # (`references/EfficientZeroV2-main/ez/config/exp/dmc_state.yaml`
-        #  and `dmc_image.yaml`, both 0.1 with a `# prev 1.0` audit note).
-        # Project previously used c_scale=1.0 which made improved-policy
-        # softmax Q-dominated (sigma_scale=54 vs log_prior range ~8) →
-        # noisy single-rollout Q-spreads jerk the policy target around
-        # and prevent commitment. With c_scale=0.1 (sigma_scale=5.4) the
-        # policy-prior dominates and Q acts as a small correction —
-        # the regime the paper authors empirically tuned to.
-        ](gamma=gamma, c_scale=0.1)
+        ](gamma=gamma, c_scale=1.0)
         self.gamma = gamma
         self.v_min = v_min
         self.v_max = v_max
