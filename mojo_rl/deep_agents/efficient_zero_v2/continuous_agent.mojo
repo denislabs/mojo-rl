@@ -240,7 +240,16 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             Self.Config.ActSpace.N_POLICY_AT_ROOT,
             Self.Config.ActSpace.SOFT_CLAMP,
             Self.Config.ActSpace.INIT_STD,
-        ](gamma=gamma, c_scale=1.0)
+        # c_scale=0.1 matches the reference EZ-V2 DMC config
+        # (`references/EfficientZeroV2-main/ez/config/exp/dmc_state.yaml`
+        #  and `dmc_image.yaml`, both 0.1 with a `# prev 1.0` audit note).
+        # Project previously used c_scale=1.0 which made improved-policy
+        # softmax Q-dominated (sigma_scale=54 vs log_prior range ~8) →
+        # noisy single-rollout Q-spreads jerk the policy target around
+        # and prevent commitment. With c_scale=0.1 (sigma_scale=5.4) the
+        # policy-prior dominates and Q acts as a small correction —
+        # the regime the paper authors empirically tuned to.
+        ](gamma=gamma, c_scale=0.1)
         self.gamma = gamma
         self.v_min = v_min
         self.v_max = v_max
@@ -414,6 +423,35 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             total_visits,
             " value_estimate=",
             root.value_estimate,
+        )
+        # Mirror of the GPU `inspect_root_gpu` instrumentation
+        # (`gpu_continuous_train.mojo`): print the load-bearing scalars
+        # for the improved-policy reconstruction so CPU vs GPU runs are
+        # directly comparable. Added 2026-05-16 to confirm whether
+        # global-tree min_q/max_q tracking compresses Q-signal on GPU.
+        var mn_cpu = self.mcts.min_max.minimum
+        var mx_cpu = self.mcts.min_max.maximum
+        var v_mix_cpu = self.mcts._v_mix(0)
+        var max_visit_cpu = 0
+        for i in range(K_ROOT):
+            if root.visit_count[i] > max_visit_cpu:
+                max_visit_cpu = root.visit_count[i]
+        var sigma_scale_cpu = (
+            self.mcts.c_visit + Float64(max_visit_cpu)
+        ) * self.mcts.c_scale
+        print(
+            "       min_q=",
+            mn_cpu,
+            " max_q=",
+            mx_cpu,
+            " q_range=",
+            mx_cpu - mn_cpu,
+            " v_self=",
+            root.value_estimate,
+            " v_mix=",
+            v_mix_cpu,
+            " sigma_scale=",
+            sigma_scale_cpu,
         )
         # Compute pi entropy as a uniform-ness scalar.
         var H = Float64(0.0)

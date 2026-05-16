@@ -187,12 +187,8 @@ struct SampledGumbelMCTSNode[ACT_DIM: Int, K_PAD: Int](
             uninitialized=True
         )
         self.visit_count = InlineArray[Int, Self.K_PAD](uninitialized=True)
-        self.total_value = InlineArray[Float64, Self.K_PAD](
-            uninitialized=True
-        )
-        self.log_prior = InlineArray[Float64, Self.K_PAD](
-            uninitialized=True
-        )
+        self.total_value = InlineArray[Float64, Self.K_PAD](uninitialized=True)
+        self.log_prior = InlineArray[Float64, Self.K_PAD](uninitialized=True)
         self.reward = InlineArray[Float64, Self.K_PAD](uninitialized=True)
         self.child_idx = InlineArray[Int, Self.K_PAD](uninitialized=True)
         for i in range(Self.K_PAD):
@@ -294,6 +290,8 @@ struct SampledGumbelMCTS[
         STD_MAGNIFICATION: Multiplier applied to σ for the second half of
             root candidates (legacy magnified mode only).
         N_POLICY_AT_ROOT: See module-level docstring above.
+        SOFT_CLAMP: Dreamer-v3 soft clamp on μ_pre.
+        INIT_STD: Bias added inside softplus on σ_raw.
 
     The squashed-Gaussian hyperparameters must match the agent's
     `Config.ActSpace` impl so the loss kernel sees the same density at
@@ -314,9 +312,9 @@ struct SampledGumbelMCTS[
         c_visit: Float64 = 50.0,
         c_scale: Float64 = 0.1,
     ):
-        self.nodes = List[
-            SampledGumbelMCTSNode[Self.ACT_DIM, Self.K_ROOT]
-        ](capacity=Self.MAX_NODES)
+        self.nodes = List[SampledGumbelMCTSNode[Self.ACT_DIM, Self.K_ROOT]](
+            capacity=Self.MAX_NODES
+        )
         self.hidden_states = alloc[Scalar[dtype]](
             Self.MAX_NODES * Self.LATENT_DIM
         )
@@ -456,9 +454,7 @@ struct SampledGumbelMCTS[
         var root_mu = InlineArray[Float64, Self.ACT_DIM](uninitialized=True)
         var root_sg = InlineArray[Float64, Self.ACT_DIM](uninitialized=True)
         for d in range(Self.ACT_DIM):
-            var mu_raw = Float64(
-                rebind[Scalar[dtype]](pred_out_t[0, d])
-            )
+            var mu_raw = Float64(rebind[Scalar[dtype]](pred_out_t[0, d]))
             var sg_raw = Float64(
                 rebind[Scalar[dtype]](pred_out_t[0, Self.ACT_DIM + d])
             )
@@ -501,9 +497,7 @@ struct SampledGumbelMCTS[
                         uninitialized=True
                     )
                     for d in range(Self.ACT_DIM):
-                        sg_widened[d] = (
-                            root_sg[d] * Self.STD_MAGNIFICATION
-                        )
+                        sg_widened[d] = root_sg[d] * Self.STD_MAGNIFICATION
                     sg_eff = sg_widened
                 for d in range(Self.ACT_DIM):
                     var a_d = _sample_squashed_gaussian_dim(
@@ -522,9 +516,7 @@ struct SampledGumbelMCTS[
                 # samples still get a meaningful (typically low) log_prior
                 # vs the policy-centered ones.
                 for d in range(Self.ACT_DIM):
-                    var a_d = random_float64(
-                        -Self.MAX_ACTION, Self.MAX_ACTION
-                    )
+                    var a_d = random_float64(-Self.MAX_ACTION, Self.MAX_ACTION)
                     root.actions[i * Self.ACT_DIM + d] = a_d
                     lp += _logp_squashed_gaussian_dim(
                         a_d, root_mu[d], root_sg[d], Self.MAX_ACTION
@@ -567,9 +559,7 @@ struct SampledGumbelMCTS[
                     if sims_used >= Self.NUM_SIMULATIONS:
                         break
                     var cand_idx = active[i]
-                    self._simulate[
-                        DynModel, PredModel, DynOpt, PredOpt
-                    ](
+                    self._simulate[DynModel, PredModel, DynOpt, PredOpt](
                         cand_idx,
                         dyn_state,
                         pred_state,
@@ -590,9 +580,7 @@ struct SampledGumbelMCTS[
         # Spend any leftover budget on the last surviving candidate.
         while sims_used < Self.NUM_SIMULATIONS and active_size > 0:
             var leftover = active[0]
-            self._simulate[
-                DynModel, PredModel, DynOpt, PredOpt
-            ](
+            self._simulate[DynModel, PredModel, DynOpt, PredOpt](
                 leftover,
                 dyn_state,
                 pred_state,
@@ -619,9 +607,7 @@ struct SampledGumbelMCTS[
         var chosen_idx = self._pick_chosen(visits, deterministic)
         var chosen = InlineArray[Float64, Self.ACT_DIM](uninitialized=True)
         for d in range(Self.ACT_DIM):
-            chosen[d] = self.nodes[0].actions[
-                chosen_idx * Self.ACT_DIM + d
-            ]
+            chosen[d] = self.nodes[0].actions[chosen_idx * Self.ACT_DIM + d]
         return (chosen, visits, root_value)
 
     # ─────────────────────────────────────────────────────────────────────
@@ -672,9 +658,7 @@ struct SampledGumbelMCTS[
             indices[i] = -1
         for i in range(active_size):
             var cand = active[i]
-            scored[i] = (
-                gumbels[cand] + root.log_prior[cand] + sigma[cand]
-            )
+            scored[i] = gumbels[cand] + root.log_prior[cand] + sigma[cand]
             indices[i] = cand
 
         for slot in range(keep):
@@ -723,13 +707,9 @@ struct SampledGumbelMCTS[
         var mean_visited_q = weighted_q / sum_w
 
         var total = Float64(node.total_visits)
-        return (
-            node.value_estimate + total * mean_visited_q
-        ) / (1.0 + total)
+        return (node.value_estimate + total * mean_visited_q) / (1.0 + total)
 
-    def _completed_q(
-        self, node_idx: Int
-    ) -> InlineArray[Float64, Self.K_ROOT]:
+    def _completed_q(self, node_idx: Int) -> InlineArray[Float64, Self.K_ROOT]:
         var node = self.nodes[node_idx]
         var v_mix = self._v_mix(node_idx)
         var q = InlineArray[Float64, Self.K_ROOT](uninitialized=True)
@@ -959,16 +939,10 @@ struct SampledGumbelMCTS[
         child.active_k = Self.K_NON_ROOT
 
         # Sample K_NON_ROOT candidates from N(μ, σ) at the child node.
-        var child_mu = InlineArray[Float64, Self.ACT_DIM](
-            uninitialized=True
-        )
-        var child_sg = InlineArray[Float64, Self.ACT_DIM](
-            uninitialized=True
-        )
+        var child_mu = InlineArray[Float64, Self.ACT_DIM](uninitialized=True)
+        var child_sg = InlineArray[Float64, Self.ACT_DIM](uninitialized=True)
         for d in range(Self.ACT_DIM):
-            var mu_raw = Float64(
-                rebind[Scalar[dtype]](pred_out_t[0, d])
-            )
+            var mu_raw = Float64(rebind[Scalar[dtype]](pred_out_t[0, d]))
             var sg_raw = Float64(
                 rebind[Scalar[dtype]](pred_out_t[0, Self.ACT_DIM + d])
             )
@@ -1013,9 +987,7 @@ struct SampledGumbelMCTS[
             var node_idx = search_path[idx]
             var ci = cand_path[idx]
 
-            value = (
-                self.nodes[node_idx].reward[ci] + self.gamma * value
-            )
+            value = self.nodes[node_idx].reward[ci] + self.gamma * value
 
             self.nodes[node_idx].visit_count[ci] += 1
             self.nodes[node_idx].total_value[ci] += value

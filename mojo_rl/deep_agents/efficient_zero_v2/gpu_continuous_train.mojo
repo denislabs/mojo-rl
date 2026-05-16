@@ -121,11 +121,16 @@ def run_ezv2_continuous_train_gpu[
     log_every: Int = 2_000,
     rng_seed_base: UInt64 = UInt64(2026),
     use_gpu_sampling: Bool = False,
-    # PUCT / Q-normalization constants for the GPU MCTS. Defaults match
-    # the converging CPU-side `SampledGumbelMCTS` in `continuous_agent.mojo:219`
-    # (`c_scale=1.0` overrides the GPU MCTS signature's `0.1` default).
+    # PUCT / Q-normalization constants for the GPU MCTS. Defaults
+    # match the reference EZ-V2 DMC config (`dmc_state.yaml`:
+    # c_visit=50, c_scale=0.1). Project previously used c_scale=1.0;
+    # tuned down to 0.1 on 2026-05-16 after `inspect_root_gpu` showed
+    # the Q-dominated regime was preventing improved-policy commitment
+    # (sigma_scale=54 vs log_prior range ~8 → noisy single-rollout Q
+    # spreads jerk the target around). See `continuous_agent.mojo:243`
+    # for the matching CPU-side change.
     mcts_c_visit: Float64 = 50.0,
-    mcts_c_scale: Float64 = 1.0,
+    mcts_c_scale: Float64 = 0.1,
     # Hybrid diagnostic: when False, replace the GPU MCTS with the
     # agent's CPU `SampledGumbelMCTS` (one search per env, sequential).
     # Useful for isolating GPU-MCTS bugs from env/training-driver bugs
@@ -182,12 +187,16 @@ def run_ezv2_continuous_train_gpu[
             supports `VALUE_TARGET_SEARCH` today; passing True with a
             SARSA / MIXED config raises a runtime error. SARSA configs
             (HalfCheetah default) must keep this False.
+        mcts_c_visit: PUCT / Q-normalization constant for the GPU MCTS.
+        mcts_c_scale: PUCT / Q-normalization constant for the GPU MCTS.
+        use_gpu_mcts: When True, use the GPU MCTS.
         obs_norm: When True, normalize the per-step `obs_buf` in place
             using a running mean / variance tracker (CleanRL VecNormalize
             semantics). Stats update from every env step; replay stores
             the normalized obs. Off by default to preserve every existing
             script's baseline. Enable on envs with non-zero-mean / wide-
             scale obs (HalfCheetah, Humanoid, Ant, etc.).
+        logger: Logger for logging progress.
         verbose: Print progress / config / summary.
 
     Returns:
@@ -482,9 +491,7 @@ def run_ezv2_continuous_train_gpu[
     # current `train_steps_per_iter` / `N_ENVS` ratio (UTD≈train_steps_
     # per_iter/N_ENVS). Default reference DMC config has UTD=1 →
     # total = NUM_ENV_STEPS.
-    var total_train_steps: Int = (
-        NUM_ENV_STEPS * train_steps_per_iter // N_ENVS
-    )
+    var total_train_steps: Int = NUM_ENV_STEPS * train_steps_per_iter // N_ENVS
     # Host shadow of the device `lr_scale` slot — avoids re-launching the
     # 1-thread write kernel when the scheduler returns the same value
     # (e.g. `ConstantSchedule` returns 1.0 every step).
@@ -793,6 +800,99 @@ def run_ezv2_continuous_train_gpu[
                 else:
                     for i in range(K_ROOT):
                         improved.append(Scalar[dtype](raw_probs[i] / sum_exp))
+
+                # ── Diagnostic: inspect_root for env 0 every 12000 env
+                # steps. Mirrors the CPU `agent.inspect_root` print format
+                # so GPU vs CPU MCTS Q/visit distributions are directly
+                # comparable. Added 2026-05-16 while debugging GPU MCTS
+                # uniform-visit collapse (visit_H ≈ log(K_ROOT) → no
+                # candidate preferred, improved-policy targets degenerate).
+                if (
+                    e == 0
+                    and stats.total_env_steps > 0
+                    and stats.total_env_steps % 12000 == 0
+                ):
+                    var H_dbg = Float64(0.0)
+                    var max_pi_dbg = Float64(0.0)
+                    for i in range(K_ROOT):
+                        var p_dbg = Float64(improved[i])
+                        if p_dbg > 1.0e-12:
+                            H_dbg -= p_dbg * log(p_dbg)
+                        if p_dbg > max_pi_dbg:
+                            max_pi_dbg = p_dbg
+                    var H_unif_dbg = log(Float64(K_ROOT))
+                    print(
+                        "[inspect_root_gpu env_step=",
+                        stats.total_env_steps,
+                        " env=0 ] total_visits=",
+                        sum_visits,
+                        " value_estimate=",
+                        root_value_per_env[e],
+                    )
+                    # min_q / max_q / q_range are the load-bearing scalars
+                    # for the host improved-policy reconstruction. If
+                    # q_range degenerates (near-zero or huge), every
+                    # candidate's normalized Q collapses to a constant and
+                    # `improved` reduces to softmax(log_prior). Print
+                    # alongside v_mix (visit-weighted Q blend used as the
+                    # unvisited-Q fallback) to distinguish:
+                    #   • Q-value collapse (mean_v identical, q_range tiny)
+                    #   • min_q runaway (q_range huge, mean_v spread small)
+                    #   • healthy spread (mean_v differentiated, q_range
+                    #     matches max(mean_v) − min(mean_v))
+                    print(
+                        "       min_q=",
+                        mn,
+                        " max_q=",
+                        mx,
+                        " q_range=",
+                        mx - mn,
+                        " v_self=",
+                        v_self,
+                        " v_mix=",
+                        v_mix,
+                        " sigma_scale=",
+                        sigma_scale_,
+                    )
+                    print(
+                        "       pi entropy =",
+                        H_dbg,
+                        "/ log(K)=",
+                        H_unif_dbg,
+                        "  (ratio=",
+                        H_dbg / H_unif_dbg,
+                        ")  max_pi=",
+                        max_pi_dbg,
+                    )
+                    for i in range(K_ROOT):
+                        var visits_i = Float64(host_node_visit[nk_base + i])
+                        var mean_v_i: Float64
+                        if visits_i > 0.5:
+                            mean_v_i = (
+                                Float64(host_node_total_value[nk_base + i])
+                                / visits_i
+                            )
+                        else:
+                            mean_v_i = Float64(0.0)
+                        var a_str = String("a=[")
+                        for d in range(ACT_DIM):
+                            a_str += String(sampled[i * ACT_DIM + d])
+                            if d + 1 < ACT_DIM:
+                                a_str += String(",")
+                        a_str += String("]")
+                        print(
+                            "       i=",
+                            i,
+                            a_str,
+                            " log_prior=",
+                            host_log_prior[nk_base + i],
+                            " visits=",
+                            Int(visits_i),
+                            " mean_v=",
+                            mean_v_i,
+                            " pi=",
+                            improved[i],
+                        )
 
                 actions_per_env.append(action^)
                 sampled_actions_per_env.append(sampled^)
@@ -1407,14 +1507,13 @@ def run_ezv2_continuous_train_gpu[
                 mean_z_var = stats.z_var_sum / Float64(stats.z_var_n)
             var mean_v_pred_var = Float64(0.0)
             if stats.v_pred_var_n > 0:
-                mean_v_pred_var = (
-                    stats.v_pred_var_sum / Float64(stats.v_pred_var_n)
+                mean_v_pred_var = stats.v_pred_var_sum / Float64(
+                    stats.v_pred_var_n
                 )
             var mean_visit_entropy = Float64(0.0)
             if stats.mcts_visit_entropy_n > 0:
-                mean_visit_entropy = (
-                    stats.mcts_visit_entropy_sum
-                    / Float64(stats.mcts_visit_entropy_n)
+                mean_visit_entropy = stats.mcts_visit_entropy_sum / Float64(
+                    stats.mcts_visit_entropy_n
                 )
 
             if verbose:
@@ -1463,9 +1562,7 @@ def run_ezv2_continuous_train_gpu[
                 # both of which crush the chart's y-axis scale.
                 if n_eps > 0:
                     var last_ep_reward = recent[len(recent) - 1]
-                    logger.value()[].log_scalar(
-                        "avg_reward", recent_mean, step
-                    )
+                    logger.value()[].log_scalar("avg_reward", recent_mean, step)
                     logger.value()[].log_scalar(
                         "episode_reward", last_ep_reward, step
                     )
@@ -1491,9 +1588,7 @@ def run_ezv2_continuous_train_gpu[
                     # Critic Loss group
                     logger.value()[].log_scalar("value_loss", mean_L_V, step)
                     # Policy Loss group
-                    logger.value()[].log_scalar(
-                        "policy_loss", mean_L_P, step
-                    )
+                    logger.value()[].log_scalar("policy_loss", mean_L_P, step)
                 # ── Entropy group ─────────────────────────────────────
                 # Improved-policy entropy = entropy of the MCTS-derived
                 # target distribution over K root candidates.
@@ -1509,9 +1604,7 @@ def run_ezv2_continuous_train_gpu[
                 # ── TD Targets / Value Head group ─────────────────────
                 # MCTS-derived SVE is the value target the V head fits
                 # against — natural fit for the TD-targets group.
-                logger.value()[].log_scalar(
-                    "value_target_mean", mean_sve, step
-                )
+                logger.value()[].log_scalar("value_target_mean", mean_sve, step)
                 # ── Extra (no exact KNOWN_GROUPS match) ───────────────
                 # `best_reward` is logged with the Episode Reward group
                 # above (gated on n_eps > 0). `action_*` track policy
@@ -1545,9 +1638,7 @@ def run_ezv2_continuous_train_gpu[
                 # See `train_step_core.mojo:4.5` and the MCTS-entropy /
                 # buf_reward_max hooks earlier in this driver.
                 logger.value()[].log_scalar("z_var", mean_z_var, step)
-                logger.value()[].log_scalar(
-                    "v_pred_var", mean_v_pred_var, step
-                )
+                logger.value()[].log_scalar("v_pred_var", mean_v_pred_var, step)
                 logger.value()[].log_scalar(
                     "mcts_visit_entropy", mean_visit_entropy, step
                 )

@@ -283,6 +283,7 @@ struct ContinuousActionSpace[
             `N(μ, STD_MAGNIFICATION·σ)` for exploration). The training
             kernel here ignores it; lives on the trait so the agent can
             read it via `Config.ActSpace.STD_MAGNIFICATION` at sample time.
+        N_POLICY_AT_ROOT_: Number of root candidates drawn from the policy `N(μ, σ)`.
         SOFT_CLAMP_: Dreamer-v3-style soft-clamp on the policy mean
             (`mu = SOFT_CLAMP · tanh(mu_raw / SOFT_CLAMP)`). Reference
             value 5.0. See parameter-level comment above for why this is
