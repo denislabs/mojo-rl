@@ -73,4 +73,5 @@ def main() raises:
         eval_samples=0,
         mpc_horizon=0,
         cem_iters=0,
+        time_phases=True,
     )

@@ -255,8 +255,11 @@ struct LeWMGPUState[
     var sigreg_out_host: HostBuffer[dtype]
     var emb_host: HostBuffer[dtype]
 
-    # Host-side scratch for batch sampling (reused per step).
-    var pixels_sample: UnsafePointer[Scalar[dtype], MutAnyOrigin]
+    # Small read-only snapshot of the most recently sampled expert actions.
+    # Used only by `eval_h6` (which permutes `actions_host` in-place and
+    # needs the unshuffled originals as ground truth). Train_step + the
+    # other eval phases skip this — they sample directly into the pinned
+    # `actions_host` buffer.
     var actions_sample: UnsafePointer[Scalar[dtype], MutAnyOrigin]
 
     def __init__(out self, ctx: DeviceContext, lambda_sigreg: Float64) raises:
@@ -462,14 +465,10 @@ struct LeWMGPUState[
         # target slice. Same memory, single host buffer.
         self.emb_host = ctx.enqueue_create_host_buffer[dtype](Self.BT * Self.EMB)
 
-        # ------------------------------------------------------------------
-        # Host-side scratch for batch sampling (reused per step).
-        # ------------------------------------------------------------------
-        self.pixels_sample = alloc[Scalar[dtype]](Self.BT * Self.IMG_DIM)
+        # Small scratch (BATCH*T*ACT floats — a few KB) for H6's expert-action snapshot.
         self.actions_sample = alloc[Scalar[dtype]](Self.BATCH * Self.T * Self.ACT)
 
     def __del__(deinit self):
-        self.pixels_sample.free()
         self.actions_sample.free()
 
     # =========================================================================
@@ -634,6 +633,18 @@ struct LeWMTrainer[
     # Timing (perf_counter_ns returns UInt; field matches to avoid casts).
     var t0_ns: UInt
 
+    # Per-phase perf counters (cumulative ns, divided by `n_timed` at print).
+    # `t_step_ns` is the wall time per step from sample-start to step-end.
+    # `t_step_ns - t_sample_ns - t_h2d_ns` ≈ host time for kernel launches +
+    # implicit stream stalls. With `time_phases=True`, an end-of-step
+    # ctx.synchronize() forces accurate GPU-wall accounting at the cost of
+    # losing CPU/GPU overlap.
+    var t_sample_ns: UInt
+    var t_h2d_ns: UInt
+    var t_step_ns: UInt
+    var n_timed: Int
+    var time_phases: Bool
+
     # Constants
     var loss_scale: Float64
     var inv_scale: Scalar[dtype]
@@ -653,6 +664,7 @@ struct LeWMTrainer[
         cem_smoothing: Float64,
         eval_shuffle_diag: Bool,
         eval_h7_closed_loop: Bool = True,
+        time_phases: Bool = False,
     ) raises:
         self.buf = buf^
         self.lambda_sigreg = lambda_sigreg
@@ -678,6 +690,12 @@ struct LeWMTrainer[
         self.loss_last = 0.0
 
         self.t0_ns = UInt(0)
+        self.t_sample_ns = UInt(0)
+        self.t_h2d_ns = UInt(0)
+        self.t_step_ns = UInt(0)
+        self.n_timed = 0
+        self.time_phases = time_phases
+
         self.loss_scale = Float64(Self.BATCH * Self.H * Self.EMB)
         self.inv_scale = Scalar[dtype](2.0 / self.loss_scale)
 
@@ -688,6 +706,9 @@ struct LeWMTrainer[
         step: Int,
         rng_seed: Int,
     ) raises -> Float64:
+        # Phase timer — wall time across the whole step (sample + h2d + GPU work).
+        var ts_step_start = perf_counter_ns()
+
         comptime IMG_DIM = Self.GPUState.IMG_DIM
         comptime BT = Self.GPUState.BT
         comptime BTH = Self.GPUState.BTH
@@ -866,14 +887,18 @@ struct LeWMTrainer[
             dtype, Layout.row_major(SIG.PARAM_SIZE), MutAnyOrigin
         ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-        # Sample batch on host, copy to device.
-        self.buf.sample_batch_fp32(Self.BATCH, Self.T, state.pixels_sample, state.actions_sample)
-        for i in range(BT * IMG_DIM):
-            state.pixels_host[i] = state.pixels_sample[i]
-        for i in range(Self.BATCH * Self.T * Self.ACT):
-            state.actions_host[i] = state.actions_sample[i]
+        # Sample batch directly into pinned host buffers, then upload to device.
+        var ts_sample_start = perf_counter_ns()
+        self.buf.sample_batch_fp32(
+            Self.BATCH,
+            Self.T,
+            state.pixels_host.unsafe_ptr(),
+            state.actions_host.unsafe_ptr(),
+        )
+        var ts_sample_end = perf_counter_ns()
         ctx.enqueue_copy(state.pixels_buf, state.pixels_host)
         ctx.enqueue_copy(state.actions_buf, state.actions_host)
+        var ts_h2d_end = perf_counter_ns()
 
         # Zero grads on all 6 groups.
         state.enc_state.zero_grads(ctx)
@@ -1216,6 +1241,17 @@ struct LeWMTrainer[
             state.msa_states[layer_idx].optimizer_step(ctx)
             state.mlp_states[layer_idx].optimizer_step(ctx)
 
+        # End-of-step timing accumulation. With time_phases=True, sync first
+        # so `t_step_ns` includes pure GPU wall time (CPU/GPU overlap is
+        # disabled in that case — only use for measurement, not production).
+        if self.time_phases:
+            ctx.synchronize()
+        var ts_step_end = perf_counter_ns()
+        self.t_sample_ns += UInt(ts_sample_end - ts_sample_start)
+        self.t_h2d_ns += UInt(ts_h2d_end - ts_sample_end)
+        self.t_step_ns += UInt(ts_step_end - ts_step_start)
+        self.n_timed += 1
+
         # Periodic logging — download emb for probes was done inline above.
         if step % self.log_every == 0:
             ctx.synchronize()
@@ -1231,6 +1267,31 @@ struct LeWMTrainer[
                 " gram=", self.gram_ema,
                 " it/s=", sps,
             )
+            if self.n_timed > 0:
+                var n = Float64(self.n_timed)
+                var ms_sample = Float64(self.t_sample_ns) / n / 1e6
+                var ms_h2d = Float64(self.t_h2d_ns) / n / 1e6
+                var ms_step = Float64(self.t_step_ns) / n / 1e6
+                var ms_rest = ms_step - ms_sample - ms_h2d
+                print(
+                    "    [phases avg over last",
+                    self.n_timed,
+                    "steps] sample=",
+                    ms_sample,
+                    "ms  h2d=",
+                    ms_h2d,
+                    "ms  rest=",
+                    ms_rest,
+                    "ms  total=",
+                    ms_step,
+                    "ms",
+                )
+                # Reset window-averages so each log line covers just the
+                # interval since the previous log line.
+                self.t_sample_ns = UInt(0)
+                self.t_h2d_ns = UInt(0)
+                self.t_step_ns = UInt(0)
+                self.n_timed = 0
 
         return pred_loss
 
@@ -1331,13 +1392,17 @@ struct LeWMTrainer[
         var h6_sum_better: Float64 = 0.0
 
         for h6_iter in range(self.eval_steps):
+            # H6 permutes actions_host in-place via _run_h6_diag_shots, so we
+            # snapshot expert actions to actions_sample (small, ~few KB) for
+            # the unshuffled MSE reference.
             self.buf.sample_batch_fp32(
-                Self.BATCH, Self.T, state.pixels_sample, state.actions_sample
+                Self.BATCH,
+                Self.T,
+                state.pixels_host.unsafe_ptr(),
+                state.actions_host.unsafe_ptr(),
             )
-            for i in range(BT * IMG_DIM):
-                state.pixels_host[i] = state.pixels_sample[i]
             for i in range(Self.BATCH * Self.T * Self.ACT):
-                state.actions_host[i] = state.actions_sample[i]
+                state.actions_sample[i] = state.actions_host[i]
             ctx.enqueue_copy(state.pixels_buf, state.pixels_host)
             ctx.enqueue_copy(state.actions_buf, state.actions_host)
 
@@ -1531,12 +1596,13 @@ struct LeWMTrainer[
         var sum_better_frac: Float64 = 0.0
 
         for eval_iter in range(self.eval_steps):
-            # Sample a fresh batch on host, copy to device.
-            self.buf.sample_batch_fp32(Self.BATCH, Self.T, state.pixels_sample, state.actions_sample)
-            for i in range(BT * IMG_DIM):
-                state.pixels_host[i] = state.pixels_sample[i]
-            for i in range(Self.BATCH * Self.T * Self.ACT):
-                state.actions_host[i] = state.actions_sample[i]
+            # Sample a fresh batch directly into pinned host buffers.
+            self.buf.sample_batch_fp32(
+                Self.BATCH,
+                Self.T,
+                state.pixels_host.unsafe_ptr(),
+                state.actions_host.unsafe_ptr(),
+            )
             ctx.enqueue_copy(state.pixels_buf, state.pixels_host)
             ctx.enqueue_copy(state.actions_buf, state.actions_host)
 
@@ -1850,10 +1916,15 @@ struct LeWMTrainer[
         var cem_better_random_min: Int = 0
 
         for eval_iter in range(self.eval_steps):
-            # Sample fresh batch, copy to device, encode.
-            self.buf.sample_batch_fp32(Self.BATCH, Self.T, state.pixels_sample, state.actions_sample)
-            for i in range(BT * IMG_DIM):
-                state.pixels_host[i] = state.pixels_sample[i]
+            # Sample fresh batch directly into pinned host buffers, upload pixels.
+            # (Actions get overwritten by CEM samples below; MPC ignores expert actions
+            #  but the sampler still writes them into actions_host — cheap, no extra copy.)
+            self.buf.sample_batch_fp32(
+                Self.BATCH,
+                Self.T,
+                state.pixels_host.unsafe_ptr(),
+                state.actions_host.unsafe_ptr(),
+            )
             ctx.enqueue_copy(state.pixels_buf, state.pixels_host)
 
             ENC.forward_gpu[BT, dtype](
@@ -1890,7 +1961,7 @@ struct LeWMTrainer[
                             for k in range(Self.ACT):
                                 action_plan_host_buf[
                                     b * needed_actions * Self.ACT + ti * Self.ACT + k
-                                ] = state.actions_sample[
+                                ] = state.actions_host[
                                     b * Self.T * Self.ACT + ti * Self.ACT + k
                                 ]
                 else:
@@ -2258,14 +2329,13 @@ struct LeWMTrainer[
         var mse_div = Float64(Self.BATCH * Self.EMB)
 
         for eval_iter in range(self.eval_steps):
-            # ---- 1. Sample + encode all T frames ----
+            # ---- 1. Sample directly into pinned host buffers, encode all T frames ----
             self.buf.sample_batch_fp32(
-                Self.BATCH, Self.T, state.pixels_sample, state.actions_sample
+                Self.BATCH,
+                Self.T,
+                state.pixels_host.unsafe_ptr(),
+                state.actions_host.unsafe_ptr(),
             )
-            for i in range(BT * IMG_DIM):
-                state.pixels_host[i] = state.pixels_sample[i]
-            for i in range(Self.BATCH * Self.T * Self.ACT):
-                state.actions_host[i] = state.actions_sample[i]
             ctx.enqueue_copy(state.pixels_buf, state.pixels_host)
             ctx.enqueue_copy(state.actions_buf, state.actions_host)
 
@@ -2706,6 +2776,7 @@ def train_lewm_offline_gpu_v2[
     eval_h7_closed_loop: Bool = True,
     var checkpoint_path: String = String(""),
     checkpoint_every: Int = 0,
+    time_phases: Bool = False,
 ) raises:
     """Struct-based v2 of train_lewm_offline_gpu.
 
@@ -2734,6 +2805,7 @@ def train_lewm_offline_gpu_v2[
         buf^, lambda_sigreg, log_every, eval_steps, eval_samples,
         eval_seed, mpc_horizon, cem_iters, cem_samples, cem_topk,
         cem_smoothing, eval_shuffle_diag, eval_h7_closed_loop,
+        time_phases,
     )
     trainer.run(state, ctx, num_steps, rng_seed, checkpoint_path^, checkpoint_every)
 
@@ -2779,6 +2851,7 @@ def train_lewm_offline_gpu_pusht_v2[
     var dataset_path: String = String(""),
     var checkpoint_path: String = String(""),
     checkpoint_every: Int = 0,
+    time_phases: Bool = False,
 ) raises:
     """LeWM v2 trainer driven by the HuggingFace PushT expert dataset.
 
@@ -2836,6 +2909,7 @@ def train_lewm_offline_gpu_pusht_v2[
         sampler^, lambda_sigreg, log_every, eval_steps, eval_samples,
         eval_seed, mpc_horizon, cem_iters, cem_samples, cem_topk,
         cem_smoothing, eval_shuffle_diag, eval_h7_closed_loop,
+        time_phases,
     )
     trainer.run(state, ctx, num_steps, rng_seed, checkpoint_path^, checkpoint_every)
 
