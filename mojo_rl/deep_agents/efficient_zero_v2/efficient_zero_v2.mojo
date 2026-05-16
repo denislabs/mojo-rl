@@ -128,12 +128,14 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
 
     comptime ACT: Int = Self.Config.action_dim
 
-    # Networks + replay live in this state. We accept the
-    # `EZV2DiscreteCPUState` default `_CAP=50000` rather than threading
-    # `Self.Config.buffer_capacity` through — Mojo nightly's type checker
-    # treats `Config.buffer_capacity` as a distinct type from its
-    # numerical equivalent, which breaks downstream alias unification.
-    var state: EZV2DiscreteCPUState[Self.Config]
+    # Networks + replay live in this state. `Self.Config.buffer_capacity`
+    # is threaded through as the explicit `_CAP` template param so the
+    # replay buffer size honors the Config setting. (Earlier code carried
+    # a Mojo nightly type-checker workaround that hardcoded _CAP=50000
+    # regardless of Config; fixed 2026-05-16 — the workaround is no
+    # longer needed in current Mojo nightly. See sibling fix in
+    # `continuous_agent.mojo`.)
+    var state: EZV2DiscreteCPUState[Self.Config, Self.Config.buffer_capacity]
 
     # GumbelMCTS engine (re-used across calls; resets internally each search).
     var mcts: GumbelMCTS[
@@ -202,7 +204,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         max_grad_norm: Float64 = 5.0,
         n_envs: Int = 1,
     ):
-        self.state = EZV2DiscreteCPUState[Self.Config]()
+        self.state = EZV2DiscreteCPUState[Self.Config, Self.Config.buffer_capacity]()
         self.mcts = GumbelMCTS[
             Self.ACT,
             Self.Config.latent_dim,
@@ -443,7 +445,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
 
             # Mirror the MCTS targets into the parallel storage at the
             # buffer's just-written index.
-            comptime CAP = 50000
+            comptime CAP = Self.Config.buffer_capacity
             var buf_idx = (self.state.buffer.ptr - 1 + CAP) % CAP
             for a in range(Self.ACT):
                 self.state.mcts_policies[buf_idx * Self.ACT + a] = Scalar[
@@ -518,7 +520,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         if not self.state.is_ready():
             return 0
 
-        comptime CAP = 50000
+        comptime CAP = Self.Config.buffer_capacity
         var buf_size = self.state.buffer.size
         var buf_ptr = self.state.buffer.ptr
         var oldest = (buf_ptr - buf_size + CAP) % CAP
@@ -632,7 +634,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         comptime DYN_IN = LATENT + ACT
         comptime DYN_OUT = LATENT + BINS
         comptime PRED_OUT = ACT + BINS
-        comptime CAP = 50000
+        comptime CAP = Self.Config.buffer_capacity
 
         if not self.state.is_ready():
             return (
@@ -2237,7 +2239,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         comptime DYN_IN = LATENT + ACT
         comptime DYN_OUT = LATENT + BINS
         comptime PRED_OUT = ACT + BINS
-        comptime CAP = 50000
+        comptime CAP = Self.Config.buffer_capacity
 
         comptime TPB: Int = 256
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
@@ -2543,7 +2545,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         mut self,
         mut gpu: EZV2GPUStateBase[Self.Config],
         mut gpu_replay: EZV2GPUReplayBuffer[
-            50000,
+            Self.Config.buffer_capacity,
             Self.Config.obs_dim,
             Self.Config.action_dim,
             Self.Config.num_root_candidates,
@@ -2586,7 +2588,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         comptime ACT = Self.Config.action_dim
         comptime BINS = Self.Config.num_bins
         comptime PRED_OUT = ACT + BINS
-        comptime CAP = 50000
+        comptime CAP = Self.Config.buffer_capacity
 
         if not self.state.is_ready():
             return (
@@ -2837,7 +2839,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         comptime DYN_IN = LATENT + ACT
         comptime DYN_OUT = LATENT + BINS
         comptime PRED_OUT = ACT + BINS
-        comptime CAP = 50000  # matches EZV2DiscreteCPUState's default
+        comptime CAP = Self.Config.buffer_capacity
 
         if not self.state.is_ready():
             return (Float64(0.0), Float64(0.0), Float64(0.0), Float64(0.0))

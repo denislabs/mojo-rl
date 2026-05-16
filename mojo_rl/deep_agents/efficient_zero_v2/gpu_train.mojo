@@ -231,7 +231,7 @@ def run_ezv2_train_gpu[
     comptime SIMS = Config.num_simulations
     comptime NODES = Config.max_nodes
     comptime MAX_K = Config.num_root_candidates
-    comptime CAP = 50000  # matches `EZV2DiscreteCPUState`'s default _CAP
+    comptime CAP = Config.buffer_capacity
 
     comptime STATE_SIZE = Env.STATE_SIZE
     comptime OBS_DIM = Env.OBS_DIM

@@ -1445,12 +1445,14 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
             Self.BATCH * Self.K
         )
 
-        # GPU sampling scratch — sized for CAP=50000 (matches the
-        # comptime CAP in `train_step_gpu`). Allocated unconditionally
-        # so the move ctor / upload paths don't have a comptime branch;
-        # the cost is ~600KB total which is rounding error vs the
-        # network-state buffers.
-        comptime CAP = 50000
+        # GPU sampling scratch — sized to `Config.buffer_capacity`
+        # (matches the comptime CAP in `train_step_gpu`). Allocated
+        # unconditionally so the move ctor / upload paths don't have a
+        # comptime branch; the cost scales linearly with CAP (~12 bytes
+        # per slot) which is rounding error vs the network-state buffers
+        # at any reasonable buffer size. 2026-05-16: was hardcoded 50000
+        # regardless of Config — now reads Config.buffer_capacity.
+        comptime CAP = Self.Config.buffer_capacity
         self.cum_prio_buf = ctx.enqueue_create_buffer[dtype](CAP)
         self.cand_starts_buf = ctx.enqueue_create_buffer[DType.int32](CAP)
         self.n_valid_buf = ctx.enqueue_create_buffer[DType.int32](1)

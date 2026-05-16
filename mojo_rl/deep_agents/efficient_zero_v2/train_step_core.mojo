@@ -140,7 +140,7 @@ def ezv2_train_step_gpu_core[
     # Equals the policy-output width (= `ACT` for discrete, = `2 * ACT_DIM`
     # for continuous), which is exactly `PRED_OUT - BINS`.
     comptime VALUE_OFF = PRED_OUT - BINS
-    comptime CAP = 50000
+    comptime CAP = Config.buffer_capacity
 
     comptime TPB: Int = 256
     comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
