@@ -46,7 +46,7 @@ def main() raises:
         eval_steps=10,
         eval_samples=32,
         eval_seed=0xBEEF,
-        mpc_horizon=1,
+        mpc_horizon=2,
         cem_iters=5,
         cem_samples=64,
         cem_topk=8,
