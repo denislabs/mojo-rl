@@ -462,3 +462,54 @@ struct LewmPushTExpert(Movable, Sized):
             var dst_base = n * self.state_dim
             for j in range(self.state_dim):
                 into.state[dst_base + j] = self.state_flat[src_base + j]
+
+    def sample_clip_pixels_uint8(
+        self,
+        idx: Int,
+        pixels_dst: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
+        actions_dst: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
+        dense_scratch: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
+    ) raises:
+        """Hot-path sample for the trainer's batch loop.
+
+        Unlike ``sample_window`` this skips proprio/state and the
+        ``LewmPushTWindow.pixels`` intermediate: pixels stream from
+        libhdf5 into ``dense_scratch`` then strided-memcpy directly
+        into the caller's batch slot in ``pixels_dst``; actions
+        memcpy in one shot from the already-slurped flat host buffer
+        into ``actions_dst``. Used by ``LewmPushTSampler``.
+
+        Args:
+            idx: Clip index, ``0 <= idx < len(self.clip_ep_idx)``.
+            pixels_dst: ``[num_steps, H, W, 3]`` uint8, caller-owned.
+            actions_dst: ``[num_steps, frameskip * action_dim]`` fp32.
+            dense_scratch: ``[span, H, W, 3]`` uint8 scratch
+                (``span = num_steps * frameskip``). Reused across calls;
+                typically the ``pixels_dense`` field of a window.
+        """
+        if idx < 0 or idx >= len(self.clip_ep_idx):
+            raise Error("sample_clip_pixels_uint8: idx out of range")
+
+        var ep_idx = Int(self.clip_ep_idx[idx])
+        var start_in_ep = Int(self.clip_start[idx])
+        var g_start = Int(self.ep_offset[ep_idx]) + start_in_ep
+
+        # Pixels: one dense hyperslab read, then 4 strided memcpys.
+        self._dset_pixels.read_range[DType.uint8](
+            g_start, g_start + self.span, dense_scratch
+        )
+        var pix_per_frame = self.pixel_h * self.pixel_w * 3
+        for k in range(self.num_steps):
+            memcpy(
+                dest=pixels_dst + k * pix_per_frame,
+                src=dense_scratch + k * self.frameskip * pix_per_frame,
+                count=pix_per_frame,
+            )
+
+        # Actions: contiguous fp32 memcpy from slurped host buffer.
+        var act_total = self.span * self.action_dim
+        memcpy(
+            dest=actions_dst,
+            src=self.action_flat.unsafe_ptr() + g_start * self.action_dim,
+            count=act_total,
+        )

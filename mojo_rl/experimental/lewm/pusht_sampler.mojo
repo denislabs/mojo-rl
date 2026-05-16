@@ -22,6 +22,7 @@ Typical usage::
     sampler.sample_batch_uint8(BATCH=16, T=4, pixels_u8_out, actions_fp32_out)
 """
 
+from std.memory import memcpy
 from std.random import random_float64
 
 from mojo_rl.nn.datasets.lewm_pusht import LewmPushTExpert, LewmPushTWindow
@@ -134,14 +135,13 @@ struct LewmPushTSampler(Movable, LeWMBuffer):
             if clip_idx < 0:
                 clip_idx = 0
 
-            self.dataset.sample_window(clip_idx, self.window)
-
-            # Bulk uint8 HWC copy (window.pixels is already HWC).
-            var pix_dst = pixels_out + b * pix_per_sample
-            for i in range(pix_per_sample):
-                pix_dst[i] = self.window.pixels[i]
-
-            # Actions: dense f32 copy.
-            var act_dst = actions_out + b * act_per_sample
-            for i in range(act_per_sample):
-                act_dst[i] = self.window.action[i]
+            # Fast path: dense HDF5 read → strided memcpy directly into
+            # the batch's slot, skipping the LewmPushTWindow.pixels
+            # intermediate. The window only contributes its ``pixels_dense``
+            # buffer as a shared scratch — proprio/state are unused here.
+            self.dataset.sample_clip_pixels_uint8(
+                clip_idx,
+                pixels_out + b * pix_per_sample,
+                actions_out + b * act_per_sample,
+                self.window.pixels_dense,
+            )
