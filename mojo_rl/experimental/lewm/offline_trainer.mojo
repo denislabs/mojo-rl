@@ -90,6 +90,7 @@ from .kernels import (
     pixels_uint8_to_fp32_kernel,
 )
 from .eval_suite import LeWMEvalSuite
+from .lewm_config import LeWMConfig
 
 
 @always_inline
@@ -102,60 +103,47 @@ comptime TPB_Y = 4
 comptime TPB_Z = 16
 
 
-struct LeWMGPUState[
-    BATCH: Int,
-    T: Int,
-    H: Int,
-    N_PREDS: Int,
-    IN_CH: Int,
-    IMG: Int,
-    PATCH: Int,
-    N_PATCHES: Int,
-    HIDDEN: Int,
-    ENC_HEADS: Int,
-    ENC_LAYERS: Int,
-    EMB: Int,
-    PROJ_H: Int,
-    ACT: Int,
-    SMOOTHED: Int,
-    PRED_HEADS: Int,
-    PRED_FF: Int,
-    DEPTH: Int = 1,
-    SIG_NUM_PROJ: Int = 1024,
-    SIG_KNOTS: Int = 17,
-]:
+struct LeWMGPUState[CONFIG: LeWMConfig]:
     """All GPU device + host buffers and per-model GPUNetworkStates.
 
     Comptime aliases for the model types are hoisted to struct level so
     they instantiate once per specialization (mirrors the TDMPC2Agent
     pattern of avoiding re-instantiation across `train_gpu[ENV, n_envs]`
-    call sites).
+    call sites). All 20 dimensional parameters + the encoder model type
+    are read off `CONFIG` (a `LeWMConfig` instance).
     """
 
-    # ── Derived dimension aliases ────────────────────────────────────
-    comptime IMG_DIM: Int = Self.IN_CH * Self.IMG * Self.IMG
-    comptime BT: Int = Self.BATCH * Self.T
-    comptime BTH: Int = Self.BATCH * Self.H
-
     # ── Model type aliases (hoisted) ─────────────────────────────────
-    comptime ENC = LeWMEncoder[
-        Self.IN_CH, Self.IMG, Self.IMG, Self.PATCH, Self.HIDDEN, Self.ENC_HEADS, Self.ENC_LAYERS, Self.N_PATCHES,
-        Self.EMB, 2, Self.PROJ_H,
-    ]
-    comptime AE = ActionEmbedder[Self.T, Self.ACT, Self.SMOOTHED, Self.EMB]
-    comptime POS = AutoDiffChain[BiasAdd[Self.H * Self.EMB]]
+    # Encoder pulled from CONFIG (swappable per concrete config: ViT,
+    # CNN, etc.). Other networks stay local for Phase 3 — easy to lift
+    # to CONFIG fields when a use case appears.
+    comptime ENC = Self.CONFIG.EncoderModel
+
+    # ── Derived dimension aliases ────────────────────────────────────
+    # IMG_DIM/EMB use ENC's own IN_DIM/OUT_DIM (not arithmetic recomputed
+    # off CONFIG) so LayoutTensors typed by `Layout.row_major(BT, EMB)`
+    # are structurally identical to those typed by
+    # `Layout.row_major(BT, ENC.OUT_DIM)` — Mojo treats `Self.EMB`
+    # and `Self.ENC.OUT_DIM` as distinct comptime expressions even when
+    # they evaluate to the same Int.
+    comptime IMG_DIM: Int = Self.ENC.IN_DIM
+    comptime EMB: Int = Self.ENC.OUT_DIM
+    comptime BT: Int = Self.CONFIG.BATCH * Self.CONFIG.T
+    comptime BTH: Int = Self.CONFIG.BATCH * Self.CONFIG.H
+    comptime AE = ActionEmbedder[Self.CONFIG.T, Self.CONFIG.ACT, Self.CONFIG.SMOOTHED, Self.EMB]
+    comptime POS = AutoDiffChain[BiasAdd[Self.CONFIG.H * Self.EMB]]
     comptime ADALN = AdaLNMod[Self.EMB]
-    comptime MSA = MultiHeadAttention[Self.EMB, Self.PRED_HEADS, Self.H, True]
-    comptime MLP = CondMLP[Self.EMB, Self.PRED_FF]
+    comptime MSA = MultiHeadAttention[Self.EMB, Self.CONFIG.PRED_HEADS, Self.CONFIG.H, True]
+    comptime MLP = CondMLP[Self.EMB, Self.CONFIG.PRED_FF]
     comptime _PredProjPerToken = Sequential[
-        Linear[Self.EMB, Self.PROJ_H],
-        BatchNorm1D[Self.PROJ_H],
-        GELU[Self.PROJ_H],
-        Linear[Self.PROJ_H, Self.EMB],
+        Linear[Self.EMB, Self.CONFIG.PROJ_H],
+        BatchNorm1D[Self.CONFIG.PROJ_H],
+        GELU[Self.CONFIG.PROJ_H],
+        Linear[Self.CONFIG.PROJ_H, Self.EMB],
     ]
-    comptime PROJ = Tokenwise[Self.H, Self._PredProjPerToken]
-    comptime SIG = SIGRegOp[Self.EMB, Self.T, Self.SIG_NUM_PROJ, Self.SIG_KNOTS]
-    comptime SIG_WS_SIZE = Self.SIG.workspace_size_for[Self.BATCH]()
+    comptime PROJ = Tokenwise[Self.CONFIG.H, Self._PredProjPerToken]
+    comptime SIG = SIGRegOp[Self.EMB, Self.CONFIG.T, Self.CONFIG.SIG_NUM_PROJ, Self.CONFIG.SIG_KNOTS]
+    comptime SIG_WS_SIZE = Self.SIG.workspace_size_for[Self.CONFIG.BATCH]()
 
     # ── Shared (single-instance) GPUNetworkStates ────────────────────
     var enc_state: GPUNetworkState[Self.ENC, Adam[]]
@@ -163,7 +151,7 @@ struct LeWMGPUState[
     var pos_state: GPUNetworkState[Self.POS, Adam[]]
     var proj_state: GPUNetworkState[Self.PROJ, Adam[]]
 
-    # ── Per-layer cond_block GPUNetworkStates (Self.DEPTH copies each) ────
+    # ── Per-layer cond_block GPUNetworkStates (Self.CONFIG.DEPTH copies each) ────
     var adaln_states: List[GPUNetworkState[Self.ADALN, Adam[]]]
     var msa_states: List[GPUNetworkState[Self.MSA, Adam[]]]
     var mlp_states: List[GPUNetworkState[Self.MLP, Adam[]]]
@@ -190,7 +178,7 @@ struct LeWMGPUState[
     var proj_cache_buf: DeviceBuffer[dtype]
     var proj_ws_buf: DeviceBuffer[dtype]
 
-    # cond_block caches — Self.DEPTH-fold (sliced per layer in helpers).
+    # cond_block caches — Self.CONFIG.DEPTH-fold (sliced per layer in helpers).
     var silu_cache_buf: DeviceBuffer[dtype]
     var adaln_cache_buf: DeviceBuffer[dtype]
     var ln1_cache_buf: DeviceBuffer[dtype]
@@ -203,8 +191,8 @@ struct LeWMGPUState[
     var gate2_cache_buf: DeviceBuffer[dtype]
     var raw_mod_buf: DeviceBuffer[dtype]
     var x_mid_buf_d: DeviceBuffer[dtype]
-    # Intermediate x flow between layers. (Self.DEPTH-1) slots since layer 0 reads
-    # x_prev_pe and layer Self.DEPTH-1 writes pred_raw directly.
+    # Intermediate x flow between layers. (Self.CONFIG.DEPTH-1) slots since layer 0 reads
+    # x_prev_pe and layer Self.CONFIG.DEPTH-1 writes pred_raw directly.
     var x_inter_buf: DeviceBuffer[dtype]
 
     # cond_block forward scratch (reused across MSA and MLP branches).
@@ -220,7 +208,7 @@ struct LeWMGPUState[
     var msa_ws_buf: DeviceBuffer[dtype]
     var mlp_ws_buf: DeviceBuffer[dtype]
 
-    # cond_block backward scratch (reused across all Self.DEPTH layers).
+    # cond_block backward scratch (reused across all Self.CONFIG.DEPTH layers).
     var sgg_buf: DeviceBuffer[dtype]
     var sgbo_buf: DeviceBuffer[dtype]
     var sgmx_buf: DeviceBuffer[dtype]
@@ -230,7 +218,7 @@ struct LeWMGPUState[
     var sgrm_buf: DeviceBuffer[dtype]
     var sgsc_buf: DeviceBuffer[dtype]
     var grad_x_mid_buf: DeviceBuffer[dtype]
-    # Backward intermediate grad_x flow between layers (Self.DEPTH-1 slots).
+    # Backward intermediate grad_x flow between layers (Self.CONFIG.DEPTH-1 slots).
     var grad_x_inter_buf: DeviceBuffer[dtype]
     # Per-layer grad_c output (single buffer, reused per layer; accumulated
     # into grad_c_buf via cb_accum_kernel).
@@ -299,11 +287,11 @@ struct LeWMGPUState[
         self.pos_state.upload_from(cpu_pos, ctx)
         self.proj_state.upload_from(cpu_proj, ctx)
 
-        # Per-layer cond_block models — Self.DEPTH copies of ADALN, MSA, MLP.
-        var cpu_adalns = List[NetworkState[Self.ADALN, Adam[]]](capacity=Self.DEPTH)
-        var cpu_msas = List[NetworkState[Self.MSA, Adam[]]](capacity=Self.DEPTH)
-        var cpu_mlps = List[NetworkState[Self.MLP, Adam[]]](capacity=Self.DEPTH)
-        for _ in range(Self.DEPTH):
+        # Per-layer cond_block models — Self.CONFIG.DEPTH copies of ADALN, MSA, MLP.
+        var cpu_adalns = List[NetworkState[Self.ADALN, Adam[]]](capacity=Self.CONFIG.DEPTH)
+        var cpu_msas = List[NetworkState[Self.MSA, Adam[]]](capacity=Self.CONFIG.DEPTH)
+        var cpu_mlps = List[NetworkState[Self.MLP, Adam[]]](capacity=Self.CONFIG.DEPTH)
+        for _ in range(Self.CONFIG.DEPTH):
             var ca = NetworkState[Self.ADALN, Adam[]]()
             ca.initialize[Xavier[]]()
             for i in range(Self.ADALN.PARAM_SIZE):
@@ -316,10 +304,10 @@ struct LeWMGPUState[
             cf.initialize[Xavier[]]()
             cpu_mlps.append(cf^)
 
-        self.adaln_states = List[GPUNetworkState[Self.ADALN, Adam[]]](capacity=Self.DEPTH)
-        self.msa_states = List[GPUNetworkState[Self.MSA, Adam[]]](capacity=Self.DEPTH)
-        self.mlp_states = List[GPUNetworkState[Self.MLP, Adam[]]](capacity=Self.DEPTH)
-        for layer_idx in range(Self.DEPTH):
+        self.adaln_states = List[GPUNetworkState[Self.ADALN, Adam[]]](capacity=Self.CONFIG.DEPTH)
+        self.msa_states = List[GPUNetworkState[Self.MSA, Adam[]]](capacity=Self.CONFIG.DEPTH)
+        self.mlp_states = List[GPUNetworkState[Self.MLP, Adam[]]](capacity=Self.CONFIG.DEPTH)
+        for layer_idx in range(Self.CONFIG.DEPTH):
             var ga = GPUNetworkState[Self.ADALN, Adam[]](ctx)
             ga.upload_from(cpu_adalns[layer_idx], ctx)
             self.adaln_states.append(ga^)
@@ -336,59 +324,59 @@ struct LeWMGPUState[
         # DeviceBuffer construction valid for zero-CACHE/WS ops.
         # ------------------------------------------------------------------
         self.pixels_buf = ctx.enqueue_create_buffer[dtype](Self.BT * Self.IMG_DIM)
-        self.actions_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.T * Self.ACT)
+        self.actions_buf = ctx.enqueue_create_buffer[dtype](Self.CONFIG.BATCH * Self.CONFIG.T * Self.CONFIG.ACT)
         self.emb_buf = ctx.enqueue_create_buffer[dtype](Self.BT * Self.EMB)
         self.enc_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BT * Self.ENC.CACHE_SIZE)
         self.enc_ws_buf = ctx.enqueue_create_buffer[dtype](
             _max_int(1, Self.BT * Self.ENC.WORKSPACE_SIZE_PER_SAMPLE)
         )
 
-        self.act_emb_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.T * Self.EMB)
-        self.ae_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.AE.CACHE_SIZE)
+        self.act_emb_buf = ctx.enqueue_create_buffer[dtype](Self.CONFIG.BATCH * Self.CONFIG.T * Self.EMB)
+        self.ae_cache_buf = ctx.enqueue_create_buffer[dtype](Self.CONFIG.BATCH * Self.AE.CACHE_SIZE)
         self.ae_ws_buf = ctx.enqueue_create_buffer[dtype](
-            _max_int(1, Self.BATCH * Self.AE.WORKSPACE_SIZE_PER_SAMPLE)
+            _max_int(1, Self.CONFIG.BATCH * Self.AE.WORKSPACE_SIZE_PER_SAMPLE)
         )
 
         self.x_prev_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB)
         self.x_prev_pe_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB)
         self.pos_cache_buf = ctx.enqueue_create_buffer[dtype](
-            _max_int(1, Self.BATCH * Self.POS.CACHE_SIZE)
+            _max_int(1, Self.CONFIG.BATCH * Self.POS.CACHE_SIZE)
         )
         self.pos_ws_buf = ctx.enqueue_create_buffer[dtype](
-            _max_int(1, Self.BATCH * Self.POS.WORKSPACE_SIZE_PER_SAMPLE)
+            _max_int(1, Self.CONFIG.BATCH * Self.POS.WORKSPACE_SIZE_PER_SAMPLE)
         )
         self.c_in_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB)
 
         self.pred_raw_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB)
-        self.pred_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.H * Self.EMB)
-        self.proj_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.PROJ.CACHE_SIZE)
+        self.pred_out_buf = ctx.enqueue_create_buffer[dtype](Self.CONFIG.BATCH * Self.CONFIG.H * Self.EMB)
+        self.proj_cache_buf = ctx.enqueue_create_buffer[dtype](Self.CONFIG.BATCH * Self.PROJ.CACHE_SIZE)
         self.proj_ws_buf = ctx.enqueue_create_buffer[dtype](
-            _max_int(1, Self.BATCH * Self.PROJ.WORKSPACE_SIZE_PER_SAMPLE)
+            _max_int(1, Self.CONFIG.BATCH * Self.PROJ.WORKSPACE_SIZE_PER_SAMPLE)
         )
 
-        # cond_block caches — Self.DEPTH-fold (sliced per layer in helpers).
-        self.silu_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB * Self.DEPTH)
+        # cond_block caches — Self.CONFIG.DEPTH-fold (sliced per layer in helpers).
+        self.silu_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB * Self.CONFIG.DEPTH)
         self.adaln_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BTH * Self.ADALN.CACHE_SIZE * Self.DEPTH
+            Self.BTH * Self.ADALN.CACHE_SIZE * Self.CONFIG.DEPTH
         )
-        self.ln1_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * (Self.EMB + 1) * Self.DEPTH)
-        self.mod1_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * 2 * Self.EMB * Self.DEPTH)
+        self.ln1_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * (Self.EMB + 1) * Self.CONFIG.DEPTH)
+        self.mod1_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * 2 * Self.EMB * Self.CONFIG.DEPTH)
         self.msa_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.MSA.CACHE_SIZE * Self.DEPTH
+            Self.CONFIG.BATCH * Self.MSA.CACHE_SIZE * Self.CONFIG.DEPTH
         )
-        self.gate1_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * 2 * Self.EMB * Self.DEPTH)
-        self.ln2_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * (Self.EMB + 1) * Self.DEPTH)
-        self.mod2_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * 2 * Self.EMB * Self.DEPTH)
+        self.gate1_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * 2 * Self.EMB * Self.CONFIG.DEPTH)
+        self.ln2_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * (Self.EMB + 1) * Self.CONFIG.DEPTH)
+        self.mod2_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * 2 * Self.EMB * Self.CONFIG.DEPTH)
         self.mlp_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BTH * Self.MLP.CACHE_SIZE * Self.DEPTH
+            Self.BTH * Self.MLP.CACHE_SIZE * Self.CONFIG.DEPTH
         )
-        self.gate2_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * 2 * Self.EMB * Self.DEPTH)
-        self.raw_mod_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * 6 * Self.EMB * Self.DEPTH)
-        self.x_mid_buf_d = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB * Self.DEPTH)
-        # Intermediate x flow between layers. (Self.DEPTH-1) slots since layer 0 reads
-        # x_prev_pe and layer Self.DEPTH-1 writes pred_raw directly.
+        self.gate2_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * 2 * Self.EMB * Self.CONFIG.DEPTH)
+        self.raw_mod_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * 6 * Self.EMB * Self.CONFIG.DEPTH)
+        self.x_mid_buf_d = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB * Self.CONFIG.DEPTH)
+        # Intermediate x flow between layers. (Self.CONFIG.DEPTH-1) slots since layer 0 reads
+        # x_prev_pe and layer Self.CONFIG.DEPTH-1 writes pred_raw directly.
         self.x_inter_buf = ctx.enqueue_create_buffer[dtype](
-            _max_int(1, Self.BTH * Self.EMB * (Self.DEPTH - 1))
+            _max_int(1, Self.BTH * Self.EMB * (Self.CONFIG.DEPTH - 1))
         )
 
         # cond_block forward scratch (reused across MSA and MLP branches).
@@ -404,13 +392,13 @@ struct LeWMGPUState[
             _max_int(1, Self.BTH * Self.ADALN.WORKSPACE_SIZE_PER_SAMPLE)
         )
         self.msa_ws_buf = ctx.enqueue_create_buffer[dtype](
-            _max_int(1, Self.BATCH * Self.MSA.WORKSPACE_SIZE_PER_SAMPLE)
+            _max_int(1, Self.CONFIG.BATCH * Self.MSA.WORKSPACE_SIZE_PER_SAMPLE)
         )
         self.mlp_ws_buf = ctx.enqueue_create_buffer[dtype](
             _max_int(1, Self.BTH * Self.MLP.WORKSPACE_SIZE_PER_SAMPLE)
         )
 
-        # cond_block backward scratch (reused across all Self.DEPTH layers).
+        # cond_block backward scratch (reused across all Self.CONFIG.DEPTH layers).
         self.sgg_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * 3 * Self.EMB)
         self.sgbo_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB)
         self.sgmx_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB)
@@ -420,46 +408,46 @@ struct LeWMGPUState[
         self.sgrm_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * 6 * Self.EMB)
         self.sgsc_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB)
         self.grad_x_mid_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB)
-        # Backward intermediate grad_x flow between layers (Self.DEPTH-1 slots).
+        # Backward intermediate grad_x flow between layers (Self.CONFIG.DEPTH-1 slots).
         self.grad_x_inter_buf = ctx.enqueue_create_buffer[dtype](
-            _max_int(1, Self.BTH * Self.EMB * (Self.DEPTH - 1))
+            _max_int(1, Self.BTH * Self.EMB * (Self.CONFIG.DEPTH - 1))
         )
         # Per-layer grad_c output (single buffer, reused per layer; accumulated
         # into grad_c_buf via cb_accum_kernel).
         self.grad_c_layer_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB)
 
         # SIGReg buffers (forward + backward).
-        self.sigreg_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.SIG.OUT_DIM)
+        self.sigreg_out_buf = ctx.enqueue_create_buffer[dtype](Self.CONFIG.BATCH * Self.SIG.OUT_DIM)
         self.sigreg_cache_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.SIG.CACHE_SIZE
+            Self.CONFIG.BATCH * Self.SIG.CACHE_SIZE
         )
         self.sigreg_grad_out_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.SIG.OUT_DIM
+            Self.CONFIG.BATCH * Self.SIG.OUT_DIM
         )
         self.sigreg_grad_emb_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.T * Self.EMB
+            Self.CONFIG.BATCH * Self.CONFIG.T * Self.EMB
         )
         self.sigreg_ws_buf = ctx.enqueue_create_buffer[dtype](Self.SIG_WS_SIZE)
         # Seed grad_output = λ/B (constant across all steps; chain rule produces
         # an effective G = λ at the SIGReg dLdz step). See CPU trainer line 735.
         var sigreg_grad_out_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.BATCH * Self.SIG.OUT_DIM
+            Self.CONFIG.BATCH * Self.SIG.OUT_DIM
         )
-        for i in range(Self.BATCH * Self.SIG.OUT_DIM):
+        for i in range(Self.CONFIG.BATCH * Self.SIG.OUT_DIM):
             sigreg_grad_out_host[i] = Scalar[dtype](
-                lambda_sigreg / Float64(Self.BATCH)
+                lambda_sigreg / Float64(Self.CONFIG.BATCH)
             )
         ctx.enqueue_copy(self.sigreg_grad_out_buf, sigreg_grad_out_host)
 
         # Gradient buffers (device).
-        self.grad_pred_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.H * Self.EMB)
+        self.grad_pred_buf = ctx.enqueue_create_buffer[dtype](Self.CONFIG.BATCH * Self.CONFIG.H * Self.EMB)
         self.grad_pred_raw_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB)
         self.grad_x_prev_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB)
         self.grad_x_prev_pe_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB)
         self.grad_c_buf = ctx.enqueue_create_buffer[dtype](Self.BTH * Self.EMB)
-        self.grad_emb_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.T * Self.EMB)
-        self.grad_act_emb_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.T * Self.EMB)
-        self.grad_actions_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.T * Self.ACT)
+        self.grad_emb_buf = ctx.enqueue_create_buffer[dtype](Self.CONFIG.BATCH * Self.CONFIG.T * Self.EMB)
+        self.grad_act_emb_buf = ctx.enqueue_create_buffer[dtype](Self.CONFIG.BATCH * Self.CONFIG.T * Self.EMB)
+        self.grad_actions_buf = ctx.enqueue_create_buffer[dtype](Self.CONFIG.BATCH * Self.CONFIG.T * Self.CONFIG.ACT)
         self.grad_pixels_buf = ctx.enqueue_create_buffer[dtype](Self.BT * Self.IMG_DIM)
 
         # Pinned host buffers for sampled data + per-step loss compute.
@@ -471,21 +459,21 @@ struct LeWMGPUState[
         self.pixels_u8_buf = ctx.enqueue_create_buffer[DType.uint8](
             Self.BT * Self.IMG_DIM
         )
-        self.actions_host = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.T * Self.ACT)
-        self.pred_host = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.H * Self.EMB)
-        self.target_host = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.H * Self.EMB)
+        self.actions_host = ctx.enqueue_create_host_buffer[dtype](Self.CONFIG.BATCH * Self.CONFIG.T * Self.CONFIG.ACT)
+        self.pred_host = ctx.enqueue_create_host_buffer[dtype](Self.CONFIG.BATCH * Self.CONFIG.H * Self.EMB)
+        self.target_host = ctx.enqueue_create_host_buffer[dtype](Self.CONFIG.BATCH * Self.CONFIG.H * Self.EMB)
         self.grad_pred_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.BATCH * Self.H * Self.EMB
+            Self.CONFIG.BATCH * Self.CONFIG.H * Self.EMB
         )
         self.sigreg_out_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.BATCH * Self.SIG.OUT_DIM
+            Self.CONFIG.BATCH * Self.SIG.OUT_DIM
         )
-        # emb on device has shape (BT, Self.EMB) — aliased as (Self.BATCH, Self.T*Self.EMB) for the
+        # emb on device has shape (BT, Self.EMB) — aliased as (Self.CONFIG.BATCH, Self.CONFIG.T*Self.EMB) for the
         # target slice. Same memory, single host buffer.
         self.emb_host = ctx.enqueue_create_host_buffer[dtype](Self.BT * Self.EMB)
 
         # Small scratch (BATCH*T*ACT floats — a few KB) for H6's expert-action snapshot.
-        self.actions_sample = alloc[Scalar[dtype]](Self.BATCH * Self.T * Self.ACT)
+        self.actions_sample = alloc[Scalar[dtype]](Self.CONFIG.BATCH * Self.CONFIG.T * Self.CONFIG.ACT)
 
     def __del__(deinit self):
         self.actions_sample.free()
@@ -510,7 +498,7 @@ struct LeWMGPUState[
         var total_params = (
             self.enc_state.PARAM_SIZE + self.ae_state.PARAM_SIZE
             + self.pos_state.PARAM_SIZE + self.proj_state.PARAM_SIZE
-            + Self.DEPTH * (
+            + Self.CONFIG.DEPTH * (
                 self.adaln_states[0].PARAM_SIZE
                 + self.msa_states[0].PARAM_SIZE
                 + self.mlp_states[0].PARAM_SIZE
@@ -519,7 +507,7 @@ struct LeWMGPUState[
         var total_opt_state = (
             self.enc_state.OPT_STATE_SIZE + self.ae_state.OPT_STATE_SIZE
             + self.pos_state.OPT_STATE_SIZE + self.proj_state.OPT_STATE_SIZE
-            + Self.DEPTH * (
+            + Self.CONFIG.DEPTH * (
                 self.adaln_states[0].OPT_STATE_SIZE
                 + self.msa_states[0].OPT_STATE_SIZE
                 + self.mlp_states[0].OPT_STATE_SIZE
@@ -532,7 +520,7 @@ struct LeWMGPUState[
         content += _write_gpu_net_sections(self.ae_state, ctx, String("ae_"))
         content += _write_gpu_net_sections(self.pos_state, ctx, String("pos_"))
         content += _write_gpu_net_sections(self.proj_state, ctx, String("proj_"))
-        for i in range(Self.DEPTH):
+        for i in range(Self.CONFIG.DEPTH):
             content += _write_gpu_net_sections(
                 self.adaln_states[i], ctx, String("adaln") + String(i) + "_"
             )
@@ -568,7 +556,7 @@ struct LeWMGPUState[
         _read_gpu_net_sections(self.ae_state, content, ctx, String("ae_"))
         _read_gpu_net_sections(self.pos_state, content, ctx, String("pos_"))
         _read_gpu_net_sections(self.proj_state, content, ctx, String("proj_"))
-        for i in range(Self.DEPTH):
+        for i in range(Self.CONFIG.DEPTH):
             _read_gpu_net_sections(
                 self.adaln_states[i], content, ctx,
                 String("adaln") + String(i) + "_",
@@ -586,43 +574,22 @@ struct LeWMGPUState[
 
 
 struct LeWMTrainer[
-    BATCH: Int,
-    T: Int,
-    H: Int,
-    N_PREDS: Int,
-    IN_CH: Int,
-    IMG: Int,
-    PATCH: Int,
-    N_PATCHES: Int,
-    HIDDEN: Int,
-    ENC_HEADS: Int,
-    ENC_LAYERS: Int,
-    EMB: Int,
-    PROJ_H: Int,
-    ACT: Int,
-    SMOOTHED: Int,
-    PRED_HEADS: Int,
-    PRED_FF: Int,
-    DEPTH: Int = 1,
-    SIG_NUM_PROJ: Int = 1024,
-    SIG_KNOTS: Int = 17,
+    CONFIG: LeWMConfig,
     BUF: LeWMBuffer = PongBuffer,
 ]:
     """Owns hyperparams + per-run EMAs + a clip buffer; methods consume a
-    `LeWMGPUState` for the GPU-resident data.
+    `LeWMGPUState[CONFIG]` for the GPU-resident data.
 
-    `BUF` is the buffer type — must implement
-    `sample_batch_fp32(B, T, pixels_out, actions_out) raises` and expose
-    `n_frames: Int`. Concrete instances: `PongBuffer` (Atari-style
-    pixel-obs replay) and `LewmPushTSampler` (HDF5-backed expert clips
-    for the LeWM paper recipe).
+    `CONFIG` carries the 20 dimensional parameters + swappable
+    `EncoderModel` type. `BUF` is the buffer type — must implement
+    `sample_batch_uint8(B, T, pixels_u8_out, actions_out) raises` and
+    expose `INPUT_LAYOUT_HWC: Bool`. Concrete instances: `PongBuffer`
+    (Atari-style pixel-obs replay) and `LewmPushTSampler` (HDF5-backed
+    expert clips for the LeWM paper recipe).
     """
 
-    comptime GPUState = LeWMGPUState[
-        Self.BATCH, Self.T, Self.H, Self.N_PREDS, Self.IN_CH, Self.IMG, Self.PATCH, Self.N_PATCHES, Self.HIDDEN,
-        Self.ENC_HEADS, Self.ENC_LAYERS, Self.EMB, Self.PROJ_H, Self.ACT, Self.SMOOTHED, Self.PRED_HEADS,
-        Self.PRED_FF, Self.DEPTH, Self.SIG_NUM_PROJ, Self.SIG_KNOTS,
-    ]
+    comptime GPUState = LeWMGPUState[Self.CONFIG]
+    comptime EMB: Int = Self.GPUState.EMB
 
     # Buffer + hyperparams
     var buf: Self.BUF
@@ -715,7 +682,7 @@ struct LeWMTrainer[
         self.n_timed = 0
         self.time_phases = time_phases
 
-        self.loss_scale = Float64(Self.BATCH * Self.H * Self.EMB)
+        self.loss_scale = Float64(Self.CONFIG.BATCH * Self.CONFIG.H * Self.EMB)
         self.inv_scale = Scalar[dtype](2.0 / self.loss_scale)
 
     def _sample_and_upload_pixels(
@@ -733,8 +700,8 @@ struct LeWMTrainer[
         (snapshots actions before shuffle).
         """
         self.buf.sample_batch_uint8(
-            Self.BATCH,
-            Self.T,
+            Self.CONFIG.BATCH,
+            Self.CONFIG.T,
             state.pixels_u8_host.unsafe_ptr(),
             state.actions_host.unsafe_ptr(),
         )
@@ -750,15 +717,15 @@ struct LeWMTrainer[
         ](state.pixels_buf)
         ctx.enqueue_function[
             pixels_uint8_to_fp32_kernel[
-                BT, Self.IN_CH, Self.IMG, Self.BUF.INPUT_LAYOUT_HWC,
+                BT, Self.CONFIG.IN_CH, Self.CONFIG.IMG, Self.BUF.INPUT_LAYOUT_HWC,
             ],
         ](
             src_u8_t,
             dst_fp32_t,
             grid_dim=(
                 ceildiv(BT, TPB_X),
-                ceildiv(Self.IN_CH, TPB_Y),
-                ceildiv(Self.IMG * Self.IMG, TPB_Z),
+                ceildiv(Self.CONFIG.IN_CH, TPB_Y),
+                ceildiv(Self.CONFIG.IMG * Self.CONFIG.IMG, TPB_Z),
             ),
             block_dim=(TPB_X, TPB_Y, TPB_Z),
         )
@@ -787,7 +754,7 @@ struct LeWMTrainer[
             dtype, Layout.row_major(BT, IMG_DIM), MutAnyOrigin
         ](state.pixels_buf)
         var actions_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.ACT), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.CONFIG.ACT), MutAnyOrigin
         ](state.actions_buf)
         var emb_t = LayoutTensor[
             dtype, Layout.row_major(BT, Self.EMB), MutAnyOrigin
@@ -797,26 +764,26 @@ struct LeWMTrainer[
         ](state.enc_cache_buf)
 
         var act_emb_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.EMB), MutAnyOrigin
         ](state.act_emb_buf)
         var ae_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, AE.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, AE.CACHE_SIZE), MutAnyOrigin
         ](state.ae_cache_buf)
 
         var x_prev_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.x_prev_buf)
         var x_prev_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.x_prev_buf)
         var x_prev_pe_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.x_prev_pe_buf)
         var x_prev_pe_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.x_prev_pe_buf)
         var pos_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, POS.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, POS.CACHE_SIZE), MutAnyOrigin
         ](state.pos_cache_buf)
         var c_in_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
@@ -826,13 +793,13 @@ struct LeWMTrainer[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.pred_raw_buf)
         var pred_raw_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.pred_raw_buf)
         var pred_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.pred_out_buf)
         var proj_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, PROJ.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, PROJ.CACHE_SIZE), MutAnyOrigin
         ](state.proj_cache_buf)
 
         # Per-layer cache LayoutTensor views are created inside the
@@ -889,60 +856,60 @@ struct LeWMTrainer[
         ](state.grad_x_mid_buf)
 
         var grad_pred_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.grad_pred_buf)
         var grad_pred_raw_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.grad_pred_raw_buf)
         var grad_pred_raw_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.grad_pred_raw_buf)
         var grad_x_prev_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.grad_x_prev_buf)
         var grad_x_prev_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.grad_x_prev_buf)
         var grad_x_prev_pe_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.grad_x_prev_pe_buf)
         var grad_x_prev_pe_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.grad_x_prev_pe_buf)
         var grad_c_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.grad_c_buf)
         var grad_emb_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.EMB), MutAnyOrigin
         ](state.grad_emb_buf)
         var grad_emb_bt_t = LayoutTensor[
             dtype, Layout.row_major(BT, Self.EMB), MutAnyOrigin
         ](state.grad_emb_buf)
         var grad_act_emb_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.EMB), MutAnyOrigin
         ](state.grad_act_emb_buf)
         var grad_actions_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.ACT), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.CONFIG.ACT), MutAnyOrigin
         ](state.grad_actions_buf)
         var grad_pixels_t = LayoutTensor[
             dtype, Layout.row_major(BT, IMG_DIM), MutAnyOrigin
         ](state.grad_pixels_buf)
 
-        # SIGReg views (treat emb / grad_emb as (Self.BATCH, Self.T*Self.EMB) — same memory).
+        # SIGReg views (treat emb / grad_emb as (Self.CONFIG.BATCH, Self.CONFIG.T*Self.EMB) — same memory).
         var emb_bte_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.EMB), MutAnyOrigin
         ](state.emb_buf)
         var sigreg_out_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, SIG.OUT_DIM), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, SIG.OUT_DIM), MutAnyOrigin
         ](state.sigreg_out_buf)
         var sigreg_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, SIG.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, SIG.CACHE_SIZE), MutAnyOrigin
         ](state.sigreg_cache_buf)
         var sigreg_grad_out_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, SIG.OUT_DIM), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, SIG.OUT_DIM), MutAnyOrigin
         ](state.sigreg_grad_out_buf)
         var sigreg_grad_emb_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.EMB), MutAnyOrigin
         ](state.sigreg_grad_emb_buf)
         var empty_params = LayoutTensor[
             dtype, Layout.row_major(SIG.PARAM_SIZE), MutAnyOrigin
@@ -954,8 +921,8 @@ struct LeWMTrainer[
         # Sample uint8 pixels into pinned host buffer, upload + convert on GPU.
         var ts_sample_start = perf_counter_ns()
         self.buf.sample_batch_uint8(
-            Self.BATCH,
-            Self.T,
+            Self.CONFIG.BATCH,
+            Self.CONFIG.T,
             state.pixels_u8_host.unsafe_ptr(),
             state.actions_host.unsafe_ptr(),
         )
@@ -972,15 +939,15 @@ struct LeWMTrainer[
         ](state.pixels_buf)
         ctx.enqueue_function[
             pixels_uint8_to_fp32_kernel[
-                BT_LOCAL, Self.IN_CH, Self.IMG, Self.BUF.INPUT_LAYOUT_HWC,
+                BT_LOCAL, Self.CONFIG.IN_CH, Self.CONFIG.IMG, Self.BUF.INPUT_LAYOUT_HWC,
             ],
         ](
             src_u8_t,
             dst_fp32_t,
             grid_dim=(
                 ceildiv(BT_LOCAL, TPB_X),
-                ceildiv(Self.IN_CH, TPB_Y),
-                ceildiv(Self.IMG * Self.IMG, TPB_Z),
+                ceildiv(Self.CONFIG.IN_CH, TPB_Y),
+                ceildiv(Self.CONFIG.IMG * Self.CONFIG.IMG, TPB_Z),
             ),
             block_dim=(TPB_X, TPB_Y, TPB_Z),
         )
@@ -991,7 +958,7 @@ struct LeWMTrainer[
         state.ae_state.zero_grads(ctx)
         state.pos_state.zero_grads(ctx)
         state.proj_state.zero_grads(ctx)
-        for layer_idx in range(Self.DEPTH):
+        for layer_idx in range(Self.CONFIG.DEPTH):
             state.adaln_states[layer_idx].zero_grads(ctx)
             state.msa_states[layer_idx].zero_grads(ctx)
             state.mlp_states[layer_idx].zero_grads(ctx)
@@ -1003,50 +970,50 @@ struct LeWMTrainer[
             enc_cache_t, state.enc_ws_buf,
         )
         # Action embedder forward.
-        AE.forward_gpu[Self.BATCH, dtype](
+        AE.forward_gpu[Self.CONFIG.BATCH, dtype](
             ctx, act_emb_t, actions_t,
             state.ae_state.params_view(), state.ae_state.model_state_view(),
             ae_cache_t, state.ae_ws_buf,
         )
 
-        # Slice first Self.H tokens of emb + act_emb into x_prev_buf + c_in_buf.
+        # Slice first Self.CONFIG.H tokens of emb + act_emb into x_prev_buf + c_in_buf.
         var act_emb_bt_t = LayoutTensor[
             dtype, Layout.row_major(BT, Self.EMB), MutAnyOrigin
         ](state.act_emb_buf)
         ctx.enqueue_function[
-            slice_h_kernel[Self.BATCH, Self.T, Self.H, Self.EMB],
+            slice_h_kernel[Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB],
         ](
             emb_t, x_prev_t,
             grid_dim=(
-                ceildiv(Self.BATCH, TPB_X),
-                ceildiv(Self.H, TPB_Y),
+                ceildiv(Self.CONFIG.BATCH, TPB_X),
+                ceildiv(Self.CONFIG.H, TPB_Y),
                 ceildiv(Self.EMB, TPB_Z),
             ),
             block_dim=(TPB_X, TPB_Y, TPB_Z),
         )
         ctx.enqueue_function[
-            slice_h_kernel[Self.BATCH, Self.T, Self.H, Self.EMB],
+            slice_h_kernel[Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB],
         ](
             act_emb_bt_t, c_in_t,
             grid_dim=(
-                ceildiv(Self.BATCH, TPB_X),
-                ceildiv(Self.H, TPB_Y),
+                ceildiv(Self.CONFIG.BATCH, TPB_X),
+                ceildiv(Self.CONFIG.H, TPB_Y),
                 ceildiv(Self.EMB, TPB_Z),
             ),
             block_dim=(TPB_X, TPB_Y, TPB_Z),
         )
 
-        # Pos embed: x_prev_pe = x_prev + pos_bias (broadcast over Self.BATCH).
-        POS.forward_gpu[Self.BATCH, dtype](
+        # Pos embed: x_prev_pe = x_prev + pos_bias (broadcast over Self.CONFIG.BATCH).
+        POS.forward_gpu[Self.CONFIG.BATCH, dtype](
             ctx, x_prev_pe_bh_t, x_prev_bh_t,
             state.pos_state.params_view(), state.pos_state.model_state_view(),
             pos_cache_t, state.pos_ws_buf,
         )
 
-        # cond_block stack: Self.DEPTH dual-branch (MSA + MLP) layers via helper.
-        for d in range(Self.DEPTH):
-            run_cond_layer_forward[Self.BATCH, Self.H, Self.EMB, Self.PRED_HEADS, Self.PRED_FF](
-                ctx, d, Self.DEPTH,
+        # cond_block stack: Self.CONFIG.DEPTH dual-branch (MSA + MLP) layers via helper.
+        for d in range(Self.CONFIG.DEPTH):
+            run_cond_layer_forward[Self.CONFIG.BATCH, Self.CONFIG.H, Self.EMB, Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF](
+                ctx, d, Self.CONFIG.DEPTH,
                 state.x_prev_pe_buf, state.x_inter_buf, state.pred_raw_buf,
                 c_in_t,
                 state.adaln_states[d].params_view(),
@@ -1064,16 +1031,16 @@ struct LeWMTrainer[
                 state.adaln_ws_buf, state.msa_ws_buf, state.mlp_ws_buf,
             )
 
-        # PredProj: (Self.BATCH, Self.H*Self.EMB) → (Self.BATCH, Self.H*Self.EMB).
-        PROJ.forward_gpu[Self.BATCH, dtype](
+        # PredProj: (Self.CONFIG.BATCH, Self.CONFIG.H*Self.EMB) → (Self.CONFIG.BATCH, Self.CONFIG.H*Self.EMB).
+        PROJ.forward_gpu[Self.CONFIG.BATCH, dtype](
             ctx, pred_t, pred_raw_bh_t,
             state.proj_state.params_view(), state.proj_state.model_state_view(),
             proj_cache_t, state.proj_ws_buf,
         )
 
-        # SIGReg forward over emb viewed as (Self.BATCH, Self.T*Self.EMB). Output is the
-        # statistic replicated across Self.BATCH slots (we read [0] for logging).
-        SIG.eval_gpu[Self.BATCH, dtype](
+        # SIGReg forward over emb viewed as (Self.CONFIG.BATCH, Self.CONFIG.T*Self.EMB). Output is the
+        # statistic replicated across Self.CONFIG.BATCH slots (we read [0] for logging).
+        SIG.eval_gpu[Self.CONFIG.BATCH, dtype](
             ctx, sigreg_out_t, emb_bte_t,
             empty_params, sigreg_cache_t, state.sigreg_ws_buf.unsafe_ptr(),
         )
@@ -1084,27 +1051,27 @@ struct LeWMTrainer[
         ctx.enqueue_copy(state.pred_host, state.pred_out_buf)
         # Download all of emb (BT, Self.EMB) — used for both target slice and probes.
         ctx.enqueue_copy(state.emb_host, state.emb_buf)
-        # Download SIGReg stat (tiny — Self.BATCH floats) for logging.
+        # Download SIGReg stat (tiny — Self.CONFIG.BATCH floats) for logging.
         ctx.enqueue_copy(state.sigreg_out_host, state.sigreg_out_buf)
         ctx.synchronize()
 
         var pred_loss: Float64 = 0.0
-        for b in range(Self.BATCH):
-            for i in range(Self.H * Self.EMB):
-                var p = Float64(state.pred_host[b * Self.H * Self.EMB + i])
-                # Target = emb[b, Self.N_PREDS .. Self.N_PREDS+Self.H, :], flat index:
-                #   b * Self.T * Self.EMB + Self.N_PREDS * Self.EMB + i
+        for b in range(Self.CONFIG.BATCH):
+            for i in range(Self.CONFIG.H * Self.EMB):
+                var p = Float64(state.pred_host[b * Self.CONFIG.H * Self.EMB + i])
+                # Target = emb[b, Self.CONFIG.N_PREDS .. Self.CONFIG.N_PREDS+Self.CONFIG.H, :], flat index:
+                #   b * Self.CONFIG.T * Self.EMB + Self.CONFIG.N_PREDS * Self.EMB + i
                 var tgt = Float64(
-                    state.emb_host[b * Self.T * Self.EMB + Self.N_PREDS * Self.EMB + i]
+                    state.emb_host[b * Self.CONFIG.T * Self.EMB + Self.CONFIG.N_PREDS * Self.EMB + i]
                 )
                 var diff = p - tgt
                 pred_loss += diff * diff
-                state.grad_pred_host[b * Self.H * Self.EMB + i] = self.inv_scale * (
+                state.grad_pred_host[b * Self.CONFIG.H * Self.EMB + i] = self.inv_scale * (
                     Scalar[dtype](p) - Scalar[dtype](tgt)
                 )
         pred_loss /= self.loss_scale
 
-        # Read SIGReg stat (replicated across Self.BATCH, take [0]).
+        # Read SIGReg stat (replicated across Self.CONFIG.BATCH, take [0]).
         var sigreg_stat = Float64(state.sigreg_out_host[0])
 
         if self.loss_first < 0.0:
@@ -1181,7 +1148,7 @@ struct LeWMTrainer[
         var proj_g = state.proj_state.grads_view()
 
         # PROJ.backward
-        PROJ.backward_gpu[Self.BATCH, dtype](
+        PROJ.backward_gpu[Self.CONFIG.BATCH, dtype](
             ctx, grad_pred_raw_bh_t, grad_pred_t,
             state.proj_state.params_view(), state.proj_state.model_state_view(),
             proj_cache_t, proj_g, state.proj_ws_buf,
@@ -1190,14 +1157,14 @@ struct LeWMTrainer[
         # cond_block stack backward — reverse depth loop via helper.
         # grad_c is accumulated across layers (c is shared input).
         ctx.enqueue_memset(state.grad_c_buf, 0)
-        for d_rev in range(Self.DEPTH):
-            var d = Self.DEPTH - 1 - d_rev
+        for d_rev in range(Self.CONFIG.DEPTH):
+            var d = Self.CONFIG.DEPTH - 1 - d_rev
             # Bind per-layer grad views to vars (mut args can't take temps).
             var adaln_g_d = state.adaln_states[d].grads_view()
             var msa_g_d = state.msa_states[d].grads_view()
             var mlp_g_d = state.mlp_states[d].grads_view()
-            run_cond_layer_backward[Self.BATCH, Self.H, Self.EMB, Self.PRED_HEADS, Self.PRED_FF](
-                ctx, d, Self.DEPTH,
+            run_cond_layer_backward[Self.CONFIG.BATCH, Self.CONFIG.H, Self.EMB, Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF](
+                ctx, d, Self.CONFIG.DEPTH,
                 state.grad_pred_raw_buf, state.grad_x_inter_buf, state.grad_x_prev_pe_buf,
                 state.adaln_states[d].params_view(),
                 state.adaln_states[d].model_state_view(),
@@ -1226,13 +1193,13 @@ struct LeWMTrainer[
             )
 
         # POS.backward
-        POS.backward_gpu[Self.BATCH, dtype](
+        POS.backward_gpu[Self.CONFIG.BATCH, dtype](
             ctx, grad_x_prev_bh_t, grad_x_prev_pe_bh_t,
             state.pos_state.params_view(), state.pos_state.model_state_view(),
             pos_cache_t, pos_g, state.pos_ws_buf,
         )
 
-        # Route grad_x_prev → grad_emb's first Self.H tokens, grad_c → grad_act_emb's.
+        # Route grad_x_prev → grad_emb's first Self.CONFIG.H tokens, grad_c → grad_act_emb's.
         # Target slice gradient is FILLED below (no stop-grad — paper recipe).
         ctx.enqueue_memset(state.grad_emb_buf, 0)
         ctx.enqueue_memset(state.grad_act_emb_buf, 0)
@@ -1244,23 +1211,23 @@ struct LeWMTrainer[
             dtype, Layout.row_major(BT, Self.EMB), MutAnyOrigin
         ](state.grad_act_emb_buf)
         ctx.enqueue_function[
-            scatter_h_kernel[Self.BATCH, Self.T, Self.H, Self.EMB],
+            scatter_h_kernel[Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB],
         ](
             grad_x_prev_t, grad_emb_bte_to_bt,
             grid_dim=(
-                ceildiv(Self.BATCH, TPB_X),
-                ceildiv(Self.H, TPB_Y),
+                ceildiv(Self.CONFIG.BATCH, TPB_X),
+                ceildiv(Self.CONFIG.H, TPB_Y),
                 ceildiv(Self.EMB, TPB_Z),
             ),
             block_dim=(TPB_X, TPB_Y, TPB_Z),
         )
         ctx.enqueue_function[
-            scatter_h_kernel[Self.BATCH, Self.T, Self.H, Self.EMB],
+            scatter_h_kernel[Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB],
         ](
             grad_c_t, grad_act_emb_bte_to_bt,
             grid_dim=(
-                ceildiv(Self.BATCH, TPB_X),
-                ceildiv(Self.H, TPB_Y),
+                ceildiv(Self.CONFIG.BATCH, TPB_X),
+                ceildiv(Self.CONFIG.H, TPB_Y),
                 ceildiv(Self.EMB, TPB_Z),
             ),
             block_dim=(TPB_X, TPB_Y, TPB_Z),
@@ -1268,23 +1235,23 @@ struct LeWMTrainer[
 
         # Drop stop-grad: scatter -grad_pred into target slice of grad_emb.
         # Math: pred_loss = (pred - tgt)^2 / N → d/d tgt = -grad_pred.
-        # Target tokens live at b * Self.T*Self.EMB + Self.N_PREDS*Self.EMB + [0..H*Self.EMB).
+        # Target tokens live at b * Self.CONFIG.T*Self.EMB + Self.CONFIG.N_PREDS*Self.EMB + [0..H*Self.EMB).
         comptime TPB_TS_X = 4
         comptime TPB_TS_Y = 64
         ctx.enqueue_function[
-            scatter_target_neg_kernel[Self.BATCH, Self.T, Self.H, Self.N_PREDS, Self.EMB],
+            scatter_target_neg_kernel[Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.CONFIG.N_PREDS, Self.EMB],
         ](
             grad_pred_t, grad_emb_t,
             grid_dim=(
-                ceildiv(Self.BATCH, TPB_TS_X),
-                ceildiv(Self.H * Self.EMB, TPB_TS_Y),
+                ceildiv(Self.CONFIG.BATCH, TPB_TS_X),
+                ceildiv(Self.CONFIG.H * Self.EMB, TPB_TS_Y),
             ),
             block_dim=(TPB_TS_X, TPB_TS_Y),
         )
 
-        # SIGReg vjp: produces sigreg_grad_emb (Self.BATCH, Self.T*Self.EMB) from
+        # SIGReg vjp: produces sigreg_grad_emb (Self.CONFIG.BATCH, Self.CONFIG.T*Self.EMB) from
         # `sigreg_grad_out_t` seed = λ/B (set once at init).
-        SIG.vjp_gpu[Self.BATCH, dtype](
+        SIG.vjp_gpu[Self.CONFIG.BATCH, dtype](
             ctx, sigreg_grad_out_t, sigreg_grad_emb_t,
             empty_params, sigreg_cache_t, empty_grad_params,
             state.sigreg_ws_buf.unsafe_ptr(),
@@ -1293,18 +1260,18 @@ struct LeWMTrainer[
         comptime TPB_AC_X = 4
         comptime TPB_AC_Y = 64
         ctx.enqueue_function[
-            accumulate_emb_kernel[Self.BATCH, Self.T, Self.EMB],
+            accumulate_emb_kernel[Self.CONFIG.BATCH, Self.CONFIG.T, Self.EMB],
         ](
             sigreg_grad_emb_t, grad_emb_t,
             grid_dim=(
-                ceildiv(Self.BATCH, TPB_AC_X),
-                ceildiv(Self.T * Self.EMB, TPB_AC_Y),
+                ceildiv(Self.CONFIG.BATCH, TPB_AC_X),
+                ceildiv(Self.CONFIG.T * Self.EMB, TPB_AC_Y),
             ),
             block_dim=(TPB_AC_X, TPB_AC_Y),
         )
 
         # AE.backward
-        AE.backward_gpu[Self.BATCH, dtype](
+        AE.backward_gpu[Self.CONFIG.BATCH, dtype](
             ctx, grad_actions_t, grad_act_emb_t,
             state.ae_state.params_view(), state.ae_state.model_state_view(),
             ae_cache_t, ae_g, state.ae_ws_buf,
@@ -1317,12 +1284,12 @@ struct LeWMTrainer[
             enc_cache_t, enc_g, state.enc_ws_buf,
         )
 
-        # Optimizer step — shared models + per-layer (ADALN/MSA/MLP × Self.DEPTH).
+        # Optimizer step — shared models + per-layer (ADALN/MSA/MLP × Self.CONFIG.DEPTH).
         state.enc_state.optimizer_step(ctx)
         state.ae_state.optimizer_step(ctx)
         state.pos_state.optimizer_step(ctx)
         state.proj_state.optimizer_step(ctx)
-        for layer_idx in range(Self.DEPTH):
+        for layer_idx in range(Self.CONFIG.DEPTH):
             state.adaln_states[layer_idx].optimizer_step(ctx)
             state.msa_states[layer_idx].optimizer_step(ctx)
             state.mlp_states[layer_idx].optimizer_step(ctx)
@@ -1390,49 +1357,35 @@ struct LeWMTrainer[
         on mismatch, plus a few useful diagnostics.
         """
         var meta = List[String]()
-        meta.append("BATCH=" + String(Self.BATCH))
-        meta.append("T=" + String(Self.T))
-        meta.append("H=" + String(Self.H))
-        meta.append("N_PREDS=" + String(Self.N_PREDS))
-        meta.append("IN_CH=" + String(Self.IN_CH))
-        meta.append("IMG=" + String(Self.IMG))
-        meta.append("PATCH=" + String(Self.PATCH))
-        meta.append("N_PATCHES=" + String(Self.N_PATCHES))
-        meta.append("HIDDEN=" + String(Self.HIDDEN))
-        meta.append("ENC_HEADS=" + String(Self.ENC_HEADS))
-        meta.append("ENC_LAYERS=" + String(Self.ENC_LAYERS))
+        meta.append("BATCH=" + String(Self.CONFIG.BATCH))
+        meta.append("T=" + String(Self.CONFIG.T))
+        meta.append("H=" + String(Self.CONFIG.H))
+        meta.append("N_PREDS=" + String(Self.CONFIG.N_PREDS))
+        meta.append("IN_CH=" + String(Self.CONFIG.IN_CH))
+        meta.append("IMG=" + String(Self.CONFIG.IMG))
+        meta.append("PATCH=" + String(Self.CONFIG.PATCH))
+        meta.append("N_PATCHES=" + String(Self.CONFIG.N_PATCHES))
+        meta.append("HIDDEN=" + String(Self.CONFIG.HIDDEN))
+        meta.append("ENC_HEADS=" + String(Self.CONFIG.ENC_HEADS))
+        meta.append("ENC_LAYERS=" + String(Self.CONFIG.ENC_LAYERS))
         meta.append("EMB=" + String(Self.EMB))
-        meta.append("PROJ_H=" + String(Self.PROJ_H))
-        meta.append("ACT=" + String(Self.ACT))
-        meta.append("SMOOTHED=" + String(Self.SMOOTHED))
-        meta.append("PRED_HEADS=" + String(Self.PRED_HEADS))
-        meta.append("PRED_FF=" + String(Self.PRED_FF))
-        meta.append("DEPTH=" + String(Self.DEPTH))
-        meta.append("SIG_NUM_PROJ=" + String(Self.SIG_NUM_PROJ))
-        meta.append("SIG_KNOTS=" + String(Self.SIG_KNOTS))
+        meta.append("PROJ_H=" + String(Self.CONFIG.PROJ_H))
+        meta.append("ACT=" + String(Self.CONFIG.ACT))
+        meta.append("SMOOTHED=" + String(Self.CONFIG.SMOOTHED))
+        meta.append("PRED_HEADS=" + String(Self.CONFIG.PRED_HEADS))
+        meta.append("PRED_FF=" + String(Self.CONFIG.PRED_FF))
+        meta.append("DEPTH=" + String(Self.CONFIG.DEPTH))
+        meta.append("SIG_NUM_PROJ=" + String(Self.CONFIG.SIG_NUM_PROJ))
+        meta.append("SIG_KNOTS=" + String(Self.CONFIG.SIG_KNOTS))
         meta.append("steps_completed=" + String(steps_completed))
         meta.append("loss_last=" + String(self.loss_last))
         meta.append("pred_ema=" + String(self.pred_ema))
         meta.append("var_min_ema=" + String(self.var_min_ema))
         return meta^
 
-    def _make_eval_suite(self) -> LeWMEvalSuite[
-        Self.BATCH, Self.T, Self.H, Self.N_PREDS,
-        Self.IN_CH, Self.IMG, Self.PATCH, Self.N_PATCHES,
-        Self.HIDDEN, Self.ENC_HEADS, Self.ENC_LAYERS,
-        Self.EMB, Self.PROJ_H, Self.ACT, Self.SMOOTHED,
-        Self.PRED_HEADS, Self.PRED_FF,
-        Self.DEPTH, Self.SIG_NUM_PROJ, Self.SIG_KNOTS,
-    ]:
+    def _make_eval_suite(self) -> LeWMEvalSuite[Self.CONFIG]:
         """Construct a `LeWMEvalSuite` forwarding the trainer's eval config."""
-        return LeWMEvalSuite[
-            Self.BATCH, Self.T, Self.H, Self.N_PREDS,
-            Self.IN_CH, Self.IMG, Self.PATCH, Self.N_PATCHES,
-            Self.HIDDEN, Self.ENC_HEADS, Self.ENC_LAYERS,
-            Self.EMB, Self.PROJ_H, Self.ACT, Self.SMOOTHED,
-            Self.PRED_HEADS, Self.PRED_FF,
-            Self.DEPTH, Self.SIG_NUM_PROJ, Self.SIG_KNOTS,
-        ](
+        return LeWMEvalSuite[Self.CONFIG](
             self.eval_steps, self.eval_samples, self.eval_seed,
             self.mpc_horizon, self.cem_iters, self.cem_samples,
             self.cem_topk, self.cem_smoothing,
@@ -1472,12 +1425,12 @@ struct LeWMTrainer[
             " MSA.PARAM=", Self.GPUState.MSA.PARAM_SIZE,
             " MLP.PARAM=", Self.GPUState.MLP.PARAM_SIZE,
             " PROJ.PARAM=", Self.GPUState.PROJ.PARAM_SIZE,
-            " DEPTH=", Self.DEPTH,
+            " DEPTH=", Self.CONFIG.DEPTH,
         )
         var total_params = (
             Self.GPUState.ENC.PARAM_SIZE + Self.GPUState.AE.PARAM_SIZE
             + Self.GPUState.POS.PARAM_SIZE + Self.GPUState.PROJ.PARAM_SIZE
-            + Self.DEPTH * (Self.GPUState.ADALN.PARAM_SIZE
+            + Self.CONFIG.DEPTH * (Self.GPUState.ADALN.PARAM_SIZE
                        + Self.GPUState.MSA.PARAM_SIZE
                        + Self.GPUState.MLP.PARAM_SIZE)
         )
@@ -1546,28 +1499,7 @@ struct LeWMTrainer[
         suite.run_all(state, self.buf, ctx)
 
 
-def train_lewm_offline_gpu[
-    BATCH: Int,
-    T: Int,
-    H: Int,
-    N_PREDS: Int,
-    IN_CH: Int,
-    IMG: Int,
-    PATCH: Int,
-    N_PATCHES: Int,
-    HIDDEN: Int,
-    ENC_HEADS: Int,
-    ENC_LAYERS: Int,
-    EMB: Int,
-    PROJ_H: Int,
-    ACT: Int,
-    SMOOTHED: Int,
-    PRED_HEADS: Int,
-    PRED_FF: Int,
-    DEPTH: Int = 1,
-    SIG_NUM_PROJ: Int = 1024,
-    SIG_KNOTS: Int = 17,
-](
+def train_lewm_offline_gpu[CONFIG: LeWMConfig](
     buffer_path: String,
     num_steps: Int,
     log_every: Int = 100,
@@ -1589,28 +1521,21 @@ def train_lewm_offline_gpu[
 ) raises:
     """LeWM offline GPU trainer entry point — Pong.
 
-    Constructs a `LeWMGPUState` + `LeWMTrainer[..., PongBuffer]` and
-    calls `trainer.run(...)`.
+    Constructs `LeWMGPUState[CONFIG]` + `LeWMTrainer[CONFIG, PongBuffer]`
+    and calls `trainer.run(...)`. `CONFIG` is a `LeWMConfig` (typically
+    `LeWMPongViTConfig[...]`).
 
     `checkpoint_path` (non-empty) enables periodic + final checkpoint
     writes, consumed by `eval_lewm_offline_gpu`. `checkpoint_every`
     controls intermediate cadence (0 = final-only).
     """
-    comptime assert DEPTH >= 1, "DEPTH must be >= 1"
+    comptime assert CONFIG.DEPTH >= 1, "CONFIG.DEPTH must be >= 1"
 
     var ctx = DeviceContext()
-    var state = LeWMGPUState[
-        BATCH, T, H, N_PREDS, IN_CH, IMG, PATCH, N_PATCHES, HIDDEN,
-        ENC_HEADS, ENC_LAYERS, EMB, PROJ_H, ACT, SMOOTHED, PRED_HEADS,
-        PRED_FF, DEPTH, SIG_NUM_PROJ, SIG_KNOTS,
-    ](ctx, lambda_sigreg)
+    var state = LeWMGPUState[CONFIG](ctx, lambda_sigreg)
     var buf = PongBuffer.load(buffer_path)
     print("Loaded Pong buffer:", buf.n_frames, "frames from", buffer_path)
-    var trainer = LeWMTrainer[
-        BATCH, T, H, N_PREDS, IN_CH, IMG, PATCH, N_PATCHES, HIDDEN,
-        ENC_HEADS, ENC_LAYERS, EMB, PROJ_H, ACT, SMOOTHED, PRED_HEADS,
-        PRED_FF, DEPTH, SIG_NUM_PROJ, SIG_KNOTS, PongBuffer,
-    ](
+    var trainer = LeWMTrainer[CONFIG, PongBuffer](
         buf^, lambda_sigreg, log_every, eval_steps, eval_samples,
         eval_seed, mpc_horizon, cem_iters, cem_samples, cem_topk,
         cem_smoothing, eval_shuffle_diag, eval_h7_closed_loop,
@@ -1620,26 +1545,7 @@ def train_lewm_offline_gpu[
 
 
 def train_lewm_offline_gpu_pusht[
-    BATCH: Int,
-    T: Int,
-    H: Int,
-    N_PREDS: Int,
-    IN_CH: Int,
-    IMG: Int,
-    PATCH: Int,
-    N_PATCHES: Int,
-    HIDDEN: Int,
-    ENC_HEADS: Int,
-    ENC_LAYERS: Int,
-    EMB: Int,
-    PROJ_H: Int,
-    ACT: Int,
-    SMOOTHED: Int,
-    PRED_HEADS: Int,
-    PRED_FF: Int,
-    DEPTH: Int = 1,
-    SIG_NUM_PROJ: Int = 1024,
-    SIG_KNOTS: Int = 17,
+    CONFIG: LeWMConfig,
     FRAMESKIP: Int = 5,
     ACTION_DIM: Int = 2,
 ](
@@ -1666,55 +1572,42 @@ def train_lewm_offline_gpu_pusht[
 
     First run auto-downloads `quentinll/lewm-pusht` (~13 GB compressed,
     decompresses to ~15-25 GB at `~/.cache/mojo_rl/lewm_pusht/`); set
-    `dataset_path` to point at an existing `.h5` to skip the download
-    (used by fixture tests).
+    `dataset_path` to point at an existing `.h5` to skip the download.
 
-    Comptime invariants enforced by `comptime assert`:
-      - `ACT == FRAMESKIP * ACTION_DIM` (paper's effective-action shape).
-      - `IN_CH == 3` (PushT pixels are RGB, no frame stack).
-      - `IMG * IMG * 3` matches the dataset's per-frame byte count.
-    The dataset's runtime ``num_steps`` is set to ``T`` so the window
-    buffer is sized correctly.
+    Comptime invariants enforced via `CONFIG`:
+      - `CONFIG.ACT == FRAMESKIP * ACTION_DIM` (paper's effective-action shape).
+      - `CONFIG.IN_CH == 3` (PushT pixels are RGB, no frame stack).
     """
-    comptime assert DEPTH >= 1, "DEPTH must be >= 1"
-    comptime assert ACT == FRAMESKIP * ACTION_DIM, \
-        "ACT must equal FRAMESKIP * ACTION_DIM (effective action dim)"
-    comptime assert IN_CH == 3, \
-        "PushT pixels are RGB; IN_CH must be 3"
+    comptime assert CONFIG.DEPTH >= 1, "CONFIG.DEPTH must be >= 1"
+    comptime assert CONFIG.ACT == FRAMESKIP * ACTION_DIM, \
+        "CONFIG.ACT must equal FRAMESKIP * ACTION_DIM"
+    comptime assert CONFIG.IN_CH == 3, \
+        "PushT pixels are RGB; CONFIG.IN_CH must be 3"
 
     var ctx = DeviceContext()
-    var state = LeWMGPUState[
-        BATCH, T, H, N_PREDS, IN_CH, IMG, PATCH, N_PATCHES, HIDDEN,
-        ENC_HEADS, ENC_LAYERS, EMB, PROJ_H, ACT, SMOOTHED, PRED_HEADS,
-        PRED_FF, DEPTH, SIG_NUM_PROJ, SIG_KNOTS,
-    ](ctx, lambda_sigreg)
+    var state = LeWMGPUState[CONFIG](ctx, lambda_sigreg)
     var sampler = LewmPushTSampler(
-        frameskip=FRAMESKIP, num_steps=T, path=dataset_path^,
+        frameskip=FRAMESKIP, num_steps=CONFIG.T, path=dataset_path^,
     )
-    if sampler.dataset.pixel_h != IMG or sampler.dataset.pixel_w != IMG:
+    if sampler.dataset.pixel_h != CONFIG.IMG or sampler.dataset.pixel_w != CONFIG.IMG:
         raise Error(
             "train_lewm_offline_gpu_pusht: dataset pixels are "
             + String(sampler.dataset.pixel_h)
             + "x"
             + String(sampler.dataset.pixel_w)
-            + " but trainer was built with IMG="
-            + String(IMG)
+            + " but CONFIG.IMG="
+            + String(CONFIG.IMG)
             + ". The `quentinll/lewm-pusht` H5 ships at 224x224; the LeWM"
-            + " paper config (config/train/lewm.yaml) uses IMG=224,"
-            + " PATCH=14 (256 patches)."
+            + " paper config uses IMG=224, PATCH=14 (256 patches)."
         )
     if sampler.dataset.action_dim != ACTION_DIM:
         raise Error(
             "train_lewm_offline_gpu_pusht: dataset action_dim="
             + String(sampler.dataset.action_dim)
-            + " but trainer was built with ACTION_DIM="
+            + " but ACTION_DIM="
             + String(ACTION_DIM)
         )
-    var trainer = LeWMTrainer[
-        BATCH, T, H, N_PREDS, IN_CH, IMG, PATCH, N_PATCHES, HIDDEN,
-        ENC_HEADS, ENC_LAYERS, EMB, PROJ_H, ACT, SMOOTHED, PRED_HEADS,
-        PRED_FF, DEPTH, SIG_NUM_PROJ, SIG_KNOTS, LewmPushTSampler,
-    ](
+    var trainer = LeWMTrainer[CONFIG, LewmPushTSampler](
         sampler^, lambda_sigreg, log_every, eval_steps, eval_samples,
         eval_seed, mpc_horizon, cem_iters, cem_samples, cem_topk,
         cem_smoothing, eval_shuffle_diag, eval_h7_closed_loop,
@@ -1723,28 +1616,7 @@ def train_lewm_offline_gpu_pusht[
     trainer.run(state, ctx, num_steps, rng_seed, checkpoint_path^, checkpoint_every)
 
 
-def eval_lewm_offline_gpu[
-    BATCH: Int,
-    T: Int,
-    H: Int,
-    N_PREDS: Int,
-    IN_CH: Int,
-    IMG: Int,
-    PATCH: Int,
-    N_PATCHES: Int,
-    HIDDEN: Int,
-    ENC_HEADS: Int,
-    ENC_LAYERS: Int,
-    EMB: Int,
-    PROJ_H: Int,
-    ACT: Int,
-    SMOOTHED: Int,
-    PRED_HEADS: Int,
-    PRED_FF: Int,
-    DEPTH: Int = 1,
-    SIG_NUM_PROJ: Int = 1024,
-    SIG_KNOTS: Int = 17,
-](
+def eval_lewm_offline_gpu[CONFIG: LeWMConfig](
     buffer_path: String,
     checkpoint_path: String,
     eval_steps: Int = 10,
@@ -1761,23 +1633,14 @@ def eval_lewm_offline_gpu[
 ) raises:
     """Load a Pong LeWM checkpoint and run only the eval phases.
 
-    Symmetric with `train_lewm_offline_gpu` — same comptime params
-    must match the binary that wrote the checkpoint. Reuses
-    `PongBuffer` (loaded fresh from `buffer_path`) for the eval-time
-    clip sampling.
-
-    Returns when all enabled eval phases (`eval_h6`,
-    `eval_h7_closed_loop_drift`, `eval_random_shots`, `eval_mpc_cem`)
-    finish.
+    Symmetric with `train_lewm_offline_gpu` — `CONFIG` must match the
+    binary that wrote the checkpoint. Reuses `PongBuffer` (loaded fresh
+    from `buffer_path`) for the eval-time clip sampling.
     """
-    comptime assert DEPTH >= 1, "DEPTH must be >= 1"
+    comptime assert CONFIG.DEPTH >= 1, "CONFIG.DEPTH must be >= 1"
 
     var ctx = DeviceContext()
-    var state = LeWMGPUState[
-        BATCH, T, H, N_PREDS, IN_CH, IMG, PATCH, N_PATCHES, HIDDEN,
-        ENC_HEADS, ENC_LAYERS, EMB, PROJ_H, ACT, SMOOTHED, PRED_HEADS,
-        PRED_FF, DEPTH, SIG_NUM_PROJ, SIG_KNOTS,
-    ](ctx, lambda_sigreg)
+    var state = LeWMGPUState[CONFIG](ctx, lambda_sigreg)
     var meta = state.load_checkpoint(ctx, checkpoint_path)
     print("Loaded checkpoint from", checkpoint_path)
     for i in range(len(meta)):
@@ -1785,11 +1648,7 @@ def eval_lewm_offline_gpu[
 
     var buf = PongBuffer.load(buffer_path)
     print("Loaded Pong buffer:", buf.n_frames, "frames from", buffer_path)
-    var trainer = LeWMTrainer[
-        BATCH, T, H, N_PREDS, IN_CH, IMG, PATCH, N_PATCHES, HIDDEN,
-        ENC_HEADS, ENC_LAYERS, EMB, PROJ_H, ACT, SMOOTHED, PRED_HEADS,
-        PRED_FF, DEPTH, SIG_NUM_PROJ, SIG_KNOTS, PongBuffer,
-    ](
+    var trainer = LeWMTrainer[CONFIG, PongBuffer](
         buf^, lambda_sigreg, 0, eval_steps, eval_samples,
         eval_seed, mpc_horizon, cem_iters, cem_samples, cem_topk,
         cem_smoothing, eval_shuffle_diag, eval_h7_closed_loop,
@@ -1798,26 +1657,7 @@ def eval_lewm_offline_gpu[
 
 
 def eval_lewm_offline_gpu_pusht[
-    BATCH: Int,
-    T: Int,
-    H: Int,
-    N_PREDS: Int,
-    IN_CH: Int,
-    IMG: Int,
-    PATCH: Int,
-    N_PATCHES: Int,
-    HIDDEN: Int,
-    ENC_HEADS: Int,
-    ENC_LAYERS: Int,
-    EMB: Int,
-    PROJ_H: Int,
-    ACT: Int,
-    SMOOTHED: Int,
-    PRED_HEADS: Int,
-    PRED_FF: Int,
-    DEPTH: Int = 1,
-    SIG_NUM_PROJ: Int = 1024,
-    SIG_KNOTS: Int = 17,
+    CONFIG: LeWMConfig,
     FRAMESKIP: Int = 5,
     ACTION_DIM: Int = 2,
 ](
@@ -1835,44 +1675,32 @@ def eval_lewm_offline_gpu_pusht[
     lambda_sigreg: Float64 = 0.09,
     var dataset_path: String = String(""),
 ) raises:
-    """Load a PushT LeWM checkpoint and run only the eval phases.
-
-    Symmetric with `train_lewm_offline_gpu_pusht`. Comptime params
-    must match the checkpoint's instantiation.
-    """
-    comptime assert DEPTH >= 1, "DEPTH must be >= 1"
-    comptime assert ACT == FRAMESKIP * ACTION_DIM, \
-        "ACT must equal FRAMESKIP * ACTION_DIM"
-    comptime assert IN_CH == 3, "PushT pixels are RGB; IN_CH must be 3"
+    """Load a PushT LeWM checkpoint and run only the eval phases."""
+    comptime assert CONFIG.DEPTH >= 1, "CONFIG.DEPTH must be >= 1"
+    comptime assert CONFIG.ACT == FRAMESKIP * ACTION_DIM, \
+        "CONFIG.ACT must equal FRAMESKIP * ACTION_DIM"
+    comptime assert CONFIG.IN_CH == 3, "PushT pixels are RGB; CONFIG.IN_CH must be 3"
 
     var ctx = DeviceContext()
-    var state = LeWMGPUState[
-        BATCH, T, H, N_PREDS, IN_CH, IMG, PATCH, N_PATCHES, HIDDEN,
-        ENC_HEADS, ENC_LAYERS, EMB, PROJ_H, ACT, SMOOTHED, PRED_HEADS,
-        PRED_FF, DEPTH, SIG_NUM_PROJ, SIG_KNOTS,
-    ](ctx, lambda_sigreg)
+    var state = LeWMGPUState[CONFIG](ctx, lambda_sigreg)
     var meta = state.load_checkpoint(ctx, checkpoint_path)
     print("Loaded checkpoint from", checkpoint_path)
     for i in range(len(meta)):
         print("  meta:", meta[i])
 
     var sampler = LewmPushTSampler(
-        frameskip=FRAMESKIP, num_steps=T, path=dataset_path^,
+        frameskip=FRAMESKIP, num_steps=CONFIG.T, path=dataset_path^,
     )
-    if sampler.dataset.pixel_h != IMG or sampler.dataset.pixel_w != IMG:
+    if sampler.dataset.pixel_h != CONFIG.IMG or sampler.dataset.pixel_w != CONFIG.IMG:
         raise Error(
             "eval_lewm_offline_gpu_pusht: dataset pixels are "
             + String(sampler.dataset.pixel_h)
             + "x"
             + String(sampler.dataset.pixel_w)
-            + " but eval driver built with IMG="
-            + String(IMG)
+            + " but CONFIG.IMG="
+            + String(CONFIG.IMG)
         )
-    var trainer = LeWMTrainer[
-        BATCH, T, H, N_PREDS, IN_CH, IMG, PATCH, N_PATCHES, HIDDEN,
-        ENC_HEADS, ENC_LAYERS, EMB, PROJ_H, ACT, SMOOTHED, PRED_HEADS,
-        PRED_FF, DEPTH, SIG_NUM_PROJ, SIG_KNOTS, LewmPushTSampler,
-    ](
+    var trainer = LeWMTrainer[CONFIG, LewmPushTSampler](
         sampler^, lambda_sigreg, 0, eval_steps, eval_samples,
         eval_seed, mpc_horizon, cem_iters, cem_samples, cem_topk,
         cem_smoothing, eval_shuffle_diag, eval_h7_closed_loop,

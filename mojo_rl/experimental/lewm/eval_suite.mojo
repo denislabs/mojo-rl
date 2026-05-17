@@ -31,6 +31,7 @@ from ...nn.constants import dtype
 
 from .offline_trainer import LeWMGPUState
 from .lewm_buffer import LeWMBuffer
+from .lewm_config import LeWMConfig
 from .cem_planner import CEMPlanner
 from .kernels import (
     _run_eval_shot_forward, _run_h6_diag_shots,
@@ -46,43 +47,16 @@ comptime TPB_Y = 4
 comptime TPB_Z = 16
 
 
-struct LeWMEvalSuite[
-    BATCH: Int,
-    T: Int,
-    H: Int,
-    N_PREDS: Int,
-    IN_CH: Int,
-    IMG: Int,
-    PATCH: Int,
-    N_PATCHES: Int,
-    HIDDEN: Int,
-    ENC_HEADS: Int,
-    ENC_LAYERS: Int,
-    EMB: Int,
-    PROJ_H: Int,
-    ACT: Int,
-    SMOOTHED: Int,
-    PRED_HEADS: Int,
-    PRED_FF: Int,
-    DEPTH: Int = 1,
-    SIG_NUM_PROJ: Int = 1024,
-    SIG_KNOTS: Int = 17,
-](Movable, ImplicitlyDestructible):
-    """Eval-only state + methods, mirroring `LeWMGPUState`'s comptime params.
+struct LeWMEvalSuite[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
+    """Eval-only state + methods, templated on `CONFIG: LeWMConfig`.
 
     Constructed cheaply (no GPU allocations) per `run_all` call. CEM/MPC
     scratch is allocated lazily inside `CEMPlanner.__init__` only when
     `mpc_horizon > 0`.
     """
 
-    comptime GPUState = LeWMGPUState[
-        Self.BATCH, Self.T, Self.H, Self.N_PREDS,
-        Self.IN_CH, Self.IMG, Self.PATCH, Self.N_PATCHES,
-        Self.HIDDEN, Self.ENC_HEADS, Self.ENC_LAYERS,
-        Self.EMB, Self.PROJ_H, Self.ACT, Self.SMOOTHED,
-        Self.PRED_HEADS, Self.PRED_FF,
-        Self.DEPTH, Self.SIG_NUM_PROJ, Self.SIG_KNOTS,
-    ]
+    comptime GPUState = LeWMGPUState[Self.CONFIG]
+    comptime EMB: Int = Self.GPUState.EMB
 
     # Eval-phase config.
     var eval_steps: Int
@@ -134,7 +108,7 @@ struct LeWMEvalSuite[
         the trainer owns its buffer; we accept one via arg.
         """
         buf.sample_batch_uint8(
-            Self.BATCH, Self.T,
+            Self.CONFIG.BATCH, Self.CONFIG.T,
             state.pixels_u8_host.unsafe_ptr(),
             state.actions_host.unsafe_ptr(),
         )
@@ -150,14 +124,14 @@ struct LeWMEvalSuite[
         ](state.pixels_buf)
         ctx.enqueue_function[
             pixels_uint8_to_fp32_kernel[
-                BT, Self.IN_CH, Self.IMG, BUF.INPUT_LAYOUT_HWC,
+                BT, Self.CONFIG.IN_CH, Self.CONFIG.IMG, BUF.INPUT_LAYOUT_HWC,
             ],
         ](
             src_u8_t, dst_fp32_t,
             grid_dim=(
                 ceildiv(BT, TPB_X),
-                ceildiv(Self.IN_CH, TPB_Y),
-                ceildiv(Self.IMG * Self.IMG, TPB_Z),
+                ceildiv(Self.CONFIG.IN_CH, TPB_Y),
+                ceildiv(Self.CONFIG.IMG * Self.CONFIG.IMG, TPB_Z),
             ),
             block_dim=(TPB_X, TPB_Y, TPB_Z),
         )
@@ -183,14 +157,7 @@ struct LeWMEvalSuite[
             self.eval_random_shots(state, buf, ctx)
 
         if self.eval_steps > 0 and self.mpc_horizon > 0:
-            var planner = CEMPlanner[
-                Self.BATCH, Self.T, Self.H, Self.N_PREDS,
-                Self.IN_CH, Self.IMG, Self.PATCH, Self.N_PATCHES,
-                Self.HIDDEN, Self.ENC_HEADS, Self.ENC_LAYERS,
-                Self.EMB, Self.PROJ_H, Self.ACT, Self.SMOOTHED,
-                Self.PRED_HEADS, Self.PRED_FF,
-                Self.DEPTH, Self.SIG_NUM_PROJ, Self.SIG_KNOTS,
-            ](
+            var planner = CEMPlanner[Self.CONFIG](
                 ctx, self.mpc_horizon, self.cem_iters,
                 self.cem_samples, self.cem_topk, self.cem_smoothing,
             )
@@ -217,7 +184,7 @@ struct LeWMEvalSuite[
             dtype, Layout.row_major(BT, IMG_DIM), MutAnyOrigin
         ](state.pixels_buf)
         var actions_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.ACT), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.CONFIG.ACT), MutAnyOrigin
         ](state.actions_buf)
         var emb_t = LayoutTensor[
             dtype, Layout.row_major(BT, Self.EMB), MutAnyOrigin
@@ -226,34 +193,34 @@ struct LeWMEvalSuite[
             dtype, Layout.row_major(BT, ENC.CACHE_SIZE), MutAnyOrigin
         ](state.enc_cache_buf)
         var act_emb_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.EMB), MutAnyOrigin
         ](state.act_emb_buf)
         var ae_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, AE.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, AE.CACHE_SIZE), MutAnyOrigin
         ](state.ae_cache_buf)
         var x_prev_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.x_prev_buf)
         var x_prev_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.x_prev_buf)
         var x_prev_pe_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.x_prev_pe_buf)
         var pos_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, POS.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, POS.CACHE_SIZE), MutAnyOrigin
         ](state.pos_cache_buf)
         var c_in_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.c_in_buf)
         var pred_raw_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.pred_raw_buf)
         var pred_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.pred_out_buf)
         var proj_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, PROJ.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, PROJ.CACHE_SIZE), MutAnyOrigin
         ](state.proj_cache_buf)
 
         var silu_buf_t = LayoutTensor[
@@ -289,7 +256,7 @@ struct LeWMEvalSuite[
         print("==== H6: action-shuffle diagnostic (teacher-forced) ====")
         _set_seed(self.eval_seed)
 
-        var perm_buf = alloc[Int](Self.BATCH)
+        var perm_buf = alloc[Int](Self.CONFIG.BATCH)
 
         var h6_sum_expert: Float64 = 0.0
         var h6_sum_shuf_mean: Float64 = 0.0
@@ -301,7 +268,7 @@ struct LeWMEvalSuite[
             # snapshot expert actions to actions_sample (small, ~few KB) for
             # the unshuffled MSE reference.
             self._sample_and_upload_pixels(state, buf, ctx)
-            for i in range(Self.BATCH * Self.T * Self.ACT):
+            for i in range(Self.CONFIG.BATCH * Self.CONFIG.T * Self.CONFIG.ACT):
                 state.actions_sample[i] = state.actions_host[i]
             ctx.enqueue_copy(state.actions_buf, state.actions_host)
 
@@ -315,8 +282,8 @@ struct LeWMEvalSuite[
             ctx.synchronize()
 
             var stats = _run_h6_diag_shots[
-                Self.BATCH, Self.T, Self.H, Self.N_PREDS, Self.EMB, Self.ACT, Self.SMOOTHED, Self.PROJ_H,
-                Self.PRED_HEADS, Self.PRED_FF, Self.DEPTH,
+                Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.CONFIG.N_PREDS, Self.EMB, Self.CONFIG.ACT, Self.CONFIG.SMOOTHED, Self.CONFIG.PROJ_H,
+                Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
             ](
                 ctx,
                 self.eval_samples,
@@ -413,7 +380,7 @@ struct LeWMEvalSuite[
             dtype, Layout.row_major(BT, IMG_DIM), MutAnyOrigin
         ](state.pixels_buf)
         var actions_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.ACT), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.CONFIG.ACT), MutAnyOrigin
         ](state.actions_buf)
         var emb_t = LayoutTensor[
             dtype, Layout.row_major(BT, Self.EMB), MutAnyOrigin
@@ -422,34 +389,34 @@ struct LeWMEvalSuite[
             dtype, Layout.row_major(BT, ENC.CACHE_SIZE), MutAnyOrigin
         ](state.enc_cache_buf)
         var act_emb_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.EMB), MutAnyOrigin
         ](state.act_emb_buf)
         var ae_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, AE.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, AE.CACHE_SIZE), MutAnyOrigin
         ](state.ae_cache_buf)
         var x_prev_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.x_prev_buf)
         var x_prev_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.x_prev_buf)
         var x_prev_pe_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.x_prev_pe_buf)
         var pos_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, POS.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, POS.CACHE_SIZE), MutAnyOrigin
         ](state.pos_cache_buf)
         var c_in_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.c_in_buf)
         var pred_raw_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.pred_raw_buf)
         var pred_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.pred_out_buf)
         var proj_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, PROJ.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, PROJ.CACHE_SIZE), MutAnyOrigin
         ](state.proj_cache_buf)
 
         var silu_buf_t = LayoutTensor[
@@ -476,9 +443,9 @@ struct LeWMEvalSuite[
         #
         # For each eval iteration:
         #   1. Sample fresh batch.
-        #   2. Forward with EXPERT actions -> expert_loss = MSE(pred, real_emb[1:Self.H+1]).
+        #   2. Forward with EXPERT actions -> expert_loss = MSE(pred, real_emb[1:Self.CONFIG.H+1]).
         #   3. For S random samples, replace actions with random one-hot and
-        #      re-run AE + POS + Self.DEPTH + PROJ (encoder unchanged).
+        #      re-run AE + POS + Self.CONFIG.DEPTH + PROJ (encoder unchanged).
         #   4. Report ratio expert/random — if << 1, model is action-aware.
         #
         # This is a "teacher-forced" shooter — it scores action sequences against
@@ -489,7 +456,7 @@ struct LeWMEvalSuite[
         print("==== Phase 4 eval: random action shooter (teacher-forced) ====")
         _set_seed(self.eval_seed)
 
-        var mse_div = Float64(Self.BATCH * Self.H * Self.EMB)
+        var mse_div = Float64(Self.CONFIG.BATCH * Self.CONFIG.H * Self.EMB)
         var sum_expert: Float64 = 0.0
         var sum_random_mean: Float64 = 0.0
         var sum_random_min: Float64 = 0.0
@@ -520,24 +487,24 @@ struct LeWMEvalSuite[
             # s >= 1 -> random one-hot actions.
             for s in range(1 + self.eval_samples):
                 if s > 0:
-                    # Generate random one-hot actions (Self.BATCH, Self.T, Self.ACT).
-                    for b in range(Self.BATCH):
-                        for tt in range(Self.T):
-                            var r_act = Int(random_float64() * Float64(Self.ACT))
-                            if r_act >= Self.ACT:
-                                r_act = Self.ACT - 1
-                            for k in range(Self.ACT):
-                                state.actions_host[b * Self.T * Self.ACT + tt * Self.ACT + k] = (
+                    # Generate random one-hot actions (Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.ACT).
+                    for b in range(Self.CONFIG.BATCH):
+                        for tt in range(Self.CONFIG.T):
+                            var r_act = Int(random_float64() * Float64(Self.CONFIG.ACT))
+                            if r_act >= Self.CONFIG.ACT:
+                                r_act = Self.CONFIG.ACT - 1
+                            for k in range(Self.CONFIG.ACT):
+                                state.actions_host[b * Self.CONFIG.T * Self.CONFIG.ACT + tt * Self.CONFIG.ACT + k] = (
                                     Scalar[dtype](1.0)
                                     if k == r_act
                                     else Scalar[dtype](0.0)
                                 )
                     ctx.enqueue_copy(state.actions_buf, state.actions_host)
 
-                # One shot through AE + slice + POS + Self.DEPTH × cond_block + PROJ.
+                # One shot through AE + slice + POS + Self.CONFIG.DEPTH × cond_block + PROJ.
                 _run_eval_shot_forward[
-                    Self.BATCH, Self.T, Self.H, Self.EMB, Self.ACT, Self.SMOOTHED, Self.PROJ_H,
-                    Self.PRED_HEADS, Self.PRED_FF, Self.DEPTH,
+                    Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB, Self.CONFIG.ACT, Self.CONFIG.SMOOTHED, Self.CONFIG.PROJ_H,
+                    Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
                 ](
                     ctx,
                     state.ae_state.params_view(), state.ae_state.model_state_view(),
@@ -564,15 +531,15 @@ struct LeWMEvalSuite[
                     pred_raw_bh_t, pred_t,
                 )
 
-                # Download pred, score MSE against emb[Self.N_PREDS:Self.N_PREDS+Self.H].
+                # Download pred, score MSE against emb[Self.CONFIG.N_PREDS:Self.CONFIG.N_PREDS+Self.CONFIG.H].
                 ctx.enqueue_copy(state.pred_host, state.pred_out_buf)
                 ctx.synchronize()
                 var l: Float64 = 0.0
-                for b in range(Self.BATCH):
-                    for i in range(Self.H * Self.EMB):
-                        var p = Float64(state.pred_host[b * Self.H * Self.EMB + i])
+                for b in range(Self.CONFIG.BATCH):
+                    for i in range(Self.CONFIG.H * Self.EMB):
+                        var p = Float64(state.pred_host[b * Self.CONFIG.H * Self.EMB + i])
                         var tgt = Float64(
-                            state.emb_host[b * Self.T * Self.EMB + Self.N_PREDS * Self.EMB + i]
+                            state.emb_host[b * Self.CONFIG.T * Self.EMB + Self.CONFIG.N_PREDS * Self.EMB + i]
                         )
                         var diff = p - tgt
                         l += diff * diff
@@ -659,14 +626,14 @@ struct LeWMEvalSuite[
         comptime AE = Self.GPUState.AE
         comptime POS = Self.GPUState.POS
         comptime PROJ = Self.GPUState.PROJ
-        comptime ROLL_T = Self.T + 1
+        comptime ROLL_T = Self.CONFIG.T + 1
 
-        var rollout_steps = Self.T - Self.H
+        var rollout_steps = Self.CONFIG.T - Self.CONFIG.H
         if rollout_steps <= 0:
             print()
             print(
                 "==== H7: closed-loop drift — SKIPPED (T=",
-                Self.T, " <= H=", Self.H, "; no rollout positions) ===="
+                Self.CONFIG.T, " <= H=", Self.CONFIG.H, "; no rollout positions) ===="
             )
             return
 
@@ -674,7 +641,7 @@ struct LeWMEvalSuite[
             dtype, Layout.row_major(BT, IMG_DIM), MutAnyOrigin
         ](state.pixels_buf)
         var actions_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.ACT), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.CONFIG.ACT), MutAnyOrigin
         ](state.actions_buf)
         var emb_t = LayoutTensor[
             dtype, Layout.row_major(BT, Self.EMB), MutAnyOrigin
@@ -683,34 +650,34 @@ struct LeWMEvalSuite[
             dtype, Layout.row_major(BT, ENC.CACHE_SIZE), MutAnyOrigin
         ](state.enc_cache_buf)
         var act_emb_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.EMB), MutAnyOrigin
         ](state.act_emb_buf)
         var ae_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, AE.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, AE.CACHE_SIZE), MutAnyOrigin
         ](state.ae_cache_buf)
         var x_prev_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.x_prev_buf)
         var x_prev_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.x_prev_buf)
         var x_prev_pe_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.x_prev_pe_buf)
         var pos_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, POS.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, POS.CACHE_SIZE), MutAnyOrigin
         ](state.pos_cache_buf)
         var c_in_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.c_in_buf)
         var pred_raw_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.pred_raw_buf)
         var pred_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.pred_out_buf)
         var proj_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, PROJ.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, PROJ.CACHE_SIZE), MutAnyOrigin
         ](state.proj_cache_buf)
 
         var silu_buf_t = LayoutTensor[
@@ -741,21 +708,21 @@ struct LeWMEvalSuite[
 
         # Local rollout buffers (allocated/freed inside this eval phase).
         var emb_seq_dev_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * ROLL_T * Self.EMB
+            Self.CONFIG.BATCH * ROLL_T * Self.EMB
         )
         var emb_seq_dev_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, ROLL_T * Self.EMB),
+            dtype, Layout.row_major(Self.CONFIG.BATCH, ROLL_T * Self.EMB),
             MutAnyOrigin,
         ](emb_seq_dev_buf.unsafe_ptr())
         var action_plan_dev_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.T * Self.ACT
+            Self.CONFIG.BATCH * Self.CONFIG.T * Self.CONFIG.ACT
         )
         var action_plan_dev_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.ACT),
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.CONFIG.ACT),
             MutAnyOrigin,
         ](action_plan_dev_buf.unsafe_ptr())
         var emb_seq_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.BATCH * ROLL_T * Self.EMB
+            Self.CONFIG.BATCH * ROLL_T * Self.EMB
         )
 
         var sum_drift_tf = alloc[Float64](rollout_steps)
@@ -766,7 +733,7 @@ struct LeWMEvalSuite[
             sum_drift_tf[k] = 0.0
             sum_drift_cl[k] = 0.0
 
-        var mse_div = Float64(Self.BATCH * Self.EMB)
+        var mse_div = Float64(Self.CONFIG.BATCH * Self.EMB)
 
         for eval_iter in range(self.eval_steps):
             # ---- 1. Sample uint8 pixels + actions; convert pixels on GPU ----
@@ -785,15 +752,15 @@ struct LeWMEvalSuite[
             ctx.synchronize()
 
             # ---- 2. Init emb_seq from real_emb (positions 0..T-1; T zeroed) ----
-            for i in range(Self.BATCH * ROLL_T * Self.EMB):
+            for i in range(Self.CONFIG.BATCH * ROLL_T * Self.EMB):
                 emb_seq_host[i] = Scalar[dtype](0)
-            for b in range(Self.BATCH):
-                for t in range(Self.T):
+            for b in range(Self.CONFIG.BATCH):
+                for t in range(Self.CONFIG.T):
                     for e in range(Self.EMB):
                         emb_seq_host[
                             b * ROLL_T * Self.EMB + t * Self.EMB + e
                         ] = state.emb_host[
-                            b * Self.T * Self.EMB + t * Self.EMB + e
+                            b * Self.CONFIG.T * Self.EMB + t * Self.EMB + e
                         ]
             ctx.enqueue_copy(emb_seq_dev_buf, emb_seq_host)
             ctx.synchronize()
@@ -802,34 +769,34 @@ struct LeWMEvalSuite[
             for k in range(rollout_steps):
                 ctx.enqueue_function[
                     slide_emb_window_kernel[
-                        Self.BATCH, Self.T, Self.H, Self.EMB, ROLL_T
+                        Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB, ROLL_T
                     ],
                 ](
                     emb_seq_dev_t, emb_t, k,
                     grid_dim=(
-                        ceildiv(Self.BATCH, TPB_X),
-                        ceildiv(Self.T, TPB_Y),
+                        ceildiv(Self.CONFIG.BATCH, TPB_X),
+                        ceildiv(Self.CONFIG.T, TPB_Y),
                         ceildiv(Self.EMB, TPB_Z),
                     ),
                     block_dim=(TPB_X, TPB_Y, TPB_Z),
                 )
                 ctx.enqueue_function[
                     slide_actions_window_kernel[
-                        Self.BATCH, Self.T, Self.H, Self.ACT, Self.T
+                        Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.CONFIG.ACT, Self.CONFIG.T
                     ],
                 ](
                     action_plan_dev_t, actions_t, k,
                     grid_dim=(
-                        ceildiv(Self.BATCH, TPB_X),
-                        ceildiv(Self.T, TPB_Y),
-                        ceildiv(Self.ACT, TPB_Z),
+                        ceildiv(Self.CONFIG.BATCH, TPB_X),
+                        ceildiv(Self.CONFIG.T, TPB_Y),
+                        ceildiv(Self.CONFIG.ACT, TPB_Z),
                     ),
                     block_dim=(TPB_X, TPB_Y, TPB_Z),
                 )
                 _run_eval_shot_forward[
-                    Self.BATCH, Self.T, Self.H, Self.EMB, Self.ACT,
-                    Self.SMOOTHED, Self.PROJ_H,
-                    Self.PRED_HEADS, Self.PRED_FF, Self.DEPTH,
+                    Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB, Self.CONFIG.ACT,
+                    Self.CONFIG.SMOOTHED, Self.CONFIG.PROJ_H,
+                    Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
                 ](
                     ctx,
                     state.ae_state.params_view(),
@@ -860,15 +827,15 @@ struct LeWMEvalSuite[
                 ctx.enqueue_copy(state.pred_host, state.pred_out_buf)
                 ctx.synchronize()
                 var l: Float64 = 0.0
-                for b in range(Self.BATCH):
+                for b in range(Self.CONFIG.BATCH):
                     for e in range(Self.EMB):
                         var p = Float64(state.pred_host[
-                            b * Self.H * Self.EMB
-                            + (Self.H - 1) * Self.EMB + e
+                            b * Self.CONFIG.H * Self.EMB
+                            + (Self.CONFIG.H - 1) * Self.EMB + e
                         ])
                         var tgt = Float64(state.emb_host[
-                            b * Self.T * Self.EMB
-                            + (k + Self.H) * Self.EMB + e
+                            b * Self.CONFIG.T * Self.EMB
+                            + (k + Self.CONFIG.H) * Self.EMB + e
                         ])
                         var diff = p - tgt
                         l += diff * diff
@@ -881,34 +848,34 @@ struct LeWMEvalSuite[
             for k in range(rollout_steps):
                 ctx.enqueue_function[
                     slide_emb_window_kernel[
-                        Self.BATCH, Self.T, Self.H, Self.EMB, ROLL_T
+                        Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB, ROLL_T
                     ],
                 ](
                     emb_seq_dev_t, emb_t, k,
                     grid_dim=(
-                        ceildiv(Self.BATCH, TPB_X),
-                        ceildiv(Self.T, TPB_Y),
+                        ceildiv(Self.CONFIG.BATCH, TPB_X),
+                        ceildiv(Self.CONFIG.T, TPB_Y),
                         ceildiv(Self.EMB, TPB_Z),
                     ),
                     block_dim=(TPB_X, TPB_Y, TPB_Z),
                 )
                 ctx.enqueue_function[
                     slide_actions_window_kernel[
-                        Self.BATCH, Self.T, Self.H, Self.ACT, Self.T
+                        Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.CONFIG.ACT, Self.CONFIG.T
                     ],
                 ](
                     action_plan_dev_t, actions_t, k,
                     grid_dim=(
-                        ceildiv(Self.BATCH, TPB_X),
-                        ceildiv(Self.T, TPB_Y),
-                        ceildiv(Self.ACT, TPB_Z),
+                        ceildiv(Self.CONFIG.BATCH, TPB_X),
+                        ceildiv(Self.CONFIG.T, TPB_Y),
+                        ceildiv(Self.CONFIG.ACT, TPB_Z),
                     ),
                     block_dim=(TPB_X, TPB_Y, TPB_Z),
                 )
                 _run_eval_shot_forward[
-                    Self.BATCH, Self.T, Self.H, Self.EMB, Self.ACT,
-                    Self.SMOOTHED, Self.PROJ_H,
-                    Self.PRED_HEADS, Self.PRED_FF, Self.DEPTH,
+                    Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB, Self.CONFIG.ACT,
+                    Self.CONFIG.SMOOTHED, Self.CONFIG.PROJ_H,
+                    Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
                 ](
                     ctx,
                     state.ae_state.params_view(),
@@ -939,15 +906,15 @@ struct LeWMEvalSuite[
                 ctx.enqueue_copy(state.pred_host, state.pred_out_buf)
                 ctx.synchronize()
                 var l: Float64 = 0.0
-                for b in range(Self.BATCH):
+                for b in range(Self.CONFIG.BATCH):
                     for e in range(Self.EMB):
                         var p = Float64(state.pred_host[
-                            b * Self.H * Self.EMB
-                            + (Self.H - 1) * Self.EMB + e
+                            b * Self.CONFIG.H * Self.EMB
+                            + (Self.CONFIG.H - 1) * Self.EMB + e
                         ])
                         var tgt = Float64(state.emb_host[
-                            b * Self.T * Self.EMB
-                            + (k + Self.H) * Self.EMB + e
+                            b * Self.CONFIG.T * Self.EMB
+                            + (k + Self.CONFIG.H) * Self.EMB + e
                         ])
                         var diff = p - tgt
                         l += diff * diff
@@ -957,11 +924,11 @@ struct LeWMEvalSuite[
                 # Store pred[:, H-1, :] -> emb_seq[:, k+H, :] for next step.
                 ctx.enqueue_function[
                     store_pred_last_kernel[
-                        Self.BATCH, Self.H, Self.EMB, ROLL_T
+                        Self.CONFIG.BATCH, Self.CONFIG.H, Self.EMB, ROLL_T
                     ],
                 ](
                     pred_t, emb_seq_dev_t, k,
-                    grid_dim=(ceildiv(Self.BATCH, 16), ceildiv(Self.EMB, 16)),
+                    grid_dim=(ceildiv(Self.CONFIG.BATCH, 16), ceildiv(Self.EMB, 16)),
                     block_dim=(16, 16),
                 )
 
@@ -970,7 +937,7 @@ struct LeWMEvalSuite[
             for k in range(rollout_steps):
                 var ratio = drift_cl_iter[k] / (drift_tf_iter[k] + 1e-12)
                 print(
-                    "    step", k, " (pos=", k + Self.H, "):",
+                    "    step", k, " (pos=", k + Self.CONFIG.H, "):",
                     " tf=", drift_tf_iter[k],
                     " cl=", drift_cl_iter[k],
                     " cl/tf=", ratio,
@@ -988,7 +955,7 @@ struct LeWMEvalSuite[
             var ratio = avg_cl / (avg_tf + 1e-12)
             if k == 0:
                 print(
-                    "  step", k, "(pos=", k + Self.H, ")",
+                    "  step", k, "(pos=", k + Self.CONFIG.H, ")",
                     " avg_tf=", avg_tf,
                     " avg_cl=", avg_cl,
                     " cl/tf=", ratio,
@@ -996,7 +963,7 @@ struct LeWMEvalSuite[
                 )
             else:
                 print(
-                    "  step", k, "(pos=", k + Self.H, ")",
+                    "  step", k, "(pos=", k + Self.CONFIG.H, ")",
                     " avg_tf=", avg_tf,
                     " avg_cl=", avg_cl,
                     " cl/tf=", ratio,

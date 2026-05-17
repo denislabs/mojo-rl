@@ -1,13 +1,12 @@
 """LeWM eval-only driver — Pong, scaled config.
 
 Loads the checkpoint written by `lewm_pong_pixel_train_gpu.mojo` and
-runs only the eval phases. No training cost — finishes in a few minutes
-even at scaled DEPTH=6, vs ~80 min for the original train+eval run.
+runs only the eval phases. Finishes in a few minutes even at DEPTH=6.
 
-This lets you iterate on eval diagnostics (new H8/H9/..., different MPC
-horizons, alternate CEM configs) without retraining.
+Iterate on eval diagnostics (new H8/H9/..., different MPC horizons,
+alternate CEM configs) without retraining.
 
-Comptime params MUST match the training driver that wrote the checkpoint.
+CONFIG must match the training driver that wrote the checkpoint.
 
 Run:
     pixi run -e apple  mojo run -I . examples/lewm/lewm_pong_pixel_eval_gpu.mojo
@@ -15,18 +14,19 @@ Run:
 """
 
 from mojo_rl.experimental.lewm.offline_trainer import eval_lewm_offline_gpu
+from mojo_rl.experimental.lewm.lewm_config import LeWMPongViTConfig
 
 
 def main() raises:
-    eval_lewm_offline_gpu[
-        BATCH=16, T=6, H=4, N_PREDS=1,
-        IN_CH=4, IMG=84, PATCH=14, N_PATCHES=36,
-        HIDDEN=96, ENC_HEADS=4, ENC_LAYERS=2,
-        EMB=96, PROJ_H=256,
-        ACT=3, SMOOTHED=32,
-        PRED_HEADS=4, PRED_FF=256,
-        DEPTH=6,
-    ](
+    eval_lewm_offline_gpu[LeWMPongViTConfig[
+        batch=16, t=6, h=4,
+        hidden=96, enc_heads=4, enc_layers=2,
+        emb=96, proj_h=256,
+        smoothed=32,
+        pred_heads=4, pred_ff=256,
+        depth=6,
+        sig_num_proj=1024, sig_knots=17,
+    ]](
         buffer_path=String("/tmp/lewm_pong_buffer.bin"),
         checkpoint_path=String("/tmp/lewm_pong.ckpt"),
         eval_steps=10,

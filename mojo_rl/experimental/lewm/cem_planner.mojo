@@ -25,6 +25,7 @@ from ...nn.constants import dtype
 
 from .offline_trainer import LeWMGPUState
 from .lewm_buffer import LeWMBuffer
+from .lewm_config import LeWMConfig
 from .kernels import (
     _run_mpc_shot, _run_cem_eval_iter,
     pixels_uint8_to_fp32_kernel,
@@ -36,33 +37,13 @@ comptime TPB_Y = 4
 comptime TPB_Z = 16
 
 
-struct CEMPlanner[
-    BATCH: Int,
-    T: Int,
-    H: Int,
-    N_PREDS: Int,
-    IN_CH: Int,
-    IMG: Int,
-    PATCH: Int,
-    N_PATCHES: Int,
-    HIDDEN: Int,
-    ENC_HEADS: Int,
-    ENC_LAYERS: Int,
-    EMB: Int,
-    PROJ_H: Int,
-    ACT: Int,
-    SMOOTHED: Int,
-    PRED_HEADS: Int,
-    PRED_FF: Int,
-    DEPTH: Int = 1,
-    SIG_NUM_PROJ: Int = 1024,
-    SIG_KNOTS: Int = 17,
-](Movable, ImplicitlyDestructible):
+struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
     """Autoregressive MPC + CEM planner over a trained LeWM world model.
 
-    Comptime params mirror `LeWMGPUState` exactly so the planner can type
-    its state argument as `Self.GPUState`. CEM-specific hyperparams are
-    carved out of the trainer's eval config and become construction args.
+    Templated on the same `CONFIG: LeWMConfig` as `LeWMGPUState` /
+    `LeWMTrainer` — the planner types its state argument as
+    `Self.GPUState = LeWMGPUState[Self.CONFIG]`. CEM-specific
+    hyperparams are construction args, not config fields.
 
     Buffer sizes:
       - emb_start_dev / emb_goal_dev: BATCH × EMB
@@ -73,14 +54,11 @@ struct CEMPlanner[
                                        (sized for 1 when cem_iters == 0)
     """
 
-    comptime GPUState = LeWMGPUState[
-        Self.BATCH, Self.T, Self.H, Self.N_PREDS,
-        Self.IN_CH, Self.IMG, Self.PATCH, Self.N_PATCHES,
-        Self.HIDDEN, Self.ENC_HEADS, Self.ENC_LAYERS,
-        Self.EMB, Self.PROJ_H, Self.ACT, Self.SMOOTHED,
-        Self.PRED_HEADS, Self.PRED_FF,
-        Self.DEPTH, Self.SIG_NUM_PROJ, Self.SIG_KNOTS,
-    ]
+    comptime GPUState = LeWMGPUState[Self.CONFIG]
+    # EMB is the encoder's OUT_DIM (see comment in LeWMGPUState). Alias
+    # here so this planner's method bodies can use Self.EMB without
+    # tripping Mojo's "different comptime expression" type mismatch.
+    comptime EMB: Int = Self.GPUState.EMB
 
     # Hyperparams (carved out of trainer eval config).
     var mpc_horizon: Int
@@ -125,8 +103,8 @@ struct CEMPlanner[
     ) raises:
         if mpc_horizon < 1:
             raise Error("CEMPlanner requires mpc_horizon >= 1")
-        var needed = Self.H + mpc_horizon - 1
-        if needed > Self.T:
+        var needed = Self.CONFIG.H + mpc_horizon - 1
+        if needed > Self.CONFIG.T:
             raise Error(
                 "mpc_horizon too large: H + mpc_horizon - 1 > T"
                 " (need bigger T or smaller horizon)"
@@ -145,48 +123,48 @@ struct CEMPlanner[
 
         # Host scratch.
         self.emb_start_host_buf = alloc[Scalar[dtype]](
-            Self.BATCH * Self.EMB
+            Self.CONFIG.BATCH * Self.EMB
         )
         self.emb_goal_host_buf = alloc[Scalar[dtype]](
-            Self.BATCH * Self.EMB
+            Self.CONFIG.BATCH * Self.EMB
         )
         self.action_plan_host_buf = alloc[Scalar[dtype]](
-            Self.BATCH * needed * Self.ACT
+            Self.CONFIG.BATCH * needed * Self.CONFIG.ACT
         )
         self.action_dist_host_buf = alloc[Scalar[dtype]](
-            Self.BATCH * needed * Self.ACT
+            Self.CONFIG.BATCH * needed * Self.CONFIG.ACT
         )
         self.sample_actions_host_buf = alloc[Scalar[dtype]](
-            cs * Self.BATCH * needed * Self.ACT
+            cs * Self.CONFIG.BATCH * needed * Self.CONFIG.ACT
         )
         self.sample_scores_host_buf = alloc[Float64](cs)
         self.elite_indices_host_buf = alloc[Int](ck)
 
         # Device buffers.
         self.emb_start_dev_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.EMB
+            Self.CONFIG.BATCH * Self.EMB
         )
         self.emb_goal_dev_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.EMB
+            Self.CONFIG.BATCH * Self.EMB
         )
         self.emb_seq_dev_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * (Self.T + 1) * Self.EMB
+            Self.CONFIG.BATCH * (Self.CONFIG.T + 1) * Self.EMB
         )
         self.action_plan_dev_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.T * Self.ACT
+            Self.CONFIG.BATCH * Self.CONFIG.T * Self.CONFIG.ACT
         )
         self.score_dev_buf = ctx.enqueue_create_buffer[dtype](1)
 
         # Pinned host staging.
         self.score_host_buf = ctx.enqueue_create_host_buffer[dtype](1)
         self.emb_start_stage_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.BATCH * Self.EMB
+            Self.CONFIG.BATCH * Self.EMB
         )
         self.emb_goal_stage_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.BATCH * Self.EMB
+            Self.CONFIG.BATCH * Self.EMB
         )
         self.action_plan_stage_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.BATCH * Self.T * Self.ACT
+            Self.CONFIG.BATCH * Self.CONFIG.T * Self.CONFIG.ACT
         )
 
     def __del__(deinit self):
@@ -213,7 +191,7 @@ struct CEMPlanner[
         upload, since MPC overwrites `actions_buf` per shot.
         """
         buf.sample_batch_uint8(
-            Self.BATCH, Self.T,
+            Self.CONFIG.BATCH, Self.CONFIG.T,
             state.pixels_u8_host.unsafe_ptr(),
             state.actions_host.unsafe_ptr(),
         )
@@ -229,14 +207,14 @@ struct CEMPlanner[
         ](state.pixels_buf)
         ctx.enqueue_function[
             pixels_uint8_to_fp32_kernel[
-                BT, Self.IN_CH, Self.IMG, BUF.INPUT_LAYOUT_HWC,
+                BT, Self.CONFIG.IN_CH, Self.CONFIG.IMG, BUF.INPUT_LAYOUT_HWC,
             ],
         ](
             src_u8_t, dst_fp32_t,
             grid_dim=(
                 ceildiv(BT, TPB_X),
-                ceildiv(Self.IN_CH, TPB_Y),
-                ceildiv(Self.IMG * Self.IMG, TPB_Z),
+                ceildiv(Self.CONFIG.IN_CH, TPB_Y),
+                ceildiv(Self.CONFIG.IMG * Self.CONFIG.IMG, TPB_Z),
             ),
             block_dim=(TPB_X, TPB_Y, TPB_Z),
         )
@@ -276,7 +254,7 @@ struct CEMPlanner[
             dtype, Layout.row_major(BT, IMG_DIM), MutAnyOrigin
         ](state.pixels_buf)
         var actions_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.ACT), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.CONFIG.ACT), MutAnyOrigin
         ](state.actions_buf)
         var emb_t = LayoutTensor[
             dtype, Layout.row_major(BT, Self.EMB), MutAnyOrigin
@@ -285,34 +263,34 @@ struct CEMPlanner[
             dtype, Layout.row_major(BT, ENC.CACHE_SIZE), MutAnyOrigin
         ](state.enc_cache_buf)
         var act_emb_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.EMB), MutAnyOrigin
         ](state.act_emb_buf)
         var ae_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, AE.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, AE.CACHE_SIZE), MutAnyOrigin
         ](state.ae_cache_buf)
         var x_prev_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.x_prev_buf)
         var x_prev_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.x_prev_buf)
         var x_prev_pe_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.x_prev_pe_buf)
         var pos_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, POS.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, POS.CACHE_SIZE), MutAnyOrigin
         ](state.pos_cache_buf)
         var c_in_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.c_in_buf)
         var pred_raw_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.pred_raw_buf)
         var pred_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.H * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
         ](state.pred_out_buf)
         var proj_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, PROJ.CACHE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, PROJ.CACHE_SIZE), MutAnyOrigin
         ](state.proj_cache_buf)
 
         var silu_buf_t = LayoutTensor[
@@ -345,16 +323,16 @@ struct CEMPlanner[
 
         # Views over persistent device buffers.
         var emb_start_dev_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.EMB), MutAnyOrigin
         ](self.emb_start_dev_buf.unsafe_ptr())
         var emb_goal_dev_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.EMB), MutAnyOrigin
         ](self.emb_goal_dev_buf.unsafe_ptr())
         var emb_seq_dev_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, (Self.T + 1) * Self.EMB), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, (Self.CONFIG.T + 1) * Self.EMB), MutAnyOrigin
         ](self.emb_seq_dev_buf.unsafe_ptr())
         var action_plan_dev_t = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH, Self.T * Self.ACT), MutAnyOrigin
+            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.CONFIG.ACT), MutAnyOrigin
         ](self.action_plan_dev_buf.unsafe_ptr())
         var score_dev_t = LayoutTensor[
             dtype, Layout.row_major(1), MutAnyOrigin
@@ -382,13 +360,13 @@ struct CEMPlanner[
 
             # Extract start (frame 0) + goal (frame T-1) per batch row,
             # upload both to device.
-            for b in range(Self.BATCH):
+            for b in range(Self.CONFIG.BATCH):
                 for d in range(Self.EMB):
                     self.emb_start_stage_host[b * Self.EMB + d] = (
-                        state.emb_host[b * Self.T * Self.EMB + d]
+                        state.emb_host[b * Self.CONFIG.T * Self.EMB + d]
                     )
                     self.emb_goal_stage_host[b * Self.EMB + d] = (
-                        state.emb_host[b * Self.T * Self.EMB + (Self.T - 1) * Self.EMB + d]
+                        state.emb_host[b * Self.CONFIG.T * Self.EMB + (Self.CONFIG.T - 1) * Self.EMB + d]
                     )
             ctx.enqueue_copy(self.emb_start_dev_buf, self.emb_start_stage_host)
             ctx.enqueue_copy(self.emb_goal_dev_buf, self.emb_goal_stage_host)
@@ -399,56 +377,56 @@ struct CEMPlanner[
             var better_count_mpc: Int = 0
 
             for s in range(1 + eval_samples):
-                # Build action plan (Self.BATCH, needed_actions, Self.ACT) on host.
+                # Build action plan (Self.CONFIG.BATCH, needed_actions, Self.CONFIG.ACT) on host.
                 if s == 0:
-                    for b in range(Self.BATCH):
+                    for b in range(Self.CONFIG.BATCH):
                         for ti in range(needed_actions):
-                            for k in range(Self.ACT):
+                            for k in range(Self.CONFIG.ACT):
                                 self.action_plan_host_buf[
-                                    b * needed_actions * Self.ACT + ti * Self.ACT + k
+                                    b * needed_actions * Self.CONFIG.ACT + ti * Self.CONFIG.ACT + k
                                 ] = state.actions_host[
-                                    b * Self.T * Self.ACT + ti * Self.ACT + k
+                                    b * Self.CONFIG.T * Self.CONFIG.ACT + ti * Self.CONFIG.ACT + k
                                 ]
                 else:
-                    for b in range(Self.BATCH):
+                    for b in range(Self.CONFIG.BATCH):
                         for ti in range(needed_actions):
                             var r_act = Int(
-                                random_float64() * Float64(Self.ACT)
+                                random_float64() * Float64(Self.CONFIG.ACT)
                             )
-                            if r_act >= Self.ACT:
-                                r_act = Self.ACT - 1
-                            for k in range(Self.ACT):
+                            if r_act >= Self.CONFIG.ACT:
+                                r_act = Self.CONFIG.ACT - 1
+                            for k in range(Self.CONFIG.ACT):
                                 self.action_plan_host_buf[
-                                    b * needed_actions * Self.ACT
-                                    + ti * Self.ACT + k
+                                    b * needed_actions * Self.CONFIG.ACT
+                                    + ti * Self.CONFIG.ACT + k
                                 ] = (
                                     Scalar[dtype](1.0)
                                     if k == r_act
                                     else Scalar[dtype](0.0)
                                 )
 
-                # Stage action_plan to (Self.BATCH, Self.T, Self.ACT) layout.
-                for b in range(Self.BATCH):
+                # Stage action_plan to (Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.ACT) layout.
+                for b in range(Self.CONFIG.BATCH):
                     for ti in range(needed_actions):
-                        for k in range(Self.ACT):
+                        for k in range(Self.CONFIG.ACT):
                             self.action_plan_stage_host[
-                                b * Self.T * Self.ACT + ti * Self.ACT + k
+                                b * Self.CONFIG.T * Self.CONFIG.ACT + ti * Self.CONFIG.ACT + k
                             ] = self.action_plan_host_buf[
-                                b * needed_actions * Self.ACT + ti * Self.ACT + k
+                                b * needed_actions * Self.CONFIG.ACT + ti * Self.CONFIG.ACT + k
                             ]
-                    for t_pad in range(Self.T - needed_actions):
-                        for k in range(Self.ACT):
+                    for t_pad in range(Self.CONFIG.T - needed_actions):
+                        for k in range(Self.CONFIG.ACT):
                             self.action_plan_stage_host[
-                                b * Self.T * Self.ACT
-                                + (needed_actions + t_pad) * Self.ACT + k
+                                b * Self.CONFIG.T * Self.CONFIG.ACT
+                                + (needed_actions + t_pad) * Self.CONFIG.ACT + k
                             ] = Scalar[dtype](0.0)
                 ctx.enqueue_copy(
                     self.action_plan_dev_buf, self.action_plan_stage_host
                 )
 
                 var l = _run_mpc_shot[
-                    Self.BATCH, Self.T, Self.H, Self.EMB, Self.ACT, Self.SMOOTHED, Self.PROJ_H,
-                    Self.PRED_HEADS, Self.PRED_FF, Self.DEPTH,
+                    Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB, Self.CONFIG.ACT, Self.CONFIG.SMOOTHED, Self.CONFIG.PROJ_H,
+                    Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
                 ](
                     ctx,
                     self.mpc_horizon, needed_actions,
@@ -510,9 +488,9 @@ struct CEMPlanner[
             if cem_active:
                 print("  -- CEM eval iter", eval_iter, "--")
                 var cem_score = _run_cem_eval_iter[
-                    Self.BATCH, Self.T, Self.H, Self.EMB, Self.ACT,
-                    Self.SMOOTHED, Self.PROJ_H,
-                    Self.PRED_HEADS, Self.PRED_FF, Self.DEPTH,
+                    Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB, Self.CONFIG.ACT,
+                    Self.CONFIG.SMOOTHED, Self.CONFIG.PROJ_H,
+                    Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
                 ](
                     ctx,
                     self.mpc_horizon, needed_actions,

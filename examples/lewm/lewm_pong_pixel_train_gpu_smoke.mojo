@@ -1,8 +1,9 @@
 """Smoke for the LeWM GPU trainer on Pong (tiny config).
 
-BATCH=4, T=4, DEPTH=2 — meant for sub-minute compile + a short training
-run that exercises the full pipeline (encoder + cond_blocks + projector
-+ all eval phases) without burning real time. Writes a checkpoint to
+Uses `LeWMPongViTConfig` defaults (BATCH=4, T=4, DEPTH=2, IN_CH=4,
+IMG=84, PATCH=14, HIDDEN=32, EMB=32, …). Sub-minute compile + 200-step
+training run exercising the full pipeline (encoder + cond_blocks +
+projector + all eval phases). Writes a checkpoint to
 /tmp/lewm_pong_smoke.ckpt for the eval-only smoke
 (`lewm_pong_pixel_eval_gpu_smoke.mojo`) to consume.
 
@@ -11,18 +12,11 @@ Run:
 """
 
 from mojo_rl.experimental.lewm.offline_trainer import train_lewm_offline_gpu
+from mojo_rl.experimental.lewm.lewm_config import LeWMPongViTConfig
 
 
 def main() raises:
-    train_lewm_offline_gpu[
-        BATCH=4, T=4, H=3, N_PREDS=1,
-        IN_CH=4, IMG=84, PATCH=14, N_PATCHES=36,
-        HIDDEN=32, ENC_HEADS=2, ENC_LAYERS=1, EMB=32, PROJ_H=64,
-        ACT=3, SMOOTHED=16,
-        PRED_HEADS=2, PRED_FF=64,
-        DEPTH=2,
-        SIG_NUM_PROJ=64, SIG_KNOTS=5,
-    ](
+    train_lewm_offline_gpu[LeWMPongViTConfig[]](
         buffer_path=String("/tmp/lewm_pong_buffer.bin"),
         num_steps=200,
         log_every=50,

@@ -1,8 +1,8 @@
-"""LeWM trainer (struct-based v2) on Pong pixels — scaled config.
+"""LeWM trainer on Pong pixels — scaled config.
 
-Same compile-time params as `lewm_pong_pixel_train_gpu.mojo` but routes
-through `train_lewm_offline_gpu` (struct-based) so DEPTH=6 actually
-builds without OOMing Mojo's compiler.
+DEPTH=6, HIDDEN=96, EMB=96 — paper-shaped training run. ~80 min on
+Apple, ~50 min on NVIDIA. Writes a checkpoint to /tmp/lewm_pong.ckpt
+that `lewm_pong_pixel_eval_gpu.mojo` consumes.
 
 Run:
     pixi run -e apple  mojo run -I . examples/lewm/lewm_pong_pixel_train_gpu.mojo
@@ -10,18 +10,19 @@ Run:
 """
 
 from mojo_rl.experimental.lewm.offline_trainer import train_lewm_offline_gpu
+from mojo_rl.experimental.lewm.lewm_config import LeWMPongViTConfig
 
 
 def main() raises:
-    train_lewm_offline_gpu[
-        BATCH=16, T=6, H=4, N_PREDS=1,
-        IN_CH=4, IMG=84, PATCH=14, N_PATCHES=36,
-        HIDDEN=96, ENC_HEADS=4, ENC_LAYERS=2,
-        EMB=96, PROJ_H=256,
-        ACT=3, SMOOTHED=32,
-        PRED_HEADS=4, PRED_FF=256,
-        DEPTH=6,
-    ](
+    train_lewm_offline_gpu[LeWMPongViTConfig[
+        batch=16, t=6, h=4,
+        hidden=96, enc_heads=4, enc_layers=2,
+        emb=96, proj_h=256,
+        smoothed=32,
+        pred_heads=4, pred_ff=256,
+        depth=6,
+        sig_num_proj=1024, sig_knots=17,
+    ]](
         buffer_path=String("/tmp/lewm_pong_buffer.bin"),
         num_steps=8000,
         log_every=200,

@@ -1,11 +1,7 @@
 """LeWM eval-only driver — PushT, smoke config.
 
 Loads the checkpoint written by `lewm_pusht_pixel_train_gpu_smoke.mojo`
-and runs only the eval phases. Skips the slow encoder forward pass on
-training batches — only the eval-time encoding + MPC shots, which fit
-in seconds.
-
-Comptime params MUST match the training driver that wrote the checkpoint.
+and runs only the eval phases. CONFIG must match the training driver.
 
 Run:
     pixi run -e apple mojo run -I . examples/lewm/lewm_pusht_pixel_eval_gpu_smoke.mojo
@@ -14,19 +10,11 @@ Run:
 from mojo_rl.experimental.lewm.offline_trainer import (
     eval_lewm_offline_gpu_pusht,
 )
+from mojo_rl.experimental.lewm.lewm_config import LeWMPushTViTConfig
 
 
 def main() raises:
-    eval_lewm_offline_gpu_pusht[
-        BATCH=4, T=4, H=3, N_PREDS=1,
-        IN_CH=3, IMG=224, PATCH=14, N_PATCHES=256,
-        HIDDEN=96, ENC_HEADS=4, ENC_LAYERS=2,
-        EMB=96, PROJ_H=256,
-        ACT=10, SMOOTHED=32,
-        PRED_HEADS=4, PRED_FF=256,
-        DEPTH=2,
-        FRAMESKIP=5, ACTION_DIM=2,
-    ](
+    eval_lewm_offline_gpu_pusht[LeWMPushTViTConfig[]](
         checkpoint_path=String("/tmp/lewm_pusht_smoke.ckpt"),
         eval_steps=3,
         eval_samples=8,
