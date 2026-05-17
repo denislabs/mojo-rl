@@ -77,6 +77,52 @@ comptime TPB_Y = 4
 comptime TPB_Z = 16
 
 
+# =============================================================================
+# Pixel conversion kernel: uint8 (HWC or CHW) -> fp32 CHW + /255 normalize.
+#
+# Replaces the host-side scalar HWC->CHW permute + uint8->fp32 conversion
+# loops with one GPU kernel pass. One thread per output element. Source
+# layout is selected at compile time via INPUT_LAYOUT_HWC (true for the
+# PushT HDF5 path, false for the Pong replay buffer).
+# =============================================================================
+
+
+def pixels_uint8_to_fp32_kernel[
+    BT: Int, IN_CH: Int, IMG: Int, INPUT_LAYOUT_HWC: Bool,
+](
+    src_u8: LayoutTensor[
+        DType.uint8,
+        Layout.row_major(BT, IN_CH * IMG * IMG),
+        MutAnyOrigin,
+    ],
+    dst_fp32: LayoutTensor[
+        dtype,
+        Layout.row_major(BT, IN_CH * IMG * IMG),
+        MutAnyOrigin,
+    ],
+):
+    var bt = Int(global_idx.x)
+    var c = Int(global_idx.y)
+    var hw = Int(global_idx.z)
+    if bt >= BT or c >= IN_CH or hw >= IMG * IMG:
+        return
+
+    var h = hw // IMG
+    var w = hw - h * IMG
+
+    var src_offset_in_frame: Int
+    comptime if INPUT_LAYOUT_HWC:
+        src_offset_in_frame = h * (IMG * IN_CH) + w * IN_CH + c
+    else:
+        src_offset_in_frame = c * (IMG * IMG) + h * IMG + w
+
+    var dst_offset_in_frame = c * (IMG * IMG) + h * IMG + w
+    var byte_val = src_u8[bt, src_offset_in_frame]
+    dst_fp32[bt, dst_offset_in_frame] = (
+        Scalar[dtype](Int(byte_val)) * Scalar[dtype](1.0 / 255.0)
+    )
+
+
 # Slice first H tokens out of a (BATCH * T, EMB) source into a (BATCH * H, EMB)
 # destination. Used to extract the predictor's H-token context from both the
 # encoder embeddings and the action embeddings.
