@@ -1,7 +1,7 @@
 """LeWM PushT — nsys profiling driver.
 
 Same comptime config as the scaled training driver
-(`lewm_pusht_pixel_train_gpu_v2.mojo`) so the kernel landscape, batch
+(`lewm_pusht_pixel_train_gpu.mojo`) so the kernel landscape, batch
 sizes, and shape-dependent autotuning are identical to production. But:
 
 - `num_steps=50` (not 8000) — long enough to clear warmup and produce
@@ -20,7 +20,7 @@ Run (NVIDIA, capture trace + inline stats):
         --stats=true \\
         -o lewm_pusht_profile \\
         pixi run -e nvidia mojo run -I . \\
-            examples/lewm/lewm_pusht_pixel_profile_gpu_v2.mojo
+            examples/lewm/lewm_pusht_pixel_profile_gpu.mojo
 
 Then open `lewm_pusht_profile.nsys-rep` in Nsight Systems.
 
@@ -44,19 +44,19 @@ scaled Pong driver (which uses an in-RAM uint8 buffer, no disk I/O):
 
     nsys profile -t cuda,nvtx,osrt --stats=true -o lewm_pong_profile \\
         pixi run -e nvidia mojo run -I . \\
-            examples/lewm/lewm_pong_pixel_train_gpu_v2.mojo
+            examples/lewm/lewm_pong_pixel_train_gpu.mojo
 
 The CPU↔GPU gap difference between the two profiles is exactly the
 PushT-specific cost (disk + larger frame size).
 """
 
-from mojo_rl.experimental.lewm.trainer_struct import (
-    train_lewm_offline_gpu_pusht_v2,
+from mojo_rl.experimental.lewm.offline_trainer import (
+    train_lewm_offline_gpu_pusht,
 )
 
 
 def main() raises:
-    train_lewm_offline_gpu_pusht_v2[
+    train_lewm_offline_gpu_pusht[
         BATCH=16, T=4, H=3, N_PREDS=1,
         IN_CH=3, IMG=224, PATCH=14, N_PATCHES=256,
         HIDDEN=96, ENC_HEADS=4, ENC_LAYERS=2,

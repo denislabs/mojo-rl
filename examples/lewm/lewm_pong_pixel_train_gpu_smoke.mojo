@@ -1,13 +1,16 @@
-"""Tiny GPU smoke for SIGReg + dual-branch + DEPTH-stacked LeWM trainer.
+"""Smoke for the LeWM GPU trainer on Pong (tiny config).
 
-200 steps at toy config + DEPTH=2 — checks the depth loop actually fires
-through 2 stacked dual-branch (MSA+MLP) cond_blocks end-to-end.
+BATCH=4, T=4, DEPTH=2 — meant for sub-minute compile + a short training
+run that exercises the full pipeline (encoder + cond_blocks + projector
++ all eval phases) without burning real time. Writes a checkpoint to
+/tmp/lewm_pong_smoke.ckpt for the eval-only smoke
+(`lewm_pong_pixel_eval_gpu_smoke.mojo`) to consume.
 
 Run:
     pixi run -e apple mojo run -I . examples/lewm/lewm_pong_pixel_train_gpu_smoke.mojo
 """
 
-from mojo_rl.experimental.lewm.train_offline_gpu import train_lewm_offline_gpu
+from mojo_rl.experimental.lewm.offline_trainer import train_lewm_offline_gpu
 
 
 def main() raises:
@@ -25,15 +28,13 @@ def main() raises:
         log_every=50,
         rng_seed=0xCAFE,
         lambda_sigreg=0.09,
-        # Phase 4b: 3 iters x 8 random shots, autoregressive MPC horizon=2.
-        # Smoke config T=4, H=3 -> max mpc_horizon = T - H + 1 = 2.
         eval_steps=3,
         eval_samples=8,
         eval_seed=0xBEEF,
         mpc_horizon=2,
-        # Phase 4c: CEM with 2 iters x 16 samples, top-4.
         cem_iters=2,
         cem_samples=16,
         cem_topk=4,
         cem_smoothing=0.5,
+        checkpoint_path=String("/tmp/lewm_pong_smoke.ckpt"),
     )

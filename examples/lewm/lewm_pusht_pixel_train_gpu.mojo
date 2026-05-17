@@ -17,17 +17,17 @@ H7 closed-loop drift on this config will hit rollout_steps = T - H = 1
 (sanity only). Bump T to 6 (and H to 3 or 4) to get a real drift curve.
 
 Run:
-    pixi run -e apple  mojo run -I . examples/lewm/lewm_pusht_pixel_train_gpu_v2.mojo
-    pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_pixel_train_gpu_v2.mojo
+    pixi run -e apple  mojo run -I . examples/lewm/lewm_pusht_pixel_train_gpu.mojo
+    pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_pixel_train_gpu.mojo
 """
 
-from mojo_rl.experimental.lewm.trainer_struct import (
-    train_lewm_offline_gpu_pusht_v2,
+from mojo_rl.experimental.lewm.offline_trainer import (
+    train_lewm_offline_gpu_pusht,
 )
 
 
 def main() raises:
-    train_lewm_offline_gpu_pusht_v2[
+    train_lewm_offline_gpu_pusht[
         BATCH=16, T=4, H=3, N_PREDS=1,
         IN_CH=3, IMG=224, PATCH=14, N_PATCHES=256,
         HIDDEN=96, ENC_HEADS=4, ENC_LAYERS=2,
@@ -48,6 +48,6 @@ def main() raises:
         cem_samples=64,
         cem_topk=8,
         cem_smoothing=0.5,
-        checkpoint_path=String("/tmp/lewm_pusht_v2.ckpt"),
+        checkpoint_path=String("/tmp/lewm_pusht.ckpt"),
         checkpoint_every=2000,
     )

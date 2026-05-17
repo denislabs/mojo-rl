@@ -12,7 +12,7 @@ Provides the two primitives the LeWMGPUState save/load methods use:
 
 The trainer-level orchestration (walking the 4 shared networks +
 3*DEPTH-fold cond_block stack) lives as methods directly on
-`LeWMGPUState` in `trainer_struct.mojo`, because Mojo nightly requires
+`LeWMGPUState` in `offline_trainer.mojo`, because Mojo nightly requires
 field access on a typed self rather than on a duck-typed comptime param.
 """
 

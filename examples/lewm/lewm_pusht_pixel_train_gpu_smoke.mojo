@@ -13,17 +13,17 @@ The encoder workload is ~7x heavier than Pong's 36-patch config; expect
 this smoke run to be slower than the Pong v2 smoke at the same step count.
 
 Run:
-    pixi run -e apple  mojo run -I . examples/lewm/lewm_pusht_pixel_train_gpu_smoke_v2.mojo
-    pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_pixel_train_gpu_smoke_v2.mojo
+    pixi run -e apple  mojo run -I . examples/lewm/lewm_pusht_pixel_train_gpu_smoke.mojo
+    pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_pixel_train_gpu_smoke.mojo
 """
 
-from mojo_rl.experimental.lewm.trainer_struct import (
-    train_lewm_offline_gpu_pusht_v2,
+from mojo_rl.experimental.lewm.offline_trainer import (
+    train_lewm_offline_gpu_pusht,
 )
 
 
 def main() raises:
-    train_lewm_offline_gpu_pusht_v2[
+    train_lewm_offline_gpu_pusht[
         BATCH=4, T=4, H=3, N_PREDS=1,
         IN_CH=3, IMG=224, PATCH=14, N_PATCHES=256,
         HIDDEN=96, ENC_HEADS=4, ENC_LAYERS=2,
@@ -44,5 +44,5 @@ def main() raises:
         cem_samples=16,
         cem_topk=4,
         cem_smoothing=0.5,
-        checkpoint_path=String("/tmp/lewm_pusht_smoke_v2.ckpt"),
+        checkpoint_path=String("/tmp/lewm_pusht_smoke.ckpt"),
     )

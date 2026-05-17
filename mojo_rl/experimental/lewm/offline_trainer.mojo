@@ -1,7 +1,6 @@
-"""LeWM offline trainer — struct-based refactor of train_offline_gpu.
+"""LeWM offline trainer — struct-based GPU training loop.
 
-This is a structural split of `train_lewm_offline_gpu` (the giant `def`
-in `train_offline_gpu.mojo`) into two structs:
+Two structs:
 
   - `LeWMGPUState[...]` — owns all GPU device/host buffers + per-model
     GPUNetworkStates. Comptime aliases for every model type are hoisted
@@ -10,22 +9,26 @@ in `train_offline_gpu.mojo`) into two structs:
 
   - `LeWMTrainer[..., BUF]` — owns a clip/window buffer, hyperparams,
     and per-run scalar EMAs. `BUF` is a comptime type parameter that must
-    expose `sample_batch_fp32(B, T, pixels_out, actions_out) raises` and
-    a `n_frames: Int` field (see `pong_buffer.PongBuffer` and
-    `pusht_sampler.LewmPushTSampler`). Each phase of the original def
-    becomes its own method (`train_step`, `eval_h6`,
-    `eval_random_shots`, `eval_mpc_cem`, `run`).
+    conform to `LeWMBuffer` (see `lewm_buffer.LeWMBuffer`): expose
+    `INPUT_LAYOUT_HWC: Bool` comptime field and
+    `sample_batch_uint8(B, T, pixels_u8_out, actions_out) raises` method.
+    Concrete buffers: `pong_buffer.PongBuffer` (in-RAM CHW uint8) and
+    `pusht_sampler.LewmPushTSampler` (HDF5-backed HWC uint8). Each phase
+    of training becomes its own method (`train_step`, `eval_h6`,
+    `eval_random_shots`, `eval_mpc_cem`, `eval_h7_closed_loop_drift`,
+    `run`, `run_eval`).
 
-`train_lewm_offline_gpu_v2` (Pong) and `train_lewm_offline_gpu_pusht_v2`
+`train_lewm_offline_gpu` (Pong) and `train_lewm_offline_gpu_pusht`
 (PushT HDF5) are the thin entry points that construct the appropriate
-buffer + state + trainer and call `trainer.run(...)`. The old
-`train_lewm_offline_gpu` def remains in `train_offline_gpu.mojo`
-unchanged.
+buffer + state + trainer and call `trainer.run(...)`. `eval_lewm_offline_gpu`
++ `eval_lewm_offline_gpu_pusht` are the checkpoint-load + eval-only
+counterparts.
 
-All module-level helpers (run_cond_layer_forward/backward,
-_run_eval_shot_forward, _run_h6_diag_shots, _run_mpc_shot,
-_run_cem_eval_iter) and the GPU kernels are imported from the original
-file — this refactor does not touch them.
+Module-level GPU kernels and per-layer / per-shot orchestration helpers
+(run_cond_layer_forward/backward, _run_eval_shot_forward,
+_run_h6_diag_shots, _run_mpc_shot, _run_cem_eval_iter, plus the 9
+kernels) live in `kernels.mojo` — kept module-level on purpose
+because inlining them explodes Mojo compile time.
 """
 
 from std.math import abs, sqrt, ceildiv
@@ -74,7 +77,7 @@ from ...nn.checkpoint import (
     read_metadata_section,
     save_checkpoint_file,
 )
-from .train_offline_gpu import (
+from .kernels import (
     run_cond_layer_forward, run_cond_layer_backward,
     _run_eval_shot_forward, _run_h6_diag_shots, _run_mpc_shot, _run_cem_eval_iter,
     slice_h_kernel, scatter_h_kernel, scatter_target_neg_kernel,
@@ -2717,8 +2720,8 @@ struct LeWMTrainer[
     ) raises:
         """Run all eval phases without training (assumes weights are loaded).
 
-        Used by the eval-only entry points (`eval_lewm_offline_gpu_v2`,
-        `eval_lewm_offline_gpu_pusht_v2`). Mirrors the eval section at
+        Used by the eval-only entry points (`eval_lewm_offline_gpu`,
+        `eval_lewm_offline_gpu_pusht`). Mirrors the eval section at
         the end of `run()` so adding a new eval phase only needs one
         edit there.
         """
@@ -2837,7 +2840,7 @@ struct LeWMTrainer[
             self.eval_mpc_cem(state, ctx)
 
 
-def train_lewm_offline_gpu_v2[
+def train_lewm_offline_gpu[
     BATCH: Int,
     T: Int,
     H: Int,
@@ -2878,13 +2881,13 @@ def train_lewm_offline_gpu_v2[
     checkpoint_every: Int = 0,
     time_phases: Bool = False,
 ) raises:
-    """Struct-based v2 of train_lewm_offline_gpu.
+    """LeWM offline GPU trainer entry point — Pong.
 
-    Same behavior as the original `def` but split across LeWMGPUState +
-    LeWMTrainer to relieve Mojo compile-time bloat.
+    Constructs a `LeWMGPUState` + `LeWMTrainer[..., PongBuffer]` and
+    calls `trainer.run(...)`.
 
     `checkpoint_path` (non-empty) enables periodic + final checkpoint
-    writes, consumed by `eval_lewm_offline_gpu_v2`. `checkpoint_every`
+    writes, consumed by `eval_lewm_offline_gpu`. `checkpoint_every`
     controls intermediate cadence (0 = final-only).
     """
     comptime assert DEPTH >= 1, "DEPTH must be >= 1"
@@ -2910,7 +2913,7 @@ def train_lewm_offline_gpu_v2[
     trainer.run(state, ctx, num_steps, rng_seed, checkpoint_path^, checkpoint_every)
 
 
-def train_lewm_offline_gpu_pusht_v2[
+def train_lewm_offline_gpu_pusht[
     BATCH: Int,
     T: Int,
     H: Int,
@@ -2953,7 +2956,7 @@ def train_lewm_offline_gpu_pusht_v2[
     checkpoint_every: Int = 0,
     time_phases: Bool = False,
 ) raises:
-    """LeWM v2 trainer driven by the HuggingFace PushT expert dataset.
+    """LeWM offline GPU trainer entry point — PushT (HF expert dataset).
 
     First run auto-downloads `quentinll/lewm-pusht` (~13 GB compressed,
     decompresses to ~15-25 GB at `~/.cache/mojo_rl/lewm_pusht/`); set
@@ -2984,7 +2987,7 @@ def train_lewm_offline_gpu_pusht_v2[
     )
     if sampler.dataset.pixel_h != IMG or sampler.dataset.pixel_w != IMG:
         raise Error(
-            "train_lewm_offline_gpu_pusht_v2: dataset pixels are "
+            "train_lewm_offline_gpu_pusht: dataset pixels are "
             + String(sampler.dataset.pixel_h)
             + "x"
             + String(sampler.dataset.pixel_w)
@@ -2996,7 +2999,7 @@ def train_lewm_offline_gpu_pusht_v2[
         )
     if sampler.dataset.action_dim != ACTION_DIM:
         raise Error(
-            "train_lewm_offline_gpu_pusht_v2: dataset action_dim="
+            "train_lewm_offline_gpu_pusht: dataset action_dim="
             + String(sampler.dataset.action_dim)
             + " but trainer was built with ACTION_DIM="
             + String(ACTION_DIM)
@@ -3014,7 +3017,7 @@ def train_lewm_offline_gpu_pusht_v2[
     trainer.run(state, ctx, num_steps, rng_seed, checkpoint_path^, checkpoint_every)
 
 
-def eval_lewm_offline_gpu_v2[
+def eval_lewm_offline_gpu[
     BATCH: Int,
     T: Int,
     H: Int,
@@ -3052,7 +3055,7 @@ def eval_lewm_offline_gpu_v2[
 ) raises:
     """Load a Pong LeWM checkpoint and run only the eval phases.
 
-    Symmetric with `train_lewm_offline_gpu_v2` — same comptime params
+    Symmetric with `train_lewm_offline_gpu` — same comptime params
     must match the binary that wrote the checkpoint. Reuses
     `PongBuffer` (loaded fresh from `buffer_path`) for the eval-time
     clip sampling.
@@ -3088,7 +3091,7 @@ def eval_lewm_offline_gpu_v2[
     trainer.run_eval(state, ctx, eval_seed)
 
 
-def eval_lewm_offline_gpu_pusht_v2[
+def eval_lewm_offline_gpu_pusht[
     BATCH: Int,
     T: Int,
     H: Int,
@@ -3128,7 +3131,7 @@ def eval_lewm_offline_gpu_pusht_v2[
 ) raises:
     """Load a PushT LeWM checkpoint and run only the eval phases.
 
-    Symmetric with `train_lewm_offline_gpu_pusht_v2`. Comptime params
+    Symmetric with `train_lewm_offline_gpu_pusht`. Comptime params
     must match the checkpoint's instantiation.
     """
     comptime assert DEPTH >= 1, "DEPTH must be >= 1"
@@ -3152,7 +3155,7 @@ def eval_lewm_offline_gpu_pusht_v2[
     )
     if sampler.dataset.pixel_h != IMG or sampler.dataset.pixel_w != IMG:
         raise Error(
-            "eval_lewm_offline_gpu_pusht_v2: dataset pixels are "
+            "eval_lewm_offline_gpu_pusht: dataset pixels are "
             + String(sampler.dataset.pixel_h)
             + "x"
             + String(sampler.dataset.pixel_w)

@@ -5,7 +5,7 @@ implementations are `PongBuffer` (in-memory uint8 CHW frames) and
 `LewmPushTSampler` (HDF5-backed expert clips in HWC uint8). The trait
 exposes a uint8 sampling path so the heavy host work (HWC→CHW permute +
 uint8→fp32 normalize) can be lifted into a GPU kernel — see
-`pixels_uint8_to_fp32_kernel` in `trainer_struct.mojo`.
+`pixels_uint8_to_fp32_kernel` in `offline_trainer.mojo`.
 
 Conformant implementations declare their pixel layout via the comptime
 field `INPUT_LAYOUT_HWC`:

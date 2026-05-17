@@ -1,6 +1,6 @@
 """LeWM PushT sampler — adapts `LewmPushTExpert` to the LeWMBuffer uint8 API.
 
-The LeWM trainer (`trainer_struct.mojo`) is generic on its buffer type
+The LeWM trainer (`offline_trainer.mojo`) is generic on its buffer type
 and requires (per `lewm_buffer.LeWMBuffer`):
 
     .INPUT_LAYOUT_HWC: Bool   (comptime)

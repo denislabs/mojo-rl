@@ -1,6 +1,6 @@
 """LeWM eval-only driver — PushT, scaled config.
 
-Loads the checkpoint written by `lewm_pusht_pixel_train_gpu_v2.mojo` and
+Loads the checkpoint written by `lewm_pusht_pixel_train_gpu.mojo` and
 runs only the eval phases. No training cost — runs in minutes vs the
 multi-hour training.
 
@@ -10,17 +10,17 @@ MPC variants, longer rollouts via larger T) without burning compute.
 Comptime params MUST match the training driver that wrote the checkpoint.
 
 Run:
-    pixi run -e apple  mojo run -I . examples/lewm/lewm_pusht_pixel_eval_gpu_v2.mojo
-    pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_pixel_eval_gpu_v2.mojo
+    pixi run -e apple  mojo run -I . examples/lewm/lewm_pusht_pixel_eval_gpu.mojo
+    pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_pixel_eval_gpu.mojo
 """
 
-from mojo_rl.experimental.lewm.trainer_struct import (
-    eval_lewm_offline_gpu_pusht_v2,
+from mojo_rl.experimental.lewm.offline_trainer import (
+    eval_lewm_offline_gpu_pusht,
 )
 
 
 def main() raises:
-    eval_lewm_offline_gpu_pusht_v2[
+    eval_lewm_offline_gpu_pusht[
         BATCH=16,
         T=4,
         H=3,
@@ -42,7 +42,7 @@ def main() raises:
         FRAMESKIP=5,
         ACTION_DIM=2,
     ](
-        checkpoint_path="lewm_pusht_v2.ckpt",
+        checkpoint_path="lewm_pusht.ckpt",
         eval_steps=10,
         eval_samples=32,
         eval_seed=0xBEEF,
