@@ -19,3 +19,4 @@ from .noise import (
     gumbel_sample,
     GaussianRng,
 )
+from .min_max_stats import MinMaxStats

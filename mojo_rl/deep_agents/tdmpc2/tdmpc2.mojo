@@ -71,6 +71,10 @@ from .state import (
 from .world_model import WorldModel, decode_value_batch_scalar
 from mojo_rl.core.logger import Logger, NoOpLogger
 from .mppi import plan, plan_gpu, plan_gpu_batched
+# Phase 2 strangler: new planner + adapter, opt-in via
+# `use_new_mppi_planner=True` on train_gpu.
+from .mppi_callback import TDMPC2RolloutCallback
+from mojo_rl.planners.trajectory import MPPIGPUBatched
 from .kernels import (
     tdmpc2_random_actions_kernel,
     tdmpc2_sample_actions_kernel,
@@ -1875,6 +1879,7 @@ struct TDMPC2Agent[
         print_every: Int = 50_000,
         use_mppi: Bool = True,
         updates_per_step: Int = 1,
+        use_new_mppi_planner: Bool = False,
     ) raises -> TrainingMetrics:
         """Train TD-MPC2 on GPU with GPU-native continuous action environments.
 
@@ -1897,6 +1902,13 @@ struct TDMPC2Agent[
                 step. The reference TD-MPC2 uses 1 update per env step. With
                 n_envs parallel environments, set to n_envs to match the
                 reference's 1:1 update-to-data ratio. Default: 1.
+            use_new_mppi_planner: Phase-2 strangler flag. If True, swap the
+                legacy ``plan_gpu_batched`` call for the new planner-package
+                path (``MPPIGPUBatched`` + ``TDMPC2RolloutCallback``). The
+                new path is built in parallel — both planners are
+                constructed and their episode-reset state is mirrored — so
+                A/B comparison against the legacy path is a flip of this
+                flag. Default: False (legacy path).
 
         Returns:
             TrainingMetrics with episode rewards and statistics.
@@ -2275,6 +2287,50 @@ struct TDMPC2Agent[
             env_prev_means.append(List[Float64]())
             env_t0_flags.append(True)
 
+        # ─── Phase-2 strangler: parallel new planner + callback ──────
+        # Constructed alongside the legacy `mppi_bufs` so call-site can
+        # A/B between paths via `use_new_mppi_planner`. Owns its own
+        # device scratch + per-env warm-start state (independent of the
+        # legacy env_prev_means / env_t0_flags lists). Both paths can
+        # coexist in one training run because the planner's warm-start
+        # is internal; setting `use_new_mppi_planner=True` switches the
+        # plan call entirely.
+        comptime NEW_MPPI_BATCH = n_envs * (
+            Self.num_samples + Self.num_pi_trajs
+        )
+        var new_callback = TDMPC2RolloutCallback[
+            Self.WM.DynModel,
+            Self.WMOpt,
+            Self.WM.RewModel,
+            Self.WMOpt,
+            Self.WM.PolModel,
+            Self.PIOpt,
+            Self.WM.QModel,
+            Self.WMOpt,
+            Self.LATENT,
+            Self.ACT,
+            Self.BINS,
+            Self.num_q,
+            NEW_MPPI_BATCH,
+        ](
+            ctx,
+            gs.dyn.params_view().ptr,
+            gs.rew.params_view().ptr,
+            gs.pol.params_view().ptr,
+            qt_param_ptrs,
+            gs.bins_buf.unsafe_ptr(),
+        )
+        var new_planner = MPPIGPUBatched[
+            Self.LATENT,
+            Self.ACT,
+            Self.H,
+            Self.num_samples,
+            Self.num_pi_trajs,
+            Self.num_elites,
+            Self.num_iterations,
+            n_envs,
+        ](ctx)
+
         # =================================================================
         # Initialize environments
         # =================================================================
@@ -2380,52 +2436,69 @@ struct TDMPC2Agent[
 
                 # Plan all envs in one batched GPU call (no per-env loop)
                 var mppi_seed = UInt32(total_steps * 1000003 + 7)
-                plan_gpu_batched[
-                    Self.OBS,
-                    Self.ACT,
-                    Self.LATENT,
-                    Self.mlp_dim,
-                    Self.BINS,
-                    Self.num_q,
-                    Self.simplex_dim,
-                    Self.v_min,
-                    Self.v_max,
-                    Self.H,
-                    Self.num_samples,
-                    Self.num_pi_trajs,
-                    Self.num_elites,
-                    Self.num_iterations,
-                    Self.WM.DynModel,
-                    Self.WMOpt,
-                    Self.WM.RewModel,
-                    Self.WMOpt,
-                    Self.WM.PolModel,
-                    Self.PIOpt,
-                    Self.WM.QModel,
-                    Self.WMOpt,
-                    n_envs,
-                ](
-                    ctx,
-                    env_z_tensor,
-                    dyn_params_tensor,
-                    rew_params_tensor,
-                    pol_params_tensor,
-                    qt_param_ptrs,
-                    bins_tensor,
-                    mppi_bufs,
-                    self.gamma,
-                    self.temperature,
-                    env_prev_means,
-                    env_t0_flags,
-                    LayoutTensor[
-                        dtype,
-                        Layout.row_major(n_envs * Self.ACT),
-                        MutAnyOrigin,
-                    ](gs.env_act_buf.unsafe_ptr()),
-                    self.action_scale,
-                    False,  # not deterministic (exploration)
-                    mppi_seed,
-                )
+                var out_act_view = LayoutTensor[
+                    dtype,
+                    Layout.row_major(n_envs * Self.ACT),
+                    MutAnyOrigin,
+                ](gs.env_act_buf.unsafe_ptr())
+                if use_new_mppi_planner:
+                    # New planner-package path (Phase 2). Same numerics
+                    # contract as legacy plan_gpu_batched; warm-start
+                    # state is internal to `new_planner`.
+                    new_planner.plan_gpu(
+                        ctx,
+                        new_callback,
+                        env_z_tensor,
+                        out_act_view,
+                        self.gamma,
+                        self.temperature,
+                        self.action_scale,
+                        False,  # not deterministic (exploration)
+                        mppi_seed,
+                    )
+                else:
+                    plan_gpu_batched[
+                        Self.OBS,
+                        Self.ACT,
+                        Self.LATENT,
+                        Self.mlp_dim,
+                        Self.BINS,
+                        Self.num_q,
+                        Self.simplex_dim,
+                        Self.v_min,
+                        Self.v_max,
+                        Self.H,
+                        Self.num_samples,
+                        Self.num_pi_trajs,
+                        Self.num_elites,
+                        Self.num_iterations,
+                        Self.WM.DynModel,
+                        Self.WMOpt,
+                        Self.WM.RewModel,
+                        Self.WMOpt,
+                        Self.WM.PolModel,
+                        Self.PIOpt,
+                        Self.WM.QModel,
+                        Self.WMOpt,
+                        n_envs,
+                    ](
+                        ctx,
+                        env_z_tensor,
+                        dyn_params_tensor,
+                        rew_params_tensor,
+                        pol_params_tensor,
+                        qt_param_ptrs,
+                        bins_tensor,
+                        mppi_bufs,
+                        self.gamma,
+                        self.temperature,
+                        env_prev_means,
+                        env_t0_flags,
+                        out_act_view,
+                        self.action_scale,
+                        False,  # not deterministic (exploration)
+                        mppi_seed,
+                    )
                 # action selection now happens inside plan_gpu_batched on
                 # GPU; env_act_buf is populated directly. No host roundtrip.
             else:
@@ -2536,6 +2609,10 @@ struct TDMPC2Agent[
                     if use_mppi:
                         env_t0_flags[env_idx] = True
                         env_prev_means[env_idx] = List[Float64]()
+                        # Phase-2 strangler: mirror the reset on the
+                        # new planner. No-op if the new path is unused
+                        # this run (state is just kept fresh).
+                        new_planner.start_episode(env_idx)
 
             if Bool(self.logger) and nb_done > 0:
                 try:
