@@ -80,6 +80,12 @@ from mojo_rl.cuda.graph import CUDAGraph
 from .configs import AlphaZeroConfig
 from .state import AlphaZeroCPUState, AlphaZeroGPUState
 
+# Phase 3 agent rewiring: optional path through the shared orchestrator.
+# Opt in per-config via ``Config.USE_NEW_MCTS = True``; default is the
+# legacy inline (CUDA-graph-capturable) path below.
+from mojo_rl.planners.tree_search import GenericGPUMCTS
+from .gpu_trait_adapters import AlphaZeroPredGPU, AlphaZeroEnvGPU
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # GPU Kernels for AlphaZero Training
@@ -3577,6 +3583,22 @@ struct GenericAlphaZeroAgent[
             Self.Config.batch_sims,
         ](ctx)
 
+        # Optional shared-orchestrator instance — only consulted when
+        # ``Self.Config.USE_NEW_MCTS`` is True (default False, legacy
+        # CUDA-graph-capturable path stays active). Allocated
+        # unconditionally to keep the surrounding body free of
+        # ``comptime if`` around state declarations. Currently the new
+        # path does NOT participate in CUDA Graph capture — opt in only
+        # on Apple or when graph capture is off.
+        var generic_planner = GenericGPUMCTS[
+            Self.n_envs, ACT, OBS, 1, MAX_NODES, SIMS,
+            Self.Config.batch_sims,
+            Self.Config.PUCT,
+            Self.Config.Noise,
+            Self.Config.Players,
+            E.STATE_SIZE,  # STATE_SIZE > 0 → AlphaZero path
+        ](ctx, gamma=0.997, v_min=-1.0, v_max=1.0)
+
         # Network workspace (sized for batched prediction: n_envs * BATCH_SIMS)
         comptime BATCH_SIMS_C = Self.Config.batch_sims
         comptime WS = Self.Config.PredModel.WORKSPACE_SIZE_PER_SAMPLE
@@ -3784,303 +3806,381 @@ struct GenericAlphaZeroAgent[
             while iter_steps < steps_per_iter:
                 # GPU MCTS with true game rules (obs stays on GPU)
                 if use_mcts:
-                    # Prediction on obs for root
-                    var pred_obs = LayoutTensor[
-                        dtype,
-                        Layout.row_major(Self.n_envs, PRED_IN),
-                        MutAnyOrigin,
-                    ](obs_buf.unsafe_ptr())
-                    var pred_out = LayoutTensor[
-                        dtype,
-                        Layout.row_major(Self.n_envs, PRED_OUT_DIM),
-                        MutAnyOrigin,
-                    ](gpu_mcts.pred_output.unsafe_ptr())
-                    Self.PredNet.forward_gpu[Self.n_envs](
-                        ctx,
-                        pred_obs,
-                        pred_out,
-                        gpu.prediction.params_view(),
-                        gpu.prediction.model_state_view(),
-                        mcts_ws,
-                    )
+                    comptime if Self.Config.USE_NEW_MCTS:
+                        # Phase 3 agent rewiring: drive the shared
+                        # ``GenericGPUMCTS`` orchestrator's AlphaZero
+                        # path. Does NOT participate in CUDA Graph
+                        # capture — leave ``USE_NEW_MCTS=False`` on
+                        # NVIDIA configs that need the graph path.
+                        var pred_a = AlphaZeroPredGPU[
+                            OBS,
+                            ACT,
+                            Self.Config.PredModel,
+                            Self.Config.OptType,
+                        ](
+                            params=gpu.prediction.params_buf.unsafe_ptr(),
+                            model_state=gpu.prediction.model_state_buf.unsafe_ptr(),
+                            workspace=mcts_ws,
+                        )
+                        var env_a = AlphaZeroEnvGPU[
+                            E, E.STATE_SIZE, OBS, ACT
+                        ]()
 
-                    # Init root
-                    comptime MCTS_PRED_OUT = ACT + 1
-                    var vc = LayoutTensor[
-                        dtype,
-                        Layout.row_major(Self.n_envs * MAX_NODES * ACT),
-                        MutAnyOrigin,
-                    ](gpu_mcts.visit_count.unsafe_ptr())
-                    var tv = LayoutTensor[
-                        dtype,
-                        Layout.row_major(Self.n_envs * MAX_NODES * ACT),
-                        MutAnyOrigin,
-                    ](gpu_mcts.total_value.unsafe_ptr())
-                    var pr = LayoutTensor[
-                        dtype,
-                        Layout.row_major(Self.n_envs * MAX_NODES * ACT),
-                        MutAnyOrigin,
-                    ](gpu_mcts.prior.unsafe_ptr())
-                    var rw = LayoutTensor[
-                        dtype,
-                        Layout.row_major(Self.n_envs * MAX_NODES * ACT),
-                        MutAnyOrigin,
-                    ](gpu_mcts.reward.unsafe_ptr())
-                    var ci = LayoutTensor[
-                        dtype,
-                        Layout.row_major(Self.n_envs * MAX_NODES * ACT),
-                        MutAnyOrigin,
-                    ](gpu_mcts.child_idx.unsafe_ptr())
-                    var tvis = LayoutTensor[
-                        dtype,
-                        Layout.row_major(Self.n_envs * MAX_NODES),
-                        MutAnyOrigin,
-                    ](gpu_mcts.total_visits.unsafe_ptr())
-                    var nc = LayoutTensor[
-                        dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                    ](gpu_mcts.node_count.unsafe_ptr())
-                    var po = LayoutTensor[
-                        dtype,
-                        Layout.row_major(Self.n_envs * MCTS_PRED_OUT),
-                        MutAnyOrigin,
-                    ](gpu_mcts.pred_output.unsafe_ptr())
-                    var miq = LayoutTensor[
-                        dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                    ](gpu_mcts.min_q.unsafe_ptr())
-                    var mxq = LayoutTensor[
-                        dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                    ](gpu_mcts.max_q.unsafe_ptr())
+                        var obs_t_new = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.n_envs, OBS),
+                            MutAnyOrigin,
+                        ](obs_buf.unsafe_ptr())
+                        var lm_t_new = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.n_envs * ACT),
+                            MutAnyOrigin,
+                        ](legal_masks_buf.unsafe_ptr())
 
-                    gpu_mcts.zero_tree(ctx)
+                        generic_planner.search_gpu_alphazero[
+                            AlphaZeroPredGPU[
+                                OBS,
+                                ACT,
+                                Self.Config.PredModel,
+                                Self.Config.OptType,
+                            ],
+                            AlphaZeroEnvGPU[E, E.STATE_SIZE, OBS, ACT],
+                        ](
+                            ctx,
+                            pred_a,
+                            env_a,
+                            obs_t_new,
+                            states_buf,
+                            lm_t_new,
+                            rng_seed=UInt64(total_steps),
+                        )
 
-                    # Increment GPU RNG counter for Dirichlet noise seed
-                    var _init_rng_t = LayoutTensor[
-                        DType.uint32, Layout.row_major(1), MutAnyOrigin
-                    ](gpu.env_rng_counter.unsafe_ptr())
-                    comptime run_incr_init = increment_rng_counter_kernel
-                    ctx.enqueue_function[run_incr_init](
-                        _init_rng_t,
-                        grid_dim=(1,),
-                        block_dim=(1,),
-                    )
+                        # Temperature-weighted action sampling with the
+                        # config-driven schedule.
+                        var ep_t_new = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.n_envs),
+                            MutAnyOrigin,
+                        ](ep_steps_buf.unsafe_ptr())
+                        generic_planner.extract_actions_temp[
+                            TEMP_THRESHOLD = Self.Config.temp_threshold
+                        ](
+                            ctx,
+                            ep_t_new,
+                            lm_t_new,
+                            rng_seed=UInt32(total_steps),
+                            temp_min=Self.Config.temp_min,
+                        )
 
-                    comptime run_init = az_init_root_gpu_rng_kernel[
-                        Self.n_envs, MAX_NODES, ACT, OBS, MCTS_PRED_OUT, dtype
-                    ]
-                    ctx.enqueue_function[run_init](
-                        vc,
-                        tv,
-                        pr,
-                        rw,
-                        ci,
-                        tvis,
-                        nc,
-                        po,
-                        miq,
-                        mxq,
-                        Scalar[dtype](Self.Config.Noise.NOISE_FRACTION),
-                        _init_rng_t,
-                        grid_dim=(ENV_BLOCKS,),
-                        block_dim=(TPB,),
-                    )
-
-                    # Apply legal mask on root prior
-                    var lm = LayoutTensor[
-                        dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
-                    ](legal_masks_buf.unsafe_ptr())
-                    comptime run_mask = gpu_mcts_apply_legal_mask_kernel[
-                        Self.n_envs, MAX_NODES, ACT, dtype
-                    ]
-                    ctx.enqueue_function[run_mask](
-                        pr, lm, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
-                    )
-
-                    # Copy root game states
-                    var gs = LayoutTensor[
-                        dtype,
-                        Layout.row_major(Self.n_envs * MAX_NODES * GS),
-                        MutAnyOrigin,
-                    ](gpu_mcts.game_states.unsafe_ptr())
-                    var es = LayoutTensor[
-                        dtype, Layout.row_major(Self.n_envs * GS), MutAnyOrigin
-                    ](states_buf.unsafe_ptr())
-                    comptime run_rs = gpu_mcts_copy_root_state_kernel[
-                        Self.n_envs, MAX_NODES, GS, dtype
-                    ]
-                    ctx.enqueue_function[run_rs](
-                        gs, es, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
-                    )
-
-                    # Batched simulations (BATCH_SIMS leaves per round)
-                    comptime BATCH_SIMS = Self.Config.batch_sims
-                    comptime NUM_ROUNDS = SIMS // BATCH_SIMS
-                    comptime TOTAL_EXPAND = Self.n_envs * BATCH_SIMS
-
-                    # Batched buffers [N_ENVS * BATCH_SIMS * ...]
-                    var b_pp = LayoutTensor[
-                        dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin
-                    ](gpu_mcts.pending_parent.unsafe_ptr())
-                    var b_pa = LayoutTensor[
-                        dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin
-                    ](gpu_mcts.pending_action.unsafe_ptr())
-                    var b_sp = LayoutTensor[
-                        dtype,
-                        Layout.row_major(TOTAL_EXPAND * MAX_DEPTH),
-                        MutAnyOrigin,
-                    ](gpu_mcts.search_paths.unsafe_ptr())
-                    var b_ap = LayoutTensor[
-                        dtype,
-                        Layout.row_major(TOTAL_EXPAND * MAX_DEPTH),
-                        MutAnyOrigin,
-                    ](gpu_mcts.action_paths.unsafe_ptr())
-                    var b_pl = LayoutTensor[
-                        dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin
-                    ](gpu_mcts.path_lengths.unsafe_ptr())
-                    var b_exp_st = LayoutTensor[
-                        dtype, Layout.row_major(TOTAL_EXPAND * GS), MutAnyOrigin
-                    ](gpu_mcts.expansion_states.unsafe_ptr())
-
-                    comptime if USE_CUDA_GRAPH and has_nvidia_gpu_accelerator():
-                        if not _mcts_round_graph:
-                            # Warmup: run one round without capture
-                            self._mcts_round_kernels[E](
-                                ctx,
-                                gpu,
-                                gpu_mcts,
-                                exp_rewards,
-                                exp_dones,
-                                exp_terminated,
-                                exp_obs,
-                                mcts_ws,
-                                vc,
-                                tv,
-                                pr,
-                                rw,
-                                ci,
-                                tvis,
-                                nc,
-                                miq,
-                                mxq,
-                                gs,
-                                b_pp,
-                                b_pa,
-                                b_exp_st,
-                                b_sp,
-                                b_ap,
-                                b_pl,
-                            )
-                            ctx.synchronize()
-                            # Capture
-                            var graph = CUDAGraph(ctx)
-                            graph.begin_capture()
-                            self._mcts_round_kernels[E](
-                                ctx,
-                                gpu,
-                                gpu_mcts,
-                                exp_rewards,
-                                exp_dones,
-                                exp_terminated,
-                                exp_obs,
-                                mcts_ws,
-                                vc,
-                                tv,
-                                pr,
-                                rw,
-                                ci,
-                                tvis,
-                                nc,
-                                miq,
-                                mxq,
-                                gs,
-                                b_pp,
-                                b_pa,
-                                b_exp_st,
-                                b_sp,
-                                b_ap,
-                                b_pl,
-                            )
-                            graph.end_capture()
-                            if verbose:
-                                print(
-                                    "[CUDA Graph] Captured MCTS round with "
-                                    + String(graph.num_nodes())
-                                    + " nodes"
-                                )
-                            _mcts_round_graph = graph^
-                            # Replay remaining rounds on Mojo stream
-                            # (preserves ordering with init_root/extract_actions)
-                            for _ in range(NUM_ROUNDS - 1):
-                                _mcts_round_graph.value().replay_on_mojo_stream()
-                        else:
-                            for _ in range(NUM_ROUNDS):
-                                _mcts_round_graph.value().replay_on_mojo_stream()
+                        # Wire orchestrator outputs into the agent
+                        # buffers downstream code reads. Stage code
+                        # reads ``gpu_mcts.policies_out`` so copy into
+                        # that too.
+                        ctx.enqueue_copy(
+                            actions_buf, generic_planner.actions_out
+                        )
+                        ctx.enqueue_copy(
+                            gpu_mcts.policies_out,
+                            generic_planner.policies_out,
+                        )
                     else:
-                        for _round in range(NUM_ROUNDS):
-                            self._mcts_round_kernels[E](
-                                ctx,
-                                gpu,
-                                gpu_mcts,
-                                exp_rewards,
-                                exp_dones,
-                                exp_terminated,
-                                exp_obs,
-                                mcts_ws,
-                                vc,
-                                tv,
-                                pr,
-                                rw,
-                                ci,
-                                tvis,
-                                nc,
-                                miq,
-                                mxq,
-                                gs,
-                                b_pp,
-                                b_pa,
-                                b_exp_st,
-                                b_sp,
-                                b_ap,
-                                b_pl,
-                            )
-
-                    # Extract actions with temperature annealing
-                    var act_out = LayoutTensor[
-                        dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                    ](actions_buf.unsafe_ptr())
-                    var pol_out = LayoutTensor[
-                        dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
-                    ](gpu_mcts.policies_out.unsafe_ptr())
-                    var ep_steps_t = LayoutTensor[
-                        dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                    ](ep_steps_buf.unsafe_ptr())
-                    # Increment GPU RNG counter (graph-safe)
-                    var _act_rng_t = LayoutTensor[
-                        DType.uint32, Layout.row_major(1), MutAnyOrigin
-                    ](gpu.env_rng_counter.unsafe_ptr())
-                    comptime run_incr_rng = increment_rng_counter_kernel
-                    ctx.enqueue_function[run_incr_rng](
-                        _act_rng_t,
-                        grid_dim=(1,),
-                        block_dim=(1,),
-                    )
-                    comptime run_act = az_extract_actions_temp_gpu_rng_kernel[
-                        Self.n_envs, MAX_NODES, ACT, dtype
-                    ]
-                    ctx.enqueue_function[run_act](
-                        vc,
-                        lm,
-                        ep_steps_t,
-                        act_out,
-                        pol_out,
-                        Self.Config.temp_threshold,
-                        _act_rng_t,
-                        Scalar[dtype](Self.Config.temp_min),
-                        grid_dim=(ENV_BLOCKS,),
-                        block_dim=(TPB,),
-                    )
-
-                    # Q-value blending is handled in az_flush_episodes_kernel
-                    # when Config.value_target_q_weight > 0 (future support)
+                        # Prediction on obs for root
+                        var pred_obs = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.n_envs, PRED_IN),
+                            MutAnyOrigin,
+                        ](obs_buf.unsafe_ptr())
+                        var pred_out = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.n_envs, PRED_OUT_DIM),
+                            MutAnyOrigin,
+                        ](gpu_mcts.pred_output.unsafe_ptr())
+                        Self.PredNet.forward_gpu[Self.n_envs](
+                            ctx,
+                            pred_obs,
+                            pred_out,
+                            gpu.prediction.params_view(),
+                            gpu.prediction.model_state_view(),
+                            mcts_ws,
+                        )
+    
+                        # Init root
+                        comptime MCTS_PRED_OUT = ACT + 1
+                        var vc = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.n_envs * MAX_NODES * ACT),
+                            MutAnyOrigin,
+                        ](gpu_mcts.visit_count.unsafe_ptr())
+                        var tv = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.n_envs * MAX_NODES * ACT),
+                            MutAnyOrigin,
+                        ](gpu_mcts.total_value.unsafe_ptr())
+                        var pr = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.n_envs * MAX_NODES * ACT),
+                            MutAnyOrigin,
+                        ](gpu_mcts.prior.unsafe_ptr())
+                        var rw = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.n_envs * MAX_NODES * ACT),
+                            MutAnyOrigin,
+                        ](gpu_mcts.reward.unsafe_ptr())
+                        var ci = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.n_envs * MAX_NODES * ACT),
+                            MutAnyOrigin,
+                        ](gpu_mcts.child_idx.unsafe_ptr())
+                        var tvis = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.n_envs * MAX_NODES),
+                            MutAnyOrigin,
+                        ](gpu_mcts.total_visits.unsafe_ptr())
+                        var nc = LayoutTensor[
+                            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                        ](gpu_mcts.node_count.unsafe_ptr())
+                        var po = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.n_envs * MCTS_PRED_OUT),
+                            MutAnyOrigin,
+                        ](gpu_mcts.pred_output.unsafe_ptr())
+                        var miq = LayoutTensor[
+                            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                        ](gpu_mcts.min_q.unsafe_ptr())
+                        var mxq = LayoutTensor[
+                            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                        ](gpu_mcts.max_q.unsafe_ptr())
+    
+                        gpu_mcts.zero_tree(ctx)
+    
+                        # Increment GPU RNG counter for Dirichlet noise seed
+                        var _init_rng_t = LayoutTensor[
+                            DType.uint32, Layout.row_major(1), MutAnyOrigin
+                        ](gpu.env_rng_counter.unsafe_ptr())
+                        comptime run_incr_init = increment_rng_counter_kernel
+                        ctx.enqueue_function[run_incr_init](
+                            _init_rng_t,
+                            grid_dim=(1,),
+                            block_dim=(1,),
+                        )
+    
+                        comptime run_init = az_init_root_gpu_rng_kernel[
+                            Self.n_envs, MAX_NODES, ACT, OBS, MCTS_PRED_OUT, dtype
+                        ]
+                        ctx.enqueue_function[run_init](
+                            vc,
+                            tv,
+                            pr,
+                            rw,
+                            ci,
+                            tvis,
+                            nc,
+                            po,
+                            miq,
+                            mxq,
+                            Scalar[dtype](Self.Config.Noise.NOISE_FRACTION),
+                            _init_rng_t,
+                            grid_dim=(ENV_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+    
+                        # Apply legal mask on root prior
+                        var lm = LayoutTensor[
+                            dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
+                        ](legal_masks_buf.unsafe_ptr())
+                        comptime run_mask = gpu_mcts_apply_legal_mask_kernel[
+                            Self.n_envs, MAX_NODES, ACT, dtype
+                        ]
+                        ctx.enqueue_function[run_mask](
+                            pr, lm, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+                        )
+    
+                        # Copy root game states
+                        var gs = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.n_envs * MAX_NODES * GS),
+                            MutAnyOrigin,
+                        ](gpu_mcts.game_states.unsafe_ptr())
+                        var es = LayoutTensor[
+                            dtype, Layout.row_major(Self.n_envs * GS), MutAnyOrigin
+                        ](states_buf.unsafe_ptr())
+                        comptime run_rs = gpu_mcts_copy_root_state_kernel[
+                            Self.n_envs, MAX_NODES, GS, dtype
+                        ]
+                        ctx.enqueue_function[run_rs](
+                            gs, es, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+                        )
+    
+                        # Batched simulations (BATCH_SIMS leaves per round)
+                        comptime BATCH_SIMS = Self.Config.batch_sims
+                        comptime NUM_ROUNDS = SIMS // BATCH_SIMS
+                        comptime TOTAL_EXPAND = Self.n_envs * BATCH_SIMS
+    
+                        # Batched buffers [N_ENVS * BATCH_SIMS * ...]
+                        var b_pp = LayoutTensor[
+                            dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin
+                        ](gpu_mcts.pending_parent.unsafe_ptr())
+                        var b_pa = LayoutTensor[
+                            dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin
+                        ](gpu_mcts.pending_action.unsafe_ptr())
+                        var b_sp = LayoutTensor[
+                            dtype,
+                            Layout.row_major(TOTAL_EXPAND * MAX_DEPTH),
+                            MutAnyOrigin,
+                        ](gpu_mcts.search_paths.unsafe_ptr())
+                        var b_ap = LayoutTensor[
+                            dtype,
+                            Layout.row_major(TOTAL_EXPAND * MAX_DEPTH),
+                            MutAnyOrigin,
+                        ](gpu_mcts.action_paths.unsafe_ptr())
+                        var b_pl = LayoutTensor[
+                            dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin
+                        ](gpu_mcts.path_lengths.unsafe_ptr())
+                        var b_exp_st = LayoutTensor[
+                            dtype, Layout.row_major(TOTAL_EXPAND * GS), MutAnyOrigin
+                        ](gpu_mcts.expansion_states.unsafe_ptr())
+    
+                        comptime if USE_CUDA_GRAPH and has_nvidia_gpu_accelerator():
+                            if not _mcts_round_graph:
+                                # Warmup: run one round without capture
+                                self._mcts_round_kernels[E](
+                                    ctx,
+                                    gpu,
+                                    gpu_mcts,
+                                    exp_rewards,
+                                    exp_dones,
+                                    exp_terminated,
+                                    exp_obs,
+                                    mcts_ws,
+                                    vc,
+                                    tv,
+                                    pr,
+                                    rw,
+                                    ci,
+                                    tvis,
+                                    nc,
+                                    miq,
+                                    mxq,
+                                    gs,
+                                    b_pp,
+                                    b_pa,
+                                    b_exp_st,
+                                    b_sp,
+                                    b_ap,
+                                    b_pl,
+                                )
+                                ctx.synchronize()
+                                # Capture
+                                var graph = CUDAGraph(ctx)
+                                graph.begin_capture()
+                                self._mcts_round_kernels[E](
+                                    ctx,
+                                    gpu,
+                                    gpu_mcts,
+                                    exp_rewards,
+                                    exp_dones,
+                                    exp_terminated,
+                                    exp_obs,
+                                    mcts_ws,
+                                    vc,
+                                    tv,
+                                    pr,
+                                    rw,
+                                    ci,
+                                    tvis,
+                                    nc,
+                                    miq,
+                                    mxq,
+                                    gs,
+                                    b_pp,
+                                    b_pa,
+                                    b_exp_st,
+                                    b_sp,
+                                    b_ap,
+                                    b_pl,
+                                )
+                                graph.end_capture()
+                                if verbose:
+                                    print(
+                                        "[CUDA Graph] Captured MCTS round with "
+                                        + String(graph.num_nodes())
+                                        + " nodes"
+                                    )
+                                _mcts_round_graph = graph^
+                                # Replay remaining rounds on Mojo stream
+                                # (preserves ordering with init_root/extract_actions)
+                                for _ in range(NUM_ROUNDS - 1):
+                                    _mcts_round_graph.value().replay_on_mojo_stream()
+                            else:
+                                for _ in range(NUM_ROUNDS):
+                                    _mcts_round_graph.value().replay_on_mojo_stream()
+                        else:
+                            for _round in range(NUM_ROUNDS):
+                                self._mcts_round_kernels[E](
+                                    ctx,
+                                    gpu,
+                                    gpu_mcts,
+                                    exp_rewards,
+                                    exp_dones,
+                                    exp_terminated,
+                                    exp_obs,
+                                    mcts_ws,
+                                    vc,
+                                    tv,
+                                    pr,
+                                    rw,
+                                    ci,
+                                    tvis,
+                                    nc,
+                                    miq,
+                                    mxq,
+                                    gs,
+                                    b_pp,
+                                    b_pa,
+                                    b_exp_st,
+                                    b_sp,
+                                    b_ap,
+                                    b_pl,
+                                )
+    
+                        # Extract actions with temperature annealing
+                        var act_out = LayoutTensor[
+                            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                        ](actions_buf.unsafe_ptr())
+                        var pol_out = LayoutTensor[
+                            dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
+                        ](gpu_mcts.policies_out.unsafe_ptr())
+                        var ep_steps_t = LayoutTensor[
+                            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                        ](ep_steps_buf.unsafe_ptr())
+                        # Increment GPU RNG counter (graph-safe)
+                        var _act_rng_t = LayoutTensor[
+                            DType.uint32, Layout.row_major(1), MutAnyOrigin
+                        ](gpu.env_rng_counter.unsafe_ptr())
+                        comptime run_incr_rng = increment_rng_counter_kernel
+                        ctx.enqueue_function[run_incr_rng](
+                            _act_rng_t,
+                            grid_dim=(1,),
+                            block_dim=(1,),
+                        )
+                        comptime run_act = az_extract_actions_temp_gpu_rng_kernel[
+                            Self.n_envs, MAX_NODES, ACT, dtype
+                        ]
+                        ctx.enqueue_function[run_act](
+                            vc,
+                            lm,
+                            ep_steps_t,
+                            act_out,
+                            pol_out,
+                            Self.Config.temp_threshold,
+                            _act_rng_t,
+                            Scalar[dtype](Self.Config.temp_min),
+                            grid_dim=(ENV_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+    
+                        # Q-value blending is handled in az_flush_episodes_kernel
+                        # when Config.value_target_q_weight > 0 (future support)
                 else:
                     # Warmup: random legal actions
                     comptime run_warmup = uniform_random_discrete_actions_kernel[

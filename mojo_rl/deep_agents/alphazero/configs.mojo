@@ -177,6 +177,7 @@ struct AlphaZeroTicTacToeConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = D4SquareAugmenter[3, 3]
+    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -247,6 +248,7 @@ struct AlphaZeroTicTacToeCNNConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = D4SquareAugmenter[3, 3]
+    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -302,6 +304,7 @@ struct AlphaZeroConnectFourConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = HFlipColumnAugmenter[6, 7, 3]
+    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -381,6 +384,7 @@ struct AlphaZeroConnectFourCNNConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = HFlipColumnAugmenter[6, 7, 3]
+    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -500,6 +504,7 @@ struct AlphaZeroConnectFourResNetConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = HFlipColumnAugmenter[6, 7, 3]
+    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -583,6 +588,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = HFlipColumnAugmenter[6, 7, 3]
+    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -648,6 +654,7 @@ struct AlphaZeroTicTacToeResNetConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = D4SquareAugmenter[3, 3]
+    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -704,6 +711,7 @@ struct AlphaZeroChessConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = IdentityAugmenter
+    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -767,3 +775,4 @@ struct AlphaZeroCartPoleConfig[
     comptime Players = SinglePlayer
     comptime Backup = MonteCarloReturn
     comptime Aug = IdentityAugmenter
+    comptime USE_NEW_MCTS: Bool = False

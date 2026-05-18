@@ -169,13 +169,13 @@ trait EnvStepGPU(ImplicitlyDestructible):
     def step_gpu[B: Int](
         mut self,
         ctx: DeviceContext,
-        states: DeviceBuffer[dtype],
+        mut states: DeviceBuffer[dtype],
         actions: DeviceBuffer[dtype],
-        rewards_out: DeviceBuffer[dtype],
-        dones_out: DeviceBuffer[dtype],
-        terminated_out: DeviceBuffer[dtype],
-        obs_out: DeviceBuffer[dtype],
-        legal_masks_out: DeviceBuffer[dtype],
+        mut rewards_out: DeviceBuffer[dtype],
+        mut dones_out: DeviceBuffer[dtype],
+        mut terminated_out: DeviceBuffer[dtype],
+        mut obs_out: DeviceBuffer[dtype],
+        mut legal_masks_out: DeviceBuffer[dtype],
         rng_seed: UInt64,
     ) raises:
         """Run the env step for ``B`` parallel transitions in place.
