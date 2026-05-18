@@ -109,6 +109,15 @@ trait MuZeroConfig:
     # ── Flags ─────────────────────────────────────────────────────
     comptime USE_REANALYZE: Bool  # Enable MuZero Reanalyze
 
+    # ── Planner refactor toggle ───────────────────────────────────
+    comptime USE_NEW_MCTS: Bool
+    """Route GPU action selection through the shared
+    ``planners.tree_search.GenericGPUMCTS`` orchestrator instead of the
+    inline kernel sequence in ``muzero.train_gpu``. Defaults to ``False``
+    in every concrete config so production training is unchanged until
+    the rewiring is flipped on per-config (see
+    ``docs/PLANNERS_PACKAGE.md`` Phase 3b agent rewiring)."""
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MuZero MLP Config (standard, clean observations)
@@ -249,6 +258,7 @@ struct MuZeroMLPConfig[
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = False
+    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -359,6 +369,7 @@ struct MuZeroCNNConfig[
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = False
+    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -480,6 +491,7 @@ struct MuZeroResNetConfig[
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = False
+    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -573,6 +585,7 @@ struct MuZeroLargeConfig[
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = True
+    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -673,6 +686,7 @@ struct EfficientZeroConfig[
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = True         # Always use Reanalyze
+    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -793,6 +807,7 @@ struct MuZeroTicTacToeConfig[
     comptime Players = SelfPlay
 
     comptime USE_REANALYZE: Bool = False
+    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -893,3 +908,4 @@ struct MuZeroConnectFourConfig[
     comptime Players = SelfPlay
 
     comptime USE_REANALYZE: Bool = False
+    comptime USE_NEW_MCTS: Bool = False

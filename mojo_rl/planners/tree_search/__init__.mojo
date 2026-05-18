@@ -13,7 +13,12 @@ from .strategies import (
     PlayerMode, SinglePlayer, SelfPlay,
 )
 from .model_traits import Representation, Dynamics, Prediction
-from .model_traits_gpu import RepresentationGPU, DynamicsGPU, PredictionGPU
+from .model_traits_gpu import (
+    RepresentationGPU,
+    DynamicsGPU,
+    PredictionGPU,
+    EnvStepGPU,
+)
 from .mcts_cpu import MCTSNode, GenericCPUMCTS
 from .mcts_gpu_orchestrator import GenericGPUMCTS
 from .mcts_gpu import (
@@ -44,4 +49,5 @@ from .mcts_gpu import (
     gpu_mcts_batched_expand_backup_muzero_kernel,
     gpu_mcts_build_dyn_input_kernel,
     gpu_mcts_copy_pred_input_kernel,
+    gpu_mcts_extract_actions_temp_kernel,
 )

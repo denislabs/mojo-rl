@@ -2,7 +2,7 @@
 
 Runs PongPixelEnv on CPU, alternating a "follow-the-ball" scripted policy
 with random actions, and dumps frames + actions + dones to a flat binary
-buffer (LWMP v1, see `mojo_rl/experimental/lewm/pong_buffer.mojo`).
+buffer (LWMP v1, see `mojo_rl/envs/arcade_games/pong/offline_buffer.mojo`).
 
 Args (edit comptime constants below):
     NUM_EPISODES   — how many episodes to collect.
@@ -22,8 +22,8 @@ from std.time import perf_counter_ns
 from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 from mojo_rl.envs.arcade_games.pong.pong import S_BALL_Y, S_PADDLE_Y
 from mojo_rl.envs.arcade_games.core.gpu_env import ArcadeGameAction
-from mojo_rl.experimental.lewm.pong_buffer import (
-    PongBuffer,
+from mojo_rl.envs.arcade_games.pong.offline_buffer import (
+    PongOfflineBuffer,
     PONG_FRAME_BYTES,
 )
 
@@ -87,7 +87,7 @@ def main() raises:
     print()
 
     var env = PongPixelEnv[dtype]()
-    var buf = PongBuffer(capacity=BUFFER_CAPACITY)
+    var buf = PongOfflineBuffer(capacity=BUFFER_CAPACITY)
 
     var t0 = perf_counter_ns()
     var total_steps: Int = 0

@@ -29,7 +29,7 @@ the search loop, taking ``REP: RepresentationGPU``, ``DYN: DynamicsGPU``,
 traits (``PUCTFormula`` / ``ExplorationNoise`` / ``PlayerMode``).
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype
@@ -137,5 +137,60 @@ trait PredictionGPU(ImplicitlyDestructible):
         logits — softmax / categorical decode happen in the MCTS
         kernels (``gpu_mcts_init_root_kernel``,
         ``gpu_mcts_batched_expand_backup_muzero_kernel``).
+        """
+        ...
+
+
+trait EnvStepGPU(ImplicitlyDestructible):
+    """Batched GPU env step: (state, action) → (next_state, reward, done,
+    terminated, obs, legal_mask).
+
+    Used by AlphaZero-style MCTS (``search_gpu_alphazero``) to expand
+    leaf nodes via the true game rules instead of a learned dynamics
+    network. The orchestrator calls ``step_gpu[B]`` once per simulation
+    round with ``B = N_ENVS · BATCH_SIMS`` — each pending expansion gets
+    its own (parent-state, action) pair, and the kernel writes the
+    child state in-place into the same buffer plus the per-sample
+    reward / done / terminated / obs / legal-mask outputs.
+
+    The trait surface intentionally mirrors the agent-level
+    ``E.step_kernel_gpu[B, STATE_SIZE, OBS_DIM]`` signature used by
+    AlphaZero today (see ``alphazero.mojo:2744``) — the adapter is one
+    function call deep.
+    """
+
+    comptime STATE_SIZE: Int
+    """Game-state stride (one ``State`` of the env in ``Float32`` cells)."""
+    comptime OBS_DIM: Int
+    """Per-step observation produced by the env step."""
+    comptime ACTION_DIM: Int
+    """Action cardinality (used for legal-mask stride)."""
+
+    def step_gpu[B: Int](
+        mut self,
+        ctx: DeviceContext,
+        states: DeviceBuffer[dtype],
+        actions: DeviceBuffer[dtype],
+        rewards_out: DeviceBuffer[dtype],
+        dones_out: DeviceBuffer[dtype],
+        terminated_out: DeviceBuffer[dtype],
+        obs_out: DeviceBuffer[dtype],
+        legal_masks_out: DeviceBuffer[dtype],
+        rng_seed: UInt64,
+    ) raises:
+        """Run the env step for ``B`` parallel transitions in place.
+
+        Buffers are sized:
+          * ``states``           : ``B * STATE_SIZE`` (read AND written)
+          * ``actions``          : ``B``
+          * ``rewards_out``      : ``B``
+          * ``dones_out``        : ``B`` (term | trunc)
+          * ``terminated_out``   : ``B`` (term-only)
+          * ``obs_out``          : ``B * OBS_DIM``
+          * ``legal_masks_out``  : ``B * ACTION_DIM``
+
+        Each adapter wraps the agent's ``Env.step_kernel_gpu[B, …]``.
+        Adapters are stateless; per-call randomness comes from
+        ``rng_seed``.
         """
         ...

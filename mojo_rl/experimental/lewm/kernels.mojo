@@ -18,13 +18,21 @@ Contents (in declaration order):
     - run_cond_layer_forward, run_cond_layer_backward
 
   Per-shot eval orchestration (used inside `eval_h6` / `eval_h7_*` /
-  `eval_random_shots` and the random-shot leg of `CEMPlanner.eval`):
-    - _run_eval_shot_forward, _run_h6_diag_shots, _run_mpc_shot
+  `eval_random_shots` and the legs of `CEMPlanner.eval`):
+    - _run_eval_shot_forward, _run_h6_diag_shots,
+    - _run_mpc_shot                  (single plan, host-syncs at end)
+    - _run_mpc_rollout_no_readback   (same body without host sync;
+                                       used by the batched score-plan
+                                       path so K rollouts share one
+                                       sync at the end of the K-loop)
 
-  CEM refinement has moved out of this file: the reusable optimizer is
-  `mojo_rl.planners.trajectory.cem.CategoricalCEMOptimizer` and the
-  LeWM-specific scoring lives in `lewm_rollout_callback.py`. The old
-  `_run_cem_eval_iter` was the launchpad for that extraction.
+  CEM refinement + random shooting have moved out of this file: the
+  reusable optimizers are
+  `mojo_rl.planners.trajectory.{cem.CategoricalCEMOptimizer,
+  random_shooter.CategoricalRandomShooter}`, and the LeWM-specific
+  scoring lives in `lewm_rollout_callback.mojo`
+  (`LeWMRolloutScoreCallback` implementing both `ScorePlanCallback` and
+  `BatchedScorePlanCallback`).
 
 The 6 model groups they operate over:
   - ENC (LeWMEncoder)        Conv2D-based ViT
@@ -64,8 +72,8 @@ from .cond_block import (
     cond_block_backward_gpu,
     cb_accum_kernel,
 )
-from .pong_buffer import (
-    PongBuffer,
+from mojo_rl.envs.arcade_games.pong.offline_buffer import (
+    PongOfflineBuffer,
     PONG_FRAME_BYTES,
     PONG_NUM_ACTIONS,
 )
@@ -1515,5 +1523,283 @@ def _run_mpc_shot[
     ctx.enqueue_copy(score_host_buf, score_dev_buf)
     ctx.synchronize()
     return Float64(score_host_buf[0]) / Float64(BATCH * EMB)
+
+
+# =============================================================================
+# Phase 4c MPC shot — same rollout as `_run_mpc_shot`, but writes the
+# scalar MSE to a caller-provided device slot and DOES NOT host-sync.
+#
+# Used by `LeWMRolloutScoreCallback.score_plans_batched` to chain K
+# rollouts on the GPU stream before a single bulk readback at the end of
+# the K-loop. This collapses K host syncs into 1, eliminating the host
+# stall that dominates LeWM eval at paper config (see other-agent
+# diagnostic in chat).
+#
+# Score slot semantics: `score_dev_slot_t` is a (1,) LayoutTensor view —
+# typically built by the caller as
+# ``LayoutTensor[..., row_major(1), ...](scores_dev_buf.unsafe_ptr() + k)``
+# so the GPU writes into element `k` of a K-sized scores buffer without
+# any extra kernel modification.
+# =============================================================================
+def _run_mpc_rollout_no_readback[
+    BATCH: Int, T: Int, H: Int, EMB: Int, ACT: Int,
+    SMOOTHED: Int, PROJ_H: Int,
+    PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
+](
+    ctx: DeviceContext,
+    mpc_horizon: Int,
+    needed_actions: Int,
+    emb_start_dev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, EMB), MutAnyOrigin
+    ],
+    emb_goal_dev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, EMB), MutAnyOrigin
+    ],
+    mut emb_seq_dev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, (T + 1) * EMB), MutAnyOrigin
+    ],
+    action_plan_dev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * ACT), MutAnyOrigin
+    ],
+    mut score_dev_slot_t: LayoutTensor[
+        dtype, Layout.row_major(1), MutAnyOrigin
+    ],
+    ae_params: LayoutTensor[
+        dtype,
+        Layout.row_major(ActionEmbedder[T, ACT, SMOOTHED, EMB].PARAM_SIZE),
+        MutAnyOrigin,
+    ],
+    ae_state: LayoutTensor[
+        dtype,
+        Layout.row_major(ActionEmbedder[T, ACT, SMOOTHED, EMB].STATE_SIZE),
+        MutAnyOrigin,
+    ],
+    actions_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * ACT), MutAnyOrigin
+    ],
+    mut act_emb_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, T * EMB), MutAnyOrigin
+    ],
+    mut ae_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH, ActionEmbedder[T, ACT, SMOOTHED, EMB].CACHE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    ae_ws_buf: DeviceBuffer[dtype],
+    emb_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * T, EMB), MutAnyOrigin
+    ],
+    act_emb_buf: DeviceBuffer[dtype],
+    mut x_prev_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut c_in_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    pos_params: LayoutTensor[
+        dtype,
+        Layout.row_major(AutoDiffChain[BiasAdd[H * EMB]].PARAM_SIZE),
+        MutAnyOrigin,
+    ],
+    pos_state: LayoutTensor[
+        dtype,
+        Layout.row_major(AutoDiffChain[BiasAdd[H * EMB]].STATE_SIZE),
+        MutAnyOrigin,
+    ],
+    x_prev_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut x_prev_pe_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut pos_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH, AutoDiffChain[BiasAdd[H * EMB]].CACHE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    pos_ws_buf: DeviceBuffer[dtype],
+    mut adaln_states: List[GPUNetworkState[AdaLNMod[EMB], Adam[]]],
+    mut msa_states: List[
+        GPUNetworkState[
+            MultiHeadAttention[EMB, PRED_HEADS, H, True], Adam[]
+        ]
+    ],
+    mut mlp_states: List[GPUNetworkState[CondMLP[EMB, PRED_FF], Adam[]]],
+    x_prev_pe_buf: DeviceBuffer[dtype],
+    x_inter_buf: DeviceBuffer[dtype],
+    pred_raw_buf: DeviceBuffer[dtype],
+    silu_cache_buf: DeviceBuffer[dtype],
+    adaln_cache_buf: DeviceBuffer[dtype],
+    ln1_cache_buf: DeviceBuffer[dtype],
+    mod1_cache_buf: DeviceBuffer[dtype],
+    msa_cache_buf: DeviceBuffer[dtype],
+    gate1_cache_buf: DeviceBuffer[dtype],
+    ln2_cache_buf: DeviceBuffer[dtype],
+    mod2_cache_buf: DeviceBuffer[dtype],
+    mlp_cache_buf: DeviceBuffer[dtype],
+    gate2_cache_buf: DeviceBuffer[dtype],
+    raw_mod_buf: DeviceBuffer[dtype],
+    x_mid_buf_d: DeviceBuffer[dtype],
+    mut silu_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut ln_out_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut mod_inp_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, 3 * EMB), MutAnyOrigin
+    ],
+    mut mod_x_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut branch_out_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, EMB), MutAnyOrigin
+    ],
+    mut gate_inp_buf_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H, 3 * EMB), MutAnyOrigin
+    ],
+    adaln_ws_buf: DeviceBuffer[dtype],
+    msa_ws_buf: DeviceBuffer[dtype],
+    mlp_ws_buf: DeviceBuffer[dtype],
+    proj_params: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].PARAM_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    proj_state: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].STATE_SIZE
+        ),
+        MutAnyOrigin,
+    ],
+    mut proj_cache_t: LayoutTensor[
+        dtype,
+        Layout.row_major(
+            BATCH,
+            Tokenwise[
+                H,
+                Sequential[
+                    Linear[EMB, PROJ_H],
+                    BatchNorm1D[PROJ_H],
+                    GELU[PROJ_H],
+                    Linear[PROJ_H, EMB],
+                ],
+            ].CACHE_SIZE,
+        ),
+        MutAnyOrigin,
+    ],
+    proj_ws_buf: DeviceBuffer[dtype],
+    pred_raw_bh_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+    mut pred_t: LayoutTensor[
+        dtype, Layout.row_major(BATCH, H * EMB), MutAnyOrigin
+    ],
+) raises:
+    # Mirror of `_run_mpc_shot` body up to (but not including) the host
+    # readback. The trailing copy + synchronize live in the caller so
+    # they can be hoisted out of a K-loop.
+    var tpb_rep = (4, 4, 16)
+    ctx.enqueue_function[
+        replicate_start_emb_kernel[BATCH, H, EMB, T + 1],
+    ](
+        emb_start_dev_t, emb_seq_dev_t,
+        grid_dim=(
+            ceildiv(BATCH, tpb_rep[0]),
+            ceildiv(T + 1, tpb_rep[1]),
+            ceildiv(EMB, tpb_rep[2]),
+        ),
+        block_dim=tpb_rep,
+    )
+    for k in range(mpc_horizon):
+        ctx.enqueue_function[
+            slide_emb_window_kernel[BATCH, T, H, EMB, T + 1],
+        ](
+            emb_seq_dev_t, emb_t, k,
+            grid_dim=(
+                ceildiv(BATCH, tpb_rep[0]),
+                ceildiv(T, tpb_rep[1]),
+                ceildiv(EMB, tpb_rep[2]),
+            ),
+            block_dim=tpb_rep,
+        )
+        ctx.enqueue_function[
+            slide_actions_window_kernel[BATCH, T, H, ACT, T],
+        ](
+            action_plan_dev_t, actions_t, k,
+            grid_dim=(
+                ceildiv(BATCH, tpb_rep[0]),
+                ceildiv(T, tpb_rep[1]),
+                ceildiv(ACT, tpb_rep[2]),
+            ),
+            block_dim=tpb_rep,
+        )
+        _run_eval_shot_forward[
+            BATCH, T, H, EMB, ACT, SMOOTHED, PROJ_H,
+            PRED_HEADS, PRED_FF, DEPTH,
+        ](
+            ctx,
+            ae_params, ae_state,
+            actions_t, act_emb_t,
+            ae_cache_t, ae_ws_buf,
+            emb_t, act_emb_buf,
+            x_prev_t, c_in_t,
+            pos_params, pos_state,
+            x_prev_bh_t, x_prev_pe_bh_t,
+            pos_cache_t, pos_ws_buf,
+            adaln_states, msa_states, mlp_states,
+            x_prev_pe_buf, x_inter_buf, pred_raw_buf,
+            silu_cache_buf, adaln_cache_buf,
+            ln1_cache_buf, mod1_cache_buf,
+            msa_cache_buf, gate1_cache_buf,
+            ln2_cache_buf, mod2_cache_buf,
+            mlp_cache_buf, gate2_cache_buf,
+            raw_mod_buf, x_mid_buf_d,
+            silu_buf_t, ln_out_buf_t, mod_inp_buf_t,
+            mod_x_buf_t, branch_out_buf_t, gate_inp_buf_t,
+            adaln_ws_buf, msa_ws_buf, mlp_ws_buf,
+            proj_params, proj_state,
+            proj_cache_t, proj_ws_buf,
+            pred_raw_bh_t, pred_t,
+        )
+        ctx.enqueue_function[
+            store_pred_last_kernel[BATCH, H, EMB, T + 1],
+        ](
+            pred_t, emb_seq_dev_t, k,
+            grid_dim=(ceildiv(BATCH, 16), ceildiv(EMB, 16)),
+            block_dim=(16, 16),
+        )
+    _ = needed_actions
+    ctx.enqueue_function[
+        mpc_score_kernel[BATCH, EMB, T + 1],
+    ](
+        emb_seq_dev_t, emb_goal_dev_t, score_dev_slot_t,
+        H + mpc_horizon - 1,
+        grid_dim=1,
+        block_dim=32,
+    )
 
 

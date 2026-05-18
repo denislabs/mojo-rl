@@ -31,8 +31,6 @@ Layout in fp32 sample tensors:
     pixels:  (B, T, C * H * W)  in [0, 1] (cast from uint8 / 255).
     actions: (B, T, num_actions) one-hot fp32.
 
-Originally lived at ``mojo_rl/experimental/lewm/pong_buffer.mojo`` as
-``PongBuffer``; that module is now a re-export shim.
 """
 
 from std.memory import alloc

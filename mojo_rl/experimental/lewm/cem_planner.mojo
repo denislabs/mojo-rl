@@ -4,7 +4,7 @@ Extracted from `offline_trainer.LeWMTrainer.eval_mpc_cem`. Owns MPC + CEM
 scratch (host + device) persistently across `eval` calls; reuses trained
 network parameters and the activation cache living on `LeWMGPUState`.
 
-Single public method `eval[BUF: LeWMBuffer](state, buf, ctx, eval_steps,
+Single public method `eval[BUF: OfflineBuffer](state, buf, ctx, eval_steps,
 eval_samples, eval_seed)` runs the full eval loop:
   - per eval_iter: sample → encode → 1 expert shot + N random shots → optional
     CEM refinement → accumulate stats
@@ -28,8 +28,9 @@ from mojo_rl.planners.trajectory import (
     CategoricalRandomShooter,
 )
 
+from mojo_rl.core.offline_buffer import OfflineBuffer
+
 from .offline_trainer import LeWMGPUState
-from .lewm_buffer import LeWMBuffer
 from .lewm_config import LeWMConfig
 from .lewm_rollout_callback import LeWMRolloutScoreCallback
 from .kernels import (
@@ -76,27 +77,20 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
     # Derived: H + mpc_horizon - 1, validated ≤ T in __init__.
     var needed_actions: Int
 
-    # Host scratch (raw allocations; freed in __del__).
-    var emb_start_host_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin]
-    var emb_goal_host_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin]
+    # Host scratch shared by the expert leg, random shooter, and CEM:
+    # the optimizers write the best plan back into this buffer.
     var action_plan_host_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin]
-    var action_dist_host_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin]
-    var sample_actions_host_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin]
-    var sample_scores_host_buf: UnsafePointer[Float64, MutAnyOrigin]
-    var elite_indices_host_buf: UnsafePointer[Int, MutAnyOrigin]
 
-    # Device-resident rollout state.
+    # Device-resident bridge for the per-iter start/goal latents. We
+    # upload encoded start/goal embeddings here then enqueue_copy into
+    # the rollout callback's twin buffers (the callback owns all the
+    # other per-shot scratch — emb_seq, action_plan_dev, score).
     var emb_start_dev_buf: DeviceBuffer[dtype]
     var emb_goal_dev_buf: DeviceBuffer[dtype]
-    var emb_seq_dev_buf: DeviceBuffer[dtype]
-    var action_plan_dev_buf: DeviceBuffer[dtype]
-    var score_dev_buf: DeviceBuffer[dtype]
 
-    # Pinned host staging (used by enqueue_copy).
-    var score_host_buf: HostBuffer[dtype]
+    # Pinned host staging for the upload above.
     var emb_start_stage_host: HostBuffer[dtype]
     var emb_goal_stage_host: HostBuffer[dtype]
-    var action_plan_stage_host: HostBuffer[dtype]
 
     def __init__(
         out self,
@@ -123,66 +117,26 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         self.cem_smoothing = cem_smoothing
         self.needed_actions = needed
 
-        var cem_active = cem_iters > 0
-        var cs = cem_samples if cem_active else 1
-        var ck = cem_topk if cem_active else 1
-
-        # Host scratch.
-        self.emb_start_host_buf = alloc[Scalar[dtype]](
-            Self.CONFIG.BATCH * Self.EMB
-        )
-        self.emb_goal_host_buf = alloc[Scalar[dtype]](
-            Self.CONFIG.BATCH * Self.EMB
-        )
         self.action_plan_host_buf = alloc[Scalar[dtype]](
             Self.CONFIG.BATCH * needed * Self.CONFIG.ACT
         )
-        self.action_dist_host_buf = alloc[Scalar[dtype]](
-            Self.CONFIG.BATCH * needed * Self.CONFIG.ACT
-        )
-        self.sample_actions_host_buf = alloc[Scalar[dtype]](
-            cs * Self.CONFIG.BATCH * needed * Self.CONFIG.ACT
-        )
-        self.sample_scores_host_buf = alloc[Float64](cs)
-        self.elite_indices_host_buf = alloc[Int](ck)
-
-        # Device buffers.
         self.emb_start_dev_buf = ctx.enqueue_create_buffer[dtype](
             Self.CONFIG.BATCH * Self.EMB
         )
         self.emb_goal_dev_buf = ctx.enqueue_create_buffer[dtype](
             Self.CONFIG.BATCH * Self.EMB
         )
-        self.emb_seq_dev_buf = ctx.enqueue_create_buffer[dtype](
-            Self.CONFIG.BATCH * (Self.CONFIG.T + 1) * Self.EMB
-        )
-        self.action_plan_dev_buf = ctx.enqueue_create_buffer[dtype](
-            Self.CONFIG.BATCH * Self.CONFIG.T * Self.CONFIG.ACT
-        )
-        self.score_dev_buf = ctx.enqueue_create_buffer[dtype](1)
-
-        # Pinned host staging.
-        self.score_host_buf = ctx.enqueue_create_host_buffer[dtype](1)
         self.emb_start_stage_host = ctx.enqueue_create_host_buffer[dtype](
             Self.CONFIG.BATCH * Self.EMB
         )
         self.emb_goal_stage_host = ctx.enqueue_create_host_buffer[dtype](
             Self.CONFIG.BATCH * Self.EMB
         )
-        self.action_plan_stage_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.CONFIG.BATCH * Self.CONFIG.T * Self.CONFIG.ACT
-        )
 
     def __del__(deinit self):
-        self.emb_start_host_buf.free()
-        self.emb_goal_host_buf.free()
         self.action_plan_host_buf.free()
-        self.action_dist_host_buf.free()
-        self.sample_actions_host_buf.free()
-        self.sample_scores_host_buf.free()
-        self.elite_indices_host_buf.free()
 
-    def _sample_and_upload_pixels[BUF: LeWMBuffer](
+    def _sample_and_upload_pixels[BUF: OfflineBuffer](
         mut self,
         mut state: Self.GPUState,
         mut buf: BUF,
@@ -225,7 +179,7 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             block_dim=(TPB_X, TPB_Y, TPB_Z),
         )
 
-    def eval[BUF: LeWMBuffer](
+    def eval[BUF: OfflineBuffer](
         mut self,
         mut state: Self.GPUState,
         mut buf: BUF,
@@ -328,22 +282,6 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         _set_seed(eval_seed)
 
         # Views over persistent device buffers.
-        var emb_start_dev_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.EMB), MutAnyOrigin
-        ](self.emb_start_dev_buf.unsafe_ptr())
-        var emb_goal_dev_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.EMB), MutAnyOrigin
-        ](self.emb_goal_dev_buf.unsafe_ptr())
-        var emb_seq_dev_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, (Self.CONFIG.T + 1) * Self.EMB), MutAnyOrigin
-        ](self.emb_seq_dev_buf.unsafe_ptr())
-        var action_plan_dev_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.CONFIG.ACT), MutAnyOrigin
-        ](self.action_plan_dev_buf.unsafe_ptr())
-        var score_dev_t = LayoutTensor[
-            dtype, Layout.row_major(1), MutAnyOrigin
-        ](self.score_dev_buf.unsafe_ptr())
-
         var sum_expert_mpc: Float64 = 0.0
         var sum_random_mean_mpc: Float64 = 0.0
         var sum_random_min_mpc: Float64 = 0.0
@@ -376,8 +314,20 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             cem_topk=self.cem_topk,
             cem_smoothing=self.cem_smoothing,
         )
+        # k_max sizes the callback's K-slot scores buffer so the same
+        # callback serves both the shooter (K=eval_samples) and CEM
+        # iterations (K=cem_samples). Taking the max avoids ever
+        # reallocating mid-eval.
+        var callback_k_max = (
+            self.cem_samples
+            if cem_active and self.cem_samples > eval_samples
+            else eval_samples
+        )
+        if callback_k_max < 1:
+            callback_k_max = 1
         var callback = LeWMRolloutScoreCallback[Self.CONFIG](
             state, ctx, self.mpc_horizon, needed_actions,
+            k_max=callback_k_max,
         )
 
         for eval_iter in range(eval_steps):
@@ -446,14 +396,15 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
 
             # ---- Leg 2: Random shooter ----
             #
-            # `shooter.optimize` draws `eval_samples` uniform-categorical
-            # plans, scores each via the callback, returns the minimum.
+            # `shooter.optimize_batched` draws `eval_samples`
+            # uniform-categorical plans, scores them in ONE batched GPU
+            # call (one host sync regardless of K), returns the minimum.
             # The per-sample scores stay populated in
             # `shooter.sample_scores` so we can compute the legacy mean +
             # frac_random_worse_than_expert statistics afterwards without
             # re-running rollouts. `verbose=False` suppresses the
             # shooter's own log line — we emit the unified summary below.
-            var random_min_mpc = shooter.optimize(
+            var random_min_mpc = shooter.optimize_batched(
                 callback, self.action_plan_host_buf, verbose=False
             )
             var random_mean_mpc: Float64 = 0.0
@@ -483,13 +434,15 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
 
             # ---- Leg 3: CEM refinement (optional). ----
             #
-            # Sample → score → top-K → refit, repeated `cem_iters` times.
-            # Same callback as the other legs (no separate bridge needed
-            # — the unified bridge above already filled
-            # `callback.emb_start/goal_dev_buf`).
+            # Sample → batched score → top-K → refit, repeated
+            # `cem_iters` times. ``optimize_batched`` scores all
+            # ``cem_samples`` plans per iter in ONE host sync. Same
+            # callback as the other legs (no separate bridge needed —
+            # the unified bridge above already filled
+            # ``callback.emb_start/goal_dev_buf``).
             if cem_active:
                 print("  -- CEM eval iter", eval_iter, "--")
-                var cem_score = optimizer.optimize(
+                var cem_score = optimizer.optimize_batched(
                     callback,
                     self.action_plan_host_buf,
                     verbose=True,

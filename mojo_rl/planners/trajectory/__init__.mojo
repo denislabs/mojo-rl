@@ -3,7 +3,7 @@
 # Phase 1: CEM (categorical) + RandomShooter (categorical) + ScorePlanCallback trait.
 # Phase 2: MPPI + RolloutCallback{CPU,GPU} traits. Phase 4: iLQR.
 
-from .score_callback import ScorePlanCallback
+from .score_callback import ScorePlanCallback, BatchedScorePlanCallback
 from .rollout_callback import RolloutCallbackCPU, RolloutCallbackGPU
 from .cem import CategoricalCEMOptimizer
 from .random_shooter import CategoricalRandomShooter

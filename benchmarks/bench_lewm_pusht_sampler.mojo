@@ -14,7 +14,7 @@ Run (Apple, no GPU env needed since we don't import any kernel):
 from std.time import perf_counter_ns
 from std.memory import alloc
 
-from mojo_rl.experimental.lewm.pusht_sampler import LewmPushTSampler
+from mojo_rl.envs.pusht.offline_sampler import PushTOfflineSampler
 
 
 def insertion_sort_u64(
@@ -67,7 +67,7 @@ def main() raises:
         " fp32 actions",
     )
 
-    var sampler = LewmPushTSampler(
+    var sampler = PushTOfflineSampler(
         frameskip=FRAMESKIP, num_steps=T, path=String("")
     )
 

@@ -117,6 +117,13 @@ trait AlphaZeroConfig:
     # ── Strategies (AZ-specific) ──────────────────────────────────
     comptime Aug: BoardAugmenter
 
+    # ── Planner refactor toggle ───────────────────────────────────
+    comptime USE_NEW_MCTS: Bool
+    """Route GPU action selection through
+    ``planners.tree_search.GenericGPUMCTS.search_gpu_alphazero`` instead of
+    the inline kernel block. Defaults to ``False`` so production training
+    is unchanged until the rewiring is flipped on per-config."""
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TicTacToe Config (MLP — lightweight)

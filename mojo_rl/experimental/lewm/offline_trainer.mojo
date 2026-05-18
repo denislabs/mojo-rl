@@ -9,14 +9,15 @@ Two structs:
 
   - `LeWMTrainer[..., BUF]` — owns a clip/window buffer, hyperparams,
     and per-run scalar EMAs. `BUF` is a comptime type parameter that must
-    conform to `LeWMBuffer` (see `lewm_buffer.LeWMBuffer`): expose
+    conform to `mojo_rl.core.offline_buffer.OfflineBuffer`: expose
     `INPUT_LAYOUT_HWC: Bool` comptime field and
     `sample_batch_uint8(B, T, pixels_u8_out, actions_out) raises` method.
-    Concrete buffers: `pong_buffer.PongBuffer` (in-RAM CHW uint8) and
-    `pusht_sampler.LewmPushTSampler` (HDF5-backed HWC uint8). Each phase
-    of training becomes its own method (`train_step`, `eval_h6`,
-    `eval_random_shots`, `eval_mpc_cem`, `eval_h7_closed_loop_drift`,
-    `run`, `run_eval`).
+    Concrete buffers: `PongOfflineBuffer` (in-RAM CHW uint8, in
+    `mojo_rl.envs.arcade_games.pong.offline_buffer`) and
+    `PushTOfflineSampler` (HDF5-backed HWC uint8, in
+    `mojo_rl.envs.pusht.offline_sampler`). Each phase of training becomes
+    its own method (`train_step`, `eval_h6`, `eval_random_shots`,
+    `eval_mpc_cem`, `eval_h7_closed_loop_drift`, `run`, `run_eval`).
 
 `train_lewm_offline_gpu` (Pong) and `train_lewm_offline_gpu_pusht`
 (PushT HDF5) are the thin entry points that construct the appropriate
@@ -66,13 +67,13 @@ from .cond_block import (
     cond_block_backward_gpu,
     cb_accum_kernel,
 )
-from .pong_buffer import (
-    PongBuffer,
+from mojo_rl.envs.arcade_games.pong.offline_buffer import (
+    PongOfflineBuffer,
     PONG_FRAME_BYTES,
     PONG_NUM_ACTIONS,
 )
-from .pusht_sampler import LewmPushTSampler
-from .lewm_buffer import LeWMBuffer
+from mojo_rl.envs.pusht.offline_sampler import PushTOfflineSampler
+from mojo_rl.core.offline_buffer import OfflineBuffer
 from .lewm_checkpoint import _write_gpu_net_sections, _read_gpu_net_sections
 
 from ...nn.checkpoint import (
@@ -575,7 +576,7 @@ struct LeWMGPUState[CONFIG: LeWMConfig]:
 
 struct LeWMTrainer[
     CONFIG: LeWMConfig,
-    BUF: LeWMBuffer = PongBuffer,
+    BUF: OfflineBuffer = PongOfflineBuffer,
 ]:
     """Owns hyperparams + per-run EMAs + a clip buffer; methods consume a
     `LeWMGPUState[CONFIG]` for the GPU-resident data.
@@ -583,9 +584,10 @@ struct LeWMTrainer[
     `CONFIG` carries the 20 dimensional parameters + swappable
     `EncoderModel` type. `BUF` is the buffer type — must implement
     `sample_batch_uint8(B, T, pixels_u8_out, actions_out) raises` and
-    expose `INPUT_LAYOUT_HWC: Bool`. Concrete instances: `PongBuffer`
-    (Atari-style pixel-obs replay) and `LewmPushTSampler` (HDF5-backed
-    expert clips for the LeWM paper recipe).
+    expose `INPUT_LAYOUT_HWC: Bool`. Concrete instances:
+    `PongOfflineBuffer` (Atari-style pixel-obs replay) and
+    `PushTOfflineSampler` (HDF5-backed expert clips for the LeWM paper
+    recipe).
     """
 
     comptime GPUState = LeWMGPUState[Self.CONFIG]
@@ -1521,7 +1523,7 @@ def train_lewm_offline_gpu[CONFIG: LeWMConfig](
 ) raises:
     """LeWM offline GPU trainer entry point — Pong.
 
-    Constructs `LeWMGPUState[CONFIG]` + `LeWMTrainer[CONFIG, PongBuffer]`
+    Constructs `LeWMGPUState[CONFIG]` + `LeWMTrainer[CONFIG, PongOfflineBuffer]`
     and calls `trainer.run(...)`. `CONFIG` is a `LeWMConfig` (typically
     `LeWMPongViTConfig[...]`).
 
@@ -1533,9 +1535,9 @@ def train_lewm_offline_gpu[CONFIG: LeWMConfig](
 
     var ctx = DeviceContext()
     var state = LeWMGPUState[CONFIG](ctx, lambda_sigreg)
-    var buf = PongBuffer.load(buffer_path)
+    var buf = PongOfflineBuffer.load(buffer_path)
     print("Loaded Pong buffer:", buf.n_frames, "frames from", buffer_path)
-    var trainer = LeWMTrainer[CONFIG, PongBuffer](
+    var trainer = LeWMTrainer[CONFIG, PongOfflineBuffer](
         buf^, lambda_sigreg, log_every, eval_steps, eval_samples,
         eval_seed, mpc_horizon, cem_iters, cem_samples, cem_topk,
         cem_smoothing, eval_shuffle_diag, eval_h7_closed_loop,
@@ -1586,7 +1588,7 @@ def train_lewm_offline_gpu_pusht[
 
     var ctx = DeviceContext()
     var state = LeWMGPUState[CONFIG](ctx, lambda_sigreg)
-    var sampler = LewmPushTSampler(
+    var sampler = PushTOfflineSampler(
         frameskip=FRAMESKIP, num_steps=CONFIG.T, path=dataset_path^,
     )
     if sampler.dataset.pixel_h != CONFIG.IMG or sampler.dataset.pixel_w != CONFIG.IMG:
@@ -1607,7 +1609,7 @@ def train_lewm_offline_gpu_pusht[
             + " but ACTION_DIM="
             + String(ACTION_DIM)
         )
-    var trainer = LeWMTrainer[CONFIG, LewmPushTSampler](
+    var trainer = LeWMTrainer[CONFIG, PushTOfflineSampler](
         sampler^, lambda_sigreg, log_every, eval_steps, eval_samples,
         eval_seed, mpc_horizon, cem_iters, cem_samples, cem_topk,
         cem_smoothing, eval_shuffle_diag, eval_h7_closed_loop,
@@ -1634,7 +1636,7 @@ def eval_lewm_offline_gpu[CONFIG: LeWMConfig](
     """Load a Pong LeWM checkpoint and run only the eval phases.
 
     Symmetric with `train_lewm_offline_gpu` — `CONFIG` must match the
-    binary that wrote the checkpoint. Reuses `PongBuffer` (loaded fresh
+    binary that wrote the checkpoint. Reuses `PongOfflineBuffer` (loaded fresh
     from `buffer_path`) for the eval-time clip sampling.
     """
     comptime assert CONFIG.DEPTH >= 1, "CONFIG.DEPTH must be >= 1"
@@ -1646,9 +1648,9 @@ def eval_lewm_offline_gpu[CONFIG: LeWMConfig](
     for i in range(len(meta)):
         print("  meta:", meta[i])
 
-    var buf = PongBuffer.load(buffer_path)
+    var buf = PongOfflineBuffer.load(buffer_path)
     print("Loaded Pong buffer:", buf.n_frames, "frames from", buffer_path)
-    var trainer = LeWMTrainer[CONFIG, PongBuffer](
+    var trainer = LeWMTrainer[CONFIG, PongOfflineBuffer](
         buf^, lambda_sigreg, 0, eval_steps, eval_samples,
         eval_seed, mpc_horizon, cem_iters, cem_samples, cem_topk,
         cem_smoothing, eval_shuffle_diag, eval_h7_closed_loop,
@@ -1688,7 +1690,7 @@ def eval_lewm_offline_gpu_pusht[
     for i in range(len(meta)):
         print("  meta:", meta[i])
 
-    var sampler = LewmPushTSampler(
+    var sampler = PushTOfflineSampler(
         frameskip=FRAMESKIP, num_steps=CONFIG.T, path=dataset_path^,
     )
     if sampler.dataset.pixel_h != CONFIG.IMG or sampler.dataset.pixel_w != CONFIG.IMG:
@@ -1700,7 +1702,7 @@ def eval_lewm_offline_gpu_pusht[
             + " but CONFIG.IMG="
             + String(CONFIG.IMG)
         )
-    var trainer = LeWMTrainer[CONFIG, LewmPushTSampler](
+    var trainer = LeWMTrainer[CONFIG, PushTOfflineSampler](
         sampler^, lambda_sigreg, 0, eval_steps, eval_samples,
         eval_seed, mpc_horizon, cem_iters, cem_samples, cem_topk,
         cem_smoothing, eval_shuffle_diag, eval_h7_closed_loop,

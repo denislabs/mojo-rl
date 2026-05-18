@@ -18,9 +18,6 @@ Constructor takes the same dataset args as ``LewmPushTExpert``
 Owns a single ``LewmPushTWindow`` scratch buffer reused across all batch
 elements.
 
-Originally lived at ``mojo_rl/experimental/lewm/pusht_sampler.mojo`` as
-``LewmPushTSampler``; that module is now a re-export shim.
-
 Typical usage::
 
     var sampler = PushTOfflineSampler(frameskip=5, num_steps=4)

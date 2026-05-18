@@ -51,7 +51,7 @@ from layout import TileTensor, Idx, row_major
 
 from mojo_rl.nn.constants import dtype
 
-from .score_callback import ScorePlanCallback
+from .score_callback import ScorePlanCallback, BatchedScorePlanCallback
 
 
 struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
@@ -321,6 +321,94 @@ struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
         # Write the best plan over the entire optimization back to caller.
         # If cem_iters == 0 (no optimization), leave best_plan_out untouched
         # and return +inf to signal "nothing optimized".
+        if best_overall_sample >= 0:
+            var all_samples = TileTensor(
+                self.sample_actions,
+                row_major(
+                    (
+                        Idx(self.cem_samples),
+                        Idx[Self.BATCH](),
+                        Idx(self.horizon),
+                        Idx[Self.ACT_DIM](),
+                    )
+                ),
+            )
+            var dst = TileTensor(
+                best_plan_out,
+                row_major(
+                    (Idx[Self.BATCH](), Idx(self.horizon), Idx[Self.ACT_DIM]())
+                ),
+            )
+            for b in range(Self.BATCH):
+                for t in range(self.horizon):
+                    for a in range(Self.ACT_DIM):
+                        dst[b, t, a] = all_samples[
+                            best_overall_sample, b, t, a
+                        ]
+
+        return best_overall
+
+    def optimize_batched[CB: BatchedScorePlanCallback](
+        mut self,
+        mut callback: CB,
+        best_plan_out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        verbose: Bool = True,
+    ) raises -> Float64:
+        """Run ``cem_iters`` rounds of sample → score → top-K → refit
+        with the K candidates of each iter scored in ONE batched GPU
+        call.
+
+        Mirror of ``optimize`` but uses ``BatchedScorePlanCallback`` so
+        the callback can amortize host-sync + kernel-launch overhead
+        across all ``cem_samples`` plans per iter. Algorithmically
+        equivalent — elite picking + refit are still host-side and
+        unchanged.
+
+        Returns the best score observed and writes the best-scoring plan
+        into ``best_plan_out`` (shape ``(BATCH, horizon, ACT_DIM)``).
+        """
+        self._init_uniform_dist()
+
+        var best_overall: Float64 = 1.0e30
+        var best_overall_sample: Int = -1
+
+        for cem_it in range(self.cem_iters):
+            # Sample all K plans into ``sample_actions``. We deliberately
+            # do NOT re-fill ``sample_plan`` per sample (the batched
+            # callback reads directly from the (K, B, H, A) buffer).
+            for s in range(self.cem_samples):
+                self._sample_plan(s)
+
+            var all_samples = TileTensor(
+                self.sample_actions,
+                row_major(
+                    (
+                        Idx(self.cem_samples),
+                        Idx[Self.BATCH](),
+                        Idx(self.horizon),
+                        Idx[Self.ACT_DIM](),
+                    )
+                ),
+            )
+            callback.score_plans_batched(all_samples, self.sample_scores)
+
+            for s in range(self.cem_samples):
+                var score = self.sample_scores[s]
+                if score < best_overall:
+                    best_overall = score
+                    best_overall_sample = s
+
+            # Elites + refit (host-side, unchanged).
+            self._pick_elites()
+            self._refit_dist()
+
+            if verbose:
+                var iter_best: Float64 = 1.0e30
+                for s in range(self.cem_samples):
+                    if self.sample_scores[s] < iter_best:
+                        iter_best = self.sample_scores[s]
+                print("    cem iter", cem_it, " best=", iter_best)
+
         if best_overall_sample >= 0:
             var all_samples = TileTensor(
                 self.sample_actions,

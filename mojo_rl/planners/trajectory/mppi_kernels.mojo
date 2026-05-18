@@ -1,41 +1,175 @@
 """Planner-side GPU kernels for MPPI.
 
 These are the planner-generic pieces of the MPPI pipeline — sampling
-actions, accumulating returns, softmax weighting, mean/std refit,
-action selection. They contain **no agent-specific logic**
-(no Q-decoding, no policy heads, no categorical bins): the
+actions, accumulating returns, softmax weighting (top-K elites),
+mean/std refit, action selection. They contain **no agent-specific
+logic** (no Q-decoding, no policy heads, no categorical bins): the
 ``RolloutCallbackGPU`` adapter is responsible for everything between
 "take z and an action" and "produce z_next + scalar reward".
 
-For Phase 2 the canonical kernel definitions still live in
-``mojo_rl/deep_agents/tdmpc2/kernels.mojo`` — this module re-exports
-them so the new planner doesn't reach across the tdmpc2 namespace
-directly. The only new kernel added here is
-``mppi_accum_reward_scalar_kernel``, the trait-friendly counterpart
-to the existing decoding accumulator (the callback decodes; this
-kernel just accumulates the scalar).
+Canonical home of the kernels — agents reach in here, not the other
+way around. The reverse (TD-MPC2 owning shared kernels) was the
+transitional state after Phase 2 landed; this file took ownership
+during the Phase 2 cleanup.
 
-Phase-2 cleanup TODO: once ``tdmpc2/mppi.mojo`` itself migrates to
-the new planner (task 38), relocate the canonical defs from
-``tdmpc2/kernels.mojo`` here and turn the tdmpc2 file into a thin
-re-export shim — preserving source compatibility for any external
-callers.
+Kernels:
+  * ``mppi_broadcast_z0_zero_returns_batched_kernel`` — fused init
+    of (z_all = z0 broadcast, returns = 0) across all envs.
+  * ``mppi_sample_actions_batched_kernel`` — per-(env, sample,
+    horizon-step) Gaussian sampling around per-env (mean, std);
+    policy-warm-start trajectories (``local_s < NUM_PI_TRAJS``) use
+    ``pi_out`` as the mean with smaller noise.
+  * ``mppi_accum_reward_scalar_kernel`` — accumulate pre-decoded
+    scalar reward into returns. Trait-friendly: the callback decodes
+    the reward (categorical → scalar where applicable) and writes
+    the result into ``reward_step``; this kernel multiplies by the
+    discount and adds to running returns.
+  * ``mppi_copy_z_kernel`` — copy z_next → z between horizon steps.
+  * ``mppi_add_terminal_value_kernel`` — add ``discount^H * V(z_H)``
+    to running returns, with a NaN/Inf guard to keep softmax from
+    poisoning.
+  * ``mppi_softmax_weights_kernel`` — per-env top-K elite softmax
+    over returns, normalizing the weights. Non-elite weights are
+    zeroed. Matches the reference TD-MPC2 recipe
+    (``tdmpc2.py:186``).
+  * ``mppi_weighted_mean_std_kernel`` — per-env weighted mean and
+    std refit over the elite-weighted action distribution. Std is
+    clamped to ``[0.05, 2.0]``.
+  * ``mppi_select_action_kernel`` — gumbel-max sampling from elite
+    softmax + optional per-axis exploration noise + clamp. One
+    block per env; one kernel call selects the per-env action and
+    writes it directly to an on-device output buffer.
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
-from layout import Layout, LayoutTensor
+from layout import LayoutTensor, Layout
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.memory import AddressSpace
+from std.math import exp, log, sqrt, cos, isnan, isinf
+from std.random.philox import Random as PhiloxRandom
 
-# Re-exports: agent-agnostic kernels currently defined in tdmpc2.
-# These have no TDMPC2 dependencies in their body; just re-homed here.
-from mojo_rl.deep_agents.tdmpc2.kernels import (
-    mppi_broadcast_z0_zero_returns_batched_kernel,
-    mppi_sample_actions_batched_kernel,
-    mppi_copy_z_kernel,
-    mppi_add_terminal_value_kernel,
-    mppi_softmax_weights_kernel,
-    mppi_weighted_mean_std_kernel,
-    mppi_select_action_kernel,
-)
+
+# =============================================================================
+# Setup: fused z0 broadcast + returns zero-init (one kernel per call)
+# =============================================================================
+
+
+@always_inline
+def mppi_broadcast_z0_zero_returns_batched_kernel[
+    dtype: DType,
+    BATCH_TOTAL: Int,
+    N_ENVS: Int,
+    TOTAL_SAMPLES: Int,
+    LATENT_DIM: Int,
+](
+    z0: LayoutTensor[dtype, Layout.row_major(N_ENVS, LATENT_DIM), MutAnyOrigin],
+    z_all: LayoutTensor[
+        dtype, Layout.row_major(BATCH_TOTAL, LATENT_DIM), MutAnyOrigin
+    ],
+    returns: LayoutTensor[dtype, Layout.row_major(BATCH_TOTAL), MutAnyOrigin],
+) where dtype.is_floating_point():
+    """Fused: broadcast per-env ``z0`` to every candidate row + zero
+    the returns accumulator. One kernel launch replaces the legacy
+    two-kernel pair.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_TOTAL:
+        return
+
+    var env_idx = i // TOTAL_SAMPLES
+    for k in range(LATENT_DIM):
+        z_all[i, k] = z0[env_idx, k]
+    returns[i] = Scalar[dtype](0.0)
+
+
+# =============================================================================
+# Per-horizon-step sampling + accumulation
+# =============================================================================
+
+
+@always_inline
+def mppi_sample_actions_batched_kernel[
+    dtype: DType,
+    BATCH_TOTAL: Int,
+    N_ENVS: Int,
+    TOTAL_SAMPLES: Int,
+    NUM_PI_TRAJS: Int,
+    ACTION_DIM: Int,
+    HORIZON: Int,
+    POL_OUT: Int = ACTION_DIM * 2,
+](
+    pi_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH_TOTAL, POL_OUT), MutAnyOrigin
+    ],
+    mean: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * HORIZON * ACTION_DIM), MutAnyOrigin
+    ],
+    std: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * HORIZON * ACTION_DIM), MutAnyOrigin
+    ],
+    act_step: LayoutTensor[
+        dtype, Layout.row_major(BATCH_TOTAL, ACTION_DIM), MutAnyOrigin
+    ],
+    all_actions: LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH_TOTAL * HORIZON * ACTION_DIM),
+        MutAnyOrigin,
+    ],
+    step: Int,
+    rng_seed: Scalar[DType.uint32],
+) where dtype.is_floating_point():
+    """Sample actions for every env's MPPI candidates at one horizon
+    step.
+
+    Thread ``i`` is the global sample index. ``env_idx = i //
+    TOTAL_SAMPLES``, ``local_s = i % TOTAL_SAMPLES``. Policy-warm
+    trajectories (``local_s < NUM_PI_TRAJS``) sample around
+    ``pi_out[i]`` with std=0.1; MPPI trajectories sample around the
+    refit Gaussian ``(mean, std)``.
+
+    ``POL_OUT`` defaults to ``2 * ACTION_DIM`` (TDMPC2's
+    mean+log_std actor output) but the kernel only reads the first
+    ``ACTION_DIM`` columns of ``pi_out`` — pass ``POL_OUT =
+    ACTION_DIM`` when the adapter feeds the mean directly.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_TOTAL:
+        return
+
+    var env_idx = i // TOTAL_SAMPLES
+    var local_s = i % TOTAL_SAMPLES
+
+    for j in range(ACTION_DIM):
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(i) * UInt64(ACTION_DIM) + UInt64(j),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = Scalar[DType.float32](rand_vals[0]) + 1e-8
+        var u2 = Scalar[DType.float32](rand_vals[1])
+        var mag = sqrt(Float32(-2.0) * log(u1))
+        var noise = Scalar[dtype](
+            mag * cos(u2 * Scalar[DType.float32](6.283185307179586))
+        )
+
+        var act: Scalar[dtype]
+        if local_s < NUM_PI_TRAJS:
+            var pi_mean = Scalar[dtype](pi_out[i, j][0])
+            act = pi_mean + noise * Scalar[dtype](0.1)
+        else:
+            var mean_idx = (
+                env_idx * HORIZON * ACTION_DIM + step * ACTION_DIM + j
+            )
+            var mu = Scalar[dtype](mean[mean_idx][0])
+            var sigma = Scalar[dtype](std[mean_idx][0])
+            act = mu + sigma * noise
+
+        if act < Scalar[dtype](-1.0):
+            act = Scalar[dtype](-1.0)
+        if act > Scalar[dtype](1.0):
+            act = Scalar[dtype](1.0)
+
+        act_step[i, j] = act
+        all_actions[i * HORIZON * ACTION_DIM + step * ACTION_DIM + j] = act
 
 
 @always_inline
@@ -53,13 +187,419 @@ def mppi_accum_reward_scalar_kernel[
 ) where dtype.is_floating_point():
     """Accumulate pre-decoded per-step rewards into discounted returns.
 
-    ``returns[i] += discount * reward_step[i]``. Unlike the legacy
-    ``mppi_accumulate_reward_kernel``, this kernel does **not** decode
-    categorical logits — the callback's ``rollout_step_gpu`` is
-    expected to have already produced a scalar reward per batch row.
-    This is the planner-side half of the trait split.
+    ``returns[i] += discount * reward_step[i]``. The callback's
+    ``rollout_step_gpu`` is expected to have already produced a
+    scalar reward per batch row — this is the planner-side half of
+    the trait split (the callback owns reward decoding).
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= TOTAL_SAMPLES:
         return
     returns[i] = returns[i] + discount * Scalar[dtype](reward_step[i][0])
+
+
+@always_inline
+def mppi_copy_z_kernel[
+    dtype: DType,
+    TOTAL_SAMPLES: Int,
+    LATENT_DIM: Int,
+](
+    dst: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, LATENT_DIM), MutAnyOrigin
+    ],
+    src: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SAMPLES, LATENT_DIM), MutAnyOrigin
+    ],
+) where dtype.is_floating_point():
+    """Copy latent states: ``dst[i] = src[i]``.
+
+    Used between horizon steps to roll ``z_next`` back into ``z``
+    for the next step's input.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= TOTAL_SAMPLES:
+        return
+    for k in range(LATENT_DIM):
+        dst[i, k] = src[i, k]
+
+
+# =============================================================================
+# Terminal bootstrap
+# =============================================================================
+
+
+@always_inline
+def mppi_add_terminal_value_kernel[
+    dtype: DType,
+    TOTAL_SAMPLES: Int,
+](
+    q_min: LayoutTensor[dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin],
+    returns: LayoutTensor[dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin],
+    discount: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Add discounted terminal bootstrap value to returns, with NaN/
+    Inf guard.
+
+    ``returns[i] = nan_to_num(returns[i] + discount * q_min[i])``.
+    Without the guard, a single NaN sample from saturating
+    activations early in training pollutes the entire env's softmax
+    (because ``exp(NaN) = NaN`` propagates). Matches reference TD-MPC2
+    (``tdmpc2.py:185``, ``value.nan_to_num(0)``).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= TOTAL_SAMPLES:
+        return
+
+    var v = Scalar[dtype](returns[i][0]) + discount * Scalar[dtype](q_min[i][0])
+    if isnan(v) or isinf(v):
+        v = Scalar[dtype](0.0)
+    returns[i] = v
+
+
+# =============================================================================
+# Top-K elite softmax + weighted mean/std refit
+# =============================================================================
+
+
+@always_inline
+def mppi_softmax_weights_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    TOTAL_SAMPLES: Int,
+    NUM_ELITES: Int,
+    BLOCK_SIZE: Int,
+](
+    returns: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * TOTAL_SAMPLES), MutAnyOrigin
+    ],
+    weights: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * TOTAL_SAMPLES), MutAnyOrigin
+    ],
+    temperature: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Per-env top-K elite softmax over returns → normalized weights.
+
+    Grid: ``N_ENVS`` blocks. Block: ``BLOCK_SIZE`` threads.
+    Each block handles one env's ``TOTAL_SAMPLES`` returns.
+
+    Reference TD-MPC2 (``tdmpc2.py:186``) selects ``num_elites=64`` of
+    ``num_samples=536`` by value, then computes softmax over only
+    those elites. Without the elite filter the bottom-fraction
+    trajectories still contribute small-but-nonzero weight, biasing
+    the MPPI mean update toward averaging-in bad samples — was the
+    likely cause of the HalfCheetah training plateau at ~-800 reward
+    before this kernel was added.
+
+    Algorithm:
+      1. Reduce max return per env (numerical stability shift).
+      2. For each sample ``s``, compute ``rank = #{k : returns[k] >
+         returns[s] OR (returns[k] == returns[s] AND k < s)}``. Sample
+         is elite iff ``rank < NUM_ELITES``.
+      3. ``weights[s] = exp(temperature * (returns[s] - max))`` if
+         elite, else 0.
+      4. Reduce sum + normalize over elites.
+    """
+    var env_idx = Int(block_idx.x)
+    var tid = Int(thread_idx.x)
+    var base = env_idx * TOTAL_SAMPLES
+
+    var smem = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # Pass 1: find max return.
+    var local_max = Scalar[dtype](-1e30)
+    var s = tid
+    while s < TOTAL_SAMPLES:
+        var v = Scalar[dtype](returns[base + s][0])
+        if v > local_max:
+            local_max = v
+        s += BLOCK_SIZE
+    smem[tid] = local_max
+
+    barrier()
+
+    var stride = BLOCK_SIZE >> 1
+    while stride > 0:
+        if tid < stride:
+            var other = smem[tid + stride]
+            var mine = smem[tid]
+            if other > mine:
+                smem[tid] = other
+        barrier()
+        stride >>= 1
+
+    var max_ret = smem[0]
+    barrier()
+
+    # Pass 2: per-sample rank + masked exp weight + local sum.
+    var local_sum: smem.element_type = 0.0
+    s = tid
+    while s < TOTAL_SAMPLES:
+        var v_s = Scalar[dtype](returns[base + s][0])
+        var rank = 0
+        for k in range(TOTAL_SAMPLES):
+            var v_k = Scalar[dtype](returns[base + k][0])
+            if v_k > v_s:
+                rank += 1
+            elif v_k == v_s and k < s:
+                rank += 1
+        if rank < NUM_ELITES:
+            var w = exp(temperature * (v_s - max_ret))
+            weights[base + s] = w
+            local_sum += w
+        else:
+            weights[base + s] = Scalar[dtype](0.0)
+        s += BLOCK_SIZE
+    smem[tid] = local_sum
+
+    barrier()
+
+    stride = BLOCK_SIZE >> 1
+    while stride > 0:
+        if tid < stride:
+            smem[tid] = rebind[Scalar[dtype]](smem[tid]) + rebind[
+                Scalar[dtype]
+            ](smem[tid + stride])
+        barrier()
+        stride >>= 1
+
+    var total_sum = rebind[Scalar[dtype]](smem[0])
+    if total_sum < Scalar[dtype](1e-10):
+        total_sum = Scalar[dtype](1e-10)
+    barrier()
+
+    # Pass 3: normalize.
+    var inv_sum = Scalar[dtype](1.0) / total_sum
+    s = tid
+    while s < TOTAL_SAMPLES:
+        weights[base + s] = Scalar[dtype](weights[base + s][0]) * inv_sum
+        s += BLOCK_SIZE
+
+
+@always_inline
+def mppi_weighted_mean_std_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    TOTAL_SAMPLES: Int,
+    HORIZON: Int,
+    ACTION_DIM: Int,
+](
+    weights: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * TOTAL_SAMPLES), MutAnyOrigin
+    ],
+    all_actions: LayoutTensor[
+        dtype,
+        Layout.row_major(N_ENVS * TOTAL_SAMPLES * HORIZON * ACTION_DIM),
+        MutAnyOrigin,
+    ],
+    mean_out: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * HORIZON * ACTION_DIM), MutAnyOrigin
+    ],
+    std_out: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * HORIZON * ACTION_DIM), MutAnyOrigin
+    ],
+) where dtype.is_floating_point():
+    """Refit ``(mean, std)`` per env using elite-weighted actions.
+
+    One thread per ``(env, t, a)`` triplet, reducing over
+    ``TOTAL_SAMPLES``. Std is clamped to ``[STD_MIN=0.05,
+    STD_MAX=2.0]`` (TD-MPC2 reference defaults). The ``+1e-8`` inside
+    ``sqrt`` keeps gradients well-defined at near-zero variance —
+    safe because elite weights are guaranteed non-degenerate by
+    ``mppi_softmax_weights_kernel``'s normalization.
+    """
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    comptime TOTAL_DIMS = N_ENVS * HORIZON * ACTION_DIM
+    if tid >= TOTAL_DIMS:
+        return
+
+    var env_idx = tid // (HORIZON * ACTION_DIM)
+    var rem = tid % (HORIZON * ACTION_DIM)
+    var t = rem // ACTION_DIM
+    var a = rem % ACTION_DIM
+
+    var w_off = env_idx * TOTAL_SAMPLES
+    var act_off = env_idx * TOTAL_SAMPLES * HORIZON * ACTION_DIM
+
+    var wm = Scalar[dtype](0.0)
+    for s in range(TOTAL_SAMPLES):
+        var w = Scalar[dtype](weights[w_off + s][0])
+        var act = Scalar[dtype](
+            all_actions[
+                act_off + s * HORIZON * ACTION_DIM + t * ACTION_DIM + a
+            ][0]
+        )
+        wm += w * act
+    mean_out[tid] = wm
+
+    var wv = Scalar[dtype](0.0)
+    for s in range(TOTAL_SAMPLES):
+        var w = Scalar[dtype](weights[w_off + s][0])
+        var act = Scalar[dtype](
+            all_actions[
+                act_off + s * HORIZON * ACTION_DIM + t * ACTION_DIM + a
+            ][0]
+        )
+        var diff = act - wm
+        wv += w * diff * diff
+
+    var std_val = sqrt(wv + Scalar[dtype](1e-8))
+    if std_val < Scalar[dtype](0.05):
+        std_val = Scalar[dtype](0.05)
+    if std_val > Scalar[dtype](2.0):
+        std_val = Scalar[dtype](2.0)
+    std_out[tid] = std_val
+
+
+# =============================================================================
+# Action selection (Gumbel-max + per-axis noise + clamp)
+# =============================================================================
+
+
+@always_inline
+def mppi_select_action_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    TOTAL_SAMPLES: Int,
+    ACTION_DIM: Int,
+    HORIZON: Int,
+    BLOCK_SIZE: Int,
+](
+    weights: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * TOTAL_SAMPLES), MutAnyOrigin
+    ],
+    all_actions: LayoutTensor[
+        dtype,
+        Layout.row_major(N_ENVS * TOTAL_SAMPLES * HORIZON * ACTION_DIM),
+        MutAnyOrigin,
+    ],
+    std: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * HORIZON * ACTION_DIM), MutAnyOrigin
+    ],
+    out_action: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACTION_DIM), MutAnyOrigin
+    ],
+    rng_seed: Scalar[DType.uint32],
+    action_scale: Scalar[dtype],
+    deterministic: UInt32,
+) where dtype.is_floating_point():
+    """Per-env action selection via Gumbel-max trick + Gaussian noise.
+
+    Algorithm matches reference TD-MPC2 (``tdmpc2.py:201-207``):
+      1. Sample ``idx ~ Categorical(weights)`` via Gumbel-max:
+         ``idx = argmax_s (log(weights[s]) + Gumbel(0,1)[s])``
+         where weights are post-softmax (already normalized in
+         ``mppi_softmax_weights_kernel``; non-elite weights are 0).
+      2. Take ``action = all_actions[env, idx, t=0, :]``.
+      3. If not deterministic: ``action += std[env, 0, :] * N(0, 1)``.
+      4. ``action = clamp(action * action_scale, ±action_scale)``.
+
+    Grid: ``N_ENVS`` blocks. Block: ``BLOCK_SIZE`` threads. Block-wide
+    argmax via shared-memory tree-reduction.
+    """
+    var env_idx = Int(block_idx.x)
+    var tid = Int(thread_idx.x)
+    var w_off = env_idx * TOTAL_SAMPLES
+    var act_off = env_idx * TOTAL_SAMPLES * HORIZON * ACTION_DIM
+
+    var smem_val = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var smem_idx = LayoutTensor[
+        DType.uint32,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # Phase 1: per-thread local argmax of (log(w) + gumbel).
+    var local_max = Scalar[dtype](-1e30)
+    var local_idx: UInt32 = 0
+    var s = tid
+    while s < TOTAL_SAMPLES:
+        var w = Scalar[dtype](weights[w_off + s][0])
+        if w > Scalar[dtype](1e-20):
+            var philox = PhiloxRandom(
+                seed=UInt64(rng_seed)
+                + UInt64(env_idx) * UInt64(TOTAL_SAMPLES)
+                + UInt64(s),
+                offset=0,
+            )
+            var rand_vals = philox.step_uniform()
+            var u = (
+                Scalar[DType.float32](rand_vals[0])
+                + Scalar[DType.float32](1e-12)
+            )
+            var g = -log(-log(u) + Scalar[DType.float32](1e-12))
+            var score = log(w) + Scalar[dtype](g)
+            if score > local_max:
+                local_max = score
+                local_idx = UInt32(s)
+        s += BLOCK_SIZE
+    smem_val[tid] = local_max
+    smem_idx[tid] = local_idx
+
+    barrier()
+
+    # Phase 2: tree-reduce argmax across block.
+    var stride = BLOCK_SIZE >> 1
+    while stride > 0:
+        if tid < stride:
+            var other_v = Scalar[dtype](smem_val[tid + stride][0])
+            var mine_v = Scalar[dtype](smem_val[tid][0])
+            if other_v > mine_v:
+                smem_val[tid] = other_v
+                smem_idx[tid] = smem_idx[tid + stride]
+        barrier()
+        stride >>= 1
+
+    var selected_s = Int(smem_idx[0])
+    barrier()
+
+    # Phase 3: thread 0..ACTION_DIM copies action, adds noise, clamps.
+    if tid < ACTION_DIM:
+        var a = tid
+        var act_idx = (
+            act_off
+            + selected_s * HORIZON * ACTION_DIM
+            + 0 * ACTION_DIM  # t = 0
+            + a
+        )
+        var act_val = Scalar[dtype](all_actions[act_idx][0])
+
+        if deterministic == UInt32(0):
+            var noise_philox = PhiloxRandom(
+                seed=(
+                    UInt64(rng_seed)
+                    + UInt64(0xA5A5A5A5)
+                    + UInt64(env_idx) * UInt64(ACTION_DIM)
+                    + UInt64(a)
+                ),
+                offset=0,
+            )
+            var noise_vals = noise_philox.step_uniform()
+            var u1 = (
+                Scalar[DType.float32](noise_vals[0])
+                + Scalar[DType.float32](1e-8)
+            )
+            var u2 = Scalar[DType.float32](noise_vals[1])
+            var mag = sqrt(Float32(-2.0) * log(u1))
+            var z = mag * cos(u2 * Scalar[DType.float32](6.283185307179586))
+            var std_val = Scalar[dtype](
+                std[env_idx * HORIZON * ACTION_DIM + 0 * ACTION_DIM + a][0]
+            )
+            act_val = act_val + std_val * Scalar[dtype](z)
+
+        act_val = act_val * action_scale
+        if act_val > action_scale:
+            act_val = action_scale
+        if act_val < -action_scale:
+            act_val = -action_scale
+        out_action[env_idx * ACTION_DIM + a] = act_val

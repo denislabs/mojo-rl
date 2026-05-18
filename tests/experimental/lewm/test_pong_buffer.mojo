@@ -9,8 +9,8 @@ from std.memory import alloc
 from std.random import seed
 from std.os import os
 
-from mojo_rl.experimental.lewm.pong_buffer import (
-    PongBuffer,
+from mojo_rl.envs.arcade_games.pong.offline_buffer import (
+    PongOfflineBuffer,
     PONG_FRAME_BYTES,
     PONG_NUM_ACTIONS,
 )
@@ -21,7 +21,7 @@ comptime dtype = DType.float32
 def main() raises:
     seed(0xABCD)
     print("=" * 70)
-    print("PongBuffer roundtrip test")
+    print("PongOfflineBuffer roundtrip test")
     print("=" * 70)
 
     # ------------------------------------------------------------------
@@ -31,7 +31,7 @@ def main() raises:
     # Frame `i` is filled with a constant pixel value `i * 20` ∈ [0, 255]
     # so we can verify quantization round-trip.
     # ------------------------------------------------------------------
-    var buf = PongBuffer(capacity=16)
+    var buf = PongOfflineBuffer(capacity=16)
     var scratch = alloc[Scalar[dtype]](PONG_FRAME_BYTES)
     for i in range(12):
         var fill_val = Scalar[dtype](i * 20) / 255.0
@@ -49,7 +49,7 @@ def main() raises:
     # ------------------------------------------------------------------
     var tmp_path = String("/tmp/test_pong_buffer.bin")
     buf.save(tmp_path)
-    var loaded = PongBuffer.load(tmp_path)
+    var loaded = PongOfflineBuffer.load(tmp_path)
     assert_eq(loaded.n_frames, 12, "loaded n_frames")
 
     # Spot-check a few raw bytes survived the round-trip.
@@ -65,15 +65,15 @@ def main() raises:
                 "got",
                 Int(loaded.frames[base]),
             )
-            raise Error("PongBuffer roundtrip: frame bytes diverged")
+            raise Error("PongOfflineBuffer roundtrip: frame bytes diverged")
     print("Frame byte roundtrip OK")
 
     # Action + done bytes
     for i in range(12):
         if Int(loaded.actions[i]) != (i % 3):
-            raise Error("PongBuffer roundtrip: action mismatch")
+            raise Error("PongOfflineBuffer roundtrip: action mismatch")
     if Int(loaded.dones[5]) != 1 or Int(loaded.dones[11]) != 1:
-        raise Error("PongBuffer roundtrip: done flag mismatch")
+        raise Error("PongOfflineBuffer roundtrip: done flag mismatch")
     print("Action/done roundtrip OK")
 
     # ------------------------------------------------------------------
@@ -110,7 +110,7 @@ def main() raises:
             if s != 1.0:
                 bad_onehot += 1
     if bad_onehot != 0:
-        raise Error("PongBuffer sample: actions not one-hot")
+        raise Error("PongOfflineBuffer sample: actions not one-hot")
     print("One-hot actions OK")
 
     # Validate pixels in [0, 1] and that within a single window, pixels
@@ -136,7 +136,7 @@ def main() raises:
     # Window-validity probe: build a buffer where every odd frame is
     # done, T=2 windows starting at even indices should be valid.
     # ------------------------------------------------------------------
-    var buf2 = PongBuffer(capacity=10)
+    var buf2 = PongOfflineBuffer(capacity=10)
     var scratch2 = alloc[Scalar[dtype]](PONG_FRAME_BYTES)
     for i in range(PONG_FRAME_BYTES):
         scratch2[i] = 0.5
@@ -159,11 +159,11 @@ def main() raises:
                 "got",
                 actual,
             )
-            raise Error("PongBuffer window validity probe failed")
+            raise Error("PongOfflineBuffer window validity probe failed")
     print("Window validity probe OK")
 
     print()
-    print("All PongBuffer tests passed.")
+    print("All PongOfflineBuffer tests passed.")
 
 
 def assert_eq(actual: Int, expected: Int, label: String) raises:

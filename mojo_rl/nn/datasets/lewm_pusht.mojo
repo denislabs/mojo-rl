@@ -477,7 +477,7 @@ struct LewmPushTExpert(Movable, Sized):
         libhdf5 into ``dense_scratch`` then strided-memcpy directly
         into the caller's batch slot in ``pixels_dst``; actions
         memcpy in one shot from the already-slurped flat host buffer
-        into ``actions_dst``. Used by ``LewmPushTSampler``.
+        into ``actions_dst``. Used by ``PushTOfflineSampler``.
 
         Args:
             idx: Clip index, ``0 <= idx < len(self.clip_ep_idx)``.

@@ -25,7 +25,7 @@ Reference: Hansen et al., 2023 — TD-MPC2: Scalable, Robust World Models
            for Continuous Control
 """
 
-from std.math import exp, log, sqrt, tanh
+from std.math import cos, exp, log, sqrt, tanh
 from std.gpu import thread_idx
 from std.random import random_float64, seed
 from std.random.philox import Random as PhiloxRandom
@@ -65,16 +65,16 @@ from mojo_rl.deep_agents.core.utils import (
 from .state import (
     TDMPC2GPUState,
     TDMPC2CPUState,
-    MPPIGPUBuffers,
-    BatchedMPPIGPUBuffers,
 )
 from .world_model import WorldModel, decode_value_batch_scalar
 from mojo_rl.core.logger import Logger, NoOpLogger
-from .mppi import plan, plan_gpu, plan_gpu_batched
-# Phase 2 strangler: new planner + adapter, opt-in via
-# `use_new_mppi_planner=True` on train_gpu.
-from .mppi_callback import TDMPC2RolloutCallback
-from mojo_rl.planners.trajectory import MPPIGPUBatched
+# MPPI planning lives in mojo_rl/planners/trajectory/; the tdmpc2
+# package supplies thin world-model adapters.
+from .mppi_callback import (
+    TDMPC2RolloutCallback,
+    TDMPC2CPURolloutCallback,
+)
+from mojo_rl.planners.trajectory import MPPICPU, MPPIGPUBatched
 from .kernels import (
     tdmpc2_random_actions_kernel,
     tdmpc2_sample_actions_kernel,
@@ -267,9 +267,17 @@ struct TDMPC2Agent[
     var logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]]
     var diag_every: Int
 
-    # MPPI warm-start state
-    var _prev_mean: List[Float64]
-    var _episode_t0: Bool
+    # CPU MPPI planner — owns its own warm-start / episode state.
+    # Used by select_action (eval path).
+    var _cpu_planner: MPPICPU[
+        Self.LATENT,
+        Self.ACT,
+        Self.H,
+        Self.num_samples,
+        Self.num_pi_trajs,
+        Self.num_iterations,
+        Self.num_elites,
+    ]
 
     def __init__(
         out self,
@@ -292,7 +300,7 @@ struct TDMPC2Agent[
         discount_min: Float64 = 0.95,
         discount_max: Float64 = 0.995,
         diag_every: Int = 0,
-    ):
+    ) raises:
         """Initialize TDMPC2 agent.
 
         Args:
@@ -346,8 +354,15 @@ struct TDMPC2Agent[
         self.running_scale = 1.0
         self.logger = None
         self.diag_every = diag_every
-        self._prev_mean = List[Float64]()
-        self._episode_t0 = True
+        self._cpu_planner = MPPICPU[
+            Self.LATENT,
+            Self.ACT,
+            Self.H,
+            Self.num_samples,
+            Self.num_pi_trajs,
+            Self.num_iterations,
+            Self.num_elites,
+        ]()
 
     # =========================================================================
     # Action Selection
@@ -357,7 +372,7 @@ struct TDMPC2Agent[
         mut self,
         obs: InlineArray[Scalar[dtype], Self.OBS],
         deterministic: Bool = False,
-    ) -> InlineArray[Scalar[dtype], Self.ACT]:
+    ) raises -> InlineArray[Scalar[dtype], Self.ACT]:
         """Select action using MPPI planning in latent space.
 
         During warmup (total_steps < warmup_steps), returns random actions.
@@ -368,6 +383,10 @@ struct TDMPC2Agent[
 
         Returns:
             Selected action [ACTION_DIM].
+
+        Warm-start state lives on ``self._cpu_planner``; the training
+        loop resets it at episode boundaries via
+        ``self._cpu_planner.start_episode()``.
         """
         # Warmup: random actions
         if self.total_steps < self.warmup_steps:
@@ -391,14 +410,9 @@ struct TDMPC2Agent[
         ](z.unsafe_ptr())
         self.state.world_model.encode[1](obs_t, z_t)
 
-        # Extract z0 as single-sample array
-        var z0 = InlineArray[Scalar[dtype], Self.LATENT](uninitialized=True)
-        for i in range(Self.LATENT):
-            z0[i] = z[i]
-
-        # MPPI planning with warm-start
-
-        var action = plan[
+        # MPPI plan via the agent-owned CPU planner. Callback wraps
+        # the world model; planner owns the warm-start state.
+        var cb = TDMPC2CPURolloutCallback[
             Self.OBS,
             Self.ACT,
             Self.LATENT,
@@ -409,23 +423,25 @@ struct TDMPC2Agent[
             Self.simplex_dim,
             Self.v_min,
             Self.v_max,
-            Self.H,
-            Self.num_samples,
-            Self.num_pi_trajs,
-            Self.num_iterations,
-        ](
-            z0,
-            self.state.world_model,
+        ](UnsafePointer(to=self.state.world_model))
+
+        var z0_list = List[Float64](length=Self.LATENT, fill=0.0)
+        for i in range(Self.LATENT):
+            z0_list[i] = Float64(z[i])
+
+        var action_list = self._cpu_planner.plan(
+            cb,
+            z0_list,
             self.gamma,
             self.temperature,
-            self._prev_mean,
             self.action_scale,
             deterministic,
-            self._episode_t0,
         )
-        # After first call in episode, subsequent calls warm-start
-        self._episode_t0 = False
-        return action^
+
+        var result = InlineArray[Scalar[dtype], Self.ACT](fill=0)
+        for i in range(Self.ACT):
+            result[i] = Scalar[dtype](action_list[i])
+        return result^
 
     # =========================================================================
     # Store Transition
@@ -969,10 +985,17 @@ struct TDMPC2Agent[
                     if log_std > 2.0:
                         log_std = 2.0
                     var std_val = exp(log_std)
-                    # Reparameterized sample: a = tanh(mean + std * noise)
-                    var noise = _gaussian_sample()
+                    # Reparameterized sample: a = tanh(mean + std * noise).
+                    # Box-Muller transform for the standard-normal noise.
+                    var u1 = random_float64()
+                    var u2 = random_float64()
+                    if u1 < 1e-10:
+                        u1 = 1e-10
+                    var noise = sqrt(-2.0 * log(u1)) * cos(
+                        2.0 * 3.14159265358979 * u2
+                    )
                     var u = mean_val + std_val * noise
-                    var act_val = _tanh(u)
+                    var act_val = Float64(tanh(Float32(u)))
                     if act_val < -1.0:
                         act_val = -1.0
                     if act_val > 1.0:
@@ -1879,7 +1902,6 @@ struct TDMPC2Agent[
         print_every: Int = 50_000,
         use_mppi: Bool = True,
         updates_per_step: Int = 1,
-        use_new_mppi_planner: Bool = False,
     ) raises -> TrainingMetrics:
         """Train TD-MPC2 on GPU with GPU-native continuous action environments.
 
@@ -1902,16 +1924,14 @@ struct TDMPC2Agent[
                 step. The reference TD-MPC2 uses 1 update per env step. With
                 n_envs parallel environments, set to n_envs to match the
                 reference's 1:1 update-to-data ratio. Default: 1.
-            use_new_mppi_planner: Phase-2 strangler flag. If True, swap the
-                legacy ``plan_gpu_batched`` call for the new planner-package
-                path (``MPPIGPUBatched`` + ``TDMPC2RolloutCallback``). The
-                new path is built in parallel — both planners are
-                constructed and their episode-reset state is mirrored — so
-                A/B comparison against the legacy path is a flip of this
-                flag. Default: False (legacy path).
 
         Returns:
             TrainingMetrics with episode rewards and statistics.
+
+        MPPI planning is delegated to ``MPPIGPUBatched`` +
+        ``TDMPC2RolloutCallback`` from ``mojo_rl/planners/``. The planner
+        owns its own per-env warm-start state; the training loop calls
+        ``new_planner.start_episode(env_idx)`` at episode boundaries.
         """
         var metrics = TrainingMetrics(
             algorithm_name="TD-MPC2 (GPU)",
@@ -2254,47 +2274,12 @@ struct TDMPC2Agent[
         ctx.enqueue_copy(gs.bins_buf, bins_host)
 
         # =================================================================
-        # MPPI GPU buffers (allocated if use_mppi=True)
+        # MPPI GPU planner + callback (allocated if use_mppi=True)
         # =================================================================
-        comptime BatchedMPPIBufs = BatchedMPPIGPUBuffers[
-            Self.WM.DynModel,  # EncModel placeholder
-            Self.WMOpt,  # EncOpt placeholder
-            Self.WM.DynModel,
-            Self.WMOpt,
-            Self.WM.RewModel,
-            Self.WMOpt,
-            Self.WM.PolModel,
-            Self.PIOpt,
-            Self.WM.QModel,
-            Self.WMOpt,
-            Self.ACT,
-            Self.LATENT,
-            Self.BINS,
-            Self.num_samples,
-            Self.num_pi_trajs,
-            Self.H,
-            n_envs,
-            Self.mlp_dim,
-            Self.num_q,
-        ]
-        # Allocate batched MPPI buffers (all envs planned in one GPU call)
-        var mppi_bufs = BatchedMPPIBufs(ctx)
-
-        # Per-env MPPI warm-start state
-        var env_prev_means = List[List[Float64]](capacity=n_envs)
-        var env_t0_flags = List[Bool](capacity=n_envs)
-        for _ in range(n_envs):
-            env_prev_means.append(List[Float64]())
-            env_t0_flags.append(True)
-
-        # ─── Phase-2 strangler: parallel new planner + callback ──────
-        # Constructed alongside the legacy `mppi_bufs` so call-site can
-        # A/B between paths via `use_new_mppi_planner`. Owns its own
-        # device scratch + per-env warm-start state (independent of the
-        # legacy env_prev_means / env_t0_flags lists). Both paths can
-        # coexist in one training run because the planner's warm-start
-        # is internal; setting `use_new_mppi_planner=True` switches the
-        # plan call entirely.
+        # The callback wraps the world-model networks via raw pointers
+        # (agent owns the buffers); the planner owns its own per-env
+        # warm-start state internally, so there are no host-side
+        # env_prev_means / env_t0_flags lists to maintain.
         comptime NEW_MPPI_BATCH = n_envs * (
             Self.num_samples + Self.num_pi_trajs
         )
@@ -2441,64 +2426,17 @@ struct TDMPC2Agent[
                     Layout.row_major(n_envs * Self.ACT),
                     MutAnyOrigin,
                 ](gs.env_act_buf.unsafe_ptr())
-                if use_new_mppi_planner:
-                    # New planner-package path (Phase 2). Same numerics
-                    # contract as legacy plan_gpu_batched; warm-start
-                    # state is internal to `new_planner`.
-                    new_planner.plan_gpu(
-                        ctx,
-                        new_callback,
-                        env_z_tensor,
-                        out_act_view,
-                        self.gamma,
-                        self.temperature,
-                        self.action_scale,
-                        False,  # not deterministic (exploration)
-                        mppi_seed,
-                    )
-                else:
-                    plan_gpu_batched[
-                        Self.OBS,
-                        Self.ACT,
-                        Self.LATENT,
-                        Self.mlp_dim,
-                        Self.BINS,
-                        Self.num_q,
-                        Self.simplex_dim,
-                        Self.v_min,
-                        Self.v_max,
-                        Self.H,
-                        Self.num_samples,
-                        Self.num_pi_trajs,
-                        Self.num_elites,
-                        Self.num_iterations,
-                        Self.WM.DynModel,
-                        Self.WMOpt,
-                        Self.WM.RewModel,
-                        Self.WMOpt,
-                        Self.WM.PolModel,
-                        Self.PIOpt,
-                        Self.WM.QModel,
-                        Self.WMOpt,
-                        n_envs,
-                    ](
-                        ctx,
-                        env_z_tensor,
-                        dyn_params_tensor,
-                        rew_params_tensor,
-                        pol_params_tensor,
-                        qt_param_ptrs,
-                        bins_tensor,
-                        mppi_bufs,
-                        self.gamma,
-                        self.temperature,
-                        env_prev_means,
-                        env_t0_flags,
-                        out_act_view,
-                        self.action_scale,
-                        False,  # not deterministic (exploration)
-                        mppi_seed,
-                    )
+                new_planner.plan_gpu(
+                    ctx,
+                    new_callback,
+                    env_z_tensor,
+                    out_act_view,
+                    self.gamma,
+                    self.temperature,
+                    self.action_scale,
+                    False,  # not deterministic (exploration)
+                    mppi_seed,
+                )
                 # action selection now happens inside plan_gpu_batched on
                 # GPU; env_act_buf is populated directly. No host roundtrip.
             else:
@@ -2607,11 +2545,6 @@ struct TDMPC2Agent[
                     cpu_ep_rewards[env_idx] = 0.0
                     # Reset MPPI warm-start for this env
                     if use_mppi:
-                        env_t0_flags[env_idx] = True
-                        env_prev_means[env_idx] = List[Float64]()
-                        # Phase-2 strangler: mirror the reset on the
-                        # new planner. No-op if the new path is unused
-                        # this run (state is just kept fresh).
                         new_planner.start_episode(env_idx)
 
             if Bool(self.logger) and nb_done > 0:
@@ -4390,7 +4323,7 @@ struct TDMPC2Agent[
         updates_per_step: Int = 1,
         verbose: Bool = True,
         print_every: Int = 10,
-    ) -> TrainingMetrics:
+    ) raises -> TrainingMetrics:
         """Run the TDMPC2 training loop.
 
         Args:
@@ -4427,7 +4360,7 @@ struct TDMPC2Agent[
             var done = False
             var steps = 0
             # Reset MPPI warm-start for new episode
-            self._episode_t0 = True
+            self._cpu_planner.start_episode()
 
             while not done:
                 # Build obs InlineArray from list
@@ -4558,26 +4491,3 @@ struct TDMPC2Agent[
         return metrics
 
 
-@always_inline
-def _gaussian_sample() -> Float64:
-    """Box-Muller transform for standard normal sample."""
-    from std.math import log as mlog, cos as mcos, sqrt as msqrt
-
-    var u1 = random_float64()
-    var u2 = random_float64()
-    if u1 < 1e-10:
-        u1 = 1e-10
-    return msqrt(-2.0 * mlog(u1)) * mcos(2.0 * 3.14159265358979 * u2)
-
-
-@always_inline
-def _tanh(x: Float64) -> Float64:
-    from std.math import exp as mexp
-
-    if x > 20.0:
-        return 1.0
-    if x < -20.0:
-        return -1.0
-    var ep = mexp(x)
-    var en = mexp(-x)
-    return (ep - en) / (ep + en)

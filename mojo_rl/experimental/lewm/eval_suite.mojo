@@ -11,12 +11,12 @@ live here (each owns no GPU state — they reuse `LeWMGPUState` buffers):
 For autoregressive MPC + CEM refinement we delegate to
 `cem_planner.CEMPlanner`, constructed on demand inside `run_all`.
 
-The buffer (`PongBuffer` or `LewmPushTSampler`) is passed in as a method
-argument — the suite does not own it. The trainer owns the buffer; both
-training-time eval (`LeWMTrainer.run` end) and standalone eval-from-
-checkpoint (`LeWMTrainer.run_eval`) reuse the same instance.
+The buffer (`PongOfflineBuffer` or `PushTOfflineSampler`) is passed in
+as a method argument — the suite does not own it. The trainer owns the
+buffer; both training-time eval (`LeWMTrainer.run` end) and standalone
+eval-from-checkpoint (`LeWMTrainer.run_eval`) reuse the same instance.
 
-Public entry: `run_all[BUF: LeWMBuffer](state, buf, ctx) raises` —
+Public entry: `run_all[BUF: OfflineBuffer](state, buf, ctx) raises` —
 sequences the four phases conditionally based on `eval_steps`,
 `eval_shuffle_diag`, `eval_h7_closed_loop`, and `mpc_horizon`.
 """
@@ -29,8 +29,9 @@ from layout import Layout, LayoutTensor
 
 from ...nn.constants import dtype
 
+from mojo_rl.core.offline_buffer import OfflineBuffer
+
 from .offline_trainer import LeWMGPUState
-from .lewm_buffer import LeWMBuffer
 from .lewm_config import LeWMConfig
 from .cem_planner import CEMPlanner
 from .kernels import (
@@ -97,7 +98,7 @@ struct LeWMEvalSuite[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         self.eval_shuffle_diag = eval_shuffle_diag
         self.eval_h7_closed_loop = eval_h7_closed_loop
 
-    def _sample_and_upload_pixels[BUF: LeWMBuffer](
+    def _sample_and_upload_pixels[BUF: OfflineBuffer](
         mut self,
         mut state: Self.GPUState,
         mut buf: BUF,
@@ -136,7 +137,7 @@ struct LeWMEvalSuite[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             block_dim=(TPB_X, TPB_Y, TPB_Z),
         )
 
-    def run_all[BUF: LeWMBuffer](
+    def run_all[BUF: OfflineBuffer](
         mut self,
         mut state: Self.GPUState,
         mut buf: BUF,
@@ -166,7 +167,7 @@ struct LeWMEvalSuite[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                 self.eval_steps, self.eval_samples, self.eval_seed,
             )
 
-    def eval_h6[BUF: LeWMBuffer](
+    def eval_h6[BUF: OfflineBuffer](
         mut self,
         mut state: Self.GPUState,
         mut buf: BUF,
@@ -362,7 +363,7 @@ struct LeWMEvalSuite[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
 
         perm_buf.free()
 
-    def eval_random_shots[BUF: LeWMBuffer](
+    def eval_random_shots[BUF: OfflineBuffer](
         mut self,
         mut state: Self.GPUState,
         mut buf: BUF,
@@ -594,7 +595,7 @@ struct LeWMEvalSuite[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             "  frac_random_worse  =", avg_better,
             " (want > 0.5 — most random plans are worse than expert)",
         )
-    def eval_h7_closed_loop_drift[BUF: LeWMBuffer](
+    def eval_h7_closed_loop_drift[BUF: OfflineBuffer](
         mut self,
         mut state: Self.GPUState,
         mut buf: BUF,

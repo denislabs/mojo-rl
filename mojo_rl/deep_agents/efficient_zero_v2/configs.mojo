@@ -360,6 +360,7 @@ struct EZV2DiscreteMLPConfig[
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = True
+    comptime USE_NEW_MCTS: Bool = False
 
     # ── EZ-V2-specific fields ────────────────────────────────────────────
     comptime ProjectorModel = ProjectionMLP[
@@ -652,6 +653,7 @@ struct EZV2ContinuousMLPConfig[
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = True
+    comptime USE_NEW_MCTS: Bool = False
 
     # ── EZ-V2-specific fields ────────────────────────────────────────────
     comptime ProjectorModel = ProjectionMLP[
@@ -886,6 +888,7 @@ struct EZV2ContinuousMLPShallowConfig[
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = True
+    comptime USE_NEW_MCTS: Bool = False
 
     # ── EZ-V2-specific fields ────────────────────────────────────────────
     # Projector matches May-11 (no PROJ_HID expansion — that landed with

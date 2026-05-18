@@ -18,12 +18,6 @@ pick the right source indexing. Actions stay on the fp32 path
 Concrete implementations:
   - ``mojo_rl.envs.arcade_games.pong.offline_buffer.PongOfflineBuffer``
   - ``mojo_rl.envs.pusht.offline_sampler.PushTOfflineSampler``
-
-The trait was originally named ``LeWMBuffer`` and lived under
-``experimental/lewm/``; it is reused by anything that wants to consume
-pixel-obs trajectory data without committing to LeWM specifics. The old
-name is still re-exported from ``experimental/lewm/lewm_buffer.mojo``
-for source compatibility.
 """
 
 

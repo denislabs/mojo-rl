@@ -27,7 +27,9 @@ via Philox (same recipe as the original
 
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
+from std.math import tanh
 from std.memory import UnsafePointer
+from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
@@ -35,7 +37,10 @@ from mojo_rl.nn.constants import dtype, TPB
 from mojo_rl.nn.model import Model
 from mojo_rl.nn.optimizer import Optimizer
 from mojo_rl.nn.training import Network
-from mojo_rl.planners.trajectory import RolloutCallbackGPU
+from mojo_rl.planners.trajectory import (
+    RolloutCallbackCPU,
+    RolloutCallbackGPU,
+)
 
 from .kernels import (
     tdmpc2_build_za_kernel,
@@ -43,6 +48,7 @@ from .kernels import (
     tdmpc2_decode_scaled_kernel,
     tdmpc2_decode_add_scaled_kernel,
 )
+from .world_model import WorldModel, decode_value_batch_scalar
 
 
 # =============================================================================
@@ -550,3 +556,263 @@ struct TDMPC2RolloutCallback[
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
+
+
+# =============================================================================
+# TDMPC2CPURolloutCallback — CPU adapter for ``MPPICPU``
+# =============================================================================
+
+
+struct TDMPC2CPURolloutCallback[
+    OBS_DIM_PARAM: Int,
+    ACTION_DIM_PARAM: Int,
+    LATENT_DIM_PARAM: Int = 512,
+    MLP_DIM: Int = 512,
+    ENC_DIM: Int = 256,
+    NUM_BINS: Int = 101,
+    NUM_Q: Int = 5,
+    SIMPLEX_DIM: Int = 8,
+    V_MIN: Float64 = -10.0,
+    V_MAX: Float64 = 10.0,
+    ENC_LR: Float64 = 9e-5,
+    WM_LR: Float64 = 3e-4,
+    PI_LR: Float64 = 3e-4,
+](Movable, ImplicitlyDestructible, RolloutCallbackCPU):
+    """``RolloutCallbackCPU`` against TDMPC2's ``WorldModel``.
+
+    Used by the agent's eval-only ``select_action`` path (B = 1).
+    The three trait methods build temporary ``(1, dim)``
+    ``LayoutTensor`` views over ``InlineArray`` scratch on each call
+    and dispatch to the matching ``WorldModel.*_forward[1]`` method.
+    Per-call allocation overhead is microseconds — negligible vs the
+    forward passes themselves.
+
+    The terminal-value method **matches the reference TD-MPC2 recipe**
+    (`tdmpc2.py:137`, ``Q(..., return_type='avg')``): sample two
+    distinct random Q-targets via ``random_float64()`` and average
+    their decoded values. The legacy CPU ``plan()`` used
+    ``q_min_forward`` (min over all 5 Q-targets) which is **over-
+    pessimistic** vs reference — fixing that bug here is one of the
+    motivations for migrating off ``plan()``.
+    """
+
+    comptime LATENT_DIM: Int = Self.LATENT_DIM_PARAM
+    comptime ACTION_DIM: Int = Self.ACTION_DIM_PARAM
+    comptime ZA_DIM: Int = Self.LATENT_DIM + Self.ACTION_DIM
+
+    comptime WM = WorldModel[
+        Self.OBS_DIM_PARAM,
+        Self.ACTION_DIM_PARAM,
+        Self.LATENT_DIM_PARAM,
+        Self.MLP_DIM,
+        Self.ENC_DIM,
+        Self.NUM_BINS,
+        Self.NUM_Q,
+        Self.SIMPLEX_DIM,
+        Self.V_MIN,
+        Self.V_MAX,
+        Self.ENC_LR,
+        Self.WM_LR,
+        Self.PI_LR,
+    ]
+
+    var wm: UnsafePointer[Self.WM, MutAnyOrigin]
+    """Borrowed pointer to the agent's WorldModel — caller guarantees
+    lifetime exceeds the callback's. Raw pointer rather than reference
+    because the callback is constructed locally inside
+    ``select_action`` and the WorldModel lives on the agent struct."""
+
+    def __init__(
+        out self,
+        wm: UnsafePointer[Self.WM, MutAnyOrigin],
+    ) raises:
+        self.wm = wm
+
+    def policy_action_cpu(
+        mut self,
+        z: List[Float64],
+        mut action_out: List[Float64],
+    ) raises:
+        # WorldModel.policy_forward[1] writes mean + log_std as
+        # separate (1, ACTION_DIM) outputs — we only need mean.
+        var z_arr = InlineArray[Scalar[dtype], Self.LATENT_DIM](fill=0)
+        for i in range(Self.LATENT_DIM):
+            z_arr[i] = Scalar[dtype](z[i])
+        var mean_arr = InlineArray[Scalar[dtype], Self.ACTION_DIM](
+            uninitialized=True
+        )
+        var log_std_arr = InlineArray[
+            Scalar[dtype], Self.ACTION_DIM
+        ](uninitialized=True)
+        var z_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.LATENT_DIM), MutAnyOrigin
+        ](z_arr.unsafe_ptr())
+        var mean_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTION_DIM), MutAnyOrigin
+        ](mean_arr.unsafe_ptr())
+        var log_std_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTION_DIM), MutAnyOrigin
+        ](log_std_arr.unsafe_ptr())
+        self.wm[].policy_forward[1](z_t, mean_t, log_std_t)
+        for i in range(Self.ACTION_DIM):
+            action_out[i] = Float64(mean_arr[i])
+
+    def rollout_step_cpu(
+        mut self,
+        z: List[Float64],
+        a: List[Float64],
+        mut z_next_out: List[Float64],
+    ) raises -> Float64:
+        # 1. Build za = [z, a] in InlineArray scratch.
+        var za = InlineArray[Scalar[dtype], Self.ZA_DIM](fill=0)
+        for i in range(Self.LATENT_DIM):
+            za[i] = Scalar[dtype](z[i])
+        for i in range(Self.ACTION_DIM):
+            za[Self.LATENT_DIM + i] = Scalar[dtype](a[i])
+        var za_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ZA_DIM), MutAnyOrigin
+        ](za.unsafe_ptr())
+
+        # 2. Dynamics: z' = Dyn(za)
+        var z_next_arr = InlineArray[
+            Scalar[dtype], Self.LATENT_DIM
+        ](uninitialized=True)
+        var z_next_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.LATENT_DIM), MutAnyOrigin
+        ](z_next_arr.unsafe_ptr())
+        self.wm[].dynamics_forward[1](za_t, z_next_t)
+        for i in range(Self.LATENT_DIM):
+            z_next_out[i] = Float64(z_next_arr[i])
+
+        # 3. Reward logits + categorical → scalar decode.
+        var rew_logits = InlineArray[
+            Scalar[dtype], Self.NUM_BINS
+        ](uninitialized=True)
+        var rew_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.NUM_BINS), MutAnyOrigin
+        ](rew_logits.unsafe_ptr())
+        self.wm[].reward_forward[1](za_t, rew_t)
+        var rew_logits_f32 = InlineArray[Float32, Self.NUM_BINS](
+            uninitialized=True
+        )
+        for i in range(Self.NUM_BINS):
+            rew_logits_f32[i] = Float32(rew_logits[i])
+        return Float64(
+            decode_value_batch_scalar[Self.NUM_BINS](
+                rew_logits_f32, self.wm[].bins
+            )
+        )
+
+    def terminal_value_cpu(
+        mut self,
+        z: List[Float64],
+    ) raises -> Float64:
+        """Q-bootstrap at end-of-horizon — matches the reference
+        TDMPC2 recipe: π(z) → tanh(mean) → 2 random target-Q heads →
+        decode each → 0.5 * (q_a + q_b).
+
+        Uses two distinct Q indices sampled via ``random_float64()``
+        (same global RNG stream the planner uses for sampling noise —
+        deterministic w.r.t. ``_set_seed``). Fixes the OLD CPU
+        ``plan()`` bug of min-over-all-Q (over-pessimistic vs
+        reference's avg-of-2).
+        """
+        var z_arr = InlineArray[Scalar[dtype], Self.LATENT_DIM](fill=0)
+        for i in range(Self.LATENT_DIM):
+            z_arr[i] = Scalar[dtype](z[i])
+        var z_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.LATENT_DIM), MutAnyOrigin
+        ](z_arr.unsafe_ptr())
+
+        # π(z) → mean (deterministic — tanh applied below for the
+        # actor's bounded action).
+        var mean_arr = InlineArray[Scalar[dtype], Self.ACTION_DIM](
+            uninitialized=True
+        )
+        var log_std_arr = InlineArray[
+            Scalar[dtype], Self.ACTION_DIM
+        ](uninitialized=True)
+        var mean_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTION_DIM), MutAnyOrigin
+        ](mean_arr.unsafe_ptr())
+        var log_std_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTION_DIM), MutAnyOrigin
+        ](log_std_arr.unsafe_ptr())
+        self.wm[].policy_forward[1](z_t, mean_t, log_std_t)
+
+        # Build za_terminal = [z, tanh(mean)] for the Q-net input.
+        var za_term = InlineArray[Scalar[dtype], Self.ZA_DIM](fill=0)
+        for i in range(Self.LATENT_DIM):
+            za_term[i] = Scalar[dtype](z[i])
+        for i in range(Self.ACTION_DIM):
+            var raw = Float64(mean_arr[i])
+            # Bounded actor uses tanh; eval-mode action is the
+            # deterministic squashed mean.
+            var act = (
+                1.0
+                if raw > 20.0
+                else (-1.0 if raw < -20.0 else _tanh_f64(raw))
+            )
+            za_term[Self.LATENT_DIM + i] = Scalar[dtype](act)
+
+        # Sample 2 distinct Q indices, run all 5 target-Q forwards
+        # in one call (q_forward writes a flat NUM_Q*1*NUM_BINS
+        # tensor with use_target=True), then decode + average the
+        # picked pair. Slightly wasteful (5 forwards instead of 2)
+        # but ``q_forward_single_no_cache`` doesn't take a
+        # ``use_target`` flag, and this is the eval-only B=1 path
+        # so the cost is negligible.
+        var qa = Int(random_float64() * Float64(Self.NUM_Q)) % Self.NUM_Q
+        var qb_offset = (
+            Int(random_float64() * Float64(Self.NUM_Q - 1))
+            % (Self.NUM_Q - 1)
+        )
+        var qb = (qa + 1 + qb_offset) % Self.NUM_Q
+
+        var za_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ZA_DIM), MutAnyOrigin
+        ](za_term.unsafe_ptr())
+
+        var q_size = Self.NUM_Q * Self.NUM_BINS
+        var all_q_logits = List[Scalar[dtype]](
+            length=q_size, fill=Scalar[dtype](0)
+        )
+        var all_q_t = LayoutTensor[
+            dtype, Layout.row_major(Self.NUM_Q * 1 * Self.NUM_BINS), MutAnyOrigin
+        ](all_q_logits.unsafe_ptr())
+        self.wm[].q_forward[1](za_t, all_q_t, True)
+
+        var v_a = self._decode_one_q(all_q_logits, qa)
+        var v_b = self._decode_one_q(all_q_logits, qb)
+        return 0.5 * (v_a + v_b)
+
+    def _decode_one_q(
+        mut self,
+        all_q_logits: List[Scalar[dtype]],
+        q_idx: Int,
+    ) raises -> Float64:
+        """Decode one slice of the (NUM_Q * NUM_BINS) flat output of
+        ``q_forward`` (B=1) into a scalar via softmax-expected-bin +
+        symexp.
+        """
+        var base = q_idx * Self.NUM_BINS
+        var logits_f32 = InlineArray[Float32, Self.NUM_BINS](
+            uninitialized=True
+        )
+        for i in range(Self.NUM_BINS):
+            logits_f32[i] = Float32(all_q_logits[base + i])
+        return Float64(
+            decode_value_batch_scalar[Self.NUM_BINS](
+                logits_f32, self.wm[].bins
+            )
+        )
+
+
+@always_inline
+def _tanh_f64(x: Float64) -> Float64:
+    """Float64 tanh using Float32 underneath — sufficient precision
+    for action clamping (we don't need exact reproducibility of
+    GPU's `tdmpc2_apply_tanh_build_za_deterministic_kernel` since
+    this is the eval-only CPU path).
+    """
+    return Float64(tanh(Float32(x)))

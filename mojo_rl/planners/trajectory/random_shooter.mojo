@@ -26,7 +26,7 @@ from layout import TileTensor, Idx, row_major
 
 from mojo_rl.nn.constants import dtype
 
-from .score_callback import ScorePlanCallback
+from .score_callback import ScorePlanCallback, BatchedScorePlanCallback
 
 
 struct CategoricalRandomShooter[BATCH: Int, ACT_DIM: Int](
@@ -167,6 +167,64 @@ struct CategoricalRandomShooter[BATCH: Int, ACT_DIM: Int](
                     )
                 ),
             )
+            var dst = TileTensor(
+                best_plan_out,
+                row_major(
+                    (Idx[Self.BATCH](), Idx(self.horizon), Idx[Self.ACT_DIM]())
+                ),
+            )
+            for b in range(Self.BATCH):
+                for t in range(self.horizon):
+                    for a in range(Self.ACT_DIM):
+                        dst[b, t, a] = all_samples[
+                            best_overall_sample, b, t, a
+                        ]
+
+        return best_overall
+
+    def optimize_batched[CB: BatchedScorePlanCallback](
+        mut self,
+        mut callback: CB,
+        best_plan_out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        verbose: Bool = True,
+    ) raises -> Float64:
+        """Sample ``num_samples`` random plans, score them in a single
+        batched GPU call, return min.
+
+        Same semantics as ``optimize`` (writes best plan + leaves
+        ``sample_scores`` populated for caller stats) but the score loop
+        is one batched call into the world model instead of
+        ``num_samples`` sequential calls. Used by LeWM eval at paper
+        config where the per-sample host sync was the bottleneck.
+        """
+        for s in range(self.num_samples):
+            self._sample_uniform(s)
+
+        var all_samples = TileTensor(
+            self.sample_actions,
+            row_major(
+                (
+                    Idx(self.num_samples),
+                    Idx[Self.BATCH](),
+                    Idx(self.horizon),
+                    Idx[Self.ACT_DIM](),
+                )
+            ),
+        )
+        callback.score_plans_batched(all_samples, self.sample_scores)
+
+        var best_overall: Float64 = 1.0e30
+        var best_overall_sample: Int = -1
+        for s in range(self.num_samples):
+            var score = self.sample_scores[s]
+            if score < best_overall:
+                best_overall = score
+                best_overall_sample = s
+
+        if verbose:
+            print("    random shooter best=", best_overall)
+
+        if best_overall_sample >= 0:
             var dst = TileTensor(
                 best_plan_out,
                 row_major(
