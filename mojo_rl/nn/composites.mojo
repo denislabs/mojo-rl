@@ -135,6 +135,33 @@ comptime MultiHeadAttention[
     Tokenwise[seq_len, Linear[dim, dim]],
 ]
 
+# MultiHeadAttentionXL: like MultiHeadAttention but with an *explicit* per-head
+# dimension. The internal MSA width is `n_heads * dim_head`, independent of the
+# external `dim`. Useful when paper specs decouple per-head capacity from the
+# residual stream width (e.g. LeWM predictor: dim=192, n_heads=16, dim_head=64
+# → internal MSA width = 1024, not 192/16=12).
+#
+# The special case `dim_head = dim / n_heads` is exactly the existing
+# `MultiHeadAttention[dim, n_heads, seq_len, causal]`.
+#
+# `ScaledDotProductAttention` takes its `dim` as the *internal* width with
+# `head_dim = dim / n_heads`, so passing `dim = n_heads * dim_head` (here:
+# n_heads * dim_head) makes the primitive compute the requested head dim.
+# IN_DIM = OUT_DIM = seq_len * dim.
+comptime MultiHeadAttentionXL[
+    dim: Int,
+    n_heads: Int,
+    dim_head: Int,
+    seq_len: Int,
+    causal: Bool = False,
+] = Sequential[
+    Tokenwise[seq_len, Linear[dim, 3 * n_heads * dim_head]],
+    AutoDiffChain[
+        ScaledDotProductAttention[n_heads * dim_head, n_heads, seq_len, causal]
+    ],
+    Tokenwise[seq_len, Linear[n_heads * dim_head, dim]],
+]
+
 # TransformerFFN: per-token feed-forward network for use inside a transformer.
 # Same as FFN[dim, ff_dim] but applied tokenwise (shared weights across
 # positions) and using GELU activation (tanh approximation, GPT-2/BERT

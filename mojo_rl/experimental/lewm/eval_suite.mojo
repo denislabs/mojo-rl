@@ -74,6 +74,12 @@ struct LeWMEvalSuite[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
     var cem_topk: Int
     var cem_smoothing: Float64
 
+    # Receding-horizon MPC config — when > 0 and mpc_horizon > 0, the
+    # suite calls ``planner.eval_receding_horizon`` after the open-loop
+    # MPC eval. Hypothesis: short-horizon plans + replanning beat
+    # long-horizon open-loop CEM at training scale (project_lewm_horizon_sweep).
+    var rh_steps: Int
+
     def __init__(
         out self,
         eval_steps: Int,
@@ -86,6 +92,7 @@ struct LeWMEvalSuite[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         cem_smoothing: Float64 = 0.5,
         eval_shuffle_diag: Bool = True,
         eval_h7_closed_loop: Bool = True,
+        rh_steps: Int = 0,
     ):
         self.eval_steps = eval_steps
         self.eval_samples = eval_samples
@@ -97,6 +104,7 @@ struct LeWMEvalSuite[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         self.cem_smoothing = cem_smoothing
         self.eval_shuffle_diag = eval_shuffle_diag
         self.eval_h7_closed_loop = eval_h7_closed_loop
+        self.rh_steps = rh_steps
 
     def _sample_and_upload_pixels[BUF: OfflineBuffer](
         mut self,
@@ -166,6 +174,12 @@ struct LeWMEvalSuite[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                 state, buf, ctx,
                 self.eval_steps, self.eval_samples, self.eval_seed,
             )
+            if self.rh_steps > 0:
+                planner.eval_receding_horizon(
+                    state, buf, ctx,
+                    self.eval_steps, self.eval_samples,
+                    self.rh_steps, self.eval_seed,
+                )
 
     def eval_h6[BUF: OfflineBuffer](
         mut self,
@@ -284,7 +298,8 @@ struct LeWMEvalSuite[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
 
             var stats = _run_h6_diag_shots[
                 Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.CONFIG.N_PREDS, Self.EMB, Self.CONFIG.ACT, Self.CONFIG.SMOOTHED, Self.CONFIG.PROJ_H,
-                Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
+                Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_DIM_HEAD,
+                Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
             ](
                 ctx,
                 self.eval_samples,
@@ -505,7 +520,8 @@ struct LeWMEvalSuite[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                 # One shot through AE + slice + POS + Self.CONFIG.DEPTH × cond_block + PROJ.
                 _run_eval_shot_forward[
                     Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB, Self.CONFIG.ACT, Self.CONFIG.SMOOTHED, Self.CONFIG.PROJ_H,
-                    Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
+                    Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_DIM_HEAD,
+                    Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
                 ](
                     ctx,
                     state.ae_state.params_view(), state.ae_state.model_state_view(),
@@ -797,7 +813,8 @@ struct LeWMEvalSuite[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                 _run_eval_shot_forward[
                     Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB, Self.CONFIG.ACT,
                     Self.CONFIG.SMOOTHED, Self.CONFIG.PROJ_H,
-                    Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
+                    Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_DIM_HEAD,
+                    Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
                 ](
                     ctx,
                     state.ae_state.params_view(),
@@ -876,7 +893,8 @@ struct LeWMEvalSuite[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                 _run_eval_shot_forward[
                     Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB, Self.CONFIG.ACT,
                     Self.CONFIG.SMOOTHED, Self.CONFIG.PROJ_H,
-                    Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
+                    Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_DIM_HEAD,
+                    Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
                 ](
                     ctx,
                     state.ae_state.params_view(),

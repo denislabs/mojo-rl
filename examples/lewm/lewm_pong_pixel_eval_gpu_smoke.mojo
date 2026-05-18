@@ -2,7 +2,8 @@
 
 Loads the checkpoint written by `lewm_pong_pixel_train_gpu_smoke.mojo`
 and runs only the eval phases (H6 action-shuffle, H7 closed-loop drift,
-Phase 4b/4c MPC+CEM). No training — should finish in seconds.
+Phase 4b/4c open-loop MPC+CEM, Phase 4d receding-horizon MPC when
+`rh_steps > 0`). No training — should finish in seconds.
 
 CONFIG must match the training driver that wrote the checkpoint.
 
@@ -26,4 +27,5 @@ def main() raises:
         cem_samples=16,
         cem_topk=4,
         cem_smoothing=0.5,
+        rh_steps=2,
     )

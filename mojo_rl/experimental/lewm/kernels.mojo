@@ -12,7 +12,7 @@ Contents (in declaration order):
     - slice_h_kernel, scatter_h_kernel, scatter_target_neg_kernel
     - accumulate_emb_kernel, replicate_start_emb_kernel
     - slide_emb_window_kernel, slide_actions_window_kernel
-    - store_pred_last_kernel, mpc_score_kernel
+    - store_pred_last_kernel, extract_emb_from_seq_kernel, mpc_score_kernel
 
   Per-layer training orchestration (used inside `train_step`):
     - run_cond_layer_forward, run_cond_layer_backward
@@ -60,7 +60,7 @@ from ...nn.model import (
     Sequential, Linear, BatchNorm1D, Tokenwise,
 )
 from ...nn.model.autodiff_layers import GELU
-from ...nn.composites import TransformerBlock, MultiHeadAttention
+from ...nn.composites import TransformerBlock, MultiHeadAttention, MultiHeadAttentionXL
 from ...nn.autodiff import AutoDiffChain
 from ...nn.autodiff.primitives import BiasAdd, SIGRegOp
 from .encoder import LeWMEncoder
@@ -306,6 +306,27 @@ def store_pred_last_kernel[
         emb_seq[b, (k + H) * EMB + d] = pred[b, (H - 1) * EMB + d]
 
 
+# Extract emb_seq[:, pos, :] -> emb_out[:, :] (inverse of replicate_start_emb).
+# Used by receding-horizon MPC eval to pull the 1-step-ahead predicted frame
+# (pos=H, the first predicted slot after the H replicated start frames) into
+# the rolling current-state buffer between RH execution steps.
+def extract_emb_from_seq_kernel[
+    BATCH: Int, EMB: Int, ROLL_T: Int,
+](
+    emb_seq: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ROLL_T * EMB), MutAnyOrigin
+    ],
+    emb_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH, EMB), MutAnyOrigin
+    ],
+    pos: Int,
+):
+    var b = Int(global_idx.x)
+    var d = Int(global_idx.y)
+    if b < BATCH and d < EMB:
+        emb_out[b, d] = emb_seq[b, pos * EMB + d]
+
+
 # Compute MSE(emb_seq[:, GOAL_POS, :], emb_goal[:, :]) summed across
 # BATCH × EMB; thread 0 writes the sum to score_out[0].
 # Caller divides by BATCH * EMB on host (or just inspects raw sum).
@@ -355,7 +376,7 @@ def mpc_score_kernel[
 
 
 def run_cond_layer_forward[
-    BATCH: Int, T: Int, D: Int, HEADS: Int, FF: Int,
+    BATCH: Int, T: Int, D: Int, HEADS: Int, DIM_HEAD: Int, FF: Int,
 ](
     ctx: DeviceContext,
     d: Int,
@@ -375,13 +396,15 @@ def run_cond_layer_forward[
     ],
     msa_params: LayoutTensor[
         dtype,
-        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].PARAM_SIZE),
+        Layout.row_major(
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].PARAM_SIZE
+        ),
         MutAnyOrigin,
     ],
     msa_state: LayoutTensor[
         dtype,
         Layout.row_major(
-            MultiHeadAttention[D, HEADS, T, True].STATE_SIZE
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].STATE_SIZE
         ),
         MutAnyOrigin,
     ],
@@ -457,11 +480,13 @@ def run_cond_layer_forward[
     ](mod1_cache_buf.unsafe_ptr() + d * (BATCH * T) * 2 * D)
     var msa_cache_d = LayoutTensor[
         dtype,
-        Layout.row_major(BATCH, MultiHeadAttention[D, HEADS, T, True].CACHE_SIZE),
+        Layout.row_major(
+            BATCH, MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].CACHE_SIZE
+        ),
         MutAnyOrigin,
     ](
         msa_cache_buf.unsafe_ptr()
-        + d * BATCH * MultiHeadAttention[D, HEADS, T, True].CACHE_SIZE
+        + d * BATCH * MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].CACHE_SIZE
     )
     var gate1_cache_d = LayoutTensor[
         dtype, Layout.row_major((BATCH * T), 2 * D), MutAnyOrigin
@@ -485,7 +510,7 @@ def run_cond_layer_forward[
         dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
     ](x_mid_buf_d.unsafe_ptr() + d * (BATCH * T) * D)
 
-    cond_block_forward_gpu[BATCH, T, D, HEADS, FF](
+    cond_block_forward_gpu[BATCH, T, D, HEADS, DIM_HEAD, FF](
         ctx, x_in_t, c_in_t,
         adaln_params, adaln_state,
         msa_params, msa_state,
@@ -502,7 +527,7 @@ def run_cond_layer_forward[
 
 
 def run_cond_layer_backward[
-    BATCH: Int, T: Int, D: Int, HEADS: Int, FF: Int,
+    BATCH: Int, T: Int, D: Int, HEADS: Int, DIM_HEAD: Int, FF: Int,
 ](
     ctx: DeviceContext,
     d: Int,
@@ -520,13 +545,15 @@ def run_cond_layer_backward[
     ],
     msa_params: LayoutTensor[
         dtype,
-        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].PARAM_SIZE),
+        Layout.row_major(
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].PARAM_SIZE
+        ),
         MutAnyOrigin,
     ],
     msa_state: LayoutTensor[
         dtype,
         Layout.row_major(
-            MultiHeadAttention[D, HEADS, T, True].STATE_SIZE
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].STATE_SIZE
         ),
         MutAnyOrigin,
     ],
@@ -558,7 +585,9 @@ def run_cond_layer_backward[
     ],
     mut g_msa: LayoutTensor[
         dtype,
-        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].PARAM_SIZE),
+        Layout.row_major(
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].PARAM_SIZE
+        ),
         MutAnyOrigin,
     ],
     mut g_mlp: LayoutTensor[
@@ -620,11 +649,13 @@ def run_cond_layer_backward[
     ](mod1_cache_buf.unsafe_ptr() + d * (BATCH * T) * 2 * D)
     var msa_cache_d = LayoutTensor[
         dtype,
-        Layout.row_major(BATCH, MultiHeadAttention[D, HEADS, T, True].CACHE_SIZE),
+        Layout.row_major(
+            BATCH, MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].CACHE_SIZE
+        ),
         MutAnyOrigin,
     ](
         msa_cache_buf.unsafe_ptr()
-        + d * BATCH * MultiHeadAttention[D, HEADS, T, True].CACHE_SIZE
+        + d * BATCH * MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].CACHE_SIZE
     )
     var gate1_cache_d = LayoutTensor[
         dtype, Layout.row_major((BATCH * T), 2 * D), MutAnyOrigin
@@ -645,7 +676,7 @@ def run_cond_layer_backward[
         dtype, Layout.row_major((BATCH * T), D), MutAnyOrigin
     ](x_mid_buf_d.unsafe_ptr() + d * (BATCH * T) * D)
 
-    cond_block_backward_gpu[BATCH, T, D, HEADS, FF](
+    cond_block_backward_gpu[BATCH, T, D, HEADS, DIM_HEAD, FF](
         ctx, grad_x_next_t,
         adaln_params, adaln_state,
         msa_params, msa_state,
@@ -679,7 +710,7 @@ def run_cond_layer_backward[
 def _run_eval_shot_forward[
     BATCH: Int, T: Int, H: Int, EMB: Int, ACT: Int,
     SMOOTHED: Int, PROJ_H: Int,
-    PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
+    PRED_HEADS: Int, PRED_DIM_HEAD: Int, PRED_FF: Int, DEPTH: Int,
 ](
     ctx: DeviceContext,
     # AE.
@@ -749,7 +780,8 @@ def _run_eval_shot_forward[
     mut adaln_states: List[GPUNetworkState[AdaLNMod[EMB], Adam[]]],
     mut msa_states: List[
         GPUNetworkState[
-            MultiHeadAttention[EMB, PRED_HEADS, H, True], Adam[]
+            MultiHeadAttentionXL[EMB, PRED_HEADS, PRED_DIM_HEAD, H, True],
+            Adam[],
         ]
     ],
     mut mlp_states: List[GPUNetworkState[CondMLP[EMB, PRED_FF], Adam[]]],
@@ -902,7 +934,7 @@ def _run_eval_shot_forward[
 
     # DEPTH × cond_block forward.
     for d in range(DEPTH):
-        run_cond_layer_forward[BATCH, H, EMB, PRED_HEADS, PRED_FF](
+        run_cond_layer_forward[BATCH, H, EMB, PRED_HEADS, PRED_DIM_HEAD, PRED_FF](
             ctx, d, DEPTH,
             x_prev_pe_buf, x_inter_buf, pred_raw_buf,
             c_in_t,
@@ -957,7 +989,7 @@ def _run_eval_shot_forward[
 def _run_h6_diag_shots[
     BATCH: Int, T: Int, H: Int, N_PREDS: Int, EMB: Int, ACT: Int,
     SMOOTHED: Int, PROJ_H: Int,
-    PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
+    PRED_HEADS: Int, PRED_DIM_HEAD: Int, PRED_FF: Int, DEPTH: Int,
 ](
     ctx: DeviceContext,
     eval_samples: Int,
@@ -1036,7 +1068,8 @@ def _run_h6_diag_shots[
     mut adaln_states: List[GPUNetworkState[AdaLNMod[EMB], Adam[]]],
     mut msa_states: List[
         GPUNetworkState[
-            MultiHeadAttention[EMB, PRED_HEADS, H, True], Adam[]
+            MultiHeadAttentionXL[EMB, PRED_HEADS, PRED_DIM_HEAD, H, True],
+            Adam[],
         ]
     ],
     mut mlp_states: List[GPUNetworkState[CondMLP[EMB, PRED_FF], Adam[]]],
@@ -1164,7 +1197,7 @@ def _run_h6_diag_shots[
 
         _run_eval_shot_forward[
             BATCH, T, H, EMB, ACT, SMOOTHED, PROJ_H,
-            PRED_HEADS, PRED_FF, DEPTH,
+            PRED_HEADS, PRED_DIM_HEAD, PRED_FF, DEPTH,
         ](
             ctx,
             ae_params, ae_state,
@@ -1244,7 +1277,7 @@ def _run_h6_diag_shots[
 def _run_mpc_shot[
     BATCH: Int, T: Int, H: Int, EMB: Int, ACT: Int,
     SMOOTHED: Int, PROJ_H: Int,
-    PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
+    PRED_HEADS: Int, PRED_DIM_HEAD: Int, PRED_FF: Int, DEPTH: Int,
 ](
     ctx: DeviceContext,
     mpc_horizon: Int,
@@ -1329,7 +1362,8 @@ def _run_mpc_shot[
     mut adaln_states: List[GPUNetworkState[AdaLNMod[EMB], Adam[]]],
     mut msa_states: List[
         GPUNetworkState[
-            MultiHeadAttention[EMB, PRED_HEADS, H, True], Adam[]
+            MultiHeadAttentionXL[EMB, PRED_HEADS, PRED_DIM_HEAD, H, True],
+            Adam[],
         ]
     ],
     mut mlp_states: List[GPUNetworkState[CondMLP[EMB, PRED_FF], Adam[]]],
@@ -1470,7 +1504,7 @@ def _run_mpc_shot[
 
         _run_eval_shot_forward[
             BATCH, T, H, EMB, ACT, SMOOTHED, PROJ_H,
-            PRED_HEADS, PRED_FF, DEPTH,
+            PRED_HEADS, PRED_DIM_HEAD, PRED_FF, DEPTH,
         ](
             ctx,
             ae_params, ae_state,
@@ -1544,7 +1578,7 @@ def _run_mpc_shot[
 def _run_mpc_rollout_no_readback[
     BATCH: Int, T: Int, H: Int, EMB: Int, ACT: Int,
     SMOOTHED: Int, PROJ_H: Int,
-    PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
+    PRED_HEADS: Int, PRED_DIM_HEAD: Int, PRED_FF: Int, DEPTH: Int,
 ](
     ctx: DeviceContext,
     mpc_horizon: Int,
@@ -1625,7 +1659,8 @@ def _run_mpc_rollout_no_readback[
     mut adaln_states: List[GPUNetworkState[AdaLNMod[EMB], Adam[]]],
     mut msa_states: List[
         GPUNetworkState[
-            MultiHeadAttention[EMB, PRED_HEADS, H, True], Adam[]
+            MultiHeadAttentionXL[EMB, PRED_HEADS, PRED_DIM_HEAD, H, True],
+            Adam[],
         ]
     ],
     mut mlp_states: List[GPUNetworkState[CondMLP[EMB, PRED_FF], Adam[]]],
@@ -1759,7 +1794,7 @@ def _run_mpc_rollout_no_readback[
         )
         _run_eval_shot_forward[
             BATCH, T, H, EMB, ACT, SMOOTHED, PROJ_H,
-            PRED_HEADS, PRED_FF, DEPTH,
+            PRED_HEADS, PRED_DIM_HEAD, PRED_FF, DEPTH,
         ](
             ctx,
             ae_params, ae_state,

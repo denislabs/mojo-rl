@@ -30,7 +30,7 @@ def main() raises:
         batch=16, t=6, h=3,
         hidden=192, enc_heads=3, enc_layers=12,
         emb=192, proj_h=2048,
-        pred_heads=16, pred_ff=2048,
+        pred_heads=16, pred_dim_head=64, pred_ff=2048,
         depth=6,
     ]
     comptime CKPT = "/tmp/lewm_pusht_paper.ckpt"

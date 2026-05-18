@@ -43,7 +43,7 @@ from std.math import ceildiv
 from ...nn.constants import dtype
 from ...nn.model import Linear, Sequential
 from ...nn.model.autodiff_layers import GELU
-from ...nn.composites import MultiHeadAttention
+from ...nn.composites import MultiHeadAttention, MultiHeadAttentionXL
 from ...nn.autodiff.primitives import (
     SwishOp,
     ModulateOp,
@@ -86,6 +86,7 @@ def cond_block_forward[
     T: Int,
     D: Int,
     HEADS: Int,
+    DIM_HEAD: Int,
 ](
     x_prev_t: LayoutTensor[dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin],
     c_t: LayoutTensor[dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin],
@@ -97,12 +98,16 @@ def cond_block_forward[
     ],
     msa_params: LayoutTensor[
         dtype,
-        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].PARAM_SIZE),
+        Layout.row_major(
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].PARAM_SIZE
+        ),
         MutAnyOrigin,
     ],
     msa_state: LayoutTensor[
         dtype,
-        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].STATE_SIZE),
+        Layout.row_major(
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].STATE_SIZE
+        ),
         MutAnyOrigin,
     ],
     mut x_next_t: LayoutTensor[
@@ -125,7 +130,7 @@ def cond_block_forward[
     mut msa_cache_t: LayoutTensor[
         dtype,
         Layout.row_major(
-            BATCH, MultiHeadAttention[D, HEADS, T, True].CACHE_SIZE
+            BATCH, MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].CACHE_SIZE
         ),
         MutAnyOrigin,
     ],
@@ -179,7 +184,7 @@ def cond_block_forward[
     var attn_btd_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, T * D), MutAnyOrigin
     ](attn_out_buf_t.ptr)
-    MultiHeadAttention[D, HEADS, T, True].forward[BATCH](
+    MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].forward[BATCH](
         mod_x_btd_t, attn_btd_t, msa_params, msa_state, msa_cache_t
     )
     for b in range(BATCH * T):
@@ -198,6 +203,7 @@ def cond_block_backward[
     T: Int,
     D: Int,
     HEADS: Int,
+    DIM_HEAD: Int,
 ](
     grad_x_next_t: LayoutTensor[
         dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin
@@ -210,12 +216,16 @@ def cond_block_backward[
     ],
     msa_params: LayoutTensor[
         dtype,
-        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].PARAM_SIZE),
+        Layout.row_major(
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].PARAM_SIZE
+        ),
         MutAnyOrigin,
     ],
     msa_state: LayoutTensor[
         dtype,
-        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].STATE_SIZE),
+        Layout.row_major(
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].STATE_SIZE
+        ),
         MutAnyOrigin,
     ],
     silu_cache_t: LayoutTensor[
@@ -235,7 +245,7 @@ def cond_block_backward[
     msa_cache_t: LayoutTensor[
         dtype,
         Layout.row_major(
-            BATCH, MultiHeadAttention[D, HEADS, T, True].CACHE_SIZE
+            BATCH, MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].CACHE_SIZE
         ),
         MutAnyOrigin,
     ],
@@ -253,7 +263,9 @@ def cond_block_backward[
     ],
     mut g_msa_params: LayoutTensor[
         dtype,
-        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].PARAM_SIZE),
+        Layout.row_major(
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].PARAM_SIZE
+        ),
         MutAnyOrigin,
     ],
     mut sgg_t: LayoutTensor[
@@ -306,7 +318,7 @@ def cond_block_backward[
     var sgmx_btd_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, T * D), MutAnyOrigin
     ](sgmx_t.ptr)
-    MultiHeadAttention[D, HEADS, T, True].backward[BATCH](
+    MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].backward[BATCH](
         sgao_btd_t,
         sgmx_btd_t,
         msa_params,
@@ -453,6 +465,7 @@ def cond_block_forward_gpu[
     T: Int,
     D: Int,
     HEADS: Int,
+    DIM_HEAD: Int,
     FF: Int,
 ](
     ctx: DeviceContext,
@@ -467,12 +480,16 @@ def cond_block_forward_gpu[
     ],
     msa_params: LayoutTensor[
         dtype,
-        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].PARAM_SIZE),
+        Layout.row_major(
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].PARAM_SIZE
+        ),
         MutAnyOrigin,
     ],
     msa_state: LayoutTensor[
         dtype,
-        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].STATE_SIZE),
+        Layout.row_major(
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].STATE_SIZE
+        ),
         MutAnyOrigin,
     ],
     mlp_params: LayoutTensor[
@@ -503,7 +520,7 @@ def cond_block_forward_gpu[
     mut msa_cache_t: LayoutTensor[
         dtype,
         Layout.row_major(
-            BATCH, MultiHeadAttention[D, HEADS, T, True].CACHE_SIZE
+            BATCH, MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].CACHE_SIZE
         ),
         MutAnyOrigin,
     ],
@@ -619,7 +636,7 @@ def cond_block_forward_gpu[
     var attn_btd_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, T * D), MutAnyOrigin
     ](branch_out_buf_t.ptr)
-    MultiHeadAttention[D, HEADS, T, True].forward_gpu[BATCH, dtype](
+    MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].forward_gpu[BATCH, dtype](
         ctx,
         attn_btd_t,
         mod_x_btd_t,
@@ -712,6 +729,7 @@ def cond_block_backward_gpu[
     T: Int,
     D: Int,
     HEADS: Int,
+    DIM_HEAD: Int,
     FF: Int,
 ](
     ctx: DeviceContext,
@@ -727,12 +745,16 @@ def cond_block_backward_gpu[
     ],
     msa_params: LayoutTensor[
         dtype,
-        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].PARAM_SIZE),
+        Layout.row_major(
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].PARAM_SIZE
+        ),
         MutAnyOrigin,
     ],
     msa_state: LayoutTensor[
         dtype,
-        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].STATE_SIZE),
+        Layout.row_major(
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].STATE_SIZE
+        ),
         MutAnyOrigin,
     ],
     mlp_params: LayoutTensor[
@@ -759,7 +781,7 @@ def cond_block_backward_gpu[
     msa_cache_t: LayoutTensor[
         dtype,
         Layout.row_major(
-            BATCH, MultiHeadAttention[D, HEADS, T, True].CACHE_SIZE
+            BATCH, MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].CACHE_SIZE
         ),
         MutAnyOrigin,
     ],
@@ -797,7 +819,9 @@ def cond_block_backward_gpu[
     ],
     mut g_msa_params: LayoutTensor[
         dtype,
-        Layout.row_major(MultiHeadAttention[D, HEADS, T, True].PARAM_SIZE),
+        Layout.row_major(
+            MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].PARAM_SIZE
+        ),
         MutAnyOrigin,
     ],
     mut g_mlp_params: LayoutTensor[
@@ -944,7 +968,7 @@ def cond_block_backward_gpu[
     var sgmx_btd_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, T * D), MutAnyOrigin
     ](sgmx_t.ptr)
-    MultiHeadAttention[D, HEADS, T, True].backward_gpu[BATCH, dtype](
+    MultiHeadAttentionXL[D, HEADS, DIM_HEAD, T, True].backward_gpu[BATCH, dtype](
         ctx,
         sgmx_btd_t,
         sgbo_btd_t,

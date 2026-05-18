@@ -78,6 +78,8 @@ trait LeWMConfig(Movable, ImplicitlyDestructible):
     comptime ENC_HEADS: Int
     comptime ENC_LAYERS: Int
     comptime PRED_HEADS: Int
+    comptime PRED_DIM_HEAD: Int  # predictor MSA per-head width (paper: 64);
+                                  # decouples MSA capacity from EMB/PRED_HEADS
     comptime PRED_FF: Int    # predictor FFN hidden width
     comptime DEPTH: Int      # # stacked conditional blocks
 
@@ -111,6 +113,7 @@ struct LeWMPongViTConfig[
     act: Int = 3,
     smoothed: Int = 16,
     pred_heads: Int = 2,
+    pred_dim_head: Int = 16,  # default = hidden/pred_heads (32/2) — backward-compat
     pred_ff: Int = 64,
     depth: Int = 2,
     sig_num_proj: Int = 64,
@@ -144,6 +147,7 @@ struct LeWMPongViTConfig[
     comptime ACT: Int = Self.act
     comptime SMOOTHED: Int = Self.smoothed
     comptime PRED_HEADS: Int = Self.pred_heads
+    comptime PRED_DIM_HEAD: Int = Self.pred_dim_head
     comptime PRED_FF: Int = Self.pred_ff
     comptime DEPTH: Int = Self.depth
     comptime SIG_NUM_PROJ: Int = Self.sig_num_proj
@@ -178,6 +182,8 @@ struct LeWMPushTViTConfig[
     act: Int = 10,         # FRAMESKIP(5) * ACTION_DIM(2)
     smoothed: Int = 32,
     pred_heads: Int = 4,
+    pred_dim_head: Int = 24,  # default = hidden/pred_heads (96/4) — backward-compat;
+                              # paper recipe uses 64 (with pred_heads=16)
     pred_ff: Int = 256,
     depth: Int = 2,
     sig_num_proj: Int = 1024,
@@ -208,6 +214,7 @@ struct LeWMPushTViTConfig[
     comptime ACT: Int = Self.act
     comptime SMOOTHED: Int = Self.smoothed
     comptime PRED_HEADS: Int = Self.pred_heads
+    comptime PRED_DIM_HEAD: Int = Self.pred_dim_head
     comptime PRED_FF: Int = Self.pred_ff
     comptime DEPTH: Int = Self.depth
     comptime SIG_NUM_PROJ: Int = Self.sig_num_proj

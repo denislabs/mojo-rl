@@ -55,7 +55,7 @@ from ...nn.model import (
     Sequential, Linear, BatchNorm1D, Tokenwise,
 )
 from ...nn.model.autodiff_layers import GELU
-from ...nn.composites import TransformerBlock, MultiHeadAttention
+from ...nn.composites import TransformerBlock, MultiHeadAttention, MultiHeadAttentionXL
 from ...nn.autodiff import AutoDiffChain
 from ...nn.autodiff.primitives import BiasAdd, SIGRegOp
 from .encoder import LeWMEncoder
@@ -134,7 +134,13 @@ struct LeWMGPUState[CONFIG: LeWMConfig]:
     comptime AE = ActionEmbedder[Self.CONFIG.T, Self.CONFIG.ACT, Self.CONFIG.SMOOTHED, Self.EMB]
     comptime POS = AutoDiffChain[BiasAdd[Self.CONFIG.H * Self.EMB]]
     comptime ADALN = AdaLNMod[Self.EMB]
-    comptime MSA = MultiHeadAttention[Self.EMB, Self.CONFIG.PRED_HEADS, Self.CONFIG.H, True]
+    comptime MSA = MultiHeadAttentionXL[
+        Self.EMB,
+        Self.CONFIG.PRED_HEADS,
+        Self.CONFIG.PRED_DIM_HEAD,
+        Self.CONFIG.H,
+        True,
+    ]
     comptime MLP = CondMLP[Self.EMB, Self.CONFIG.PRED_FF]
     comptime _PredProjPerToken = Sequential[
         Linear[Self.EMB, Self.CONFIG.PROJ_H],
@@ -607,6 +613,7 @@ struct LeWMTrainer[
     var cem_smoothing: Float64
     var eval_shuffle_diag: Bool
     var eval_h7_closed_loop: Bool
+    var rh_steps: Int
 
     # Per-run scalar tracking
     var loss_ema: Float64
@@ -652,6 +659,7 @@ struct LeWMTrainer[
         cem_smoothing: Float64,
         eval_shuffle_diag: Bool,
         eval_h7_closed_loop: Bool = True,
+        rh_steps: Int = 0,
         time_phases: Bool = False,
     ) raises:
         self.buf = buf^
@@ -667,6 +675,7 @@ struct LeWMTrainer[
         self.cem_smoothing = cem_smoothing
         self.eval_shuffle_diag = eval_shuffle_diag
         self.eval_h7_closed_loop = eval_h7_closed_loop
+        self.rh_steps = rh_steps
 
         self.loss_ema = 0.0
         self.pred_ema = 0.0
@@ -1014,7 +1023,14 @@ struct LeWMTrainer[
 
         # cond_block stack: Self.CONFIG.DEPTH dual-branch (MSA + MLP) layers via helper.
         for d in range(Self.CONFIG.DEPTH):
-            run_cond_layer_forward[Self.CONFIG.BATCH, Self.CONFIG.H, Self.EMB, Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF](
+            run_cond_layer_forward[
+                Self.CONFIG.BATCH,
+                Self.CONFIG.H,
+                Self.EMB,
+                Self.CONFIG.PRED_HEADS,
+                Self.CONFIG.PRED_DIM_HEAD,
+                Self.CONFIG.PRED_FF,
+            ](
                 ctx, d, Self.CONFIG.DEPTH,
                 state.x_prev_pe_buf, state.x_inter_buf, state.pred_raw_buf,
                 c_in_t,
@@ -1165,7 +1181,14 @@ struct LeWMTrainer[
             var adaln_g_d = state.adaln_states[d].grads_view()
             var msa_g_d = state.msa_states[d].grads_view()
             var mlp_g_d = state.mlp_states[d].grads_view()
-            run_cond_layer_backward[Self.CONFIG.BATCH, Self.CONFIG.H, Self.EMB, Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF](
+            run_cond_layer_backward[
+                Self.CONFIG.BATCH,
+                Self.CONFIG.H,
+                Self.EMB,
+                Self.CONFIG.PRED_HEADS,
+                Self.CONFIG.PRED_DIM_HEAD,
+                Self.CONFIG.PRED_FF,
+            ](
                 ctx, d, Self.CONFIG.DEPTH,
                 state.grad_pred_raw_buf, state.grad_x_inter_buf, state.grad_x_prev_pe_buf,
                 state.adaln_states[d].params_view(),
@@ -1392,6 +1415,7 @@ struct LeWMTrainer[
             self.mpc_horizon, self.cem_iters, self.cem_samples,
             self.cem_topk, self.cem_smoothing,
             self.eval_shuffle_diag, self.eval_h7_closed_loop,
+            self.rh_steps,
         )
 
     def run_eval(
@@ -1517,6 +1541,7 @@ def train_lewm_offline_gpu[CONFIG: LeWMConfig](
     cem_smoothing: Float64 = 0.5,
     eval_shuffle_diag: Bool = True,
     eval_h7_closed_loop: Bool = True,
+    rh_steps: Int = 0,
     var checkpoint_path: String = String(""),
     checkpoint_every: Int = 0,
     time_phases: Bool = False,
@@ -1541,7 +1566,7 @@ def train_lewm_offline_gpu[CONFIG: LeWMConfig](
         buf^, lambda_sigreg, log_every, eval_steps, eval_samples,
         eval_seed, mpc_horizon, cem_iters, cem_samples, cem_topk,
         cem_smoothing, eval_shuffle_diag, eval_h7_closed_loop,
-        time_phases,
+        rh_steps, time_phases,
     )
     trainer.run(state, ctx, num_steps, rng_seed, checkpoint_path^, checkpoint_every)
 
@@ -1565,6 +1590,7 @@ def train_lewm_offline_gpu_pusht[
     cem_smoothing: Float64 = 0.5,
     eval_shuffle_diag: Bool = True,
     eval_h7_closed_loop: Bool = True,
+    rh_steps: Int = 0,
     var dataset_path: String = String(""),
     var checkpoint_path: String = String(""),
     checkpoint_every: Int = 0,
@@ -1613,7 +1639,7 @@ def train_lewm_offline_gpu_pusht[
         sampler^, lambda_sigreg, log_every, eval_steps, eval_samples,
         eval_seed, mpc_horizon, cem_iters, cem_samples, cem_topk,
         cem_smoothing, eval_shuffle_diag, eval_h7_closed_loop,
-        time_phases,
+        rh_steps, time_phases,
     )
     trainer.run(state, ctx, num_steps, rng_seed, checkpoint_path^, checkpoint_every)
 
@@ -1631,6 +1657,7 @@ def eval_lewm_offline_gpu[CONFIG: LeWMConfig](
     cem_smoothing: Float64 = 0.5,
     eval_shuffle_diag: Bool = True,
     eval_h7_closed_loop: Bool = True,
+    rh_steps: Int = 0,
     lambda_sigreg: Float64 = 0.09,
 ) raises:
     """Load a Pong LeWM checkpoint and run only the eval phases.
@@ -1654,6 +1681,7 @@ def eval_lewm_offline_gpu[CONFIG: LeWMConfig](
         buf^, lambda_sigreg, 0, eval_steps, eval_samples,
         eval_seed, mpc_horizon, cem_iters, cem_samples, cem_topk,
         cem_smoothing, eval_shuffle_diag, eval_h7_closed_loop,
+        rh_steps,
     )
     trainer.run_eval(state, ctx, eval_seed)
 
@@ -1674,6 +1702,7 @@ def eval_lewm_offline_gpu_pusht[
     cem_smoothing: Float64 = 0.5,
     eval_shuffle_diag: Bool = True,
     eval_h7_closed_loop: Bool = True,
+    rh_steps: Int = 0,
     lambda_sigreg: Float64 = 0.09,
     var dataset_path: String = String(""),
 ) raises:
@@ -1706,5 +1735,6 @@ def eval_lewm_offline_gpu_pusht[
         sampler^, lambda_sigreg, 0, eval_steps, eval_samples,
         eval_seed, mpc_horizon, cem_iters, cem_samples, cem_topk,
         cem_smoothing, eval_shuffle_diag, eval_h7_closed_loop,
+        rh_steps,
     )
     trainer.run_eval(state, ctx, eval_seed)

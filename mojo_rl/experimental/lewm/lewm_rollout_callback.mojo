@@ -369,7 +369,8 @@ def _lewm_score_plan_helper[CONFIG: LeWMConfig, L: TensorLayout](
 
     return _run_mpc_shot[
         CONFIG.BATCH, CONFIG.T, CONFIG.H, EMB, CONFIG.ACT, CONFIG.SMOOTHED,
-        CONFIG.PROJ_H, CONFIG.PRED_HEADS, CONFIG.PRED_FF, CONFIG.DEPTH,
+        CONFIG.PROJ_H, CONFIG.PRED_HEADS, CONFIG.PRED_DIM_HEAD,
+        CONFIG.PRED_FF, CONFIG.DEPTH,
     ](
         ctx, mpc_horizon, needed_actions,
         emb_start_dev_t, emb_goal_dev_t,
@@ -558,7 +559,8 @@ def _lewm_score_plans_batched_helper[CONFIG: LeWMConfig, L: TensorLayout](
         _run_mpc_rollout_no_readback[
             CONFIG.BATCH, CONFIG.T, CONFIG.H, EMB, CONFIG.ACT,
             CONFIG.SMOOTHED, CONFIG.PROJ_H,
-            CONFIG.PRED_HEADS, CONFIG.PRED_FF, CONFIG.DEPTH,
+            CONFIG.PRED_HEADS, CONFIG.PRED_DIM_HEAD,
+            CONFIG.PRED_FF, CONFIG.DEPTH,
         ](
             ctx, mpc_horizon, needed_actions,
             emb_start_dev_t, emb_goal_dev_t,

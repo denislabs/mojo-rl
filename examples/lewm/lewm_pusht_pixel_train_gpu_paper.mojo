@@ -10,6 +10,7 @@ Matches the LeWM paper's ViT-Tiny + paper-predictor recipe on width:
 | `emb`             | **192**     | 96                       | 192            |
 | `proj_h`          | **2048**    | 256                      | 2048 (default) |
 | `pred_heads`      | **16**      | 4                        | 16             |
+| `pred_dim_head`   | **64**      | 24 (=96/4)               | 64             |
 | `pred_ff`         | **2048**    | 256                      | 2048           |
 
 Everything else (BATCH=16, T=6, H=3, depth=6, 32k steps) matches
@@ -41,7 +42,7 @@ def main() raises:
         batch=16, t=6, h=3,
         hidden=192, enc_heads=3, enc_layers=12,
         emb=192, proj_h=2048,
-        pred_heads=16, pred_ff=2048,
+        pred_heads=16, pred_dim_head=64, pred_ff=2048,
         depth=6,
     ]](
         num_steps=32000,
