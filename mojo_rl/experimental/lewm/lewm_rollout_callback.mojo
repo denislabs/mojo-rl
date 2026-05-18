@@ -36,7 +36,7 @@ in ``score_plan`` only constructs ``LayoutTensor`` values (no
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from layout import Layout, LayoutTensor
+from layout import Layout, LayoutTensor, TileTensor, TensorLayout
 
 from mojo_rl.nn.constants import dtype
 from mojo_rl.planners.trajectory.score_callback import ScorePlanCallback
@@ -61,10 +61,12 @@ struct LeWMRolloutScoreCallback[CONFIG: LeWMConfig](
     comptime GPUState = LeWMGPUState[Self.CONFIG]
     comptime EMB: Int = Self.GPUState.EMB
 
-    var state_ptr: UnsafePointer[Self.GPUState, MutAnyOrigin]
-    """Pointer to the trainer's persistent GPU state. Caller guarantees
-    it outlives the callback (which lives only inside one
-    ``CEMPlanner.eval`` call)."""
+    var state_ref: Pointer[Self.GPUState, MutAnyOrigin]
+    """Safe pointer to the trainer's persistent GPU state. Caller
+    guarantees it outlives the callback (which lives only inside one
+    ``CEMPlanner.eval`` call). ``Pointer`` is the checked alternative
+    to ``UnsafePointer``; we use it here because the callback never
+    does pointer arithmetic on the state, only a single dereference."""
 
     var ctx: DeviceContext
     var mpc_horizon: Int
@@ -94,7 +96,7 @@ struct LeWMRolloutScoreCallback[CONFIG: LeWMConfig](
         before the first ``score_plan`` call (typically via a
         device-to-device copy from the trainer's encoded embeddings).
         """
-        self.state_ptr = UnsafePointer(to=state)
+        self.state_ref = Pointer(to=state)
         self.ctx = ctx
         self.mpc_horizon = mpc_horizon
         self.needed_actions = needed_actions
@@ -117,7 +119,7 @@ struct LeWMRolloutScoreCallback[CONFIG: LeWMConfig](
         )
 
     def __init__(out self, *, deinit take: Self):
-        self.state_ptr = take.state_ptr
+        self.state_ref = take.state_ref
         self.ctx = take.ctx^
         self.mpc_horizon = take.mpc_horizon
         self.needed_actions = take.needed_actions
@@ -129,20 +131,25 @@ struct LeWMRolloutScoreCallback[CONFIG: LeWMConfig](
         self.score_host_buf = take.score_host_buf^
         self.action_plan_stage_host = take.action_plan_stage_host^
 
-    def score_plan(
+    def score_plan[L: TensorLayout](
         mut self,
-        action_plan_host: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        action_plan: TileTensor[dtype, L, MutAnyOrigin],
     ) raises -> Float64:
-        """Stage `action_plan_host` (BATCH, needed_actions, ACT) → device
+        """Stage `action_plan` (BATCH, needed_actions, ACT) → device
         (BATCH, T, ACT) with zero-pad, then run a single
         autoregressive MPC shot and return the score.
+
+        ``action_plan`` is a 3D tile-tensor; the layout type ``L`` is
+        generic because the optimizer's runtime ``horizon`` makes
+        the type non-uniform across CEMPlanner instances. We index
+        ``action_plan[b, ti, k]`` and trust the caller's contract.
         """
-        return _lewm_score_plan_helper[Self.CONFIG](
+        return _lewm_score_plan_helper[Self.CONFIG, L](
             self.ctx,
-            self.state_ptr[],
+            self.state_ref[],
             self.mpc_horizon,
             self.needed_actions,
-            action_plan_host,
+            action_plan,
             self.emb_start_dev_buf,
             self.emb_goal_dev_buf,
             self.emb_seq_dev_buf,
@@ -163,12 +170,12 @@ struct LeWMRolloutScoreCallback[CONFIG: LeWMConfig](
 # ==============================================================================
 
 
-def _lewm_score_plan_helper[CONFIG: LeWMConfig](
+def _lewm_score_plan_helper[CONFIG: LeWMConfig, L: TensorLayout](
     ctx: DeviceContext,
     mut state: LeWMGPUState[CONFIG],
     mpc_horizon: Int,
     needed_actions: Int,
-    action_plan_host: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    action_plan: TileTensor[dtype, L, MutAnyOrigin],
     mut emb_start_dev_buf: DeviceBuffer[dtype],
     mut emb_goal_dev_buf: DeviceBuffer[dtype],
     mut emb_seq_dev_buf: DeviceBuffer[dtype],
@@ -189,6 +196,9 @@ def _lewm_score_plan_helper[CONFIG: LeWMConfig](
     ``LeWMGPUState[CONFIG].EMB`` expression that ``ae_state.params_view()``
     returns.
     """
+    comptime assert action_plan.flat_rank == 3, (
+        "_lewm_score_plan_helper expects a 3D (BATCH, needed_actions, ACT) plan"
+    )
     comptime EMB = LeWMGPUState[CONFIG].EMB
     comptime BT = CONFIG.BATCH * CONFIG.T
     comptime BTH = CONFIG.BATCH * CONFIG.H
@@ -196,16 +206,14 @@ def _lewm_score_plan_helper[CONFIG: LeWMConfig](
     comptime POS = LeWMGPUState[CONFIG].POS
     comptime PROJ = LeWMGPUState[CONFIG].PROJ
 
-    # Stage action_plan_host (BATCH, needed_actions, ACT) →
+    # Stage action_plan (BATCH, needed_actions, ACT) tile-tensor →
     # action_plan_stage_host (BATCH, T, ACT) with zero-padding.
     for b in range(CONFIG.BATCH):
         for ti in range(needed_actions):
             for k in range(CONFIG.ACT):
                 action_plan_stage_host[
                     b * CONFIG.T * CONFIG.ACT + ti * CONFIG.ACT + k
-                ] = action_plan_host[
-                    b * needed_actions * CONFIG.ACT + ti * CONFIG.ACT + k
-                ]
+                ] = action_plan[b, ti, k]
         for t_pad in range(CONFIG.T - needed_actions):
             for k in range(CONFIG.ACT):
                 action_plan_stage_host[

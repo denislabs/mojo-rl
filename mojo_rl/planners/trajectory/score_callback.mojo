@@ -24,7 +24,17 @@ The intent is intentionally narrow: this is **not** the full
 expose a per-step ``rollout_step_gpu`` contract for direct on-device
 optimization). That richer contract is deferred to Phase 2/4. For
 host-driven CEM, scoring an entire plan in one call is enough.
+
+The plan is passed as a ``TileTensor`` rather than a raw pointer.
+The layout type is a method-level comptime param (``L: TensorLayout``),
+so implementations work for any plan layout the optimizer constructs —
+typically a row-major ``(BATCH, horizon, ACT_DIM)`` Coord-based layout
+that mixes the agent's comptime ``BATCH``/``ACT_DIM`` with the
+optimizer's runtime ``horizon``. Implementors trust the contract and
+index the tensor as ``plan[b, t, a]``.
 """
+
+from layout import TileTensor, TensorLayout
 
 from mojo_rl.nn.constants import dtype
 
@@ -34,19 +44,19 @@ trait ScorePlanCallback(ImplicitlyDestructible):
 
     The callback owns whatever scratch is needed to evaluate a plan
     (GPU buffers, world-model views, etc.). The optimizer treats it as
-    a black box: pass a host plan, receive a scalar.
+    a black box: pass a tile-tensor plan, receive a scalar.
 
     Implementations must agree with the caller on the
-    ``(BATCH, HORIZON, ACT_DIM)`` shape of ``action_plan_host``. A
-    lower score is better by convention — e.g. CEM picks the K plans
-    with the smallest score values.
+    ``(BATCH, HORIZON, ACT_DIM)`` shape of ``action_plan`` (3D, flat
+    rank == 3). A lower score is better by convention — e.g. CEM picks
+    the K plans with the smallest score values.
     """
 
-    def score_plan(
+    def score_plan[L: TensorLayout](
         mut self,
-        action_plan_host: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        action_plan: TileTensor[dtype, L, MutAnyOrigin],
     ) raises -> Float64:
-        """Score `action_plan_host` of shape (BATCH, HORIZON, ACT_DIM).
+        """Score `action_plan` of shape (BATCH, HORIZON, ACT_DIM).
 
         Returns a single scalar — typically sum-of-MSEs or sum-of-rewards
         aggregated across the batch. Lower is better.

@@ -21,6 +21,8 @@ from std.memory import alloc
 from std.random import seed as _set_seed
 from std.testing import assert_true
 
+from layout import TileTensor, TensorLayout
+
 from mojo_rl.nn.constants import dtype
 from mojo_rl.planners.trajectory import (
     CategoricalCEMOptimizer,
@@ -53,17 +55,20 @@ struct GoalReachScoreCallback(Movable, ImplicitlyDestructible, ScorePlanCallback
     var goal_y: Float64
     var goal_z: Float64
 
-    def score_plan(
+    def score_plan[L: TensorLayout](
         mut self,
-        action_plan_host: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        action_plan: TileTensor[dtype, L, MutAnyOrigin],
     ) raises -> Float64:
-        # BATCH=1: one trajectory.
+        # BATCH=1: one trajectory. action_plan is (1, HORIZON, ACT_DIM).
+        comptime assert action_plan.flat_rank == 3, (
+            "GoalReachScoreCallback expects a 3D (B, H, A) plan"
+        )
         var z: List[Float64] = [0.0, 0.0, 0.0]
         for t in range(HORIZON):
             # Decode one-hot at timestep t into a unit-vector action.
             var picked: Int = 0
             for a in range(ACT_DIM):
-                if action_plan_host[t * ACT_DIM + a] > Scalar[dtype](0.5):
+                if action_plan[0, t, a] > Scalar[dtype](0.5):
                     picked = a
                     break
             # Apply IdentityDynamics: z' = z + e_picked.
@@ -106,6 +111,8 @@ def test_cem_converges_to_goal() raises:
     )
 
     # The recovered best_plan must actually decode to a goal-reaching trajectory.
+    # best_plan_out is still a raw pointer — the optimizer writes into it via
+    # a TileTensor view internally, but the writeback target is a buffer.
     var z: List[Float64] = [0.0, 0.0, 0.0]
     for t in range(HORIZON):
         var picked: Int = 0
