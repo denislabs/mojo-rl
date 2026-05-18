@@ -1,20 +1,22 @@
-"""LeWM eval-only driver — PushT, MPC horizon sweep on the long checkpoint.
+"""LeWM eval-only driver — PushT, MPC horizon sweep on the paper-width checkpoint.
 
-Loads the checkpoint written by `lewm_pusht_pixel_train_gpu_long.mojo`
-(`T=6, H=3, depth=6, 32k steps`) and sweeps `mpc_horizon ∈ {1, 2, 3}`
-back-to-back in one process — the missing horizons vs the training-time
-h=4 eval. Each pass re-loads the 78MB checkpoint (~2-3s overhead per
-horizon, negligible against the ~12min CEM cost).
+Loads the checkpoint written by `lewm_pusht_pixel_train_gpu_paper.mojo`
+(paper width: HIDDEN=192, ENC_LAYERS=12, PRED_FF=2048, PRED_HEADS=16,
+proj_h=2048; T=6, H=3, depth=6, 32k steps) and sweeps
+`mpc_horizon ∈ {1, 2, 3}` back-to-back. Combined with the in-training
+h=4 eval, this gives the 4-point cem/expert vs horizon curve directly
+comparable to the 96-wide long run's curve.
+
+CONFIG must match the training driver byte-for-byte.
 
 H6 and H7 are identical between passes (no dependence on mpc_horizon),
-so we disable them on horizons 2 and 3 — saves ~2-3 min total without
-losing comparability. The h=1 pass keeps them on as a sanity check
-against the training-time numbers.
+so we only run them on pass 1 — saves ~2-3 min total.
 
-Expected wall time on NVIDIA: ~3 × 12min ≈ 35-40min total.
+Expected wall time on NVIDIA: ~3 × 30-50min = **90-150min** (paper width
+makes CEM rollouts ~5-8× slower than 96-wide).
 
 Run:
-    pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_pixel_eval_gpu_long_sweep.mojo
+    pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_pixel_eval_gpu_paper_sweep.mojo
 """
 
 from mojo_rl.experimental.lewm.offline_trainer import (
@@ -24,13 +26,19 @@ from mojo_rl.experimental.lewm.lewm_config import LeWMPushTViTConfig
 
 
 def main() raises:
-    comptime CONFIG = LeWMPushTViTConfig[batch=16, t=6, h=3, depth=6]
-    comptime CKPT = "/tmp/lewm_pusht_long.ckpt"
+    comptime CONFIG = LeWMPushTViTConfig[
+        batch=16, t=6, h=3,
+        hidden=192, enc_heads=3, enc_layers=12,
+        emb=192, proj_h=2048,
+        pred_heads=16, pred_ff=2048,
+        depth=6,
+    ]
+    comptime CKPT = "/tmp/lewm_pusht_paper.ckpt"
 
     # ── horizon = 1 ────────────────────────────────────────────────
     print()
     print("################################################################")
-    print("### MPC horizon sweep: pass 1 / 3 — mpc_horizon = 1")
+    print("### MPC horizon sweep [paper width]: pass 1 / 3 — mpc_horizon = 1")
     print("################################################################")
     eval_lewm_offline_gpu_pusht[CONFIG](
         checkpoint_path=String(CKPT),
@@ -49,7 +57,7 @@ def main() raises:
     # ── horizon = 2 ────────────────────────────────────────────────
     print()
     print("################################################################")
-    print("### MPC horizon sweep: pass 2 / 3 — mpc_horizon = 2")
+    print("### MPC horizon sweep [paper width]: pass 2 / 3 — mpc_horizon = 2")
     print("################################################################")
     eval_lewm_offline_gpu_pusht[CONFIG](
         checkpoint_path=String(CKPT),
@@ -68,7 +76,7 @@ def main() raises:
     # ── horizon = 3 ────────────────────────────────────────────────
     print()
     print("################################################################")
-    print("### MPC horizon sweep: pass 3 / 3 — mpc_horizon = 3")
+    print("### MPC horizon sweep [paper width]: pass 3 / 3 — mpc_horizon = 3")
     print("################################################################")
     eval_lewm_offline_gpu_pusht[CONFIG](
         checkpoint_path=String(CKPT),

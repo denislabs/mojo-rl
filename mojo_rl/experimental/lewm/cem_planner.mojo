@@ -19,11 +19,14 @@ from std.math import ceildiv
 from std.memory import alloc
 from std.random import seed as _set_seed, random_float64
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from layout import Layout, LayoutTensor
+from layout import Layout, LayoutTensor, TileTensor, Idx, row_major
 
 from ...nn.constants import dtype
 
-from mojo_rl.planners.trajectory import CategoricalCEMOptimizer
+from mojo_rl.planners.trajectory import (
+    CategoricalCEMOptimizer,
+    CategoricalRandomShooter,
+)
 
 from .offline_trainer import LeWMGPUState
 from .lewm_buffer import LeWMBuffer
@@ -350,13 +353,20 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         var cem_better_random_min: Int = 0
         var cem_active = self.cem_iters > 0
 
-        # CEM refinement pipeline (lives across all eval iters when active).
-        # When cem_active is False the optimizer is constructed with the
-        # caller's hyperparams but `optimize` is never called, so the only
-        # cost is a small host-scratch allocation that gets freed at eval
-        # end. The callback allocates its own per-call rollout scratch
-        # (action-plan staging, score buffers) — separate from the planner's
-        # random-shot scratch above.
+        # Planning pipeline (lives across all eval iters):
+        #   - `shooter` runs the random-shooting MPC baseline. Always
+        #     constructed since the random-vs-expert diagnostic is
+        #     part of every eval, regardless of cem_active.
+        #   - `optimizer` runs the CEM refinement. When cem_active is
+        #     False it's still constructed but `optimize` is never
+        #     called, so the cost is just a small host-scratch
+        #     allocation freed at eval end.
+        #   - `callback` is shared across all three legs (expert,
+        #     shooter, CEM) — owns the LeWM rollout scratch and
+        #     wraps `_run_mpc_shot` behind `ScorePlanCallback`.
+        var shooter = CategoricalRandomShooter[
+            Self.CONFIG.BATCH, Self.CONFIG.ACT,
+        ](horizon=needed_actions, num_samples=eval_samples)
         var optimizer = CategoricalCEMOptimizer[
             Self.CONFIG.BATCH, Self.CONFIG.ACT,
         ](
@@ -394,101 +404,65 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             ctx.enqueue_copy(self.emb_start_dev_buf, self.emb_start_stage_host)
             ctx.enqueue_copy(self.emb_goal_dev_buf, self.emb_goal_stage_host)
 
-            var expert_loss_mpc: Float64 = 0.0
+            # Bridge the encoded start/goal embeddings into the callback's
+            # buffers — they're consumed by every leg (expert, shooter,
+            # CEM) below. Two tiny device-to-device copies per eval iter.
+            ctx.enqueue_copy(
+                callback.emb_start_dev_buf, self.emb_start_dev_buf
+            )
+            ctx.enqueue_copy(
+                callback.emb_goal_dev_buf, self.emb_goal_dev_buf
+            )
+
+            # ---- Leg 1: Expert plan ----
+            #
+            # Copy the first `needed_actions` timesteps of the recorded
+            # actions from `state.actions_host` into the planner's host
+            # scratch (`action_plan_host_buf`), then wrap as a TileTensor
+            # of shape (BATCH, needed_actions, ACT) and score via the
+            # callback. The callback handles staging + device upload +
+            # `_run_mpc_shot` internally.
+            for b in range(Self.CONFIG.BATCH):
+                for ti in range(needed_actions):
+                    for k in range(Self.CONFIG.ACT):
+                        self.action_plan_host_buf[
+                            b * needed_actions * Self.CONFIG.ACT
+                            + ti * Self.CONFIG.ACT + k
+                        ] = state.actions_host[
+                            b * Self.CONFIG.T * Self.CONFIG.ACT
+                            + ti * Self.CONFIG.ACT + k
+                        ]
+            var expert_view = TileTensor(
+                self.action_plan_host_buf,
+                row_major(
+                    (
+                        Idx[Self.CONFIG.BATCH](),
+                        Idx(needed_actions),
+                        Idx[Self.CONFIG.ACT](),
+                    )
+                ),
+            )
+            var expert_loss_mpc = callback.score_plan(expert_view)
+
+            # ---- Leg 2: Random shooter ----
+            #
+            # `shooter.optimize` draws `eval_samples` uniform-categorical
+            # plans, scores each via the callback, returns the minimum.
+            # The per-sample scores stay populated in
+            # `shooter.sample_scores` so we can compute the legacy mean +
+            # frac_random_worse_than_expert statistics afterwards without
+            # re-running rollouts. `verbose=False` suppresses the
+            # shooter's own log line — we emit the unified summary below.
+            var random_min_mpc = shooter.optimize(
+                callback, self.action_plan_host_buf, verbose=False
+            )
             var random_mean_mpc: Float64 = 0.0
-            var random_min_mpc: Float64 = 1e30
             var better_count_mpc: Int = 0
-
-            for s in range(1 + eval_samples):
-                # Build action plan (Self.CONFIG.BATCH, needed_actions, Self.CONFIG.ACT) on host.
-                if s == 0:
-                    for b in range(Self.CONFIG.BATCH):
-                        for ti in range(needed_actions):
-                            for k in range(Self.CONFIG.ACT):
-                                self.action_plan_host_buf[
-                                    b * needed_actions * Self.CONFIG.ACT + ti * Self.CONFIG.ACT + k
-                                ] = state.actions_host[
-                                    b * Self.CONFIG.T * Self.CONFIG.ACT + ti * Self.CONFIG.ACT + k
-                                ]
-                else:
-                    for b in range(Self.CONFIG.BATCH):
-                        for ti in range(needed_actions):
-                            var r_act = Int(
-                                random_float64() * Float64(Self.CONFIG.ACT)
-                            )
-                            if r_act >= Self.CONFIG.ACT:
-                                r_act = Self.CONFIG.ACT - 1
-                            for k in range(Self.CONFIG.ACT):
-                                self.action_plan_host_buf[
-                                    b * needed_actions * Self.CONFIG.ACT
-                                    + ti * Self.CONFIG.ACT + k
-                                ] = (
-                                    Scalar[dtype](1.0)
-                                    if k == r_act
-                                    else Scalar[dtype](0.0)
-                                )
-
-                # Stage action_plan to (Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.ACT) layout.
-                for b in range(Self.CONFIG.BATCH):
-                    for ti in range(needed_actions):
-                        for k in range(Self.CONFIG.ACT):
-                            self.action_plan_stage_host[
-                                b * Self.CONFIG.T * Self.CONFIG.ACT + ti * Self.CONFIG.ACT + k
-                            ] = self.action_plan_host_buf[
-                                b * needed_actions * Self.CONFIG.ACT + ti * Self.CONFIG.ACT + k
-                            ]
-                    for t_pad in range(Self.CONFIG.T - needed_actions):
-                        for k in range(Self.CONFIG.ACT):
-                            self.action_plan_stage_host[
-                                b * Self.CONFIG.T * Self.CONFIG.ACT
-                                + (needed_actions + t_pad) * Self.CONFIG.ACT + k
-                            ] = Scalar[dtype](0.0)
-                ctx.enqueue_copy(
-                    self.action_plan_dev_buf, self.action_plan_stage_host
-                )
-
-                var l = _run_mpc_shot[
-                    Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB, Self.CONFIG.ACT, Self.CONFIG.SMOOTHED, Self.CONFIG.PROJ_H,
-                    Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
-                ](
-                    ctx,
-                    self.mpc_horizon, needed_actions,
-                    emb_start_dev_t, emb_goal_dev_t,
-                    emb_seq_dev_t, action_plan_dev_t,
-                    score_dev_t, self.score_dev_buf, self.score_host_buf,
-                    state.ae_state.params_view(), state.ae_state.model_state_view(),
-                    actions_t, act_emb_t,
-                    ae_cache_t, state.ae_ws_buf,
-                    emb_t, state.act_emb_buf,
-                    x_prev_t, c_in_t,
-                    state.pos_state.params_view(), state.pos_state.model_state_view(),
-                    x_prev_bh_t, x_prev_pe_bh_t,
-                    pos_cache_t, state.pos_ws_buf,
-                    state.adaln_states, state.msa_states, state.mlp_states,
-                    state.x_prev_pe_buf, state.x_inter_buf, state.pred_raw_buf,
-                    state.silu_cache_buf, state.adaln_cache_buf,
-                    state.ln1_cache_buf, state.mod1_cache_buf,
-                    state.msa_cache_buf, state.gate1_cache_buf,
-                    state.ln2_cache_buf, state.mod2_cache_buf,
-                    state.mlp_cache_buf, state.gate2_cache_buf,
-                    state.raw_mod_buf, state.x_mid_buf_d,
-                    silu_buf_t, ln_out_buf_t, mod_inp_buf_t,
-                    mod_x_buf_t, branch_out_buf_t, gate_inp_buf_t,
-                    state.adaln_ws_buf, state.msa_ws_buf, state.mlp_ws_buf,
-                    state.proj_state.params_view(), state.proj_state.model_state_view(),
-                    proj_cache_t, state.proj_ws_buf,
-                    pred_raw_bh_t, pred_t,
-                )
-
-                if s == 0:
-                    expert_loss_mpc = l
-                else:
-                    random_mean_mpc += l
-                    if l < random_min_mpc:
-                        random_min_mpc = l
-                    if l > expert_loss_mpc:
-                        better_count_mpc += 1
-
+            for i in range(eval_samples):
+                var sc = shooter.sample_scores[i]
+                random_mean_mpc += sc
+                if sc > expert_loss_mpc:
+                    better_count_mpc += 1
             random_mean_mpc /= Float64(eval_samples)
             var better_frac_mpc = (
                 Float64(better_count_mpc) / Float64(eval_samples)
@@ -507,23 +481,14 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                 " frac_random_worse=", better_frac_mpc,
             )
 
-            # ---- CEM eval for this iter (optional). ----
+            # ---- Leg 3: CEM refinement (optional). ----
             #
-            # Delegates to the reusable `CategoricalCEMOptimizer` + a thin
-            # `LeWMRolloutScoreCallback`. The optimizer drives the host
-            # sample/sort/refit loop; the callback owns the LeWM-side
-            # rollout (a single `_run_mpc_shot` per scored plan). We bridge
-            # the encoded start/goal embeddings into the callback's
-            # buffers with two tiny device-to-device copies — the random-
-            # shot harness above still uses the planner's own scratch.
+            # Sample → score → top-K → refit, repeated `cem_iters` times.
+            # Same callback as the other legs (no separate bridge needed
+            # — the unified bridge above already filled
+            # `callback.emb_start/goal_dev_buf`).
             if cem_active:
                 print("  -- CEM eval iter", eval_iter, "--")
-                ctx.enqueue_copy(
-                    callback.emb_start_dev_buf, self.emb_start_dev_buf
-                )
-                ctx.enqueue_copy(
-                    callback.emb_goal_dev_buf, self.emb_goal_dev_buf
-                )
                 var cem_score = optimizer.optimize(
                     callback,
                     self.action_plan_host_buf,
