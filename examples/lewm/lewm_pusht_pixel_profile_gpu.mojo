@@ -6,10 +6,13 @@ Profiles a 50-step training pass at the paper-aligned config:
     PRED_HEADS=16, PRED_FF=2048 — matches `references/le-wm-main/
     config/train/lewm.yaml` except for `dim_head` (paper uses
     `dim_head=64`, ours is implicit `192/16=12` — see below).
-  - **Batch**: 128 (paper). The prior 32k-step training run used
-    BATCH=16 because the sampler was the bottleneck; with the sampler
-    now ~20 it/s and GPU-bound, paper batch is the right profiling
-    target.
+  - **Batch**: 64 (paper is 128, but 128 OOMs on a 24GB GPU at paper
+    width — activations at hidden=192 × 12 enc layers × 256 patches +
+    depth=6 predictor blocks are too large). 64 is the largest power
+    of 2 that fits; bump to 96 manually if you have more headroom.
+    The prior 32k-step training run used BATCH=16 because the sampler
+    was the bottleneck; with the sampler now ~20 it/s and GPU-bound,
+    paper-ish batch is the right profiling target.
   - **T/H/depth**: 6 / 3 / 6 — matches the long + paper-width runs.
 
 `num_steps=50` is enough to clear warmup and produce steady-state
@@ -72,7 +75,7 @@ from mojo_rl.experimental.lewm.lewm_config import LeWMPushTViTConfig
 
 def main() raises:
     train_lewm_offline_gpu_pusht[LeWMPushTViTConfig[
-        batch=128, t=6, h=3,
+        batch=64, t=6, h=3,
         hidden=192, enc_heads=3, enc_layers=12,
         emb=192, proj_h=2048,
         pred_heads=16, pred_ff=2048,
