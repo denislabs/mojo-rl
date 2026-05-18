@@ -20,13 +20,13 @@ Profiles a 50-step training pass at the paper-aligned config:
 `num_steps=50` is enough to clear warmup and produce steady-state
 phase averages. `eval_steps=0` skips H6/H7/MPC. No checkpoint write.
 
-Known divergence from paper: predictor MSA `dim_head` is implicit
-`HIDDEN/PRED_HEADS=12` here vs paper's explicit `64` (heads=16 ×
-dim_head=64 = internal MSA width 1024). That's a separate
-architectural change (`MultiHeadAttentionXL` composite + new
-`PRED_DIM_HEAD` config field, ~1-2 days) and is NOT in this profile.
-The numbers below should match the production training run's per-step
-cost minus that MSA capacity gap.
+Predictor MSA now uses `dim_head=64` (paper-aligned) via
+`MultiHeadAttentionXL` — heads=16 × dim_head=64 = internal MSA width
+1024 over hidden=192. This matches the production training driver
+(`lewm_pusht_pixel_train_gpu_paper.mojo`) byte-for-byte on
+architecture. Expect predictor MSA to be ~5× heavier than the prior
+profile (which had implicit `dim_head=12`); after this change,
+predictor MSA will likely dominate over predictor MLP.
 
 Run (NVIDIA, capture trace + inline stats):
 
@@ -80,7 +80,7 @@ def main() raises:
         batch=32, t=6, h=3,
         hidden=192, enc_heads=3, enc_layers=12,
         emb=192, proj_h=2048,
-        pred_heads=16, pred_ff=2048,
+        pred_heads=16, pred_dim_head=64, pred_ff=2048,
         depth=6,
     ]](
         num_steps=50,
