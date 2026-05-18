@@ -30,6 +30,7 @@ from .continuous_replay_buffer import (
     ContinuousTransition,
     ContinuousReplayBuffer,
 )
+from .offline_buffer import OfflineBuffer
 from .metrics import (
     EpisodeMetrics,
     TrainingMetrics,

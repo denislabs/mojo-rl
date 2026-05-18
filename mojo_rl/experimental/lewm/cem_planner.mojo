@@ -23,11 +23,14 @@ from layout import Layout, LayoutTensor
 
 from ...nn.constants import dtype
 
+from mojo_rl.planners.trajectory import CategoricalCEMOptimizer
+
 from .offline_trainer import LeWMGPUState
 from .lewm_buffer import LeWMBuffer
 from .lewm_config import LeWMConfig
+from .lewm_rollout_callback import LeWMRolloutScoreCallback
 from .kernels import (
-    _run_mpc_shot, _run_cem_eval_iter,
+    _run_mpc_shot,
     pixels_uint8_to_fp32_kernel,
 )
 
@@ -347,6 +350,26 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         var cem_better_random_min: Int = 0
         var cem_active = self.cem_iters > 0
 
+        # CEM refinement pipeline (lives across all eval iters when active).
+        # When cem_active is False the optimizer is constructed with the
+        # caller's hyperparams but `optimize` is never called, so the only
+        # cost is a small host-scratch allocation that gets freed at eval
+        # end. The callback allocates its own per-call rollout scratch
+        # (action-plan staging, score buffers) — separate from the planner's
+        # random-shot scratch above.
+        var optimizer = CategoricalCEMOptimizer[
+            Self.CONFIG.BATCH, Self.CONFIG.ACT,
+        ](
+            horizon=needed_actions,
+            cem_iters=self.cem_iters,
+            cem_samples=self.cem_samples,
+            cem_topk=self.cem_topk,
+            cem_smoothing=self.cem_smoothing,
+        )
+        var callback = LeWMRolloutScoreCallback[Self.CONFIG](
+            state, ctx, self.mpc_horizon, needed_actions,
+        )
+
         for eval_iter in range(eval_steps):
             self._sample_and_upload_pixels(state, buf, ctx)
 
@@ -485,46 +508,26 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             )
 
             # ---- CEM eval for this iter (optional). ----
+            #
+            # Delegates to the reusable `CategoricalCEMOptimizer` + a thin
+            # `LeWMRolloutScoreCallback`. The optimizer drives the host
+            # sample/sort/refit loop; the callback owns the LeWM-side
+            # rollout (a single `_run_mpc_shot` per scored plan). We bridge
+            # the encoded start/goal embeddings into the callback's
+            # buffers with two tiny device-to-device copies — the random-
+            # shot harness above still uses the planner's own scratch.
             if cem_active:
                 print("  -- CEM eval iter", eval_iter, "--")
-                var cem_score = _run_cem_eval_iter[
-                    Self.CONFIG.BATCH, Self.CONFIG.T, Self.CONFIG.H, Self.EMB, Self.CONFIG.ACT,
-                    Self.CONFIG.SMOOTHED, Self.CONFIG.PROJ_H,
-                    Self.CONFIG.PRED_HEADS, Self.CONFIG.PRED_FF, Self.CONFIG.DEPTH,
-                ](
-                    ctx,
-                    self.mpc_horizon, needed_actions,
-                    self.cem_iters, self.cem_samples, self.cem_topk, self.cem_smoothing,
-                    self.action_dist_host_buf, self.action_plan_host_buf,
-                    self.sample_actions_host_buf, self.sample_scores_host_buf,
-                    self.elite_indices_host_buf,
-                    emb_start_dev_t, emb_goal_dev_t,
-                    emb_seq_dev_t, action_plan_dev_t,
-                    self.action_plan_dev_buf,
-                    score_dev_t, self.score_dev_buf, self.score_host_buf,
-                    self.action_plan_stage_host,
-                    state.ae_state.params_view(), state.ae_state.model_state_view(),
-                    actions_t, act_emb_t,
-                    ae_cache_t, state.ae_ws_buf,
-                    emb_t, state.act_emb_buf,
-                    x_prev_t, c_in_t,
-                    state.pos_state.params_view(), state.pos_state.model_state_view(),
-                    x_prev_bh_t, x_prev_pe_bh_t,
-                    pos_cache_t, state.pos_ws_buf,
-                    state.adaln_states, state.msa_states, state.mlp_states,
-                    state.x_prev_pe_buf, state.x_inter_buf, state.pred_raw_buf,
-                    state.silu_cache_buf, state.adaln_cache_buf,
-                    state.ln1_cache_buf, state.mod1_cache_buf,
-                    state.msa_cache_buf, state.gate1_cache_buf,
-                    state.ln2_cache_buf, state.mod2_cache_buf,
-                    state.mlp_cache_buf, state.gate2_cache_buf,
-                    state.raw_mod_buf, state.x_mid_buf_d,
-                    silu_buf_t, ln_out_buf_t, mod_inp_buf_t,
-                    mod_x_buf_t, branch_out_buf_t, gate_inp_buf_t,
-                    state.adaln_ws_buf, state.msa_ws_buf, state.mlp_ws_buf,
-                    state.proj_state.params_view(), state.proj_state.model_state_view(),
-                    proj_cache_t, state.proj_ws_buf,
-                    pred_raw_bh_t, pred_t,
+                ctx.enqueue_copy(
+                    callback.emb_start_dev_buf, self.emb_start_dev_buf
+                )
+                ctx.enqueue_copy(
+                    callback.emb_goal_dev_buf, self.emb_goal_dev_buf
+                )
+                var cem_score = optimizer.optimize(
+                    callback,
+                    self.action_plan_host_buf,
+                    verbose=True,
                 )
                 sum_cem += cem_score
                 if cem_score < expert_loss_mpc:

@@ -1,4 +1,7 @@
 # Trajectory optimizers — CEM, MPPI, iLQR.
 #
-# Phase 0 placeholder. Concrete planners migrate here in Phase 1 (CEM) and
-# Phase 2 (MPPI). iLQR is Phase 4.
+# Phase 1: CEM (categorical) + ScorePlanCallback trait.
+# Phase 2: MPPI. Phase 4: iLQR.
+
+from .score_callback import ScorePlanCallback
+from .cem import CategoricalCEMOptimizer
