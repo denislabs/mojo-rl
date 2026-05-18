@@ -11,7 +11,14 @@ so we disable them on horizons 2 and 3 — saves ~2-3 min total without
 losing comparability. The h=1 pass keeps them on as a sanity check
 against the training-time numbers.
 
-Expected wall time on NVIDIA: ~3 × 12min ≈ 35-40min total.
+Each pass also runs the Phase 4d receding-horizon MPC eval at
+``rh_steps=3`` — testing whether short-horizon CEM + replanning beats
+long-horizon open-loop CEM at this checkpoint width (the gating
+hypothesis from ``project_lewm_horizon_sweep.md``). This 96-wide run is
+the cheap dress rehearsal for the paper-width sweep.
+
+Expected wall time on NVIDIA: ~3 × 35-40min ≈ 105-120min total
+(rh_steps=3 triples per-pass CEM rollouts).
 
 Run:
     pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_pixel_eval_gpu_long_sweep.mojo
@@ -44,6 +51,7 @@ def main() raises:
         cem_smoothing=0.5,
         eval_shuffle_diag=True,
         eval_h7_closed_loop=True,
+        rh_steps=3,
     )
 
     # ── horizon = 2 ────────────────────────────────────────────────
@@ -63,6 +71,7 @@ def main() raises:
         cem_smoothing=0.5,
         eval_shuffle_diag=False,
         eval_h7_closed_loop=False,
+        rh_steps=3,
     )
 
     # ── horizon = 3 ────────────────────────────────────────────────
@@ -82,4 +91,5 @@ def main() raises:
         cem_smoothing=0.5,
         eval_shuffle_diag=False,
         eval_h7_closed_loop=False,
+        rh_steps=3,
     )

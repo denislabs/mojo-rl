@@ -10,3 +10,7 @@ from .stub_models import (
     TwoArmBandit,
     KnownValueTree,
 )
+from .ilqr_stubs import (
+    LinearQuadratic1DILQRCallback,
+    Pendulum2DILQRCallback,
+)

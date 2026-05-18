@@ -33,8 +33,14 @@ from mojo_rl.deep_agents.efficient_zero_v2.gpu_mcts import EZV2GPUMCTSState
 from mojo_rl.deep_agents.efficient_zero_v2.gpu_replay import (
     EZV2GPUReplayBuffer,
 )
+from mojo_rl.deep_agents.efficient_zero_v2.gpu_trait_adapters import (
+    EZv2RepGPU,
+    EZv2DynGPU,
+    EZv2PredGPU,
+)
 from mojo_rl.deep_agents.efficient_zero_v2.strategies import compute_sve
 from mojo_rl.nn.constants import dtype
+from mojo_rl.planners.tree_search import GumbelGPUMCTS
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -294,6 +300,20 @@ def run_ezv2_train_gpu[
     comptime MCTS_WS_TOTAL = N_ENVS * MAX_WS if MAX_WS > 0 else 1
     var mcts_workspace = ctx.enqueue_create_buffer[dtype](MCTS_WS_TOTAL)
 
+    # ─── Phase 3 strangler planner ──────────────────────────────────────
+    # Allocated unconditionally so the comptime-gated dispatch below has a
+    # binding for both branches. ~1 extra `EZV2GPUMCTSState` worth of
+    # memory (<1 MB for typical EZv2 configs) — recoverable when the
+    # legacy `mcts_gpu` is removed at strangler end.
+    var planner = GumbelGPUMCTS[
+        N_ENVS, ACT, LATENT, BINS, NODES, MAX_K, SIMS,
+    ](
+        ctx,
+        gamma=agent.gamma,
+        v_min=agent.v_min,
+        v_max=agent.v_max,
+    )
+
     var host_policies = ctx.enqueue_create_host_buffer[dtype](N_ENVS * ACT)
     var host_visits = ctx.enqueue_create_host_buffer[dtype](
         N_ENVS * NODES * ACT
@@ -367,18 +387,74 @@ def run_ezv2_train_gpu[
                 host_action[e] = Scalar[dtype](Float64(rand_a))
         else:
             # ── 1. GPU MCTS — batched over N_ENVS ──────────────────────
-            gpu.mcts_search[N_ENVS, NODES, MAX_K, SIMS](
-                ctx,
-                mcts_gpu,
-                obs_buf,
-                mcts_workspace,
-                v_min=agent.v_min,
-                v_max=agent.v_max,
-                gamma=agent.gamma,
-                rng_seed=mcts_seed,
-                apply_legal=False,
-                k_actual=MAX_K,
-            )
+            comptime if Config.USE_NEW_MCTS:
+                # New path: drive `GumbelGPUMCTS` via Rep/Dyn/Pred adapters
+                # over the agent's on-device network states. Bit-parity
+                # vs `run_gumbel_search_gpu` is asserted by
+                # `test_mcts_gpu_parity_ezv2.mojo`.
+                var rep = EZv2RepGPU[
+                    OBS, LATENT, Config.RepModel, Config.OptType
+                ](
+                    params=gpu.representation.params_buf.unsafe_ptr(),
+                    model_state=gpu.representation.model_state_buf.unsafe_ptr(),
+                    workspace=mcts_workspace,
+                )
+                var dyn = EZv2DynGPU[
+                    ACT, LATENT, BINS, Config.DynModel, Config.OptType
+                ](
+                    params=gpu.dynamics.params_buf.unsafe_ptr(),
+                    model_state=gpu.dynamics.model_state_buf.unsafe_ptr(),
+                    workspace=mcts_workspace,
+                )
+                var pred = EZv2PredGPU[
+                    ACT, LATENT, BINS, Config.PredModel, Config.OptType
+                ](
+                    params=gpu.prediction.params_buf.unsafe_ptr(),
+                    model_state=gpu.prediction.model_state_buf.unsafe_ptr(),
+                    workspace=mcts_workspace,
+                )
+                var obs_t = LayoutTensor[
+                    dtype, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
+                ](obs_buf.unsafe_ptr())
+                planner.search_gpu[
+                    EZv2RepGPU[OBS, LATENT, Config.RepModel, Config.OptType],
+                    EZv2DynGPU[
+                        ACT, LATENT, BINS, Config.DynModel, Config.OptType
+                    ],
+                    EZv2PredGPU[
+                        ACT, LATENT, BINS, Config.PredModel, Config.OptType
+                    ],
+                ](
+                    ctx, rep, dyn, pred, obs_t,
+                    apply_legal=False,
+                    k_actual=MAX_K,
+                    rng_seed=mcts_seed,
+                )
+                # Mirror orchestrator outputs into the legacy `mcts_gpu`
+                # buffers so the downstream host-side SVE / policy read
+                # code stays unchanged through the strangler period.
+                ctx.enqueue_copy(
+                    mcts_gpu.policies_out, planner.state.policies_out
+                )
+                ctx.enqueue_copy(
+                    mcts_gpu.visit_count, planner.state.visit_count
+                )
+                ctx.enqueue_copy(
+                    mcts_gpu.total_value, planner.state.total_value
+                )
+            else:
+                gpu.mcts_search[N_ENVS, NODES, MAX_K, SIMS](
+                    ctx,
+                    mcts_gpu,
+                    obs_buf,
+                    mcts_workspace,
+                    v_min=agent.v_min,
+                    v_max=agent.v_max,
+                    gamma=agent.gamma,
+                    rng_seed=mcts_seed,
+                    apply_legal=False,
+                    k_actual=MAX_K,
+                )
             mcts_seed += UInt32(1)
 
             ctx.enqueue_copy(

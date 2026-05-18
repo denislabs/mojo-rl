@@ -275,6 +275,10 @@ struct EZV2DiscreteMLPConfig[
     LSTM_HIDDEN: Int = 64,
     LSTM_HORIZON_LEN: Int = 5,
     LSTM_MLP_HIDDEN: Int = 64,
+    # Phase 3 strangler: route MCTS through `GumbelGPUMCTS` orchestrator
+    # in `run_ezv2_train_gpu` when `True`. Default `False` keeps the
+    # legacy `run_gumbel_search_gpu` inline path active.
+    NEW_MCTS: Bool = False,
 ](EZV2DiscreteConfig):
     """Standalone-MLP EZ-V2 for clean state-based observations.
 
@@ -360,7 +364,7 @@ struct EZV2DiscreteMLPConfig[
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = True
-    comptime USE_NEW_MCTS: Bool = False
+    comptime USE_NEW_MCTS: Bool = Self.NEW_MCTS
 
     # ── EZ-V2-specific fields ────────────────────────────────────────────
     comptime ProjectorModel = ProjectionMLP[
@@ -505,6 +509,11 @@ struct EZV2ContinuousMLPConfig[
     LSTM_HIDDEN: Int = 64,
     LSTM_HORIZON_LEN: Int = 5,
     LSTM_MLP_HIDDEN: Int = 64,
+    # Phase 3 strangler: route sampled MCTS through `SampledGumbelGPUMCTS`
+    # orchestrator in `run_ezv2_continuous_train_gpu` when `True`. Default
+    # `False` keeps the legacy `run_sampled_gumbel_search_gpu` inline
+    # path active.
+    NEW_MCTS: Bool = False,
 ](EZV2DiscreteConfig):
     """Standalone-MLP EZ-V2 for continuous-action proprio environments.
 
@@ -653,7 +662,7 @@ struct EZV2ContinuousMLPConfig[
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = True
-    comptime USE_NEW_MCTS: Bool = False
+    comptime USE_NEW_MCTS: Bool = Self.NEW_MCTS
 
     # ── EZ-V2-specific fields ────────────────────────────────────────────
     comptime ProjectorModel = ProjectionMLP[
@@ -805,6 +814,8 @@ struct EZV2ContinuousMLPShallowConfig[
     LSTM_HIDDEN: Int = 64,
     LSTM_HORIZON_LEN: Int = 5,
     LSTM_MLP_HIDDEN: Int = 64,
+    # Phase 3 strangler — see `EZV2ContinuousMLPConfig.NEW_MCTS`.
+    NEW_MCTS: Bool = False,
 ](EZV2DiscreteConfig):
     """May-11 postmortem -212 architecture for continuous EZ-V2.
 
@@ -888,7 +899,7 @@ struct EZV2ContinuousMLPShallowConfig[
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = True
-    comptime USE_NEW_MCTS: Bool = False
+    comptime USE_NEW_MCTS: Bool = Self.NEW_MCTS
 
     # ── EZ-V2-specific fields ────────────────────────────────────────────
     # Projector matches May-11 (no PROJ_HID expansion — that landed with

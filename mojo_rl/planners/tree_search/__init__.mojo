@@ -21,6 +21,35 @@ from .model_traits_gpu import (
 )
 from .mcts_cpu import MCTSNode, GenericCPUMCTS
 from .mcts_gpu_orchestrator import GenericGPUMCTS
+from .mcts_gpu_gumbel import (
+    EZV2GPUMCTSState,
+    gz_scatter_root_hidden_kernel,
+    gz_init_root_kernel,
+    gz_select_kernel,
+    gz_copy_pred_input_kernel,
+    gz_expand_kernel,
+    gz_backup_kernel,
+    gz_halve_active_kernel,
+    gz_extract_policy_kernel,
+    run_gumbel_search_gpu,
+)
+from .mcts_gpu_gumbel_orchestrator import (
+    GumbelGPUMCTS,
+    gz_extract_root_value_kernel,
+)
+from .mcts_gpu_gumbel_sampled import (
+    EZV2GPUSampledMCTSState,
+    gs_scatter_root_hidden_kernel,
+    gs_init_root_kernel,
+    gs_select_kernel,
+    gs_copy_pred_input_kernel,
+    gs_expand_kernel,
+    gs_backup_kernel,
+    gs_halve_active_kernel,
+    gs_extract_kernel,
+    run_sampled_gumbel_search_gpu,
+)
+from .mcts_gpu_gumbel_sampled_orchestrator import SampledGumbelGPUMCTS
 from .mcts_gpu import (
     TPB,
     MAX_DEPTH,

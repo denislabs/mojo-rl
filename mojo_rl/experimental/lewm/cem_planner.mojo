@@ -695,15 +695,11 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         high while replanning recovers the model-informativeness gain that
         long-horizon plans pick up at training scale.
 
-        Args:
-            eval_steps: Number of distinct batches to evaluate.
-            eval_samples: K (candidate plans per RH step) for the random
-                shooter and the CEM optimizer's inner sample count
-                (overrides ``self.cem_samples`` for the RH pass).
-            rh_steps: Number of receding-horizon execution steps per iter.
-                Each step plans ``mpc_horizon`` ahead, executes 1 in the
-                latent (via ``_rh_advance_one_step``), then replans.
-            eval_seed: RNG seed for sampling + random plans.
+        ``rh_steps`` controls the number of receding-horizon execution
+        steps per iter; each step plans ``mpc_horizon`` ahead, executes 1
+        in the latent via ``_rh_advance_one_step``, then replans.
+        ``eval_samples`` is K (candidate plans per RH step) for the random
+        shooter; the CEM pass uses ``self.cem_samples`` as configured.
         """
         comptime IMG_DIM = Self.GPUState.IMG_DIM
         comptime BT = Self.GPUState.BT

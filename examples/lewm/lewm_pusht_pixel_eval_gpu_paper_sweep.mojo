@@ -12,8 +12,23 @@ CONFIG must match the training driver byte-for-byte.
 H6 and H7 are identical between passes (no dependence on mpc_horizon),
 so we only run them on pass 1 — saves ~2-3 min total.
 
-Expected wall time on NVIDIA: ~3 × 30-50min = **90-150min** (paper width
-makes CEM rollouts ~5-8× slower than 96-wide).
+Each pass also runs the Phase 4d receding-horizon MPC eval at
+``rh_steps=3``. The hypothesis (per ``project_lewm_horizon_sweep.md``):
+``cem_rh`` at small ``mpc_horizon`` recovers the long-horizon model
+informativeness via replanning, while keeping the CEM optimizer in its
+high-competence regime. Compare ``cem_rh`` across passes (lower is
+better) AND against open-loop ``cem`` at ``mpc_horizon=3`` (the
+long-horizon baseline).
+
+Expert RH zero-pads recorded actions past ``T``: at ``T=6, H=3``,
+``rh_steps=3`` is fully clean only at ``mpc_horizon=1``
+(``rh_steps ≤ T - H - mpc_horizon + 2 = 5 - mpc_horizon``); at
+``mpc_horizon=2`` the last RH step is partially padded, at
+``mpc_horizon=3`` the last two are. CEM/random RH are unaffected — they
+generate fresh plans each step.
+
+Expected wall time on NVIDIA: ~3 × 90-150min = **270-450min** (~4.5-7.5h)
+— RH triples each pass (rh_steps=3 means 3× the CEM rollouts).
 
 Run:
     pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_pixel_eval_gpu_paper_sweep.mojo
@@ -52,6 +67,7 @@ def main() raises:
         cem_smoothing=0.5,
         eval_shuffle_diag=True,
         eval_h7_closed_loop=True,
+        rh_steps=3,
     )
 
     # ── horizon = 2 ────────────────────────────────────────────────
@@ -71,6 +87,7 @@ def main() raises:
         cem_smoothing=0.5,
         eval_shuffle_diag=False,
         eval_h7_closed_loop=False,
+        rh_steps=3,
     )
 
     # ── horizon = 3 ────────────────────────────────────────────────
@@ -90,4 +107,5 @@ def main() raises:
         cem_smoothing=0.5,
         eval_shuffle_diag=False,
         eval_h7_closed_loop=False,
+        rh_steps=3,
     )
