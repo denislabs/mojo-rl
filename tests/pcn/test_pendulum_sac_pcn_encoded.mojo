@@ -81,7 +81,7 @@ comptime SCHED = CosineWarmupSchedule[
 ]
 
 # Shared SAC hyperparameters — must match `test_pendulum_sac_baseline.mojo`.
-comptime SAC_NUM_EPISODES = 200
+comptime SAC_NUM_STEPS = 40_000
 comptime SAC_MAX_STEPS = 200
 comptime SAC_WARMUP_STEPS = 1000
 comptime SAC_PRINT_EVERY = 20
@@ -158,7 +158,7 @@ def main() raises:
     )
     print("  Wrapper    : EncoderWrappedEnv → SAC sees", HIDDEN, "-dim latent")
     print("  Enc epochs :", ENC_EPOCHS)
-    print("  SAC eps    :", SAC_NUM_EPISODES, " steps/ep:", SAC_MAX_STEPS)
+    print("  SAC eps    :", SAC_NUM_STEPS, " steps/ep:", SAC_MAX_STEPS)
 
     # ────────────────────────────────────────────────────────────────────────
     # PHASE A — Train encoder (Exp-3 procedure: no SGLD, PC weight rule on
@@ -492,7 +492,7 @@ def main() raises:
     var t_sac0 = perf_counter_ns()
     var metrics = agent.train(
         wrapped,
-        num_episodes=SAC_NUM_EPISODES,
+        num_steps=SAC_NUM_STEPS,
         max_steps_per_episode=SAC_MAX_STEPS,
         warmup_steps=SAC_WARMUP_STEPS,
         train_every=1,

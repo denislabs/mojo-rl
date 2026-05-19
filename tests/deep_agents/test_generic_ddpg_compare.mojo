@@ -18,23 +18,23 @@ def main() raises:
     print("=== Generic DDPG vs Old DDPG Comparison ===\n")
 
     # ---------- Generic agent ----------
-    print("1. Training GenericOffPolicyAgent[DDPGConfig] (10 episodes)...")
+    print("1. Training GenericOffPolicyAgent[DDPGConfig] (2000 steps)...")
     seed(42)
     var gen = GenericOffPolicyAgent[DDPGConfig[3, 1, 64, 1000, 32]](
         action_scale=2.0
     )
     var env1 = PendulumEnv[DType.float64]()
-    var m1 = gen.train(env1, num_episodes=10)
+    var m1 = gen.train(env1, num_steps=2000)
     var gen_steps = gen.train_step_count
     var gen_episodes = len(m1.episodes)
     print("   train_steps:", gen_steps, " episodes:", gen_episodes)
 
     # ---------- Old agent ----------
-    print("\n2. Training DeepDDPGAgent (10 episodes)...")
+    print("\n2. Training DeepDDPGAgent (2000 steps)...")
     seed(42)
     var old = DeepDDPGAgent[3, 1, 64, 1000, 32](action_scale=2.0)
     var env2 = PendulumEnv[DType.float64]()
-    var m2 = old.train(env2, num_episodes=10)
+    var m2 = old.train(env2, num_steps=2000)
     var old_steps = old.train_step_count
     var old_episodes = len(m2.episodes)
     print("   train_steps:", old_steps, " episodes:", old_episodes)

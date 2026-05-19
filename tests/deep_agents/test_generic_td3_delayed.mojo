@@ -16,7 +16,7 @@ def main() raises:
     var env = PendulumEnv[DType.float64]()
 
     # Train enough to fill buffer and do several updates
-    _ = agent.train(env, num_episodes=10)
+    _ = agent.train(env, num_steps=2000)
 
     print("train_steps:", agent.train_step_count)
     print("update_count:", agent.update_count)

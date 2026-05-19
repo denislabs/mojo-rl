@@ -11,23 +11,23 @@ def main() raises:
     print("=== Generic SAC Test ===\n")
 
     # Test 1: Unified SAC agent
-    print("1. GenericOffPolicyAgent[SACConfig] (5 episodes)...")
+    print("1. GenericOffPolicyAgent[SACConfig] (1000 steps)...")
     seed(42)
     var sac = GenericOffPolicyAgent[SACConfig[3, 1, 64, 1000, 32]](
         action_scale=2.0
     )
     var env1 = PendulumEnv[DType.float64]()
-    var m1 = sac.train(env1, num_episodes=5)
+    var m1 = sac.train(env1, num_steps=1000)
     print("   steps:", sac.train_step_count, " alpha:", sac.alpha)
 
     # Test 2: Old SAC for comparison
-    print("\n2. DeepSACAgent (5 episodes)...")
+    print("\n2. DeepSACAgent (1000 steps)...")
     seed(42)
     var old_sac = DeepSACAgent[3, 1, 64, 1000, 32](
         action_scale=2.0,
     )
     var env2 = PendulumEnv[DType.float64]()
-    var m2 = old_sac.train(env2, num_episodes=5)
+    var m2 = old_sac.train(env2, num_steps=1000)
     print("   steps:", old_sac.train_step_count, " alpha:", old_sac.alpha)
 
     # Comparison

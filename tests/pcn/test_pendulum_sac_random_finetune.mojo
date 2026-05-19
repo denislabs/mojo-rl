@@ -28,7 +28,7 @@ comptime HIDDEN = 64
 comptime ACTION_DIM = 1
 comptime OBS_DIM = 3
 
-comptime SAC_NUM_EPISODES = 200
+comptime SAC_NUM_STEPS = 40_000
 comptime SAC_MAX_STEPS = 200
 comptime SAC_WARMUP_STEPS = 1000
 comptime SAC_PRINT_EVERY = 50
@@ -40,7 +40,7 @@ def main() raises:
     print("=" * 60)
     print("  Encoder    : none (Xavier random in the prefix layers)")
     print("  SAC arch   : EncoderPrefix (LinearTanh -> Linear -> LinearReLU -> heads)")
-    print("  SAC eps    :", SAC_NUM_EPISODES)
+    print("  SAC eps    :", SAC_NUM_STEPS)
 
     var env = PendulumEnv[dtype]()
 
@@ -75,7 +75,7 @@ def main() raises:
         agent,
         cpu_state,
         env,
-        num_episodes=SAC_NUM_EPISODES,
+        num_steps=SAC_NUM_STEPS,
         max_steps_per_episode=SAC_MAX_STEPS,
         warmup_steps=SAC_WARMUP_STEPS,
         train_every=1,

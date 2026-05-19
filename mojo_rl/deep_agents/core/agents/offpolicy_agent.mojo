@@ -1143,15 +1143,64 @@ struct GenericOffPolicyAgent[
             else:
                 critic_loss = (critic_loss + ci_loss) / 2.0
 
-        # Diagnostic logging
+        # Diagnostic logging — mirrors GPU diag (critic_loss, mean_q,
+        # mean_target, mean_reward, mean_next_q, mean_done, mean_abs_action,
+        # alpha) so CPU/GPU runs are directly comparable.
         if Bool(self.logger) and (
             self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
+                comptime BS = Self.BATCH
+                var q0_p = ws.q_out(0).ptr
+                var nq0_p = ws.next_q(0).ptr
+                var nq1_p = ws.next_q(Self.Config.NUM_CRITICS - 1).ptr
+                var rew_p = b_rew.unsafe_ptr()
+                var done_p = b_done.unsafe_ptr()
+                var act_p = b_act.unsafe_ptr()
+
+                var mean_q: Float64 = 0.0
+                var mean_tgt: Float64 = 0.0
+                var mean_rew: Float64 = 0.0
+                var mean_done: Float64 = 0.0
+                var mean_nq: Float64 = 0.0
+                var mean_abs_act: Float64 = 0.0
+                for b in range(BS):
+                    mean_q += Float64(q0_p[b])
+                    mean_tgt += Float64(tgt_p[b])
+                    mean_rew += Float64(rew_p[b])
+                    mean_done += Float64(done_p[b])
+                    var nq0 = Float64(nq0_p[b])
+                    var nq1 = Float64(nq1_p[b])
+                    mean_nq += nq0 if nq0 < nq1 else nq1
+                for i in range(BS * Self.ACTIONS):
+                    var a = Float64(act_p[i])
+                    mean_abs_act += a if a >= 0.0 else -a
+                mean_q /= Float64(BS)
+                mean_tgt /= Float64(BS)
+                mean_rew /= Float64(BS)
+                mean_done /= Float64(BS)
+                mean_nq /= Float64(BS)
+                mean_abs_act /= Float64(BS * Self.ACTIONS)
+
                 var step = self.train_step_count
-                self.logger.value()[].log_scalar("loss", critic_loss, step)
                 self.logger.value()[].log_scalar(
-                    "explore_rate", self.get_explore_rate(), step
+                    "critic_loss", critic_loss, step
+                )
+                self.logger.value()[].log_scalar("mean_q", mean_q, step)
+                self.logger.value()[].log_scalar(
+                    "mean_target", mean_tgt, step
+                )
+                self.logger.value()[].log_scalar(
+                    "mean_reward", mean_rew, step
+                )
+                self.logger.value()[].log_scalar(
+                    "mean_next_q", mean_nq, step
+                )
+                self.logger.value()[].log_scalar(
+                    "mean_done", mean_done, step
+                )
+                self.logger.value()[].log_scalar(
+                    "mean_abs_action", mean_abs_act, step
                 )
                 comptime if Self.Config.ActorLoss.HAS_ALPHA:
                     self.logger.value()[].log_scalar("alpha", self.alpha, step)
@@ -2081,12 +2130,12 @@ struct GenericOffPolicyAgent[
     ](
         mut self,
         mut env: E,
-        num_episodes: Int = 300,
+        num_steps: Int = 300_000,
         max_steps_per_episode: Int = 1000,
         warmup_steps: Int = 1000,
         train_every: Int = 1,
         verbose: Bool = False,
-        print_every: Int = 10,
+        print_every: Int = 10_000,
         environment_name: String = "Environment",
         logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
@@ -2095,12 +2144,15 @@ struct GenericOffPolicyAgent[
 
         Args:
             env: Environment implementing BoxContinuousActionEnv.
-            num_episodes: Number of training episodes.
-            max_steps_per_episode: Maximum steps per episode (default: 1000).
+            num_steps: Total env transitions to collect. Training exits when
+                this many steps have been taken, mirroring train_gpu().
+            max_steps_per_episode: Per-episode time limit for truncation
+                (default: 1000).
             warmup_steps: Random steps to fill replay buffer (default: 1000).
             train_every: Train every N steps (default: 1).
-            verbose: Print progress (default: False).
-            print_every: Print every N episodes if verbose (default: 10).
+            verbose: Print progress bar + periodic status line (default: False).
+            print_every: Print/log cadence in env transitions
+                (default: 10_000). Matches GPU loop semantics.
             environment_name: Name for metrics labeling.
             logger: Optional metrics logger.
             diag_every: Log diagnostics every N train steps. 0 = every step
@@ -2113,11 +2165,12 @@ struct GenericOffPolicyAgent[
         self.diag_every = diag_every
         var cpu_state = Self.CPUStateType()
         var ckpt_path = String(self.checkpoint_path)
+        var algo_name = Self.Config.NAME
         var metrics = run_offpolicy_continuous_train[E, Self, Self.L](
             self,
             cpu_state,
             env,
-            num_episodes,
+            num_steps,
             max_steps_per_episode=max_steps_per_episode,
             warmup_steps=warmup_steps,
             train_every=train_every,
@@ -2126,6 +2179,7 @@ struct GenericOffPolicyAgent[
             verbose=verbose,
             print_every=print_every,
             environment_name=environment_name,
+            algorithm_name=algo_name,
             logger=logger,
         )
         self.state = cpu_state^

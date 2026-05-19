@@ -58,12 +58,12 @@ def main() raises:
         agent,
         cpu_state,
         env,
-        num_episodes=2000,
+        num_steps=2_000_000,
         max_steps_per_episode=1000,
         warmup_steps=10_000,
         train_every=1,
         verbose=True,
-        print_every=50,
+        print_every=10_000,
     )
 
     print("-" * 70)

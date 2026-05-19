@@ -87,7 +87,7 @@ comptime SCHED = CosineWarmupSchedule[
 ]
 
 # SAC hyperparameters — match Phase-2 baseline.
-comptime SAC_NUM_EPISODES = 200
+comptime SAC_NUM_STEPS = 40_000
 comptime SAC_MAX_STEPS = 200
 comptime SAC_WARMUP_STEPS = 1000
 comptime SAC_PRINT_EVERY = 20
@@ -158,7 +158,7 @@ def main() raises:
     print("=" * 60)
     print("  Encoder    : PCN (Exp-3: per-step PC weight rule, no SGLD)")
     print("  SAC arch   : EncoderPrefix (LinearTanh -> Linear -> LinearReLU -> heads)")
-    print("  Enc epochs :", ENC_EPOCHS, "  SAC eps:", SAC_NUM_EPISODES)
+    print("  Enc epochs :", ENC_EPOCHS, "  SAC eps:", SAC_NUM_STEPS)
 
     # ────────────────────────────────────────────────────────────────────────
     # PHASE A — Train encoder via Exp-3 procedure.
@@ -490,7 +490,7 @@ def main() raises:
         agent,
         cpu_state,
         env,
-        num_episodes=SAC_NUM_EPISODES,
+        num_steps=SAC_NUM_STEPS,
         max_steps_per_episode=SAC_MAX_STEPS,
         warmup_steps=SAC_WARMUP_STEPS,
         train_every=1,

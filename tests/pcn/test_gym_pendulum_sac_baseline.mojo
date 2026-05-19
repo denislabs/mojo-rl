@@ -18,7 +18,7 @@ from mojo_rl.envs.gymnasium.gymnasium_classic_control import GymPendulumEnv
 from mojo_rl.deep_agents.core.agents import DeepSACAgent
 
 
-comptime NUM_EPISODES = 200
+comptime NUM_STEPS = 40_000
 comptime MAX_STEPS = 200
 comptime WARMUP_STEPS = 1000
 comptime PRINT_EVERY = 20
@@ -32,7 +32,7 @@ def main() raises:
     print("  Obs        : raw [cos θ, sin θ, θ_dot] (3D)")
     print("  Action     : 1D continuous torque ∈ [-2, 2]")
     print("  SAC arch   : hidden=64, twin Q, auto-α")
-    print("  Episodes   :", NUM_EPISODES, "  steps/ep:", MAX_STEPS)
+    print("  Steps      :", NUM_STEPS, "  max_steps/ep:", MAX_STEPS)
 
     var env = GymPendulumEnv(render_mode="")
 
@@ -57,7 +57,7 @@ def main() raises:
     var t0 = perf_counter_ns()
     var metrics = agent.train(
         env,
-        num_episodes=NUM_EPISODES,
+        num_steps=NUM_STEPS,
         max_steps_per_episode=MAX_STEPS,
         warmup_steps=WARMUP_STEPS,
         train_every=1,

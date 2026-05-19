@@ -21,7 +21,7 @@ def main() raises:
     print("Initial alpha:", initial_alpha)
 
     var env = PendulumEnv[DType.float64]()
-    _ = agent.train(env, num_episodes=10)
+    _ = agent.train(env, num_steps=2000)
 
     var final_alpha = agent.alpha
     print("Final alpha:", final_alpha)
