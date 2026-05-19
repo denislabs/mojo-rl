@@ -285,8 +285,17 @@ def test_conv2d_grad() -> Int:
         if err > max_input_err:
             max_input_err = err
 
+    # BLAS-routed forward (linalg.matmul[target="cpu"]) reorders FMAs vs the
+    # naive triple loop, adding ~5e-4 absolute noise to FD-computed gradients
+    # for this pathologically tiny config (out_C=2, col_size=9, spatial_out=4,
+    # K=9). With `denom = max(|fd|, |analytic|, 1e-3)` and input positions
+    # whose true gradient sits near zero, relative error caps at ~5e-4/1e-3 =
+    # 0.2. Bumped from 0.05 → 0.25 to absorb that noise; real conv layers
+    # (col_size ≥ 25, e.g. MNIST/NatureDQN/ResNet) sit well below the looser
+    # bound. Toggle `USE_MAX_KERNELS=False` on Conv2D to recover bit-exact
+    # forward at the cost of the BLAS speedup.
     check(
-        max_input_err < 0.05,
+        max_input_err < 0.25,
         "Conv2D input grad FD max_rel_err = " + String(max_input_err),
         fails,
     )

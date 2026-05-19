@@ -130,9 +130,7 @@ def test_init():
             gamma_max_dev = dev
         if dev > 1e-6:
             gamma_ok = False
-    print(
-        "  gamma == 1.0:", gamma_ok, " max_dev =", gamma_max_dev
-    )
+    print("  gamma == 1.0:", gamma_ok, " max_dev =", gamma_max_dev)
 
     # Check beta == 0
     var beta_ok = True
@@ -183,8 +181,8 @@ def test_forward_parity():
     comptime OUT = 4
     comptime BS = 3
 
-    alias NL = NormedLinear[IN, OUT]
-    alias SEQ = Sequential[Linear[IN, OUT], LayerNorm[OUT], Mish[OUT]]
+    comptime NL = NormedLinear[IN, OUT]
+    comptime SEQ = Sequential[Linear[IN, OUT], LayerNorm[OUT], Mish[OUT]]
 
     # ── Initialize NormedLinear with deterministic params ──
     var nl_state = NetworkState[NL, Adam[]]()
@@ -212,30 +210,28 @@ def test_forward_parity():
 
     # ── Build input ──
     var input_ptr = alloc[Scalar[dtype]](BS * IN)
-    var input_t = LayoutTensor[
-        dtype, Layout.row_major(BS, IN), MutAnyOrigin
-    ](input_ptr)
+    var input_t = LayoutTensor[dtype, Layout.row_major(BS, IN), MutAnyOrigin](
+        input_ptr
+    )
     fill_input[BS, IN](input_t, salt=1)
 
     # ── NormedLinear forward ──
     var nl_out_ptr = alloc[Scalar[dtype]](BS * OUT)
     var nl_cache_ptr = alloc[Scalar[dtype]](BS * NL.CACHE_SIZE)
-    var nl_out = LayoutTensor[
-        dtype, Layout.row_major(BS, OUT), MutAnyOrigin
-    ](nl_out_ptr)
+    var nl_out = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](
+        nl_out_ptr
+    )
     var nl_cache = LayoutTensor[
         dtype, Layout.row_major(BS, NL.CACHE_SIZE), MutAnyOrigin
     ](nl_cache_ptr)
-    NL.forward[BS](
-        input_t, nl_out, nl_p, nl_state.model_state_view(), nl_cache
-    )
+    NL.forward[BS](input_t, nl_out, nl_p, nl_state.model_state_view(), nl_cache)
 
     # ── Sequential forward ──
     var seq_out_ptr = alloc[Scalar[dtype]](BS * OUT)
     var seq_cache_ptr = alloc[Scalar[dtype]](BS * SEQ.CACHE_SIZE)
-    var seq_out = LayoutTensor[
-        dtype, Layout.row_major(BS, OUT), MutAnyOrigin
-    ](seq_out_ptr)
+    var seq_out = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](
+        seq_out_ptr
+    )
     var seq_cache = LayoutTensor[
         dtype, Layout.row_major(BS, SEQ.CACHE_SIZE), MutAnyOrigin
     ](seq_cache_ptr)
@@ -278,8 +274,8 @@ def test_backward_parity():
     comptime OUT = 4
     comptime BS = 3
 
-    alias NL = NormedLinear[IN, OUT]
-    alias SEQ = Sequential[Linear[IN, OUT], LayerNorm[OUT], Mish[OUT]]
+    comptime NL = NormedLinear[IN, OUT]
+    comptime SEQ = Sequential[Linear[IN, OUT], LayerNorm[OUT], Mish[OUT]]
 
     # Initialize and sync params (same as test 2)
     var nl_state = NetworkState[NL, Adam[]]()
@@ -294,15 +290,15 @@ def test_backward_parity():
 
     # Input + grad_output
     var input_ptr = alloc[Scalar[dtype]](BS * IN)
-    var input_t = LayoutTensor[
-        dtype, Layout.row_major(BS, IN), MutAnyOrigin
-    ](input_ptr)
+    var input_t = LayoutTensor[dtype, Layout.row_major(BS, IN), MutAnyOrigin](
+        input_ptr
+    )
     fill_input[BS, IN](input_t, salt=2)
 
     var grad_out_ptr = alloc[Scalar[dtype]](BS * OUT)
-    var grad_out = LayoutTensor[
-        dtype, Layout.row_major(BS, OUT), MutAnyOrigin
-    ](grad_out_ptr)
+    var grad_out = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](
+        grad_out_ptr
+    )
     fill_input[BS, OUT](grad_out, salt=3)
 
     # NL.backward mutates grad_out in-place (Mish chain stored there).
@@ -319,9 +315,9 @@ def test_backward_parity():
     var nl_out_ptr = alloc[Scalar[dtype]](BS * OUT)
     var nl_cache_ptr = alloc[Scalar[dtype]](BS * NL.CACHE_SIZE)
     var nl_grad_in_ptr = alloc[Scalar[dtype]](BS * IN)
-    var nl_out = LayoutTensor[
-        dtype, Layout.row_major(BS, OUT), MutAnyOrigin
-    ](nl_out_ptr)
+    var nl_out = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](
+        nl_out_ptr
+    )
     var nl_cache = LayoutTensor[
         dtype, Layout.row_major(BS, NL.CACHE_SIZE), MutAnyOrigin
     ](nl_cache_ptr)
@@ -329,9 +325,7 @@ def test_backward_parity():
         dtype, Layout.row_major(BS, IN), MutAnyOrigin
     ](nl_grad_in_ptr)
 
-    NL.forward[BS](
-        input_t, nl_out, nl_p, nl_state.model_state_view(), nl_cache
-    )
+    NL.forward[BS](input_t, nl_out, nl_p, nl_state.model_state_view(), nl_cache)
 
     # Zero param grads, then call backward (CPU backward accumulates)
     var nl_g = nl_state.grads_view()
@@ -350,9 +344,9 @@ def test_backward_parity():
     var seq_out_ptr = alloc[Scalar[dtype]](BS * OUT)
     var seq_cache_ptr = alloc[Scalar[dtype]](BS * SEQ.CACHE_SIZE)
     var seq_grad_in_ptr = alloc[Scalar[dtype]](BS * IN)
-    var seq_out = LayoutTensor[
-        dtype, Layout.row_major(BS, OUT), MutAnyOrigin
-    ](seq_out_ptr)
+    var seq_out = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](
+        seq_out_ptr
+    )
     var seq_cache = LayoutTensor[
         dtype, Layout.row_major(BS, SEQ.CACHE_SIZE), MutAnyOrigin
     ](seq_cache_ptr)
@@ -414,7 +408,16 @@ def test_backward_parity():
             var d = abs(Float64(nl_g[i][0]) - Float64(seq_g[i][0]))
             if d > dbeta:
                 dbeta = d
-        print("    per-section: dW =", dW, " db =", db, " dgamma =", dgamma, " dbeta =", dbeta)
+        print(
+            "    per-section: dW =",
+            dW,
+            " db =",
+            db,
+            " dgamma =",
+            dgamma,
+            " dbeta =",
+            dbeta,
+        )
 
 
 # =============================================================================
@@ -431,7 +434,7 @@ def test_gradcheck():
     comptime BS = 2
     comptime PS = IN * OUT + 3 * OUT
 
-    alias NL = NormedLinear[IN, OUT]
+    comptime NL = NormedLinear[IN, OUT]
 
     var state = NetworkState[NL, Adam[]]()
     state.initialize[Kaiming[]]()
@@ -439,25 +442,25 @@ def test_gradcheck():
     var s = state.model_state_view()
 
     var input_ptr = alloc[Scalar[dtype]](BS * IN)
-    var input_t = LayoutTensor[
-        dtype, Layout.row_major(BS, IN), MutAnyOrigin
-    ](input_ptr)
+    var input_t = LayoutTensor[dtype, Layout.row_major(BS, IN), MutAnyOrigin](
+        input_ptr
+    )
     fill_input[BS, IN](input_t, salt=4)
 
     # Build a fixed grad_output so the loss is L = sum(grad_output * output)
     # so that dL/d(output) = grad_output, and dL/d(params) is exactly what
     # backward computes.
     var grad_out_ptr = alloc[Scalar[dtype]](BS * OUT)
-    var grad_out = LayoutTensor[
-        dtype, Layout.row_major(BS, OUT), MutAnyOrigin
-    ](grad_out_ptr)
+    var grad_out = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](
+        grad_out_ptr
+    )
     fill_input[BS, OUT](grad_out, salt=5)
 
     # Analytical grad
     var out_ptr = alloc[Scalar[dtype]](BS * OUT)
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BS, OUT), MutAnyOrigin
-    ](out_ptr)
+    var out_t = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](
+        out_ptr
+    )
     var cache_ptr = alloc[Scalar[dtype]](BS * NL.CACHE_SIZE)
     var cache_t = LayoutTensor[
         dtype, Layout.row_major(BS, NL.CACHE_SIZE), MutAnyOrigin
@@ -465,9 +468,9 @@ def test_gradcheck():
     NL.forward[BS](input_t, out_t, p, s, cache_t)
 
     var grad_in_ptr = alloc[Scalar[dtype]](BS * IN)
-    var grad_in = LayoutTensor[
-        dtype, Layout.row_major(BS, IN), MutAnyOrigin
-    ](grad_in_ptr)
+    var grad_in = LayoutTensor[dtype, Layout.row_major(BS, IN), MutAnyOrigin](
+        grad_in_ptr
+    )
     var g_view = state.grads_view()
     for i in range(PS):
         g_view[i] = 0
@@ -563,21 +566,21 @@ def test_sequential_gradcheck():
         p[i] = 0
 
     var input_ptr = alloc[Scalar[dtype]](BS * IN)
-    var input_t = LayoutTensor[
-        dtype, Layout.row_major(BS, IN), MutAnyOrigin
-    ](input_ptr)
+    var input_t = LayoutTensor[dtype, Layout.row_major(BS, IN), MutAnyOrigin](
+        input_ptr
+    )
     fill_input[BS, IN](input_t, salt=4)
 
     var grad_out_ptr = alloc[Scalar[dtype]](BS * OUT)
-    var grad_out = LayoutTensor[
-        dtype, Layout.row_major(BS, OUT), MutAnyOrigin
-    ](grad_out_ptr)
+    var grad_out = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](
+        grad_out_ptr
+    )
     fill_input[BS, OUT](grad_out, salt=5)
 
     var out_ptr = alloc[Scalar[dtype]](BS * OUT)
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BS, OUT), MutAnyOrigin
-    ](out_ptr)
+    var out_t = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](
+        out_ptr
+    )
     var cache_ptr = alloc[Scalar[dtype]](BS * SEQ.CACHE_SIZE)
     var cache_t = LayoutTensor[
         dtype, Layout.row_major(BS, SEQ.CACHE_SIZE), MutAnyOrigin
@@ -585,9 +588,9 @@ def test_sequential_gradcheck():
     SEQ.forward[BS](input_t, out_t, p, s, cache_t)
 
     var grad_in_ptr = alloc[Scalar[dtype]](BS * IN)
-    var grad_in = LayoutTensor[
-        dtype, Layout.row_major(BS, IN), MutAnyOrigin
-    ](grad_in_ptr)
+    var grad_in = LayoutTensor[dtype, Layout.row_major(BS, IN), MutAnyOrigin](
+        grad_in_ptr
+    )
     var g_view = state.grads_view()
     for i in range(PS):
         g_view[i] = 0
@@ -919,7 +922,9 @@ def test_dynamics_arch_gradcheck():
     """Numeric gradcheck on TD-MPC2 dynamics architecture:
     Sequential[NormedLinear, NormedLinear, Linear, LayerNorm, SimNorm].
     """
-    print("\n[Test 7] Dynamics arch gradcheck (NL → NL → Linear → LN → SimNorm)")
+    print(
+        "\n[Test 7] Dynamics arch gradcheck (NL → NL → Linear → LN → SimNorm)"
+    )
     print("-" * 60)
 
     comptime IN = 8
@@ -943,9 +948,9 @@ def test_dynamics_arch_gradcheck():
     var s = state.model_state_view()
 
     var input_ptr = alloc[Scalar[dtype]](BS * IN)
-    var input_t = LayoutTensor[
-        dtype, Layout.row_major(BS, IN), MutAnyOrigin
-    ](input_ptr)
+    var input_t = LayoutTensor[dtype, Layout.row_major(BS, IN), MutAnyOrigin](
+        input_ptr
+    )
     fill_input[BS, IN](input_t, salt=10)
 
     var grad_out_ptr = alloc[Scalar[dtype]](BS * LATENT)
@@ -955,9 +960,9 @@ def test_dynamics_arch_gradcheck():
     fill_input[BS, LATENT](grad_out, salt=11)
 
     var out_ptr = alloc[Scalar[dtype]](BS * LATENT)
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BS, LATENT), MutAnyOrigin
-    ](out_ptr)
+    var out_t = LayoutTensor[dtype, Layout.row_major(BS, LATENT), MutAnyOrigin](
+        out_ptr
+    )
     var cache_ptr = alloc[Scalar[dtype]](BS * DYN.CACHE_SIZE)
     var cache_t = LayoutTensor[
         dtype, Layout.row_major(BS, DYN.CACHE_SIZE), MutAnyOrigin
@@ -965,9 +970,9 @@ def test_dynamics_arch_gradcheck():
     DYN.forward[BS](input_t, out_t, p, s, cache_t)
 
     var grad_in_ptr = alloc[Scalar[dtype]](BS * IN)
-    var grad_in = LayoutTensor[
-        dtype, Layout.row_major(BS, IN), MutAnyOrigin
-    ](grad_in_ptr)
+    var grad_in = LayoutTensor[dtype, Layout.row_major(BS, IN), MutAnyOrigin](
+        grad_in_ptr
+    )
     var g_view = state.grads_view()
     for i in range(PS):
         g_view[i] = 0
@@ -986,7 +991,9 @@ def test_dynamics_arch_gradcheck():
     for i in range(PS):
         analytical[i] = g_view[i][0]
 
-    comptime EPS: Float64 = 1e-3
+    # See `gradcheck_sequential` and `test_normed_linear_fd_eps_sweep.mojo`
+    # for why 1e-2 is the right FP32 FD step for deep chains.
+    comptime EPS: Float64 = 1e-2
     var max_rel_err: Float64 = 0.0
     var max_abs_err: Float64 = 0.0
     var worst_idx = 0
@@ -1019,7 +1026,11 @@ def test_dynamics_arch_gradcheck():
 
     print("  max abs error =", max_abs_err)
     print("  max rel error =", max_rel_err, " (idx", worst_idx, ")")
-    if max_rel_err < 1e-2:
+    # Match the OR criterion used by `gradcheck_sequential`: tiny absolute
+    # errors (below the FP32 FD precision floor) are fine even if relative
+    # error exceeds 1% — that just means the gradient sits near zero and
+    # FP roundoff dominates.
+    if max_rel_err < 1e-2 or max_abs_err < 5e-4:
         print("  PASS")
     else:
         print("  FAIL — bug somewhere in the dynamics chain")
@@ -1058,9 +1069,9 @@ def gradcheck_sequential[
         dtype, Layout.row_major(BS, OUT_FIX), MutAnyOrigin
     ](out_ptr)
     var cache_ptr = alloc[Scalar[dtype]](BS * CS)
-    var cache_t = LayoutTensor[
-        dtype, Layout.row_major(BS, CS), MutAnyOrigin
-    ](cache_ptr)
+    var cache_t = LayoutTensor[dtype, Layout.row_major(BS, CS), MutAnyOrigin](
+        cache_ptr
+    )
     M.forward[BS](input_t, out_t, p, s, cache_t)
 
     var grad_in_ptr = alloc[Scalar[dtype]](BS * IN_FIX)
@@ -1083,7 +1094,15 @@ def gradcheck_sequential[
     for i in range(PS):
         analytical[i] = g_view[i][0]
 
-    comptime EPS: Float64 = 1e-3
+    # Central-difference FD with FP32 forwards has a U-shaped error curve:
+    # truncation `~ eps² · ∂³L/∂p³` dominates at large eps, FP roundoff
+    # `~ machine_eps / eps` dominates at small eps. The sweet spot is around
+    # √(fp32_machine_eps) ≈ 3e-4 for shallow nets, but **drifts up to ~1e-2
+    # for deep chains** (NL → NL → Linear / + LN), where roundoff in
+    # (out_plus - out_minus) compounds through multiple matmul+LN passes.
+    # 1e-2 was empirically validated as the global sweet spot across all
+    # chains in `tests/nn/test_normed_linear_fd_eps_sweep.mojo`.
+    comptime EPS: Float64 = 1e-2
     var max_rel_err: Float64 = 0.0
     var max_abs_err: Float64 = 0.0
     var worst_idx = 0
@@ -1171,14 +1190,14 @@ def test_narrowing_dynamics():
     ]("Seq[NL, NL] BS=1")
 
     # NL stacked with Linear (no LN, no Mish in between)
-    gradcheck_sequential[
-        Sequential[NormedLinear[D, D], Linear[D, D]], D, D
-    ]("Seq[NL, Linear]")
+    gradcheck_sequential[Sequential[NormedLinear[D, D], Linear[D, D]], D, D](
+        "Seq[NL, Linear]"
+    )
 
     # Linear → NL
-    gradcheck_sequential[
-        Sequential[Linear[D, D], NormedLinear[D, D]], D, D
-    ]("Seq[Linear, NL]")
+    gradcheck_sequential[Sequential[Linear[D, D], NormedLinear[D, D]], D, D](
+        "Seq[Linear, NL]"
+    )
 
     # Add Linear
     gradcheck_sequential[

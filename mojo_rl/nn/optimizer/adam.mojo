@@ -8,6 +8,10 @@ from layout import LayoutTensor, Layout
 from std.math import sqrt, exp, log
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct Adam[
@@ -110,23 +114,48 @@ struct Adam[
         var eps = Scalar[dtype](Self.EPS)
         var wd = Scalar[dtype](Self.WEIGHT_DECAY)
 
-        for i in range(PARAM_SIZE):
-            # L2-in-gradient: g = grad + WEIGHT_DECAY * param. The compiler
-            # elides the add when WEIGHT_DECAY == 0 (the comptime default).
+        # SIMD path: state layout is AoS [m0, v0, m1, v1, ...] (row_major
+        # (PARAM_SIZE, 2)). Load 2W consecutive scalars per chunk, deinterleave
+        # into (m_W, v_W) lanes, compute, interleave back.
+        comptime W = _CPU_SIMD_W
+        var p_p = params.ptr
+        var g_p = grads.ptr
+        var s_p = state.ptr
+        var bc1_v = SIMD[dtype, W](bias_correction1)
+        var bc2_v = SIMD[dtype, W](bias_correction2)
+        var omb1_v = SIMD[dtype, W](one_minus_beta1)
+        var omb2_v = SIMD[dtype, W](one_minus_beta2)
+        var b1_v = SIMD[dtype, W](beta1)
+        var b2_v = SIMD[dtype, W](beta2)
+        var lr_v = SIMD[dtype, W](lr)
+        var eps_v = SIMD[dtype, W](eps)
+        var wd_v = SIMD[dtype, W](wd)
+        var i = 0
+        while i + W <= PARAM_SIZE:
+            var p = p_p.load[width=W](i)
+            var g = g_p.load[width=W](i) + wd_v * p
+            var mv = s_p.load[width=2 * W](2 * i).deinterleave()
+            var m = rebind[SIMD[dtype, W]](mv[0])
+            var v = rebind[SIMD[dtype, W]](mv[1])
+            var m_new = b1_v * m + omb1_v * g
+            var v_new = b2_v * v + omb2_v * g * g
+            s_p.store(2 * i, m_new.interleave(v_new))
+            var m_hat = m_new / bc1_v
+            var v_hat = v_new / bc2_v
+            p_p.store(i, p - lr_v * m_hat / (sqrt(v_hat) + eps_v))
+            i += W
+        while i < PARAM_SIZE:
             var g = grads[i] + wd * params[i]
             var m = state[i, 0]
             var v = state[i, 1]
-
             var m_new = beta1 * m + one_minus_beta1 * g
             var v_new = beta2 * v + one_minus_beta2 * g * g
-
             state[i, 0] = m_new
             state[i, 1] = v_new
-
             var m_hat = m_new / bias_correction1
             var v_hat = v_new / bias_correction2
-
             params[i] -= lr * m_hat / (sqrt(v_hat) + eps)
+            i += 1
 
     # =========================================================================
     # GPU kernel implementation

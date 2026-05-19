@@ -23,6 +23,7 @@ from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from std.gpu.compute.mma import mma
 from linalg.matmul import matmul as max_matmul
 from layout.tile_tensor import lt_to_tt
+from std.memory import alloc
 
 
 struct FusedMatMulBias[
@@ -35,10 +36,12 @@ struct FusedMatMulBias[
     PARAM_SIZE = in_dim * out_dim + out_dim  (W then b)
     CACHE_SIZE = in_dim  (caches input for dW)
 
-    USE_MAX_KERNELS (NVIDIA only): when True, route the matmul portion through
-    `linalg.matmul.matmul` (max_matmul) and apply bias via a separate kernel.
-    Backward likewise uses max_matmul for dx and dW; db keeps its own kernel.
-    Apple is unaffected — always uses the 2x2 tiled fallback.
+    USE_MAX_KERNELS: when True (default), route the matmul portion through
+    `linalg.matmul.matmul` and apply bias (and db) via simple loops/kernels:
+      - CPU: target="cpu" (vendor BLAS / Modular CPU GEMM).
+      - NVIDIA GPU: target="gpu".
+    When False, naive triple-loop on CPU and custom MMA on NVIDIA. Apple GPU is
+    unaffected — always uses the 2x2 tiled fallback.
     """
 
     comptime OP_ID: Int = OpID.FUSED_MATMUL_BIAS._value
@@ -87,14 +90,30 @@ struct FusedMatMulBias[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
         ](params.ptr + Self.in_dim * Self.out_dim)
 
+        # Cache input for backward.
         for ba in range(BATCH):
             for i in range(Self.in_dim):
                 cache[ba, i] = input[ba, i]
-            for j in range(Self.out_dim):
-                var acc: output.element_type = b[j]
-                for k in range(Self.in_dim):
-                    acc += input[ba, k] * W[k, j]
-                output[ba, j] = acc
+
+        comptime if Self.USE_MAX_KERNELS:
+            # output = input @ W (BLAS), then add bias elementwise.
+            # max_matmul is `raises`; trait `def eval` is not — contain locally.
+            try:
+                max_matmul[target="cpu"](
+                    lt_to_tt(output), lt_to_tt(input), lt_to_tt(W), None
+                )
+            except e:
+                pass
+            for ba in range(BATCH):
+                for j in range(Self.out_dim):
+                    output[ba, j] = output[ba, j] + b[j]
+        else:
+            for ba in range(BATCH):
+                for j in range(Self.out_dim):
+                    var acc: output.element_type = b[j]
+                    for k in range(Self.in_dim):
+                        acc += input[ba, k] * W[k, j]
+                    output[ba, j] = acc
 
     @staticmethod
     def vjp[
@@ -127,22 +146,76 @@ struct FusedMatMulBias[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
         ](grad_params.ptr + Self.in_dim * Self.out_dim)
 
-        for ba in range(BATCH):
-            # dx = dy @ W.T
-            for i in range(Self.in_dim):
-                var acc: grad_output.element_type = 0
-                for j in range(Self.out_dim):
-                    acc += grad_output[ba, j] * W[i, j]
-                grad_input[ba, i] = acc
+        comptime if Self.USE_MAX_KERNELS:
+            var cache_x = LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+            ](cache.ptr)
+            # Physically transpose cache → cache_T because linalg.matmul has no
+            # transpose_a support.
+            var cache_T_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](Self.in_dim * BATCH)
+            var cache_T = LayoutTensor[
+                dtype, Layout.row_major(Self.in_dim, BATCH), MutAnyOrigin
+            ](cache_T_buf)
+            for ba in range(BATCH):
+                for i in range(Self.in_dim):
+                    cache_T[i, ba] = cache_x[ba, i]
 
-            # dW += x.T @ dy
+            var dW_tmp_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](Self.in_dim * Self.out_dim)
+            var dW_tmp = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.in_dim, Self.out_dim),
+                MutAnyOrigin,
+            ](dW_tmp_buf)
+            try:
+                # dx = dy @ W.T  (overwrite)
+                max_matmul[transpose_b=True, target="cpu"](
+                    lt_to_tt(grad_input),
+                    lt_to_tt(grad_output),
+                    lt_to_tt(W),
+                    None,
+                )
+                # dW_tmp = cache_T @ grad_output
+                max_matmul[target="cpu"](
+                    lt_to_tt(dW_tmp),
+                    lt_to_tt(cache_T),
+                    lt_to_tt(grad_output),
+                    None,
+                )
+            except e:
+                pass
             for i in range(Self.in_dim):
                 for j in range(Self.out_dim):
-                    dW[i, j] = dW[i, j] + cache[ba, i] * grad_output[ba, j]
+                    dW[i, j] = dW[i, j] + dW_tmp[i, j]
+            dW_tmp_buf.free()
+            cache_T_buf.free()
 
             # db += sum(dy, axis=0)
             for j in range(Self.out_dim):
-                db[j] = db[j] + grad_output[ba, j]
+                var sb: Scalar[dtype] = 0
+                for ba in range(BATCH):
+                    sb += rebind[Scalar[dtype]](grad_output[ba, j])
+                db[j] = db[j] + sb
+        else:
+            for ba in range(BATCH):
+                # dx = dy @ W.T
+                for i in range(Self.in_dim):
+                    var acc: grad_output.element_type = 0
+                    for j in range(Self.out_dim):
+                        acc += grad_output[ba, j] * W[i, j]
+                    grad_input[ba, i] = acc
+
+                # dW += x.T @ dy
+                for i in range(Self.in_dim):
+                    for j in range(Self.out_dim):
+                        dW[i, j] = dW[i, j] + cache[ba, i] * grad_output[ba, j]
+
+                # db += sum(dy, axis=0)
+                for j in range(Self.out_dim):
+                    db[j] = db[j] + grad_output[ba, j]
 
     # =========================================================================
     # GPU kernel implementations — tiled (Apple fallback)

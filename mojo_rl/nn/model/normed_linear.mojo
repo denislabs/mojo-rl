@@ -25,6 +25,7 @@ from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from std.math import sqrt, exp, log
 from linalg.matmul import matmul as max_matmul
 from layout.tile_tensor import lt_to_tt
+from std.memory import alloc
 
 
 struct NormedLinear[
@@ -158,19 +159,35 @@ struct NormedLinear[
         var eps = Scalar[dtype](Self.EPSILON)
         var n = Scalar[dtype](Self.out_dim)
 
+        # Cache input (unchanged).
         for batch in range(BATCH):
-            # Cache input for dW computation
             for i in range(Self.in_dim):
                 cache[batch, Self._INPUT_OFFSET + i] = input[batch, i]
 
-            # --- Linear: z = x @ W + b ---
-            for j in range(Self.out_dim):
-                var acc = params[Self._B_OFFSET + j]  # bias
-                for i in range(Self.in_dim):
-                    acc += input[batch, i] * W[i, j]
-                # Store linear output temporarily in the output buffer
-                output[batch, j] = acc
+        comptime if Self.USE_MAX_KERNELS:
+            # Single BLAS call across the whole batch: output = input @ W.
+            # `max_matmul` is `raises`; trait `def forward` is not — contain.
+            try:
+                max_matmul[target="cpu"](
+                    lt_to_tt(output), lt_to_tt(input), lt_to_tt(W), None
+                )
+            except e:
+                pass
+            # Bias-add elementwise.
+            for batch in range(BATCH):
+                for j in range(Self.out_dim):
+                    output[batch, j] = output[batch, j] + rebind[
+                        Scalar[dtype]
+                    ](params[Self._B_OFFSET + j])
+        else:
+            for batch in range(BATCH):
+                for j in range(Self.out_dim):
+                    var acc = params[Self._B_OFFSET + j]
+                    for i in range(Self.in_dim):
+                        acc += input[batch, i] * W[i, j]
+                    output[batch, j] = acc
 
+        for batch in range(BATCH):
             # --- LayerNorm: y = gamma * (z - mean) / sqrt(var + eps) + beta ---
             # Compute mean
             var mean = rebind[Scalar[dtype]](output[batch, 0])
@@ -247,14 +264,27 @@ struct NormedLinear[
         var eps = Scalar[dtype](Self.EPSILON)
         var n = Scalar[dtype](Self.out_dim)
 
-        for batch in range(BATCH):
-            # --- Linear ---
-            for j in range(Self.out_dim):
-                var acc = params[Self._B_OFFSET + j]
-                for i in range(Self.in_dim):
-                    acc += input[batch, i] * W[i, j]
-                output[batch, j] = acc
+        comptime if Self.USE_MAX_KERNELS:
+            try:
+                max_matmul[target="cpu"](
+                    lt_to_tt(output), lt_to_tt(input), lt_to_tt(W), None
+                )
+            except e:
+                pass
+            for batch in range(BATCH):
+                for j in range(Self.out_dim):
+                    output[batch, j] = output[batch, j] + rebind[
+                        Scalar[dtype]
+                    ](params[Self._B_OFFSET + j])
+        else:
+            for batch in range(BATCH):
+                for j in range(Self.out_dim):
+                    var acc = params[Self._B_OFFSET + j]
+                    for i in range(Self.in_dim):
+                        acc += input[batch, i] * W[i, j]
+                    output[batch, j] = acc
 
+        for batch in range(BATCH):
             # --- LayerNorm ---
             var mean: output.element_type = output[batch, 0]
             for j in range(1, Self.out_dim):
@@ -325,10 +355,9 @@ struct NormedLinear[
         ](grads.ptr)
         var n = Scalar[dtype](Self.out_dim)
 
+        # Step 1: Mish backward (overwrites grad_output → d_ln_out) +
+        # dgamma/dbeta accumulation (per-batch, all elementwise — no matmul).
         for batch in range(BATCH):
-            # ---- Mish backward: d_ln_out = dy * d_mish ----
-            # d_mish = tanh_sp + x * sigmoid(x) * (1 - tanh_sp^2)
-            # where x = ln_output (input to Mish)
             for j in range(Self.out_dim):
                 var tanh_sp = Float64(
                     rebind[Scalar[dtype]](
@@ -343,85 +372,138 @@ struct NormedLinear[
                     1.0 - tanh_sp * tanh_sp
                 )
                 var dy = rebind[Scalar[dtype]](grad_output[batch, j])
-                # Reuse grad_input temporarily? No, dimensions differ.
-                # We'll store d_ln_out in output-sized temp. Use grad_output
-                # buffer if mutable... but it's passed as non-mut for grads.
-                # Actually grad_output IS mut in the signature. We can
-                # overwrite it since we process each element once.
-                # Store Mish gradient result back into grad_output buffer.
                 grad_output[batch, j] = Scalar[dtype](Float64(dy) * d_mish)
 
-            # ---- LayerNorm backward ----
-            # grad_output now contains d_ln_out (gradient w.r.t. LN output)
-            var inv_std = cache[batch, Self._INV_STD_OFFSET]
-
-            # Accumulate dgamma, dbeta
+            # Accumulate dgamma, dbeta (grad_output is now d_ln_out).
             for j in range(Self.out_dim):
                 var normalized = cache[batch, Self._LN_NORM_OFFSET + j]
                 var dy = grad_output[batch, j]
-                # dgamma += dy * normalized
                 grads[Self._GAMMA_OFFSET + j] = (
                     grads[Self._GAMMA_OFFSET + j] + dy * normalized
                 )
-                # dbeta += dy
                 grads[Self._BETA_OFFSET + j] = grads[Self._BETA_OFFSET + j] + dy
 
-            # Compute d_linear_out from LayerNorm backward
-            var sum_dy_gamma: grad_output.element_type = 0.0
-            var sum_dy_gamma_norm: grad_output.element_type = 0.0
+        # Step 2: Materialize d_linear_out[BATCH, out_dim] into scratch.
+        # The LayerNorm backward needs two per-batch reductions
+        # (sum_dy_gamma, sum_dy_gamma_norm) before each per-element d_lin can
+        # be computed. Materializing once avoids recomputing it three times
+        # (the original inlined d_lin in each of dx, dW, db loops).
+        var d_lin_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](BATCH * Self.out_dim)
+        var d_lin = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
+        ](d_lin_buf)
+        for batch in range(BATCH):
+            var inv_std = rebind[Scalar[dtype]](
+                cache[batch, Self._INV_STD_OFFSET]
+            )
+            var sum_dy_gamma: Scalar[dtype] = 0
+            var sum_dy_gamma_norm: Scalar[dtype] = 0
             for j in range(Self.out_dim):
-                var gamma = params[Self._GAMMA_OFFSET + j]
-                var dy = grad_output[batch, j]
-                var normalized = cache[batch, Self._LN_NORM_OFFSET + j]
+                var gamma = rebind[Scalar[dtype]](
+                    params[Self._GAMMA_OFFSET + j]
+                )
+                var dy = rebind[Scalar[dtype]](grad_output[batch, j])
+                var normalized = rebind[Scalar[dtype]](
+                    cache[batch, Self._LN_NORM_OFFSET + j]
+                )
                 sum_dy_gamma = sum_dy_gamma + dy * gamma
-                sum_dy_gamma_norm = sum_dy_gamma_norm + dy * gamma * normalized
-
-            # Now compute d_linear_out and use it for Linear backward inline
-            # d_linear_out[j] = inv_std * (dy*gamma - sum_dy_gamma/n
-            #                              - normalized * sum_dy_gamma_norm/n)
-            # Then: dx = d_linear_out @ W.T, dW += x.T @ d_linear_out,
-            #        db += d_linear_out
-
-            # --- Linear backward: dx = d_linear_out @ W.T ---
-            for i in range(Self.in_dim):
-                var acc: grad_input.element_type = 0
-                for j in range(Self.out_dim):
-                    var gamma = params[Self._GAMMA_OFFSET + j]
-                    var dy = grad_output[batch, j]
-                    var normalized = cache[batch, Self._LN_NORM_OFFSET + j]
-                    var d_lin = inv_std * (
-                        dy * gamma
-                        - sum_dy_gamma / n
-                        - normalized * sum_dy_gamma_norm / n
-                    )
-                    acc += d_lin * W[i, j]
-                grad_input[batch, i] = acc
-
-            # --- Linear backward: dW += x.T @ d_linear_out ---
-            for i in range(Self.in_dim):
-                var cached_input = cache[batch, Self._INPUT_OFFSET + i]
-                for j in range(Self.out_dim):
-                    var gamma = params[Self._GAMMA_OFFSET + j]
-                    var dy = grad_output[batch, j]
-                    var normalized = cache[batch, Self._LN_NORM_OFFSET + j]
-                    var d_lin = inv_std * (
-                        dy * gamma
-                        - sum_dy_gamma / n
-                        - normalized * sum_dy_gamma_norm / n
-                    )
-                    dW[i, j] = dW[i, j] + cached_input * d_lin
-
-            # --- Linear backward: db += d_linear_out ---
+                sum_dy_gamma_norm = (
+                    sum_dy_gamma_norm + dy * gamma * normalized
+                )
             for j in range(Self.out_dim):
-                var gamma = params[Self._GAMMA_OFFSET + j]
-                var dy = grad_output[batch, j]
-                var normalized = cache[batch, Self._LN_NORM_OFFSET + j]
-                var d_lin = inv_std * (
+                var gamma = rebind[Scalar[dtype]](
+                    params[Self._GAMMA_OFFSET + j]
+                )
+                var dy = rebind[Scalar[dtype]](grad_output[batch, j])
+                var normalized = rebind[Scalar[dtype]](
+                    cache[batch, Self._LN_NORM_OFFSET + j]
+                )
+                d_lin[batch, j] = inv_std * (
                     dy * gamma
                     - sum_dy_gamma / n
                     - normalized * sum_dy_gamma_norm / n
                 )
-                grads[Self._B_OFFSET + j] = grads[Self._B_OFFSET + j] + d_lin
+
+        comptime if Self.USE_MAX_KERNELS:
+            # Step 3a: grad_input = d_lin @ W.T via single BLAS call.
+            try:
+                max_matmul[transpose_b=True, target="cpu"](
+                    lt_to_tt(grad_input),
+                    lt_to_tt(d_lin),
+                    lt_to_tt(W),
+                    None,
+                )
+            except e:
+                pass
+
+            # Step 3b: dW += input_T @ d_lin. linalg.matmul has no transpose_a,
+            # so physically transpose the cached input region into
+            # input_T (in_dim, BATCH). cache has row stride CACHE_SIZE — can't
+            # alias as (BATCH, in_dim) directly; read via the strided cache LT.
+            var input_T_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](Self.in_dim * BATCH)
+            var input_T = LayoutTensor[
+                dtype, Layout.row_major(Self.in_dim, BATCH), MutAnyOrigin
+            ](input_T_buf)
+            for batch in range(BATCH):
+                for i in range(Self.in_dim):
+                    input_T[i, batch] = rebind[Scalar[dtype]](
+                        cache[batch, Self._INPUT_OFFSET + i]
+                    )
+
+            var dW_tmp_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](Self.in_dim * Self.out_dim)
+            var dW_tmp = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.in_dim, Self.out_dim),
+                MutAnyOrigin,
+            ](dW_tmp_buf)
+            try:
+                max_matmul[target="cpu"](
+                    lt_to_tt(dW_tmp),
+                    lt_to_tt(input_T),
+                    lt_to_tt(d_lin),
+                    None,
+                )
+            except e:
+                pass
+            for i in range(Self.in_dim):
+                for j in range(Self.out_dim):
+                    dW[i, j] = dW[i, j] + dW_tmp[i, j]
+
+            # Step 3c: db += sum(d_lin, axis=0)
+            for j in range(Self.out_dim):
+                var s: Scalar[dtype] = 0
+                for batch in range(BATCH):
+                    s = s + rebind[Scalar[dtype]](d_lin[batch, j])
+                grads[Self._B_OFFSET + j] = grads[Self._B_OFFSET + j] + s
+
+            input_T_buf.free()
+            dW_tmp_buf.free()
+        else:
+            for batch in range(BATCH):
+                # dx = d_lin @ W.T
+                for i in range(Self.in_dim):
+                    var acc: grad_input.element_type = 0
+                    for j in range(Self.out_dim):
+                        acc += d_lin[batch, j] * W[i, j]
+                    grad_input[batch, i] = acc
+                # dW += x.T @ d_lin
+                for i in range(Self.in_dim):
+                    var cached_input = cache[batch, Self._INPUT_OFFSET + i]
+                    for j in range(Self.out_dim):
+                        dW[i, j] = dW[i, j] + cached_input * d_lin[batch, j]
+                # db += d_lin
+                for j in range(Self.out_dim):
+                    grads[Self._B_OFFSET + j] = (
+                        grads[Self._B_OFFSET + j] + d_lin[batch, j]
+                    )
+
+        d_lin_buf.free()
 
     # =========================================================================
     # GPU Kernel Implementations

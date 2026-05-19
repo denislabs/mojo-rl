@@ -12,6 +12,10 @@ from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct NegateOp[dim: Int](DiffOp):
@@ -54,8 +58,17 @@ struct NegateOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        for i in range(BATCH * Self.dim):
-            output.ptr[i] = -input.ptr[i]
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var i = 0
+        while i + W <= N:
+            out_p.store(i, -in_p.load[width=W](i))
+            i += W
+        while i < N:
+            out_p[i] = -in_p[i]
+            i += 1
 
     @staticmethod
     def vjp[
@@ -77,8 +90,17 @@ struct NegateOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        for i in range(BATCH * Self.dim):
-            grad_input.ptr[i] = -grad_output.ptr[i]
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var i = 0
+        while i + W <= N:
+            gi_p.store(i, -go_p.load[width=W](i))
+            i += W
+        while i < N:
+            gi_p[i] = -go_p[i]
+            i += 1
 
     @staticmethod
     def eval_gpu[

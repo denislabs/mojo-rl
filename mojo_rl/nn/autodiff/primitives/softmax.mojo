@@ -5,6 +5,11 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.gpu.primitives import block
 from std.math import exp
+from std.math import max as math_max
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct SoftmaxOp[dim: Int](DiffOp):
@@ -53,30 +58,60 @@ struct SoftmaxOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
+        comptime W = _CPU_SIMD_W
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var c_p = cache.ptr
         for b in range(BATCH):
-            # Find max for numerical stability
-            var max_val = Float64(rebind[Scalar[dtype]](input[b, 0]))
-            for i in range(1, Self.dim):
-                var v = Float64(rebind[Scalar[dtype]](input[b, i]))
-                if v > max_val:
-                    max_val = v
+            var off = b * Self.dim
 
-            # Compute exp(x - max) and sum
-            var sum_exp: Float64 = 0.0
-            for i in range(Self.dim):
-                var v = Float64(rebind[Scalar[dtype]](input[b, i]))
-                var e = exp(v - max_val)
-                output[b, i] = Scalar[dtype](e)
-                sum_exp += e
+            # Pass 1: row max (SIMD reduce + scalar tail)
+            var max_vec = SIMD[dtype, W](in_p[off])
+            var max_scalar = in_p[off]
+            var j = 0
+            while j + W <= Self.dim:
+                max_vec = math_max(max_vec, in_p.load[width=W](off + j))
+                j += W
+            while j < Self.dim:
+                var v = in_p[off + j]
+                if v > max_scalar:
+                    max_scalar = v
+                j += 1
+            var row_max = max_scalar
+            var vmax = max_vec.reduce_max()
+            if vmax > row_max:
+                row_max = vmax
+            var rm_v = SIMD[dtype, W](row_max)
 
-            # Normalize
-            var inv_sum = 1.0 / sum_exp
-            for i in range(Self.dim):
-                var y = Scalar[dtype](
-                    Float64(rebind[Scalar[dtype]](output[b, i])) * inv_sum
-                )
-                output[b, i] = y
-                cache[b, i] = y
+            # Pass 2: exp(x - max), accumulate sum
+            var sum_vec = SIMD[dtype, W](0)
+            var sum_tail = Scalar[dtype](0)
+            j = 0
+            while j + W <= Self.dim:
+                var e = exp(in_p.load[width=W](off + j) - rm_v)
+                out_p.store(off + j, e)
+                sum_vec += e
+                j += W
+            while j < Self.dim:
+                var e = exp(in_p[off + j] - row_max)
+                out_p[off + j] = e
+                sum_tail += e
+                j += 1
+            var inv_sum = Scalar[dtype](1) / (sum_vec.reduce_add() + sum_tail)
+            var inv_v = SIMD[dtype, W](inv_sum)
+
+            # Pass 3: normalize + store cache
+            j = 0
+            while j + W <= Self.dim:
+                var y = out_p.load[width=W](off + j) * inv_v
+                out_p.store(off + j, y)
+                c_p.store(off + j, y)
+                j += W
+            while j < Self.dim:
+                var y = out_p[off + j] * inv_sum
+                out_p[off + j] = y
+                c_p[off + j] = y
+                j += 1
 
     @staticmethod
     def vjp[
@@ -99,18 +134,38 @@ struct SoftmaxOp[dim: Int](DiffOp):
         ],
     ):
         # dx[b,i] = y[b,i] * (grad[b,i] - sum_j(grad[b,j] * y[b,j]))
+        comptime W = _CPU_SIMD_W
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var c_p = cache.ptr
         for b in range(BATCH):
-            # Compute dot = sum_j(grad[b,j] * y[b,j])
-            var dot: Float64 = 0.0
-            for j in range(Self.dim):
-                var g = Float64(rebind[Scalar[dtype]](grad_output[b, j]))
-                var y = Float64(rebind[Scalar[dtype]](cache[b, j]))
-                dot += g * y
+            var off = b * Self.dim
 
-            for i in range(Self.dim):
-                var g = Float64(rebind[Scalar[dtype]](grad_output[b, i]))
-                var y = Float64(rebind[Scalar[dtype]](cache[b, i]))
-                grad_input[b, i] = Scalar[dtype](y * (g - dot))
+            # Pass 1: dot = sum_j grad[b,j] * y[b,j]
+            var dot_vec = SIMD[dtype, W](0)
+            var dot_tail = Scalar[dtype](0)
+            var j = 0
+            while j + W <= Self.dim:
+                dot_vec += go_p.load[width=W](off + j) * c_p.load[width=W](
+                    off + j
+                )
+                j += W
+            while j < Self.dim:
+                dot_tail += go_p[off + j] * c_p[off + j]
+                j += 1
+            var dot = dot_vec.reduce_add() + dot_tail
+            var dot_v = SIMD[dtype, W](dot)
+
+            # Pass 2: dx = y * (g - dot)
+            j = 0
+            while j + W <= Self.dim:
+                var g = go_p.load[width=W](off + j)
+                var y = c_p.load[width=W](off + j)
+                gi_p.store(off + j, y * (g - dot_v))
+                j += W
+            while j < Self.dim:
+                gi_p[off + j] = c_p[off + j] * (go_p[off + j] - dot)
+                j += 1
 
     # =========================================================================
     # GPU kernels

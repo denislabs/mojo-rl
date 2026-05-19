@@ -8,6 +8,10 @@ from layout import LayoutTensor, Layout
 from std.math import sqrt
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct RMSprop[
@@ -68,15 +72,31 @@ struct RMSprop[
         var lr = Scalar[dtype](Self.LR * lr_scale)
         var eps = Scalar[dtype](Self.EPS)
 
-        for i in range(PARAM_SIZE):
-            var g = rebind[Scalar[dtype]](grads[i])
-            var v = rebind[Scalar[dtype]](state[i, 0])
-
+        # STATE_PER_PARAM=1 → state buffer is contiguous Float32 [v0, v1, ...].
+        comptime W = _CPU_SIMD_W
+        var p_p = params.ptr
+        var g_p = grads.ptr
+        var s_p = state.ptr
+        var alpha_v = SIMD[dtype, W](alpha)
+        var oma_v = SIMD[dtype, W](one_minus_alpha)
+        var lr_v = SIMD[dtype, W](lr)
+        var eps_v = SIMD[dtype, W](eps)
+        var i = 0
+        while i + W <= PARAM_SIZE:
+            var g = g_p.load[width=W](i)
+            var v = s_p.load[width=W](i)
+            var v_new = alpha_v * v + oma_v * g * g
+            s_p.store(i, v_new)
+            var p = p_p.load[width=W](i)
+            p_p.store(i, p - lr_v * g / (sqrt(v_new) + eps_v))
+            i += W
+        while i < PARAM_SIZE:
+            var g = grads[i]
+            var v = state[i, 0]
             var v_new = alpha * v + one_minus_alpha * g * g
             state[i, 0] = v_new
-
-            var p = rebind[Scalar[dtype]](params[i])
-            params[i] = p - lr * g / (sqrt(v_new) + eps)
+            params[i] = params[i] - lr * g / (sqrt(v_new) + eps)
+            i += 1
 
     # =========================================================================
     # GPU kernel implementation

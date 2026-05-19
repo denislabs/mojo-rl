@@ -3,6 +3,10 @@ from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
@@ -57,10 +61,19 @@ struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
         var s = Self._scale[dtype]()
-        for b in range(BATCH):
-            for i in range(Self.dim):
-                output[b, i] = input[b, i] * s
+        var s_v = SIMD[dtype, W](s)
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var i = 0
+        while i + W <= N:
+            out_p.store(i, in_p.load[width=W](i) * s_v)
+            i += W
+        while i < N:
+            out_p[i] = in_p[i] * s
+            i += 1
 
     @staticmethod
     def vjp[
@@ -82,10 +95,19 @@ struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
         var s = Self._scale[dtype]()
-        for b in range(BATCH):
-            for i in range(Self.dim):
-                grad_input[b, i] = grad_output[b, i] * s
+        var s_v = SIMD[dtype, W](s)
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var i = 0
+        while i + W <= N:
+            gi_p.store(i, go_p.load[width=W](i) * s_v)
+            i += W
+        while i < N:
+            gi_p[i] = go_p[i] * s
+            i += 1
 
     # =========================================================================
     # GPU kernels

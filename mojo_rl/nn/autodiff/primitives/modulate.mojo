@@ -30,6 +30,10 @@ from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct ModulateOp[dim: Int](DiffOp):
@@ -74,14 +78,33 @@ struct ModulateOp[dim: Int](DiffOp):
         ],
     ):
         comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime W = _CPU_SIMD_W
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var c_p = cache.ptr
+        var one_v = SIMD[dtype, W](1)
         for b in range(BATCH):
-            for i in range(Self.dim):
-                var x = rebind[Scalar[dtype]](input[b, i])
-                var s = rebind[Scalar[dtype]](input[b, Self.dim + i])
-                var sh = rebind[Scalar[dtype]](input[b, 2 * Self.dim + i])
-                cache[b, i] = x
-                cache[b, Self.dim + i] = s
-                output[b, i] = x * (Scalar[dtype](1.0) + s) + sh
+            var in_off = b * 3 * Self.dim
+            var out_off = b * Self.dim
+            var c_off = b * 2 * Self.dim
+            var j = 0
+            while j + W <= Self.dim:
+                var x = in_p.load[width=W](in_off + j)
+                var s = in_p.load[width=W](in_off + Self.dim + j)
+                var sh = in_p.load[width=W](in_off + 2 * Self.dim + j)
+                c_p.store(c_off + j, x)
+                c_p.store(c_off + Self.dim + j, s)
+                out_p.store(out_off + j, x * (one_v + s) + sh)
+                j += W
+            var one = Scalar[dtype](1)
+            while j < Self.dim:
+                var x = in_p[in_off + j]
+                var s = in_p[in_off + Self.dim + j]
+                var sh = in_p[in_off + 2 * Self.dim + j]
+                c_p[c_off + j] = x
+                c_p[c_off + Self.dim + j] = s
+                out_p[out_off + j] = x * (one + s) + sh
+                j += 1
 
     @staticmethod
     def vjp[
@@ -103,14 +126,33 @@ struct ModulateOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
+        comptime W = _CPU_SIMD_W
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var c_p = cache.ptr
+        var one_v = SIMD[dtype, W](1)
         for b in range(BATCH):
-            for i in range(Self.dim):
-                var go = rebind[Scalar[dtype]](grad_output[b, i])
-                var x = rebind[Scalar[dtype]](cache[b, i])
-                var s = rebind[Scalar[dtype]](cache[b, Self.dim + i])
-                grad_input[b, i] = go * (Scalar[dtype](1.0) + s)         # dx
-                grad_input[b, Self.dim + i] = go * x                      # dscale
-                grad_input[b, 2 * Self.dim + i] = go                      # dshift
+            var go_off = b * Self.dim
+            var gi_off = b * 3 * Self.dim
+            var c_off = b * 2 * Self.dim
+            var j = 0
+            while j + W <= Self.dim:
+                var go = go_p.load[width=W](go_off + j)
+                var x = c_p.load[width=W](c_off + j)
+                var s = c_p.load[width=W](c_off + Self.dim + j)
+                gi_p.store(gi_off + j, go * (one_v + s))
+                gi_p.store(gi_off + Self.dim + j, go * x)
+                gi_p.store(gi_off + 2 * Self.dim + j, go)
+                j += W
+            var one = Scalar[dtype](1)
+            while j < Self.dim:
+                var go = go_p[go_off + j]
+                var x = c_p[c_off + j]
+                var s = c_p[c_off + Self.dim + j]
+                gi_p[gi_off + j] = go * (one + s)
+                gi_p[gi_off + Self.dim + j] = go * x
+                gi_p[gi_off + 2 * Self.dim + j] = go
+                j += 1
 
     # =========================================================================
     # GPU kernels

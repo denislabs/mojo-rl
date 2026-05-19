@@ -4,6 +4,10 @@ from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.math import exp, log, tanh
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct ReLUOp[dim: Int](DiffOp):
@@ -50,11 +54,23 @@ struct ReLUOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        for b in range(BATCH):
-            for i in range(Self.dim):
-                var val = input[b, i]
-                cache[b, i] = val
-                output[b, i] = val if val > 0 else 0
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var cache_p = cache.ptr
+        var zero_v = SIMD[dtype, W](0)
+        var i = 0
+        while i + W <= N:
+            var v = in_p.load[width=W](i)
+            cache_p.store(i, v)
+            out_p.store(i, v.gt(zero_v).select(v, zero_v))
+            i += W
+        while i < N:
+            var v = in_p[i]
+            cache_p[i] = v
+            out_p[i] = v if v > 0 else 0
+            i += 1
 
     @staticmethod
     def vjp[
@@ -76,9 +92,21 @@ struct ReLUOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        for b in range(BATCH):
-            for i in range(Self.dim):
-                grad_input[b, i] = grad_output[b, i] if cache[b, i] > 0 else 0
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var c_p = cache.ptr
+        var zero_v = SIMD[dtype, W](0)
+        var i = 0
+        while i + W <= N:
+            var c = c_p.load[width=W](i)
+            var g = go_p.load[width=W](i)
+            gi_p.store(i, c.gt(zero_v).select(g, zero_v))
+            i += W
+        while i < N:
+            gi_p[i] = go_p[i] if c_p[i] > 0 else 0
+            i += 1
 
     # =========================================================================
     # GPU kernels
@@ -129,10 +157,7 @@ struct ReLUOp[dim: Int](DiffOp):
         var row = idx // Self.dim
         var col = idx % Self.dim
         grad_input[row, col] = (
-            rebind[Scalar[dtype]](grad_output[row, col]) if rebind[
-                Scalar[dtype]
-            ](cache[row, col])
-            > 0 else 0
+            grad_output[row, col] if cache[row, col] > 0 else 0
         )
 
     # =========================================================================
@@ -231,7 +256,9 @@ struct ReLUOp[dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](
+                grad_input, grad_output, cache
+            )
 
         ctx.enqueue_function[wrapper](
             grad_input,
@@ -286,19 +313,26 @@ struct TanhOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
-        for b in range(BATCH):
-            for i in range(Self.dim):
-                var val_scalar: Scalar[dtype] = rebind[Scalar[dtype]](
-                    input[b, i]
-                )
-                var val = Scalar[dtype](val_scalar)
-                var exp_val = exp(val)
-                var exp_neg_val = exp(-val)
-                var tanh_val = (exp_val - exp_neg_val) / (exp_val + exp_neg_val)
-                var t = Scalar[dtype](tanh_val[0])
-                cache[b, i] = t
-                output[b, i] = t
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var cache_p = cache.ptr
+        var i = 0
+        while i + W <= N:
+            var v = in_p.load[width=W](i)
+            var t = tanh(v)
+            cache_p.store(i, t)
+            out_p.store(i, t)
+            i += W
+        while i < N:
+            var t = tanh(in_p[i])
+            cache_p[i] = t
+            out_p[i] = t
+            i += 1
 
     @staticmethod
     def vjp[
@@ -320,10 +354,22 @@ struct TanhOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        for b in range(BATCH):
-            for i in range(Self.dim):
-                var t = cache[b, i]
-                grad_input[b, i] = grad_output[b, i] * (1 - t * t)
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var c_p = cache.ptr
+        var one_v = SIMD[dtype, W](1)
+        var i = 0
+        while i + W <= N:
+            var t = c_p.load[width=W](i)
+            var g = go_p.load[width=W](i)
+            gi_p.store(i, g * (one_v - t * t))
+            i += W
+        while i < N:
+            var t = c_p[i]
+            gi_p[i] = go_p[i] * (1 - t * t)
+            i += 1
 
     # =========================================================================
     # GPU kernels
@@ -344,7 +390,9 @@ struct TanhOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
@@ -479,7 +527,9 @@ struct TanhOp[dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](
+                grad_input, grad_output, cache
+            )
 
         ctx.enqueue_function[wrapper](
             grad_input,
@@ -534,13 +584,28 @@ struct SigmoidOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
-        for b in range(BATCH):
-            for i in range(Self.dim):
-                var val = rebind[Scalar[dtype]](input[b, i])
-                var sigmoid: Scalar[dtype] = 1.0 / (1.0 + exp(-val))
-                cache[b, i] = sigmoid
-                output[b, i] = sigmoid
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var cache_p = cache.ptr
+        var one_v = SIMD[dtype, W](1)
+        var i = 0
+        while i + W <= N:
+            var v = in_p.load[width=W](i)
+            var s = one_v / (one_v + exp(-v))
+            cache_p.store(i, s)
+            out_p.store(i, s)
+            i += W
+        var one = Scalar[dtype](1)
+        while i < N:
+            var s = one / (one + exp(-in_p[i]))
+            cache_p[i] = s
+            out_p[i] = s
+            i += 1
 
     @staticmethod
     def vjp[
@@ -562,12 +627,23 @@ struct SigmoidOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        var one = Scalar[dtype](1.0)
-        for b in range(BATCH):
-            for i in range(Self.dim):
-                var s = rebind[Scalar[dtype]](cache[b, i])
-                var dy = rebind[Scalar[dtype]](grad_output[b, i])
-                grad_input[b, i] = dy * s * (one - s)
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var c_p = cache.ptr
+        var one_v = SIMD[dtype, W](1)
+        var i = 0
+        while i + W <= N:
+            var s = c_p.load[width=W](i)
+            var dy = go_p.load[width=W](i)
+            gi_p.store(i, dy * s * (one_v - s))
+            i += W
+        var one = Scalar[dtype](1)
+        while i < N:
+            var s = c_p[i]
+            gi_p[i] = go_p[i] * s * (one - s)
+            i += 1
 
     # =========================================================================
     # GPU kernels
@@ -588,7 +664,9 @@ struct SigmoidOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
@@ -728,7 +806,9 @@ struct SigmoidOp[dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](
+                grad_input, grad_output, cache
+            )
 
         ctx.enqueue_function[wrapper](
             grad_input,
@@ -783,21 +863,37 @@ struct MishOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
-        for b in range(BATCH):
-            for i in range(Self.dim):
-                var val = rebind[Scalar[dtype]](input[b, i])
-                cache[b, i] = val
-                var x = Scalar[dtype](val)
-                # Clamp for numerical stability
-                if x > 20.0:
-                    output[b, i] = val  # mish(x) ≈ x
-                elif x < -20.0:
-                    output[b, i] = Scalar[dtype](0.0)
-                else:
-                    var sp = log(1.0 + exp(x))
-                    var t = tanh(sp)
-                    output[b, i] = Scalar[dtype](x * t)
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
+        # IEEE saturation handles the extreme branches: exp(+Inf)→+Inf,
+        # log(1+Inf)→+Inf, tanh(+Inf)→1, x*1=x; exp(-Inf)→0, log(1)→0,
+        # tanh(0)→0, x*0=0. The original branchy code's `x > 20` / `x < -20`
+        # clamps were defensive — natural FP saturation gives the same result.
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var cache_p = cache.ptr
+        var one_v = SIMD[dtype, W](1)
+        var i = 0
+        while i + W <= N:
+            var x = in_p.load[width=W](i)
+            cache_p.store(i, x)
+            var sp = log(one_v + exp(x))
+            out_p.store(i, x * tanh(sp))
+            i += W
+        var one = Scalar[dtype](1)
+        while i < N:
+            var x = in_p[i]
+            cache_p[i] = x
+            if x > 20.0:
+                out_p[i] = x
+            elif x < -20.0:
+                out_p[i] = 0
+            else:
+                out_p[i] = x * tanh(log(one + exp(x)))
+            i += 1
 
     @staticmethod
     def vjp[
@@ -819,23 +915,39 @@ struct MishOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
-        for b in range(BATCH):
-            for i in range(Self.dim):
-                var x = rebind[Scalar[dtype]](cache[b, i])
-                var dy = rebind[Scalar[dtype]](grad_output[b, i])
-                # Clamp for numerical stability
-                if x > 20.0:
-                    grad_input[b, i] = Scalar[dtype](dy)  # dmish ≈ 1
-                elif x < -20.0:
-                    grad_input[b, i] = Scalar[dtype](0.0)
-                else:
-                    var sp = log(1.0 + exp(x))
-                    var t = tanh(sp)
-                    var sig = 1.0 / (1.0 + exp(-x))
-                    # dy/dx = tanh(sp) + x * (1 - tanh(sp)^2) * sigmoid(x)
-                    var deriv = t + x * (1.0 - t * t) * sig
-                    grad_input[b, i] = Scalar[dtype](dy * deriv)
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var c_p = cache.ptr
+        var one_v = SIMD[dtype, W](1)
+        var i = 0
+        while i + W <= N:
+            var x = c_p.load[width=W](i)
+            var dy = go_p.load[width=W](i)
+            var sp = log(one_v + exp(x))
+            var t = tanh(sp)
+            var sig = one_v / (one_v + exp(-x))
+            var deriv = t + x * (one_v - t * t) * sig
+            gi_p.store(i, dy * deriv)
+            i += W
+        var one = Scalar[dtype](1)
+        while i < N:
+            var x = c_p[i]
+            var dy = go_p[i]
+            if x > 20.0:
+                gi_p[i] = dy
+            elif x < -20.0:
+                gi_p[i] = 0
+            else:
+                var sp = log(one + exp(x))
+                var t = tanh(sp)
+                var sig = one / (one + exp(-x))
+                gi_p[i] = dy * (t + x * (one - t * t) * sig)
+            i += 1
 
     # =========================================================================
     # GPU kernels
@@ -856,7 +968,9 @@ struct MishOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
@@ -890,7 +1004,9 @@ struct MishOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
@@ -1008,7 +1124,9 @@ struct MishOp[dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](
+                grad_input, grad_output, cache
+            )
 
         ctx.enqueue_function[wrapper](
             grad_input,
@@ -1065,7 +1183,9 @@ struct SwishOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         for b in range(BATCH):
             for i in range(Self.dim):
                 var val = rebind[Scalar[dtype]](input[b, i])
@@ -1094,7 +1214,9 @@ struct SwishOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         for b in range(BATCH):
             for i in range(Self.dim):
                 var x = rebind[Scalar[dtype]](cache[b, i])
@@ -1122,7 +1244,9 @@ struct SwishOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
@@ -1154,7 +1278,9 @@ struct SwishOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
@@ -1268,7 +1394,9 @@ struct SwishOp[dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](
+                grad_input, grad_output, cache
+            )
 
         ctx.enqueue_function[wrapper](
             grad_input,
@@ -1339,9 +1467,11 @@ struct GELUOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         # Constants kept in Float32 — Metal does not support Float64.
-        var c = Scalar[dtype](Float32(0.7978845608028654))   # sqrt(2/π)
+        var c = Scalar[dtype](Float32(0.7978845608028654))  # sqrt(2/π)
         var a = Scalar[dtype](Float32(0.044715))
         var half = Scalar[dtype](Float32(0.5))
         var one = Scalar[dtype](Float32(1.0))
@@ -1373,7 +1503,9 @@ struct GELUOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var c = Scalar[dtype](Float32(0.7978845608028654))
         var a = Scalar[dtype](Float32(0.044715))
         var half = Scalar[dtype](Float32(0.5))
@@ -1409,7 +1541,9 @@ struct GELUOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
@@ -1440,7 +1574,9 @@ struct GELUOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
@@ -1556,7 +1692,9 @@ struct GELUOp[dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](
+                grad_input, grad_output, cache
+            )
 
         ctx.enqueue_function[wrapper](
             grad_input,

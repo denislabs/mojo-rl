@@ -4,6 +4,10 @@ from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.gpu.primitives import block
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct BiasAdd[dim: Int](DiffOp):
@@ -52,10 +56,22 @@ struct BiasAdd[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        """Forward: output = input + bias."""
+        """Forward: output = input + bias (SIMD over inner dim, broadcast bias)."""
+        comptime W = _CPU_SIMD_W
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var bias_p = params.ptr
         for b in range(BATCH):
-            for i in range(Self.dim):
-                output[b, i] = input[b, i] + params[i]
+            var off = b * Self.dim
+            var j = 0
+            while j + W <= Self.dim:
+                var x = in_p.load[width=W](off + j)
+                var bv = bias_p.load[width=W](j)
+                out_p.store(off + j, x + bv)
+                j += W
+            while j < Self.dim:
+                out_p[off + j] = in_p[off + j] + bias_p[j]
+                j += 1
 
     @staticmethod
     def vjp[
@@ -77,15 +93,35 @@ struct BiasAdd[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Backward: grad_input = grad_out, db += sum(grad_out, axis=0)."""
-        for b in range(BATCH):
-            # grad_input = grad_output (identity for addition)
-            for i in range(Self.dim):
-                grad_input[b, i] = grad_output[b, i]
+        """Backward: grad_input = grad_out (identity), db += sum(grad_out, axis=0)."""
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var gp_p = grad_params.ptr
 
-            # db += sum(grad_output, axis=0) (ACCUMULATE)
-            for i in range(Self.dim):
-                grad_params[i] = grad_params[i] + grad_output[b, i]
+        # Identity copy: grad_input = grad_output (flat SIMD over full tensor)
+        var k = 0
+        while k + W <= N:
+            gi_p.store(k, go_p.load[width=W](k))
+            k += W
+        while k < N:
+            gi_p[k] = go_p[k]
+            k += 1
+
+        # db += sum(grad_output, axis=0): SIMD over inner dim, accumulate per
+        # batch row into the same column-wise db slot.
+        for b in range(BATCH):
+            var off = b * Self.dim
+            var j = 0
+            while j + W <= Self.dim:
+                gp_p.store(
+                    j, gp_p.load[width=W](j) + go_p.load[width=W](off + j)
+                )
+                j += W
+            while j < Self.dim:
+                gp_p[j] = gp_p[j] + go_p[off + j]
+                j += 1
 
     # =========================================================================
     # GPU kernel implementations

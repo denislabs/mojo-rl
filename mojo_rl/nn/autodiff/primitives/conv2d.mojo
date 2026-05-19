@@ -23,6 +23,7 @@ from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from std.gpu.compute.mma import mma
 from linalg.matmul import matmul as max_matmul
 from layout.tile_tensor import lt_to_tt
+from std.memory import alloc
 
 
 struct Conv2D[
@@ -141,23 +142,60 @@ struct Conv2D[
 
             # output[b] = W @ col + bias
             # W: (out_channels, col_size), col: (col_size, spatial_out)
-            for oc in range(Self.out_channels):
-                for s in range(Self.spatial_out):
-                    var acc: Scalar[dtype] = 0
-                    for k in range(Self.col_size):
-                        var w_val = rebind[Scalar[dtype]](
-                            params[oc * Self.col_size + k]
-                        )
-                        var c_val = rebind[Scalar[dtype]](
-                            cache[b, s * Self.col_size + k]
-                        )
-                        acc += w_val * c_val
-                    # Add bias
+            # cache[b, :] stores col.T as (spatial_out, col_size) row-major.
+            comptime if Self.USE_MAX_KERNELS:
+                # 2D views over the per-batch slices.
+                var output_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, Self.spatial_out),
+                    MutAnyOrigin,
+                ](output.ptr + b * Self.OUT_DIM)
+                var cache_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.spatial_out, Self.col_size),
+                    MutAnyOrigin,
+                ](cache.ptr + b * Self.CACHE_SIZE)
+                var W_mat = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, Self.col_size),
+                    MutAnyOrigin,
+                ](params.ptr)
+                # output_b = W @ col = W @ cache_b.T
+                # `max_matmul` is `raises`; trait `def eval` is not — contain.
+                try:
+                    max_matmul[transpose_b=True, target="cpu"](
+                        lt_to_tt(output_b),
+                        lt_to_tt(W_mat),
+                        lt_to_tt(cache_b),
+                        None,
+                    )
+                except e:
+                    pass
+                # Add bias elementwise per output channel.
+                for oc in range(Self.out_channels):
                     var bias_val = rebind[Scalar[dtype]](
                         params[Self.out_channels * Self.col_size + oc]
                     )
-                    acc += bias_val
-                    output[b, oc * Self.spatial_out + s] = acc
+                    for s in range(Self.spatial_out):
+                        output_b[oc, s] = output_b[oc, s] + bias_val
+            else:
+                for oc in range(Self.out_channels):
+                    for s in range(Self.spatial_out):
+                        var acc: Scalar[dtype] = 0
+                        for k in range(Self.col_size):
+                            var w_val = rebind[Scalar[dtype]](
+                                params[oc * Self.col_size + k]
+                            )
+                            var c_val = rebind[Scalar[dtype]](
+                                cache[b, s * Self.col_size + k]
+                            )
+                            acc += w_val * c_val
+                        # Add bias
+                        var bias_val = rebind[Scalar[dtype]](
+                            params[Self.out_channels * Self.col_size + oc]
+                        )
+                        acc += bias_val
+                        output[b, oc * Self.spatial_out + s] = acc
 
     @staticmethod
     def vjp[
@@ -182,80 +220,219 @@ struct Conv2D[
         """Backward: compute dW, db, and grad_input via col2im."""
         comptime W_SIZE = Self.out_channels * Self.col_size
 
-        for b in range(BATCH):
-            # 1. dW += grad_output_reshaped @ col.T
+        comptime if Self.USE_MAX_KERNELS:
+            # Scratch allocations (reused across the batch loop):
+            #   dW_tmp   (out_C, col_size)        — output of go @ cache_b
+            #   W_T      (col_size, out_C)        — transposed W (no transpose_a)
+            #   dcol     (col_size, spatial_out)  — output of W_T @ go
+            var dW_tmp_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](Self.out_channels * Self.col_size)
+            var W_T_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](Self.col_size * Self.out_channels)
+            var dcol_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](Self.col_size * Self.spatial_out)
+            var dW_tmp = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.out_channels, Self.col_size),
+                MutAnyOrigin,
+            ](dW_tmp_buf)
+            var W_T = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.col_size, Self.out_channels),
+                MutAnyOrigin,
+            ](W_T_buf)
+            var dcol = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.col_size, Self.spatial_out),
+                MutAnyOrigin,
+            ](dcol_buf)
+
+            # Physically transpose W (out_C, col_size) → W_T (col_size, out_C)
+            # once; reused for every batch in this vjp call.
             for oc in range(Self.out_channels):
                 for k in range(Self.col_size):
+                    W_T[k, oc] = rebind[Scalar[dtype]](
+                        params[oc * Self.col_size + k]
+                    )
+
+            for b in range(BATCH):
+                var go_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, Self.spatial_out),
+                    MutAnyOrigin,
+                ](grad_output.ptr + b * Self.OUT_DIM)
+                var cache_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.spatial_out, Self.col_size),
+                    MutAnyOrigin,
+                ](cache.ptr + b * Self.CACHE_SIZE)
+
+                try:
+                    # 1) dW_tmp = grad_output_2d @ cache_b  (cache_b = col.T)
+                    #    dW[oc, k] = sum_s go[oc, s] * col[k, s]
+                    #             = sum_s go[oc, s] * cache_b[s, k]
+                    max_matmul[target="cpu"](
+                        lt_to_tt(dW_tmp),
+                        lt_to_tt(go_b),
+                        lt_to_tt(cache_b),
+                        None,
+                    )
+                    # 3) dcol = W.T @ grad_output_2d = W_T @ go_b
+                    max_matmul[target="cpu"](
+                        lt_to_tt(dcol),
+                        lt_to_tt(W_T),
+                        lt_to_tt(go_b),
+                        None,
+                    )
+                except e:
+                    pass
+
+                # 1) dW += dW_tmp (accumulate across batch + multi-call BPTT)
+                for oc in range(Self.out_channels):
+                    for k in range(Self.col_size):
+                        var cur = rebind[Scalar[dtype]](
+                            grad_params[oc * Self.col_size + k]
+                        )
+                        grad_params[oc * Self.col_size + k] = cur + dW_tmp[
+                            oc, k
+                        ]
+
+                # 2) db += sum(grad_output, axis=spatial)
+                for oc in range(Self.out_channels):
                     var acc: Scalar[dtype] = 0
                     for s in range(Self.spatial_out):
-                        var go_val = rebind[Scalar[dtype]](
+                        acc += rebind[Scalar[dtype]](go_b[oc, s])
+                    var cur = rebind[Scalar[dtype]](grad_params[W_SIZE + oc])
+                    grad_params[W_SIZE + oc] = cur + acc
+
+                # 3) col2im scatter: grad_input[b, :] = col2im(dcol)
+                for i in range(Self.IN_DIM):
+                    grad_input[b, i] = 0
+                for oh in range(Self.out_h):
+                    for ow in range(Self.out_w):
+                        var s = oh * Self.out_w + ow
+                        for c in range(Self.in_channels):
+                            for kh in range(Self.kernel_size):
+                                for kw in range(Self.kernel_size):
+                                    var ih = (
+                                        oh * Self.stride - Self.padding + kh
+                                    )
+                                    var iw = (
+                                        ow * Self.stride - Self.padding + kw
+                                    )
+                                    if (
+                                        ih >= 0
+                                        and ih < Self.in_h
+                                        and iw >= 0
+                                        and iw < Self.in_w
+                                    ):
+                                        var in_idx = (
+                                            c * Self.in_h * Self.in_w
+                                            + ih * Self.in_w
+                                            + iw
+                                        )
+                                        var c_k = (
+                                            c
+                                            * Self.kernel_size
+                                            * Self.kernel_size
+                                            + kh * Self.kernel_size
+                                            + kw
+                                        )
+                                        var cur = rebind[Scalar[dtype]](
+                                            grad_input[b, in_idx]
+                                        )
+                                        grad_input[b, in_idx] = cur + rebind[
+                                            Scalar[dtype]
+                                        ](dcol[c_k, s])
+
+            dW_tmp_buf.free()
+            W_T_buf.free()
+            dcol_buf.free()
+        else:
+            for b in range(BATCH):
+                # 1. dW += grad_output_reshaped @ col.T
+                for oc in range(Self.out_channels):
+                    for k in range(Self.col_size):
+                        var acc: Scalar[dtype] = 0
+                        for s in range(Self.spatial_out):
+                            var go_val = rebind[Scalar[dtype]](
+                                grad_output[b, oc * Self.spatial_out + s]
+                            )
+                            var col_val = rebind[Scalar[dtype]](
+                                cache[b, s * Self.col_size + k]
+                            )
+                            acc += go_val * col_val
+                        var cur = rebind[Scalar[dtype]](
+                            grad_params[oc * Self.col_size + k]
+                        )
+                        grad_params[oc * Self.col_size + k] = cur + acc
+
+                # 2. db += sum(grad_output, over spatial dims)
+                for oc in range(Self.out_channels):
+                    var acc: Scalar[dtype] = 0
+                    for s in range(Self.spatial_out):
+                        acc += rebind[Scalar[dtype]](
                             grad_output[b, oc * Self.spatial_out + s]
                         )
-                        var col_val = rebind[Scalar[dtype]](
-                            cache[b, s * Self.col_size + k]
-                        )
-                        acc += go_val * col_val
-                    var cur = rebind[Scalar[dtype]](
-                        grad_params[oc * Self.col_size + k]
-                    )
-                    grad_params[oc * Self.col_size + k] = cur + acc
+                    var cur = rebind[Scalar[dtype]](grad_params[W_SIZE + oc])
+                    grad_params[W_SIZE + oc] = cur + acc
 
-            # 2. db += sum(grad_output, over spatial dims)
-            for oc in range(Self.out_channels):
-                var acc: Scalar[dtype] = 0
-                for s in range(Self.spatial_out):
-                    acc += rebind[Scalar[dtype]](
-                        grad_output[b, oc * Self.spatial_out + s]
-                    )
-                var cur = rebind[Scalar[dtype]](grad_params[W_SIZE + oc])
-                grad_params[W_SIZE + oc] = cur + acc
+                # 3. grad_input via col2im of W.T @ grad_output
+                # Zero grad_input for this batch first
+                for i in range(Self.IN_DIM):
+                    grad_input[b, i] = 0
 
-            # 3. grad_input via col2im of W.T @ grad_output
-            # Zero grad_input for this batch first
-            for i in range(Self.IN_DIM):
-                grad_input[b, i] = 0
-
-            # For each output position, scatter gradient back through kernel
-            for oh in range(Self.out_h):
-                for ow in range(Self.out_w):
-                    var s = oh * Self.out_w + ow
-                    for c in range(Self.in_channels):
-                        for kh in range(Self.kernel_size):
-                            for kw in range(Self.kernel_size):
-                                var ih = oh * Self.stride - Self.padding + kh
-                                var iw = ow * Self.stride - Self.padding + kw
-                                if (
-                                    ih >= 0
-                                    and ih < Self.in_h
-                                    and iw >= 0
-                                    and iw < Self.in_w
-                                ):
-                                    var in_idx = (
-                                        c * Self.in_h * Self.in_w
-                                        + ih * Self.in_w
-                                        + iw
+                # For each output position, scatter gradient back through kernel
+                for oh in range(Self.out_h):
+                    for ow in range(Self.out_w):
+                        var s = oh * Self.out_w + ow
+                        for c in range(Self.in_channels):
+                            for kh in range(Self.kernel_size):
+                                for kw in range(Self.kernel_size):
+                                    var ih = (
+                                        oh * Self.stride - Self.padding + kh
                                     )
-                                    var c_k = (
-                                        c * Self.kernel_size * Self.kernel_size
-                                        + kh * Self.kernel_size
-                                        + kw
+                                    var iw = (
+                                        ow * Self.stride - Self.padding + kw
                                     )
-                                    # dcol[c_k, s] = sum_oc(W[oc, c_k] * grad_output[b, oc*spatial_out + s])
-                                    var dcol_val: Scalar[dtype] = 0
-                                    for oc in range(Self.out_channels):
-                                        var w_val = rebind[Scalar[dtype]](
-                                            params[oc * Self.col_size + c_k]
+                                    if (
+                                        ih >= 0
+                                        and ih < Self.in_h
+                                        and iw >= 0
+                                        and iw < Self.in_w
+                                    ):
+                                        var in_idx = (
+                                            c * Self.in_h * Self.in_w
+                                            + ih * Self.in_w
+                                            + iw
                                         )
-                                        var go_val = rebind[Scalar[dtype]](
-                                            grad_output[
-                                                b, oc * Self.spatial_out + s
-                                            ]
+                                        var c_k = (
+                                            c
+                                            * Self.kernel_size
+                                            * Self.kernel_size
+                                            + kh * Self.kernel_size
+                                            + kw
                                         )
-                                        dcol_val += w_val * go_val
-                                    var cur = rebind[Scalar[dtype]](
-                                        grad_input[b, in_idx]
-                                    )
-                                    grad_input[b, in_idx] = cur + dcol_val
+                                        # dcol[c_k, s] = sum_oc(W[oc, c_k] * grad_output[b, oc*spatial_out + s])
+                                        var dcol_val: Scalar[dtype] = 0
+                                        for oc in range(Self.out_channels):
+                                            var w_val = rebind[Scalar[dtype]](
+                                                params[oc * Self.col_size + c_k]
+                                            )
+                                            var go_val = rebind[Scalar[dtype]](
+                                                grad_output[
+                                                    b,
+                                                    oc * Self.spatial_out + s,
+                                                ]
+                                            )
+                                            dcol_val += w_val * go_val
+                                        var cur = rebind[Scalar[dtype]](
+                                            grad_input[b, in_idx]
+                                        )
+                                        grad_input[b, in_idx] = cur + dcol_val
 
     # =========================================================================
     # GPU kernels — naive (kept for backward_dx which has sufficient parallelism)
