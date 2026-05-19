@@ -47,6 +47,7 @@ struct CountVisitor(ParamVisitor):
         param: TileTensor[DT, L, OP],
         grad: TileTensor[DT, L, OG],
         n_elems: Int,
+        apply_decay: Bool,
     ) raises:
         self.names.append(name)
         self.sizes.append(n_elems)

@@ -34,7 +34,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import TileTensor, TensorLayout, row_major
 
 from ..constants import DT
-from ..core import Module, Optimizer, Loss, Initializer
+from ..core import Module, Optimizer, Loss, Initializer, AMPPolicy, NoAMP
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -66,6 +66,7 @@ struct Trainer[
     LOSS: Loss,
     BATCH: Int,
     target: StaticString = "cpu",
+    POLICY: AMPPolicy = NoAMP,
 ](Movable & ImplicitlyDestructible):
     comptime IN_DIM = Self.NET.IN_DIM
     comptime OUT_DIM = Self.NET.OUT_DIM
@@ -265,12 +266,18 @@ struct Trainer[
                 self.grad_in_buf, row_major[Self.BATCH, Self.IN_DIM]()
             )
             self.optim.zero_grad[Self.target](self.net)
-            self.net.forward[Self.target, Self.BATCH](input, output)
-            var L = self.loss_fn.forward[Self.target, Self.BATCH](
-                output, targets
+            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                input, output
             )
-            self.loss_fn.backward[Self.target, Self.BATCH](targets, grad_out)
-            self.net.backward[Self.target, Self.BATCH](grad_out, grad_in)
+            var L = self.loss_fn.forward[
+                Self.target, Self.BATCH, POLICY=Self.POLICY
+            ](output, targets)
+            self.loss_fn.backward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                targets, grad_out
+            )
+            self.net.backward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                grad_out, grad_in
+            )
             self.optim.step[Self.target](self.net)
             return L
         else:
@@ -294,12 +301,18 @@ struct Trainer[
                 gi_ptr, row_major[Self.BATCH, Self.IN_DIM]()
             )
             self.optim.zero_grad[Self.target](self.net)
-            self.net.forward[Self.target, Self.BATCH](input, output)
-            var L = self.loss_fn.forward[Self.target, Self.BATCH](
-                output, targets
+            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                input, output
             )
-            self.loss_fn.backward[Self.target, Self.BATCH](targets, grad_out)
-            self.net.backward[Self.target, Self.BATCH](grad_out, grad_in)
+            var L = self.loss_fn.forward[
+                Self.target, Self.BATCH, POLICY=Self.POLICY
+            ](output, targets)
+            self.loss_fn.backward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                targets, grad_out
+            )
+            self.net.backward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                grad_out, grad_in
+            )
             self.optim.step[Self.target](self.net)
             return L
 
@@ -363,7 +376,9 @@ struct Trainer[
             var output = TileTensor(
                 self.output_buf, row_major[Self.BATCH, Self.OUT_DIM]()
             )
-            self.net.forward[Self.target, Self.BATCH](input, output)
+            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                input, output
+            )
             for k in range(Self.BATCH * Self.OUT_DIM):
                 output_host_ptr[k] = self.output_buf[k]
         else:
@@ -383,7 +398,9 @@ struct Trainer[
             var output = TileTensor(
                 out_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
             )
-            self.net.forward[Self.target, Self.BATCH](input, output)
+            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                input, output
+            )
             ctx.enqueue_copy(out_host_buf, self.output_dev.value())
             ctx.synchronize()
             for k in range(Self.BATCH * Self.OUT_DIM):
@@ -557,7 +574,9 @@ struct Trainer[
                 self.output_dev.value().unsafe_ptr(),
                 row_major[Self.BATCH, Self.OUT_DIM](),
             )
-            self.net.forward[Self.target, Self.BATCH](input, output)
+            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                input, output
+            )
             ctx.enqueue_copy(out_host, self.output_dev.value())
             ctx.synchronize()
             for k in range(Self.BATCH):

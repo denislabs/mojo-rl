@@ -5,6 +5,8 @@ from .module import Module
 from .optimizer import Optimizer
 from .loss import Loss
 from .initializer import Initializer
+from .amp import AMPPolicy, NoAMP, Bf16Compute
+from .named_params import NamedParam, named_params
 from .target_tag import (
     TARGET_UNINIT, TARGET_CPU, TARGET_GPU, target_tag_for,
 )

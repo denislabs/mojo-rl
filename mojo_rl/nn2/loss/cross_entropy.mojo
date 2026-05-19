@@ -11,7 +11,8 @@ from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
 
 from ..constants import DT
 from ..core import (
-    Loss, TARGET_UNINIT, TARGET_CPU, TARGET_GPU, target_tag_for,
+    Loss, AMPPolicy, NoAMP,
+    TARGET_UNINIT, TARGET_CPU, TARGET_GPU, target_tag_for,
 )
 
 
@@ -149,11 +150,15 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
         LT: TensorLayout,
         OL: MutOrigin,
         OT: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         logits: TileTensor[DT, LL, OL],
         targets: TileTensor[DT, LT, OT],
     ) raises -> Scalar[DT]:
+        # CrossEntropy is `force_fp32_input=True` per the AMP doc — softmax
+        # + log/exp need fp32 dynamic range. POLICY is accepted for trait
+        # conformance but ignored.
         comptime assert logits.flat_rank  == 2, "logits must be rank-2"
         comptime assert targets.flat_rank == 2, "targets must be rank-2"
         self._assert_tag[target]()
@@ -208,6 +213,7 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
         LG: TensorLayout,
         OT: MutOrigin,
         OG: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         targets: TileTensor[DT, LT, OT],

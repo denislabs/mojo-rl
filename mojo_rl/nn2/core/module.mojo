@@ -22,6 +22,7 @@ from layout import TileTensor, TensorLayout
 from ..constants import DT
 from .param_visitor import ParamVisitor
 from .initializer import Initializer
+from .amp import AMPPolicy, NoAMP
 
 
 trait Module(Defaultable & Movable & ImplicitlyDestructible):
@@ -43,6 +44,7 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         LOUT: TensorLayout,
         OIN: MutOrigin,
         OOUT: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         input: TileTensor[DT, LIN, OIN],
@@ -57,6 +59,7 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         LGI: TensorLayout,
         OGO: MutOrigin,
         OGI: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         grad_output: TileTensor[DT, LGO, OGO],
@@ -72,4 +75,18 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         prefix: String,
         mut visitor: V,
     ) raises:
+        ...
+
+    def set_inference(mut self, value: Bool):
+        """Set inference mode on this module and recurse into children.
+
+        When `value=True`, forward should skip side effects that are
+        training-only — dropout sampling, BatchNorm running-stats
+        updates, NoisyLinear noise injection, etc. Current leaves
+        (Linear, ReLU, Tanh, LayerNorm, StopGrad) just store the flag
+        for downstream layers that need it.
+
+        Combinators (Sequential, Residual, Parallel, ...) propagate
+        the flag to every child.
+        """
         ...

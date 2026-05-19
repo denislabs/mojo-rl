@@ -8,6 +8,7 @@ from std.gpu.host import DeviceContext
 from layout import TileTensor, TensorLayout
 
 from ..constants import DT
+from .amp import AMPPolicy, NoAMP
 
 
 trait Loss(Defaultable & Movable & ImplicitlyDestructible):
@@ -28,6 +29,7 @@ trait Loss(Defaultable & Movable & ImplicitlyDestructible):
         LT: TensorLayout,
         OL: MutOrigin,
         OT: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         logits: TileTensor[DT, LL, OL],
@@ -42,6 +44,7 @@ trait Loss(Defaultable & Movable & ImplicitlyDestructible):
         LG: TensorLayout,
         OT: MutOrigin,
         OG: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         targets: TileTensor[DT, LT, OT],

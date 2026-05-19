@@ -1,11 +1,15 @@
-"""ReLU[DIM] — element-wise rectified linear unit. Phase 2.4: target is
-a comptime method param.
+"""Tanh[DIM] — element-wise hyperbolic tangent. Phase 5.1.
 
-Parameterless. Caches input on forward, masks grad by sign(cache) on
-backward. At x == 0 the gradient is 0 (matches PyTorch).
+Same shape as ReLU. Cache stores the **output** (y = tanh(x)) rather
+than the input, since the backward derivative is `1 - y^2` — saves a
+re-evaluation of tanh on backward.
+
+Like ReLU, Tanh is parameterless and ignores POLICY (element-wise op,
+runs in DT — bf16 tanh is mantissa-ugly and saves nothing in practice).
 """
 
-from std.gpu import global_idx, thread_idx
+from std.math import tanh
+from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
 
@@ -28,7 +32,7 @@ from ..core import (
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def _relu_forward_kernel[
+def _tanh_forward_kernel[
     BATCH: Int,
     DIM: Int,
 ](
@@ -42,12 +46,12 @@ def _relu_forward_kernel[
         var b = idx // DIM
         var d = idx % DIM
         var x = rebind[Scalar[DT]](input[b, d])
-        cache[b, d] = x
-        var zero: Scalar[DT] = 0.0
-        output[b, d] = x if x > zero else zero
+        var y = tanh(x)
+        output[b, d] = y
+        cache[b, d] = y
 
 
-def _relu_backward_kernel[
+def _tanh_backward_kernel[
     BATCH: Int,
     DIM: Int,
 ](
@@ -60,17 +64,18 @@ def _relu_backward_kernel[
     if idx < total:
         var b = idx // DIM
         var d = idx % DIM
-        var zero: Scalar[DT] = 0.0
-        var cached = rebind[Scalar[DT]](cache[b, d])
-        grad_input[b, d] = grad_output[b, d] if cached > zero else zero
+        var y = rebind[Scalar[DT]](cache[b, d])
+        var go = rebind[Scalar[DT]](grad_output[b, d])
+        var one: Scalar[DT] = 1.0
+        grad_input[b, d] = go * (one - y * y)
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# ReLU — method-level target.
+# Tanh — method-level target.
 # ──────────────────────────────────────────────────────────────────────────
 
 
-struct ReLU[DIM: Int](Module):
+struct Tanh[DIM: Int](Module):
     comptime IN_DIM = Self.DIM
     comptime OUT_DIM = Self.DIM
 
@@ -91,14 +96,13 @@ struct ReLU[DIM: Int](Module):
 
     @staticmethod
     def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        """CPU factory. INIT is ignored (ReLU is parameterless) but accepted
-        for uniformity so Sequential.make[target, INIT] can recurse."""
+        """CPU factory. INIT ignored (Tanh is parameterless)."""
         comptime assert (
             target == "cpu"
-        ), "ReLU.make[target='gpu', INIT] requires a DeviceContext"
-        var r = Self()
-        r._target_tag = TARGET_CPU
-        return r^
+        ), "Tanh.make[target='gpu', INIT] requires a DeviceContext"
+        var t = Self()
+        t._target_tag = TARGET_CPU
+        return t^
 
     @staticmethod
     def make[
@@ -107,19 +111,19 @@ struct ReLU[DIM: Int](Module):
         """GPU factory."""
         comptime assert (
             target == "gpu"
-        ), "ReLU.make[target='cpu', INIT](ctx) — drop ctx for CPU"
-        var r = Self()
-        r.cache_dev = ctx.enqueue_create_buffer[DT](1)
-        r.cache_dev_n = 0
-        r.ctx = ctx
-        r._target_tag = TARGET_GPU
-        return r^
+        ), "Tanh.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+        var t = Self()
+        t.cache_dev = ctx.enqueue_create_buffer[DT](1)
+        t.cache_dev_n = 0
+        t.ctx = ctx
+        t._target_tag = TARGET_GPU
+        return t^
 
     def _assert_tag[target: StaticString](self) raises:
         comptime expected = target_tag_for[target]()
         if self._target_tag != expected:
             raise Error(
-                "ReLU: method called with [target='"
+                "Tanh: method called with [target='"
                 + String(target)
                 + "'] but module was make'd for a different target "
                 + "(tag="
@@ -150,9 +154,6 @@ struct ReLU[DIM: Int](Module):
         input: TileTensor[DT, LIN, OIN],
         mut output: TileTensor[DT, LOUT, OOUT],
     ) raises:
-        # ReLU is element-wise; POLICY is accepted for trait conformance
-        # but the implementation stays in DT (fp32). AMPPolicy never
-        # downgrades element-wise ops.
         comptime assert (
             input.flat_rank == 2
         ), "input must be rank-2 [BATCH, DIM]"
@@ -164,12 +165,11 @@ struct ReLU[DIM: Int](Module):
         comptime if target == "cpu":
             self._ensure_cache_cpu(BATCH)
             var cache = TileTensor(self.cache, row_major[BATCH, Self.DIM]())
-            var zero: Scalar[DT] = 0.0
             for b in range(BATCH):
                 for d in range(Self.DIM):
-                    var x = input[b, d]
-                    cache[b, d] = x
-                    output[b, d] = x if x > zero else zero
+                    var y = tanh(input[b, d])
+                    output[b, d] = y
+                    cache[b, d] = y
         else:
             self._ensure_cache_gpu(BATCH * Self.DIM)
             comptime layout = Layout.row_major(BATCH, Self.DIM)
@@ -182,7 +182,7 @@ struct ReLU[DIM: Int](Module):
             )
             comptime TPB = 128
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
-            comptime kernel = _relu_forward_kernel[BATCH, Self.DIM]
+            comptime kernel = _tanh_forward_kernel[BATCH, Self.DIM]
             self.ctx.value().enqueue_function[kernel](
                 input_lt,
                 output_lt,
@@ -210,12 +210,11 @@ struct ReLU[DIM: Int](Module):
 
         comptime if target == "cpu":
             var cache = TileTensor(self.cache, row_major[BATCH, Self.DIM]())
-            var zero: Scalar[DT] = 0.0
+            var one: Scalar[DT] = 1.0
             for b in range(BATCH):
                 for d in range(Self.DIM):
-                    grad_input[b, d] = (
-                        grad_output[b, d] if cache[b, d] > zero else zero
-                    )
+                    var y = cache[b, d]
+                    grad_input[b, d] = grad_output[b, d] * (one - y * y)
         else:
             comptime layout = Layout.row_major(BATCH, Self.DIM)
             var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
@@ -233,7 +232,7 @@ struct ReLU[DIM: Int](Module):
             )
             comptime TPB = 128
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
-            comptime kernel = _relu_backward_kernel[BATCH, Self.DIM]
+            comptime kernel = _tanh_backward_kernel[BATCH, Self.DIM]
             self.ctx.value().enqueue_function[kernel](
                 go_lt,
                 cache_lt,
@@ -247,10 +246,10 @@ struct ReLU[DIM: Int](Module):
         V: ParamVisitor,
     ](mut self, prefix: String, mut visitor: V,) raises:
         self._assert_tag[target]()
-        # ReLU has no parameters — nothing to visit.
+        # Tanh has no parameters — nothing to visit.
         pass
 
     def set_inference(mut self, value: Bool):
-        # ReLU forward is deterministic — flag stored for trait
+        # Tanh forward is deterministic — flag stored for trait
         # conformance but has no behavioral effect.
         self._inference = value
