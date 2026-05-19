@@ -23,11 +23,13 @@ struct CountVisitor(ParamVisitor):
     def __init__(out self):
         self.visits = 0
 
-    def visit[L: TensorLayout](
+    def visit[
+        L: TensorLayout, OP: MutOrigin, OG: MutOrigin,
+    ](
         mut self,
         name: String,
-        param: TileTensor[DT, L, MutAnyOrigin],
-        grad: TileTensor[DT, L, MutAnyOrigin],
+        param: TileTensor[DT, L, OP],
+        grad: TileTensor[DT, L, OG],
         n_elems: Int,
     ) raises:
         self.visits += 1

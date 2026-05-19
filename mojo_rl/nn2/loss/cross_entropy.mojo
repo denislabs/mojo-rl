@@ -29,21 +29,21 @@ def _ce_forward_kernel[
 ):
     var b = Int(global_idx.x)
     if b < BATCH:
-        var m = logits.ptr[b * N_CLASSES + 0]
+        var m = rebind[Scalar[DT]](logits[b, 0])
         for c in range(1, N_CLASSES):
-            var v = logits.ptr[b * N_CLASSES + c]
+            var v = rebind[Scalar[DT]](logits[b, c])
             if v > m:
                 m = v
         var sum_exp: Scalar[DT] = 0.0
         for c in range(N_CLASSES):
-            sum_exp += exp(logits.ptr[b * N_CLASSES + c] - m)
+            sum_exp += exp(rebind[Scalar[DT]](logits[b, c]) - m)
         var lse = m + log(sum_exp)
         var sample_loss: Scalar[DT] = 0.0
         for c in range(N_CLASSES):
-            var x = logits.ptr[b * N_CLASSES + c]
-            softmax.ptr[b * N_CLASSES + c] = exp(x - lse)
-            sample_loss += -targets.ptr[b * N_CLASSES + c] * (x - lse)
-        partial_loss.ptr[b] = sample_loss
+            var x = rebind[Scalar[DT]](logits[b, c])
+            softmax[b, c] = exp(x - lse)
+            sample_loss += -rebind[Scalar[DT]](targets[b, c]) * (x - lse)
+        partial_loss[b] = sample_loss
 
 
 def _ce_backward_kernel[
@@ -56,10 +56,12 @@ def _ce_backward_kernel[
     var idx = Int(global_idx.x)
     var total = BATCH * N_CLASSES
     if idx < total:
+        var b = idx // N_CLASSES
+        var c = idx % N_CLASSES
         var inv_batch: Scalar[DT] = 1.0 / Scalar[DT](BATCH)
-        grad_logits.ptr[idx] = (
-            softmax.ptr[idx] - targets.ptr[idx]
-        ) * inv_batch
+        var sm = rebind[Scalar[DT]](softmax[b, c])
+        var tg = rebind[Scalar[DT]](targets[b, c])
+        grad_logits[b, c] = (sm - tg) * inv_batch
 
 
 # ──────────────────────────────────────────────────────────────────────────

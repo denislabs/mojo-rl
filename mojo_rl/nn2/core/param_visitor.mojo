@@ -1,9 +1,10 @@
 """ParamVisitor trait — invoked once per parameter during a tree walk.
 
-`visit` is parametric over the TileTensor's layout so that 2D weights
-and 1D biases dispatch through one trait method. The TileTensor is
-passed by value (it's a thin pointer + layout view) — mutations through
-`param.ptr[i] = ...` go to the owner's storage.
+`visit` is parametric over the TileTensor's layout AND its mutable
+origins so that callers can hand in `TileTensor(buf, layout)` views
+built directly from a DeviceBuffer (narrow origin) without an explicit
+`MutAnyOrigin` widening. Impls that need `MutAnyOrigin` (e.g. to feed a
+GPU kernel) rebind once at the top of the visit body.
 
 `n_elems` is passed explicitly. Production version may recover this
 from `param.runtime_layout` (or similar TileTensor instance API) once
@@ -17,11 +18,15 @@ from ..constants import DT
 
 
 trait ParamVisitor(ImplicitlyDestructible):
-    def visit[L: TensorLayout](
+    def visit[
+        L: TensorLayout,
+        OP: MutOrigin,
+        OG: MutOrigin,
+    ](
         mut self,
         name: String,
-        param: TileTensor[DT, L, MutAnyOrigin],
-        grad: TileTensor[DT, L, MutAnyOrigin],
+        param: TileTensor[DT, L, OP],
+        grad: TileTensor[DT, L, OG],
         n_elems: Int,
     ) raises:
         ...

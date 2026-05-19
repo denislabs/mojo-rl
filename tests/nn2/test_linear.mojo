@@ -39,11 +39,13 @@ struct CountVisitor(ParamVisitor):
         self.names = List[String]()
         self.sizes = List[Int]()
 
-    def visit[L: TensorLayout](
+    def visit[
+        L: TensorLayout, OP: MutOrigin, OG: MutOrigin,
+    ](
         mut self,
         name: String,
-        param: TileTensor[DT, L, MutAnyOrigin],
-        grad: TileTensor[DT, L, MutAnyOrigin],
+        param: TileTensor[DT, L, OP],
+        grad: TileTensor[DT, L, OG],
         n_elems: Int,
     ) raises:
         self.names.append(name)

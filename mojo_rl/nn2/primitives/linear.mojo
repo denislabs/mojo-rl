@@ -27,8 +27,13 @@ from linalg.matmul import matmul as max_matmul
 
 from ..constants import DT
 from ..core import (
-    Module, ParamVisitor, Initializer,
-    TARGET_UNINIT, TARGET_CPU, TARGET_GPU, target_tag_for,
+    Module,
+    ParamVisitor,
+    Initializer,
+    TARGET_UNINIT,
+    TARGET_CPU,
+    TARGET_GPU,
+    target_tag_for,
 )
 
 
@@ -36,8 +41,25 @@ from ..core import (
 # GPU kernels — module-level so enqueue_function can bind them.
 # ──────────────────────────────────────────────────────────────────────────
 
+
+def _cache_input_kernel[
+    BATCH: Int,
+    IN: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin],
+    cache: LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    var total = BATCH * IN
+    if idx < total:
+        var b = idx // IN
+        var i = idx % IN
+        cache[b, i] = rebind[Scalar[DT]](input[b, i])
+
+
 def _bias_add_kernel[
-    BATCH: Int, OUT: Int,
+    BATCH: Int,
+    OUT: Int,
 ](
     output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
     bias: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
@@ -45,13 +67,15 @@ def _bias_add_kernel[
     var idx = Int(global_idx.x)
     var total = BATCH * OUT
     if idx < total:
-        var col = idx % OUT
-        var b_val = rebind[Scalar[DT]](bias[col])
-        output.ptr[idx] = output.ptr[idx] + b_val
+        var b = idx // OUT
+        var j = idx % OUT
+        output[b, j] = rebind[Scalar[DT]](output[b, j]) + rebind[Scalar[DT]](bias[j])
 
 
 def _grad_w_accum_kernel[
-    BATCH: Int, IN: Int, OUT: Int,
+    BATCH: Int,
+    IN: Int,
+    OUT: Int,
 ](
     cache: LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin],
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
@@ -64,12 +88,13 @@ def _grad_w_accum_kernel[
         var j = idx % OUT
         var s: Scalar[DT] = 0.0
         for b in range(BATCH):
-            s += cache.ptr[b * IN + i] * grad_output.ptr[b * OUT + j]
-        grad_w.ptr[i * OUT + j] = grad_w.ptr[i * OUT + j] + s
+            s += rebind[Scalar[DT]](cache[b, i]) * rebind[Scalar[DT]](grad_output[b, j])
+        grad_w[i, j] = rebind[Scalar[DT]](grad_w[i, j]) + s
 
 
 def _grad_bias_kernel[
-    BATCH: Int, OUT: Int,
+    BATCH: Int,
+    OUT: Int,
 ](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
     grad_bias: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
@@ -78,13 +103,14 @@ def _grad_bias_kernel[
     if j < OUT:
         var s: Scalar[DT] = 0.0
         for b in range(BATCH):
-            s += grad_output.ptr[b * OUT + j]
-        grad_bias.ptr[j] = grad_bias.ptr[j] + s
+            s += rebind[Scalar[DT]](grad_output[b, j])
+        grad_bias[j] = rebind[Scalar[DT]](grad_bias[j]) + s
 
 
 # ──────────────────────────────────────────────────────────────────────────
 # Linear — method-level target.
 # ──────────────────────────────────────────────────────────────────────────
+
 
 struct Linear[IN: Int, OUT: Int](Module):
     comptime IN_DIM = Self.IN
@@ -94,17 +120,17 @@ struct Linear[IN: Int, OUT: Int](Module):
 
     # CPU storage (populated when _target_tag == TARGET_CPU)
     var weight: List[Scalar[DT]]
-    var bias:   List[Scalar[DT]]
+    var bias: List[Scalar[DT]]
     var grad_w: List[Scalar[DT]]
     var grad_b: List[Scalar[DT]]
-    var cache:  List[Scalar[DT]]
+    var cache: List[Scalar[DT]]
 
     # GPU storage (Some when _target_tag == TARGET_GPU)
     var weight_dev: Optional[DeviceBuffer[DT]]
-    var bias_dev:   Optional[DeviceBuffer[DT]]
+    var bias_dev: Optional[DeviceBuffer[DT]]
     var grad_w_dev: Optional[DeviceBuffer[DT]]
     var grad_b_dev: Optional[DeviceBuffer[DT]]
-    var cache_dev:  Optional[DeviceBuffer[DT]]
+    var cache_dev: Optional[DeviceBuffer[DT]]
     var cache_dev_n: Int
     var ctx: Optional[DeviceContext]
 
@@ -116,15 +142,15 @@ struct Linear[IN: Int, OUT: Int](Module):
 
     def __init__(out self):
         self.weight = List[Scalar[DT]]()
-        self.bias   = List[Scalar[DT]]()
+        self.bias = List[Scalar[DT]]()
         self.grad_w = List[Scalar[DT]]()
         self.grad_b = List[Scalar[DT]]()
-        self.cache  = List[Scalar[DT]]()
+        self.cache = List[Scalar[DT]]()
         self.weight_dev = None
-        self.bias_dev   = None
+        self.bias_dev = None
         self.grad_w_dev = None
         self.grad_b_dev = None
-        self.cache_dev  = None
+        self.cache_dev = None
         self.cache_dev_n = 0
         self.ctx = None
         self._target_tag = TARGET_UNINIT
@@ -136,31 +162,35 @@ struct Linear[IN: Int, OUT: Int](Module):
     @staticmethod
     def make[target: StaticString, INIT: Initializer]() raises -> Self:
         """CPU factory. Use `.make[target='gpu', INIT](ctx)` for GPU."""
-        comptime assert target == "cpu", (
-            "Linear.make[target='gpu', INIT] requires a DeviceContext"
-        )
+        comptime assert (
+            target == "cpu"
+        ), "Linear.make[target='gpu', INIT] requires a DeviceContext"
         var lin = Self()
         lin.weight = List[Scalar[DT]](length=Self.W_SIZE, fill=0.0)
-        lin.bias   = List[Scalar[DT]](length=Self.B_SIZE, fill=0.0)
+        lin.bias = List[Scalar[DT]](length=Self.B_SIZE, fill=0.0)
         lin.grad_w = List[Scalar[DT]](length=Self.W_SIZE, fill=0.0)
         lin.grad_b = List[Scalar[DT]](length=Self.B_SIZE, fill=0.0)
-        INIT.init_weight(lin.weight.unsafe_ptr(), Self.W_SIZE, Self.IN, Self.OUT)
+        INIT.init_weight(
+            lin.weight.unsafe_ptr(), Self.W_SIZE, Self.IN, Self.OUT
+        )
         INIT.init_bias(lin.bias.unsafe_ptr(), Self.B_SIZE)
         lin._target_tag = TARGET_CPU
         return lin^
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer](ctx: DeviceContext) raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: DeviceContext) raises -> Self:
         """GPU factory."""
-        comptime assert target == "gpu", (
-            "Linear.make[target='cpu', INIT](ctx) — drop ctx for CPU"
-        )
+        comptime assert (
+            target == "gpu"
+        ), "Linear.make[target='cpu', INIT](ctx) — drop ctx for CPU"
         var lin = Self()
-        var w_dev  = ctx.enqueue_create_buffer[DT](Self.W_SIZE)
-        var b_dev  = ctx.enqueue_create_buffer[DT](Self.B_SIZE)
+        var w_dev = ctx.enqueue_create_buffer[DT](Self.W_SIZE)
+        var b_dev = ctx.enqueue_create_buffer[DT](Self.B_SIZE)
         var gw_dev = ctx.enqueue_create_buffer[DT](Self.W_SIZE)
         var gb_dev = ctx.enqueue_create_buffer[DT](Self.B_SIZE)
-        var c_dev  = ctx.enqueue_create_buffer[DT](1)
+        var c_dev = ctx.enqueue_create_buffer[DT](1)
         gw_dev.enqueue_fill(0.0)
         gb_dev.enqueue_fill(0.0)
         # Init weights/biases on host via INIT, then upload.
@@ -173,10 +203,10 @@ struct Linear[IN: Int, OUT: Int](Module):
         ctx.enqueue_copy(b_dev, b_host)
         ctx.synchronize()
         lin.weight_dev = w_dev^
-        lin.bias_dev   = b_dev^
+        lin.bias_dev = b_dev^
         lin.grad_w_dev = gw_dev^
         lin.grad_b_dev = gb_dev^
-        lin.cache_dev  = c_dev^
+        lin.cache_dev = c_dev^
         lin.cache_dev_n = 0
         lin.ctx = ctx
         lin._target_tag = TARGET_GPU
@@ -190,9 +220,12 @@ struct Linear[IN: Int, OUT: Int](Module):
         comptime expected = target_tag_for[target]()
         if self._target_tag != expected:
             raise Error(
-                "Linear: method called with [target='" + String(target)
+                "Linear: method called with [target='"
+                + String(target)
                 + "'] but module was make'd for a different target "
-                + "(tag=" + String(Int(self._target_tag)) + ")"
+                + "(tag="
+                + String(Int(self._target_tag))
+                + ")"
             )
 
     def _ensure_cache_cpu(mut self, batch: Int):
@@ -221,8 +254,10 @@ struct Linear[IN: Int, OUT: Int](Module):
         input: TileTensor[DT, LIN, OIN],
         mut output: TileTensor[DT, LOUT, OOUT],
     ) raises:
-        comptime assert input.flat_rank  == 2, "input must be rank-2 [BATCH, IN]"
-        comptime assert output.flat_rank == 2, "output must be rank-2 [BATCH, OUT]"
+        comptime assert input.flat_rank == 2, "input must be rank-2 [BATCH, IN]"
+        comptime assert (
+            output.flat_rank == 2
+        ), "output must be rank-2 [BATCH, OUT]"
         self._assert_tag[target]()
 
         comptime if target == "cpu":
@@ -243,27 +278,40 @@ struct Linear[IN: Int, OUT: Int](Module):
             self._ensure_cache_dev(BATCH * Self.IN)
             # Rebind caller-supplied tensor origins to MutAnyOrigin so we
             # can feed them into kernel + max-kernels APIs that expect it.
-            var input_w  = rebind[TileTensor[DT, LIN,  MutAnyOrigin]](input)
+            var input_w = rebind[TileTensor[DT, LIN, MutAnyOrigin]](input)
             var output_w = rebind[TileTensor[DT, LOUT, MutAnyOrigin]](output)
-            ctx.enqueue_copy(
-                dst_buf=DeviceBuffer[DT](ctx, self.cache_dev.value().unsafe_ptr(),
-                                         BATCH * Self.IN, owning=False),
-                src_buf=DeviceBuffer[DT](ctx, input_w.ptr,
-                                         BATCH * Self.IN, owning=False),
+
+            # Cache input for backward (one launch — avoids a DeviceBuffer
+            # wrap-and-enqueue_copy dance around the foreign-owned input ptr).
+            comptime cache_layout = Layout.row_major(BATCH, Self.IN)
+            var input_lt = LayoutTensor[DT, cache_layout, MutAnyOrigin](input_w.ptr)
+            var cache_lt = LayoutTensor[DT, cache_layout, MutAnyOrigin](self.cache_dev.value())
+            comptime TPB = 128
+            comptime n_blocks_cache = (BATCH * Self.IN + TPB - 1) // TPB
+            comptime cache_kernel = _cache_input_kernel[BATCH, Self.IN]
+            ctx.enqueue_function[cache_kernel](
+                input_lt, cache_lt,
+                grid_dim=n_blocks_cache, block_dim=TPB,
             )
-            var weight_tt = TileTensor(self.weight_dev.value(),
-                                       row_major[Self.IN, Self.OUT]())
-            max_matmul[target="gpu"](output_w, input_w, weight_tt,
-                                     DeviceContextPtr(ctx))
-            comptime out_layout  = Layout.row_major(BATCH, Self.OUT)
+
+            # output = input @ W via max_matmul.
+            var weight_tt = TileTensor(
+                self.weight_dev.value(), row_major[Self.IN, Self.OUT]()
+            )
+            max_matmul[target="gpu"](
+                output_w, input_w, weight_tt, DeviceContextPtr(ctx)
+            )
+
+            # output += bias.
+            comptime out_layout = Layout.row_major(BATCH, Self.OUT)
             comptime bias_layout = Layout.row_major(Self.OUT)
             var output_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](output_w.ptr)
-            var bias_lt   = LayoutTensor[DT, bias_layout, MutAnyOrigin](self.bias_dev.value())
-            comptime TPB = 128
+            var bias_lt = LayoutTensor[DT, bias_layout, MutAnyOrigin](self.bias_dev.value())
             comptime n_blocks_ba = (BATCH * Self.OUT + TPB - 1) // TPB
             comptime ba_kernel = _bias_add_kernel[BATCH, Self.OUT]
             ctx.enqueue_function[ba_kernel](
-                output_lt, bias_lt, grid_dim=n_blocks_ba, block_dim=TPB,
+                output_lt, bias_lt,
+                grid_dim=n_blocks_ba, block_dim=TPB,
             )
 
     # ------------------------------------------------------------------
@@ -283,14 +331,14 @@ struct Linear[IN: Int, OUT: Int](Module):
         mut grad_input: TileTensor[DT, LGI, OGI],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
-        comptime assert grad_input.flat_rank  == 2, "grad_input must be rank-2"
+        comptime assert grad_input.flat_rank == 2, "grad_input must be rank-2"
         self._assert_tag[target]()
 
         comptime if target == "cpu":
-            var w  = TileTensor(self.weight, row_major[Self.IN, Self.OUT]())
+            var w = TileTensor(self.weight, row_major[Self.IN, Self.OUT]())
             var gw = TileTensor(self.grad_w, row_major[Self.IN, Self.OUT]())
             var gb = TileTensor(self.grad_b, row_major[Self.OUT]())
-            var c  = TileTensor(self.cache,  row_major[BATCH, Self.IN]())
+            var c = TileTensor(self.cache, row_major[BATCH, Self.IN]())
             for bi in range(BATCH):
                 for i in range(Self.IN):
                     var acc: Scalar[DT] = 0.0
@@ -310,31 +358,51 @@ struct Linear[IN: Int, OUT: Int](Module):
                 gb[j] = gb[j] + acc
         else:
             var ctx = self.ctx.value()
-            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](grad_output)
-            var grad_input_w  = rebind[TileTensor[DT, LGI, MutAnyOrigin]](grad_input)
-            var weight_tt = TileTensor(self.weight_dev.value(),
-                                       row_major[Self.IN, Self.OUT]())
+            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
+                grad_output
+            )
+            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
+                grad_input
+            )
+            var weight_tt = TileTensor(
+                self.weight_dev.value(), row_major[Self.IN, Self.OUT]()
+            )
             max_matmul[transpose_b=True, target="gpu"](
                 grad_input_w, grad_output_w, weight_tt, DeviceContextPtr(ctx)
             )
             comptime cache_layout = Layout.row_major(BATCH, Self.IN)
-            comptime go_layout    = Layout.row_major(BATCH, Self.OUT)
-            comptime gw_layout    = Layout.row_major(Self.IN, Self.OUT)
-            var cache_lt = LayoutTensor[DT, cache_layout, MutAnyOrigin](self.cache_dev.value())
-            var go_lt    = LayoutTensor[DT, go_layout, MutAnyOrigin](grad_output_w.ptr)
-            var gw_lt    = LayoutTensor[DT, gw_layout, MutAnyOrigin](self.grad_w_dev.value())
+            comptime go_layout = Layout.row_major(BATCH, Self.OUT)
+            comptime gw_layout = Layout.row_major(Self.IN, Self.OUT)
+            var cache_lt = LayoutTensor[DT, cache_layout, MutAnyOrigin](
+                self.cache_dev.value()
+            )
+            var go_lt = LayoutTensor[DT, go_layout, MutAnyOrigin](
+                grad_output_w.ptr
+            )
+            var gw_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
+                self.grad_w_dev.value()
+            )
             comptime TPB = 128
             comptime n_blocks_gw = (Self.W_SIZE + TPB - 1) // TPB
             comptime gw_kernel = _grad_w_accum_kernel[BATCH, Self.IN, Self.OUT]
             ctx.enqueue_function[gw_kernel](
-                cache_lt, go_lt, gw_lt, grid_dim=n_blocks_gw, block_dim=TPB,
+                cache_lt,
+                go_lt,
+                gw_lt,
+                grid_dim=n_blocks_gw,
+                block_dim=TPB,
             )
             comptime gb_layout = Layout.row_major(Self.OUT)
-            var gb_lt = LayoutTensor[DT, gb_layout, MutAnyOrigin](self.grad_b_dev.value())
+            var gb_lt = LayoutTensor[DT, gb_layout, MutAnyOrigin](
+                self.grad_b_dev.value()
+            )
             comptime n_blocks_gb = (Self.OUT + TPB - 1) // TPB
             comptime gb_kernel = _grad_bias_kernel[BATCH, Self.OUT]
             ctx.enqueue_function[gb_kernel](
-                go_lt, gb_lt, grid_dim=n_blocks_gb, block_dim=TPB,
+                go_lt,
+                gb_lt,
+                grid_dim=n_blocks_gb,
+                block_dim=TPB,
             )
 
     # ------------------------------------------------------------------
@@ -364,30 +432,23 @@ struct Linear[IN: Int, OUT: Int](Module):
     def for_each_param[
         target: StaticString,
         V: ParamVisitor,
-    ](
-        mut self,
-        prefix: String,
-        mut visitor: V,
-    ) raises:
+    ](mut self, prefix: String, mut visitor: V,) raises:
         self._assert_tag[target]()
         var sep = "." if prefix.byte_length() > 0 else ""
         comptime if target == "cpu":
-            var w  = TileTensor(self.weight, row_major[Self.IN, Self.OUT]())
+            var w = TileTensor(self.weight, row_major[Self.IN, Self.OUT]())
             var gw = TileTensor(self.grad_w, row_major[Self.IN, Self.OUT]())
-            var b  = TileTensor(self.bias,   row_major[Self.OUT]())
+            var b = TileTensor(self.bias, row_major[Self.OUT]())
             var gb = TileTensor(self.grad_b, row_major[Self.OUT]())
             visitor.visit(prefix + sep + "weight", w, gw, Self.W_SIZE)
-            visitor.visit(prefix + sep + "bias",   b, gb, Self.B_SIZE)
+            visitor.visit(prefix + sep + "bias", b, gb, Self.B_SIZE)
         else:
-            # ParamVisitor.visit expects MutAnyOrigin TileTensors — go
-            # through explicit-origin pointers to widen.
-            var w_ptr:  UnsafePointer[Scalar[DT], MutAnyOrigin] = self.weight_dev.value().unsafe_ptr()
-            var gw_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.grad_w_dev.value().unsafe_ptr()
-            var b_ptr:  UnsafePointer[Scalar[DT], MutAnyOrigin] = self.bias_dev.value().unsafe_ptr()
-            var gb_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.grad_b_dev.value().unsafe_ptr()
-            var w  = TileTensor(w_ptr,  row_major[Self.IN, Self.OUT]())
-            var gw = TileTensor(gw_ptr, row_major[Self.IN, Self.OUT]())
-            var b  = TileTensor(b_ptr,  row_major[Self.OUT]())
-            var gb = TileTensor(gb_ptr, row_major[Self.OUT]())
+            # ParamVisitor.visit is now origin-generic — pass DeviceBuffers
+            # directly to TileTensor; visitor rebinds internally if it needs
+            # MutAnyOrigin for a kernel.
+            var w  = TileTensor(self.weight_dev.value(), row_major[Self.IN, Self.OUT]())
+            var gw = TileTensor(self.grad_w_dev.value(), row_major[Self.IN, Self.OUT]())
+            var b  = TileTensor(self.bias_dev.value(),   row_major[Self.OUT]())
+            var gb = TileTensor(self.grad_b_dev.value(), row_major[Self.OUT]())
             visitor.visit(prefix + sep + "weight", w, gw, Self.W_SIZE)
-            visitor.visit(prefix + sep + "bias",   b, gb, Self.B_SIZE)
+            visitor.visit(prefix + sep + "bias", b, gb, Self.B_SIZE)
