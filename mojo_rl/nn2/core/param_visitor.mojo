@@ -23,5 +23,5 @@ trait ParamVisitor(ImplicitlyDestructible):
         param: TileTensor[DT, L, MutAnyOrigin],
         grad: TileTensor[DT, L, MutAnyOrigin],
         n_elems: Int,
-    ):
+    ) raises:
         ...

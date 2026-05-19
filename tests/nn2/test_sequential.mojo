@@ -1,4 +1,4 @@
-"""Sequential2 CPU tests — Phase 1.
+"""Sequential CPU tests — Phase 1.
 
 Covers:
   - forward chain (Linear → ReLU): output matches hand-computed value
@@ -6,7 +6,7 @@ Covers:
     child grad_w/grad_b match hand-computed values
   - for_each_param walks both children with indexed prefix
   - end-to-end forward + backward on Linear → ReLU → Linear (chained
-    Sequential2)
+    Sequential)
 """
 
 from std.memory import alloc
@@ -14,10 +14,11 @@ from std.testing import assert_equal, assert_almost_equal
 from layout import TileTensor, TensorLayout, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.initializer import Zero
 from mojo_rl.nn2.core import ParamVisitor
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
-from mojo_rl.nn2.combinators import Sequential2
+from mojo_rl.nn2.combinators import Sequential
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -38,7 +39,7 @@ struct CountVisitor(ParamVisitor):
         param: TileTensor[DT, L, MutAnyOrigin],
         grad: TileTensor[DT, L, MutAnyOrigin],
         n_elems: Int,
-    ):
+    ) raises:
         self.names.append(name)
         self.sizes.append(n_elems)
 
@@ -59,7 +60,7 @@ def test_forward_linear_relu() raises:
     comptime MID = 3
     comptime BATCH = 1
 
-    var lin = Linear[IN, MID]()
+    var lin = Linear[IN, MID].make["cpu", INIT=Zero]()
     var w = TileTensor(lin.weight, row_major[IN, MID]())
     w[0, 0] =  1.0
     w[0, 1] = -1.0
@@ -72,7 +73,7 @@ def test_forward_linear_relu() raises:
     b[1] =  2.0
     b[2] =  0.0
 
-    var net = Sequential2(lin^, ReLU[MID]())
+    var net = Sequential(lin^, ReLU[MID].make["cpu", INIT=Zero]())
 
     var in_buf:  UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * IN)
     var out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * MID)
@@ -84,7 +85,7 @@ def test_forward_linear_relu() raises:
     var input  = TileTensor(in_buf,  row_major[BATCH, IN]())
     var output = TileTensor(out_buf, row_major[BATCH, MID]())
 
-    net.forward[BATCH](input, output)
+    net.forward["cpu", BATCH](input, output)
 
     assert_equal(output[0, 0], 0.0)   # max(0, -3)
     assert_equal(output[0, 1], 2.0)   # max(0, 2)
@@ -119,7 +120,7 @@ def test_backward_linear_relu() raises:
     comptime MID = 3
     comptime BATCH = 1
 
-    var lin = Linear[IN, MID]()
+    var lin = Linear[IN, MID].make["cpu", INIT=Zero]()
     var w = TileTensor(lin.weight, row_major[IN, MID]())
     w[0, 0] =  1.0
     w[0, 1] = -1.0
@@ -132,7 +133,7 @@ def test_backward_linear_relu() raises:
     b[1] =  2.0
     b[2] =  0.0
 
-    var net = Sequential2(lin^, ReLU[MID]())
+    var net = Sequential(lin^, ReLU[MID].make["cpu", INIT=Zero]())
 
     # Forward to populate both children's caches
     var in_buf:  UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * IN)
@@ -141,7 +142,7 @@ def test_backward_linear_relu() raises:
     in_buf[1] = 1.0
     var input  = TileTensor(in_buf,  row_major[BATCH, IN]())
     var output = TileTensor(out_buf, row_major[BATCH, MID]())
-    net.forward[BATCH](input, output)
+    net.forward["cpu", BATCH](input, output)
 
     var go_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * MID)
     for k in range(BATCH * MID):
@@ -152,21 +153,21 @@ def test_backward_linear_relu() raises:
     var grad_out = TileTensor(go_buf, row_major[BATCH, MID]())
     var grad_in  = TileTensor(gi_buf, row_major[BATCH, IN]())
 
-    net.backward[BATCH](grad_out, grad_in)
+    net.backward["cpu", BATCH](grad_out, grad_in)
 
     # grad_input
     assert_equal(grad_in[0, 0], 1.0)
     assert_equal(grad_in[0, 1], 1.0)
 
-    # Linear (first) grad_w + grad_b
-    var gw = TileTensor(net.first.grad_w, row_major[IN, MID]())
+    # Linear (first child) grad_w + grad_b
+    var gw = TileTensor(net.children[0].grad_w, row_major[IN, MID]())
     assert_equal(gw[0, 0], 0.0)
     assert_equal(gw[0, 1], 1.0)
     assert_equal(gw[0, 2], 1.0)
     assert_equal(gw[1, 0], 0.0)
     assert_equal(gw[1, 1], 1.0)
     assert_equal(gw[1, 2], 1.0)
-    var gb = TileTensor(net.first.grad_b, row_major[MID]())
+    var gb = TileTensor(net.children[0].grad_b, row_major[MID]())
     assert_equal(gb[0], 0.0)
     assert_equal(gb[1], 1.0)
     assert_equal(gb[2], 1.0)
@@ -183,11 +184,11 @@ def test_backward_linear_relu() raises:
 # ──────────────────────────────────────────────────────────────────────────
 
 def test_for_each_param() raises:
-    """Sequential2(Linear, ReLU): walk yields 2 params from Linear,
+    """Sequential(Linear, ReLU): walk yields 2 params from Linear,
     0 from ReLU. Names prefixed "0.weight" / "0.bias"."""
-    var net = Sequential2(Linear[3, 4](), ReLU[4]())
+    var net = Sequential(Linear[3, 4].make["cpu", INIT=Zero](), ReLU[4].make["cpu", INIT=Zero]())
     var v = CountVisitor()
-    net.for_each_param(String("net"), v)
+    net.for_each_param["cpu"](String("net"), v)
 
     assert_equal(len(v.names), 2)
     assert_equal(v.names[0], String("net.0.weight"))
@@ -195,13 +196,13 @@ def test_for_each_param() raises:
     assert_equal(v.sizes[0], 12)  # 3*4
     assert_equal(v.sizes[1], 4)
 
-    # Nested Sequential2: Sequential2(Sequential2(Linear, ReLU), Linear)
-    var net2 = Sequential2(
-        Sequential2(Linear[2, 3](), ReLU[3]()),
-        Linear[3, 5](),
+    # Nested Sequential: Sequential(Sequential(Linear, ReLU), Linear)
+    var net2 = Sequential(
+        Sequential(Linear[2, 3].make["cpu", INIT=Zero](), ReLU[3].make["cpu", INIT=Zero]()),
+        Linear[3, 5].make["cpu", INIT=Zero](),
     )
     var v2 = CountVisitor()
-    net2.for_each_param(String(""), v2)
+    net2.for_each_param["cpu"](String(""), v2)
     assert_equal(len(v2.names), 4)
     assert_equal(v2.names[0], String("0.0.weight"))
     assert_equal(v2.names[1], String("0.0.bias"))
@@ -215,7 +216,7 @@ def test_for_each_param() raises:
 # ──────────────────────────────────────────────────────────────────────────
 
 def test_end_to_end_2_layer_mlp() raises:
-    """Sequential2(Sequential2(Linear, ReLU), Linear) — a 2-hidden-layer MLP
+    """Sequential(Sequential(Linear, ReLU), Linear) — a 2-hidden-layer MLP
     with weights matching test_forward_linear_relu's known computation,
     chained with an identity second Linear (weight = I, bias = 0).
 
@@ -227,7 +228,7 @@ def test_end_to_end_2_layer_mlp() raises:
     comptime BATCH = 1
 
     # First Linear: weights matching test_forward_linear_relu
-    var lin0 = Linear[IN, MID]()
+    var lin0 = Linear[IN, MID].make["cpu", INIT=Zero]()
     var w0 = TileTensor(lin0.weight, row_major[IN, MID]())
     w0[0, 0] =  1.0; w0[0, 1] = -1.0; w0[0, 2] =  2.0
     w0[1, 0] = -3.0; w0[1, 1] =  1.0; w0[1, 2] =  0.0
@@ -235,14 +236,14 @@ def test_end_to_end_2_layer_mlp() raises:
     b0[0] = -1.0; b0[1] = 2.0; b0[2] = 0.0
 
     # Second Linear: identity (weight = I, bias = 0)
-    var lin1 = Linear[MID, OUT]()
+    var lin1 = Linear[MID, OUT].make["cpu", INIT=Zero]()
     var w1 = TileTensor(lin1.weight, row_major[MID, OUT]())
     for i in range(MID):
         for j in range(OUT):
             w1[i, j] = 1.0 if i == j else 0.0
 
-    var net = Sequential2(
-        Sequential2(lin0^, ReLU[MID]()),
+    var net = Sequential(
+        Sequential(lin0^, ReLU[MID].make["cpu", INIT=Zero]()),
         lin1^,
     )
 
@@ -252,7 +253,7 @@ def test_end_to_end_2_layer_mlp() raises:
     var input  = TileTensor(in_buf,  row_major[BATCH, IN]())
     var output = TileTensor(out_buf, row_major[BATCH, OUT]())
 
-    net.forward[BATCH](input, output)
+    net.forward["cpu", BATCH](input, output)
 
     # Identity second layer means output == ReLU(Linear0(input)) == [0, 2, 2]
     assert_equal(output[0, 0], 0.0)
@@ -267,7 +268,7 @@ def test_end_to_end_2_layer_mlp() raises:
 # ──────────────────────────────────────────────────────────────────────────
 def main() raises:
     print("=" * 60)
-    print("nn2 Sequential2 unit tests (CPU, Phase 1)")
+    print("nn2 Sequential unit tests (CPU, Phase 1)")
     print("=" * 60)
     test_forward_linear_relu()
     test_backward_linear_relu()

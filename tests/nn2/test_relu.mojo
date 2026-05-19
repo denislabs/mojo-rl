@@ -12,6 +12,7 @@ from std.testing import assert_equal
 from layout import TileTensor, TensorLayout, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.initializer import Zero
 from mojo_rl.nn2.core import ParamVisitor
 from mojo_rl.nn2.primitives.relu import ReLU
 
@@ -28,7 +29,7 @@ struct CountVisitor(ParamVisitor):
         param: TileTensor[DT, L, MutAnyOrigin],
         grad: TileTensor[DT, L, MutAnyOrigin],
         n_elems: Int,
-    ):
+    ) raises:
         self.visits += 1
 
 
@@ -37,7 +38,7 @@ def test_forward() raises:
     comptime DIM = 4
     comptime BATCH = 2
 
-    var relu = ReLU[DIM]()
+    var relu = ReLU[DIM].make["cpu", INIT=Zero]()
 
     var in_buf:  UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * DIM)
     var out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * DIM)
@@ -55,7 +56,7 @@ def test_forward() raises:
     var input = TileTensor(in_buf, row_major[BATCH, DIM]())
     var output = TileTensor(out_buf, row_major[BATCH, DIM]())
 
-    relu.forward[BATCH](input, output)
+    relu.forward["cpu", BATCH](input, output)
 
     assert_equal(output[0, 0], 0.0)
     assert_equal(output[0, 1], 0.0)
@@ -83,7 +84,7 @@ def test_backward() raises:
     comptime DIM = 3
     comptime BATCH = 2
 
-    var relu = ReLU[DIM]()
+    var relu = ReLU[DIM].make["cpu", INIT=Zero]()
 
     # Pre-populate internal cache (simulates a forward with these inputs)
     relu.cache.resize(BATCH * DIM, 0.0)
@@ -109,7 +110,7 @@ def test_backward() raises:
     var grad_out = TileTensor(go_buf, row_major[BATCH, DIM]())
     var grad_in  = TileTensor(gi_buf, row_major[BATCH, DIM]())
 
-    relu.backward[BATCH](grad_out, grad_in)
+    relu.backward["cpu", BATCH](grad_out, grad_in)
 
     assert_equal(grad_in[0, 0], 0.0)
     assert_equal(grad_in[0, 1], 0.0)
@@ -124,9 +125,9 @@ def test_backward() raises:
 
 
 def test_for_each_param() raises:
-    var relu = ReLU[16]()
+    var relu = ReLU[16].make["cpu", INIT=Zero]()
     var v = CountVisitor()
-    relu.for_each_param(String("act0"), v)
+    relu.for_each_param["cpu"](String("act0"), v)
     assert_equal(v.visits, 0)
     print("  test_for_each_param PASSED")
 

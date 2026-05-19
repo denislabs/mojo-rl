@@ -21,7 +21,7 @@ def test_forward_uniform_logits() raises:
     """Uniform logits → uniform softmax → CE = log(N_CLASSES)."""
     comptime N = 4
     comptime BATCH = 2
-    var loss = CrossEntropyLoss[N]()
+    var loss = CrossEntropyLoss[N].make["cpu"]()
 
     var lg_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * N)
     var tg_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * N)
@@ -35,7 +35,7 @@ def test_forward_uniform_logits() raises:
     var logits  = TileTensor(lg_buf, row_major[BATCH, N]())
     var targets = TileTensor(tg_buf, row_major[BATCH, N]())
 
-    var L = loss.forward[BATCH](logits, targets)
+    var L = loss.forward["cpu", BATCH](logits, targets)
     # Expected: CE per sample = log(N); averaged still log(N) = log(4)
     assert_almost_equal(L, Scalar[DT](flog(Scalar[DT](N))), atol=1e-6)
 
@@ -54,7 +54,7 @@ def test_forward_confident_correct() raises:
     """Strongly positive logit on true class → CE → 0."""
     comptime N = 3
     comptime BATCH = 1
-    var loss = CrossEntropyLoss[N]()
+    var loss = CrossEntropyLoss[N].make["cpu"]()
 
     var lg_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * N)
     var tg_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * N)
@@ -64,7 +64,7 @@ def test_forward_confident_correct() raises:
 
     var logits  = TileTensor(lg_buf, row_major[BATCH, N]())
     var targets = TileTensor(tg_buf, row_major[BATCH, N]())
-    var L = loss.forward[BATCH](logits, targets)
+    var L = loss.forward["cpu", BATCH](logits, targets)
 
     # softmax[0] ≈ 1, log_softmax[0] ≈ 0, CE ≈ 0
     assert_almost_equal(L, 0.0, atol=1e-3)
@@ -78,7 +78,7 @@ def test_forward_confident_wrong() raises:
     """Strongly negative logit on true class → CE large."""
     comptime N = 3
     comptime BATCH = 1
-    var loss = CrossEntropyLoss[N]()
+    var loss = CrossEntropyLoss[N].make["cpu"]()
 
     var lg_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * N)
     var tg_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * N)
@@ -88,7 +88,7 @@ def test_forward_confident_wrong() raises:
 
     var logits  = TileTensor(lg_buf, row_major[BATCH, N]())
     var targets = TileTensor(tg_buf, row_major[BATCH, N]())
-    var L = loss.forward[BATCH](logits, targets)
+    var L = loss.forward["cpu", BATCH](logits, targets)
 
     # CE ≈ -log(softmax[0]) ≈ -log(exp(-10)/something) ≈ 10
     # (more precisely: log(1 + 2*exp(-10)) + 10 - 0 = 10 + log(1 + 2e-10) ≈ 10)
@@ -104,7 +104,7 @@ def test_backward_softmax_minus_target() raises:
     """grad_logits[b, c] = (softmax[b, c] - target[b, c]) / BATCH."""
     comptime N = 3
     comptime BATCH = 2
-    var loss = CrossEntropyLoss[N]()
+    var loss = CrossEntropyLoss[N].make["cpu"]()
 
     var lg_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * N)
     var tg_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * N)
@@ -116,11 +116,11 @@ def test_backward_softmax_minus_target() raises:
 
     var logits  = TileTensor(lg_buf, row_major[BATCH, N]())
     var targets = TileTensor(tg_buf, row_major[BATCH, N]())
-    _ = loss.forward[BATCH](logits, targets)
+    _ = loss.forward["cpu", BATCH](logits, targets)
 
     var grad_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * N)
     var grad_logits = TileTensor(grad_buf, row_major[BATCH, N]())
-    loss.backward[BATCH](targets, grad_logits)
+    loss.backward["cpu", BATCH](targets, grad_logits)
 
     # softmax is uniform 1/3. grad = (1/3 - target) / BATCH.
     # Sample 0: target = [0, 1, 0] → grad = [1/3, 1/3 - 1, 1/3] / 2 = [1/6, -1/3, 1/6]

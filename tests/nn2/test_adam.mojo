@@ -14,6 +14,7 @@ from std.testing import assert_equal, assert_almost_equal, assert_true
 from layout import TileTensor, TensorLayout, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.initializer import Zero
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.optimizer import Adam
 
@@ -33,7 +34,7 @@ def test_one_step_smoke() raises:
       update = lr * m_hat / (sqrt(v_hat) + eps) = 0.1 * 0.5 / 0.5 ≈ 0.1
       new_weight ≈ 1.0 - 0.1 ≈ 0.9
     """
-    var lin = Linear[1, 1]()
+    var lin = Linear[1, 1].make["cpu", INIT=Zero]()
     var w = TileTensor(lin.weight, row_major[1, 1]())
     w[0, 0] = 1.0
     # bias is already 0
@@ -41,8 +42,8 @@ def test_one_step_smoke() raises:
     gw[0, 0] = 0.5
     # grad_b stays 0
 
-    var adam = Adam.make(lin, lr=0.1)
-    adam.step(lin)
+    var adam = Adam.make["cpu"](lin, lr=0.1)
+    adam.step["cpu"](lin)
 
     var w_after = TileTensor(lin.weight, row_major[1, 1]())
     # Approximate equality (eps perturbs it slightly).
@@ -59,8 +60,8 @@ def test_init_param_count() raises:
     """Adam.make populates flat m/v lists + offsets table by walking the
     model. Linear[3, 5] has 2 params (weight: 15, bias: 5) → offsets has
     2 entries, m_flat/v_flat have 20 zeros."""
-    var lin = Linear[3, 5]()
-    var adam = Adam.make(lin)
+    var lin = Linear[3, 5].make["cpu", INIT=Zero]()
+    var adam = Adam.make["cpu"](lin)
     assert_equal(len(adam.offsets), 2)
     assert_equal(adam.offsets[0], 0)     # weight starts at offset 0
     assert_equal(adam.offsets[1], 15)    # bias starts after weight
@@ -86,13 +87,13 @@ def test_convergence_overfitting() raises:
     comptime TARGET: Scalar[DT] = 5.0
     comptime N_STEPS = 300
 
-    var lin = Linear[IN, OUT]()
+    var lin = Linear[IN, OUT].make["cpu", INIT=Zero]()
     # Small random-ish init: w[0,0]=0.1, w[1,0]=-0.2, bias[0]=0.0
     var w = TileTensor(lin.weight, row_major[IN, OUT]())
     w[0, 0] =  0.1
     w[1, 0] = -0.2
 
-    var adam = Adam.make(lin, lr=0.05)
+    var adam = Adam.make["cpu"](lin, lr=0.05)
 
     var in_buf:  UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * IN)
     var out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * OUT)
@@ -107,21 +108,21 @@ def test_convergence_overfitting() raises:
 
     var final_loss: Scalar[DT] = 0.0
     for step_i in range(N_STEPS):
-        lin.zero_grad()
-        lin.forward[BATCH](input, output)
+        lin.zero_grad["cpu"]()
+        lin.forward["cpu", BATCH](input, output)
         var y = output[0, 0]
         var err = y - TARGET
         final_loss = 0.5 * err * err
         grad_out[0, 0] = err   # ∂L/∂y
-        lin.backward[BATCH](grad_out, grad_in)
-        adam.step(lin)
+        lin.backward["cpu", BATCH](grad_out, grad_in)
+        adam.step["cpu"](lin)
 
     # After 300 Adam steps with lr=0.05 the loss should be tiny.
     assert_true(final_loss < Scalar[DT](1e-3),
         "Expected loss < 1e-3 after 300 steps, got " + String(final_loss))
 
     # Verify forward at the trained weights does map close to TARGET.
-    lin.forward[BATCH](input, output)
+    lin.forward["cpu", BATCH](input, output)
     var y_final = output[0, 0]
     assert_almost_equal(y_final, TARGET, atol=0.05)
 

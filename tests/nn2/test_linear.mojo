@@ -24,6 +24,7 @@ from layout import TileTensor, TensorLayout, row_major
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import ParamVisitor
 from mojo_rl.nn2.primitives.linear import Linear
+from mojo_rl.nn2.initializer import Zero
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -44,7 +45,7 @@ struct CountVisitor(ParamVisitor):
         param: TileTensor[DT, L, MutAnyOrigin],
         grad: TileTensor[DT, L, MutAnyOrigin],
         n_elems: Int,
-    ):
+    ) raises:
         self.names.append(name)
         self.sizes.append(n_elems)
 
@@ -60,7 +61,7 @@ def test_forward() raises:
     comptime OUT = 3
     comptime BATCH = 1
 
-    var lin = Linear[IN, OUT]()
+    var lin = Linear[IN, OUT].make[target="cpu", INIT=Zero]()
     var w = TileTensor(lin.weight, row_major[IN, OUT]())
     var b = TileTensor(lin.bias,   row_major[OUT]())
 
@@ -86,7 +87,7 @@ def test_forward() raises:
     var input = TileTensor(in_buf, row_major[BATCH, IN]())
     var output = TileTensor(out_buf, row_major[BATCH, OUT]())
 
-    lin.forward[BATCH](input, output)
+    lin.forward["cpu", BATCH](input, output)
 
     # Expected: out[0,0]=15, out[0,1]=27, out[0,2]=39
     assert_equal(output[0, 0], 15.0)
@@ -115,7 +116,7 @@ def test_backward() raises:
     comptime OUT = 3
     comptime BATCH = 2
 
-    var lin = Linear[IN, OUT]()
+    var lin = Linear[IN, OUT].make[target="cpu", INIT=Zero]()
     var w = TileTensor(lin.weight, row_major[IN, OUT]())
     w[0, 0] = 1.0
     w[0, 1] = 2.0
@@ -143,7 +144,7 @@ def test_backward() raises:
     var grad_out = TileTensor(go_buf, row_major[BATCH, OUT]())
     var grad_in = TileTensor(gi_buf, row_major[BATCH, IN]())
 
-    lin.backward[BATCH](grad_out, grad_in)
+    lin.backward["cpu", BATCH](grad_out, grad_in)
 
     # grad_input
     assert_equal(grad_in[0, 0], 6.0)
@@ -183,7 +184,7 @@ def test_grad_accumulation() raises:
     comptime OUT = 2
     comptime BATCH = 1
 
-    var lin = Linear[IN, OUT]()
+    var lin = Linear[IN, OUT].make[target="cpu", INIT=Zero]()
     var w = TileTensor(lin.weight, row_major[IN, OUT]())
     w[0, 0] = 1.0
     w[0, 1] = 0.0
@@ -197,7 +198,7 @@ def test_grad_accumulation() raises:
     var out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * OUT)
     var input = TileTensor(in_buf, row_major[BATCH, IN]())
     var output = TileTensor(out_buf, row_major[BATCH, OUT]())
-    lin.forward[BATCH](input, output)
+    lin.forward["cpu", BATCH](input, output)
 
     var go_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * OUT)
     go_buf[0] = 1.0
@@ -208,13 +209,13 @@ def test_grad_accumulation() raises:
     var grad_out = TileTensor(go_buf, row_major[BATCH, OUT]())
     var grad_in = TileTensor(gi_buf, row_major[BATCH, IN]())
 
-    lin.backward[BATCH](grad_out, grad_in)
+    lin.backward["cpu", BATCH](grad_out, grad_in)
     var gw_after_one = TileTensor(lin.grad_w, row_major[IN, OUT]())
     var gw00_after_one = gw_after_one[0, 0]
     var gb_after_one = TileTensor(lin.grad_b, row_major[OUT]())
     var gb0_after_one = gb_after_one[0]
 
-    lin.backward[BATCH](grad_out, grad_in)
+    lin.backward["cpu", BATCH](grad_out, grad_in)
     var gw_after_two = TileTensor(lin.grad_w, row_major[IN, OUT]())
     var gb_after_two = TileTensor(lin.grad_b, row_major[OUT]())
     assert_equal(gw_after_two[0, 0], gw00_after_one * 2.0)
@@ -233,7 +234,7 @@ def test_grad_accumulation() raises:
 
 def test_zero_grad() raises:
     """zero_grad() clears grad_w + grad_b to 0.0."""
-    var lin = Linear[3, 2]()
+    var lin = Linear[3, 2].make[target="cpu", INIT=Zero]()
     var gw = TileTensor(lin.grad_w, row_major[3, 2]())
     var gb = TileTensor(lin.grad_b, row_major[2]())
     for i in range(3):
@@ -242,7 +243,7 @@ def test_zero_grad() raises:
     gb[0] = 7.0
     gb[1] = 8.0
 
-    lin.zero_grad()
+    lin.zero_grad["cpu"]()
 
     var gw2 = TileTensor(lin.grad_w, row_major[3, 2]())
     var gb2 = TileTensor(lin.grad_b, row_major[2]())
@@ -260,9 +261,9 @@ def test_zero_grad() raises:
 
 def test_for_each_param() raises:
     """Walk yields ("prefix.weight", W_SIZE) and ("prefix.bias", B_SIZE)."""
-    var lin = Linear[4, 5]()
+    var lin = Linear[4, 5].make[target="cpu", INIT=Zero]()
     var v = CountVisitor()
-    lin.for_each_param(String("layer0"), v)
+    lin.for_each_param["cpu"](String("layer0"), v)
 
     assert_equal(len(v.names), 2)
     assert_equal(v.names[0], String("layer0.weight"))
@@ -271,7 +272,7 @@ def test_for_each_param() raises:
     assert_equal(v.sizes[1], 5)
 
     var v2 = CountVisitor()
-    lin.for_each_param(String(""), v2)
+    lin.for_each_param["cpu"](String(""), v2)
     assert_equal(v2.names[0], String("weight"))
     assert_equal(v2.names[1], String("bias"))
     print("  test_for_each_param PASSED")
