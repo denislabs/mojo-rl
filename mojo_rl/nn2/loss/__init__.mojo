@@ -7,3 +7,4 @@ from .sac_actor_loss import (
     sac_actor_backward,
     sac_actor_loss_value,
 )
+from .sac_actor_loss_block import SACActorLoss, SACActorLossOut
