@@ -168,15 +168,20 @@ struct Linear[IN: Int, OUT: Int](Module):
     var ctx: Optional[DeviceContext]
 
     # AMP scratch (lazy, populated on first forward[POLICY=Bf16Compute]
-    # call). Cast-around-matmul: linalg.matmul[target="gpu"] is dtype-
-    # homogeneous, so we re-cast weight + activations to bf16 each step,
-    # run a bf16 matmul, then cast the output back to fp32.
+    # call). Cast-around-matmul: linalg.matmul is dtype-homogeneous on
+    # both CPU and GPU, so we re-cast weight + activations to bf16 each
+    # step, run a bf16 matmul, then cast the output back to fp32.
     #   w_bf16  — IN × OUT     (weights, re-cast every forward/backward)
     #   in_bf16 — BATCH × IN   (forward activations + backward grad_input)
     #   ou_bf16 — BATCH × OUT  (forward output + backward grad_output)
+    # Both GPU (DeviceBuffer) and CPU (List) variants live in the struct;
+    # only the matching set is populated, gated by `_target_tag`.
     var w_bf16_dev:  Optional[DeviceBuffer[DType.bfloat16]]
     var in_bf16_dev: Optional[DeviceBuffer[DType.bfloat16]]
     var ou_bf16_dev: Optional[DeviceBuffer[DType.bfloat16]]
+    var w_bf16_cpu:  List[Scalar[DType.bfloat16]]
+    var in_bf16_cpu: List[Scalar[DType.bfloat16]]
+    var ou_bf16_cpu: List[Scalar[DType.bfloat16]]
     var amp_n_batch: Int   # current capacity (BATCH) for batch-dim buffers
 
     var _target_tag: Int8
@@ -202,6 +207,9 @@ struct Linear[IN: Int, OUT: Int](Module):
         self.w_bf16_dev = None
         self.in_bf16_dev = None
         self.ou_bf16_dev = None
+        self.w_bf16_cpu = List[Scalar[DType.bfloat16]]()
+        self.in_bf16_cpu = List[Scalar[DType.bfloat16]]()
+        self.ou_bf16_cpu = List[Scalar[DType.bfloat16]]()
         self.amp_n_batch = 0
         self._target_tag = TARGET_UNINIT
         self._inference = False
@@ -294,6 +302,18 @@ struct Linear[IN: Int, OUT: Int](Module):
             self.cache_dev = self.ctx.value().enqueue_create_buffer[DT](needed)
             self.cache_dev_n = needed
 
+    def _ensure_amp_buffers_cpu(mut self, batch: Int):
+        """CPU mirror of `_ensure_amp_buffers_gpu`: lazy-grow the bf16
+        scratch buffers used by the CPU cast-around-matmul AMP path.
+        Weight scratch is sized at IN*OUT (compile-time), batch-dim
+        scratches grow with BATCH."""
+        if len(self.w_bf16_cpu) < Self.W_SIZE:
+            self.w_bf16_cpu.resize(Self.W_SIZE, Scalar[DType.bfloat16](0.0))
+        if self.amp_n_batch < batch:
+            self.in_bf16_cpu.resize(batch * Self.IN, Scalar[DType.bfloat16](0.0))
+            self.ou_bf16_cpu.resize(batch * Self.OUT, Scalar[DType.bfloat16](0.0))
+            self.amp_n_batch = batch
+
     def _ensure_amp_buffers_gpu(mut self, batch: Int) raises:
         """Lazy-grow the bf16 scratch buffers used by the
         cast-around-matmul AMP path. Weight scratch is sized at
@@ -330,17 +350,80 @@ struct Linear[IN: Int, OUT: Int](Module):
         self._assert_tag[target]()
 
         comptime if target == "cpu":
-            # CPU path: ignore POLICY, always fp32 (CPU AMP isn't useful).
-            # Phase 8.0: route the matmul through `linalg.matmul[target="cpu"]`
-            # (vendor BLAS / Modular CPU GEMM) — ~250-760x over the naive
-            # triple loop. Bias-add and cache-memcpy stay manual but SIMD'd.
+            # CPU path. Phase 8.0 routed the fp32 matmul through
+            # `linalg.matmul[target="cpu"]`; Phase 8.3 adds the bf16
+            # cast-around branch — symmetric with the GPU AMP path.
             self._ensure_cache_cpu(BATCH)
-            var w = TileTensor(self.weight, row_major[Self.IN, Self.OUT]())
             var input_w = rebind[TileTensor[DT, LIN, MutAnyOrigin]](input)
             var output_w = rebind[TileTensor[DT, LOUT, MutAnyOrigin]](output)
-            # output = input @ weight  (overwrite)
-            max_matmul[target="cpu"](output_w, input_w, w, None)
+
+            comptime if POLICY.compute_dtype == DT:
+                # fp32 CPU path (Phase 8.0).
+                var w = TileTensor(self.weight, row_major[Self.IN, Self.OUT]())
+                # output = input @ weight  (overwrite)
+                max_matmul[target="cpu"](output_w, input_w, w, None)
+            else:
+                # bf16 CPU cast-around path (Phase 8.3).
+                comptime assert POLICY.compute_dtype == DType.bfloat16, (
+                    "Phase 8.3 supports only fp32 and bf16 compute_dtype on CPU"
+                )
+                self._ensure_amp_buffers_cpu(BATCH)
+
+                # Cast weight fp32 → bf16 (re-cast every forward — Adam may
+                # have stepped since the last call).
+                var w_fp32 = self.weight.unsafe_ptr()
+                var w_bf16 = self.w_bf16_cpu.unsafe_ptr()
+                var wk = 0
+                while wk + CPU_SIMD_W <= Self.W_SIZE:
+                    var wv = w_fp32.load[width=CPU_SIMD_W](wk)
+                    w_bf16.store(wk, wv.cast[DType.bfloat16]())
+                    wk += CPU_SIMD_W
+                while wk < Self.W_SIZE:
+                    w_bf16[wk] = w_fp32[wk].cast[DType.bfloat16]()
+                    wk += 1
+
+                # Cast input fp32 → bf16.
+                var in_fp32 = input_w.ptr
+                var in_bf16 = self.in_bf16_cpu.unsafe_ptr()
+                comptime in_n = BATCH * Self.IN
+                var ik = 0
+                while ik + CPU_SIMD_W <= in_n:
+                    var iv = in_fp32.load[width=CPU_SIMD_W](ik)
+                    in_bf16.store(ik, iv.cast[DType.bfloat16]())
+                    ik += CPU_SIMD_W
+                while ik < in_n:
+                    in_bf16[ik] = in_fp32[ik].cast[DType.bfloat16]()
+                    ik += 1
+
+                # bf16 matmul → bf16 output scratch.
+                var in_bf16_tt = TileTensor(
+                    self.in_bf16_cpu, row_major[BATCH, Self.IN]()
+                )
+                var w_bf16_tt = TileTensor(
+                    self.w_bf16_cpu, row_major[Self.IN, Self.OUT]()
+                )
+                var ou_bf16_tt = TileTensor(
+                    self.ou_bf16_cpu, row_major[BATCH, Self.OUT]()
+                )
+                max_matmul[target="cpu"](
+                    ou_bf16_tt, in_bf16_tt, w_bf16_tt, None
+                )
+
+                # Cast output bf16 → fp32 into caller's buffer.
+                var ou_bf16 = self.ou_bf16_cpu.unsafe_ptr()
+                var ou_fp32 = output_w.ptr
+                comptime ou_n = BATCH * Self.OUT
+                var ok = 0
+                while ok + CPU_SIMD_W <= ou_n:
+                    var ov = ou_bf16.load[width=CPU_SIMD_W](ok)
+                    ou_fp32.store(ok, ov.cast[DT]())
+                    ok += CPU_SIMD_W
+                while ok < ou_n:
+                    ou_fp32[ok] = ou_bf16[ok].cast[DT]()
+                    ok += 1
+
             # Bias-add: broadcast self.bias across BATCH rows, SIMD per row.
+            # Stays fp32 regardless of POLICY (Bf16Compute keeps bias fp32).
             var b_ptr = self.bias.unsafe_ptr()
             var out_ptr = output_w.ptr
             for bi in range(BATCH):
@@ -355,6 +438,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                     out_ptr[row_off + ij] = out_ptr[row_off + ij] + b_ptr[ij]
                     ij += 1
             # Cache input: SIMD memcpy [BATCH * IN] elements contiguous.
+            # Cache is fp32 (backward grad_w accum stays fp32).
             var in_ptr = input_w.ptr
             var cache_ptr = self.cache.unsafe_ptr()
             comptime cache_n = BATCH * Self.IN
@@ -491,14 +575,15 @@ struct Linear[IN: Int, OUT: Int](Module):
         self._assert_tag[target]()
 
         comptime if target == "cpu":
-            # CPU path: ignore POLICY, fp32.
-            # Phase 8.0: matmul through `linalg.matmul[target="cpu"]`.
+            # CPU path. Phase 8.0 routed all three matmuls through fp32
+            # `linalg.matmul[target="cpu"]`; Phase 8.3 adds the bf16
+            # cast-around branch for grad_input. grad_w / grad_b stay
+            # fp32 regardless of POLICY (mirrors the GPU path — AMP
+            # accum_dtype = fp32).
             #   grad_input = grad_output @ W^T          (overwrite)
             #   grad_w    += cache^T @ grad_output      (accumulate; matmul
             #                overwrites a scratch then sums into grad_w)
             #   grad_b    += sum_b grad_output[b, :]    (SIMD reduction)
-            var w = TileTensor(self.weight, row_major[Self.IN, Self.OUT]())
-            var c = TileTensor(self.cache, row_major[BATCH, Self.IN]())
             var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
                 grad_output
             )
@@ -507,9 +592,71 @@ struct Linear[IN: Int, OUT: Int](Module):
             )
 
             # 1) grad_input = grad_output @ W^T
-            max_matmul[transpose_b=True, target="cpu"](
-                grad_input_w, grad_output_w, w, None
-            )
+            comptime if POLICY.compute_dtype == DT:
+                # fp32 CPU path (Phase 8.0).
+                var w = TileTensor(self.weight, row_major[Self.IN, Self.OUT]())
+                max_matmul[transpose_b=True, target="cpu"](
+                    grad_input_w, grad_output_w, w, None
+                )
+            else:
+                # bf16 CPU cast-around path (Phase 8.3) — symmetric with
+                # the GPU bf16 backward in `backward_input`.
+                comptime assert POLICY.compute_dtype == DType.bfloat16, (
+                    "Phase 8.3 supports only fp32 and bf16 compute_dtype on CPU"
+                )
+                self._ensure_amp_buffers_cpu(BATCH)
+
+                # Cast weight fp32 → bf16.
+                var w_fp32 = self.weight.unsafe_ptr()
+                var w_bf16 = self.w_bf16_cpu.unsafe_ptr()
+                var wk = 0
+                while wk + CPU_SIMD_W <= Self.W_SIZE:
+                    var wv = w_fp32.load[width=CPU_SIMD_W](wk)
+                    w_bf16.store(wk, wv.cast[DType.bfloat16]())
+                    wk += CPU_SIMD_W
+                while wk < Self.W_SIZE:
+                    w_bf16[wk] = w_fp32[wk].cast[DType.bfloat16]()
+                    wk += 1
+
+                # Cast grad_output fp32 → bf16 into ou_bf16 scratch.
+                var go_fp32 = grad_output_w.ptr
+                var go_bf16 = self.ou_bf16_cpu.unsafe_ptr()
+                comptime go_n = BATCH * Self.OUT
+                var gk = 0
+                while gk + CPU_SIMD_W <= go_n:
+                    var gv = go_fp32.load[width=CPU_SIMD_W](gk)
+                    go_bf16.store(gk, gv.cast[DType.bfloat16]())
+                    gk += CPU_SIMD_W
+                while gk < go_n:
+                    go_bf16[gk] = go_fp32[gk].cast[DType.bfloat16]()
+                    gk += 1
+
+                # bf16 matmul: gi_bf16 = go_bf16 @ W_bf16^T
+                var go_bf16_tt = TileTensor(
+                    self.ou_bf16_cpu, row_major[BATCH, Self.OUT]()
+                )
+                var w_bf16_tt = TileTensor(
+                    self.w_bf16_cpu, row_major[Self.IN, Self.OUT]()
+                )
+                var gi_bf16_tt = TileTensor(
+                    self.in_bf16_cpu, row_major[BATCH, Self.IN]()
+                )
+                max_matmul[transpose_b=True, target="cpu"](
+                    gi_bf16_tt, go_bf16_tt, w_bf16_tt, None
+                )
+
+                # Cast grad_input bf16 → fp32 into caller's buffer.
+                var gi_bf16 = self.in_bf16_cpu.unsafe_ptr()
+                var gi_fp32 = grad_input_w.ptr
+                comptime gi_n = BATCH * Self.IN
+                var ik = 0
+                while ik + CPU_SIMD_W <= gi_n:
+                    var iv = gi_bf16.load[width=CPU_SIMD_W](ik)
+                    gi_fp32.store(ik, iv.cast[DT]())
+                    ik += CPU_SIMD_W
+                while ik < gi_n:
+                    gi_fp32[ik] = gi_bf16[ik].cast[DT]()
+                    ik += 1
 
             # 2) grad_w += cache^T @ grad_output
             # linalg.matmul has no transpose_a, so physically transpose cache
@@ -707,17 +854,75 @@ struct Linear[IN: Int, OUT: Int](Module):
         self._assert_tag[target]()
 
         comptime if target == "cpu":
-            # CPU: grad_input = grad_output @ W^T. POLICY ignored on CPU.
-            var w = TileTensor(self.weight, row_major[Self.IN, Self.OUT]())
+            # CPU: grad_input = grad_output @ W^T. Mirrors `backward`'s
+            # cast-around path (Phase 8.3) for bf16; skips grad_w/grad_b.
             var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
                 grad_output
             )
             var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
                 grad_input
             )
-            max_matmul[transpose_b=True, target="cpu"](
-                grad_input_w, grad_output_w, w, None
-            )
+
+            comptime if POLICY.compute_dtype == DT:
+                var w = TileTensor(
+                    self.weight, row_major[Self.IN, Self.OUT]()
+                )
+                max_matmul[transpose_b=True, target="cpu"](
+                    grad_input_w, grad_output_w, w, None
+                )
+            else:
+                comptime assert POLICY.compute_dtype == DType.bfloat16, (
+                    "Phase 8.3 supports only fp32 and bf16 compute_dtype on CPU"
+                )
+                self._ensure_amp_buffers_cpu(BATCH)
+
+                var w_fp32 = self.weight.unsafe_ptr()
+                var w_bf16 = self.w_bf16_cpu.unsafe_ptr()
+                var wk = 0
+                while wk + CPU_SIMD_W <= Self.W_SIZE:
+                    var wv = w_fp32.load[width=CPU_SIMD_W](wk)
+                    w_bf16.store(wk, wv.cast[DType.bfloat16]())
+                    wk += CPU_SIMD_W
+                while wk < Self.W_SIZE:
+                    w_bf16[wk] = w_fp32[wk].cast[DType.bfloat16]()
+                    wk += 1
+
+                var go_fp32 = grad_output_w.ptr
+                var go_bf16 = self.ou_bf16_cpu.unsafe_ptr()
+                comptime go_n = BATCH * Self.OUT
+                var gk = 0
+                while gk + CPU_SIMD_W <= go_n:
+                    var gv = go_fp32.load[width=CPU_SIMD_W](gk)
+                    go_bf16.store(gk, gv.cast[DType.bfloat16]())
+                    gk += CPU_SIMD_W
+                while gk < go_n:
+                    go_bf16[gk] = go_fp32[gk].cast[DType.bfloat16]()
+                    gk += 1
+
+                var go_bf16_tt = TileTensor(
+                    self.ou_bf16_cpu, row_major[BATCH, Self.OUT]()
+                )
+                var w_bf16_tt = TileTensor(
+                    self.w_bf16_cpu, row_major[Self.IN, Self.OUT]()
+                )
+                var gi_bf16_tt = TileTensor(
+                    self.in_bf16_cpu, row_major[BATCH, Self.IN]()
+                )
+                max_matmul[transpose_b=True, target="cpu"](
+                    gi_bf16_tt, go_bf16_tt, w_bf16_tt, None
+                )
+
+                var gi_bf16 = self.in_bf16_cpu.unsafe_ptr()
+                var gi_fp32 = grad_input_w.ptr
+                comptime gi_n = BATCH * Self.IN
+                var ik = 0
+                while ik + CPU_SIMD_W <= gi_n:
+                    var iv = gi_bf16.load[width=CPU_SIMD_W](ik)
+                    gi_fp32.store(ik, iv.cast[DT]())
+                    ik += CPU_SIMD_W
+                while ik < gi_n:
+                    gi_fp32[ik] = gi_bf16[ik].cast[DT]()
+                    ik += 1
         else:
             var ctx = self.ctx.value()
             var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
