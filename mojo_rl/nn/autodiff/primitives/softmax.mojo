@@ -58,6 +58,10 @@ struct SoftmaxOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
+
         comptime W = _CPU_SIMD_W
         var in_p = input.ptr
         var out_p = output.ptr
@@ -187,7 +191,9 @@ struct SoftmaxOp[dim: Int](DiffOp):
         ],
     ):
         """Per-sample softmax. Grid: (BATCH,), Block: (TPB,)."""
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var b = Int(block_idx.x)
         var local_i = Int(thread_idx.x)
 
@@ -358,7 +364,9 @@ struct SoftmaxOp[dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](
+                grad_input, grad_output, cache
+            )
 
         ctx.enqueue_function[wrapper](
             grad_input,

@@ -1,4 +1,4 @@
-"""nn2/ — stateful NN framework redesign.
+"""Stateful NN framework redesign.
 
 See docs/NN2_DESIGN.md for the design. Phase 1 scope:
   - Module + ParamVisitor traits

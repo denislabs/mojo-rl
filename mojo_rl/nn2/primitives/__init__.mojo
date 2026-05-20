@@ -1,1 +1,1 @@
-"""nn2/primitives/ — concrete Module implementations (layers)."""
+"""Primitives — concrete Module implementations (layers)."""

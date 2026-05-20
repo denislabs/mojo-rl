@@ -25,7 +25,8 @@ Cast-around-matmul model on Apple Metal (probed 2026-05-19,
 
 
 trait AMPPolicy(ImplicitlyDestructible):
-    """Mixed-precision policy: where each tensor lives and what kernels run in."""
+    """Mixed-precision policy: where each tensor lives and what kernels run in.
+    """
 
     comptime param_dtype: DType
     """Master weights + grads + Adam moments. Almost always fp32."""
@@ -46,7 +47,7 @@ struct NoAMP(AMPPolicy):
 
 
 struct Bf16Compute(AMPPolicy):
-    """bf16 compute, fp32 params + accumulators."""
+    """Bf16Compute: bf16 compute, fp32 params + accumulators."""
 
     comptime param_dtype = DType.float32
     comptime compute_dtype = DType.bfloat16

@@ -1,4 +1,4 @@
-"""box_muller_normal — fill a buffer with i.i.d. N(0, 1) samples.
+"""Box-Muller transform — fill a buffer with i.i.d. N(0, 1) samples.
 
 Box-Muller transform: given two independent U(0, 1) samples u1, u2,
     z = sqrt(-2 ln u1) · cos(2π u2)

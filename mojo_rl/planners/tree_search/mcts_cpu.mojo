@@ -181,10 +181,7 @@ def _sample_dirichlet_approx[
 @always_inline
 def _apply_legal_mask[
     ACTION_DIM: Int
-](
-    mut prior: InlineArray[Float64, ACTION_DIM],
-    legal_mask: List[Bool],
-):
+](mut prior: InlineArray[Float64, ACTION_DIM], legal_mask: List[Bool],):
     """Zero out illegal-action prior entries and renormalize.
 
     If all legal actions had zero prior, fall back to uniform over the
@@ -225,7 +222,7 @@ struct GenericCPUMCTS[
     PUCT: PUCTFormula,
     NOISE: ExplorationNoise,
     PLAYER: PlayerMode,
-](Movable, ImplicitlyDestructible):
+](ImplicitlyDestructible, Movable):
     """CPU MCTS parameterized by the model contract + strategy traits.
 
     Comptime params:
@@ -305,8 +302,9 @@ struct GenericCPUMCTS[
           7. Return the normalized visit-count policy.
 
         Args:
-            rep / dyn / pred: Trait-implementing adapters wrapping the
-                agent's networks (or stubs).
+            rep: Trait-implementing adapter wrapping the agent's networks representation (or stub).
+            dyn: Trait-implementing adapter wrapping the agent's networks dynamics (or stub).
+            pred: Trait-implementing adapter wrapping the agent's networks prediction (or stub).
             root_obs: Length ``OBS_DIM`` observation.
             add_noise: Whether to apply root exploration noise. Set
                 ``False`` for evaluation runs; ``True`` for self-play /
@@ -355,17 +353,15 @@ struct GenericCPUMCTS[
                 var noise = _sample_dirichlet_approx[Self.ACTION_DIM]()
                 var frac = Self.NOISE.NOISE_FRACTION
                 for a in range(Self.ACTION_DIM):
-                    root.prior[a] = (
-                        (1.0 - frac) * root.prior[a] + frac * noise[a]
-                    )
+                    root.prior[a] = (1.0 - frac) * root.prior[a] + frac * noise[
+                        a
+                    ]
             elif Self.NOISE.NOISE_TYPE == 1:
                 # Uniform epsilon
                 var frac = Self.NOISE.NOISE_FRACTION
                 var u = Float64(1.0) / Float64(Self.ACTION_DIM)
                 for a in range(Self.ACTION_DIM):
-                    root.prior[a] = (
-                        (1.0 - frac) * root.prior[a] + frac * u
-                    )
+                    root.prior[a] = (1.0 - frac) * root.prior[a] + frac * u
             # NOISE_TYPE == 2: no-op.
 
         self.nodes.append(root^)
@@ -416,12 +412,7 @@ struct GenericCPUMCTS[
         REP: Representation,
         DYN: Dynamics,
         PRED: Prediction,
-    ](
-        mut self,
-        mut rep: REP,
-        mut dyn: DYN,
-        mut pred: PRED,
-    ) raises:
+    ](mut self, mut rep: REP, mut dyn: DYN, mut pred: PRED,) raises:
         """One simulation: traverse to leaf, expand, back up the value."""
         var search_path = List[Int](capacity=64)
         var actions_path = List[Int](capacity=64)
@@ -530,9 +521,7 @@ struct GenericCPUMCTS[
         hidden state — the seed for ``_backup``.
         """
         # Pull parent hidden out of the pool.
-        var parent_h = List[Float64](
-            length=Self.LATENT_DIM, fill=Float64(0.0)
-        )
+        var parent_h = List[Float64](length=Self.LATENT_DIM, fill=Float64(0.0))
         var parent_off = (
             self.nodes[parent_idx].hidden_state_idx * Self.LATENT_DIM
         )
@@ -540,9 +529,7 @@ struct GenericCPUMCTS[
             parent_h[i] = self.hidden_states[parent_off + i]
 
         # Dynamics — reward + next hidden.
-        var child_h = List[Float64](
-            length=Self.LATENT_DIM, fill=Float64(0.0)
-        )
+        var child_h = List[Float64](length=Self.LATENT_DIM, fill=Float64(0.0))
         var reward = dyn.step_cpu(parent_h, action, child_h)
 
         # Store child hidden in the pool slot the caller chose.

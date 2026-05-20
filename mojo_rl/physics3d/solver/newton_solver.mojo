@@ -272,7 +272,7 @@ def _build_hessian[
                 var fr_off = fr * NV
                 comptime if USE_NEWTON_SIMD:
                     for i in range(NV):
-                        var s_a = h_cross * J_p[n_off + i]   # scales J_fr row
+                        var s_a = h_cross * J_p[n_off + i]  # scales J_fr row
                         var s_b = h_cross * J_p[fr_off + i]  # scales J_n  row
                         var sa_v = SIMD[DTYPE, W](s_a)
                         var sb_v = SIMD[DTYPE, W](s_b)
@@ -288,8 +288,7 @@ def _build_hessian[
                             jj += W
                         while jj < NV:
                             H_p[row_off + jj] += (
-                                s_a * J_p[fr_off + jj]
-                                + s_b * J_p[n_off + jj]
+                                s_a * J_p[fr_off + jj] + s_b * J_p[n_off + jj]
                             )
                             jj += 1
                 else:
@@ -658,7 +657,7 @@ struct NewtonSolver(ConstraintSolver):
         for iter in range(NEWTON_CPU_ITERATIONS):
             total_iter += 1
             # Compute gradient: grad = Ma - qfrc_smooth - qfrc_constraint
-            var grad_norm: Scalar[DTYPE] = 0
+            var grad_norm: Scalar[DTYPE]
             comptime if USE_NEWTON_SIMD:
                 var Ma_p = Ma.unsafe_ptr()
                 var qfs_p = qfrc_smooth.unsafe_ptr()
@@ -726,13 +725,12 @@ struct NewtonSolver(ConstraintSolver):
                 for i in range(NV):
                     var row_off = i * NV
                     var acc_v = SIMD[DTYPE, W](0)
-                    var sum_i: Scalar[DTYPE] = 0
+                    var sum_i: Scalar[DTYPE]
                     var jj = 0
                     while jj + W <= NV:
-                        acc_v += (
-                            Mh_p.load[width=W](row_off + jj)
-                            * sr_p.load[width=W](jj)
-                        )
+                        acc_v += Mh_p.load[width=W](row_off + jj) * sr_p.load[
+                            width=W
+                        ](jj)
                         jj += W
                     sum_i = acc_v.reduce_add()
                     while jj < NV:
@@ -1594,10 +1592,19 @@ struct NewtonSolver(ConstraintSolver):
                     # Gauss cost = 0.5*(Ma-f_smooth)·(qacc-qacc_smooth)
                     var old_cost: Scalar[DTYPE] = 0
                     for i in range(NV):
-                        old_cost += Scalar[DTYPE](0.5) * (Ma[i] - f_smooth[i]) * (qacc[i] - qacc_smooth[i])
+                        old_cost += (
+                            Scalar[DTYPE](0.5)
+                            * (Ma[i] - f_smooth[i])
+                            * (qacc[i] - qacc_smooth[i])
+                        )
                     for e_idx in range(num_edges):
                         if jar[e_idx] < Scalar[DTYPE](0):
-                            old_cost += Scalar[DTYPE](0.5) * De[e_idx] * jar[e_idx] * jar[e_idx]
+                            old_cost += (
+                                Scalar[DTYPE](0.5)
+                                * De[e_idx]
+                                * jar[e_idx]
+                                * jar[e_idx]
+                            )
 
                     # Try alpha, halve if cost doesn't decrease
                     for _ in range(LINESEARCH_ITER):
@@ -1605,11 +1612,20 @@ struct NewtonSolver(ConstraintSolver):
                         for i in range(NV):
                             var qa_t = qacc[i] + alpha * search[i]
                             var Ma_t = Ma[i] + alpha * Mv[i]
-                            trial_cost += Scalar[DTYPE](0.5) * (Ma_t - f_smooth[i]) * (qa_t - qacc_smooth[i])
+                            trial_cost += (
+                                Scalar[DTYPE](0.5)
+                                * (Ma_t - f_smooth[i])
+                                * (qa_t - qacc_smooth[i])
+                            )
                         for e_idx in range(num_edges):
                             var jar_t = jar[e_idx] + alpha * Jv_e[e_idx]
                             if jar_t < Scalar[DTYPE](0):
-                                trial_cost += Scalar[DTYPE](0.5) * De[e_idx] * jar_t * jar_t
+                                trial_cost += (
+                                    Scalar[DTYPE](0.5)
+                                    * De[e_idx]
+                                    * jar_t
+                                    * jar_t
+                                )
                         if trial_cost <= old_cost:
                             break
                         alpha *= Scalar[DTYPE](0.5)

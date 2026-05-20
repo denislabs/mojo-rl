@@ -1,4 +1,4 @@
-"""compute_gae — Generalized Advantage Estimation.
+"""Generalized Advantage Estimation (GAE) helper functions.
 
 Phase 8.1. Walks backward through a rollout, computes:
 

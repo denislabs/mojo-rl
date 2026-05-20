@@ -20,7 +20,7 @@ from std.math import sqrt
 
 
 struct IdentityDynamics(Copyable, Movable):
-    """z' = z + a — pure pass-through, no internal state.
+    """IdentityDynamics: z' = z + a — pure pass-through, no internal state.
 
     Paired with `GoalReachReward`: the one-step-optimal action from state z
     is exactly `goal - z` since reward is maximized when z' = goal.
@@ -38,7 +38,8 @@ struct IdentityDynamics(Copyable, Movable):
 
 @fieldwise_init
 struct GoalReachReward(Copyable, Movable):
-    """r(z) = -‖z - goal‖². Strictly concave in z; argmax is z = goal."""
+    """GoalReachReward: r(z) = -‖z - goal‖². Strictly concave in z; argmax is z = goal.
+    """
 
     var goal: List[Float64]
 
@@ -95,9 +96,11 @@ struct LinearQuadratic1D(Copyable, Movable):
         var P: Float64 = self.Q
         for _ in range(200):
             var denom = self.R + self.B * self.B * P
-            var P_next = self.Q + self.A * self.A * P - (
-                self.A * self.B * P
-            ) * (self.A * self.B * P) / denom
+            var P_next = (
+                self.Q
+                + self.A * self.A * P
+                - (self.A * self.B * P) * (self.A * self.B * P) / denom
+            )
             if abs(P_next - P) < 1e-12:
                 P = P_next
                 break

@@ -1,4 +1,4 @@
-"""nn2/training/ — training-loop coordinators."""
+"""Training-loop coordinators."""
 
 from .trainer import Trainer
 from .episode_tracker import EpisodeTracker

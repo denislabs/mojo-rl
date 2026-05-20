@@ -44,19 +44,30 @@ def apple_sgemm_accum[
     op(A) is (M, K), op(B) is (K, N), C is (M, N).
 
     Args:
-        M, N, K: matmul dimensions after any transposes.
-        alpha, beta: scaling constants (typical: alpha=1, beta=0 or 1).
-        A, B, C: pointers to row-major fp32 buffers.
-        lda, ldb, ldc: leading dimensions = number of columns of the
-            underlying (untransposed) buffer.
+        M: Number of rows of the underlying (untransposed) buffer.
+        N: Number of columns of the underlying (untransposed) buffer.
+        K: Number of columns of the other operand.
+        alpha: Scaling constant for operand A (typical: alpha=1).
+        A: Pointer to row-major fp32 buffer for operand A.
+        lda: Leading dimension of A = number of columns of the untransposed buffer.
+        B: Pointer to row-major fp32 buffer for operand B.
+        ldb: Leading dimension of B = number of columns of the untransposed buffer.
+        beta: Scaling constant for output/accumulation (typical: beta=0 or 1).
+        C: Pointer to row-major fp32 buffer for output/accumulation.
+        ldc: Leading dimension of C = number of columns of the untransposed buffer.
+
     """
     comptime assert (
         CompilationTarget.is_macos()
     ), "apple_sgemm_accum is macOS-only (Apple Accelerate)"
 
     var cblas_gemm = get_cblas_f32_function()
-    var ta = _CBLASTranspose.TRANSPOSE if transpose_a else _CBLASTranspose.NO_TRANSPOSE
-    var tb = _CBLASTranspose.TRANSPOSE if transpose_b else _CBLASTranspose.NO_TRANSPOSE
+    var ta = (
+        _CBLASTranspose.TRANSPOSE if transpose_a else _CBLASTranspose.NO_TRANSPOSE
+    )
+    var tb = (
+        _CBLASTranspose.TRANSPOSE if transpose_b else _CBLASTranspose.NO_TRANSPOSE
+    )
 
     cblas_gemm(
         _CBLASOrder.ROW_MAJOR,

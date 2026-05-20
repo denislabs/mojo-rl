@@ -216,16 +216,15 @@ struct PGSSolver(ConstraintSolver):
 
                 # Normal constraints: simple λ≥0 PGS
                 for normal_r in range(num_normals):
-                    var a_n: Scalar[DTYPE] = 0
+                    var a_n: Scalar[DTYPE]
                     var row_off_n = normal_r * NV
                     comptime if USE_PGS_SIMD:
                         var acc_v = SIMD[DTYPE, W](0)
                         var ii = 0
                         while ii + W <= NV:
-                            acc_v += (
-                                J_ptr.load[width=W](row_off_n + ii)
-                                * qacc_ptr.load[width=W](ii)
-                            )
+                            acc_v += J_ptr.load[width=W](
+                                row_off_n + ii
+                            ) * qacc_ptr.load[width=W](ii)
                             ii += W
                         a_n = acc_v.reduce_add()
                         while ii < NV:
@@ -273,23 +272,21 @@ struct PGSSolver(ConstraintSolver):
                         else:
                             for i in range(NV):
                                 qacc[i] += (
-                                    constraints.MinvJT[row_off_n + i]
-                                    * actual_n
+                                    constraints.MinvJT[row_off_n + i] * actual_n
                                 )
 
                 # Pyramid edge constraints: each edge is λ≥0
                 for r_off in range(num_friction):
                     var r = friction_start + r_off
                     var row_off_e = r * NV
-                    var a_edge: Scalar[DTYPE] = 0
+                    var a_edge: Scalar[DTYPE]
                     comptime if USE_PGS_SIMD:
                         var acc_v = SIMD[DTYPE, W](0)
                         var ii = 0
                         while ii + W <= NV:
-                            acc_v += (
-                                J_ptr.load[width=W](row_off_e + ii)
-                                * qacc_ptr.load[width=W](ii)
-                            )
+                            acc_v += J_ptr.load[width=W](
+                                row_off_e + ii
+                            ) * qacc_ptr.load[width=W](ii)
                             ii += W
                         a_edge = acc_v.reduce_add()
                         while ii < NV:
@@ -371,21 +368,19 @@ struct PGSSolver(ConstraintSolver):
                         var bi_off = row_idx[bi] * NV
                         for bj in range(dim):
                             var bj_off = row_idx[bj] * NV
-                            var a_val: Scalar[DTYPE] = 0
+                            var a_val: Scalar[DTYPE]
                             comptime if USE_PGS_SIMD:
                                 var acc_v = SIMD[DTYPE, W](0)
                                 var kk = 0
                                 while kk + W <= NV:
-                                    acc_v += (
-                                        J_ptr.load[width=W](bi_off + kk)
-                                        * MJ_ptr.load[width=W](bj_off + kk)
-                                    )
+                                    acc_v += J_ptr.load[width=W](
+                                        bi_off + kk
+                                    ) * MJ_ptr.load[width=W](bj_off + kk)
                                     kk += W
                                 a_val = acc_v.reduce_add()
                                 while kk < NV:
                                     a_val += (
-                                        J_ptr[bi_off + kk]
-                                        * MJ_ptr[bj_off + kk]
+                                        J_ptr[bi_off + kk] * MJ_ptr[bj_off + kk]
                                     )
                                     kk += 1
                             else:
@@ -409,15 +404,14 @@ struct PGSSolver(ConstraintSolver):
                     )
                     for bj in range(dim):
                         var bj_off = row_idx[bj] * NV
-                        var a: Scalar[DTYPE] = 0
+                        var a: Scalar[DTYPE]
                         comptime if USE_PGS_SIMD:
                             var acc_v = SIMD[DTYPE, W](0)
                             var kk = 0
                             while kk + W <= NV:
-                                acc_v += (
-                                    J_ptr.load[width=W](bj_off + kk)
-                                    * qacc_ptr.load[width=W](kk)
-                                )
+                                acc_v += J_ptr.load[width=W](
+                                    bj_off + kk
+                                ) * qacc_ptr.load[width=W](kk)
                                 kk += W
                             a = acc_v.reduce_add()
                             while kk < NV:
@@ -685,9 +679,7 @@ struct PGSSolver(ConstraintSolver):
                                     qacc_ptr.store(jj, q + m * s_v)
                                     jj += W
                                 while jj < NV:
-                                    qacc_ptr[jj] += (
-                                        MJ_ptr[bi_off + jj] * actual
-                                    )
+                                    qacc_ptr[jj] += MJ_ptr[bi_off + jj] * actual
                                     jj += 1
                             else:
                                 for k in range(NV):
@@ -740,15 +732,14 @@ struct PGSSolver(ConstraintSolver):
             for r_off in range(num_equality):
                 var r = equality_start + r_off
                 var r_off_nv = r * NV
-                var a_eq: Scalar[DTYPE] = 0
+                var a_eq: Scalar[DTYPE]
                 comptime if USE_PGS_SIMD:
                     var acc_v = SIMD[DTYPE, W](0)
                     var ii = 0
                     while ii + W <= NV:
-                        acc_v += (
-                            J_ptr.load[width=W](r_off_nv + ii)
-                            * qacc_ptr.load[width=W](ii)
-                        )
+                        acc_v += J_ptr.load[width=W](
+                            r_off_nv + ii
+                        ) * qacc_ptr.load[width=W](ii)
                         ii += W
                     a_eq = acc_v.reduce_add()
                     while ii < NV:
@@ -1165,11 +1156,17 @@ struct PGSSolver(ConstraintSolver):
                         var abs_ny = abs(ny)
                         var abs_nz = abs(nz)
                         if abs_nx <= abs_ny and abs_nx <= abs_nz:
-                            hint_x = Scalar[DTYPE](1); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](0)
+                            hint_x = Scalar[DTYPE](1)
+                            hint_y = Scalar[DTYPE](0)
+                            hint_z = Scalar[DTYPE](0)
                         elif abs_ny <= abs_nz:
-                            hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](1); hint_z = Scalar[DTYPE](0)
+                            hint_x = Scalar[DTYPE](0)
+                            hint_y = Scalar[DTYPE](1)
+                            hint_z = Scalar[DTYPE](0)
                         else:
-                            hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](1)
+                            hint_x = Scalar[DTYPE](0)
+                            hint_y = Scalar[DTYPE](0)
+                            hint_z = Scalar[DTYPE](1)
 
                     # Gram-Schmidt: orthogonalize hint against normal
                     var dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
@@ -1183,11 +1180,17 @@ struct PGSSolver(ConstraintSolver):
                         var abs_ny = abs(ny)
                         var abs_nz = abs(nz)
                         if abs_nx <= abs_ny and abs_nx <= abs_nz:
-                            hint_x = Scalar[DTYPE](1); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](0)
+                            hint_x = Scalar[DTYPE](1)
+                            hint_y = Scalar[DTYPE](0)
+                            hint_z = Scalar[DTYPE](0)
                         elif abs_ny <= abs_nz:
-                            hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](1); hint_z = Scalar[DTYPE](0)
+                            hint_x = Scalar[DTYPE](0)
+                            hint_y = Scalar[DTYPE](1)
+                            hint_z = Scalar[DTYPE](0)
                         else:
-                            hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](1)
+                            hint_x = Scalar[DTYPE](0)
+                            hint_y = Scalar[DTYPE](0)
+                            hint_z = Scalar[DTYPE](1)
                         dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
                         t1x = hint_x - dot_nh * nx
                         t1y = hint_y - dot_nh * ny
@@ -1721,9 +1724,7 @@ struct PGSSolver(ConstraintSolver):
                             workspace[env, ws_diag_n_pgs + c]
                         )
                         var R_n_val = (
-                            (Scalar[DTYPE](1.0) - imp_pgs)
-                            / imp_pgs
-                            * diag_pgs
+                            (Scalar[DTYPE](1.0) - imp_pgs) / imp_pgs * diag_pgs
                         )
                         AR[0] = (
                             rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])

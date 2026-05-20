@@ -1,4 +1,4 @@
-"""iLQR (iterative Linear Quadratic Regulator) planner.
+"""Planner-side trajectory optimization for iLQR (iterative Linear Quadratic Regulator).
 
 Two structs:
 
@@ -65,6 +65,7 @@ from .ilqr_kernels import (
 # the algorithm body readable while ACTION_DIM / LATENT_DIM stay
 # comptime in the struct body.
 
+
 @always_inline
 def _matmul(
     A: List[Float64],
@@ -84,6 +85,7 @@ def _matmul(
             for r in range(k):
                 s += A[a_offset + i * k + r] * B[b_offset + r * n + j]
             C_out[c_offset + i * n + j] = s
+
 
 @always_inline
 def _matmul_T_A(
@@ -105,6 +107,7 @@ def _matmul_T_A(
                 s += A[a_offset + r * m + i] * B[b_offset + r * n + j]
             C_out[c_offset + i * n + j] = s
 
+
 @always_inline
 def _matvec(
     A: List[Float64],
@@ -123,6 +126,7 @@ def _matvec(
             s += A[a_offset + i * n + j] * x[x_offset + j]
         y_out[y_offset + i] = s
 
+
 @always_inline
 def _matvec_T(
     A: List[Float64],
@@ -140,6 +144,7 @@ def _matvec_T(
         for i in range(m):
             s += A[a_offset + i * n + j] * x[x_offset + i]
         y_out[y_offset + j] = s
+
 
 def _cholesky_solve(
     mut M: List[Float64],
@@ -185,19 +190,22 @@ def _cholesky_solve(
             rhs[i * nrhs + c] = s
     return True
 
+
 @always_inline
 def _maxf(a: Float64, b: Float64) -> Float64:
     return a if a > b else b
+
 
 # =============================================================================
 # ILQRCPU
 # =============================================================================
 
+
 struct ILQRCPU[
     LATENT_DIM: Int,
     ACTION_DIM: Int,
     HORIZON: Int,
-](Movable, ImplicitlyDestructible):
+](ImplicitlyDestructible, Movable):
     """CPU iLQR planner.
 
     Plans an open-loop ``HORIZON``-step control sequence for a single
@@ -285,9 +293,7 @@ struct ILQRCPU[
         self.cost_tol = cost_tol
 
         self.U = List[Float64](length=Self._T * Self._A, fill=0.0)
-        self.z_seq = List[Float64](
-            length=(Self._T + 1) * Self._L, fill=0.0
-        )
+        self.z_seq = List[Float64](length=(Self._T + 1) * Self._L, fill=0.0)
         self.A_seq = List[Float64](length=Self._T * Self._LL, fill=0.0)
         self.B_seq = List[Float64](length=Self._T * Self._LA, fill=0.0)
         self.l_z_seq = List[Float64](length=Self._T * Self._L, fill=0.0)
@@ -315,9 +321,7 @@ struct ILQRCPU[
         )
 
         self.U_trial = List[Float64](length=Self._T * Self._A, fill=0.0)
-        self.z_trial = List[Float64](
-            length=(Self._T + 1) * Self._L, fill=0.0
-        )
+        self.z_trial = List[Float64](length=(Self._T + 1) * Self._L, fill=0.0)
 
         self.current_cost = 0.0
 
@@ -326,7 +330,9 @@ struct ILQRCPU[
         for i in range(Self._T * Self._A):
             self.U[i] = 0.0
 
-    def plan[CB: RolloutJacobianCallbackCPU](
+    def plan[
+        CB: RolloutJacobianCallbackCPU
+    ](
         mut self,
         mut callback: CB,
         z0: List[Float64],
@@ -385,11 +391,9 @@ struct ILQRCPU[
 
     # ────────────────────────────────────────────────────────────────
 
-    def _rollout[CB: RolloutJacobianCallbackCPU](
-        mut self,
-        mut callback: CB,
-        z0: List[Float64],
-    ) raises -> Float64:
+    def _rollout[
+        CB: RolloutJacobianCallbackCPU
+    ](mut self, mut callback: CB, z0: List[Float64],) raises -> Float64:
         for d in range(Self._L):
             self.z_seq[d] = z0[d]
 
@@ -415,10 +419,9 @@ struct ILQRCPU[
         total += callback.terminal_cpu(z_step, V_z_scratch, V_zz_scratch)
         return total
 
-    def _linearize_all[CB: RolloutJacobianCallbackCPU](
-        mut self,
-        mut callback: CB,
-    ) raises:
+    def _linearize_all[
+        CB: RolloutJacobianCallbackCPU
+    ](mut self, mut callback: CB,) raises:
         var z_step = List[Float64](length=Self._L, fill=0.0)
         var u_step = List[Float64](length=Self._A, fill=0.0)
         var A_buf = List[Float64](length=Self._LL, fill=0.0)
@@ -470,57 +473,97 @@ struct ILQRCPU[
 
             # Q_z = l_z + A^T V_z
             _matvec_T(
-                self.A_seq, self.V_z, self.Q_z,
-                Self._L, Self._L,
-                t * Self._LL, 0, 0,
+                self.A_seq,
+                self.V_z,
+                self.Q_z,
+                Self._L,
+                Self._L,
+                t * Self._LL,
+                0,
+                0,
             )
             for d in range(Self._L):
                 self.Q_z[d] += self.l_z_seq[t * Self._L + d]
 
             # Q_u = l_u + B^T V_z
             _matvec_T(
-                self.B_seq, self.V_z, self.Q_u,
-                Self._L, Self._A,
-                t * Self._LA, 0, 0,
+                self.B_seq,
+                self.V_z,
+                self.Q_u,
+                Self._L,
+                Self._A,
+                t * Self._LA,
+                0,
+                0,
             )
             for d in range(Self._A):
                 self.Q_u[d] += self.l_u_seq[t * Self._A + d]
 
             # tmp_LL = V_zz @ A
             _matmul(
-                self.V_zz, self.A_seq, self._tmp_LL,
-                Self._L, Self._L, Self._L,
-                0, 0, t * Self._LL,
+                self.V_zz,
+                self.A_seq,
+                self._tmp_LL,
+                Self._L,
+                Self._L,
+                Self._L,
+                0,
+                0,
+                t * Self._LL,
             )
             # Q_zz = l_zz + A^T (V_zz A)
             _matmul_T_A(
-                self.A_seq, self._tmp_LL, self.Q_zz,
-                Self._L, Self._L, Self._L,
-                0, t * Self._LL, 0,
+                self.A_seq,
+                self._tmp_LL,
+                self.Q_zz,
+                Self._L,
+                Self._L,
+                Self._L,
+                0,
+                t * Self._LL,
+                0,
             )
             for d in range(Self._LL):
                 self.Q_zz[d] += self.l_zz_seq[t * Self._LL + d]
 
             # tmp_LA = V_zz @ B
             _matmul(
-                self.V_zz, self.B_seq, self._tmp_LA,
-                Self._L, Self._L, Self._A,
-                0, 0, t * Self._LA,
+                self.V_zz,
+                self.B_seq,
+                self._tmp_LA,
+                Self._L,
+                Self._L,
+                Self._A,
+                0,
+                0,
+                t * Self._LA,
             )
             # Q_uu = l_uu + B^T (V_zz B)
             _matmul_T_A(
-                self.B_seq, self._tmp_LA, self.Q_uu,
-                Self._L, Self._A, Self._A,
-                0, t * Self._LA, 0,
+                self.B_seq,
+                self._tmp_LA,
+                self.Q_uu,
+                Self._L,
+                Self._A,
+                Self._A,
+                0,
+                t * Self._LA,
+                0,
             )
             for d in range(Self._AA):
                 self.Q_uu[d] += self.l_uu_seq[t * Self._AA + d]
 
             # Q_zu = l_zu + A^T (V_zz B)
             _matmul_T_A(
-                self.A_seq, self._tmp_LA, self.Q_zu,
-                Self._L, Self._L, Self._A,
-                0, t * Self._LL, 0,
+                self.A_seq,
+                self._tmp_LA,
+                self.Q_zu,
+                Self._L,
+                Self._L,
+                Self._A,
+                0,
+                t * Self._LL,
+                0,
             )
             for d in range(Self._LA):
                 self.Q_zu[d] += self.l_zu_seq[t * Self._LA + d]
@@ -536,9 +579,9 @@ struct ILQRCPU[
             for i in range(Self._A):
                 self._rhs_solve[i * (1 + Self._L) + 0] = -self.Q_u[i]
                 for j in range(Self._L):
-                    self._rhs_solve[
-                        i * (1 + Self._L) + 1 + j
-                    ] = -self.Q_zu[j * Self._A + i]
+                    self._rhs_solve[i * (1 + Self._L) + 1 + j] = -self.Q_zu[
+                        j * Self._A + i
+                    ]
 
             var ok = _cholesky_solve(
                 self._quu_solve, self._rhs_solve, Self._A, 1 + Self._L
@@ -557,48 +600,86 @@ struct ILQRCPU[
 
             # V_z, V_zz update (Tassa Eqs. 11–12)
             _matmul(
-                self.Q_uu, self.K_seq, self._tmp_AL,
-                Self._A, Self._A, Self._L,
-                0, 0, t * Self._LA,
+                self.Q_uu,
+                self.K_seq,
+                self._tmp_AL,
+                Self._A,
+                Self._A,
+                Self._L,
+                0,
+                0,
+                t * Self._LA,
             )
 
             var term1 = List[Float64](length=Self._L, fill=0.0)
             _matvec_T(
-                self.K_seq, self.Q_u, term1,
-                Self._A, Self._L,
-                t * Self._LA, 0, 0,
+                self.K_seq,
+                self.Q_u,
+                term1,
+                Self._A,
+                Self._L,
+                t * Self._LA,
+                0,
+                0,
             )
             var Quu_k = List[Float64](length=Self._A, fill=0.0)
             _matvec(
-                self.Q_uu, self.k_seq, Quu_k,
-                Self._A, Self._A,
-                0, t * Self._A, 0,
+                self.Q_uu,
+                self.k_seq,
+                Quu_k,
+                Self._A,
+                Self._A,
+                0,
+                t * Self._A,
+                0,
             )
             var term2 = List[Float64](length=Self._L, fill=0.0)
             _matvec_T(
-                self.K_seq, Quu_k, term2,
-                Self._A, Self._L,
-                t * Self._LA, 0, 0,
+                self.K_seq,
+                Quu_k,
+                term2,
+                Self._A,
+                Self._L,
+                t * Self._LA,
+                0,
+                0,
             )
             var term3 = List[Float64](length=Self._L, fill=0.0)
             _matvec(
-                self.Q_zu, self.k_seq, term3,
-                Self._L, Self._A,
-                0, t * Self._A, 0,
+                self.Q_zu,
+                self.k_seq,
+                term3,
+                Self._L,
+                Self._A,
+                0,
+                t * Self._A,
+                0,
             )
             for d in range(Self._L):
                 self.V_z[d] = self.Q_z[d] + term1[d] + term2[d] + term3[d]
 
             _matmul_T_A(
-                self.K_seq, self._tmp_AL, self._tmp_LL,
-                Self._A, Self._L, Self._L,
-                0, t * Self._LA, 0,
+                self.K_seq,
+                self._tmp_AL,
+                self._tmp_LL,
+                Self._A,
+                Self._L,
+                Self._L,
+                0,
+                t * Self._LA,
+                0,
             )
             var cross = List[Float64](length=Self._LL, fill=0.0)
             _matmul(
-                self.Q_zu, self.K_seq, cross,
-                Self._L, Self._A, Self._L,
-                0, 0, t * Self._LA,
+                self.Q_zu,
+                self.K_seq,
+                cross,
+                Self._L,
+                Self._A,
+                Self._L,
+                0,
+                0,
+                t * Self._LA,
             )
             for i in range(Self._L):
                 for j in range(Self._L):
@@ -611,7 +692,9 @@ struct ILQRCPU[
 
         return True
 
-    def _forward_with_gains[CB: RolloutJacobianCallbackCPU](
+    def _forward_with_gains[
+        CB: RolloutJacobianCallbackCPU
+    ](
         mut self,
         mut callback: CB,
         z0: List[Float64],
@@ -632,9 +715,7 @@ struct ILQRCPU[
                 var ff = self.k_seq[t * Self._A + i]
                 var fb: Float64 = 0.0
                 for j in range(Self._L):
-                    fb += self.K_seq[
-                        t * Self._LA + i * Self._L + j
-                    ] * (
+                    fb += self.K_seq[t * Self._LA + i * Self._L + j] * (
                         self.z_trial[t * Self._L + j]
                         - self.z_seq[t * Self._L + j]
                     )
@@ -670,7 +751,7 @@ struct ILQRGPUBatched[
     ACTION_DIM: Int,
     HORIZON: Int,
     N_ENVS: Int,
-](Movable, ImplicitlyDestructible):
+](ImplicitlyDestructible, Movable):
     """Batched GPU iLQR — ``N_ENVS`` independent problems planned in
     parallel.
 
@@ -749,7 +830,8 @@ struct ILQRGPUBatched[
     ) raises:
         if Self._T < 1 or Self._L < 1 or Self._A < 1 or Self._N < 1:
             raise Error(
-                "ILQRGPUBatched: HORIZON / LATENT / ACTION / N_ENVS must be >= 1"
+                "ILQRGPUBatched: HORIZON / LATENT / ACTION / N_ENVS must be"
+                " >= 1"
             )
         if n_iters < 1:
             raise Error("ILQRGPUBatched: n_iters must be >= 1")
@@ -770,9 +852,7 @@ struct ILQRGPUBatched[
         self.z_seq_buf = ctx.enqueue_create_buffer[dtype](
             Self._N * (Self._T + 1) * Self._L
         )
-        self.step_cost_buf = ctx.enqueue_create_buffer[dtype](
-            Self._N * Self._T
-        )
+        self.step_cost_buf = ctx.enqueue_create_buffer[dtype](Self._N * Self._T)
         self.term_cost_buf = ctx.enqueue_create_buffer[dtype](Self._N)
         self.total_cost_buf = ctx.enqueue_create_buffer[dtype](Self._N)
 
@@ -797,9 +877,7 @@ struct ILQRGPUBatched[
         self.l_zu_seq_buf = ctx.enqueue_create_buffer[dtype](
             Self._N * Self._T * Self._LA
         )
-        self.V_z_term_buf = ctx.enqueue_create_buffer[dtype](
-            Self._N * Self._L
-        )
+        self.V_z_term_buf = ctx.enqueue_create_buffer[dtype](Self._N * Self._L)
         self.V_zz_term_buf = ctx.enqueue_create_buffer[dtype](
             Self._N * Self._LL
         )
@@ -820,15 +898,9 @@ struct ILQRGPUBatched[
         )
         self.trial_cost_buf = ctx.enqueue_create_buffer[dtype](Self._N)
 
-        self.bw_ok_host = ctx.enqueue_create_host_buffer[DType.int32](
-            Self._N
-        )
-        self.trial_cost_host = ctx.enqueue_create_host_buffer[dtype](
-            Self._N
-        )
-        self.total_cost_host = ctx.enqueue_create_host_buffer[dtype](
-            Self._N
-        )
+        self.bw_ok_host = ctx.enqueue_create_host_buffer[DType.int32](Self._N)
+        self.trial_cost_host = ctx.enqueue_create_host_buffer[dtype](Self._N)
+        self.total_cost_host = ctx.enqueue_create_host_buffer[dtype](Self._N)
         self.zeros_U_host = ctx.enqueue_create_host_buffer[dtype](
             Self._N * Self._T * Self._A
         )
@@ -837,7 +909,9 @@ struct ILQRGPUBatched[
 
         ctx.synchronize()
 
-    def plan_gpu[CB: RolloutJacobianCallbackGPU](
+    def plan_gpu[
+        CB: RolloutJacobianCallbackGPU
+    ](
         mut self,
         ctx: DeviceContext,
         mut callback: CB,
@@ -933,9 +1007,7 @@ struct ILQRGPUBatched[
             Layout.row_major(Self._N * Self._L),
             MutAnyOrigin,
         ](self.z_seq_buf.unsafe_ptr())
-        ctx.enqueue_function[
-            ilqr_copy_z0_kernel[dtype, Self._N, Self._L]
-        ](
+        ctx.enqueue_function[ilqr_copy_z0_kernel[dtype, Self._N, Self._L]](
             z0,
             z_seq_view,
             grid_dim=Self._N,
@@ -954,20 +1026,16 @@ struct ILQRGPUBatched[
             Layout.row_major(Self._N * Self._L),
             MutAnyOrigin,
         ](self.z_trial_buf.unsafe_ptr())
-        ctx.enqueue_function[
-            ilqr_copy_z0_kernel[dtype, Self._N, Self._L]
-        ](
+        ctx.enqueue_function[ilqr_copy_z0_kernel[dtype, Self._N, Self._L]](
             z0,
             z_trial_view,
             grid_dim=Self._N,
             block_dim=Self._L,
         )
 
-    def _forward_rollout_initial[CB: RolloutJacobianCallbackGPU](
-        mut self,
-        ctx: DeviceContext,
-        mut callback: CB,
-    ) raises:
+    def _forward_rollout_initial[
+        CB: RolloutJacobianCallbackGPU
+    ](mut self, ctx: DeviceContext, mut callback: CB,) raises:
         """Roll out ``z_seq[t+1] = f(z_seq[t], U[t])``, accumulate
         ``step_cost``, then terminal expansion on ``z_seq[T]``.
         """
@@ -1018,11 +1086,9 @@ struct ILQRGPUBatched[
 
         self._terminal_on_z_seq(ctx, callback)
 
-    def _terminal_on_z_seq[CB: RolloutJacobianCallbackGPU](
-        mut self,
-        ctx: DeviceContext,
-        mut callback: CB,
-    ) raises:
+    def _terminal_on_z_seq[
+        CB: RolloutJacobianCallbackGPU
+    ](mut self, ctx: DeviceContext, mut callback: CB,) raises:
         var z_T = rebind[
             LayoutTensor[
                 dtype,
@@ -1058,16 +1124,14 @@ struct ILQRGPUBatched[
                 MutAnyOrigin,
             ](self.V_zz_term_buf.unsafe_ptr())
         )
-        var term = LayoutTensor[
-            dtype, Layout.row_major(Self._N), MutAnyOrigin
-        ](self.term_cost_buf.unsafe_ptr())
+        var term = LayoutTensor[dtype, Layout.row_major(Self._N), MutAnyOrigin](
+            self.term_cost_buf.unsafe_ptr()
+        )
         callback.terminal_gpu[Self._N](ctx, z_T, Vz, Vzz, term)
 
-    def _terminal_on_z_trial[CB: RolloutJacobianCallbackGPU](
-        mut self,
-        ctx: DeviceContext,
-        mut callback: CB,
-    ) raises:
+    def _terminal_on_z_trial[
+        CB: RolloutJacobianCallbackGPU
+    ](mut self, ctx: DeviceContext, mut callback: CB,) raises:
         var z_T = rebind[
             LayoutTensor[
                 dtype,
@@ -1077,10 +1141,7 @@ struct ILQRGPUBatched[
         ](
             LayoutTensor[
                 dtype, Layout.row_major(Self._N, Self._L), MutAnyOrigin
-            ](
-                self.z_trial_buf.unsafe_ptr()
-                + Self._T * Self._N * Self._L
-            )
+            ](self.z_trial_buf.unsafe_ptr() + Self._T * Self._N * Self._L)
         )
         var Vz = rebind[
             LayoutTensor[
@@ -1106,9 +1167,9 @@ struct ILQRGPUBatched[
                 MutAnyOrigin,
             ](self.V_zz_term_buf.unsafe_ptr())
         )
-        var term = LayoutTensor[
-            dtype, Layout.row_major(Self._N), MutAnyOrigin
-        ](self.term_cost_buf.unsafe_ptr())
+        var term = LayoutTensor[dtype, Layout.row_major(Self._N), MutAnyOrigin](
+            self.term_cost_buf.unsafe_ptr()
+        )
         callback.terminal_gpu[Self._N](ctx, z_T, Vz, Vzz, term)
 
     def _reduce_total_cost(mut self, ctx: DeviceContext) raises:
@@ -1121,9 +1182,7 @@ struct ILQRGPUBatched[
         var out_view = LayoutTensor[
             dtype, Layout.row_major(Self._N), MutAnyOrigin
         ](self.total_cost_buf.unsafe_ptr())
-        ctx.enqueue_function[
-            ilqr_reduce_cost_kernel[dtype, Self._T, Self._N]
-        ](
+        ctx.enqueue_function[ilqr_reduce_cost_kernel[dtype, Self._T, Self._N]](
             step_view,
             term_view,
             out_view,
@@ -1141,9 +1200,7 @@ struct ILQRGPUBatched[
         var out_view = LayoutTensor[
             dtype, Layout.row_major(Self._N), MutAnyOrigin
         ](self.trial_cost_buf.unsafe_ptr())
-        ctx.enqueue_function[
-            ilqr_reduce_cost_kernel[dtype, Self._T, Self._N]
-        ](
+        ctx.enqueue_function[ilqr_reduce_cost_kernel[dtype, Self._T, Self._N]](
             step_view,
             term_view,
             out_view,
@@ -1151,11 +1208,9 @@ struct ILQRGPUBatched[
             block_dim=Self._N,
         )
 
-    def _linearize_all[CB: RolloutJacobianCallbackGPU](
-        mut self,
-        ctx: DeviceContext,
-        mut callback: CB,
-    ) raises:
+    def _linearize_all[
+        CB: RolloutJacobianCallbackGPU
+    ](mut self, ctx: DeviceContext, mut callback: CB,) raises:
         for t in range(Self._T):
             var z_t = rebind[
                 LayoutTensor[
@@ -1336,9 +1391,7 @@ struct ILQRGPUBatched[
             DType.int32, Layout.row_major(Self._N), MutAnyOrigin
         ](self.bw_ok_buf.unsafe_ptr())
         ctx.enqueue_function[
-            ilqr_backward_pass_kernel[
-                dtype, Self._N, Self._T, Self._L, Self._A
-            ]
+            ilqr_backward_pass_kernel[dtype, Self._N, Self._T, Self._L, Self._A]
         ](
             A_view,
             B_view,
@@ -1357,12 +1410,9 @@ struct ILQRGPUBatched[
             block_dim=1,
         )
 
-    def _forward_with_gains[CB: RolloutJacobianCallbackGPU](
-        mut self,
-        ctx: DeviceContext,
-        mut callback: CB,
-        alpha: Float64,
-    ) raises:
+    def _forward_with_gains[
+        CB: RolloutJacobianCallbackGPU
+    ](mut self, ctx: DeviceContext, mut callback: CB, alpha: Float64,) raises:
         var U_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._A),
@@ -1447,10 +1497,7 @@ struct ILQRGPUBatched[
                     dtype,
                     Layout.row_major(Self._N, Self._L),
                     MutAnyOrigin,
-                ](
-                    self.z_trial_buf.unsafe_ptr()
-                    + (t + 1) * Self._N * Self._L
-                )
+                ](self.z_trial_buf.unsafe_ptr() + (t + 1) * Self._N * Self._L)
             )
             var c_t = LayoutTensor[
                 dtype, Layout.row_major(Self._N), MutAnyOrigin
@@ -1487,9 +1534,7 @@ struct ILQRGPUBatched[
             dtype, Layout.row_major(Self._N), MutAnyOrigin
         ](self.total_cost_buf.unsafe_ptr())
         ctx.enqueue_function[
-            ilqr_accept_kernel[
-                dtype, Self._N, Self._T, Self._L, Self._A
-            ]
+            ilqr_accept_kernel[dtype, Self._N, Self._T, Self._L, Self._A]
         ](
             Utrial_view,
             ztrial_view,

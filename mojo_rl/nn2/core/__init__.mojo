@@ -1,4 +1,4 @@
-"""nn2/core/ — traits + target-tag infrastructure."""
+"""Traits + target-tag infrastructure."""
 
 from .param_visitor import ParamVisitor
 from .module import Module
@@ -10,5 +10,8 @@ from .named_params import NamedParam, named_params
 from .map_params import polyak_update, hard_copy_params
 from .online_target_pair import OnlineTargetPair
 from .target_tag import (
-    TARGET_UNINIT, TARGET_CPU, TARGET_GPU, target_tag_for,
+    TARGET_UNINIT,
+    TARGET_CPU,
+    TARGET_GPU,
+    target_tag_for,
 )

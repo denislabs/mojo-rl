@@ -89,7 +89,11 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
         var b = 0
         while b + W <= BATCH:
             var pair = in_p.load[width=2 * W](2 * b).deinterleave()
-            var r = pair[0] - pair[1]
+            # deinterleave() returns SIMD[dtype, (2*W)/2] tuple — Mojo nightly
+            # doesn't fold the width back to W. Explicit rebind required.
+            var pred_v = rebind[SIMD[dtype, W]](pair[0])
+            var target_v = rebind[SIMD[dtype, W]](pair[1])
+            var r = pred_v - target_v
             c_p.store(b, r)
             var abs_r = math_abs(r)
             # Both branches computed; select by |r| <= delta mask.

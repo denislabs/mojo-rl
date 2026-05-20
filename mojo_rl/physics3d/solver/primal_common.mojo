@@ -227,15 +227,14 @@ def compute_jar[
     var qacc_ptr = qacc.unsafe_ptr()
     for r in range(constraints.num_rows):
         var row_off = r * NV
-        var val: Scalar[DTYPE] = 0
+        var val: Scalar[DTYPE]
         comptime if USE_NEWTON_SIMD:
             var acc_v = SIMD[DTYPE, W](0)
             var ii = 0
             while ii + W <= NV:
-                acc_v += (
-                    J_ptr.load[width=W](row_off + ii)
-                    * qacc_ptr.load[width=W](ii)
-                )
+                acc_v += J_ptr.load[width=W](row_off + ii) * qacc_ptr.load[
+                    width=W
+                ](ii)
                 ii += W
             val = acc_v.reduce_add()
             while ii < NV:
@@ -309,7 +308,7 @@ def compute_gauss_cost[
 ) -> Scalar[DTYPE]:
     """Compute Gauss cost = 0.5 * (Ma - qfrc_smooth) . (qacc - qacc_smooth)."""
     comptime W = simd_width_of[DTYPE]()
-    var cost_val: Scalar[DTYPE] = 0
+    var cost_val: Scalar[DTYPE]
     comptime if USE_NEWTON_SIMD:
         var Ma_p = Ma.unsafe_ptr()
         var qfs_p = qfrc_smooth.unsafe_ptr()
@@ -318,9 +317,8 @@ def compute_gauss_cost[
         var acc_v = SIMD[DTYPE, W](0)
         var ii = 0
         while ii + W <= NV:
-            acc_v += (
-                (Ma_p.load[width=W](ii) - qfs_p.load[width=W](ii))
-                * (qa_p.load[width=W](ii) - qas_p.load[width=W](ii))
+            acc_v += (Ma_p.load[width=W](ii) - qfs_p.load[width=W](ii)) * (
+                qa_p.load[width=W](ii) - qas_p.load[width=W](ii)
             )
             ii += W
         cost_val = acc_v.reduce_add()

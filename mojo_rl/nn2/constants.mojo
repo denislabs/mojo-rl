@@ -1,4 +1,4 @@
-"""nn2/ Phase 1 constants.
+"""Constants for nn2/ Phase 1.
 
 DT is pinned to float32 for Phase 1. Phase 3 (AMP) introduces per-layer
 `compute_dtype` / `accum_dtype` / `param_dtype` and AMPPolicy on DiffOps.

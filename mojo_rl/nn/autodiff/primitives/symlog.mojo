@@ -60,6 +60,10 @@ struct SymlogOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
+
         comptime W = _CPU_SIMD_W
         comptime N = BATCH * Self.dim
         var in_p = input.ptr
@@ -144,7 +148,9 @@ struct SymlogOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
@@ -282,7 +288,9 @@ struct SymlogOp[dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](
+                grad_input, grad_output, cache
+            )
 
         ctx.enqueue_function[wrapper](
             grad_input,

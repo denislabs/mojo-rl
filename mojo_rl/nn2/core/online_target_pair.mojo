@@ -38,18 +38,15 @@ struct OnlineTargetPair[M: Module](Movable & ImplicitlyDestructible):
     def make[target: StaticString, INIT: Initializer]() raises -> Self:
         """CPU factory. Builds online + target via M.make, then hard-copies
         online → target so the pair starts synchronized."""
-        comptime assert target == "cpu", (
-            "OnlineTargetPair.make[target='gpu', INIT] requires a "
-            "DeviceContext"
-        )
+        comptime assert (
+            target == "cpu"
+        ), "OnlineTargetPair.make[target='gpu', INIT] requires a DeviceContext"
         var p = Self()
         p.online = Self.M.make[target, INIT]()
         p.target_net = Self.M.make[target, INIT]()
         hard_copy_params[target, M=Self.M](p.online, p.target_net)
         return p^
 
-    def polyak_step[target: StaticString](
-        mut self, tau: Scalar[DT]
-    ) raises:
-        """target_net = (1-τ)·target_net + τ·online, per leaf."""
+    def polyak_step[target: StaticString](mut self, tau: Scalar[DT]) raises:
+        """Polyak update: target_net = (1-τ)·target_net + τ·online, per leaf."""
         polyak_update[target, M=Self.M](self.online, self.target_net, tau)
