@@ -16,6 +16,7 @@ Reference: mujoco-main/src/engine/engine_solver.c (mj_solPrimal)
 """
 
 from std.math import sqrt, max
+from std.sys import simd_width_of
 from ..types import _max_one
 from ..constraints.constraint_data import (
     CNSTR_NORMAL,
@@ -30,6 +31,14 @@ from ..constraints.constraint_data import (
     CNSTR_EQUALITY_WELD,
     ConstraintData,
 )
+
+# Manual SIMD on dense NV-length inner loops in compute_jar / compute_qfrc_constraint /
+# compute_gauss_cost (called per Newton iter from newton_solver.mojo and friends).
+# Mirrors USE_PGS_SIMD in pgs_solver.mojo (3.7-4× on Hopper-sized NV=11 Float32).
+# Flip to False to revert to the scalar code path if a regression is found;
+# correctness vs scalar is ~Float32 epsilon (FP reorder noise).
+comptime USE_NEWTON_SIMD: Bool = True
+
 
 # Constraint states (matching MuJoCo mjCnstrState)
 comptime PRIMAL_SATISFIED: Int = 0  # Inequality constraint satisfied (jar >= 0)
@@ -213,10 +222,28 @@ def compute_jar[
 
     aref = -bias (stored as bias in constraint rows), so jar = J*qacc + bias.
     """
+    comptime W = simd_width_of[DTYPE]()
+    var J_ptr = constraints.J.unsafe_ptr()
+    var qacc_ptr = qacc.unsafe_ptr()
     for r in range(constraints.num_rows):
+        var row_off = r * NV
         var val: Scalar[DTYPE] = 0
-        for i in range(NV):
-            val += constraints.J[r * NV + i] * qacc[i]
+        comptime if USE_NEWTON_SIMD:
+            var acc_v = SIMD[DTYPE, W](0)
+            var ii = 0
+            while ii + W <= NV:
+                acc_v += (
+                    J_ptr.load[width=W](row_off + ii)
+                    * qacc_ptr.load[width=W](ii)
+                )
+                ii += W
+            val = acc_v.reduce_add()
+            while ii < NV:
+                val += J_ptr[row_off + ii] * qacc_ptr[ii]
+                ii += 1
+        else:
+            for i in range(NV):
+                val += constraints.J[row_off + i] * qacc[i]
         jar[r] = val + constraints.rows[r].bias
 
 
@@ -233,13 +260,40 @@ def compute_qfrc_constraint[
     mut qfrc: List[Scalar[DTYPE]],
 ):
     """Compute qfrc_constraint = J^T * force."""
-    for i in range(NV):
-        qfrc[i] = Scalar[DTYPE](0)
-    for r in range(constraints.num_rows):
-        if force[r] == Scalar[DTYPE](0):
-            continue
+    comptime W = simd_width_of[DTYPE]()
+    var J_ptr = constraints.J.unsafe_ptr()
+    var qfrc_ptr = qfrc.unsafe_ptr()
+    comptime if USE_NEWTON_SIMD:
+        var zero_v = SIMD[DTYPE, W](0)
+        var i0 = 0
+        while i0 + W <= NV:
+            qfrc_ptr.store(i0, zero_v)
+            i0 += W
+        while i0 < NV:
+            qfrc_ptr[i0] = Scalar[DTYPE](0)
+            i0 += 1
+    else:
         for i in range(NV):
-            qfrc[i] += constraints.J[r * NV + i] * force[r]
+            qfrc[i] = Scalar[DTYPE](0)
+    for r in range(constraints.num_rows):
+        var f_r = force[r]
+        if f_r == Scalar[DTYPE](0):
+            continue
+        var row_off = r * NV
+        comptime if USE_NEWTON_SIMD:
+            var s_v = SIMD[DTYPE, W](f_r)
+            var jj = 0
+            while jj + W <= NV:
+                var q = qfrc_ptr.load[width=W](jj)
+                var m = J_ptr.load[width=W](row_off + jj)
+                qfrc_ptr.store(jj, q + m * s_v)
+                jj += W
+            while jj < NV:
+                qfrc_ptr[jj] += J_ptr[row_off + jj] * f_r
+                jj += 1
+        else:
+            for i in range(NV):
+                qfrc[i] += constraints.J[row_off + i] * f_r
 
 
 @always_inline
@@ -254,9 +308,28 @@ def compute_gauss_cost[
     qacc_smooth: List[Scalar[DTYPE]],
 ) -> Scalar[DTYPE]:
     """Compute Gauss cost = 0.5 * (Ma - qfrc_smooth) . (qacc - qacc_smooth)."""
+    comptime W = simd_width_of[DTYPE]()
     var cost_val: Scalar[DTYPE] = 0
-    for i in range(NV):
-        cost_val += (Ma[i] - qfrc_smooth[i]) * (qacc[i] - qacc_smooth[i])
+    comptime if USE_NEWTON_SIMD:
+        var Ma_p = Ma.unsafe_ptr()
+        var qfs_p = qfrc_smooth.unsafe_ptr()
+        var qa_p = qacc.unsafe_ptr()
+        var qas_p = qacc_smooth.unsafe_ptr()
+        var acc_v = SIMD[DTYPE, W](0)
+        var ii = 0
+        while ii + W <= NV:
+            acc_v += (
+                (Ma_p.load[width=W](ii) - qfs_p.load[width=W](ii))
+                * (qa_p.load[width=W](ii) - qas_p.load[width=W](ii))
+            )
+            ii += W
+        cost_val = acc_v.reduce_add()
+        while ii < NV:
+            cost_val += (Ma_p[ii] - qfs_p[ii]) * (qa_p[ii] - qas_p[ii])
+            ii += 1
+    else:
+        for i in range(NV):
+            cost_val += (Ma[i] - qfrc_smooth[i]) * (qacc[i] - qacc_smooth[i])
     return Scalar[DTYPE](0.5) * cost_val
 
 

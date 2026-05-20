@@ -37,6 +37,7 @@ Reference: mujoco-main/src/engine/engine_solver.c (mj_solPrimal)
 """
 
 from std.math import sqrt, pow
+from std.sys import simd_width_of
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from ..types import Model, Data, _max_one, ConeType
@@ -68,6 +69,7 @@ from .primal_common import (
     PRIMAL_QUADRATIC,
     PRIMAL_CONE,
     PRIMAL_MINVAL,
+    USE_NEWTON_SIMD,
 )
 from .cholesky import (
     chol_factor,
@@ -192,6 +194,11 @@ def _build_hessian[
     # Track which rows are handled as part of cone groups
     var handled = InlineArray[Bool, MR](fill=False)
 
+    # Pointers for SIMD inner-loop ports below (USE_NEWTON_SIMD comptime-gated).
+    comptime W = simd_width_of[DTYPE]()
+    var H_p = H.unsafe_ptr()
+    var J_p = constraints.J.unsafe_ptr()
+
     # Process cone contact groups (normal + friction children together)
     var fric_idx = 0
     for n in range(num_normals):
@@ -232,27 +239,69 @@ def _build_hessian[
             # row indices: n (normal), friction_start + fric_idx + g (friction children)
 
             # H_cone[0,0] = Dm → add Dm * J_n * J_n^T
-            for i in range(NV):
-                for j in range(NV):
-                    H[i * NV + j] += (
-                        Dm
-                        * constraints.J[n * NV + i]
-                        * constraints.J[n * NV + j]
-                    )
+            var n_off = n * NV
+            comptime if USE_NEWTON_SIMD:
+                for i in range(NV):
+                    var s_i = Dm * J_p[n_off + i]
+                    var s_iv = SIMD[DTYPE, W](s_i)
+                    var row_off = i * NV
+                    var jj = 0
+                    while jj + W <= NV:
+                        H_p.store(
+                            row_off + jj,
+                            H_p.load[width=W](row_off + jj)
+                            + s_iv * J_p.load[width=W](n_off + jj),
+                        )
+                        jj += W
+                    while jj < NV:
+                        H_p[row_off + jj] += s_i * J_p[n_off + jj]
+                        jj += 1
+            else:
+                for i in range(NV):
+                    for j in range(NV):
+                        H[i * NV + j] += (
+                            Dm
+                            * constraints.J[n * NV + i]
+                            * constraints.J[n * NV + j]
+                        )
 
             # H_cone[0,g+1] = -Dm * mu * jar_fg / T_safe  (cross-terms)
             for g in range(group_size):
                 var fr = friction_start + fric_idx + g
                 var h_cross = -Dm * mu * jar[fr] / T_safe
-                for i in range(NV):
-                    for j in range(NV):
-                        # J_n^T * h_cross * J_fr + J_fr^T * h_cross * J_n (symmetric)
-                        H[i * NV + j] += h_cross * (
-                            constraints.J[n * NV + i]
-                            * constraints.J[fr * NV + j]
-                            + constraints.J[fr * NV + i]
-                            * constraints.J[n * NV + j]
-                        )
+                var fr_off = fr * NV
+                comptime if USE_NEWTON_SIMD:
+                    for i in range(NV):
+                        var s_a = h_cross * J_p[n_off + i]   # scales J_fr row
+                        var s_b = h_cross * J_p[fr_off + i]  # scales J_n  row
+                        var sa_v = SIMD[DTYPE, W](s_a)
+                        var sb_v = SIMD[DTYPE, W](s_b)
+                        var row_off = i * NV
+                        var jj = 0
+                        while jj + W <= NV:
+                            H_p.store(
+                                row_off + jj,
+                                H_p.load[width=W](row_off + jj)
+                                + sa_v * J_p.load[width=W](fr_off + jj)
+                                + sb_v * J_p.load[width=W](n_off + jj),
+                            )
+                            jj += W
+                        while jj < NV:
+                            H_p[row_off + jj] += (
+                                s_a * J_p[fr_off + jj]
+                                + s_b * J_p[n_off + jj]
+                            )
+                            jj += 1
+                else:
+                    for i in range(NV):
+                        for j in range(NV):
+                            # J_n^T * h_cross * J_fr + J_fr^T * h_cross * J_n (symmetric)
+                            H[i * NV + j] += h_cross * (
+                                constraints.J[n * NV + i]
+                                * constraints.J[fr * NV + j]
+                                + constraints.J[fr * NV + i]
+                                * constraints.J[n * NV + j]
+                            )
 
             # H_cone[g1+1,g2+1]: friction-friction block
             for g1 in range(group_size):
@@ -273,13 +322,32 @@ def _build_hessian[
                     )
                     if g1 == g2:
                         h_ff -= Dm * mu * s / T_safe
-                    for i in range(NV):
-                        for j in range(NV):
-                            H[i * NV + j] += (
-                                h_ff
-                                * constraints.J[fr1 * NV + i]
-                                * constraints.J[fr2 * NV + j]
-                            )
+                    var fr1_off = fr1 * NV
+                    var fr2_off = fr2 * NV
+                    comptime if USE_NEWTON_SIMD:
+                        for i in range(NV):
+                            var s_i = h_ff * J_p[fr1_off + i]
+                            var s_iv = SIMD[DTYPE, W](s_i)
+                            var row_off = i * NV
+                            var jj = 0
+                            while jj + W <= NV:
+                                H_p.store(
+                                    row_off + jj,
+                                    H_p.load[width=W](row_off + jj)
+                                    + s_iv * J_p.load[width=W](fr2_off + jj),
+                                )
+                                jj += W
+                            while jj < NV:
+                                H_p[row_off + jj] += s_i * J_p[fr2_off + jj]
+                                jj += 1
+                    else:
+                        for i in range(NV):
+                            for j in range(NV):
+                                H[i * NV + j] += (
+                                    h_ff
+                                    * constraints.J[fr1 * NV + i]
+                                    * constraints.J[fr2 * NV + j]
+                                )
 
             # Mark these rows as handled
             handled[n] = True
@@ -294,11 +362,31 @@ def _build_hessian[
             continue
         # QUADRATIC state: standard D * J * J^T
         var D_r = D_vals[r]
-        for i in range(NV):
-            for j in range(NV):
-                H[i * NV + j] += (
-                    D_r * constraints.J[r * NV + i] * constraints.J[r * NV + j]
-                )
+        var r_off = r * NV
+        comptime if USE_NEWTON_SIMD:
+            for i in range(NV):
+                var s_i = D_r * J_p[r_off + i]
+                var s_iv = SIMD[DTYPE, W](s_i)
+                var row_off = i * NV
+                var jj = 0
+                while jj + W <= NV:
+                    H_p.store(
+                        row_off + jj,
+                        H_p.load[width=W](row_off + jj)
+                        + s_iv * J_p.load[width=W](r_off + jj),
+                    )
+                    jj += W
+                while jj < NV:
+                    H_p[row_off + jj] += s_i * J_p[r_off + jj]
+                    jj += 1
+        else:
+            for i in range(NV):
+                for j in range(NV):
+                    H[i * NV + j] += (
+                        D_r
+                        * constraints.J[r * NV + i]
+                        * constraints.J[r * NV + j]
+                    )
 
 
 struct NewtonSolver(ConstraintSolver):
@@ -566,13 +654,37 @@ struct NewtonSolver(ConstraintSolver):
 
         var total_iter = 0
 
+        comptime W = simd_width_of[DTYPE]()
         for iter in range(NEWTON_CPU_ITERATIONS):
             total_iter += 1
             # Compute gradient: grad = Ma - qfrc_smooth - qfrc_constraint
             var grad_norm: Scalar[DTYPE] = 0
-            for i in range(NV):
-                grad[i] = Ma[i] - qfrc_smooth[i] - qfrc_constraint[i]
-                grad_norm += grad[i] * grad[i]
+            comptime if USE_NEWTON_SIMD:
+                var Ma_p = Ma.unsafe_ptr()
+                var qfs_p = qfrc_smooth.unsafe_ptr()
+                var qfc_p = qfrc_constraint.unsafe_ptr()
+                var grad_p = grad.unsafe_ptr()
+                var acc_v = SIMD[DTYPE, W](0)
+                var ii = 0
+                while ii + W <= NV:
+                    var g = (
+                        Ma_p.load[width=W](ii)
+                        - qfs_p.load[width=W](ii)
+                        - qfc_p.load[width=W](ii)
+                    )
+                    grad_p.store(ii, g)
+                    acc_v += g * g
+                    ii += W
+                grad_norm = acc_v.reduce_add()
+                while ii < NV:
+                    var g = Ma_p[ii] - qfs_p[ii] - qfc_p[ii]
+                    grad_p[ii] = g
+                    grad_norm += g * g
+                    ii += 1
+            else:
+                for i in range(NV):
+                    grad[i] = Ma[i] - qfrc_smooth[i] - qfrc_constraint[i]
+                    grad_norm += grad[i] * grad[i]
 
             comptime if NEWTON_CPU_DEBUG:
                 print(
@@ -608,10 +720,30 @@ struct NewtonSolver(ConstraintSolver):
                 break
 
             # Compute Mv = M * search (needed for line search)
-            for i in range(NV):
-                Mv[i] = Scalar[DTYPE](0)
-                for j in range(NV):
-                    Mv[i] += constraints.M_hat[i * NV + j] * search[j]
+            comptime if USE_NEWTON_SIMD:
+                var Mh_p = constraints.M_hat.unsafe_ptr()
+                var sr_p = search.unsafe_ptr()
+                for i in range(NV):
+                    var row_off = i * NV
+                    var acc_v = SIMD[DTYPE, W](0)
+                    var sum_i: Scalar[DTYPE] = 0
+                    var jj = 0
+                    while jj + W <= NV:
+                        acc_v += (
+                            Mh_p.load[width=W](row_off + jj)
+                            * sr_p.load[width=W](jj)
+                        )
+                        jj += W
+                    sum_i = acc_v.reduce_add()
+                    while jj < NV:
+                        sum_i += Mh_p[row_off + jj] * sr_p[jj]
+                        jj += 1
+                    Mv[i] = sum_i
+            else:
+                for i in range(NV):
+                    Mv[i] = Scalar[DTYPE](0)
+                    for j in range(NV):
+                        Mv[i] += constraints.M_hat[i * NV + j] * search[j]
 
             # Forward-exploring linesearch with MuJoCo D
             var alpha = primal_linesearch_with_D[
