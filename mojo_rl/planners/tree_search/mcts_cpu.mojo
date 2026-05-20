@@ -462,6 +462,19 @@ struct GenericCPUMCTS[
         Q̂ is MinMax-normalized to [0, 1]. ``c(s)`` comes from the
         compile-time ``PUCT`` trait so MuZero / AlphaGo / UCB1 all live
         in one branch.
+
+        For ``PLAYER.USE_LEGAL_MASK = True`` (zero-sum AlphaZero-style),
+        zero-prior actions are skipped — they encode hard illegality
+        (``predict_cpu`` zeroes illegal entries before renormalizing).
+        At an unvisited node ``sqrt(N) = 0`` forces every explore term
+        to 0, so without this skip the argmax would tie-break to
+        ``action 0`` even when illegal. For ``USE_LEGAL_MASK = False``
+        (single-player MuZero etc.) the skip is bypassed to preserve
+        bit-parity with the legacy ``muzero/mcts.MCTS`` — softmax
+        priors there are strictly positive anyway, so the practical
+        difference is the legal-mask edge case that the parity test in
+        ``tests/planners/tree_search/test_mcts_cpu_parity_muzero.mojo``
+        documents.
         """
         var node = self.nodes[node_idx]
         var sqrt_total = sqrt(Float64(node.total_visits))
@@ -475,6 +488,10 @@ struct GenericCPUMCTS[
         var best_action: Int = 0
         var best_score = Float64(-1.0e18)
         for a in range(Self.ACTION_DIM):
+            comptime if Self.PLAYER.USE_LEGAL_MASK:
+                if node.prior[a] <= Float64(0.0):
+                    continue
+
             var q: Float64
             if node.visit_count[a] > 0:
                 q = self.min_max.normalize(node.mean_value(a))

@@ -83,8 +83,17 @@ from .state import AlphaZeroCPUState, AlphaZeroGPUState
 # Phase 3 agent rewiring: optional path through the shared orchestrator.
 # Opt in per-config via ``Config.USE_NEW_MCTS = True``; default is the
 # legacy inline (CUDA-graph-capturable) path below.
-from mojo_rl.planners.tree_search import GenericGPUMCTS
-from .gpu_trait_adapters import AlphaZeroPredGPU, AlphaZeroEnvGPU
+from mojo_rl.planners.tree_search import (
+    GenericGPUMCTS,
+    GenericCPUMCTS,
+)
+from .gpu_trait_adapters import (
+    AlphaZeroPredGPU,
+    AlphaZeroEnvGPU,
+    AlphaZeroRepCPU,
+    AlphaZeroDynCPU,
+    AlphaZeroPredCPU,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3514,285 +3523,94 @@ struct GenericAlphaZeroAgent[
         return (eval_wins, eval_draws, eval_losses)
 
     # ══════════════════════════════════════════════════════════════
-    # CPU MCTS (with exposed visit counts — for self-play data collection)
+    # CPU MCTS (delegates to shared planner)
     # ══════════════════════════════════════════════════════════════
 
     def _mcts_search_visits_cpu[
         E: TwoPlayerDiscreteEnv & Saveable,
     ](
         mut self,
-        obs: List[Scalar[dtype]],
         legal_mask: List[Bool],
         mut env: E,
         mut visits_out: UnsafePointer[Int, MutAnyOrigin],
-        num_sims: Int = 0,
-    ):
-        """Run MCTS from the current env state. Writes per-action visit counts.
+    ) raises:
+        """Run MCTS from the current env state via ``GenericCPUMCTS``.
 
-        ``visits_out`` must point to at least ``Self.Config.action_dim`` ints.
-        On return the env is restored to the root state so the caller can step
-        from the same position.
+        Writes per-action *integer* visit counts into ``visits_out``
+        (length ``Self.Config.action_dim``). The shared planner returns
+        a normalized policy; we recover counts by multiplying by the
+        total simulation budget so the existing temperature-sampling
+        code (which compares integer counts) keeps working unchanged.
 
-        This mirrors ``select_action_mcts`` exactly but exposes the root visit
-        counts (the AlphaZero policy target) instead of just the argmax action.
+        Adapters: AlphaZeroRepCPU (serialize env state), AlphaZeroDynCPU
+        (env.step true game rules), AlphaZeroPredCPU (network + tanh).
+        The live env is mutated during the search; it is restored to
+        the root state before returning.
         """
         comptime ACT = Self.Config.action_dim
         comptime OBS = Self.Config.obs_dim
-        comptime B: Int = 1
-        comptime PRED_IN = Self.Config.PredModel.IN_DIM
-        comptime PRED_OUT_DIM = Self.Config.PredModel.OUT_DIM
+        comptime SIMS = Self.Config.num_simulations
         comptime MAX_N = Self.Config.max_nodes
-        comptime C_PUCT = Self.Config.PUCT.C_INIT
+        comptime LATENT = E.SAVE_SIZE
 
         for a in range(ACT):
             visits_out[a] = 0
 
-        var sims = num_sims if num_sims > 0 else Self.Config.num_simulations
-
-        # Root network forward pass
-        var obs_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
-            Scalar[dtype]
-        ](OBS)
-        for i in range(OBS):
-            obs_ptr[i] = obs[i] if i < len(obs) else Scalar[dtype](0.0)
-        var obs_t = LayoutTensor[
-            dtype, Layout.row_major(B, PRED_IN), MutAnyOrigin
-        ](obs_ptr)
-        var pred_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
-            Scalar[dtype]
-        ](PRED_OUT_DIM)
-        memset(pred_ptr, 0, PRED_OUT_DIM)
-        var pred_t = LayoutTensor[
-            dtype, Layout.row_major(B, PRED_OUT_DIM), MutAnyOrigin
-        ](pred_ptr)
-        Self.PredNet.forward[B](
-            obs_t,
-            pred_t,
-            self.state.prediction.params_view(),
-            self.state.prediction.model_state_view(),
-        )
-
-        # Softmax over legal actions for root prior
-        var prior: UnsafePointer[Float64, MutAnyOrigin] = alloc[Float64](ACT)
-        var max_logit: Float64 = -1e18
-        for a in range(ACT):
-            var l = Float64(rebind[Scalar[dtype]](pred_t[0, a]))
-            if a < len(legal_mask) and legal_mask[a] and l > max_logit:
-                max_logit = l
-        var sum_exp: Float64 = 0.0
-        for a in range(ACT):
-            if a < len(legal_mask) and legal_mask[a]:
-                prior[a] = exp(
-                    Float64(rebind[Scalar[dtype]](pred_t[0, a])) - max_logit
-                )
-                sum_exp += prior[a]
-            else:
-                prior[a] = 0.0
-        if sum_exp > 0:
-            for a in range(ACT):
-                prior[a] /= sum_exp
-        obs_ptr.free()
-        pred_ptr.free()
-
-        # MCTS tree (flat arrays)
-        var visit_count: UnsafePointer[Int, MutAnyOrigin] = alloc[Int](
-            MAX_N * ACT
-        )
-        var total_value: UnsafePointer[Float64, MutAnyOrigin] = alloc[Float64](
-            MAX_N * ACT
-        )
-        var child_idx: UnsafePointer[Int, MutAnyOrigin] = alloc[Int](
-            MAX_N * ACT
-        )
-        var node_prior: UnsafePointer[Float64, MutAnyOrigin] = alloc[Float64](
-            MAX_N * ACT
-        )
-        var node_visits: UnsafePointer[Int, MutAnyOrigin] = alloc[Int](MAX_N)
-        var node_count = 1
-
-        memset(visit_count, 0, MAX_N * ACT)
-        memset(total_value, 0, MAX_N * ACT)
-        memset(node_visits, 0, MAX_N)
-        for i in range(MAX_N * ACT):
-            child_idx[i] = -1
-        node_visits[0] = 1
-        for a in range(ACT):
-            node_prior[a] = prior[a]
-
-        # Per-node saved env states
-        var node_states: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
-            Scalar[dtype]
-        ](MAX_N * E.SAVE_SIZE)
-
-        # Save root state
+        # Save the root so we can restore after the search trashes env state.
         var root_save: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
             Scalar[dtype]
-        ](E.SAVE_SIZE)
+        ](LATENT)
         env.save_env_state(root_save)
-        for i in range(E.SAVE_SIZE):
-            node_states[0 * E.SAVE_SIZE + i] = root_save[i]
 
-        for sim in range(sims):
-            if node_count >= MAX_N:
-                break
+        var env_ptr: UnsafePointer[E, MutAnyOrigin] = UnsafePointer(to=env)
 
-            env.load_env_state(root_save)
+        var rep = AlphaZeroRepCPU[E, OBS](env=env_ptr)
+        var dyn = AlphaZeroDynCPU[E, ACT](env=env_ptr)
+        var pred = AlphaZeroPredCPU[
+            E, OBS, ACT, Self.Config.PredModel, Self.Config.OptType
+        ](
+            env=env_ptr,
+            params=self.state.prediction.params,
+            model_state=self.state.prediction.model_state,
+        )
 
-            var node = 0
-            var path = List[Int]()
-            var path_actions = List[Int]()
+        var mcts = GenericCPUMCTS[
+            ACT,
+            LATENT,
+            SIMS,
+            MAX_N,
+            Self.Config.PUCT,
+            Self.Config.Noise,
+            Self.Config.Players,
+        ](gamma=Float64(self.gamma))
 
-            var found_leaf = False
-            while not found_leaf:
-                var total_n = Float64(node_visits[node])
-                var sqrt_n = sqrt(total_n)
-                var best_a = -1
-                var best_puct: Float64 = -1e18
+        # The planner's encode_cpu ignores its obs arg, but the API
+        # demands a list of length OBS_DIM.
+        var root_obs = List[Float64](length=OBS, fill=Float64(0.0))
 
-                for a in range(ACT):
-                    var p = node_prior[node * ACT + a]
-                    if p <= 0:
-                        continue
-                    var n_a = Float64(visit_count[node * ACT + a])
-                    var q: Float64 = 0.0
-                    if n_a > 0:
-                        q = total_value[node * ACT + a] / n_a
-                    var puct = q + C_PUCT * p * sqrt_n / (1.0 + n_a)
-                    if puct > best_puct:
-                        best_puct = puct
-                        best_a = a
+        var policy = mcts.search[
+            AlphaZeroRepCPU[E, OBS],
+            AlphaZeroDynCPU[E, ACT],
+            AlphaZeroPredCPU[
+                E, OBS, ACT, Self.Config.PredModel, Self.Config.OptType
+            ],
+        ](
+            rep,
+            dyn,
+            pred,
+            root_obs,
+            add_noise=True,
+            legal_mask=legal_mask,
+        )
 
-                if best_a < 0:
-                    break
-
-                path.append(node)
-                path_actions.append(best_a)
-
-                var ci = child_idx[node * ACT + best_a]
-                if ci < 0:
-                    var parent_state = node_states + node * E.SAVE_SIZE
-                    env.load_env_state(parent_state)
-                    _ = env.step(env.action_from_index(best_a))
-                    var game_result = env.game_result()
-
-                    var leaf_value: Float64
-                    if game_result != 0:
-                        if game_result == 3:
-                            leaf_value = 0.0
-                        else:
-                            var moved_player = 1 - env.current_player()
-                            leaf_value = (
-                                1.0 if game_result == moved_player + 1 else -1.0
-                            )
-                    else:
-                        var ci_new = node_count
-                        node_count += 1
-                        child_idx[node * ACT + best_a] = ci_new
-                        node_visits[ci_new] = 1
-
-                        var child_state = node_states + ci_new * E.SAVE_SIZE
-                        env.save_env_state(child_state)
-
-                        var child_obs_raw = env.get_obs_list()
-                        var child_obs: UnsafePointer[
-                            Scalar[dtype], MutAnyOrigin
-                        ] = alloc[Scalar[dtype]](OBS)
-                        for i in range(OBS):
-                            child_obs[i] = Scalar[dtype](
-                                child_obs_raw[i]
-                            ) if i < len(child_obs_raw) else Scalar[dtype](0.0)
-                        var c_obs_t = LayoutTensor[
-                            dtype, Layout.row_major(B, PRED_IN), MutAnyOrigin
-                        ](child_obs)
-                        var c_pred_ptr: UnsafePointer[
-                            Scalar[dtype], MutAnyOrigin
-                        ] = alloc[Scalar[dtype]](PRED_OUT_DIM)
-                        memset(c_pred_ptr, 0, PRED_OUT_DIM)
-                        var c_pred_t = LayoutTensor[
-                            dtype,
-                            Layout.row_major(B, PRED_OUT_DIM),
-                            MutAnyOrigin,
-                        ](c_pred_ptr)
-                        Self.PredNet.forward[B](
-                            c_obs_t,
-                            c_pred_t,
-                            self.state.prediction.params_view(),
-                            self.state.prediction.model_state_view(),
-                        )
-
-                        var child_legal = env.legal_action_mask()
-                        var c_max: Float64 = -1e18
-                        for a2 in range(ACT):
-                            var l2 = Float64(
-                                rebind[Scalar[dtype]](c_pred_t[0, a2])
-                            )
-                            if (
-                                a2 < len(child_legal)
-                                and child_legal[a2]
-                                and l2 > c_max
-                            ):
-                                c_max = l2
-                        var c_sum: Float64 = 0.0
-                        for a2 in range(ACT):
-                            if a2 < len(child_legal) and child_legal[a2]:
-                                node_prior[ci_new * ACT + a2] = exp(
-                                    Float64(
-                                        rebind[Scalar[dtype]](c_pred_t[0, a2])
-                                    )
-                                    - c_max
-                                )
-                                c_sum += node_prior[ci_new * ACT + a2]
-                            else:
-                                node_prior[ci_new * ACT + a2] = 0.0
-                        if c_sum > 0:
-                            for a2 in range(ACT):
-                                node_prior[ci_new * ACT + a2] /= c_sum
-
-                        var raw_v = Float64(
-                            rebind[Scalar[dtype]](c_pred_t[0, ACT])
-                        )
-                        if raw_v > 15.0:
-                            leaf_value = 1.0
-                        elif raw_v < -15.0:
-                            leaf_value = -1.0
-                        else:
-                            var ev = exp(2.0 * raw_v)
-                            leaf_value = (ev - 1.0) / (ev + 1.0)
-
-                        child_obs.free()
-                        c_pred_ptr.free()
-
-                    var v = leaf_value
-                    for p_idx in range(len(path) - 1, -1, -1):
-                        v = -v
-                        visit_count[
-                            path[p_idx] * ACT + path_actions[p_idx]
-                        ] += 1
-                        total_value[
-                            path[p_idx] * ACT + path_actions[p_idx]
-                        ] += v
-                        node_visits[path[p_idx]] += 1
-                    found_leaf = True
-                else:
-                    var child_state = node_states + ci * E.SAVE_SIZE
-                    env.load_env_state(child_state)
-                    node = ci
-
-        # Restore env to root state
+        # Restore env to root before returning.
         env.load_env_state(root_save)
-
-        # Copy root visit counts into the output buffer
-        for a in range(ACT):
-            visits_out[a] = visit_count[a]
-
-        prior.free()
-        visit_count.free()
-        total_value.free()
-        child_idx.free()
-        node_prior.free()
-        node_visits.free()
-        node_states.free()
         root_save.free()
+
+        # Map normalized policy → integer visit counts via the
+        # simulation budget. (Sum of visits across legal actions == SIMS.)
+        for a in range(ACT):
+            visits_out[a] = Int(policy[a] * Float64(SIMS) + 0.5)
 
     # ══════════════════════════════════════════════════════════════
     # Self-Play CPU Training (board games — MLP/small configs)
@@ -3916,7 +3734,7 @@ struct GenericAlphaZeroAgent[
 
                     if use_mcts:
                         self._mcts_search_visits_cpu[E](
-                            obs, legal, env, visits
+                            legal, env, visits
                         )
                         var total = 0
                         for a in range(ACT):
