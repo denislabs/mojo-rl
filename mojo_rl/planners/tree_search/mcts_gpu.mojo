@@ -1080,11 +1080,25 @@ def gpu_mcts_extract_actions_temp_kernel[
 ) where dtype.is_floating_point():
     """Extract actions with temperature annealing.
 
-    Temperature schedule (matching AlphaZero.jl):
-      - First temp_threshold moves: temp=1, sample proportionally
-      - After temp_threshold: temp=temp_min
-        - temp_min=0.0: greedy argmax (one-hot policy)
-        - temp_min>0.0: sample from N^(1/τ) distribution
+    POLICY TARGET (``policies_out``): always the normalized visit
+    distribution over legal actions (∝ visits), independent of
+    temperature. This matches the CPU MCTS path (``GenericCPUMCTS``)
+    and the AlphaZero paper convention where the search result π is
+    the training target — softening the late-game target preserves
+    the search's uncertainty.
+
+    ACTION SELECTION (``actions_out``): temperature-controlled.
+      - First ``temp_threshold`` moves: τ=1, sample ∝ N.
+      - After ``temp_threshold``: τ = ``temp_min``.
+          τ=0     → greedy argmax.
+          τ>0     → sample from N^(1/τ).
+
+    Previously this kernel overwrote ``policies_out`` with a one-hot
+    target at τ=0, which deviated from CPU semantics and (with D4
+    augmentation on small boards like TTT) caused premature policy
+    entropy collapse + non-convergence. Action sampling now reads
+    temperature-adjusted weights from local storage so the stored
+    policy target is never sharpened.
 
     One thread per environment.
     """
@@ -1095,7 +1109,7 @@ def gpu_mcts_extract_actions_temp_kernel[
     var root_off = e * MAX_NODES * ACT
     var move_count = Int(rebind[Scalar[dtype]](ep_steps[e]))
 
-    # Compute visit counts for legal actions
+    # Compute legal-masked visit total + argmax over legal actions.
     var total = Scalar[dtype](0.0)
     var best_action = -1
     var best_count = Scalar[dtype](-1.0)
@@ -1112,7 +1126,24 @@ def gpu_mcts_extract_actions_temp_kernel[
     if best_action < 0:
         best_action = 0
 
-    # Determine temperature
+    # ── Soft policy target: π_a = N_a / Σ N (legal-masked) ──
+    if total > Scalar[dtype](0.5):
+        for a in range(ACT):
+            var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
+            if legal > Scalar[dtype](0.5):
+                policies_out[e * ACT + a] = (
+                    rebind[Scalar[dtype]](visit_count[root_off + a]) / total
+                )
+            else:
+                policies_out[e * ACT + a] = Scalar[dtype](0.0)
+    else:
+        # No visits — fallback to one-hot on best_action (only used as
+        # a degenerate seed; should not occur after MCTS has run).
+        for a in range(ACT):
+            policies_out[e * ACT + a] = Scalar[dtype](0.0)
+        policies_out[e * ACT + best_action] = Scalar[dtype](1.0)
+
+    # ── Temperature-controlled action selection ──
     var temp: Scalar[dtype]
     if move_count < temp_threshold:
         temp = Scalar[dtype](1.0)
@@ -1120,56 +1151,43 @@ def gpu_mcts_extract_actions_temp_kernel[
         temp = temp_min
 
     if temp > Scalar[dtype](0.01) and total > Scalar[dtype](0.5):
-        # Positive temperature: apply temp and sample
-        # Policy: π_a ∝ N_a^(1/τ)
+        # Sample from temperature-adjusted N^(1/τ) over legal actions.
+        # Weights are kept in a local InlineArray so we never mutate
+        # the stored soft policy target.
         var inv_temp = Scalar[dtype](1.0) / temp
         var weighted_total = Scalar[dtype](0.0)
+        var w_arr = InlineArray[Scalar[dtype], ACT](fill=Scalar[dtype](0.0))
         for a in range(ACT):
             var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
             if legal > Scalar[dtype](0.5):
                 var count = rebind[Scalar[dtype]](visit_count[root_off + a])
-                # N^(1/τ) = exp(ln(N)/τ) — safe for count > 0
                 if count > Scalar[dtype](0.5):
-                    var weighted = exp(log(count) * inv_temp)
-                    policies_out[e * ACT + a] = weighted
-                    weighted_total += weighted
-                else:
-                    policies_out[e * ACT + a] = Scalar[dtype](0.0)
-            else:
-                policies_out[e * ACT + a] = Scalar[dtype](0.0)
+                    var w = exp(log(count) * inv_temp)
+                    w_arr[a] = w
+                    weighted_total += w
 
-        # Normalize policy
-        if weighted_total > Scalar[dtype](1e-8):
+        if weighted_total <= Scalar[dtype](1e-8):
+            actions_out[e] = Scalar[dtype](best_action)
+        else:
+            var philox = PhiloxRandom(
+                seed=UInt64(rng_seed) + UInt64(e * 7919 + move_count * 6271),
+                offset=0,
+            )
+            var rand_vals = philox.step_uniform()
+            var rand = Scalar[dtype](rand_vals[0]) * weighted_total
+
+            var cumsum = Scalar[dtype](0.0)
+            var sampled = best_action  # Fallback to best
             for a in range(ACT):
-                var v = rebind[Scalar[dtype]](policies_out[e * ACT + a])
-                if v > Scalar[dtype](0.0):
-                    policies_out[e * ACT + a] = v / weighted_total
-
-        # Sample action from temperature-adjusted distribution
-        var philox = PhiloxRandom(
-            seed=UInt64(rng_seed) + UInt64(e * 7919 + move_count * 6271),
-            offset=0,
-        )
-        var rand_vals = philox.step_uniform()
-        var rand = Scalar[dtype](rand_vals[0])
-
-        var cumsum = Scalar[dtype](0.0)
-        var sampled = best_action  # Fallback to best
-        for a in range(ACT):
-            var p = rebind[Scalar[dtype]](policies_out[e * ACT + a])
-            if p > Scalar[dtype](0.0):
-                cumsum += p
-                if rand < cumsum:
-                    sampled = a
-                    break
-        actions_out[e] = Scalar[dtype](sampled)
+                if w_arr[a] > Scalar[dtype](0.0):
+                    cumsum += w_arr[a]
+                    if rand < cumsum:
+                        sampled = a
+                        break
+            actions_out[e] = Scalar[dtype](sampled)
     else:
-        # Temperature = 0: greedy argmax + one-hot policy target
+        # τ ≤ 0.01: greedy argmax. Policy target stays soft (above).
         actions_out[e] = Scalar[dtype](best_action)
-
-        for a in range(ACT):
-            policies_out[e * ACT + a] = Scalar[dtype](0.0)
-        policies_out[e * ACT + best_action] = Scalar[dtype](1.0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

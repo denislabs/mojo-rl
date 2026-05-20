@@ -1,18 +1,26 @@
 """AlphaZero CPU training on TicTacToe (MLP config).
 
-CPU-only — no DeviceContext required. Mirrors the GPU recipe but at a much
-smaller scale: a few iterations of MCTS self-play interleaved with CPU SGD
-on the (obs, MCTS-policy, game-outcome) replay buffer.
+CPU-only — no DeviceContext required. Trains a small MLP to optimal
+TicTacToe play via self-play + MCTS + supervised policy/value learning.
+
+Target: draw every game against the ``MinimaxTicTacToe`` evaluator (the
+perfect-play oracle). At convergence the agent should also draw nearly
+all games against itself (P0w/P1w both ≈ 0).
 
 Usage:
     pixi run mojo run -I . examples/board_games/tictactoe_alphazero_cpu.mojo
 """
 
+from std.time import perf_counter_ns
+
 from mojo_rl.deep_agents.alphazero import (
     GenericAlphaZeroAgent,
     AlphaZeroTicTacToeConfig,
 )
-from mojo_rl.deep_agents.muzero.evaluators import RandomOpponent
+from mojo_rl.deep_agents.muzero.evaluators import (
+    RandomOpponent,
+    MinimaxTicTacToe,
+)
 from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
@@ -20,31 +28,75 @@ def main() raises:
     print("=== AlphaZero CPU on TicTacToe (MLP) ===")
     print()
 
-    # Small, CPU-friendly config:
-    #   HIDDEN=64 (vs default 128) keeps the MLP tiny.
-    #   SIMS=25  (vs default 100) caps per-move MCTS at ~25 sims.
-    #   BS=32    matches our SGD step size on the CPU.
+    # Training-grade config — closer to alpha-zero-general defaults.
+    #   HIDDEN=128  : two-layer 128-unit MLP for both heads.
+    #   SIMS=50     : MCTS sims per move (50 is enough for 3×3 TTT;
+    #                 paper uses 100 for boards with larger branching).
+    #   NODES=128   : tree node pool; with SIMS=50 ≤ MAX_EP=9 plies
+    #                 most search trees stay well below this.
+    #   BS=64       : SGD batch size on a CPU is comfortably large.
+    #   CAP=80000   : replay capacity; with D4 8× augmentation a single
+    #                 iter of 500 env-steps yields ~4k samples, so this
+    #                 holds ~20 iters before eviction kicks in.
+    #   LR=0.005    : conservative LR; with use_one_cycle we anneal each
+    #                 iter's gradient pass through a OneCycle warmup.
     comptime Config = AlphaZeroTicTacToeConfig[
-        HIDDEN=64, LR=0.01, BS=32, CAP=20000, SIMS=25, NODES=64
+        HIDDEN=128,
+        LR=0.005,
+        BS=64,
+        CAP=80000,
+        SIMS=50,
+        NODES=128,
+        C_PUCT=1.0,
     ]
 
     var env = TicTacToeEnv[DType.float32]()
     var agent = GenericAlphaZeroAgent[Config]()
-    var opp = RandomOpponent()
+    var random_opp = RandomOpponent()
+    var minimax_opp = MinimaxTicTacToe()
+
+    var t0 = perf_counter_ns()
 
     _ = agent.train_selfplay_cpu[
-        TicTacToeEnv[DType.float32], RandomOpponent
+        TicTacToeEnv[DType.float32], RandomOpponent, MinimaxTicTacToe
     ](
         env,
-        opp,
-        num_iters=10,
-        games_per_iter=20,
-        train_epochs=5,
+        random_opp,
+        minimax_opp,
+        # Outer loop.
+        num_iters=40,
+        # ~500 env-steps per iter ≈ 70 self-play games on TTT.
+        steps_per_iter=500,
+        # 10 epochs over the current replay window per iter.
+        train_epochs=10,
+        # First iter: uniform-random self-play to seed the buffer.
         warmup_iters=1,
+        # Arena: a new model must win ≥55% of decisive games to replace
+        # the best. Rejected runs revert params + optimizer state.
+        arena_threshold=0.55,
+        do_eval=True,
+        do_eval2=True,
+        do_arena=True,
         eval_games=20,
+        arena_games=20,
+        # Slow-ramp the replay window: start with the last 4 iterations
+        # of history, grow by 1 iter every 2 iters until full
+        # ``Config.history_window`` (20).
+        slow_window_start=4,
+        slow_window_growth=2,
+        # Periodic checkpoint so a long run can be resumed.
+        checkpoint_every=10,
+        checkpoint_path="tictactoe_alphazero_cpu.ckpt",
+        diag_every=200,
         verbose=True,
+        dump_replay=False,
+        # OneCycle LR scaling across each iter's gradient pass.
+        use_one_cycle=True,
     )
+
+    var dt_s = Float64(perf_counter_ns() - t0) / 1e9
 
     print()
     print("Train steps:", agent.train_step_count)
+    print("Elapsed:    ", dt_s, "s")
     print("=== Done ===")

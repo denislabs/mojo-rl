@@ -138,6 +138,7 @@ struct AlphaZeroTicTacToeConfig[
     SIMS: Int = 100,
     NODES: Int = 128,
     C_PUCT: Float64 = 1.0,
+    BATCH_SIMS: Int = 8,
 ](AlphaZeroConfig):
     """AlphaZero for TicTacToe (27D obs, 9 actions) — MLP variant."""
 
@@ -162,7 +163,7 @@ struct AlphaZeroTicTacToeConfig[
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 4  # temp=1 first 4 moves, then temp_min
     comptime temp_min: Float64 = 0.0
-    comptime batch_sims: Int = 8
+    comptime batch_sims: Int = Self.BATCH_SIMS
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0

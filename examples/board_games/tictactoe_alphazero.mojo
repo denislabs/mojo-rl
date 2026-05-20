@@ -43,11 +43,22 @@ def main() raises:
 
     # Choose architecture:
     # MLP (fastest, decent for TTT):
-    # comptime Config = AlphaZeroTicTacToeConfig[]
+    comptime Config = AlphaZeroTicTacToeConfig[
+        HIDDEN=128,
+        LR=0.005,
+        BS=64,
+        CAP=80000,
+        SIMS=50,
+        NODES=128,
+        C_PUCT=1.0,
+        # GPU MCTS expands BATCH_SIMS paths per round, so SIMS must be a
+        # multiple of BATCH_SIMS. 50/10 = 5 rounds, matching CPU SIMS=50.
+        BATCH_SIMS=10,
+    ]
     # CNN (heavier but better features):
     # comptime Config = AlphaZeroTicTacToeCNNConfig[]
     # ResNet (strongest, 50 MCTS sims):
-    comptime Config = AlphaZeroTicTacToeResNetConfig[]
+    # comptime Config = AlphaZeroTicTacToeResNetConfig[]
 
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "TicTacToe")
@@ -62,7 +73,7 @@ def main() raises:
     var agent = GenericAlphaZeroAgent[Config, 64, 64, RemoteLogger]()
 
     _ = agent.train_selfplay_gpu[
-        TTT, RandomOpponent, GPUMinimaxTicTacToe, USE_CUDA_GRAPH=False
+        TTT, RandomOpponent, GPUMinimaxTicTacToe
     ](
         ctx,
         num_iters=100,
@@ -73,6 +84,12 @@ def main() raises:
         do_eval=True,
         do_eval2=True,
         do_arena=True,
+        # Match CPU example: slow-ramp the replay window so early iters
+        # train on recent data only (avoids overfitting iter-1's uniform
+        # warmup distribution). Start with last 4 iters, grow by 1 iter
+        # every 2 iters until full Config.history_window=20.
+        slow_window_start=4,
+        slow_window_growth=2,
         checkpoint_every=10,
         checkpoint_path="tictactoe_alphazero.ckpt",
         logger=UnsafePointer(to=logger),
