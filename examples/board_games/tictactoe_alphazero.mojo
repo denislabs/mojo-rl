@@ -36,30 +36,31 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="AlphaZero TicTacToe",
+        run_name="AlphaZero TicTacToe CNN",
         buffer_size=13,
         api_key=api_key,
     )
 
     # Choose architecture:
-    # MLP (fastest, decent for TTT):
-    comptime Config = AlphaZeroTicTacToeConfig[
-        HIDDEN=128,
-        LR=0.005,
+    # CNN smoke test — confirms Conv2DBatchNormReLU + Parallel head code
+    # paths work on the known-good TTT setup. BATCH_SIMS=1 matches the
+    # MLP-validated proven path (see docs/PHASE_D_GPU_MCTS_BUG_HUNT.md).
+    comptime Config = AlphaZeroTicTacToeCNNConfig[
+        FILTERS=64,
+        LR=0.001,
         BS=64,
         CAP=80000,
         SIMS=50,
         NODES=128,
         C_PUCT=1.0,
-        # GPU MCTS expands BATCH_SIMS paths per round, so SIMS must be a
-        # multiple of BATCH_SIMS. 50/10 = 5 rounds, matching CPU SIMS=50.
-        # With path-wide virtual loss (Phase D fix) batched sims diverge
-        # at every tree level, so BATCH_SIMS>1 no longer flattens the
-        # visit distribution.
-        BATCH_SIMS=10,
+        BATCH_SIMS=1,
+        VLOSS=3,
     ]
-    # CNN (heavier but better features):
-    # comptime Config = AlphaZeroTicTacToeCNNConfig[]
+    # MLP (fastest, decent for TTT) — known-converging baseline:
+    # comptime Config = AlphaZeroTicTacToeConfig[
+    #     HIDDEN=128, LR=0.005, BS=64, CAP=80000, SIMS=50, NODES=128,
+    #     C_PUCT=1.0, BATCH_SIMS=1,
+    # ]
     # ResNet (strongest, 50 MCTS sims):
     # comptime Config = AlphaZeroTicTacToeResNetConfig[]
 

@@ -1,7 +1,9 @@
-"""AlphaZero CPU training on TicTacToe (MLP config).
+"""AlphaZero CPU training on TicTacToe (CNN smoke test).
 
-CPU-only — no DeviceContext required. Trains a small MLP to optimal
-TicTacToe play via self-play + MCTS + supervised policy/value learning.
+CPU-only — no DeviceContext required. Trains the CNN variant
+(Conv2D+BN+ReLU backbone) to optimal TicTacToe play via self-play +
+MCTS + supervised policy/value learning. CPU is the convergence oracle
+we trust for validating the CNN code paths before GPU.
 
 Target: draw every game against the ``MinimaxTicTacToe`` evaluator (the
 perfect-play oracle). At convergence the agent should also draw nearly
@@ -19,6 +21,7 @@ from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.alphazero import (
     GenericAlphaZeroAgent,
     AlphaZeroTicTacToeConfig,
+    AlphaZeroTicTacToeCNNConfig,
 )
 from mojo_rl.deep_agents.muzero.evaluators import (
     RandomOpponent,
@@ -28,7 +31,7 @@ from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
 def main() raises:
-    print("=== AlphaZero CPU on TicTacToe (MLP) ===")
+    print("=== AlphaZero CPU on TicTacToe (CNN smoke) ===")
     print()
 
     # ── Logger setup ────────────────────────────────────────────
@@ -38,32 +41,34 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="AlphaZero TicTacToe CPU",
+        run_name="AlphaZero TicTacToe CNN CPU",
         buffer_size=13,
         api_key=api_key,
     )
 
-    # Training-grade config — closer to alpha-zero-general defaults.
-    #   HIDDEN=128  : two-layer 128-unit MLP for both heads.
-    #   SIMS=50     : MCTS sims per move (50 is enough for 3×3 TTT;
-    #                 paper uses 100 for boards with larger branching).
-    #   NODES=128   : tree node pool; with SIMS=50 ≤ MAX_EP=9 plies
-    #                 most search trees stay well below this.
-    #   BS=64       : SGD batch size on a CPU is comfortably large.
-    #   CAP=80000   : replay capacity; with D4 8× augmentation a single
-    #                 iter of 500 env-steps yields ~4k samples, so this
-    #                 holds ~20 iters before eviction kicks in.
-    #   LR=0.005    : conservative LR; with use_one_cycle we anneal each
-    #                 iter's gradient pass through a OneCycle warmup.
-    comptime Config = AlphaZeroTicTacToeConfig[
-        HIDDEN=128,
-        LR=0.005,
+    # CNN smoke test — mirror of the GPU example so curves are directly
+    # comparable on the dashboard. CPU is the convergence oracle.
+    #   FILTERS=64  : half the CNN default 128 to keep CPU wall-time
+    #                 reasonable; still richer than the MLP backbone.
+    #   LR=0.001    : matches the CNN config default (lower than MLP's
+    #                 0.005 to avoid dying ReLU in the deeper backbone).
+    #   SIMS=50     : same MCTS budget as the MLP-validated baseline so
+    #                 only the network changes vs the known-good run.
+    #   NODES=128, BS=64, CAP=80000 : as MLP baseline.
+    comptime Config = AlphaZeroTicTacToeCNNConfig[
+        FILTERS=64,
+        LR=0.001,
         BS=64,
         CAP=80000,
         SIMS=50,
         NODES=128,
         C_PUCT=1.0,
     ]
+    # MLP baseline (known-converging) — uncomment to revert:
+    # comptime Config = AlphaZeroTicTacToeConfig[
+    #     HIDDEN=128, LR=0.005, BS=64, CAP=80000, SIMS=50, NODES=128,
+    #     C_PUCT=1.0,
+    # ]
 
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "TicTacToe")
@@ -109,7 +114,7 @@ def main() raises:
         slow_window_growth=2,
         # Periodic checkpoint so a long run can be resumed.
         checkpoint_every=10,
-        checkpoint_path="tictactoe_alphazero_cpu.ckpt",
+        checkpoint_path="tictactoe_alphazero_cnn_cpu.ckpt",
         logger=UnsafePointer(to=logger),
         diag_every=500,
         verbose=True,
