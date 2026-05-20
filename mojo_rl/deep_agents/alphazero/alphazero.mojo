@@ -3514,6 +3514,773 @@ struct GenericAlphaZeroAgent[
         return (eval_wins, eval_draws, eval_losses)
 
     # ══════════════════════════════════════════════════════════════
+    # CPU MCTS (with exposed visit counts — for self-play data collection)
+    # ══════════════════════════════════════════════════════════════
+
+    def _mcts_search_visits_cpu[
+        E: TwoPlayerDiscreteEnv & Saveable,
+    ](
+        mut self,
+        obs: List[Scalar[dtype]],
+        legal_mask: List[Bool],
+        mut env: E,
+        mut visits_out: UnsafePointer[Int, MutAnyOrigin],
+        num_sims: Int = 0,
+    ):
+        """Run MCTS from the current env state. Writes per-action visit counts.
+
+        ``visits_out`` must point to at least ``Self.Config.action_dim`` ints.
+        On return the env is restored to the root state so the caller can step
+        from the same position.
+
+        This mirrors ``select_action_mcts`` exactly but exposes the root visit
+        counts (the AlphaZero policy target) instead of just the argmax action.
+        """
+        comptime ACT = Self.Config.action_dim
+        comptime OBS = Self.Config.obs_dim
+        comptime B: Int = 1
+        comptime PRED_IN = Self.Config.PredModel.IN_DIM
+        comptime PRED_OUT_DIM = Self.Config.PredModel.OUT_DIM
+        comptime MAX_N = Self.Config.max_nodes
+        comptime C_PUCT = Self.Config.PUCT.C_INIT
+
+        for a in range(ACT):
+            visits_out[a] = 0
+
+        var sims = num_sims if num_sims > 0 else Self.Config.num_simulations
+
+        # Root network forward pass
+        var obs_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](OBS)
+        for i in range(OBS):
+            obs_ptr[i] = obs[i] if i < len(obs) else Scalar[dtype](0.0)
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(B, PRED_IN), MutAnyOrigin
+        ](obs_ptr)
+        var pred_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](PRED_OUT_DIM)
+        memset(pred_ptr, 0, PRED_OUT_DIM)
+        var pred_t = LayoutTensor[
+            dtype, Layout.row_major(B, PRED_OUT_DIM), MutAnyOrigin
+        ](pred_ptr)
+        Self.PredNet.forward[B](
+            obs_t,
+            pred_t,
+            self.state.prediction.params_view(),
+            self.state.prediction.model_state_view(),
+        )
+
+        # Softmax over legal actions for root prior
+        var prior: UnsafePointer[Float64, MutAnyOrigin] = alloc[Float64](ACT)
+        var max_logit: Float64 = -1e18
+        for a in range(ACT):
+            var l = Float64(rebind[Scalar[dtype]](pred_t[0, a]))
+            if a < len(legal_mask) and legal_mask[a] and l > max_logit:
+                max_logit = l
+        var sum_exp: Float64 = 0.0
+        for a in range(ACT):
+            if a < len(legal_mask) and legal_mask[a]:
+                prior[a] = exp(
+                    Float64(rebind[Scalar[dtype]](pred_t[0, a])) - max_logit
+                )
+                sum_exp += prior[a]
+            else:
+                prior[a] = 0.0
+        if sum_exp > 0:
+            for a in range(ACT):
+                prior[a] /= sum_exp
+        obs_ptr.free()
+        pred_ptr.free()
+
+        # MCTS tree (flat arrays)
+        var visit_count: UnsafePointer[Int, MutAnyOrigin] = alloc[Int](
+            MAX_N * ACT
+        )
+        var total_value: UnsafePointer[Float64, MutAnyOrigin] = alloc[Float64](
+            MAX_N * ACT
+        )
+        var child_idx: UnsafePointer[Int, MutAnyOrigin] = alloc[Int](
+            MAX_N * ACT
+        )
+        var node_prior: UnsafePointer[Float64, MutAnyOrigin] = alloc[Float64](
+            MAX_N * ACT
+        )
+        var node_visits: UnsafePointer[Int, MutAnyOrigin] = alloc[Int](MAX_N)
+        var node_count = 1
+
+        memset(visit_count, 0, MAX_N * ACT)
+        memset(total_value, 0, MAX_N * ACT)
+        memset(node_visits, 0, MAX_N)
+        for i in range(MAX_N * ACT):
+            child_idx[i] = -1
+        node_visits[0] = 1
+        for a in range(ACT):
+            node_prior[a] = prior[a]
+
+        # Per-node saved env states
+        var node_states: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](MAX_N * E.SAVE_SIZE)
+
+        # Save root state
+        var root_save: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](E.SAVE_SIZE)
+        env.save_env_state(root_save)
+        for i in range(E.SAVE_SIZE):
+            node_states[0 * E.SAVE_SIZE + i] = root_save[i]
+
+        for sim in range(sims):
+            if node_count >= MAX_N:
+                break
+
+            env.load_env_state(root_save)
+
+            var node = 0
+            var path = List[Int]()
+            var path_actions = List[Int]()
+
+            var found_leaf = False
+            while not found_leaf:
+                var total_n = Float64(node_visits[node])
+                var sqrt_n = sqrt(total_n)
+                var best_a = -1
+                var best_puct: Float64 = -1e18
+
+                for a in range(ACT):
+                    var p = node_prior[node * ACT + a]
+                    if p <= 0:
+                        continue
+                    var n_a = Float64(visit_count[node * ACT + a])
+                    var q: Float64 = 0.0
+                    if n_a > 0:
+                        q = total_value[node * ACT + a] / n_a
+                    var puct = q + C_PUCT * p * sqrt_n / (1.0 + n_a)
+                    if puct > best_puct:
+                        best_puct = puct
+                        best_a = a
+
+                if best_a < 0:
+                    break
+
+                path.append(node)
+                path_actions.append(best_a)
+
+                var ci = child_idx[node * ACT + best_a]
+                if ci < 0:
+                    var parent_state = node_states + node * E.SAVE_SIZE
+                    env.load_env_state(parent_state)
+                    _ = env.step(env.action_from_index(best_a))
+                    var game_result = env.game_result()
+
+                    var leaf_value: Float64
+                    if game_result != 0:
+                        if game_result == 3:
+                            leaf_value = 0.0
+                        else:
+                            var moved_player = 1 - env.current_player()
+                            leaf_value = (
+                                1.0 if game_result == moved_player + 1 else -1.0
+                            )
+                    else:
+                        var ci_new = node_count
+                        node_count += 1
+                        child_idx[node * ACT + best_a] = ci_new
+                        node_visits[ci_new] = 1
+
+                        var child_state = node_states + ci_new * E.SAVE_SIZE
+                        env.save_env_state(child_state)
+
+                        var child_obs_raw = env.get_obs_list()
+                        var child_obs: UnsafePointer[
+                            Scalar[dtype], MutAnyOrigin
+                        ] = alloc[Scalar[dtype]](OBS)
+                        for i in range(OBS):
+                            child_obs[i] = Scalar[dtype](
+                                child_obs_raw[i]
+                            ) if i < len(child_obs_raw) else Scalar[dtype](0.0)
+                        var c_obs_t = LayoutTensor[
+                            dtype, Layout.row_major(B, PRED_IN), MutAnyOrigin
+                        ](child_obs)
+                        var c_pred_ptr: UnsafePointer[
+                            Scalar[dtype], MutAnyOrigin
+                        ] = alloc[Scalar[dtype]](PRED_OUT_DIM)
+                        memset(c_pred_ptr, 0, PRED_OUT_DIM)
+                        var c_pred_t = LayoutTensor[
+                            dtype,
+                            Layout.row_major(B, PRED_OUT_DIM),
+                            MutAnyOrigin,
+                        ](c_pred_ptr)
+                        Self.PredNet.forward[B](
+                            c_obs_t,
+                            c_pred_t,
+                            self.state.prediction.params_view(),
+                            self.state.prediction.model_state_view(),
+                        )
+
+                        var child_legal = env.legal_action_mask()
+                        var c_max: Float64 = -1e18
+                        for a2 in range(ACT):
+                            var l2 = Float64(
+                                rebind[Scalar[dtype]](c_pred_t[0, a2])
+                            )
+                            if (
+                                a2 < len(child_legal)
+                                and child_legal[a2]
+                                and l2 > c_max
+                            ):
+                                c_max = l2
+                        var c_sum: Float64 = 0.0
+                        for a2 in range(ACT):
+                            if a2 < len(child_legal) and child_legal[a2]:
+                                node_prior[ci_new * ACT + a2] = exp(
+                                    Float64(
+                                        rebind[Scalar[dtype]](c_pred_t[0, a2])
+                                    )
+                                    - c_max
+                                )
+                                c_sum += node_prior[ci_new * ACT + a2]
+                            else:
+                                node_prior[ci_new * ACT + a2] = 0.0
+                        if c_sum > 0:
+                            for a2 in range(ACT):
+                                node_prior[ci_new * ACT + a2] /= c_sum
+
+                        var raw_v = Float64(
+                            rebind[Scalar[dtype]](c_pred_t[0, ACT])
+                        )
+                        if raw_v > 15.0:
+                            leaf_value = 1.0
+                        elif raw_v < -15.0:
+                            leaf_value = -1.0
+                        else:
+                            var ev = exp(2.0 * raw_v)
+                            leaf_value = (ev - 1.0) / (ev + 1.0)
+
+                        child_obs.free()
+                        c_pred_ptr.free()
+
+                    var v = leaf_value
+                    for p_idx in range(len(path) - 1, -1, -1):
+                        v = -v
+                        visit_count[
+                            path[p_idx] * ACT + path_actions[p_idx]
+                        ] += 1
+                        total_value[
+                            path[p_idx] * ACT + path_actions[p_idx]
+                        ] += v
+                        node_visits[path[p_idx]] += 1
+                    found_leaf = True
+                else:
+                    var child_state = node_states + ci * E.SAVE_SIZE
+                    env.load_env_state(child_state)
+                    node = ci
+
+        # Restore env to root state
+        env.load_env_state(root_save)
+
+        # Copy root visit counts into the output buffer
+        for a in range(ACT):
+            visits_out[a] = visit_count[a]
+
+        prior.free()
+        visit_count.free()
+        total_value.free()
+        child_idx.free()
+        node_prior.free()
+        node_visits.free()
+        node_states.free()
+        root_save.free()
+
+    # ══════════════════════════════════════════════════════════════
+    # Self-Play CPU Training (board games — MLP/small configs)
+    # ══════════════════════════════════════════════════════════════
+
+    def train_selfplay_cpu[
+        E: TwoPlayerDiscreteEnv & Saveable,
+        EvalType: Evaluator,
+    ](
+        mut self,
+        mut env: E,
+        mut evaluator: EvalType,
+        num_iters: Int = 50,
+        games_per_iter: Int = 50,
+        train_epochs: Int = 10,
+        warmup_iters: Int = 1,
+        eval_games: Int = 20,
+        verbose: Bool = True,
+    ) raises -> TrainingMetrics:
+        """CPU self-play training (mirrors ``train_selfplay_gpu`` flow).
+
+        Per iteration:
+          1. Play ``games_per_iter`` self-play games with MCTS (frozen net).
+             First ``warmup_iters`` iterations use uniform-random legal actions
+             with a uniform policy target — fills the buffer cheaply.
+          2. Run ``train_epochs`` epochs of supervised training over the
+             current replay window. Each epoch does ``buf_size // batch_size``
+             SGD steps with the policy CE + value MSE objective (mirrors
+             ``az_policy_value_grad_kernel``).
+          3. Eval the current network vs ``EvalType`` (default RandomOpponent).
+
+        Designed for fast iteration on tiny configs (TicTacToe MLP). No GPU
+        context, no CUDA Graph capture, no GPU MCTS — just CPU LayoutTensor
+        forward/backward.
+        """
+        comptime BATCH = Self.Config.batch_size
+        comptime OBS = Self.Config.obs_dim
+        comptime ACT = Self.Config.action_dim
+        comptime PRED_IN = Self.Config.PredModel.IN_DIM
+        comptime PRED_OUT_DIM = Self.Config.PredModel.OUT_DIM
+        comptime PRED_CS = Self.Config.PredModel.CACHE_SIZE
+        comptime CACHE_ALLOC = PRED_CS if PRED_CS > 0 else 1
+        comptime NUM_SYM: Int = Self.Config.Aug.NUM_SYMMETRIES
+        comptime MAX_EP = Self.Config.max_episode_length
+        comptime TEMP_THRESH = Self.Config.temp_threshold
+        comptime VALUE_SQUASH = Self.Config.value_squash
+        comptime INV_PEN = Self.Config.invalid_action_penalty
+        comptime MAX_GRAD = Self.Config.max_grad_norm
+        comptime PS = Self.Config.PredModel.PARAM_SIZE
+
+        # ── Training scratch (reused across all SGD steps) ───────────
+        var input_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](BATCH * OBS)
+        var target_policy_buf: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = alloc[Scalar[dtype]](BATCH * ACT)
+        var target_value_buf: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = alloc[Scalar[dtype]](BATCH)
+        var pred_out_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](BATCH * PRED_OUT_DIM)
+        var cache_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](BATCH * CACHE_ALLOC)
+        var grad_out_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](BATCH * PRED_OUT_DIM)
+        var grad_in_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](BATCH * OBS)
+
+        # ── Per-episode scratch ─────────────────────────────────────
+        var ep_obs: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](MAX_EP * OBS)
+        var ep_policy: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](MAX_EP * ACT)
+        var ep_player: UnsafePointer[Int, MutAnyOrigin] = alloc[Int](MAX_EP)
+        var aug_obs: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](OBS)
+        var aug_policy: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](ACT)
+        var visits: UnsafePointer[Int, MutAnyOrigin] = alloc[Int](ACT)
+
+        var metrics = TrainingMetrics(algorithm_name="AlphaZero-CPU")
+
+        for iter in range(num_iters):
+            self.state.start_new_iteration()
+            var use_mcts = iter >= warmup_iters
+
+            var p0_wins = 0
+            var p1_wins = 0
+            var iter_draws = 0
+            var games_completed = 0
+
+            # ── 1. Collect self-play games ─────────────────────────
+            for _g in range(games_per_iter):
+                _ = env.reset()
+                var step_count = 0
+
+                while env.game_result() == 0 and step_count < MAX_EP:
+                    var legal = env.legal_action_mask()
+                    var obs_raw = env.get_obs_list()
+                    var obs = List[Scalar[dtype]](capacity=OBS)
+                    for i in range(OBS):
+                        if i < len(obs_raw):
+                            obs.append(Scalar[dtype](obs_raw[i]))
+                        else:
+                            obs.append(Scalar[dtype](0.0))
+
+                    var player = env.current_player()
+                    ep_player[step_count] = player
+
+                    var pol_off = step_count * ACT
+                    var chosen_action: Int = -1
+
+                    if use_mcts:
+                        self._mcts_search_visits_cpu[E](
+                            obs, legal, env, visits
+                        )
+                        var total = 0
+                        for a in range(ACT):
+                            total += visits[a]
+                        if total > 0:
+                            for a in range(ACT):
+                                ep_policy[pol_off + a] = Scalar[dtype](
+                                    Float64(visits[a]) / Float64(total)
+                                )
+                        else:
+                            var n_leg = 0
+                            for a in range(ACT):
+                                if a < len(legal) and legal[a]:
+                                    n_leg += 1
+                            for a in range(ACT):
+                                if (
+                                    a < len(legal)
+                                    and legal[a]
+                                    and n_leg > 0
+                                ):
+                                    ep_policy[pol_off + a] = Scalar[dtype](
+                                        1.0 / Float64(n_leg)
+                                    )
+                                else:
+                                    ep_policy[pol_off + a] = Scalar[dtype](0.0)
+
+                        # Temperature: temp=1 (sample from visits) for the
+                        # first temp_threshold moves, then argmax (temp=0).
+                        if step_count < TEMP_THRESH and total > 0:
+                            var rnd = random_float64()
+                            var acc: Float64 = 0.0
+                            for a in range(ACT):
+                                acc += Float64(visits[a]) / Float64(total)
+                                if rnd <= acc:
+                                    chosen_action = a
+                                    break
+                            if chosen_action < 0:
+                                for a in range(ACT):
+                                    if a < len(legal) and legal[a]:
+                                        chosen_action = a
+                                        break
+                        else:
+                            var best_v = -1
+                            for a in range(ACT):
+                                if visits[a] > best_v:
+                                    best_v = visits[a]
+                                    chosen_action = a
+                            if chosen_action < 0 or not (
+                                chosen_action < len(legal)
+                                and legal[chosen_action]
+                            ):
+                                for a in range(ACT):
+                                    if a < len(legal) and legal[a]:
+                                        chosen_action = a
+                                        break
+                    else:
+                        # Warmup: uniform random legal + uniform policy target
+                        var n_leg = 0
+                        for a in range(ACT):
+                            if a < len(legal) and legal[a]:
+                                n_leg += 1
+                        for a in range(ACT):
+                            if a < len(legal) and legal[a] and n_leg > 0:
+                                ep_policy[pol_off + a] = Scalar[dtype](
+                                    1.0 / Float64(n_leg)
+                                )
+                            else:
+                                ep_policy[pol_off + a] = Scalar[dtype](0.0)
+                        if n_leg == 0:
+                            break
+                        var pick = Int(random_float64() * Float64(n_leg))
+                        if pick >= n_leg:
+                            pick = n_leg - 1
+                        var c = 0
+                        for a in range(ACT):
+                            if a < len(legal) and legal[a]:
+                                if c == pick:
+                                    chosen_action = a
+                                    break
+                                c += 1
+
+                    # Record obs at this step (canonical, current player's POV)
+                    for i in range(OBS):
+                        if i < len(obs):
+                            ep_obs[step_count * OBS + i] = obs[i]
+                        else:
+                            ep_obs[step_count * OBS + i] = Scalar[dtype](0.0)
+
+                    _ = env.step(env.action_from_index(chosen_action))
+                    step_count += 1
+
+                # Game over — compute per-step value targets
+                var result = env.game_result()
+                var ep_len = step_count
+                games_completed += 1
+                if result == 1:
+                    p0_wins += 1
+                elif result == 2:
+                    p1_wins += 1
+                elif result == 3:
+                    iter_draws += 1
+                self.total_steps += ep_len
+
+                for t in range(ep_len):
+                    var p = ep_player[t]
+                    var v: Float64
+                    if result == 3 or result == 0:
+                        # Draw (or truncated as draw) — tiny non-zero target
+                        # matches the GPU draw-bump (1e-4) so the value head
+                        # has a gradient signal on drawn positions.
+                        v = 1e-4
+                    elif result == p + 1:
+                        v = 1.0
+                    else:
+                        v = -1.0
+                    var src_obs = ep_obs + t * OBS
+                    var src_pol = ep_policy + t * ACT
+                    for s in range(NUM_SYM):
+                        Self.Config.Aug.augment_obs[OBS](
+                            src_obs, s, aug_obs
+                        )
+                        Self.Config.Aug.augment_policy[ACT](
+                            src_pol, s, aug_policy
+                        )
+                        self.state.add(aug_obs, aug_policy, Scalar[dtype](v))
+
+            # ── 2. Train for train_epochs ──────────────────────────
+            var avg_p_ce_last: Float64 = 0.0
+            var avg_v_mse_last: Float64 = 0.0
+            if self.state.is_ready(BATCH):
+                var input_t = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, PRED_IN), MutAnyOrigin
+                ](input_buf)
+                var pred_t = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, PRED_OUT_DIM), MutAnyOrigin
+                ](pred_out_buf)
+                var cache_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Config.PredModel.CACHE_SIZE),
+                    MutAnyOrigin,
+                ](cache_buf)
+                var grad_out_t = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, PRED_OUT_DIM), MutAnyOrigin
+                ](grad_out_buf)
+                var grad_in_t = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, PRED_IN), MutAnyOrigin
+                ](grad_in_buf)
+
+                var steps_per_epoch = self.state.buf_size // BATCH
+                if steps_per_epoch < 1:
+                    steps_per_epoch = 1
+
+                for _ep in range(train_epochs):
+                    var sum_p_ce: Float64 = 0.0
+                    var sum_v_mse: Float64 = 0.0
+                    for _s in range(steps_per_epoch):
+                        # Sample BATCH random indices into the replay buffer
+                        for b in range(BATCH):
+                            var idx = Int(
+                                random_float64() * Float64(self.state.buf_size)
+                            )
+                            if idx >= self.state.buf_size:
+                                idx = self.state.buf_size - 1
+                            for i in range(OBS):
+                                input_buf[b * OBS + i] = self.state.buf_obs[
+                                    idx * OBS + i
+                                ]
+                            for i in range(ACT):
+                                target_policy_buf[b * ACT + i] = (
+                                    self.state.buf_policy[idx * ACT + i]
+                                )
+                            target_value_buf[b] = self.state.buf_value[idx]
+
+                        # Forward with cache
+                        var params_v = self.state.prediction.params_view()
+                        var model_state_v = (
+                            self.state.prediction.model_state_view()
+                        )
+                        Self.PredNet.forward_with_cache[BATCH](
+                            input_t,
+                            pred_t,
+                            params_v,
+                            model_state_v,
+                            cache_t,
+                        )
+
+                        # Compute combined policy CE + value MSE gradient.
+                        # Mirrors az_policy_value_grad_kernel exactly.
+                        var inv_batch: Float64 = 1.0 / Float64(BATCH)
+                        for b in range(BATCH):
+                            var pred_off = b * PRED_OUT_DIM
+                            var pol_off2 = b * ACT
+
+                            var max_l: Float64 = Float64(
+                                rebind[Scalar[dtype]](
+                                    pred_out_buf[pred_off]
+                                )
+                            )
+                            for a in range(1, ACT):
+                                var lv = Float64(
+                                    rebind[Scalar[dtype]](
+                                        pred_out_buf[pred_off + a]
+                                    )
+                                )
+                                if lv > max_l:
+                                    max_l = lv
+                            var sum_e: Float64 = 0.0
+                            for a in range(ACT):
+                                sum_e += exp(
+                                    Float64(
+                                        rebind[Scalar[dtype]](
+                                            pred_out_buf[pred_off + a]
+                                        )
+                                    )
+                                    - max_l
+                                )
+
+                            for a in range(ACT):
+                                var prob = (
+                                    exp(
+                                        Float64(
+                                            rebind[Scalar[dtype]](
+                                                pred_out_buf[pred_off + a]
+                                            )
+                                        )
+                                        - max_l
+                                    )
+                                    / sum_e
+                                )
+                                var target = Float64(
+                                    target_policy_buf[pol_off2 + a]
+                                )
+                                var g = (prob - target) * inv_batch
+                                if INV_PEN > 0.0 and target < 1e-6:
+                                    g += INV_PEN * prob * inv_batch
+                                grad_out_buf[pred_off + a] = Scalar[dtype](g)
+                                if target > 1e-8 and prob > 1e-8:
+                                    sum_p_ce -= target * log(prob)
+
+                            var raw_v = Float64(
+                                rebind[Scalar[dtype]](
+                                    pred_out_buf[pred_off + ACT]
+                                )
+                            )
+                            var target_v = Float64(target_value_buf[b])
+                            comptime if VALUE_SQUASH:
+                                var clamped = raw_v
+                                if clamped > 10.0:
+                                    clamped = 10.0
+                                elif clamped < -10.0:
+                                    clamped = -10.0
+                                var ev_p = exp(clamped)
+                                var ev_n = exp(-clamped)
+                                var tanh_v = (ev_p - ev_n) / (ev_p + ev_n)
+                                var dtanh = 1.0 - tanh_v * tanh_v
+                                grad_out_buf[pred_off + ACT] = Scalar[dtype](
+                                    2.0
+                                    * (tanh_v - target_v)
+                                    * dtanh
+                                    * inv_batch
+                                )
+                                sum_v_mse += (tanh_v - target_v) * (
+                                    tanh_v - target_v
+                                )
+                            else:
+                                grad_out_buf[pred_off + ACT] = Scalar[dtype](
+                                    2.0 * (raw_v - target_v) * inv_batch
+                                )
+                                sum_v_mse += (raw_v - target_v) * (
+                                    raw_v - target_v
+                                )
+
+                        # Backward
+                        self.state.prediction.zero_grads()
+                        var grads_v = self.state.prediction.grads_view()
+                        Self.PredNet.backward[BATCH](
+                            grad_out_t,
+                            grad_in_t,
+                            params_v,
+                            model_state_v,
+                            cache_t,
+                            grads_v,
+                        )
+
+                        # Per-element grad clip (matches the GPU clip_grads
+                        # path; 0.0 disables).
+                        comptime if MAX_GRAD > 0.0:
+                            for i in range(PS):
+                                var gv = Float64(
+                                    self.state.prediction.grads[i]
+                                )
+                                if gv > MAX_GRAD:
+                                    gv = MAX_GRAD
+                                elif gv < -MAX_GRAD:
+                                    gv = -MAX_GRAD
+                                self.state.prediction.grads[i] = Scalar[
+                                    dtype
+                                ](gv)
+
+                        self.state.prediction.optimizer_step()
+                        self.train_step_count += 1
+
+                    var n_samples = Float64(steps_per_epoch * BATCH)
+                    avg_p_ce_last = sum_p_ce / n_samples
+                    avg_v_mse_last = sum_v_mse / n_samples
+
+            # ── 3. Eval ─────────────────────────────────────────────
+            var eval_w = 0
+            var eval_d = 0
+            var eval_l = 0
+            if eval_games > 0:
+                var r = self.evaluate_against[E, EvalType](
+                    env, evaluator, eval_games
+                )
+                eval_w = r[0]
+                eval_d = r[1]
+                eval_l = r[2]
+
+            if verbose:
+                print(
+                    "[iter ",
+                    iter + 1,
+                    "/",
+                    num_iters,
+                    "] buf=",
+                    self.state.buf_size,
+                    " P0w/P1w/Dr=",
+                    p0_wins,
+                    "/",
+                    p1_wins,
+                    "/",
+                    iter_draws,
+                    " p_ce=",
+                    avg_p_ce_last,
+                    " v_mse=",
+                    avg_v_mse_last,
+                    " | vs Random W/D/L=",
+                    eval_w,
+                    "/",
+                    eval_d,
+                    "/",
+                    eval_l,
+                    " train_steps=",
+                    self.train_step_count,
+                    sep="",
+                )
+
+        input_buf.free()
+        target_policy_buf.free()
+        target_value_buf.free()
+        pred_out_buf.free()
+        cache_buf.free()
+        grad_out_buf.free()
+        grad_in_buf.free()
+        ep_obs.free()
+        ep_policy.free()
+        ep_player.free()
+        aug_obs.free()
+        aug_policy.free()
+        visits.free()
+
+        return metrics^
+
+    # ══════════════════════════════════════════════════════════════
     # Self-Play GPU Training
     # ══════════════════════════════════════════════════════════════
 

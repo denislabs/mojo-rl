@@ -21,6 +21,7 @@ Implementations:
 from layout import Layout, LayoutTensor
 from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext, DeviceBuffer
+from std.time import perf_counter_ns
 from std.gpu import thread_idx, block_idx, block_dim
 from mojo_rl.nn.constants import dtype, TPB
 from mojo_rl.nn.model import Model
@@ -1400,6 +1401,7 @@ struct AutodiffMaxEntLoss[
             + BATCH * 2  # grad_out (seed)
             + BATCH * OBS  # grad_obs
             + BATCH  # lp_buf
+            + 10  # reserved: 5 Int64 timer slots at tail (temporary profile)
         )
 
     @staticmethod
@@ -1439,6 +1441,17 @@ struct AutodiffMaxEntLoss[
 
         Returns mean log_prob for alpha auto-tuning.
         """
+        # Temporary profiling — 5 Int64 timer slots reserved at the TAIL of
+        # ws (ws_size adds +10 fp32 = +40 bytes). Order: [count, ns_assemble,
+        # ns_forward, ns_backward, ns_scatter]. The tail is exclusive to this
+        # strategy (TargetAction uses the head of strat_ws). Read from agent
+        # at end of train() at the same offset.
+        comptime _TIMER_OFFSET = (
+            Self.ws_size[BATCH, ACTIONS, ActorModel, CriticModel]() - 10
+        )
+        var _timer_p = (ws + _TIMER_OFFSET).bitcast[Int]()
+        var _t0 = Int(perf_counter_ns())
+
         comptime OBS = ActorModel.IN_DIM
         comptime ACTOR_PS = ActorModel.PARAM_SIZE
         comptime CRITIC_PS = CriticModel.PARAM_SIZE
@@ -1479,6 +1492,8 @@ struct AutodiffMaxEntLoss[
             dtype, Layout.row_major(SACGraph.PARAM_SIZE), MutAnyOrigin
         ](combined_params.unsafe_ptr())
 
+        var _t1 = Int(perf_counter_ns())
+
         # =====================================================================
         # Forward: obs → [min_Q, log_prob]
         # =====================================================================
@@ -1500,6 +1515,8 @@ struct AutodiffMaxEntLoss[
         ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
         SACGraph.forward[BATCH](obs, output_t, params_t, sac_state, cache_t)
+
+        var _t2 = Int(perf_counter_ns())
 
         # =====================================================================
         # Backward: gradient seed = [-1/BS, alpha/BS] per sample
@@ -1537,6 +1554,8 @@ struct AutodiffMaxEntLoss[
             grad_out_t, grad_obs_t, params_t, sac_state, cache_t, grads_t
         )
 
+        var _t3 = Int(perf_counter_ns())
+
         # =====================================================================
         # Scatter gradients back to separate actor/critic grad buffers
         # =====================================================================
@@ -1557,6 +1576,14 @@ struct AutodiffMaxEntLoss[
                 lp = -1.0
             mean_lp += lp
         mean_lp /= Float64(BATCH)
+
+        var _t4 = Int(perf_counter_ns())
+        _timer_p[0] += 1
+        _timer_p[1] += _t1 - _t0  # assemble
+        _timer_p[2] += _t2 - _t1  # forward
+        _timer_p[3] += _t3 - _t2  # backward
+        _timer_p[4] += _t4 - _t3  # scatter + meanlp
+
         return mean_lp
 
     @staticmethod

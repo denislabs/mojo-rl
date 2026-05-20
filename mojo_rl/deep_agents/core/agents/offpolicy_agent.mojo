@@ -44,6 +44,7 @@ from mojo_rl.nn.model.stochastic_actor import (
 )
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.time import perf_counter_ns
 
 from mojo_rl.deep_agents.core import (
     OffPolicyState,
@@ -793,6 +794,20 @@ struct GenericOffPolicyAgent[
     var use_ere: Bool
     var ere_eta: Float32
 
+    # do_cpu_train_step phase counters (always-on; perf_counter_ns/call
+    # overhead is negligible vs ~2.3 ms train_step. Printed at end of train()
+    # when profile_phases).
+    var ts_count: Int
+    var ts_ns_sample: Int
+    var ts_ns_target_q: Int
+    var ts_ns_critic_update: Int
+    var ts_ns_actor_update: Int
+    var ts_ns_soft_update: Int
+    # actor+alpha sub-phase counters
+    var ts_ns_actor_loss: Int       # SACGraph forward + backward + scatter
+    var ts_ns_actor_opt: Int        # Adam step on actor params
+    var ts_ns_alpha_adam: Int       # scalar alpha Adam
+
     def __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -874,6 +889,17 @@ struct GenericOffPolicyAgent[
         # ERE config
         self.use_ere = use_ere
         self.ere_eta = ere_eta
+
+        # do_cpu_train_step phase counters
+        self.ts_count = 0
+        self.ts_ns_sample = 0
+        self.ts_ns_target_q = 0
+        self.ts_ns_critic_update = 0
+        self.ts_ns_actor_update = 0
+        self.ts_ns_soft_update = 0
+        self.ts_ns_actor_loss = 0
+        self.ts_ns_actor_opt = 0
+        self.ts_ns_alpha_adam = 0
 
     # =========================================================================
     # OffPolicyContinuousAgent trait
@@ -1002,6 +1028,8 @@ struct GenericOffPolicyAgent[
 
         self.update_count += 1
 
+        var ts_t0 = Int(perf_counter_ns())
+
         # Phase 1: Sample batch
         var b_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
             uninitialized=True
@@ -1017,6 +1045,9 @@ struct GenericOffPolicyAgent[
         cpu_state.buffer.sample[Self.BATCH](b_obs, b_act, b_rew, b_next, b_done)
 
         var ws = Self.TrainWS(cpu_state.ws_data.unsafe_ptr())
+
+        var ts_t1 = Int(perf_counter_ns())
+        self.ts_ns_sample += ts_t1 - ts_t0
 
         # Phase 2: Target actions -- delegate to Config.TargetAction
         # SAC uses online (no target actor), DDPG/TD3 use target
@@ -1100,6 +1131,9 @@ struct GenericOffPolicyAgent[
             self.alpha,
         )
 
+        var ts_t2 = Int(perf_counter_ns())
+        self.ts_ns_target_q += ts_t2 - ts_t1
+
         # Phase 3: Critic update
         _concat_obs_act[Self.BATCH, Self.OBS, Self.ACTIONS, Self.CRITIC_IN](
             ws.ci().ptr, b_obs.unsafe_ptr(), b_act.unsafe_ptr()
@@ -1142,6 +1176,9 @@ struct GenericOffPolicyAgent[
                 critic_loss = ci_loss
             else:
                 critic_loss = (critic_loss + ci_loss) / 2.0
+
+        var ts_t3 = Int(perf_counter_ns())
+        self.ts_ns_critic_update += ts_t3 - ts_t2
 
         # Diagnostic logging — mirrors GPU diag (critic_loss, mean_q,
         # mean_target, mean_reward, mean_next_q, mean_done, mean_abs_action,
@@ -1221,6 +1258,7 @@ struct GenericOffPolicyAgent[
             comptime if Self.Config.NUM_CRITICS == 2:
                 c2_grads = cpu_state.critics.online_grads_view(1)
                 c2_params = cpu_state.critics.online_params_view(1)
+            var t_al0 = Int(perf_counter_ns())
             var mean_lp = Self.Config.ActorLoss.update_actor_cpu[
                 Self.BATCH,
                 Self.ACTIONS,
@@ -1239,7 +1277,11 @@ struct GenericOffPolicyAgent[
                 ws.strat_ws_ptr(),
                 self.alpha,
             )
+            var t_al1 = Int(perf_counter_ns())
             cpu_state.actor.optimizer_step()
+            var t_al2 = Int(perf_counter_ns())
+            self.ts_ns_actor_loss += t_al1 - t_al0
+            self.ts_ns_actor_opt += t_al2 - t_al1
 
             # Alpha update (SAC only)
             comptime if Self.Config.ActorLoss.HAS_ALPHA:
@@ -1265,6 +1307,11 @@ struct GenericOffPolicyAgent[
                         self.alpha_lr * m_hat / (sqrt(v_hat) + eps)
                     )
                     self.alpha = exp(self.log_alpha)
+            var t_al3 = Int(perf_counter_ns())
+            self.ts_ns_alpha_adam += t_al3 - t_al2
+
+        var ts_t4 = Int(perf_counter_ns())
+        self.ts_ns_actor_update += ts_t4 - ts_t3
 
         # Phase 5: Soft update targets -- delegate to Config.Schedule
         if Self.Config.Schedule.should_update_targets(
@@ -1273,6 +1320,10 @@ struct GenericOffPolicyAgent[
             comptime if Self.Config.HAS_TARGET_ACTOR:
                 cpu_state.actor.soft_update(self.tau)
             cpu_state.critics.soft_update_all(self.tau)
+
+        var ts_t5 = Int(perf_counter_ns())
+        self.ts_ns_soft_update += ts_t5 - ts_t4
+        self.ts_count += 1
 
         self.train_step_count += 1
         return critic_loss
@@ -2139,6 +2190,7 @@ struct GenericOffPolicyAgent[
         environment_name: String = "Environment",
         logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
+        profile_phases: Bool = False,
     ) raises -> TrainingMetrics:
         """Train the agent on a continuous-action environment.
 
@@ -2181,9 +2233,223 @@ struct GenericOffPolicyAgent[
             environment_name=environment_name,
             algorithm_name=algo_name,
             logger=logger,
+            profile=profile_phases,
         )
         self.state = cpu_state^
         self.logger = None
+
+        if profile_phases and self.ts_count > 0:
+            var fs = Float64(self.ts_count)
+            var ts_total = (
+                self.ts_ns_sample
+                + self.ts_ns_target_q
+                + self.ts_ns_critic_update
+                + self.ts_ns_actor_update
+                + self.ts_ns_soft_update
+            )
+            var ft = Float64(max(ts_total, 1))
+            print()
+            print("=" * 70)
+            print("do_cpu_train_step phase breakdown")
+            print("=" * 70)
+            print(
+                "Train calls: "
+                + String(self.ts_count)
+                + "  | Total: "
+                + String(Float64(Int(Float64(ts_total) / 1e3)) / 1e3)
+                + " ms  | Avg: "
+                + String(Float64(Int(Float64(ts_total) / fs)))
+                + " ns/call"
+            )
+            print(
+                "  sample        : "
+                + String(Float64(Int(Float64(self.ts_ns_sample) / fs)))
+                + " ns ("
+                + String(
+                    Float64(Int(100.0 * Float64(self.ts_ns_sample) / ft * 100))
+                    / 100.0
+                )
+                + " %)"
+            )
+            print(
+                "  target_q      : "
+                + String(Float64(Int(Float64(self.ts_ns_target_q) / fs)))
+                + " ns ("
+                + String(
+                    Float64(
+                        Int(100.0 * Float64(self.ts_ns_target_q) / ft * 100)
+                    )
+                    / 100.0
+                )
+                + " %)"
+            )
+            print(
+                "  critic_update : "
+                + String(
+                    Float64(Int(Float64(self.ts_ns_critic_update) / fs))
+                )
+                + " ns ("
+                + String(
+                    Float64(
+                        Int(100.0 * Float64(self.ts_ns_critic_update) / ft * 100)
+                    )
+                    / 100.0
+                )
+                + " %)"
+            )
+            print(
+                "  actor+alpha   : "
+                + String(Float64(Int(Float64(self.ts_ns_actor_update) / fs)))
+                + " ns ("
+                + String(
+                    Float64(
+                        Int(100.0 * Float64(self.ts_ns_actor_update) / ft * 100)
+                    )
+                    / 100.0
+                )
+                + " %)"
+            )
+            print(
+                "  soft_update   : "
+                + String(Float64(Int(Float64(self.ts_ns_soft_update) / fs)))
+                + " ns ("
+                + String(
+                    Float64(
+                        Int(100.0 * Float64(self.ts_ns_soft_update) / ft * 100)
+                    )
+                    / 100.0
+                )
+                + " %)"
+            )
+            print("-" * 70)
+            print("actor+alpha sub-phase breakdown")
+            # Read AutodiffMaxEntLoss inner timers from the TAIL of strat_ws
+            # (ws_size has +10 reserved fp32 = 5 Int64: count, assemble,
+            # forward, backward, scatter).
+            var _final_ws = Self.TrainWS(self.state.ws_data.unsafe_ptr())
+            comptime _AL_TIMER_OFF = Self._AL_WS - 10
+            var _al_tp = (_final_ws.strat_ws_ptr() + _AL_TIMER_OFF).bitcast[
+                Int
+            ]()
+            var al_count = _al_tp[0]
+            var al_ns_assemble = _al_tp[1]
+            var al_ns_forward = _al_tp[2]
+            var al_ns_backward = _al_tp[3]
+            var al_ns_scatter = _al_tp[4]
+            var au_total = (
+                self.ts_ns_actor_loss
+                + self.ts_ns_actor_opt
+                + self.ts_ns_alpha_adam
+            )
+            var fau = Float64(max(au_total, 1))
+            print(
+                "  actor_loss    : "
+                + String(Float64(Int(Float64(self.ts_ns_actor_loss) / fs)))
+                + " ns ("
+                + String(
+                    Float64(
+                        Int(100.0 * Float64(self.ts_ns_actor_loss) / fau * 100)
+                    )
+                    / 100.0
+                )
+                + " % of actor+alpha)"
+            )
+            print(
+                "  actor_opt     : "
+                + String(Float64(Int(Float64(self.ts_ns_actor_opt) / fs)))
+                + " ns ("
+                + String(
+                    Float64(
+                        Int(100.0 * Float64(self.ts_ns_actor_opt) / fau * 100)
+                    )
+                    / 100.0
+                )
+                + " % of actor+alpha)"
+            )
+            print(
+                "  alpha_adam    : "
+                + String(Float64(Int(Float64(self.ts_ns_alpha_adam) / fs)))
+                + " ns ("
+                + String(
+                    Float64(
+                        Int(100.0 * Float64(self.ts_ns_alpha_adam) / fau * 100)
+                    )
+                    / 100.0
+                )
+                + " % of actor+alpha)"
+            )
+            print(
+                "    DEBUG al_count="
+                + String(al_count)
+                + " ass="
+                + String(al_ns_assemble)
+                + " fwd="
+                + String(al_ns_forward)
+                + " bwd="
+                + String(al_ns_backward)
+                + " sc="
+                + String(al_ns_scatter)
+            )
+            if al_count > 0:
+                var falc = Float64(al_count)
+                var al_inner_total = (
+                    al_ns_assemble
+                    + al_ns_forward
+                    + al_ns_backward
+                    + al_ns_scatter
+                )
+                var fali = Float64(max(al_inner_total, 1))
+                print("    --- actor_loss inner ---")
+                print(
+                    "    assemble    : "
+                    + String(Float64(Int(Float64(al_ns_assemble) / falc)))
+                    + " ns ("
+                    + String(
+                        Float64(
+                            Int(100.0 * Float64(al_ns_assemble) / fali * 100)
+                        )
+                        / 100.0
+                    )
+                    + " % of actor_loss)"
+                )
+                print(
+                    "    forward     : "
+                    + String(Float64(Int(Float64(al_ns_forward) / falc)))
+                    + " ns ("
+                    + String(
+                        Float64(
+                            Int(100.0 * Float64(al_ns_forward) / fali * 100)
+                        )
+                        / 100.0
+                    )
+                    + " % of actor_loss)"
+                )
+                print(
+                    "    backward    : "
+                    + String(Float64(Int(Float64(al_ns_backward) / falc)))
+                    + " ns ("
+                    + String(
+                        Float64(
+                            Int(100.0 * Float64(al_ns_backward) / fali * 100)
+                        )
+                        / 100.0
+                    )
+                    + " % of actor_loss)"
+                )
+                print(
+                    "    scatter+lp  : "
+                    + String(Float64(Int(Float64(al_ns_scatter) / falc)))
+                    + " ns ("
+                    + String(
+                        Float64(
+                            Int(100.0 * Float64(al_ns_scatter) / fali * 100)
+                        )
+                        / 100.0
+                    )
+                    + " % of actor_loss)"
+                )
+            print("=" * 70)
+
         return metrics^
 
     # =========================================================================

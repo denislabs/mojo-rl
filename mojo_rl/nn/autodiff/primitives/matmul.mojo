@@ -19,7 +19,13 @@ from std.gpu.host import DeviceContext
 from std.runtime.asyncrt import DeviceContextPtr
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
-from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
+from std.sys import (
+    is_nvidia_gpu,
+    has_nvidia_gpu_accelerator,
+    simd_width_of,
+    CompilationTarget,
+)
+from ..apple_cblas import apple_sgemm_accum
 from std.gpu.compute.mma import mma
 from linalg.matmul import matmul as _max_matmul
 from layout.tile_tensor import lt_to_tt
@@ -96,16 +102,53 @@ struct MatMul[
                 cache[b, i] = input[b, i]
 
         comptime if Self.USE_MAX_KERNELS:
-            # output = input @ W via vendor BLAS / Modular CPU GEMM.
-            # `_max_matmul` is `raises`; the DiffOp trait declares `def eval`
-            # without `raises`, so we contain the propagation here. CPU GEMM
-            # has no recoverable error path in practice.
-            try:
-                _max_matmul[target="cpu"](
-                    lt_to_tt(output), lt_to_tt(input), lt_to_tt(W), None
-                )
-            except e:
-                pass
+            comptime if BATCH == 1:
+                # M=1 GEMV fast path: cblas_sgemm has high per-call dispatch
+                # overhead at M=1 (see Modular's `apple_gemv` comment), so we
+                # do the GEMV by hand with SIMD-over-N for action-selection
+                # latency. Mirrors the BATCH==1 path in FusedMatMulBias.eval.
+                comptime W_SIMD = simd_width_of[dtype]()
+                var in_p = input.ptr
+                var W_p = W.ptr
+                var out_p = output.ptr
+                # output[0, :] = 0
+                var j0 = 0
+                var zero_v = SIMD[dtype, W_SIMD](0)
+                while j0 + W_SIMD <= Self.out_dim:
+                    out_p.store(j0, zero_v)
+                    j0 += W_SIMD
+                while j0 < Self.out_dim:
+                    out_p[j0] = 0
+                    j0 += 1
+                # output[0, j] += sum_k input[0, k] * W[k, j]
+                for k in range(Self.in_dim):
+                    var x_k = SIMD[dtype, W_SIMD](
+                        rebind[Scalar[dtype]](in_p[k])
+                    )
+                    var W_row = k * Self.out_dim
+                    var j1 = 0
+                    while j1 + W_SIMD <= Self.out_dim:
+                        var W_vec = W_p.load[width=W_SIMD](W_row + j1)
+                        var o_vec = out_p.load[width=W_SIMD](j1)
+                        out_p.store(j1, o_vec + x_k * W_vec)
+                        j1 += W_SIMD
+                    var x_k_s = rebind[Scalar[dtype]](in_p[k])
+                    while j1 < Self.out_dim:
+                        out_p[j1] = (
+                            out_p[j1] + x_k_s * W_p[W_row + j1]
+                        )
+                        j1 += 1
+            else:
+                # output = input @ W via vendor BLAS / Modular CPU GEMM.
+                # `_max_matmul` is `raises`; the DiffOp trait declares `def eval`
+                # without `raises`, so we contain the propagation here. CPU GEMM
+                # has no recoverable error path in practice.
+                try:
+                    _max_matmul[target="cpu"](
+                        lt_to_tt(output), lt_to_tt(input), lt_to_tt(W), None
+                    )
+                except e:
+                    pass
         else:
             # Naive reference path
             for b in range(BATCH):
@@ -150,50 +193,76 @@ struct MatMul[
             # caller's pre-zero (zero_grads) plus per-call accumulation works.
             # linalg.matmul doesn't support transpose_a; physically transpose
             # cache (BATCH, in_dim) → cache_T (in_dim, BATCH) first.
-            var cache_x = LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
-            ](cache.ptr)
-            var cache_T_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
-                Scalar[dtype]
-            ](Self.in_dim * BATCH)
-            var cache_T = LayoutTensor[
-                dtype, Layout.row_major(Self.in_dim, BATCH), MutAnyOrigin
-            ](cache_T_buf)
-            for b in range(BATCH):
-                for i in range(Self.in_dim):
-                    cache_T[i, b] = cache_x[b, i]
-
-            var dW_tmp_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
-                Scalar[dtype]
-            ](Self.in_dim * Self.out_dim)
-            var dW_tmp = LayoutTensor[
-                dtype,
-                Layout.row_major(Self.in_dim, Self.out_dim),
-                MutAnyOrigin,
-            ](dW_tmp_buf)
-            # `_max_matmul` is `raises`; trait `def vjp` is not. Contain.
+            # grad_input = grad_output @ W.T (overwrite) — same on all platforms.
             try:
-                # grad_input = grad_output @ W.T  (overwrite)
                 _max_matmul[transpose_b=True, target="cpu"](
                     lt_to_tt(grad_input),
                     lt_to_tt(grad_output),
                     lt_to_tt(W),
                     None,
                 )
-                # dW_tmp = cache_T @ grad_output
-                _max_matmul[target="cpu"](
-                    lt_to_tt(dW_tmp),
-                    lt_to_tt(cache_T),
-                    lt_to_tt(grad_output),
-                    None,
-                )
             except e:
                 pass
-            for i in range(Self.in_dim):
-                for j in range(Self.out_dim):
-                    dW[i, j] = dW[i, j] + dW_tmp[i, j]
-            dW_tmp_buf.free()
-            cache_T_buf.free()
+
+            comptime if CompilationTarget.is_macos() and dtype == DType.float32:
+                # Apple Accelerate: dW += cache.T @ grad_output in ONE call.
+                # cache is row-major (BATCH, in_dim), lda = in_dim.
+                try:
+                    apple_sgemm_accum[transpose_a=True, transpose_b=False](
+                        Self.in_dim,
+                        Self.out_dim,
+                        BATCH,
+                        Float32(1.0),
+                        rebind[
+                            UnsafePointer[Float32, ImmutAnyOrigin]
+                        ](cache.ptr),
+                        Self.in_dim,
+                        rebind[
+                            UnsafePointer[Float32, ImmutAnyOrigin]
+                        ](grad_output.ptr),
+                        Self.out_dim,
+                        Float32(1.0),
+                        rebind[UnsafePointer[Float32, MutAnyOrigin]](dW.ptr),
+                        Self.out_dim,
+                    )
+                except e:
+                    pass
+            else:
+                # Non-macOS (or non-fp32) fallback: physical transpose +
+                # 2nd max_matmul + manual dW accumulation.
+                var cache_x = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+                ](cache.ptr)
+                var cache_T_arr = InlineArray[
+                    Scalar[dtype], Self.in_dim * BATCH
+                ](uninitialized=True)
+                var cache_T = LayoutTensor[
+                    dtype, Layout.row_major(Self.in_dim, BATCH), MutAnyOrigin
+                ](cache_T_arr.unsafe_ptr())
+                for b in range(BATCH):
+                    for i in range(Self.in_dim):
+                        cache_T[i, b] = cache_x[b, i]
+
+                var dW_tmp_arr = InlineArray[
+                    Scalar[dtype], Self.in_dim * Self.out_dim
+                ](uninitialized=True)
+                var dW_tmp = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.in_dim, Self.out_dim),
+                    MutAnyOrigin,
+                ](dW_tmp_arr.unsafe_ptr())
+                try:
+                    _max_matmul[target="cpu"](
+                        lt_to_tt(dW_tmp),
+                        lt_to_tt(cache_T),
+                        lt_to_tt(grad_output),
+                        None,
+                    )
+                except e:
+                    pass
+                for i in range(Self.in_dim):
+                    for j in range(Self.out_dim):
+                        dW[i, j] = dW[i, j] + dW_tmp[i, j]
         else:
             for b in range(BATCH):
                 # grad_input = grad_output @ W.T
