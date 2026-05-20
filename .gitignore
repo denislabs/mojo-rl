@@ -228,6 +228,7 @@ docs/
 CLAUDE.md
 *.code-workspace
 *.mojopkg
+*.mojoc
 
 .DS_Store
 **/.DS_Store

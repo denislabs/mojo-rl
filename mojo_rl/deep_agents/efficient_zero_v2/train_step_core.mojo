@@ -44,9 +44,13 @@ from mojo_rl.deep_agents.efficient_zero_v2.kernels import (
     ezv2_gather_reward_at_step_kernel,
     ezv2_gather_value_target_kernel,
     ezv2_gather_policy_target_kernel,
+    ezv2_gather_fullpi_targets_kernel,
+    ezv2_policy_loss_grad_continuous_fullpi_kernel,
     ezv2_priority_from_v_loss_kernel,
     ezv2_copy_lstm_input_kernel,
     ezv2_reward_prefix_loss_grad_kernel,
+    ezv2_z_feature_var_kernel,
+    ezv2_v_pred_var_kernel,
 )
 from mojo_rl.deep_agents.muzero.kernels import (
     scalar_transform_kernel,
@@ -67,6 +71,15 @@ def ezv2_train_step_gpu_core[
     v_min: Float64,
     v_max: Float64,
     max_grad_norm: Float64,
+    # Reward-head support, in TRANSFORMED scalar space (same convention as
+    # `v_min/v_max`). Reference `dmc_state.yaml` carries a separate
+    # `reward_support: range=[-2, 2]` with the same `scalar_transform`
+    # applied, giving step ≈ 0.029 over `[-h(2), +h(2)] ≈ ±0.732` — ~100×
+    # finer than re-using the value range, which is what kept HalfCheetah
+    # `L_R` pinned at `log(2)`. Defaults match the reference DMC values.
+    reward_min: Float64 = -0.732_050_807_568_877_3,
+    reward_max: Float64 = 0.732_050_807_568_877_3,
+    rng_seed: UInt64 = 0,
 ) raises -> Tuple[Float64, Float64, Float64, Float64]:
     """Sections 2-9 of `train_step_gpu`: upload + zero accumulators +
     forward + (optional) LSTM forward + per-output gradients + backward
@@ -127,7 +140,7 @@ def ezv2_train_step_gpu_core[
     # Equals the policy-output width (= `ACT` for discrete, = `2 * ACT_DIM`
     # for continuous), which is exactly `PRED_OUT - BINS`.
     comptime VALUE_OFF = PRED_OUT - BINS
-    comptime CAP = 50000
+    comptime CAP = Config.buffer_capacity
 
     comptime TPB: Int = 256
     comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
@@ -146,6 +159,15 @@ def ezv2_train_step_gpu_core[
         ctx.enqueue_copy(gpu.batch_mcts_pol_buf, gpu.batch_mcts_pol_host)
         ctx.enqueue_copy(gpu.batch_mcts_val_buf, gpu.batch_mcts_val_host)
         ctx.enqueue_copy(gpu.batch_age_buf, gpu.batch_age_host)
+        # Full-π targets (paper Eq. 6) for continuous ACT_DIM==1 — extra
+        # uploads. For other configs the buffers are still allocated but
+        # the kernel isn't dispatched, so contents don't matter.
+        ctx.enqueue_copy(
+            gpu.batch_mcts_samp_act_buf, gpu.batch_mcts_samp_act_host
+        )
+        ctx.enqueue_copy(
+            gpu.batch_mcts_imp_pi_buf, gpu.batch_mcts_imp_pi_host
+        )
         ctx.enqueue_copy(
             gpu.value_target_full_buf, gpu.value_target_full_host
         )
@@ -244,7 +266,7 @@ def ezv2_train_step_gpu_core[
     comptime gather_obs = ezv2_copy_obs_at_step_kernel[
         BATCH, K + 1, OBS, dtype
     ]
-    ctx.enqueue_function[gather_obs, gather_obs](
+    ctx.enqueue_function[gather_obs](
         batch_obs_t,
         rep_input_t_flat,
         0,
@@ -293,7 +315,7 @@ def ezv2_train_step_gpu_core[
             MutAnyOrigin,
         ](gpu.hidden_buf.unsafe_ptr() + k * BATCH * LATENT)
 
-        ctx.enqueue_function[build_dyn_in, build_dyn_in](
+        ctx.enqueue_function[build_dyn_in](
             hidden_k_flat,
             batch_actions_t,
             dyn_input_t_flat,
@@ -324,7 +346,8 @@ def ezv2_train_step_gpu_core[
             gpu.workspace_buf,
         )
 
-        # Extract hidden part: dyn_out_buf[k][:, :LATENT] → hidden[k+1].
+        # Residual: hidden[k+1] = dyn_out_buf[k][:, :LATENT] + hidden[k].
+        # Matches reference `ez_dmc_state.py:270` (`state = hidden + x`).
         var dyn_out_k_flat = LayoutTensor[
             dtype,
             Layout.row_major(BATCH * DYN_OUT),
@@ -335,8 +358,9 @@ def ezv2_train_step_gpu_core[
             Layout.row_major(BATCH * LATENT),
             MutAnyOrigin,
         ](gpu.hidden_buf.unsafe_ptr() + (k + 1) * BATCH * LATENT)
-        ctx.enqueue_function[extract_hidden, extract_hidden](
+        ctx.enqueue_function[extract_hidden](
             dyn_out_k_flat,
+            hidden_k_flat,
             hidden_kp1_flat,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
@@ -441,9 +465,19 @@ def ezv2_train_step_gpu_core[
             gpu.workspace_buf,
         )
 
-        # Target branch (no cache, no gradient).
+        # Target branch (stop-grad, no backward — but uses TRAINING-MODE
+        # forward so BN normalizes by batch stats just like the online
+        # branch. Matches PyTorch reference SimSiam (both branches in
+        # `train()` mode; only `.detach()` stops gradient on the target).
+        # With LN→BN in the projector (2026-05-14), running-stats BN on
+        # the target left the trivial constant-output collapse path open
+        # early in training because running_mean=0/var=1 init doesn't
+        # subtract the batch mean of the constant. Batch-stat BN here
+        # kills the constant collapse symmetrically. Cache writes to
+        # `rep_obs_cache_buf` / `proj_obs_cache_buf` are scratch — no
+        # backward consumes them.
         # Gather batch_obs[:, k, :] → obs_step.
-        ctx.enqueue_function[gather_obs, gather_obs](
+        ctx.enqueue_function[gather_obs](
             batch_obs_t,
             obs_step_t_flat,
             k,
@@ -451,32 +485,44 @@ def ezv2_train_step_gpu_core[
             block_dim=(TPB,),
         )
 
-        # rep(obs_step) → rep_obs (no cache; stop-grad target)
+        # rep(obs_step) → rep_obs — train-mode BN, throw-away cache.
+        var rep_obs_cache_w = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Config.RepModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](gpu.rep_obs_cache_buf.unsafe_ptr())
         Network[
             Config.RepModel, Config.OptType
-        ].forward_gpu[BATCH](
+        ].forward_gpu_with_cache[BATCH](
             ctx,
             obs_step_t_in,
             rep_obs_t_out,
             gpu.representation.params_view(),
             gpu.representation.model_state_view(),
+            rep_obs_cache_w,
             gpu.workspace_buf,
         )
 
-        # projector(rep_obs) → proj_obs[k_offset] (no cache)
+        # projector(rep_obs) → proj_obs[k_offset] — train-mode BN.
         var proj_obs_k_in = LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Config.ProjectorModel.OUT_DIM),
             MutAnyOrigin,
         ](gpu.proj_obs_buf.unsafe_ptr() + k_offset * BATCH * PROJ)
+        var proj_obs_cache_w = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Config.ProjectorModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](gpu.proj_obs_cache_buf.unsafe_ptr())
         Network[
             Config.ProjectorModel, Config.OptType
-        ].forward_gpu[BATCH](
+        ].forward_gpu_with_cache[BATCH](
             ctx,
             rep_obs_t_in_proj,
             proj_obs_k_in,
             gpu.projector.params_view(),
             gpu.projector.model_state_view(),
+            proj_obs_cache_w,
             gpu.workspace_buf,
         )
 
@@ -546,7 +592,7 @@ def ezv2_train_step_gpu_core[
                     Layout.row_major(BATCH * LSTM_HIDDEN),
                     MutAnyOrigin,
                 ](gpu.lstm_c_input_buf.unsafe_ptr())
-                ctx.enqueue_function[copy_lstm_input, copy_lstm_input](
+                ctx.enqueue_function[copy_lstm_input](
                     hs_k_flat,
                     cs_k_flat,
                     h_in_flat,
@@ -638,6 +684,49 @@ def ezv2_train_step_gpu_core[
                 gpu.workspace_buf,
             )
 
+    # ── 4.5 Diagnostics: encoder feature-variance + value-pred variance
+    #        (single-thread kernels, fired once on the k=0 forwards). These
+    #        are pure telemetry — they don't gate training and don't enter
+    #        the backward graph. Target the two dominant collapse failure
+    #        modes:
+    #          - z_var ≈ 0  ⇒  SimSiam encoder collapse (latents constant
+    #                          across batch). All downstream V/π predictions
+    #                          become state-agnostic.
+    #          - v_pred_var ≈ 0 ⇒ value head produces same V regardless of z
+    #                          (either V head dead, or z already collapsed).
+    comptime z_var_kernel = ezv2_z_feature_var_kernel[BATCH, LATENT, dtype]
+    var hidden0_flat = LayoutTensor[
+        dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+    ](gpu.hidden_buf.unsafe_ptr())
+    var z_var_out_t = LayoutTensor[
+        dtype, Layout.row_major(1), MutAnyOrigin
+    ](gpu.z_var_buf.unsafe_ptr())
+    ctx.enqueue_function[z_var_kernel](
+        hidden0_flat,
+        z_var_out_t,
+        grid_dim=(1,),
+        block_dim=(1,),
+    )
+
+    comptime v_pred_var_kernel = ezv2_v_pred_var_kernel[
+        BATCH, PRED_OUT, BINS, VALUE_OFF, dtype
+    ]
+    var pred_out0_flat = LayoutTensor[
+        dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+    ](gpu.pred_out_buf.unsafe_ptr())
+    var v_pred_var_out_t = LayoutTensor[
+        dtype, Layout.row_major(1), MutAnyOrigin
+    ](gpu.v_pred_var_buf.unsafe_ptr())
+    ctx.enqueue_function[v_pred_var_kernel](
+        pred_out0_flat,
+        v_pred_var_out_t,
+        Scalar[dtype](v_min),
+        Scalar[dtype](v_max),
+        Scalar[dtype](0.001),
+        grid_dim=(1,),
+        block_dim=(1,),
+    )
+
     # ── 5. Per-output upstream gradients + per-sample loss reductions ─
 
     # 5.1 Policy CE at every k = 0..K
@@ -645,14 +734,50 @@ def ezv2_train_step_gpu_core[
     # the only action-space-specific hook in the K-step BPTT body.
     # Discrete uses the existing CE kernel; continuous (Phase 3)
     # supplies a different one. See `docs/EZV2_MODULAR_ARCHITECTURE.md`.
+    #
+    # Continuous ACT_DIM==1 (Pendulum etc., paper Eq. 6 branch in
+    # `ez/utils/loss.py:continuous_loss`) takes a separate full-π path:
+    # K root-sampled candidates + improved-policy weights from the MCTS
+    # search produce a weighted NLL instead of a simple-best NLL.
     comptime POL_TGT_DIM = Config.ActSpace.POLICY_TARGET_DIM
+    comptime _ACT = Config.action_dim
+    comptime _K_ROOT_CFG = Config.num_root_candidates
+    comptime USE_FULLPI = (
+        Config.ActSpace.IS_CONTINUOUS and _ACT == 1
+    )
     comptime gather_pol = ezv2_gather_policy_target_kernel[
         BATCH, K + 1, POL_TGT_DIM, dtype
     ]
+    comptime gather_fullpi = ezv2_gather_fullpi_targets_kernel[
+        BATCH, K + 1, _K_ROOT_CFG, _ACT, dtype
+    ]
+    comptime fullpi_kernel = (
+        ezv2_policy_loss_grad_continuous_fullpi_kernel[
+            BATCH, _ACT, _K_ROOT_CFG, PRED_OUT, dtype
+        ]
+    )
     comptime reduce_one = ezv2_reduce_add_kernel[BATCH, dtype]
     var policy_target_step_t = LayoutTensor[
         dtype, Layout.row_major(BATCH * POL_TGT_DIM), MutAnyOrigin
     ](gpu.policy_target_step_buf.unsafe_ptr())
+    var fullpi_target_actions_step_t = LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH * _K_ROOT_CFG * _ACT),
+        MutAnyOrigin,
+    ](gpu.fullpi_target_actions_step_buf.unsafe_ptr())
+    var fullpi_target_policy_step_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH * _K_ROOT_CFG), MutAnyOrigin
+    ](gpu.fullpi_target_policy_step_buf.unsafe_ptr())
+    var batch_mcts_samp_act_t = LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH * (K + 1) * _K_ROOT_CFG * _ACT),
+        MutAnyOrigin,
+    ](gpu.batch_mcts_samp_act_buf.unsafe_ptr())
+    var batch_mcts_imp_pi_t = LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH * (K + 1) * _K_ROOT_CFG),
+        MutAnyOrigin,
+    ](gpu.batch_mcts_imp_pi_buf.unsafe_ptr())
     var per_sample_loss_t = LayoutTensor[
         dtype, Layout.row_major(BATCH), MutAnyOrigin
     ](gpu.per_sample_loss_scratch_buf.unsafe_ptr())
@@ -663,32 +788,85 @@ def ezv2_train_step_gpu_core[
     var n_P = Float64(BATCH * (K + 1))
     var lp_scale = Config.lambda_policy / n_P
     var ent_scale = Config.entropy_weight / n_P
+    # `MAX_ACTION` / `MIN_STD` / `SOFT_CLAMP` / `INIT_STD` live on
+    # `ContinuousActionSpace` only — bind them at comptime so the discrete
+    # path doesn't try to resolve them on `DiscreteActionSpace`.
+    comptime MAX_ACTION_F: Float64 = (
+        Config.ActSpace.MAX_ACTION if USE_FULLPI else Float64(0.0)
+    )
+    comptime MIN_STD_F: Float64 = (
+        Config.ActSpace.MIN_STD if USE_FULLPI else Float64(0.0)
+    )
+    comptime SOFT_CLAMP_F: Float64 = (
+        Config.ActSpace.SOFT_CLAMP if USE_FULLPI else Float64(5.0)
+    )
+    comptime INIT_STD_F: Float64 = (
+        Config.ActSpace.INIT_STD if USE_FULLPI else Float64(1.0)
+    )
+    var max_action_s = Scalar[dtype](MAX_ACTION_F)
+    var min_std_s = Scalar[dtype](MIN_STD_F)
+    var soft_clamp_s = Scalar[dtype](SOFT_CLAMP_F)
+    var init_std_s = Scalar[dtype](INIT_STD_F)
     for k in range(K + 1):
-        ctx.enqueue_function[gather_pol, gather_pol](
-            batch_mcts_pol_t,
-            policy_target_step_t,
-            k,
-            grid_dim=(BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
         var pred_out_k_flat = LayoutTensor[
             dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
         ](gpu.pred_out_buf.unsafe_ptr() + k * BATCH * PRED_OUT)
         var grad_pred_out_k_flat = LayoutTensor[
             dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
         ](gpu.grad_pred_out_buf.unsafe_ptr() + k * BATCH * PRED_OUT)
-        Config.ActSpace.policy_loss_grad_gpu[
-            BATCH, PRED_OUT, POL_TGT_DIM, dtype
-        ](
-            ctx,
-            pred_out_k_flat,
-            policy_target_step_t,
-            grad_pred_out_k_flat,
-            per_sample_loss_t,
-            Scalar[dtype](lp_scale),
-            Scalar[dtype](ent_scale),
+        # Mix `rng_seed` with the unroll-step index `k` so each per-slice
+        # MC entropy estimator gets a distinct Philox stream.
+        var policy_seed_k = (
+            rng_seed * UInt64(0x9E3779B97F4A7C15)
+            + UInt64(k) * UInt64(2862933555777941757)
         )
-        ctx.enqueue_function[reduce_one, reduce_one](
+        comptime if USE_FULLPI:
+            ctx.enqueue_function[gather_fullpi](
+                batch_mcts_samp_act_t,
+                batch_mcts_imp_pi_t,
+                fullpi_target_actions_step_t,
+                fullpi_target_policy_step_t,
+                k,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[fullpi_kernel](
+                pred_out_k_flat,
+                fullpi_target_actions_step_t,
+                fullpi_target_policy_step_t,
+                grad_pred_out_k_flat,
+                per_sample_loss_t,
+                Scalar[dtype](lp_scale),
+                Scalar[dtype](ent_scale),
+                max_action_s,
+                min_std_s,
+                soft_clamp_s,
+                init_std_s,
+                policy_seed_k,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+        else:
+            ctx.enqueue_function[gather_pol](
+                batch_mcts_pol_t,
+                policy_target_step_t,
+                k,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            Config.ActSpace.policy_loss_grad_gpu[
+                BATCH, PRED_OUT, POL_TGT_DIM, dtype
+            ](
+                ctx,
+                pred_out_k_flat,
+                policy_target_step_t,
+                grad_pred_out_k_flat,
+                per_sample_loss_t,
+                Scalar[dtype](lp_scale),
+                Scalar[dtype](ent_scale),
+                policy_seed_k,
+            )
+        ctx.enqueue_function[reduce_one](
             per_sample_loss_t,
             L_P_t,
             grid_dim=(1,),
@@ -733,20 +911,20 @@ def ezv2_train_step_gpu_core[
     ctx.enqueue_memset(gpu.per_sample_v_loss_k0_buf, 0)
 
     for k in range(K + 1):
-        ctx.enqueue_function[gather_val, gather_val](
+        ctx.enqueue_function[gather_val](
             value_target_full_t,
             value_target_scalar_t,
             k,
             grid_dim=(BATCH_BLOCKS_BS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[st_kernel, st_kernel](
+        ctx.enqueue_function[st_kernel](
             value_target_scalar_t,
             Scalar[dtype](0.001),
             grid_dim=(BATCH_BLOCKS_BS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[th_kernel, th_kernel](
+        ctx.enqueue_function[th_kernel](
             value_target_dist_t,
             value_target_scalar_t,
             Scalar[dtype](v_min),
@@ -760,7 +938,7 @@ def ezv2_train_step_gpu_core[
         var grad_pred_out_k_flat = LayoutTensor[
             dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
         ](gpu.grad_pred_out_buf.unsafe_ptr() + k * BATCH * PRED_OUT)
-        ctx.enqueue_function[value_grad, value_grad](
+        ctx.enqueue_function[value_grad](
             pred_out_k_flat,
             value_target_dist_t,
             grad_pred_out_k_flat,
@@ -769,14 +947,14 @@ def ezv2_train_step_gpu_core[
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[reduce_one, reduce_one](
+        ctx.enqueue_function[reduce_one](
             per_sample_loss_t,
             L_V_t,
             grid_dim=(1,),
             block_dim=(1,),
         )
         if k == 0:
-            ctx.enqueue_function[copy_kernel_b, copy_kernel_b](
+            ctx.enqueue_function[copy_kernel_b](
                 per_sample_v_loss_k0_t,
                 per_sample_loss_t,
                 grid_dim=(BATCH_BLOCKS,),
@@ -821,24 +999,24 @@ def ezv2_train_step_gpu_core[
 
     comptime if not Config.use_reward_prefix:
         for k in range(K):
-            ctx.enqueue_function[gather_rew, gather_rew](
+            ctx.enqueue_function[gather_rew](
                 batch_rewards_t,
                 reward_target_scalar_t,
                 k,
                 grid_dim=(BATCH_BLOCKS_BS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[st_kernel, st_kernel](
+            ctx.enqueue_function[st_kernel](
                 reward_target_scalar_t,
                 Scalar[dtype](0.001),
                 grid_dim=(BATCH_BLOCKS_BS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[th_kernel, th_kernel](
+            ctx.enqueue_function[th_kernel](
                 reward_target_dist_t,
                 reward_target_scalar_t,
-                Scalar[dtype](v_min),
-                Scalar[dtype](v_max),
+                Scalar[dtype](reward_min),
+                Scalar[dtype](reward_max),
                 grid_dim=(BINS_BLOCKS,),
                 block_dim=(TPB,),
             )
@@ -848,7 +1026,7 @@ def ezv2_train_step_gpu_core[
             var grad_dyn_out_k_flat = LayoutTensor[
                 dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
             ](gpu.grad_dyn_out_buf.unsafe_ptr() + k * BATCH * DYN_OUT)
-            ctx.enqueue_function[reward_grad, reward_grad](
+            ctx.enqueue_function[reward_grad](
                 dyn_out_k_flat,
                 reward_target_dist_t,
                 grad_dyn_out_k_flat,
@@ -857,7 +1035,7 @@ def ezv2_train_step_gpu_core[
                 grid_dim=(BATCH_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[reduce_one, reduce_one](
+            ctx.enqueue_function[reduce_one](
                 per_sample_loss_t,
                 L_R_t,
                 grid_dim=(1,),
@@ -873,24 +1051,24 @@ def ezv2_train_step_gpu_core[
 
         for k in range(K):
             # Gather cum_rewards[:, k] → reward_target_scalar.
-            ctx.enqueue_function[gather_rew, gather_rew](
+            ctx.enqueue_function[gather_rew](
                 cum_rewards_t,
                 reward_target_scalar_t,
                 k,
                 grid_dim=(BATCH_BLOCKS_BS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[st_kernel, st_kernel](
+            ctx.enqueue_function[st_kernel](
                 reward_target_scalar_t,
                 Scalar[dtype](0.001),
                 grid_dim=(BATCH_BLOCKS_BS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[th_kernel, th_kernel](
+            ctx.enqueue_function[th_kernel](
                 rew_pref_target_dist_t,
                 reward_target_scalar_t,
-                Scalar[dtype](v_min),
-                Scalar[dtype](v_max),
+                Scalar[dtype](reward_min),
+                Scalar[dtype](reward_max),
                 grid_dim=(BINS_BLOCKS,),
                 block_dim=(TPB,),
             )
@@ -910,7 +1088,7 @@ def ezv2_train_step_gpu_core[
                 gpu.grad_rew_pref_logits_buf.unsafe_ptr()
                 + k * BATCH * BINS
             )
-            ctx.enqueue_function[rew_pref_grad, rew_pref_grad](
+            ctx.enqueue_function[rew_pref_grad](
                 rpl_k_flat,
                 rew_pref_target_dist_t,
                 grad_rpl_k_flat,
@@ -919,7 +1097,7 @@ def ezv2_train_step_gpu_core[
                 grid_dim=(BATCH_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[reduce_one, reduce_one](
+            ctx.enqueue_function[reduce_one](
                 per_sample_loss_t,
                 L_R_t,
                 grid_dim=(1,),
@@ -946,7 +1124,7 @@ def ezv2_train_step_gpu_core[
         var grad_pred_dyn_k_flat = LayoutTensor[
             dtype, Layout.row_major(BATCH * PROJ), MutAnyOrigin
         ](gpu.grad_pred_dyn_buf.unsafe_ptr() + k_offset * BATCH * PROJ)
-        ctx.enqueue_function[cosine_grad, cosine_grad](
+        ctx.enqueue_function[cosine_grad](
             pred_dyn_k_flat,
             proj_obs_k_flat,
             grad_pred_dyn_k_flat,
@@ -955,7 +1133,7 @@ def ezv2_train_step_gpu_core[
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[reduce_one, reduce_one](
+        ctx.enqueue_function[reduce_one](
             per_sample_loss_t,
             L_G_t,
             grid_dim=(1,),
@@ -1002,7 +1180,7 @@ def ezv2_train_step_gpu_core[
         var grad_pred_in_step_flat = LayoutTensor[
             dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
         ](gpu.grad_pred_in_step_buf.unsafe_ptr())
-        ctx.enqueue_function[add_kernel_lat, add_kernel_lat](
+        ctx.enqueue_function[add_kernel_lat](
             grad_hidden_k_flat,
             grad_pred_in_step_flat,
             grid_dim=(LATENT_BLOCKS,),
@@ -1086,7 +1264,7 @@ def ezv2_train_step_gpu_core[
         var grad_proj_in_step_flat = LayoutTensor[
             dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
         ](gpu.grad_proj_in_step_buf.unsafe_ptr())
-        ctx.enqueue_function[add_kernel_lat, add_kernel_lat](
+        ctx.enqueue_function[add_kernel_lat](
             grad_hidden_k_flat,
             grad_proj_in_step_flat,
             grid_dim=(LATENT_BLOCKS,),
@@ -1155,9 +1333,7 @@ def ezv2_train_step_gpu_core[
                 Layout.row_major(BATCH * LSTM_HIDDEN),
                 MutAnyOrigin,
             ](gpu.grad_mlp_in_step_buf.unsafe_ptr())
-            ctx.enqueue_function[
-                add_kernel_lstm_h, add_kernel_lstm_h
-            ](
+            ctx.enqueue_function[add_kernel_lstm_h](
                 grad_h_lstm_kp1_flat,
                 grad_mlp_in_step_flat,
                 grid_dim=(LSTM_HIDDEN_BLOCKS,),
@@ -1211,7 +1387,7 @@ def ezv2_train_step_gpu_core[
                     Layout.row_major(BATCH * LSTM_HIDDEN),
                     MutAnyOrigin,
                 ](gpu.lstm_c_input_buf.unsafe_ptr())
-                ctx.enqueue_function[copy_lstm_input, copy_lstm_input](
+                ctx.enqueue_function[copy_lstm_input](
                     hs_k_flat_b,
                     cs_k_flat_b,
                     h_in_flat_b,
@@ -1302,9 +1478,7 @@ def ezv2_train_step_gpu_core[
                 Layout.row_major(BATCH * LATENT),
                 MutAnyOrigin,
             ](gpu.grad_x_lstm_buf.unsafe_ptr())
-            ctx.enqueue_function[
-                add_kernel_latent, add_kernel_latent
-            ](
+            ctx.enqueue_function[add_kernel_latent](
                 grad_hidden_kp1_flat_lstm,
                 grad_x_lstm_flat,
                 grid_dim=(LATENT_BLOCKS,),
@@ -1340,17 +1514,13 @@ def ezv2_train_step_gpu_core[
                     Layout.row_major(BATCH * LSTM_HIDDEN),
                     MutAnyOrigin,
                 ](gpu.grad_c_prev_lstm_buf.unsafe_ptr())
-                ctx.enqueue_function[
-                    add_kernel_lstm_h, add_kernel_lstm_h
-                ](
+                ctx.enqueue_function[add_kernel_lstm_h](
                     grad_h_lstm_k_flat,
                     grad_h_prev_flat,
                     grid_dim=(LSTM_HIDDEN_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function[
-                    add_kernel_lstm_h, add_kernel_lstm_h
-                ](
+                ctx.enqueue_function[add_kernel_lstm_h](
                     grad_c_lstm_k_flat,
                     grad_c_prev_flat,
                     grid_dim=(LSTM_HIDDEN_BLOCKS,),
@@ -1381,7 +1551,7 @@ def ezv2_train_step_gpu_core[
         var grad_dyn_out_step_t = LayoutTensor[
             dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
         ](gpu.grad_dyn_out_step_buf.unsafe_ptr())
-        ctx.enqueue_function[assemble_dyn_grad, assemble_dyn_grad](
+        ctx.enqueue_function[assemble_dyn_grad](
             grad_hidden_kp1_flat,
             grad_dyn_out_k_full,
             grad_dyn_out_step_t,
@@ -1426,10 +1596,26 @@ def ezv2_train_step_gpu_core[
         var grad_hidden_k_flat = LayoutTensor[
             dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
         ](gpu.grad_hidden_buf.unsafe_ptr() + k * BATCH * LATENT)
-        ctx.enqueue_function[accum_dyn_grad_in, accum_dyn_grad_in](
+        ctx.enqueue_function[accum_dyn_grad_in](
             grad_dyn_in_step_flat,
             grad_hidden_k_flat,
             grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # Residual skip-path gradient: hidden[k+1] = dyn(hidden[k]) + hidden[k]
+        # → ∂L/∂hidden[k] picks up an extra +∂L/∂hidden[k+1] term beyond the
+        # through-dyn path handled above. `grad_hidden[k+1]` is fully
+        # accumulated by this point (used as input to `assemble_dyn_grad`
+        # at the top of this iteration; not read by any subsequent step in
+        # the reverse loop since k decreases), so it's safe to read here.
+        var grad_hidden_kp1_skip = LayoutTensor[
+            dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+        ](gpu.grad_hidden_buf.unsafe_ptr() + (k + 1) * BATCH * LATENT)
+        ctx.enqueue_function[add_kernel_lat](
+            grad_hidden_k_flat,
+            grad_hidden_kp1_skip,
+            grid_dim=(LATENT_BLOCKS,),
             block_dim=(TPB,),
         )
 
@@ -1479,10 +1665,10 @@ def ezv2_train_step_gpu_core[
             dtype, Layout.row_major(_R_BLK), MutAnyOrigin
         ](gpu.grad_clip_ps.unsafe_ptr())
         var _r_g = gpu.representation.grads_view()
-        ctx.enqueue_function[_r_norm_k, _r_norm_k](
+        ctx.enqueue_function[_r_norm_k](
             _r_ps_t, _r_g, grid_dim=(_R_BLK,), block_dim=(_CLIP_TPB,)
         )
-        ctx.enqueue_function[_r_clip_k, _r_clip_k](
+        ctx.enqueue_function[_r_clip_k](
             _r_g,
             _r_ps_t,
             Scalar[dtype](max_grad_norm),
@@ -1502,10 +1688,10 @@ def ezv2_train_step_gpu_core[
             dtype, Layout.row_major(_D_BLK), MutAnyOrigin
         ](gpu.grad_clip_ps.unsafe_ptr())
         var _d_g = gpu.dynamics.grads_view()
-        ctx.enqueue_function[_d_norm_k, _d_norm_k](
+        ctx.enqueue_function[_d_norm_k](
             _d_ps_t, _d_g, grid_dim=(_D_BLK,), block_dim=(_CLIP_TPB,)
         )
-        ctx.enqueue_function[_d_clip_k, _d_clip_k](
+        ctx.enqueue_function[_d_clip_k](
             _d_g,
             _d_ps_t,
             Scalar[dtype](max_grad_norm),
@@ -1525,10 +1711,10 @@ def ezv2_train_step_gpu_core[
             dtype, Layout.row_major(_P_BLK), MutAnyOrigin
         ](gpu.grad_clip_ps.unsafe_ptr())
         var _p_g = gpu.prediction.grads_view()
-        ctx.enqueue_function[_p_norm_k, _p_norm_k](
+        ctx.enqueue_function[_p_norm_k](
             _p_ps_t, _p_g, grid_dim=(_P_BLK,), block_dim=(_CLIP_TPB,)
         )
-        ctx.enqueue_function[_p_clip_k, _p_clip_k](
+        ctx.enqueue_function[_p_clip_k](
             _p_g,
             _p_ps_t,
             Scalar[dtype](max_grad_norm),
@@ -1548,10 +1734,10 @@ def ezv2_train_step_gpu_core[
             dtype, Layout.row_major(_PJ_BLK), MutAnyOrigin
         ](gpu.grad_clip_ps.unsafe_ptr())
         var _pj_g = gpu.projector.grads_view()
-        ctx.enqueue_function[_pj_norm_k, _pj_norm_k](
+        ctx.enqueue_function[_pj_norm_k](
             _pj_ps_t, _pj_g, grid_dim=(_PJ_BLK,), block_dim=(_CLIP_TPB,)
         )
-        ctx.enqueue_function[_pj_clip_k, _pj_clip_k](
+        ctx.enqueue_function[_pj_clip_k](
             _pj_g,
             _pj_ps_t,
             Scalar[dtype](max_grad_norm),
@@ -1571,10 +1757,10 @@ def ezv2_train_step_gpu_core[
             dtype, Layout.row_major(_PR_BLK), MutAnyOrigin
         ](gpu.grad_clip_ps.unsafe_ptr())
         var _pr_g = gpu.predictor.grads_view()
-        ctx.enqueue_function[_pr_norm_k, _pr_norm_k](
+        ctx.enqueue_function[_pr_norm_k](
             _pr_ps_t, _pr_g, grid_dim=(_PR_BLK,), block_dim=(_CLIP_TPB,)
         )
-        ctx.enqueue_function[_pr_clip_k, _pr_clip_k](
+        ctx.enqueue_function[_pr_clip_k](
             _pr_g,
             _pr_ps_t,
             Scalar[dtype](max_grad_norm),
@@ -1636,7 +1822,7 @@ def ezv2_train_step_gpu_core[
     var priorities_out_t = LayoutTensor[
         dtype, Layout.row_major(BATCH), MutAnyOrigin
     ](gpu.priorities_out_buf.unsafe_ptr())
-    ctx.enqueue_function[prio_kernel, prio_kernel](
+    ctx.enqueue_function[prio_kernel](
         per_sample_v_loss_k0_t,
         priorities_out_t,
         grid_dim=(BATCH_BLOCKS,),
@@ -1649,6 +1835,9 @@ def ezv2_train_step_gpu_core[
     ctx.enqueue_copy(gpu.L_V_host, gpu.L_V_buf)
     ctx.enqueue_copy(gpu.L_G_host, gpu.L_G_buf)
     ctx.enqueue_copy(gpu.priorities_out_host, gpu.priorities_out_buf)
+    # Diagnostics — single-scalar each, written in section 4.5.
+    ctx.enqueue_copy(gpu.z_var_host, gpu.z_var_buf)
+    ctx.enqueue_copy(gpu.v_pred_var_host, gpu.v_pred_var_buf)
     ctx.synchronize()
 
     var L_R_sum = Float64(gpu.L_R_host[0])

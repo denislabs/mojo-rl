@@ -650,7 +650,7 @@ struct LinearBatchNormReLU[
             dst.ptr[b * Self.CACHE_SIZE + i] = src.ptr[tid]
 
         comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[copy_input_cache, copy_input_cache](
+        ctx.enqueue_function[copy_input_cache](
             cache, mm_cache,
             grid_dim=(COPY_BLOCKS,), block_dim=(TPB,),
         )
@@ -673,7 +673,7 @@ struct LinearBatchNormReLU[
                 output[idx] = rebind[Scalar[dtype]](output[idx]) + rebind[Scalar[dtype]](bias[idx % Self.out_dim])
 
         var out_flat = LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin](output.ptr)
-        ctx.enqueue_function[bias_add_wrapper, bias_add_wrapper](
+        ctx.enqueue_function[bias_add_wrapper](
             out_flat, bias, grid_dim=(BLOCKS,), block_dim=(TPB,),
         )
 
@@ -688,7 +688,7 @@ struct LinearBatchNormReLU[
         ):
             Self.bn_relu_kernel_impl[BATCH, dtype](output, cache, params, state)
 
-        ctx.enqueue_function[bn_relu_wrapper, bn_relu_wrapper](
+        ctx.enqueue_function[bn_relu_wrapper](
             output, cache, params, state,
             grid_dim=(Self.out_dim,),
             block_dim=(TPB,),
@@ -751,7 +751,7 @@ struct LinearBatchNormReLU[
                 output[idx] = rebind[Scalar[dtype]](output[idx]) + rebind[Scalar[dtype]](bias[idx % Self.out_dim])
 
         var out_flat = LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin](output.ptr)
-        ctx.enqueue_function[bias_add_wrapper, bias_add_wrapper](
+        ctx.enqueue_function[bias_add_wrapper](
             out_flat, bias, grid_dim=(BLOCKS,), block_dim=(TPB,),
         )
 
@@ -771,7 +771,7 @@ struct LinearBatchNormReLU[
         ):
             Self.bn_relu_kernel_impl_no_cache[BATCH, dtype](output, params, state)
 
-        ctx.enqueue_function[bn_relu_nc_wrapper, bn_relu_nc_wrapper](
+        ctx.enqueue_function[bn_relu_nc_wrapper](
             output, params_immut, state_immut,
             grid_dim=(Self.out_dim,),
             block_dim=(TPB,),
@@ -860,7 +860,7 @@ struct LinearBatchNormReLU[
         ):
             Self.relu_bn_backward_kernel_impl[BATCH, dtype](grad_pre_bn, grad_output, params, cache, grads)
 
-        ctx.enqueue_function[relu_bn_bwd_wrapper, relu_bn_bwd_wrapper](
+        ctx.enqueue_function[relu_bn_bwd_wrapper](
             grad_pre_bn, grad_output_immut, params_immut, cache_immut, grads,
             grid_dim=(Self.out_dim,),
             block_dim=(TPB,),
@@ -885,7 +885,7 @@ struct LinearBatchNormReLU[
                 db[j] = rebind[Scalar[dtype]](db[j]) + acc
 
         comptime BG_BLOCKS = (Self.out_dim + TPB - 1) // TPB
-        ctx.enqueue_function[bias_grad_wrapper, bias_grad_wrapper](
+        ctx.enqueue_function[bias_grad_wrapper](
             bias_grads, grad_pre_bn,
             grid_dim=(BG_BLOCKS,), block_dim=(TPB,),
         )
@@ -913,7 +913,7 @@ struct LinearBatchNormReLU[
             dst.ptr[tid] = src.ptr[b * Self.CACHE_SIZE + i]
 
         comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[copy_input_bwd, copy_input_bwd](
+        ctx.enqueue_function[copy_input_bwd](
             mm_cache, cache,
             grid_dim=(COPY_BLOCKS,), block_dim=(TPB,),
         )
@@ -1072,7 +1072,7 @@ struct LinearBatchNormReLU[
             dst.ptr[b * Self.CACHE_SIZE + i] = src.ptr[tid]
 
         comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[copy_input_cache_inf, copy_input_cache_inf](
+        ctx.enqueue_function[copy_input_cache_inf](
             cache, mm_cache,
             grid_dim=(COPY_BLOCKS,), block_dim=(TPB,),
         )
@@ -1095,7 +1095,7 @@ struct LinearBatchNormReLU[
                 output[idx] = rebind[Scalar[dtype]](output[idx]) + rebind[Scalar[dtype]](bias[idx % Self.out_dim])
 
         var out_flat = LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin](output.ptr)
-        ctx.enqueue_function[bias_add_inf_wrapper, bias_add_inf_wrapper](
+        ctx.enqueue_function[bias_add_inf_wrapper](
             out_flat, bias, grid_dim=(BLOCKS,), block_dim=(TPB,),
         )
 
@@ -1116,7 +1116,7 @@ struct LinearBatchNormReLU[
         ):
             Self.bn_relu_kernel_impl_inference_with_cache[BATCH, dtype](output, cache, params, state)
 
-        ctx.enqueue_function[bn_relu_inf_wrapper, bn_relu_inf_wrapper](
+        ctx.enqueue_function[bn_relu_inf_wrapper](
             output, cache, params_immut, state_immut,
             grid_dim=(Self.out_dim,),
             block_dim=(TPB,),
@@ -1184,7 +1184,7 @@ struct LinearBatchNormReLU[
                 grad_pre_bn, grad_output, params, cache
             )
 
-        ctx.enqueue_function[relu_bn_bwd_inf_wrapper, relu_bn_bwd_inf_wrapper](
+        ctx.enqueue_function[relu_bn_bwd_inf_wrapper](
             grad_pre_bn, grad_output_immut, params_immut, cache_immut,
             grid_dim=(Self.out_dim,),
             block_dim=(TPB,),
@@ -1209,7 +1209,7 @@ struct LinearBatchNormReLU[
                 db[j] = rebind[Scalar[dtype]](db[j]) + acc
 
         comptime BG_BLOCKS = (Self.out_dim + TPB - 1) // TPB
-        ctx.enqueue_function[bias_grad_inf_wrapper, bias_grad_inf_wrapper](
+        ctx.enqueue_function[bias_grad_inf_wrapper](
             bias_grads, grad_pre_bn,
             grid_dim=(BG_BLOCKS,), block_dim=(TPB,),
         )
@@ -1236,7 +1236,7 @@ struct LinearBatchNormReLU[
             dst.ptr[tid] = src.ptr[b * Self.CACHE_SIZE + i]
 
         comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[copy_input_bwd_inf, copy_input_bwd_inf](
+        ctx.enqueue_function[copy_input_bwd_inf](
             mm_cache, cache,
             grid_dim=(COPY_BLOCKS,), block_dim=(TPB,),
         )

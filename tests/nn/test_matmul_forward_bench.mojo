@@ -15,7 +15,6 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from layout.tile_tensor import lt_to_tt
 from linalg.matmul import matmul as max_matmul
-from std.runtime.asyncrt import DeviceContextPtr
 
 from mojo_rl.nn.constants import dtype, TPB, MMA_BLOCK_THREADS
 from mojo_rl.nn.autodiff.primitives.matmul import MatMul
@@ -84,7 +83,7 @@ def _bench[
     # Warmup
     for _ in range(5):
         MM.eval_gpu[BATCH](ctx, out_lt, input_lt, params_lt, cache_lt, ws)
-        max_matmul[target="gpu"](lt_to_tt(out_mm), lt_to_tt(input_mm), lt_to_tt(W_mm), DeviceContextPtr(ctx))
+        max_matmul[target="gpu"](lt_to_tt(out_mm), lt_to_tt(input_mm), lt_to_tt(W_mm), ctx)
     ctx.synchronize()
 
     # Benchmark MMA
@@ -100,7 +99,7 @@ def _bench[
     ctx.synchronize()
     var t2 = perf_counter_ns()
     for _ in range(N_ITERS):
-        max_matmul[target="gpu"](lt_to_tt(out_mm), lt_to_tt(input_mm), lt_to_tt(W_mm), DeviceContextPtr(ctx))
+        max_matmul[target="gpu"](lt_to_tt(out_mm), lt_to_tt(input_mm), lt_to_tt(W_mm), ctx)
     ctx.synchronize()
     var t3 = perf_counter_ns()
     var mm_us = Float64(t3 - t2) / 1000.0 / Float64(N_ITERS)

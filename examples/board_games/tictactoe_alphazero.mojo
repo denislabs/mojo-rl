@@ -36,18 +36,33 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="AlphaZero TicTacToe",
+        run_name="AlphaZero TicTacToe CNN",
         buffer_size=13,
         api_key=api_key,
     )
 
     # Choose architecture:
-    # MLP (fastest, decent for TTT):
-    # comptime Config = AlphaZeroTicTacToeConfig[]
-    # CNN (heavier but better features):
-    # comptime Config = AlphaZeroTicTacToeCNNConfig[]
+    # CNN smoke test — confirms Conv2DBatchNormReLU + Parallel head code
+    # paths work on the known-good TTT setup. BATCH_SIMS=1 matches the
+    # MLP-validated proven path (see docs/PHASE_D_GPU_MCTS_BUG_HUNT.md).
+    comptime Config = AlphaZeroTicTacToeCNNConfig[
+        FILTERS=64,
+        LR=0.001,
+        BS=64,
+        CAP=80000,
+        SIMS=50,
+        NODES=128,
+        C_PUCT=1.0,
+        BATCH_SIMS=1,
+        VLOSS=3,
+    ]
+    # MLP (fastest, decent for TTT) — known-converging baseline:
+    # comptime Config = AlphaZeroTicTacToeConfig[
+    #     HIDDEN=128, LR=0.005, BS=64, CAP=80000, SIMS=50, NODES=128,
+    #     C_PUCT=1.0, BATCH_SIMS=1,
+    # ]
     # ResNet (strongest, 50 MCTS sims):
-    comptime Config = AlphaZeroTicTacToeResNetConfig[]
+    # comptime Config = AlphaZeroTicTacToeResNetConfig[]
 
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "TicTacToe")
@@ -62,7 +77,7 @@ def main() raises:
     var agent = GenericAlphaZeroAgent[Config, 64, 64, RemoteLogger]()
 
     _ = agent.train_selfplay_gpu[
-        TTT, RandomOpponent, GPUMinimaxTicTacToe, USE_CUDA_GRAPH=False
+        TTT, RandomOpponent, GPUMinimaxTicTacToe
     ](
         ctx,
         num_iters=100,
@@ -73,10 +88,16 @@ def main() raises:
         do_eval=True,
         do_eval2=True,
         do_arena=True,
+        # Match CPU example: slow-ramp the replay window so early iters
+        # train on recent data only (avoids overfitting iter-1's uniform
+        # warmup distribution). Start with last 4 iters, grow by 1 iter
+        # every 2 iters until full Config.history_window=20.
+        slow_window_start=4,
+        slow_window_growth=2,
         checkpoint_every=10,
         checkpoint_path="tictactoe_alphazero.ckpt",
         logger=UnsafePointer(to=logger),
-        diag_every=100,
+        diag_every=500,
         dump_replay=True,
         use_one_cycle=True,
     )

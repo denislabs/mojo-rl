@@ -176,7 +176,7 @@ struct MSELoss(LossFunction):
         ):
             Self.forward_kernel_impl[BATCH, OUT_DIM, dtype](loss, predictions, targets)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             loss,
             predictions,
             targets,
@@ -223,7 +223,7 @@ struct MSELoss(LossFunction):
         comptime total = BATCH * OUT_DIM
         comptime grid_size = (total + TPB - 1) // TPB
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             grad_output,
             predictions,
             targets,

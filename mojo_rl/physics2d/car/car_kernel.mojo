@@ -168,7 +168,7 @@ struct CarPhysicsKernel:
                 MAX_TILES,
             ](state, tiles, num_active_tiles, dt)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             tiles,
             num_active_tiles,

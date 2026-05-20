@@ -30,6 +30,7 @@ from .continuous_replay_buffer import (
     ContinuousTransition,
     ContinuousReplayBuffer,
 )
+from .offline_buffer import OfflineBuffer
 from .metrics import (
     EpisodeMetrics,
     TrainingMetrics,
@@ -47,6 +48,8 @@ from .linear_fa import (
     FeatureExtractor,
 )
 
+
+from .obs_norm import ObsNormStats
 
 from .vec_env import (
     VecStepResult,

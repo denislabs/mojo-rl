@@ -24,7 +24,7 @@ trait Phyics3dEnvConfig:
     # === CPU: Integrator step ===
     @staticmethod
     def physics_substep[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -65,7 +65,7 @@ trait Phyics3dEnvConfig:
     # === CPU: Pre-step hook — save any per-env state before physics ===
     @staticmethod
     def pre_step_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -87,7 +87,7 @@ trait Phyics3dEnvConfig:
     # === CPU: Unified reward + termination ===
     @staticmethod
     def compute_reward_and_done_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -119,7 +119,7 @@ trait Phyics3dEnvConfig:
     # === CPU: Custom reset hook (called after _reset_state) ===
     @staticmethod
     def custom_reset_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -132,8 +132,17 @@ trait Phyics3dEnvConfig:
         NSITE: Int = 0,
     ](
         mut model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     ):
@@ -144,7 +153,7 @@ trait Phyics3dEnvConfig:
     # === CPU: Custom observation extraction (default: use MODEL_DEF.extract_obs) ===
     @staticmethod
     def custom_extract_obs_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -165,7 +174,7 @@ trait Phyics3dEnvConfig:
     # === CPU: Custom action application (default: use MODEL_DEF.apply_actions) ===
     @staticmethod
     def custom_apply_actions_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -197,7 +206,7 @@ trait Phyics3dEnvConfig:
     # === GPU: Integrator step ===
     @staticmethod
     def physics_substep_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         NQ: Int,
         NV: Int,

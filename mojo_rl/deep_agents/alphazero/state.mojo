@@ -118,11 +118,24 @@ struct AlphaZeroCPUState[Config: AlphaZeroConfig](Movable):
         If we already have history_window iterations, evict the oldest
         before starting a new one. This keeps the buffer fresh.
         """
-        # Evict oldest iterations until we have room for one more
-        while self.num_iters >= Self.WINDOW:
-            self._evict_oldest()
+        self.start_new_iteration_with_window(Self.WINDOW)
 
-        # Mark new iteration boundary at current write position
+    def start_new_iteration_with_window(mut self, window: Int):
+        """Variant that uses a runtime window cap.
+
+        Lets the trainer slow-ramp the window from a small value up
+        toward the compile-time ``Self.WINDOW``, so early iterations
+        train on a smaller (fresher) replay slice. Capped at the
+        compile-time window; a window of ``0`` falls back to ``1``
+        (always keep at least the current iteration).
+        """
+        var w = window
+        if w < 1:
+            w = 1
+        if w > Self.WINDOW:
+            w = Self.WINDOW
+        while self.num_iters >= w:
+            self._evict_oldest()
         self.iter_boundaries.append(self.buf_size)
         self.num_iters += 1
 

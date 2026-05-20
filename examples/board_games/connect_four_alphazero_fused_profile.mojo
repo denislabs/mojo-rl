@@ -39,7 +39,7 @@ def main() raises:
     var agent = GenericAlphaZeroAgent[Config, 64]()
 
     # 2 iters, 3000 steps each — enough to complete games and trigger training.
-    _ = agent.train_selfplay_gpu[C4, RandomOpponent, USE_CUDA_GRAPH=False](
+    _ = agent.train_selfplay_gpu[C4, RandomOpponent](
         ctx,
         num_iters=2,
         steps_per_iter=3000,

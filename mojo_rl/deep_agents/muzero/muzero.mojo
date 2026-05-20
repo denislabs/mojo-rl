@@ -83,6 +83,11 @@ from .gpu_mcts import (
     TPB,
     MAX_DEPTH,
 )
+# Phase 3 agent rewiring: optional path through the shared orchestrator.
+# Enabled per-config via ``Config.USE_NEW_MCTS = True``; default is the
+# legacy inline kernel block below.
+from mojo_rl.planners.tree_search import GenericGPUMCTS
+from .gpu_trait_adapters import MuZeroRepGPU, MuZeroDynGPU, MuZeroPredGPU
 from .utils import (
     scalar_transform,
     inverse_scalar_transform,
@@ -183,7 +188,7 @@ struct GenericMuZeroAgent[
     var train_step_count: Int
 
     # Logger (NoOpLogger = zero-overhead default)
-    var logger: UnsafePointer[Self.L, MutAnyOrigin]
+    var logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]]
     var diag_every: Int
 
     # Episode data storage for MCTS targets
@@ -226,6 +231,11 @@ struct GenericMuZeroAgent[
             temperature: Initial action selection temperature (default: 1.0).
             temperature_decay_steps: Steps to decay temperature to 0.
             max_grad_norm: Maximum gradient norm for clipping (default: 10.0).
+            target_tau: Target network update rate (default: 0.01).
+            pred_head_input_dim: Input dimension for the prediction head (default: 0).
+            per_alpha: Prioritized experience replay alpha (default: 0.5).
+            per_beta_init: Prioritized experience replay beta initial value (default: 0.4).
+            per_eps: Prioritized experience replay epsilon (default: 1e-6).
         """
         self.state = Self.StateType()
         # Zero pred policy + value head Linear params (W and b) to fix the
@@ -265,7 +275,7 @@ struct GenericMuZeroAgent[
         self.per_eps = per_eps
         self.total_steps = 0
         self.train_step_count = 0
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         self.diag_every = 0
         self._episode_obs = List[List[Scalar[dtype]]]()
         self._episode_actions = List[Int]()
@@ -408,19 +418,13 @@ struct GenericMuZeroAgent[
             if max_raw <= 0.0:
                 max_raw = 1.0
             for b in range(BATCH):
-                gpu.per_is_weights_host[b] = Scalar[dtype](
-                    raw_w[b] / max_raw
-                )
+                gpu.per_is_weights_host[b] = Scalar[dtype](raw_w[b] / max_raw)
 
-        ctx.enqueue_copy(
-            gpu.per_sampled_envs_buf, gpu.per_sampled_envs_host
-        )
+        ctx.enqueue_copy(gpu.per_sampled_envs_buf, gpu.per_sampled_envs_host)
         ctx.enqueue_copy(
             gpu.per_sampled_starts_buf, gpu.per_sampled_starts_host
         )
-        ctx.enqueue_copy(
-            gpu.per_is_weights_buf, gpu.per_is_weights_host
-        )
+        ctx.enqueue_copy(gpu.per_is_weights_buf, gpu.per_is_weights_host)
 
     def _per_update_priorities[
         N_ENVS_P: Int = 64,
@@ -503,9 +507,7 @@ struct GenericMuZeroAgent[
             gpu.representation.params_host, gpu.representation.params_buf
         )
         ctx.enqueue_copy(gpu.dynamics.params_host, gpu.dynamics.params_buf)
-        ctx.enqueue_copy(
-            gpu.prediction.params_host, gpu.prediction.params_buf
-        )
+        ctx.enqueue_copy(gpu.prediction.params_host, gpu.prediction.params_buf)
         ctx.synchronize()
 
         var rep_n = Float64(0.0)
@@ -522,6 +524,7 @@ struct GenericMuZeroAgent[
             pred_n += v * v
 
         from std.math import sqrt as _sqrt
+
         return (_sqrt(rep_n), _sqrt(dyn_n), _sqrt(pred_n))
 
     def _global_clip_grad_norm[
@@ -594,9 +597,7 @@ struct GenericMuZeroAgent[
             pred_dirty = True
 
         if rep_dirty:
-            ctx.enqueue_copy(
-                gpu.representation.grads_buf, gpu.rep_grads_host
-            )
+            ctx.enqueue_copy(gpu.representation.grads_buf, gpu.rep_grads_host)
         if dyn_dirty:
             ctx.enqueue_copy(gpu.dynamics.grads_buf, gpu.dyn_grads_host)
         if pred_dirty:
@@ -994,7 +995,11 @@ struct GenericMuZeroAgent[
         ](self.state._rep_cache)
 
         Self.RepNet.forward_with_cache[BATCH](
-            obs_t, h0_t, self.state.representation.params_view(), self.state.representation.model_state_view(), rep_cache_t
+            obs_t,
+            h0_t,
+            self.state.representation.params_view(),
+            self.state.representation.model_state_view(),
+            rep_cache_t,
         )
 
         # Scale hidden state
@@ -1019,7 +1024,11 @@ struct GenericMuZeroAgent[
             ](self.state._pred_caches + pred_cache_offset)
 
             Self.PredNet.forward_with_cache[BATCH](
-                hk_t, pred_t, self.state.prediction.params_view(), self.state.prediction.model_state_view(), pred_cache_t
+                hk_t,
+                pred_t,
+                self.state.prediction.params_view(),
+                self.state.prediction.model_state_view(),
+                pred_cache_t,
             )
 
             # Compute policy and value loss for this step
@@ -1573,7 +1582,10 @@ struct GenericMuZeroAgent[
         ](pred_ptr)
 
         Self.PredNet.forward[B](
-            obs_t, pred_t, self.state.prediction.params_view(), self.state.prediction.model_state_view()
+            obs_t,
+            pred_t,
+            self.state.prediction.params_view(),
+            self.state.prediction.model_state_view(),
         )
 
         # Argmax over legal actions (first ACT elements are policy logits)
@@ -1996,6 +2008,8 @@ struct GenericMuZeroAgent[
             ctx: GPU device context.
             gpu: GPU state with network states and scratch buffers.
             use_reanalyze: Whether to reanalyze old positions.
+            use_per: Whether to use prioritized experience replay.
+            per_progress: Progress of the prioritized experience replay.
 
         Returns:
             Total training loss.
@@ -2173,9 +2187,24 @@ struct GenericMuZeroAgent[
             sample_seq_with_targets_kernel[
                 BATCH, K, N_TD, N_ENVS_GPU, PER_ENV_CAP, OBS, ACT, dtype
             ](
-                bo, ba, br, bd, bd_term, bp, bv, btp,
-                oo, oa, orw, od, op, ov, otp,
-                bsz, bwi, seed,
+                bo,
+                ba,
+                br,
+                bd,
+                bd_term,
+                bp,
+                bv,
+                btp,
+                oo,
+                oa,
+                orw,
+                od,
+                op,
+                ov,
+                otp,
+                bsz,
+                bwi,
+                seed,
             )
 
         if use_per:
@@ -2206,13 +2235,19 @@ struct GenericMuZeroAgent[
                     MutAnyOrigin,
                 ],
                 br: LayoutTensor[
-                    dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(N_ENVS_GPU * PER_ENV_CAP),
+                    MutAnyOrigin,
                 ],
                 bd: LayoutTensor[
-                    dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(N_ENVS_GPU * PER_ENV_CAP),
+                    MutAnyOrigin,
                 ],
                 bd_term: LayoutTensor[
-                    dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(N_ENVS_GPU * PER_ENV_CAP),
+                    MutAnyOrigin,
                 ],
                 bp: LayoutTensor[
                     dtype,
@@ -2220,7 +2255,9 @@ struct GenericMuZeroAgent[
                     MutAnyOrigin,
                 ],
                 bv: LayoutTensor[
-                    dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(N_ENVS_GPU * PER_ENV_CAP),
+                    MutAnyOrigin,
                 ],
                 btp: LayoutTensor[
                     DType.uint8,
@@ -2228,7 +2265,9 @@ struct GenericMuZeroAgent[
                     MutAnyOrigin,
                 ],
                 oo: LayoutTensor[
-                    dtype, Layout.row_major(WIN_FULL * BATCH * OBS), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(WIN_FULL * BATCH * OBS),
+                    MutAnyOrigin,
                 ],
                 oa: LayoutTensor[
                     dtype, Layout.row_major(K * BATCH * ACT), MutAnyOrigin
@@ -2240,13 +2279,17 @@ struct GenericMuZeroAgent[
                     dtype, Layout.row_major(WIN_TRN * BATCH), MutAnyOrigin
                 ],
                 op: LayoutTensor[
-                    dtype, Layout.row_major(WIN_FULL * BATCH * ACT), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(WIN_FULL * BATCH * ACT),
+                    MutAnyOrigin,
                 ],
                 ov: LayoutTensor[
                     dtype, Layout.row_major(WIN_FULL * BATCH), MutAnyOrigin
                 ],
                 otp: LayoutTensor[
-                    DType.uint8, Layout.row_major(WIN_FULL * BATCH), MutAnyOrigin
+                    DType.uint8,
+                    Layout.row_major(WIN_FULL * BATCH),
+                    MutAnyOrigin,
                 ],
                 pe: LayoutTensor[
                     DType.int32, Layout.row_major(BATCH), MutAnyOrigin
@@ -2258,12 +2301,26 @@ struct GenericMuZeroAgent[
                 sample_seq_with_targets_priority_kernel[
                     BATCH, K, N_TD, N_ENVS_GPU, PER_ENV_CAP, OBS, ACT, dtype
                 ](
-                    bo, ba, br, bd, bd_term, bp, bv, btp,
-                    oo, oa, orw, od, op, ov, otp,
-                    pe, ps,
+                    bo,
+                    ba,
+                    br,
+                    bd,
+                    bd_term,
+                    bp,
+                    bv,
+                    btp,
+                    oo,
+                    oa,
+                    orw,
+                    od,
+                    op,
+                    ov,
+                    otp,
+                    pe,
+                    ps,
                 )
 
-            ctx.enqueue_function[per_sample_wrapper, per_sample_wrapper](
+            ctx.enqueue_function[per_sample_wrapper](
                 buf_obs_t,
                 buf_act_t,
                 buf_rew_t,
@@ -2285,7 +2342,7 @@ struct GenericMuZeroAgent[
                 block_dim=(TPB,),
             )
         else:
-            ctx.enqueue_function[sample_wrapper, sample_wrapper](
+            ctx.enqueue_function[sample_wrapper](
                 buf_obs_t,
                 buf_act_t,
                 buf_rew_t,
@@ -2352,7 +2409,7 @@ struct GenericMuZeroAgent[
                 var ra_h_1d = LayoutTensor[
                     dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
                 ](gpu.reanalyze_hidden_buf.unsafe_ptr())
-                ctx.enqueue_function[run_ra_scale, run_ra_scale](
+                ctx.enqueue_function[run_ra_scale](
                     ra_h_1d,
                     grid_dim=(BATCH_BLOCKS_RA,),
                     block_dim=(TPB,),
@@ -2389,7 +2446,7 @@ struct GenericMuZeroAgent[
                 var bval_slot = LayoutTensor[
                     dtype, Layout.row_major(BATCH), MutAnyOrigin
                 ](gpu.batch_values_buf.unsafe_ptr() + t * BATCH)
-                ctx.enqueue_function[run_ra_dec, run_ra_dec](
+                ctx.enqueue_function[run_ra_dec](
                     ra_p_1d,
                     bval_slot,
                     Scalar[dtype](self.v_min),
@@ -2443,7 +2500,7 @@ struct GenericMuZeroAgent[
         # b_val_t still holds raw MCTS values from sampling, used as bootstrap
         # b_rew_t holds raw rewards from sampling
         # b_tp_t holds the per-step player-to-move stream (0 for single-player)
-        ctx.enqueue_function[nstep_wrapper, nstep_wrapper](
+        ctx.enqueue_function[nstep_wrapper](
             val_tgt_t,
             rew_tgt_t,
             b_rew_t,
@@ -2459,7 +2516,7 @@ struct GenericMuZeroAgent[
         comptime VAL_TGT_SIZE = (K + 1) * BATCH
         comptime VAL_TGT_BLOCKS = (VAL_TGT_SIZE + TPB - 1) // TPB
         comptime run_st_val = scalar_transform_kernel[VAL_TGT_SIZE, dtype]
-        ctx.enqueue_function[run_st_val, run_st_val](
+        ctx.enqueue_function[run_st_val](
             val_tgt_t,
             Scalar[dtype](0.001),
             grid_dim=(VAL_TGT_BLOCKS,),
@@ -2470,7 +2527,7 @@ struct GenericMuZeroAgent[
         comptime REW_TGT_SIZE = K * BATCH
         comptime REW_TGT_BLOCKS = (REW_TGT_SIZE + TPB - 1) // TPB
         comptime run_st_rew = scalar_transform_kernel[REW_TGT_SIZE, dtype]
-        ctx.enqueue_function[run_st_rew, run_st_rew](
+        ctx.enqueue_function[run_st_rew](
             rew_tgt_t,
             Scalar[dtype](0.001),
             grid_dim=(REW_TGT_BLOCKS,),
@@ -2513,7 +2570,7 @@ struct GenericMuZeroAgent[
         var hidden_1d = LayoutTensor[
             dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
         ](gpu.hidden_buf.unsafe_ptr())
-        ctx.enqueue_function[run_scale, run_scale](
+        ctx.enqueue_function[run_scale](
             hidden_1d,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
@@ -2566,7 +2623,7 @@ struct GenericMuZeroAgent[
                 var hk_1d = LayoutTensor[
                     dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
                 ](gpu.hidden_buf.unsafe_ptr() + k * BATCH * LATENT)
-                ctx.enqueue_function[run_build, run_build](
+                ctx.enqueue_function[run_build](
                     dyn_in_1d,
                     hk_1d,
                     actions_k_t,
@@ -2610,7 +2667,7 @@ struct GenericMuZeroAgent[
                 comptime run_extract = extract_hidden_kernel[
                     BATCH, LATENT, DYN_OUT, dtype
                 ]
-                ctx.enqueue_function[run_extract, run_extract](
+                ctx.enqueue_function[run_extract](
                     next_hidden,
                     dyn_out_1d,
                     grid_dim=(EXTRACT_BLOCKS,),
@@ -2621,7 +2678,7 @@ struct GenericMuZeroAgent[
                 var next_h_scale = LayoutTensor[
                     dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
                 ](gpu.hidden_buf.unsafe_ptr() + (k + 1) * BATCH * LATENT)
-                ctx.enqueue_function[run_scale, run_scale](
+                ctx.enqueue_function[run_scale](
                     next_h_scale,
                     grid_dim=(BATCH_BLOCKS,),
                     block_dim=(TPB,),
@@ -2680,7 +2737,7 @@ struct GenericMuZeroAgent[
             comptime run_pol_grad = ce_policy_grad_kernel[
                 BATCH, ACT, PRED_OUT, dtype
             ]
-            ctx.enqueue_function[run_pol_grad, run_pol_grad](
+            ctx.enqueue_function[run_pol_grad](
                 grad_pred_1d,
                 pred_1d,
                 policy_targets_k,
@@ -2699,7 +2756,7 @@ struct GenericMuZeroAgent[
             ](gpu.value_target_dist_buf.unsafe_ptr())
 
             comptime run_twohot = two_hot_encode_kernel[BATCH, BINS, dtype]
-            ctx.enqueue_function[run_twohot, run_twohot](
+            ctx.enqueue_function[run_twohot](
                 val_dist,
                 val_targets_k,
                 Scalar[dtype](self.v_min),
@@ -2711,7 +2768,7 @@ struct GenericMuZeroAgent[
             comptime run_val_grad = ce_value_grad_kernel[
                 BATCH, BINS, ACT, PRED_OUT, dtype
             ]
-            ctx.enqueue_function[run_val_grad, run_val_grad](
+            ctx.enqueue_function[run_val_grad](
                 grad_pred_1d,
                 pred_1d,
                 val_dist,
@@ -2758,7 +2815,7 @@ struct GenericMuZeroAgent[
             var grad_pred_in_1d = LayoutTensor[
                 dtype, Layout.row_major(HIDDEN_EL), MutAnyOrigin
             ](gpu.grad_pred_in_buf.unsafe_ptr())
-            ctx.enqueue_function[run_add, run_add](
+            ctx.enqueue_function[run_add](
                 grad_hidden_1d,
                 grad_pred_in_1d,
                 Scalar[dtype](1.0),
@@ -2778,7 +2835,7 @@ struct GenericMuZeroAgent[
                 var grad_dyn_1d = LayoutTensor[
                     dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
                 ](gpu.grad_dyn_out_buf.unsafe_ptr())
-                ctx.enqueue_function[run_set_hgrad, run_set_hgrad](
+                ctx.enqueue_function[run_set_hgrad](
                     grad_dyn_1d,
                     grad_hidden_1d,
                     Scalar[dtype](0.5),
@@ -2793,7 +2850,7 @@ struct GenericMuZeroAgent[
                 var rew_dist = LayoutTensor[
                     dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin
                 ](gpu.reward_target_dist_buf.unsafe_ptr())
-                ctx.enqueue_function[run_twohot, run_twohot](
+                ctx.enqueue_function[run_twohot](
                     rew_dist,
                     rew_targets_k,
                     Scalar[dtype](self.v_min),
@@ -2821,7 +2878,7 @@ struct GenericMuZeroAgent[
                     dtype, Layout.row_major(BATCH * DYN_IN), MutAnyOrigin
                 ](gpu.dyn_input_buf.unsafe_ptr())
                 comptime DYN_BUILD_BLOCKS = (BATCH * DYN_IN + TPB - 1) // TPB
-                ctx.enqueue_function[run_build2, run_build2](
+                ctx.enqueue_function[run_build2](
                     dyn_in_1d_bwd,
                     hk_bwd_1d,
                     act_bwd_1d,
@@ -2848,7 +2905,7 @@ struct GenericMuZeroAgent[
                 comptime run_rew_grad = ce_reward_grad_kernel[
                     BATCH, BINS, DYN_OUT, LATENT, dtype
                 ]
-                ctx.enqueue_function[run_rew_grad, run_rew_grad](
+                ctx.enqueue_function[run_rew_grad](
                     grad_dyn_1d,
                     dyn_out_1d_bwd,
                     rew_dist,
@@ -2862,7 +2919,7 @@ struct GenericMuZeroAgent[
                 comptime DYN_OUT_EL = BATCH * DYN_OUT
                 comptime DYN_OUT_BLOCKS = (DYN_OUT_EL + TPB - 1) // TPB
                 comptime run_dyn_scale = scale_kernel[DYN_OUT_EL, dtype]
-                ctx.enqueue_function[run_dyn_scale, run_dyn_scale](
+                ctx.enqueue_function[run_dyn_scale](
                     grad_dyn_1d,
                     Scalar[dtype](1.0 / Float64(K)),
                     grid_dim=(DYN_OUT_BLOCKS,),
@@ -2904,7 +2961,7 @@ struct GenericMuZeroAgent[
                 var grad_dyn_in_1d = LayoutTensor[
                     dtype, Layout.row_major(BATCH * DYN_IN), MutAnyOrigin
                 ](gpu.grad_dyn_in_buf.unsafe_ptr())
-                ctx.enqueue_function[run_extract_hgrad, run_extract_hgrad](
+                ctx.enqueue_function[run_extract_hgrad](
                     grad_hidden_1d,
                     grad_dyn_in_1d,
                     grid_dim=(HIDDEN_BLOCKS,),
@@ -2946,9 +3003,8 @@ struct GenericMuZeroAgent[
         # k=0 since dyn_output_buf is reused across K dyn steps.
         # Cost: 3 small DMAs + 1 sync per diag step (gated by
         # diag_every; default 0 = log every update).
-        if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+        if Bool(self.logger) and (
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             # Copy whole K+1-step target buffers to pre-allocated host
             # buffers; the loss calc below reads only the k=0 slice
@@ -2971,6 +3027,7 @@ struct GenericMuZeroAgent[
             var sum_policy_entropy: Float64 = 0.0
             var sum_value_ce: Float64 = 0.0
             var sum_value_mean: Float64 = 0.0
+            var sum_value_target: Float64 = 0.0
 
             for b in range(BATCH):
                 var pred_off = b * PRED_OUT
@@ -2987,9 +3044,7 @@ struct GenericMuZeroAgent[
                     )
                 for a in range(ACT):
                     var prob = (
-                        exp(
-                            Float64(gpu.diag_pred_host[pred_off + a]) - max_p
-                        )
+                        exp(Float64(gpu.diag_pred_host[pred_off + a]) - max_p)
                         / sum_e_p
                     )
                     var tgt = Float64(gpu.diag_pol_host[b * ACT + a])
@@ -3011,9 +3066,9 @@ struct GenericMuZeroAgent[
                     sum_e_v += exp(
                         Float64(gpu.diag_pred_host[val_off + i]) - max_v
                     )
-                var v_step = (
-                    self.v_max - self.v_min
-                ) / Float64(BINS - 1) if BINS > 1 else 1.0
+                var v_step = (self.v_max - self.v_min) / Float64(
+                    BINS - 1
+                ) if BINS > 1 else 1.0
                 var pred_val_scalar: Float64 = 0.0
                 for i in range(BINS):
                     var prob_v = (
@@ -3026,12 +3081,14 @@ struct GenericMuZeroAgent[
                 var diff = pred_val_scalar - tgt_scalar
                 sum_value_ce += diff * diff  # MSE; reuses sum_value_ce slot
                 sum_value_mean += pred_val_scalar
+                sum_value_target += tgt_scalar
 
             var n = Float64(BATCH)
             var policy_ce = sum_policy_ce / n
             var policy_entropy = sum_policy_entropy / n
             var value_ce = sum_value_ce / n
             var value_mean = sum_value_mean / n
+            var value_target_mean = sum_value_target / n
 
             # Clamp NaN/inf so logger doesn't silently drop
             if policy_ce != policy_ce or policy_ce > 1e10:
@@ -3040,15 +3097,26 @@ struct GenericMuZeroAgent[
                 value_ce = 0.0
             if value_mean != value_mean:
                 value_mean = 0.0
+            if value_target_mean != value_target_mean:
+                value_target_mean = 0.0
 
-            self.logger[].log_scalar("loss/policy_ce", policy_ce, step)
-            self.logger[].log_scalar(
-                "loss/policy_entropy", policy_entropy, step
+            # KNOWN_GROUPS alignment: drop "loss/" prefix on names that
+            # already match canonical group metrics.
+            # - policy_ce       → Policy Cross-Entropy group
+            # - entropy         → Entropy group
+            # - value_mse,
+            #   value_mean,
+            #   value_target_mean → Value Head group
+            # - loss            → Loss group (total = CE + MSE)
+            self.logger.value()[].log_scalar("policy_ce", policy_ce, step)
+            self.logger.value()[].log_scalar("entropy", policy_entropy, step)
+            self.logger.value()[].log_scalar("value_mse", value_ce, step)
+            self.logger.value()[].log_scalar("value_mean", value_mean, step)
+            self.logger.value()[].log_scalar(
+                "value_target_mean", value_target_mean, step
             )
-            self.logger[].log_scalar("loss/value_mse", value_ce, step)
-            self.logger[].log_scalar("loss/value_mean", value_mean, step)
-            self.logger[].log_scalar(
-                "loss/total", policy_ce + value_ce, step
+            self.logger.value()[].log_scalar(
+                "loss", policy_ce + value_ce, step
             )
 
         # ── Step 4.5: Global-L2 gradient clipping ────────────────────
@@ -3146,9 +3214,9 @@ struct GenericMuZeroAgent[
         comptime LocalGPUState = MuZeroGPUState[Self.Config, Self.n_envs]
         var gpu = LocalGPUState(ctx)
         gpu.upload_from(self.state, ctx)
-        var gpu_mcts = GPUMCTSState[
-            Self.n_envs, MAX_NODES, ACT, LATENT, BINS
-        ](ctx)
+        var gpu_mcts = GPUMCTSState[Self.n_envs, MAX_NODES, ACT, LATENT, BINS](
+            ctx
+        )
 
         var obs_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs * OBS)
         var workspace_buf = ctx.enqueue_create_buffer[dtype](WS_TOTAL)
@@ -3215,7 +3283,7 @@ struct GenericMuZeroAgent[
         var hidden_1d = LayoutTensor[
             dtype, Layout.row_major(Self.n_envs * LATENT), MutAnyOrigin
         ](gpu_mcts.hidden_states.unsafe_ptr())
-        ctx.enqueue_function[run_scale, run_scale](
+        ctx.enqueue_function[run_scale](
             hidden_1d,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
@@ -3314,9 +3382,9 @@ struct GenericMuZeroAgent[
         var eps_h = 0.001
         var sgn = 1.0 if expected_h >= 0.0 else -1.0
         var ah = expected_h if expected_h >= 0.0 else -expected_h
-        var f = (
-            sqrt(1.0 + 4.0 * eps_h * (ah + 1.0 + eps_h)) - 1.0
-        ) / (2.0 * eps_h)
+        var f = (sqrt(1.0 + 4.0 * eps_h * (ah + 1.0 + eps_h)) - 1.0) / (
+            2.0 * eps_h
+        )
         var v_decoded = sgn * (f * f - 1.0) if BINS > 1 else expected_h
         print(
             "[3c] value: expected_h=",
@@ -3372,7 +3440,7 @@ struct GenericMuZeroAgent[
         comptime run_init = gpu_mcts_init_root_kernel[
             Self.n_envs, MAX_NODES, ACT, LATENT, PRED_OUT, dtype
         ]
-        ctx.enqueue_function[run_init, run_init](
+        ctx.enqueue_function[run_init](
             vc_t,
             tv_t,
             pr_t,
@@ -3438,7 +3506,7 @@ struct GenericMuZeroAgent[
                     dtype,
                 ]
             )
-            ctx.enqueue_function[run_sel_dyn, run_sel_dyn](
+            ctx.enqueue_function[run_sel_dyn](
                 vc_t,
                 tv_t,
                 pr_t,
@@ -3488,7 +3556,7 @@ struct GenericMuZeroAgent[
             comptime run_extr = extract_hidden_kernel[
                 MCTS_TOTAL, LATENT, DYN_OUT, dtype
             ]
-            ctx.enqueue_function[run_extr, run_extr](
+            ctx.enqueue_function[run_extr](
                 pred_in_b,
                 dyn_out_b_flat,
                 grid_dim=(EXTR_BLK,),
@@ -3530,7 +3598,7 @@ struct GenericMuZeroAgent[
                     dtype,
                 ]
             )
-            ctx.enqueue_function[run_exp_bk, run_exp_bk](
+            ctx.enqueue_function[run_exp_bk](
                 vc_t,
                 tv_t,
                 pr_t,
@@ -3584,9 +3652,7 @@ struct GenericMuZeroAgent[
         tv_str += "]"
         print(vc_str)
         print(tv_str)
-        var root_v = (
-            tvsum_root / vsum_root if vsum_root > 0.5 else 0.0
-        )
+        var root_v = tvsum_root / vsum_root if vsum_root > 0.5 else 0.0
         print(
             "[5c] root V (Σtv/Σvc)  =",
             root_v,
@@ -3629,9 +3695,7 @@ struct GenericMuZeroAgent[
                 for a in range(ACT):
                     if a > 0:
                         child_str += ","
-                    child_str += String(
-                        Float64(vc_full_host[nidx * ACT + a])
-                    )
+                    child_str += String(Float64(vc_full_host[nidx * ACT + a]))
                 child_str += "] "
             print(child_str)
 
@@ -3677,6 +3741,9 @@ struct GenericMuZeroAgent[
             print_every: Print interval in transitions.
             use_reanalyze: Enable MuZero Reanalyze.
             sync_every: GPU→CPU weight sync interval in transitions.
+            lr_decay_rate: Learning rate decay rate.
+            lr_decay_steps: Learning rate decay steps.
+            use_per: Whether to use prioritized experience replay.
 
         Returns:
             TrainingMetrics with episode rewards.
@@ -3690,9 +3757,7 @@ struct GenericMuZeroAgent[
         # old default of 1 grad step per env-step batch. The previous
         # default did roughly 1/n_envs the training of an AZ-comparable
         # setup, leaving CartPole stuck at random-policy reward.
-        var grad_steps = (
-            gradient_steps if gradient_steps > 0 else Self.n_envs
-        )
+        var grad_steps = gradient_steps if gradient_steps > 0 else Self.n_envs
 
         # ── Create GPU state with correct Self.n_envs ─────────────────────
         # PER_ENV_CAP derived from Config.buffer_capacity (Bug G, 2026-05-05):
@@ -3795,6 +3860,29 @@ struct GenericMuZeroAgent[
             ctx
         )
 
+        # Optional shared-orchestrator instance — only consulted when
+        # ``Self.Config.USE_NEW_MCTS`` is True (default False, legacy path
+        # active). Allocated unconditionally to keep the surrounding
+        # ``train_gpu`` body free of ``comptime if`` around state
+        # declarations; the ~200 KB tree-state overhead when unused is
+        # negligible vs the production replay/Network buffers.
+        # ``MCTS_BATCH_SIMS`` is picked so it always divides ``NUM_SIMS``
+        # (orchestrator requires the divisibility). 8 = legacy default for
+        # production configs; configs with small ``NUM_SIMS`` (smoke tests
+        # at SIMS=5) silently drop to 4 / 2 / 1.
+        comptime MCTS_BATCH_SIMS = (
+            8 if NUM_SIMS % 8 == 0
+            else (4 if NUM_SIMS % 4 == 0
+            else (2 if NUM_SIMS % 2 == 0 else 1))
+        )
+        var generic_planner = GenericGPUMCTS[
+            Self.n_envs, ACT, LATENT, BINS, MAX_NODES, NUM_SIMS,
+            MCTS_BATCH_SIMS,
+            Self.Config.PUCT,
+            Self.Config.Noise,
+            Self.Config.Players,
+        ](ctx, gamma=self.gamma, v_min=self.v_min, v_max=self.v_max)
+
         # Network workspace for GPU MCTS forward calls
         comptime RepModel = Self.StateType.RepModel
         comptime DynModel = Self.StateType.DynModel
@@ -3878,7 +3966,7 @@ struct GenericMuZeroAgent[
                 var warmup_acts_t = LayoutTensor[
                     dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
                 ](actions_buf.unsafe_ptr())
-                ctx.enqueue_function[run_warmup, run_warmup](
+                ctx.enqueue_function[run_warmup](
                     warmup_acts_t,
                     Scalar[DType.uint32](UInt32(total_steps)),
                     grid_dim=(ENV_BLOCKS,),
@@ -3891,271 +3979,185 @@ struct GenericMuZeroAgent[
                 gpu.mcts_step_value_buf.enqueue_fill(Scalar[dtype](0.0))
             else:
                 # ── Full GPU MCTS ────────────────────────────────────
-
-                # 2a. Representation forward: obs → root hidden states
-                var rep_obs_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.n_envs, REP_IN_DIM),
-                    MutAnyOrigin,
-                ](obs_buf.unsafe_ptr())
-                var rep_h_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.n_envs, REP_OUT_DIM),
-                    MutAnyOrigin,
-                ](gpu_mcts.hidden_states.unsafe_ptr())
-                RepNet.forward_gpu[Self.n_envs](
-                    ctx,
-                    rep_obs_t,
-                    rep_h_t,
-                    gpu.representation.params_view(),
-                    gpu.representation.model_state_view(),
-                    mcts_workspace,
-                )
-
-                # 2b. Prediction forward: root hidden → policy + value
-                var pred_root_in = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.n_envs, PRED_IN_DIM),
-                    MutAnyOrigin,
-                ](gpu_mcts.hidden_states.unsafe_ptr())
-                var pred_root_out = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.n_envs, PRED_OUT_DIM),
-                    MutAnyOrigin,
-                ](gpu_mcts.pred_output.unsafe_ptr())
-                PredNet.forward_gpu[Self.n_envs](
-                    ctx,
-                    pred_root_in,
-                    pred_root_out,
-                    gpu.prediction.params_view(),
-                    gpu.prediction.model_state_view(),
-                    mcts_workspace,
-                )
-
-                # 2c. Initialize root nodes
-                var vc_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.n_envs * MAX_NODES * ACT),
-                    MutAnyOrigin,
-                ](gpu_mcts.visit_count.unsafe_ptr())
-                var tv_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.n_envs * MAX_NODES * ACT),
-                    MutAnyOrigin,
-                ](gpu_mcts.total_value.unsafe_ptr())
-                var pr_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.n_envs * MAX_NODES * ACT),
-                    MutAnyOrigin,
-                ](gpu_mcts.prior.unsafe_ptr())
-                var rw_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.n_envs * MAX_NODES * ACT),
-                    MutAnyOrigin,
-                ](gpu_mcts.reward.unsafe_ptr())
-                var ci_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.n_envs * MAX_NODES * ACT),
-                    MutAnyOrigin,
-                ](gpu_mcts.child_idx.unsafe_ptr())
-                var tvis_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.n_envs * MAX_NODES),
-                    MutAnyOrigin,
-                ](gpu_mcts.total_visits.unsafe_ptr())
-                var nc_t = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                ](gpu_mcts.node_count.unsafe_ptr())
-                var po_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.n_envs * PRED_OUT),
-                    MutAnyOrigin,
-                ](gpu_mcts.pred_output.unsafe_ptr())
-                var miq_t = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                ](gpu_mcts.min_q.unsafe_ptr())
-                var mxq_t = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                ](gpu_mcts.max_q.unsafe_ptr())
-
-                # Bug D fix (2026-05-04): zero tree state before init_root.
-                # Without this, the previous env-step's child_idx still
-                # points to old expanded children → MCTS descends into
-                # stale tree → backup accumulates ~30 visits per sim
-                # instead of 1. AZ does the same at alphazero.mojo:2662.
-                gpu_mcts.zero_tree(ctx)
-                comptime run_init = gpu_mcts_init_root_kernel[
-                    Self.n_envs, MAX_NODES, ACT, LATENT, PRED_OUT, dtype
-                ]
-                ctx.enqueue_function[run_init, run_init](
-                    vc_t,
-                    tv_t,
-                    pr_t,
-                    rw_t,
-                    ci_t,
-                    tvis_t,
-                    nc_t,
-                    po_t,
-                    miq_t,
-                    mxq_t,
-                    Scalar[dtype](0.25),
-                    Scalar[DType.uint32](UInt32(total_steps)),
-                    grid_dim=(ENV_BLOCKS,),
-                    block_dim=(TPB,),
-                )
-
-                # 2d. Run NUM_SIMS simulation rounds
-                # ── Batched simulations (BATCH_SIMS per round) ──
-                comptime MCTS_BATCH_SIMS = 8
-                comptime MCTS_ROUNDS = NUM_SIMS // MCTS_BATCH_SIMS
-                comptime MCTS_TOTAL = Self.n_envs * MCTS_BATCH_SIMS
-
-                var hs_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.n_envs * MAX_NODES * LATENT),
-                    MutAnyOrigin,
-                ](gpu_mcts.hidden_states.unsafe_ptr())
-                var b_pp = LayoutTensor[
-                    dtype, Layout.row_major(MCTS_TOTAL), MutAnyOrigin
-                ](gpu_mcts.pending_parent.unsafe_ptr())
-                var b_pa = LayoutTensor[
-                    dtype, Layout.row_major(MCTS_TOTAL), MutAnyOrigin
-                ](gpu_mcts.pending_action.unsafe_ptr())
-                var b_sp = LayoutTensor[
-                    dtype,
-                    Layout.row_major(MCTS_TOTAL * MAX_DEPTH),
-                    MutAnyOrigin,
-                ](gpu_mcts.search_paths.unsafe_ptr())
-                var b_ap = LayoutTensor[
-                    dtype,
-                    Layout.row_major(MCTS_TOTAL * MAX_DEPTH),
-                    MutAnyOrigin,
-                ](gpu_mcts.action_paths.unsafe_ptr())
-                var b_pl = LayoutTensor[
-                    dtype, Layout.row_major(MCTS_TOTAL), MutAnyOrigin
-                ](gpu_mcts.path_lengths.unsafe_ptr())
-                var b_di = LayoutTensor[
-                    dtype, Layout.row_major(MCTS_TOTAL * DYN_IN), MutAnyOrigin
-                ](gpu_mcts.dyn_input.unsafe_ptr())
-
-                for _round in range(MCTS_ROUNDS):
-                    # 1. Fused select + build dynamics input
-                    comptime run_sel_dyn = gpu_mcts_batched_select_and_build_dyn_kernel[
-                        Self.n_envs,
-                        MAX_NODES,
-                        ACT,
-                        MCTS_BATCH_SIMS,
-                        LATENT,
-                        DYN_IN,
-                        dtype,
-                    ]
-                    ctx.enqueue_function[run_sel_dyn, run_sel_dyn](
-                        vc_t,
-                        tv_t,
-                        pr_t,
-                        ci_t,
-                        tvis_t,
-                        nc_t,
-                        miq_t,
-                        mxq_t,
-                        hs_t,
-                        b_di,
-                        b_pp,
-                        b_pa,
-                        b_sp,
-                        b_ap,
-                        b_pl,
-                        Scalar[dtype](Self.Config.PUCT.C_BASE),
-                        Scalar[dtype](Self.Config.PUCT.C_INIT),
-                        grid_dim=(ENV_BLOCKS,),
-                        block_dim=(TPB,),
+                comptime if Self.Config.USE_NEW_MCTS:
+                    # Phase 3 agent rewiring: drive the shared
+                    # ``GenericGPUMCTS`` orchestrator instead of the
+                    # inline kernel block. Same kernels, same RNG-seed
+                    # plumbing, same temperature schedule — produces
+                    # numerically equivalent outputs (modulo the
+                    # post-encode scale kernel, which is a true identity
+                    # on the MinMaxNorm-normalized representation
+                    # output). See ``docs/PLANNERS_PACKAGE.md`` Phase 3.
+                    var rep_a = MuZeroRepGPU[
+                        OBS, LATENT, RepModel, OptType
+                    ](
+                        params=gpu.representation.params_buf.unsafe_ptr(),
+                        model_state=gpu.representation.model_state_buf.unsafe_ptr(),
+                        workspace=mcts_workspace,
+                    )
+                    var dyn_a = MuZeroDynGPU[
+                        ACT, LATENT, BINS, DynModel, OptType
+                    ](
+                        params=gpu.dynamics.params_buf.unsafe_ptr(),
+                        model_state=gpu.dynamics.model_state_buf.unsafe_ptr(),
+                        workspace=mcts_workspace,
+                    )
+                    var pred_a = MuZeroPredGPU[
+                        ACT, LATENT, BINS, PredModel, OptType
+                    ](
+                        params=gpu.prediction.params_buf.unsafe_ptr(),
+                        model_state=gpu.prediction.model_state_buf.unsafe_ptr(),
+                        workspace=mcts_workspace,
                     )
 
-                    # 2. Batched dynamics forward [BATCH = n_envs * BATCH_SIMS]
-                    var dyn_in_b = LayoutTensor[
+                    var obs_t_new = LayoutTensor[
                         dtype,
-                        Layout.row_major(MCTS_TOTAL, DYN_IN_DIM),
+                        Layout.row_major(Self.n_envs, OBS),
                         MutAnyOrigin,
-                    ](gpu_mcts.dyn_input.unsafe_ptr())
-                    var dyn_out_b = LayoutTensor[
-                        dtype,
-                        Layout.row_major(MCTS_TOTAL, DYN_OUT_DIM),
-                        MutAnyOrigin,
-                    ](gpu_mcts.dyn_output.unsafe_ptr())
-                    DynNet.forward_gpu[MCTS_TOTAL](
+                    ](obs_buf.unsafe_ptr())
+
+                    generic_planner.search_gpu[
+                        MuZeroRepGPU[OBS, LATENT, RepModel, OptType],
+                        MuZeroDynGPU[ACT, LATENT, BINS, DynModel, OptType],
+                        MuZeroPredGPU[ACT, LATENT, BINS, PredModel, OptType],
+                    ](
                         ctx,
-                        dyn_in_b,
-                        dyn_out_b,
-                        gpu.dynamics.params_view(),
-                        gpu.dynamics.model_state_view(),
+                        rep_a,
+                        dyn_a,
+                        pred_a,
+                        obs_t_new,
+                        rng_seed=UInt32(total_steps),
+                    )
+
+                    # Temperature-weighted action sampling — matches
+                    # legacy ``gpu_mcts_extract_actions_temp_kernel``
+                    # call at the bottom of the inline block.
+                    var ep_t_new = LayoutTensor[
+                        dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                    ](episode_steps_buf.unsafe_ptr())
+                    var lm_t_new = LayoutTensor[
+                        dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
+                    ](legal_masks_buf.unsafe_ptr())
+                    generic_planner.extract_actions_temp[TEMP_THRESHOLD=0](
+                        ctx,
+                        ep_t_new,
+                        lm_t_new,
+                        rng_seed=UInt32(total_steps),
+                        temp_min=self.temperature,
+                    )
+
+                    # Wire orchestrator outputs into the agent buffers
+                    # the downstream replay/training code reads from.
+                    # Three small device→device copies — sub-microsecond
+                    # vs the ~ms MCTS forward cost.
+                    ctx.enqueue_copy(
+                        actions_buf, generic_planner.actions_out
+                    )
+                    ctx.enqueue_copy(
+                        gpu.mcts_step_policy_buf,
+                        generic_planner.policies_out,
+                    )
+                    ctx.enqueue_copy(
+                        gpu.mcts_step_value_buf,
+                        generic_planner.root_value_out,
+                    )
+                else:
+                    # 2a. Representation forward: obs → root hidden states
+                    var rep_obs_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.n_envs, REP_IN_DIM),
+                        MutAnyOrigin,
+                    ](obs_buf.unsafe_ptr())
+                    var rep_h_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.n_envs, REP_OUT_DIM),
+                        MutAnyOrigin,
+                    ](gpu_mcts.hidden_states.unsafe_ptr())
+                    RepNet.forward_gpu[Self.n_envs](
+                        ctx,
+                        rep_obs_t,
+                        rep_h_t,
+                        gpu.representation.params_view(),
+                        gpu.representation.model_state_view(),
                         mcts_workspace,
                     )
-
-                    # 3. Extract hidden from dyn → pred input
-                    var pred_in_b = LayoutTensor[
+    
+                    # 2b. Prediction forward: root hidden → policy + value
+                    var pred_root_in = LayoutTensor[
                         dtype,
-                        Layout.row_major(MCTS_TOTAL * LATENT),
+                        Layout.row_major(Self.n_envs, PRED_IN_DIM),
                         MutAnyOrigin,
-                    ](gpu_mcts.pred_input.unsafe_ptr())
-                    var dyn_out_b_flat = LayoutTensor[
+                    ](gpu_mcts.hidden_states.unsafe_ptr())
+                    var pred_root_out = LayoutTensor[
                         dtype,
-                        Layout.row_major(MCTS_TOTAL * DYN_OUT),
-                        MutAnyOrigin,
-                    ](gpu_mcts.dyn_output.unsafe_ptr())
-                    comptime EXTR_TOTAL = MCTS_TOTAL * LATENT
-                    comptime EXTR_BLK = (EXTR_TOTAL + TPB - 1) // TPB
-                    comptime run_extr = extract_hidden_kernel[
-                        MCTS_TOTAL, LATENT, DYN_OUT, dtype
-                    ]
-                    ctx.enqueue_function[run_extr, run_extr](
-                        pred_in_b,
-                        dyn_out_b_flat,
-                        grid_dim=(EXTR_BLK,),
-                        block_dim=(TPB,),
-                    )
-
-                    # 4. Batched prediction forward [BATCH = n_envs * BATCH_SIMS]
-                    var pred_in_net = LayoutTensor[
-                        dtype,
-                        Layout.row_major(MCTS_TOTAL, PRED_IN_DIM),
-                        MutAnyOrigin,
-                    ](gpu_mcts.pred_input.unsafe_ptr())
-                    var pred_out_net = LayoutTensor[
-                        dtype,
-                        Layout.row_major(MCTS_TOTAL, PRED_OUT_DIM),
+                        Layout.row_major(Self.n_envs, PRED_OUT_DIM),
                         MutAnyOrigin,
                     ](gpu_mcts.pred_output.unsafe_ptr())
-                    PredNet.forward_gpu[MCTS_TOTAL](
+                    PredNet.forward_gpu[Self.n_envs](
                         ctx,
-                        pred_in_net,
-                        pred_out_net,
+                        pred_root_in,
+                        pred_root_out,
                         gpu.prediction.params_view(),
                         gpu.prediction.model_state_view(),
                         mcts_workspace,
                     )
-
-                    # 5. Fused expand + backup + remove virtual losses
-                    var b_do = LayoutTensor[
+    
+                    # 2c. Initialize root nodes
+                    var vc_t = LayoutTensor[
                         dtype,
-                        Layout.row_major(MCTS_TOTAL * DYN_OUT),
+                        Layout.row_major(Self.n_envs * MAX_NODES * ACT),
                         MutAnyOrigin,
-                    ](gpu_mcts.dyn_output.unsafe_ptr())
-                    var b_po = LayoutTensor[
+                    ](gpu_mcts.visit_count.unsafe_ptr())
+                    var tv_t = LayoutTensor[
                         dtype,
-                        Layout.row_major(MCTS_TOTAL * PRED_OUT),
+                        Layout.row_major(Self.n_envs * MAX_NODES * ACT),
+                        MutAnyOrigin,
+                    ](gpu_mcts.total_value.unsafe_ptr())
+                    var pr_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.n_envs * MAX_NODES * ACT),
+                        MutAnyOrigin,
+                    ](gpu_mcts.prior.unsafe_ptr())
+                    var rw_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.n_envs * MAX_NODES * ACT),
+                        MutAnyOrigin,
+                    ](gpu_mcts.reward.unsafe_ptr())
+                    var ci_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.n_envs * MAX_NODES * ACT),
+                        MutAnyOrigin,
+                    ](gpu_mcts.child_idx.unsafe_ptr())
+                    var tvis_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.n_envs * MAX_NODES),
+                        MutAnyOrigin,
+                    ](gpu_mcts.total_visits.unsafe_ptr())
+                    var nc_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                    ](gpu_mcts.node_count.unsafe_ptr())
+                    var po_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.n_envs * PRED_OUT),
                         MutAnyOrigin,
                     ](gpu_mcts.pred_output.unsafe_ptr())
-                    comptime run_exp_bk = gpu_mcts_batched_expand_backup_muzero_kernel[
-                        Self.n_envs,
-                        MAX_NODES,
-                        ACT,
-                        MCTS_BATCH_SIMS,
-                        LATENT,
-                        PRED_OUT,
-                        DYN_OUT,
-                        dtype,
+                    var miq_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                    ](gpu_mcts.min_q.unsafe_ptr())
+                    var mxq_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                    ](gpu_mcts.max_q.unsafe_ptr())
+    
+                    # Bug D fix (2026-05-04): zero tree state before init_root.
+                    # Without this, the previous env-step's child_idx still
+                    # points to old expanded children → MCTS descends into
+                    # stale tree → backup accumulates ~30 visits per sim
+                    # instead of 1. AZ does the same at alphazero.mojo:2662.
+                    gpu_mcts.zero_tree(ctx)
+                    comptime run_init = gpu_mcts_init_root_kernel[
+                        Self.n_envs, MAX_NODES, ACT, LATENT, PRED_OUT, dtype
                     ]
-                    ctx.enqueue_function[run_exp_bk, run_exp_bk](
+                    ctx.enqueue_function[run_init](
                         vc_t,
                         tv_t,
                         pr_t,
@@ -4163,124 +4165,290 @@ struct GenericMuZeroAgent[
                         ci_t,
                         tvis_t,
                         nc_t,
+                        po_t,
                         miq_t,
                         mxq_t,
-                        hs_t,
-                        b_pp,
-                        b_pa,
-                        b_do,
-                        b_po,
-                        b_sp,
-                        b_ap,
-                        b_pl,
-                        Scalar[dtype](self.v_min),
-                        Scalar[dtype](self.v_max),
-                        Scalar[dtype](self.gamma),
-                        Scalar[DType.bool](False),
+                        Scalar[dtype](0.25),
+                        Scalar[DType.uint32](UInt32(total_steps)),
                         grid_dim=(ENV_BLOCKS,),
                         block_dim=(TPB,),
                     )
-
-                # 2e. Extract actions + policies from visit counts via
-                # temperature-weighted sampling. Bug E (2026-05-04): the
-                # previous `gpu_mcts_extract_actions_kernel` did pure
-                # argmax — when MCTS visits tie (which happens whenever
-                # pred init produces a uniform-ish prior, e.g. post-Bug-A
-                # zero-init), argmax deterministically returns action 0
-                # every step → CartPole tips deterministically → 5-step
-                # episodes regardless of training progress. The temp
-                # kernel samples π(a) ∝ N_a^(1/τ) for τ > 0, breaking
-                # ties stochastically. τ = self.temperature decays from
-                # 1.0 (full exploration) to 0.01 (greedy) over
-                # `temperature_decay_steps`, matching muzero-general.
-                var act_out_t = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                ](actions_buf.unsafe_ptr())
-                var pol_out_t = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
-                ](gpu.mcts_step_policy_buf.unsafe_ptr())
-                var lm_t = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
-                ](legal_masks_buf.unsafe_ptr())
-                var ep_steps_t = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                ](episode_steps_buf.unsafe_ptr())
-                comptime run_act = gpu_mcts_extract_actions_temp_kernel[
-                    Self.n_envs, MAX_NODES, ACT, dtype
-                ]
-                # temp_threshold=0 → use temp_min=self.temperature for
-                # every move (no separate "exploration phase" — the global
-                # temperature schedule handles annealing). Lifted to
-                # comptime per Mojo GPU enqueue_function constraint on
-                # runtime Int args (see feedback_gpu_scalar_args memory).
-                comptime _temp_thr_zero = 0
-                ctx.enqueue_function[run_act, run_act](
-                    vc_t,
-                    lm_t,
-                    ep_steps_t,
-                    act_out_t,
-                    pol_out_t,
-                    _temp_thr_zero,
-                    Scalar[DType.uint32](UInt32(total_steps)),
-                    Scalar[dtype](self.temperature),
-                    grid_dim=(ENV_BLOCKS,),
-                    block_dim=(TPB,),
-                )
-
-                # Tally per-action selection counts for diagnostics.
-                var hist_t = LayoutTensor[
-                    dtype, Layout.row_major(ACT), MutAnyOrigin
-                ](action_hist_buf.unsafe_ptr())
-                comptime run_hist = action_histogram_kernel[
-                    Self.n_envs, ACT, dtype
-                ]
-                ctx.enqueue_function[run_hist, run_hist](
-                    act_out_t,
-                    hist_t,
-                    grid_dim=(1,),
-                    block_dim=(1,),
-                )
-
-                # Switch-rate counter — increments by #{i : action[t,i] != action[t-1,i]}
-                # then snapshots actions into prev_actions for the next step.
-                var prev_act_t = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                ](prev_actions_buf.unsafe_ptr())
-                var switch_t = LayoutTensor[
-                    dtype, Layout.row_major(1), MutAnyOrigin
-                ](switch_count_buf.unsafe_ptr())
-                comptime run_switch = action_switch_kernel[
-                    Self.n_envs, dtype
-                ]
-                ctx.enqueue_function[run_switch, run_switch](
-                    act_out_t,
-                    prev_act_t,
-                    switch_t,
-                    grid_dim=(1,),
-                    block_dim=(1,),
-                )
-
-                # Compute root values for MCTS value targets via
-                # Σ_a total_value[root,a] / Σ_a visit_count[root,a] — the
-                # MCTS-improved value at the root, in raw scalar space (the
-                # expand+backup kernel decodes via h⁻¹ post-F1, so total_value
-                # is already raw). This feeds the n-step bootstrap V(s_{t+n})
-                # in nstep_value_targets_kernel. Replaces the previous stub
-                # that filled zero — see docs/MUZERO_AUDIT.md F2.
-                var val_out_t = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-                ](gpu.mcts_step_value_buf.unsafe_ptr())
-                comptime run_root_val = gpu_mcts_extract_root_value_kernel[
-                    Self.n_envs, MAX_NODES, ACT, dtype
-                ]
-                ctx.enqueue_function[run_root_val, run_root_val](
-                    vc_t,
-                    tv_t,
-                    val_out_t,
-                    grid_dim=(ENV_BLOCKS,),
-                    block_dim=(TPB,),
-                )
-
+    
+                    # 2d. Run NUM_SIMS simulation rounds
+                    # ── Batched simulations (BATCH_SIMS per round) ──
+                    comptime MCTS_BATCH_SIMS = 8
+                    comptime MCTS_ROUNDS = NUM_SIMS // MCTS_BATCH_SIMS
+                    comptime MCTS_TOTAL = Self.n_envs * MCTS_BATCH_SIMS
+    
+                    var hs_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.n_envs * MAX_NODES * LATENT),
+                        MutAnyOrigin,
+                    ](gpu_mcts.hidden_states.unsafe_ptr())
+                    var b_pp = LayoutTensor[
+                        dtype, Layout.row_major(MCTS_TOTAL), MutAnyOrigin
+                    ](gpu_mcts.pending_parent.unsafe_ptr())
+                    var b_pa = LayoutTensor[
+                        dtype, Layout.row_major(MCTS_TOTAL), MutAnyOrigin
+                    ](gpu_mcts.pending_action.unsafe_ptr())
+                    var b_sp = LayoutTensor[
+                        dtype,
+                        Layout.row_major(MCTS_TOTAL * MAX_DEPTH),
+                        MutAnyOrigin,
+                    ](gpu_mcts.search_paths.unsafe_ptr())
+                    var b_ap = LayoutTensor[
+                        dtype,
+                        Layout.row_major(MCTS_TOTAL * MAX_DEPTH),
+                        MutAnyOrigin,
+                    ](gpu_mcts.action_paths.unsafe_ptr())
+                    var b_pl = LayoutTensor[
+                        dtype, Layout.row_major(MCTS_TOTAL), MutAnyOrigin
+                    ](gpu_mcts.path_lengths.unsafe_ptr())
+                    var b_di = LayoutTensor[
+                        dtype, Layout.row_major(MCTS_TOTAL * DYN_IN), MutAnyOrigin
+                    ](gpu_mcts.dyn_input.unsafe_ptr())
+    
+                    for _round in range(MCTS_ROUNDS):
+                        # 1. Fused select + build dynamics input
+                        comptime run_sel_dyn = gpu_mcts_batched_select_and_build_dyn_kernel[
+                            Self.n_envs,
+                            MAX_NODES,
+                            ACT,
+                            MCTS_BATCH_SIMS,
+                            LATENT,
+                            DYN_IN,
+                            dtype,
+                        ]
+                        ctx.enqueue_function[run_sel_dyn](
+                            vc_t,
+                            tv_t,
+                            pr_t,
+                            ci_t,
+                            tvis_t,
+                            nc_t,
+                            miq_t,
+                            mxq_t,
+                            hs_t,
+                            b_di,
+                            b_pp,
+                            b_pa,
+                            b_sp,
+                            b_ap,
+                            b_pl,
+                            Scalar[dtype](Self.Config.PUCT.C_BASE),
+                            Scalar[dtype](Self.Config.PUCT.C_INIT),
+                            grid_dim=(ENV_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+    
+                        # 2. Batched dynamics forward [BATCH = n_envs * BATCH_SIMS]
+                        var dyn_in_b = LayoutTensor[
+                            dtype,
+                            Layout.row_major(MCTS_TOTAL, DYN_IN_DIM),
+                            MutAnyOrigin,
+                        ](gpu_mcts.dyn_input.unsafe_ptr())
+                        var dyn_out_b = LayoutTensor[
+                            dtype,
+                            Layout.row_major(MCTS_TOTAL, DYN_OUT_DIM),
+                            MutAnyOrigin,
+                        ](gpu_mcts.dyn_output.unsafe_ptr())
+                        DynNet.forward_gpu[MCTS_TOTAL](
+                            ctx,
+                            dyn_in_b,
+                            dyn_out_b,
+                            gpu.dynamics.params_view(),
+                            gpu.dynamics.model_state_view(),
+                            mcts_workspace,
+                        )
+    
+                        # 3. Extract hidden from dyn → pred input
+                        var pred_in_b = LayoutTensor[
+                            dtype,
+                            Layout.row_major(MCTS_TOTAL * LATENT),
+                            MutAnyOrigin,
+                        ](gpu_mcts.pred_input.unsafe_ptr())
+                        var dyn_out_b_flat = LayoutTensor[
+                            dtype,
+                            Layout.row_major(MCTS_TOTAL * DYN_OUT),
+                            MutAnyOrigin,
+                        ](gpu_mcts.dyn_output.unsafe_ptr())
+                        comptime EXTR_TOTAL = MCTS_TOTAL * LATENT
+                        comptime EXTR_BLK = (EXTR_TOTAL + TPB - 1) // TPB
+                        comptime run_extr = extract_hidden_kernel[
+                            MCTS_TOTAL, LATENT, DYN_OUT, dtype
+                        ]
+                        ctx.enqueue_function[run_extr](
+                            pred_in_b,
+                            dyn_out_b_flat,
+                            grid_dim=(EXTR_BLK,),
+                            block_dim=(TPB,),
+                        )
+    
+                        # 4. Batched prediction forward [BATCH = n_envs * BATCH_SIMS]
+                        var pred_in_net = LayoutTensor[
+                            dtype,
+                            Layout.row_major(MCTS_TOTAL, PRED_IN_DIM),
+                            MutAnyOrigin,
+                        ](gpu_mcts.pred_input.unsafe_ptr())
+                        var pred_out_net = LayoutTensor[
+                            dtype,
+                            Layout.row_major(MCTS_TOTAL, PRED_OUT_DIM),
+                            MutAnyOrigin,
+                        ](gpu_mcts.pred_output.unsafe_ptr())
+                        PredNet.forward_gpu[MCTS_TOTAL](
+                            ctx,
+                            pred_in_net,
+                            pred_out_net,
+                            gpu.prediction.params_view(),
+                            gpu.prediction.model_state_view(),
+                            mcts_workspace,
+                        )
+    
+                        # 5. Fused expand + backup + remove virtual losses
+                        var b_do = LayoutTensor[
+                            dtype,
+                            Layout.row_major(MCTS_TOTAL * DYN_OUT),
+                            MutAnyOrigin,
+                        ](gpu_mcts.dyn_output.unsafe_ptr())
+                        var b_po = LayoutTensor[
+                            dtype,
+                            Layout.row_major(MCTS_TOTAL * PRED_OUT),
+                            MutAnyOrigin,
+                        ](gpu_mcts.pred_output.unsafe_ptr())
+                        comptime run_exp_bk = gpu_mcts_batched_expand_backup_muzero_kernel[
+                            Self.n_envs,
+                            MAX_NODES,
+                            ACT,
+                            MCTS_BATCH_SIMS,
+                            LATENT,
+                            PRED_OUT,
+                            DYN_OUT,
+                            dtype,
+                        ]
+                        ctx.enqueue_function[run_exp_bk](
+                            vc_t,
+                            tv_t,
+                            pr_t,
+                            rw_t,
+                            ci_t,
+                            tvis_t,
+                            nc_t,
+                            miq_t,
+                            mxq_t,
+                            hs_t,
+                            b_pp,
+                            b_pa,
+                            b_do,
+                            b_po,
+                            b_sp,
+                            b_ap,
+                            b_pl,
+                            Scalar[dtype](self.v_min),
+                            Scalar[dtype](self.v_max),
+                            Scalar[dtype](self.gamma),
+                            Scalar[DType.bool](False),
+                            grid_dim=(ENV_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+    
+                    # 2e. Extract actions + policies from visit counts via
+                    # temperature-weighted sampling. Bug E (2026-05-04): the
+                    # previous `gpu_mcts_extract_actions_kernel` did pure
+                    # argmax — when MCTS visits tie (which happens whenever
+                    # pred init produces a uniform-ish prior, e.g. post-Bug-A
+                    # zero-init), argmax deterministically returns action 0
+                    # every step → CartPole tips deterministically → 5-step
+                    # episodes regardless of training progress. The temp
+                    # kernel samples π(a) ∝ N_a^(1/τ) for τ > 0, breaking
+                    # ties stochastically. τ = self.temperature decays from
+                    # 1.0 (full exploration) to 0.01 (greedy) over
+                    # `temperature_decay_steps`, matching muzero-general.
+                    var act_out_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                    ](actions_buf.unsafe_ptr())
+                    var pol_out_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
+                    ](gpu.mcts_step_policy_buf.unsafe_ptr())
+                    var lm_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
+                    ](legal_masks_buf.unsafe_ptr())
+                    var ep_steps_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                    ](episode_steps_buf.unsafe_ptr())
+                    comptime run_act = gpu_mcts_extract_actions_temp_kernel[
+                        Self.n_envs, MAX_NODES, ACT, dtype
+                    ]
+                    # temp_threshold=0 → use temp_min=self.temperature for
+                    # every move (no separate "exploration phase" — the global
+                    # temperature schedule handles annealing). Lifted to
+                    # comptime per Mojo GPU enqueue_function constraint on
+                    # runtime Int args (see feedback_gpu_scalar_args memory).
+                    comptime _temp_thr_zero = 0
+                    ctx.enqueue_function[run_act](
+                        vc_t,
+                        lm_t,
+                        ep_steps_t,
+                        act_out_t,
+                        pol_out_t,
+                        _temp_thr_zero,
+                        Scalar[DType.uint32](UInt32(total_steps)),
+                        Scalar[dtype](self.temperature),
+                        grid_dim=(ENV_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+    
+                    # Tally per-action selection counts for diagnostics.
+                    var hist_t = LayoutTensor[
+                        dtype, Layout.row_major(ACT), MutAnyOrigin
+                    ](action_hist_buf.unsafe_ptr())
+                    comptime run_hist = action_histogram_kernel[
+                        Self.n_envs, ACT, dtype
+                    ]
+                    ctx.enqueue_function[run_hist](
+                        act_out_t,
+                        hist_t,
+                        grid_dim=(1,),
+                        block_dim=(1,),
+                    )
+    
+                    # Switch-rate counter — increments by #{i : action[t,i] != action[t-1,i]}
+                    # then snapshots actions into prev_actions for the next step.
+                    var prev_act_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                    ](prev_actions_buf.unsafe_ptr())
+                    var switch_t = LayoutTensor[
+                        dtype, Layout.row_major(1), MutAnyOrigin
+                    ](switch_count_buf.unsafe_ptr())
+                    comptime run_switch = action_switch_kernel[Self.n_envs, dtype]
+                    ctx.enqueue_function[run_switch](
+                        act_out_t,
+                        prev_act_t,
+                        switch_t,
+                        grid_dim=(1,),
+                        block_dim=(1,),
+                    )
+    
+                    # Compute root values for MCTS value targets via
+                    # Σ_a total_value[root,a] / Σ_a visit_count[root,a] — the
+                    # MCTS-improved value at the root, in raw scalar space (the
+                    # expand+backup kernel decodes via h⁻¹ post-F1, so total_value
+                    # is already raw). This feeds the n-step bootstrap V(s_{t+n})
+                    # in nstep_value_targets_kernel. Replaces the previous stub
+                    # that filled zero — see docs/MUZERO_AUDIT.md F2.
+                    var val_out_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                    ](gpu.mcts_step_value_buf.unsafe_ptr())
+                    comptime run_root_val = gpu_mcts_extract_root_value_kernel[
+                        Self.n_envs, MAX_NODES, ACT, dtype
+                    ]
+                    ctx.enqueue_function[run_root_val](
+                        vc_t,
+                        tv_t,
+                        val_out_t,
+                        grid_dim=(ENV_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+    
             # ── 3. GPU environment step ──────────────────────────────
             E.step_kernel_gpu[Self.n_envs, E.STATE_SIZE, OBS](
                 ctx,
@@ -4375,7 +4543,7 @@ struct GenericMuZeroAgent[
                     pi, vi, ti, pb, vb, tb, widx
                 )
 
-            ctx.enqueue_function[store_targets_wrapper, store_targets_wrapper](
+            ctx.enqueue_function[store_targets_wrapper](
                 mcts_pol_in_t,
                 mcts_val_in_t,
                 mcts_tp_in_t,
@@ -4402,14 +4570,14 @@ struct GenericMuZeroAgent[
             ](episode_steps_buf.unsafe_ptr())
 
             comptime run_accum = accumulate_rewards_kernel[dtype, Self.n_envs]
-            ctx.enqueue_function[run_accum, run_accum](
+            ctx.enqueue_function[run_accum](
                 ep_rew_t,
                 rewards_t,
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
             )
             comptime run_incr = increment_steps_kernel[dtype, Self.n_envs]
-            ctx.enqueue_function[run_incr, run_incr](
+            ctx.enqueue_function[run_incr](
                 ep_steps_t,
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
@@ -4424,7 +4592,7 @@ struct GenericMuZeroAgent[
             comptime run_log = log_and_reset_completed_kernel[
                 dtype, Self.n_envs
             ]
-            ctx.enqueue_function[run_log, run_log](
+            ctx.enqueue_function[run_log](
                 dones_t,
                 ep_rew_t,
                 ep_steps_t,
@@ -4567,16 +4735,24 @@ struct GenericMuZeroAgent[
                     hist_total += Float64(action_hist_host[ai])
                 for ai in range(ACT):
                     var c = Float64(action_hist_host[ai])
-                    var pct = (c / hist_total * 100.0) if hist_total > 0 else Float64(0.0)
-                    act_line += String("a") + String(ai) + String("=") + String(Int(c))
+                    var pct = (
+                        c / hist_total * 100.0
+                    ) if hist_total > 0 else Float64(0.0)
+                    act_line += (
+                        String("a") + String(ai) + String("=") + String(Int(c))
+                    )
                     act_line += String(" (") + String(Int(pct)) + String("%)")
                     if ai < ACT - 1:
                         act_line += String(", ")
                 act_line += String("]  total=") + String(Int(hist_total))
                 var switches = Float64(switch_count_host[0])
-                var switch_pct = (switches / hist_total * 100.0) if hist_total > 0 else Float64(0.0)
+                var switch_pct = (
+                    switches / hist_total * 100.0
+                ) if hist_total > 0 else Float64(0.0)
                 act_line += String("  switches=") + String(Int(switches))
-                act_line += String(" (") + String(Int(switch_pct)) + String("%)")
+                act_line += (
+                    String(" (") + String(Int(switch_pct)) + String("%)")
+                )
                 print(act_line)
                 action_hist_buf.enqueue_fill(Scalar[dtype](0.0))
                 switch_count_buf.enqueue_fill(Scalar[dtype](0.0))
@@ -4663,9 +4839,7 @@ struct GenericMuZeroAgent[
         checkpoint_path: String = "muzero.ckpt",
         use_reanalyze: Bool = False,
         reanalyze_per_iter: Int = 64,
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         use_one_cycle: Bool = False,
     ) raises -> TrainingMetrics:
@@ -4682,6 +4856,7 @@ struct GenericMuZeroAgent[
             E: GPU two-player environment (TicTacToe, Chess, Go, etc.).
             GPUEval: GPU evaluator for opponent evaluation.
             GPUEval2: GPU evaluator for opponent evaluation.
+            temp_threshold: Use temp=1 for first N moves, then argmax.
 
         Args:
             ctx: GPU device context.
@@ -4702,6 +4877,9 @@ struct GenericMuZeroAgent[
                 stability story; off by default for backwards compatibility.
             reanalyze_per_iter: Number of positions to reanalyze each
                 iteration when use_reanalyze=True. Capped by buffer size.
+            logger: Optional logger for diagnostic logging.
+            diag_every: Print diagnostic information every N iterations.
+            use_one_cycle: Whether to use one-cycle learning rate schedule.
 
         Compile-time parameters:
             temp_threshold: Use temp=1 for first N moves, then argmax.
@@ -4938,7 +5116,7 @@ struct GenericMuZeroAgent[
                     comptime run_init = gpu_mcts_init_root_kernel[
                         Self.n_envs, MAX_NODES, ACT, LATENT, PRED_OUT, dtype
                     ]
-                    ctx.enqueue_function[run_init, run_init](
+                    ctx.enqueue_function[run_init](
                         vc_t,
                         tv_t,
                         pr_t,
@@ -4962,7 +5140,7 @@ struct GenericMuZeroAgent[
                     comptime run_mask = gpu_mcts_apply_legal_mask_kernel[
                         Self.n_envs, MAX_NODES, ACT, dtype
                     ]
-                    ctx.enqueue_function[run_mask, run_mask](
+                    ctx.enqueue_function[run_mask](
                         pr_t,
                         lm_t,
                         grid_dim=(ENV_BLOCKS,),
@@ -5013,7 +5191,7 @@ struct GenericMuZeroAgent[
                             DYN_IN,
                             dtype,
                         ]
-                        ctx.enqueue_function[run_sel_dyn, run_sel_dyn](
+                        ctx.enqueue_function[run_sel_dyn](
                             vc_t,
                             tv_t,
                             pr_t,
@@ -5073,7 +5251,7 @@ struct GenericMuZeroAgent[
                         comptime run_extr = extract_hidden_kernel[
                             TOTAL_EXPAND, LATENT, DYN_OUT, dtype
                         ]
-                        ctx.enqueue_function[run_extr, run_extr](
+                        ctx.enqueue_function[run_extr](
                             pred_in_flat,
                             dyn_out_flat,
                             grid_dim=(EXTR_BLK,),
@@ -5120,7 +5298,7 @@ struct GenericMuZeroAgent[
                             DYN_OUT,
                             dtype,
                         ]
-                        ctx.enqueue_function[run_exp_bk, run_exp_bk](
+                        ctx.enqueue_function[run_exp_bk](
                             vc_t,
                             tv_t,
                             pr_t,
@@ -5163,7 +5341,7 @@ struct GenericMuZeroAgent[
                         Self.n_envs, MAX_NODES, ACT, dtype
                     ]
                     comptime _temp_thr = temp_threshold
-                    ctx.enqueue_function[run_act_temp, run_act_temp](
+                    ctx.enqueue_function[run_act_temp](
                         vc_t,
                         lm_t,
                         ep_steps_t,
@@ -5189,9 +5367,7 @@ struct GenericMuZeroAgent[
                             Self.n_envs, MAX_NODES, ACT, dtype
                         ]
                     )
-                    ctx.enqueue_function[
-                        sp_run_root_val, sp_run_root_val
-                    ](
+                    ctx.enqueue_function[sp_run_root_val](
                         vc_t,
                         tv_t,
                         sp_val_out_t,
@@ -5210,7 +5386,7 @@ struct GenericMuZeroAgent[
                     var wl_t = LayoutTensor[
                         dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
                     ](legal_masks_buf.unsafe_ptr())
-                    ctx.enqueue_function[run_warmup, run_warmup](
+                    ctx.enqueue_function[run_warmup](
                         wa_t,
                         wl_t,
                         Scalar[DType.uint32](UInt32(total_steps + iter_steps)),
@@ -5263,7 +5439,7 @@ struct GenericMuZeroAgent[
                 comptime run_to_play = to_play_from_episode_step_kernel[
                     Self.n_envs, dtype
                 ]
-                ctx.enqueue_function[run_to_play, run_to_play](
+                ctx.enqueue_function[run_to_play](
                     ep_steps_for_tp,
                     step_tp_out,
                     grid_dim=(ENV_BLOCKS,),
@@ -5336,7 +5512,7 @@ struct GenericMuZeroAgent[
                         Self.n_envs, PER_ENV_CAP, ACT, dtype
                     ](pi, vi, ti, pb, vb, tb, w)
 
-                ctx.enqueue_function[store_tgt_w, store_tgt_w](
+                ctx.enqueue_function[store_tgt_w](
                     mcts_pol_in,
                     mcts_val_in,
                     mcts_tp_in,
@@ -5364,14 +5540,14 @@ struct GenericMuZeroAgent[
                 comptime run_accum = accumulate_rewards_kernel[
                     dtype, Self.n_envs
                 ]
-                ctx.enqueue_function[run_accum, run_accum](
+                ctx.enqueue_function[run_accum](
                     ep_rew_t,
                     rewards_t,
                     grid_dim=(ENV_BLOCKS,),
                     block_dim=(TPB,),
                 )
                 comptime run_incr = increment_steps_kernel[dtype, Self.n_envs]
-                ctx.enqueue_function[run_incr, run_incr](
+                ctx.enqueue_function[run_incr](
                     ep_steps_t,
                     grid_dim=(ENV_BLOCKS,),
                     block_dim=(TPB,),
@@ -5385,7 +5561,7 @@ struct GenericMuZeroAgent[
                 comptime run_log = log_and_reset_completed_kernel[
                     dtype, Self.n_envs
                 ]
-                ctx.enqueue_function[run_log, run_log](
+                ctx.enqueue_function[run_log](
                     dones_t,
                     ep_rew_t,
                     ep_steps_t,
@@ -5458,9 +5634,7 @@ struct GenericMuZeroAgent[
                         gpu.representation.set_lr_scale(sc, ctx)
                         gpu.dynamics.set_lr_scale(sc, ctx)
                         gpu.prediction.set_lr_scale(sc, ctx)
-                    _ = self.update_gpu(
-                        ctx, gpu, use_reanalyze=use_reanalyze
-                    )
+                    _ = self.update_gpu(ctx, gpu, use_reanalyze=use_reanalyze)
                 self.train_step_count += grad_steps
                 gpu.download_to(self.state, ctx)
 
@@ -5480,19 +5654,21 @@ struct GenericMuZeroAgent[
                     "L:",
                     eval_r[2],
                 )
-                if self.logger:
-                    self.logger[].log_scalar(
-                        "eval/" + GPUEval.NAME + "/wins",
+                if Bool(self.logger):
+                    # Flat snake_case so each evaluator gets its own
+                    # series without nested slashes.
+                    self.logger.value()[].log_scalar(
+                        "eval_" + GPUEval.NAME + "_wins",
                         Float64(eval_r[0]),
                         iter,
                     )
-                    self.logger[].log_scalar(
-                        "eval/" + GPUEval.NAME + "/draws",
+                    self.logger.value()[].log_scalar(
+                        "eval_" + GPUEval.NAME + "_draws",
                         Float64(eval_r[1]),
                         iter,
                     )
-                    self.logger[].log_scalar(
-                        "eval/" + GPUEval.NAME + "/losses",
+                    self.logger.value()[].log_scalar(
+                        "eval_" + GPUEval.NAME + "_losses",
                         Float64(eval_r[2]),
                         iter,
                     )
@@ -5513,19 +5689,19 @@ struct GenericMuZeroAgent[
                     "L",
                     eval_r2[2],
                 )
-                if self.logger:
-                    self.logger[].log_scalar(
-                        "eval/" + GPUEval2.NAME + "/wins",
+                if Bool(self.logger):
+                    self.logger.value()[].log_scalar(
+                        "eval_" + GPUEval2.NAME + "_wins",
                         Float64(eval_r2[0]),
                         iter,
                     )
-                    self.logger[].log_scalar(
-                        "eval/" + GPUEval2.NAME + "/draws",
+                    self.logger.value()[].log_scalar(
+                        "eval_" + GPUEval2.NAME + "_draws",
                         Float64(eval_r2[1]),
                         iter,
                     )
-                    self.logger[].log_scalar(
-                        "eval/" + GPUEval2.NAME + "/losses",
+                    self.logger.value()[].log_scalar(
+                        "eval_" + GPUEval2.NAME + "_losses",
                         Float64(eval_r2[2]),
                         iter,
                     )
@@ -5570,21 +5746,21 @@ struct GenericMuZeroAgent[
                     arena_accepts + arena_rejects,
                     ")",
                 )
-                if self.logger:
-                    self.logger[].log_scalar(
-                        "arena/new_wins", Float64(ar[1]), iter
+                if Bool(self.logger):
+                    self.logger.value()[].log_scalar(
+                        "arena_new_wins", Float64(ar[1]), iter
                     )
-                    self.logger[].log_scalar(
-                        "arena/draws", Float64(ar[2]), iter
+                    self.logger.value()[].log_scalar(
+                        "arena_draws", Float64(ar[2]), iter
                     )
-                    self.logger[].log_scalar(
-                        "arena/old_wins", Float64(ar[3]), iter
+                    self.logger.value()[].log_scalar(
+                        "arena_old_wins", Float64(ar[3]), iter
                     )
-                    self.logger[].log_scalar(
-                        "arena/accepted", 1.0 if ar[0] else 0.0, iter
+                    self.logger.value()[].log_scalar(
+                        "arena_accepted", 1.0 if ar[0] else 0.0, iter
                     )
-                    self.logger[].log_scalar(
-                        "arena/accept_rate",
+                    self.logger.value()[].log_scalar(
+                        "arena_accept_rate",
                         Float64(arena_accepts)
                         / Float64(arena_accepts + arena_rejects),
                         iter,
@@ -5641,43 +5817,56 @@ struct GenericMuZeroAgent[
             # Log iter summary metrics. Param norms are the key signal for
             # spotting weight runaway (we saw NVIDIA explode pre-MinMaxNorm
             # with pred_norm growing 25 → 297 over 6 iters before NaN).
-            if self.logger:
-                self.logger[].log_scalar(
-                    "param_norm/rep", last_rep_n, iter
+            if Bool(self.logger):
+                # KNOWN_GROUPS alignment for iter-summary metrics:
+                # - param_norm (Parameter Norm) = sum of rep+dyn+pred
+                #   submodel norms. Per-subnet breakdown is kept as flat
+                #   metrics so the rep/dyn/pred runaway can still be
+                #   diagnosed (e.g. the historical NVIDIA pred_norm bug).
+                # - avg_reward (Episode Reward) for 2-player games is
+                #   {-1, 0, +1}-valued; trends toward +1 vs the eval pool.
+                # - episodes / train_steps (Training Progress) — `games`
+                #   == episodes here.
+                # - buffer_size (Runtime Throughput) for the replay.
+                self.logger.value()[].log_scalar(
+                    "param_norm", last_rep_n + last_dyn_n + last_pred_n, iter
                 )
-                self.logger[].log_scalar(
-                    "param_norm/dyn", last_dyn_n, iter
+                self.logger.value()[].log_scalar(
+                    "param_norm_rep", last_rep_n, iter
                 )
-                self.logger[].log_scalar(
-                    "param_norm/pred", last_pred_n, iter
+                self.logger.value()[].log_scalar(
+                    "param_norm_dyn", last_dyn_n, iter
                 )
-                self.logger[].log_scalar(
-                    "param_norm/d_rep", d_rep, iter
+                self.logger.value()[].log_scalar(
+                    "param_norm_pred", last_pred_n, iter
                 )
-                self.logger[].log_scalar(
-                    "param_norm/d_dyn", d_dyn, iter
+                self.logger.value()[].log_scalar(
+                    "param_norm_d_rep", d_rep, iter
                 )
-                self.logger[].log_scalar(
-                    "param_norm/d_pred", d_pred, iter
+                self.logger.value()[].log_scalar(
+                    "param_norm_d_dyn", d_dyn, iter
                 )
-                self.logger[].log_scalar(
-                    "train/avg_reward", avg_rew, iter
+                self.logger.value()[].log_scalar(
+                    "param_norm_d_pred", d_pred, iter
                 )
-                self.logger[].log_scalar(
-                    "train/games", Float64(total_eps), iter
+                self.logger.value()[].log_scalar(
+                    "avg_reward", avg_rew, iter
                 )
-                self.logger[].log_scalar(
-                    "train/total_steps", Float64(total_steps), iter
+                self.logger.value()[].log_scalar(
+                    "episodes", Float64(total_eps), iter
                 )
-                self.logger[].log_scalar(
-                    "train/replay_size", Float64(replay_total), iter
+                self.logger.value()[].log_scalar(
+                    "env_steps", Float64(total_steps), iter
                 )
-                self.logger[].log_scalar(
-                    "train/grad_steps_total",
+                self.logger.value()[].log_scalar(
+                    "buffer_size", Float64(replay_total), iter
+                )
+                self.logger.value()[].log_scalar(
+                    "train_steps",
                     Float64(self.train_step_count),
                     iter,
                 )
-                self.logger[].flush()
+                self.logger.value()[].flush()
 
             # ── 7. Checkpoint ────────────────────────────────────
             if checkpoint_every > 0 and (iter + 1) % checkpoint_every == 0:
@@ -5876,7 +6065,7 @@ struct GenericMuZeroAgent[
                 comptime e_run_init = gpu_mcts_init_root_kernel[
                     Self.n_envs, MAX_NODES, ACT, LATENT, PRED_OUT, dtype
                 ]
-                ctx.enqueue_function[e_run_init, e_run_init](
+                ctx.enqueue_function[e_run_init](
                     e_vc,
                     e_tv,
                     e_pr,
@@ -5895,7 +6084,7 @@ struct GenericMuZeroAgent[
                 comptime e_run_mask = gpu_mcts_apply_legal_mask_kernel[
                     Self.n_envs, MAX_NODES, ACT, dtype
                 ]
-                ctx.enqueue_function[e_run_mask, e_run_mask](
+                ctx.enqueue_function[e_run_mask](
                     e_pr,
                     e_lm,
                     grid_dim=(ENV_BLOCKS,),
@@ -5938,7 +6127,7 @@ struct GenericMuZeroAgent[
                         DYN_IN,
                         dtype,
                     ]
-                    ctx.enqueue_function[e_run_sel, e_run_sel](
+                    ctx.enqueue_function[e_run_sel](
                         e_vc,
                         e_tv,
                         e_pr,
@@ -5994,7 +6183,7 @@ struct GenericMuZeroAgent[
                     comptime e_run_extr = extract_hidden_kernel[
                         TOTAL_EXPAND, LATENT, DYN_OUT, dtype
                     ]
-                    ctx.enqueue_function[e_run_extr, e_run_extr](
+                    ctx.enqueue_function[e_run_extr](
                         e_pi_flat,
                         e_do_flat,
                         grid_dim=(E_EXTR_BLK,),
@@ -6040,7 +6229,7 @@ struct GenericMuZeroAgent[
                         DYN_OUT,
                         dtype,
                     ]
-                    ctx.enqueue_function[e_run_exp, e_run_exp](
+                    ctx.enqueue_function[e_run_exp](
                         e_vc,
                         e_tv,
                         e_pr,
@@ -6076,7 +6265,7 @@ struct GenericMuZeroAgent[
                 comptime e_run_act = gpu_mcts_extract_actions_masked_kernel[
                     Self.n_envs, MAX_NODES, ACT, dtype
                 ]
-                ctx.enqueue_function[e_run_act, e_run_act](
+                ctx.enqueue_function[e_run_act](
                     e_vc,
                     e_lm,
                     e_act,
@@ -6229,9 +6418,9 @@ struct GenericMuZeroAgent[
         if total == 0:
             accepted = False
         else:
-            var score = (
-                Float64(new_wins) + 0.5 * Float64(draws)
-            ) / Float64(total)
+            var score = (Float64(new_wins) + 0.5 * Float64(draws)) / Float64(
+                total
+            )
             accepted = score >= threshold
 
         if not accepted:

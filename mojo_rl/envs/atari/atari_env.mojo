@@ -139,11 +139,11 @@ struct AtariEnv[
     var _steps: Int
 
     # Pixel-mode buffers (allocated only when OBS_MODE==1)
-    var frame_stack: UnsafePointer[UInt8, MutAnyOrigin]  # 4 * 84 * 84
+    var frame_stack: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # 4 * 84 * 84
     var frame_idx: Int  # ring buffer index
-    var raw_frame_a: UnsafePointer[UInt8, MutAnyOrigin]  # 160*210*4 BGRA
-    var raw_frame_b: UnsafePointer[UInt8, MutAnyOrigin]  # 160*210*4 BGRA
-    var gray_buf: UnsafePointer[UInt8, MutAnyOrigin]  # 160*210 grayscale
+    var raw_frame_a: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # 160*210*4 BGRA
+    var raw_frame_b: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # 160*210*4 BGRA
+    var gray_buf: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # 160*210 grayscale
 
     def __init__(
         out self,
@@ -184,12 +184,12 @@ struct AtariEnv[
             self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
             self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
             self.frame_idx = 0
-            memset(self.frame_stack, 0, FRAME_STACK_SIZE)
+            memset(self.frame_stack.value(), 0, FRAME_STACK_SIZE)
         else:
-            self.frame_stack = UnsafePointer[UInt8, MutAnyOrigin]()
-            self.raw_frame_a = UnsafePointer[UInt8, MutAnyOrigin]()
-            self.raw_frame_b = UnsafePointer[UInt8, MutAnyOrigin]()
-            self.gray_buf = UnsafePointer[UInt8, MutAnyOrigin]()
+            self.frame_stack = None
+            self.raw_frame_a = None
+            self.raw_frame_b = None
+            self.gray_buf = None
             self.frame_idx = 0
 
     def __init__(out self, *, deinit take: Self):
@@ -217,27 +217,26 @@ struct AtariEnv[
             var offset = i * 4
             # Max of two frames per channel
             var b = max(
-                Int(self.raw_frame_a[offset + 0]),
-                Int(self.raw_frame_b[offset + 0]),
+                Int(self.raw_frame_a.value()[offset + 0]),
+                Int(self.raw_frame_b.value()[offset + 0]),
             )
             var g = max(
-                Int(self.raw_frame_a[offset + 1]),
-                Int(self.raw_frame_b[offset + 1]),
+                Int(self.raw_frame_a.value()[offset + 1]),
+                Int(self.raw_frame_b.value()[offset + 1]),
             )
             var r = max(
-                Int(self.raw_frame_a[offset + 2]),
-                Int(self.raw_frame_b[offset + 2]),
+                Int(self.raw_frame_a.value()[offset + 2]),
+                Int(self.raw_frame_b.value()[offset + 2]),
             )
             # Luminance: Y = (77*R + 150*G + 29*B) >> 8
-            self.gray_buf[i] = UInt8((77 * r + 150 * g + 29 * b) >> 8)
+            self.gray_buf.value()[i] = UInt8((77 * r + 150 * g + 29 * b) >> 8)
 
     def _push_frame_to_stack(mut self):
         """Resize gray_buf (160×210) to 84×84 and push into frame_stack ring buffer.
         """
         var slot_offset = self.frame_idx * OBS_FRAME_SIZE
-        _resize_160x210_to_84x84(
-            self.gray_buf,
-            self.frame_stack + slot_offset,
+        _resize_160x210_to_84x84(self.gray_buf.value(),
+            self.frame_stack.value() + slot_offset,
         )
         self.frame_idx = (self.frame_idx + 1) % 4
 
@@ -247,7 +246,7 @@ struct AtariEnv[
         Runs one NOOP frame with video output to capture the display.
         """
         run_frame_with_video(
-            self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_a
+            self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_a.value()
         )
 
     # ========================================================================
@@ -267,11 +266,11 @@ struct AtariEnv[
                 self.env.state,
                 self.env.rom,
                 self.env.rom_size,
-                self.raw_frame_a,
+                self.raw_frame_a.value(),
             )
             # Copy frame_a to frame_b for maxpool (both identical after reset)
             for i in range(FRAME_BGRA_SIZE):
-                self.raw_frame_b[i] = self.raw_frame_a[i]
+                self.raw_frame_b.value()[i] = self.raw_frame_a.value()[i]
             self._bgra_to_gray_maxpool()
             # Fill all 4 slots with the same initial frame
             self.frame_idx = 0
@@ -297,18 +296,18 @@ struct AtariEnv[
     def close(mut self):
         """Free pixel-mode buffers."""
         comptime if Self.OBS_MODE == 1:
-            if self.frame_stack:
-                self.frame_stack.free()
-                self.frame_stack = UnsafePointer[UInt8, MutAnyOrigin]()
-            if self.raw_frame_a:
-                self.raw_frame_a.free()
-                self.raw_frame_a = UnsafePointer[UInt8, MutAnyOrigin]()
-            if self.raw_frame_b:
-                self.raw_frame_b.free()
-                self.raw_frame_b = UnsafePointer[UInt8, MutAnyOrigin]()
-            if self.gray_buf:
-                self.gray_buf.free()
-                self.gray_buf = UnsafePointer[UInt8, MutAnyOrigin]()
+            if Bool(self.frame_stack):
+                self.frame_stack.value().free()
+                self.frame_stack = None
+            if Bool(self.raw_frame_a):
+                self.raw_frame_a.value().free()
+                self.raw_frame_a = None
+            if Bool(self.raw_frame_b):
+                self.raw_frame_b.value().free()
+                self.raw_frame_b = None
+            if Bool(self.gray_buf):
+                self.gray_buf.value().free()
+                self.gray_buf = None
 
     # ========================================================================
     # ContinuousStateEnv trait
@@ -328,7 +327,7 @@ struct AtariEnv[
                 var offset = slot * OBS_FRAME_SIZE
                 for j in range(OBS_FRAME_SIZE):
                     obs.append(
-                        Scalar[Self.DTYPE](self.frame_stack[offset + j]) / 255.0
+                        Scalar[Self.DTYPE](self.frame_stack.value()[offset + j]) / 255.0
                     )
             return obs^
         else:
@@ -416,13 +415,13 @@ struct AtariEnv[
         # Frame skip-2: render into raw_frame_a
         set_action(self.env.state, ale_action)
         run_frame_with_video(
-            self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_a
+            self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_a.value()
         )
 
         # Frame skip-1: render into raw_frame_b
         set_action(self.env.state, ale_action)
         run_frame_with_video(
-            self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_b
+            self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_b.value()
         )
 
         # Extract RL signals from RAM (same as step_with_game)

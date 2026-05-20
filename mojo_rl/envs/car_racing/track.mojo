@@ -82,9 +82,7 @@ struct TrackRNG:
 # =============================================================================
 
 
-struct TrackPoint[DTYPE: DType where DTYPE.is_floating_point()](
-    Copyable, ImplicitlyCopyable, Movable
-):
+struct TrackPoint[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
     """A point on the track centerline with direction."""
 
     var alpha: Scalar[Self.DTYPE]  # Angle from center (for lap tracking)
@@ -122,9 +120,7 @@ struct TrackPoint[DTYPE: DType where DTYPE.is_floating_point()](
 # =============================================================================
 
 
-struct Checkpoint[DTYPE: DType where DTYPE.is_floating_point()](
-    Copyable, ImplicitlyCopyable, Movable
-):
+struct Checkpoint[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
     """A checkpoint on the track."""
 
     var alpha: Scalar[Self.DTYPE]  # Angle from center
@@ -152,9 +148,7 @@ struct Checkpoint[DTYPE: DType where DTYPE.is_floating_point()](
         self.y = take.y
 
 
-struct TrackTile[DTYPE: DType where DTYPE.is_floating_point()](
-    Copyable, ImplicitlyCopyable, Movable
-):
+struct TrackTile[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
     """A single track tile with quad vertices and friction.
 
     The tile is stored as 4 vertices in CCW order forming a convex quad.
@@ -250,9 +244,7 @@ struct TrackTile[DTYPE: DType where DTYPE.is_floating_point()](
         tiles[idx, TILE_FRICTION] = Scalar[dtype](self.friction)
 
 
-struct TrackGenerator[DTYPE: DType where DTYPE.is_floating_point()](
-    Copyable, Movable
-):
+struct TrackGenerator[DTYPE: DType](Copyable, Movable):
     """Procedural track generator for CarRacing.
 
     Generates a closed-loop track around random checkpoints.
@@ -279,6 +271,10 @@ struct TrackGenerator[DTYPE: DType where DTYPE.is_floating_point()](
 
         This is a reliable fallback that always produces a valid track.
         """
+        comptime assert (
+            Self.DTYPE.is_floating_point()
+        ), "DTYPE must be a floating point type"
+
         self.track.clear()
 
         var num_tiles: Int = 100
@@ -367,6 +363,10 @@ struct TrackGenerator[DTYPE: DType where DTYPE.is_floating_point()](
     ) -> Bool:
         """Attempt to generate a random track. Returns True on success."""
         self.track.clear()
+
+        comptime assert (
+            Self.DTYPE.is_floating_point()
+        ), "DTYPE must be a floating point type"
 
         var two_pi = Scalar[Self.DTYPE](2.0 * pi)
         var track_rad = Scalar[Self.DTYPE](CRConstants.TRACK_RAD)

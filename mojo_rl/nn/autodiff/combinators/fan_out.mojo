@@ -397,7 +397,7 @@ struct FanOut[Inner: Model, N: Int](Model):
                     row * Self.OUT_DIM + Self._out_offset[i]() + col
                 ] = src.ptr[idx]
 
-            ctx.enqueue_function[scatter_k, scatter_k](
+            ctx.enqueue_function[scatter_k](
                 output, i_immut, grid_dim=(i_grid,), block_dim=(TPB,)
             )
 
@@ -521,7 +521,7 @@ struct FanOut[Inner: Model, N: Int](Model):
                     row * Self.OUT_DIM + Self._out_offset[i]() + col
                 ]
 
-            ctx.enqueue_function[extract_k, extract_k](
+            ctx.enqueue_function[extract_k](
                 go_t, go_immut, grid_dim=(i_grid,), block_dim=(TPB,)
             )
 
@@ -595,7 +595,7 @@ struct FanOut[Inner: Model, N: Int](Model):
                         return
                     a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
 
-                ctx.enqueue_function[add_gi, add_gi](
+                ctx.enqueue_function[add_gi](
                     grad_input,
                     gi_immut,
                     grid_dim=(gi_grid,),
@@ -701,7 +701,7 @@ struct FanOut[Inner: Model, N: Int](Model):
                     row * Self.OUT_DIM + Self._out_offset[i]() + col
                 ] = src.ptr[idx]
 
-            ctx.enqueue_function[scatter_k, scatter_k](
+            ctx.enqueue_function[scatter_k](
                 output, i_immut, grid_dim=(i_grid,), block_dim=(TPB,)
             )
 
@@ -784,7 +784,7 @@ struct FanOut[Inner: Model, N: Int](Model):
                     row * Self.OUT_DIM + Self._out_offset[i]() + col
                 ]
 
-            ctx.enqueue_function[extract_k, extract_k](
+            ctx.enqueue_function[extract_k](
                 go_t, go_immut, grid_dim=(i_grid,), block_dim=(TPB,)
             )
 
@@ -858,7 +858,7 @@ struct FanOut[Inner: Model, N: Int](Model):
                         return
                     a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
 
-                ctx.enqueue_function[add_gi, add_gi](
+                ctx.enqueue_function[add_gi](
                     grad_input,
                     gi_immut,
                     grid_dim=(gi_grid,),

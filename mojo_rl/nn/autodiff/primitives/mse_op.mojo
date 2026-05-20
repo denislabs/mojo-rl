@@ -17,6 +17,10 @@ from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct MSEOp(DiffOp):
@@ -65,12 +69,26 @@ struct MSEOp(DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        for b in range(BATCH):
-            var pred = rebind[Scalar[dtype]](input[b, 0])
-            var target = rebind[Scalar[dtype]](input[b, 1])
-            var residual = pred - target
-            cache[b, 0] = residual
-            output[b, 0] = residual * residual
+        # Input is interleaved [p0, t0, p1, t1, ...]. Use SIMD deinterleave
+        # to split W batch rows at a time into pred/target lanes.
+        comptime W = _CPU_SIMD_W
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var c_p = cache.ptr
+        var b = 0
+        while b + W <= BATCH:
+            var pair = in_p.load[width=2 * W](2 * b).deinterleave()
+            var residual = pair[0] - pair[1]
+            c_p.store(b, residual)
+            out_p.store(b, residual * residual)
+            b += W
+        while b < BATCH:
+            var pred = in_p[2 * b]
+            var target = in_p[2 * b + 1]
+            var r = pred - target
+            c_p[b] = r
+            out_p[b] = r * r
+            b += 1
 
     @staticmethod
     def vjp[
@@ -92,13 +110,26 @@ struct MSEOp(DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        for b in range(BATCH):
-            var g = rebind[Scalar[dtype]](grad_output[b, 0])
-            var residual = rebind[Scalar[dtype]](cache[b, 0])
-            # d(residual^2)/d(pred) = 2 * residual
-            grad_input[b, 0] = Scalar[dtype](2.0) * residual * g
-            # target is frozen — no gradient
-            grad_input[b, 1] = Scalar[dtype](0.0)
+        comptime W = _CPU_SIMD_W
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var c_p = cache.ptr
+        var two_v = SIMD[dtype, W](2)
+        var zero_v = SIMD[dtype, W](0)
+        var b = 0
+        while b + W <= BATCH:
+            var g = go_p.load[width=W](b)
+            var r = c_p.load[width=W](b)
+            var d_pred = two_v * r * g
+            # interleave [d_pred, 0] back into [..., 2*r*g, 0, ...]
+            gi_p.store(2 * b, d_pred.interleave(zero_v))
+            b += W
+        while b < BATCH:
+            var g = go_p[b]
+            var r = c_p[b]
+            gi_p[2 * b] = 2 * r * g
+            gi_p[2 * b + 1] = 0
+            b += 1
 
     # =========================================================================
     # GPU kernels
@@ -180,7 +211,7 @@ struct MSEOp(DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](o, i, c)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             cache,
@@ -227,7 +258,7 @@ struct MSEOp(DiffOp):
         ):
             Self.backward_kernel_impl[BATCH, dtype](gi, go, c)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input,
             go_immut,
             c_immut,

@@ -181,7 +181,7 @@ def get_sensors(
             count: Ptr[c_int, MutAnyOrigin]
         ) thin -> Ptr[SensorID, MutAnyOrigin],
     ]()(count)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -272,7 +272,7 @@ def open_sensor(
         "SDL_OpenSensor",
         def(instance_id: SensorID) thin -> Ptr[Sensor, MutAnyOrigin],
     ]()(instance_id)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -296,7 +296,7 @@ def get_sensor_from_id(
         "SDL_GetSensorFromID",
         def(instance_id: SensorID) thin -> Ptr[Sensor, MutAnyOrigin],
     ]()(instance_id)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -342,7 +342,7 @@ def get_sensor_name(
         "SDL_GetSensorName",
         def(sensor: Ptr[Sensor, MutAnyOrigin]) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(sensor)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 

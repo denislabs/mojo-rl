@@ -112,7 +112,7 @@ def compute_cvel_gpu[
             states[env, cvel_base + 4] = vcy
             states[env, cvel_base + 5] = vcz
 
-    ctx.enqueue_function[cvel_kernel, cvel_kernel](
+    ctx.enqueue_function[cvel_kernel](
         states,
         grid_dim=(BLOCKS,),
         block_dim=(TPB,),

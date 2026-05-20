@@ -402,12 +402,8 @@ trait GPUDiscreteEnv:
         mut terminated: DeviceBuffer[dtype],
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
-        workspace_ptr: UnsafePointer[
-            Scalar[dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         """Perform one environment step and extract observations.
 
@@ -458,12 +454,8 @@ trait GPUDiscreteEnv:
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
-        workspace_ptr: UnsafePointer[
-            Scalar[dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         """Reset only done environments to random initial values.
 
@@ -570,7 +562,7 @@ trait GPUDiscreteEnv:
             for d in range(OBS_DIM):
                 o[e * OBS_DIM + d] = s[e * STATE_SIZE + d]
 
-        ctx.enqueue_function[extract_wrapper, extract_wrapper](
+        ctx.enqueue_function[extract_wrapper](
             states_t,
             obs_t,
             grid_dim=(BLOCKS,),
@@ -615,12 +607,8 @@ trait GPUContinuousEnv:
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
-        workspace_ptr: UnsafePointer[
-            Scalar[dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         """Perform one environment step with continuous actions.
 
@@ -673,12 +661,8 @@ trait GPUContinuousEnv:
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
-        workspace_ptr: UnsafePointer[
-            Scalar[dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         """Reset only done environments to random initial values.
 
@@ -921,9 +905,7 @@ trait GPUTwoPlayerDiscreteEnv:
         mut obs: DeviceBuffer[dtype],
         mut legal_masks: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         """Perform one environment step for all games in batch.
 
@@ -968,9 +950,7 @@ trait GPUTwoPlayerDiscreteEnv:
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         """Reset only finished games.
 

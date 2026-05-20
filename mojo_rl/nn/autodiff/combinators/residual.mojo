@@ -206,7 +206,7 @@ struct Residual[Inner: Model](Model):
         ):
             _add_kernel_impl[BATCH, Self.IN_DIM, dtype](a, b)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output, input_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )
 
@@ -256,7 +256,7 @@ struct Residual[Inner: Model](Model):
         ):
             _add_kernel_impl[BATCH, Self.IN_DIM, dtype](a, b)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output, input_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )
 
@@ -335,7 +335,7 @@ struct Residual[Inner: Model](Model):
         ):
             _add_kernel_impl[BATCH, Self.IN_DIM, dtype](a, b)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input, go_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )
 
@@ -388,7 +388,7 @@ struct Residual[Inner: Model](Model):
         ):
             _add_kernel_impl[BATCH, Self.IN_DIM, dtype](a, b)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output, input_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )
 
@@ -444,6 +444,6 @@ struct Residual[Inner: Model](Model):
         ):
             _add_kernel_impl[BATCH, Self.IN_DIM, dtype](a, b)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input, go_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )

@@ -9,7 +9,10 @@ A frictionless pendulum starts from a random position and the goal is to
 swing it up and keep it balanced upright.
 
 State observation: [cos(θ), sin(θ), θ_dot] (3D)
-Action: torque in [-2.0, 2.0] (1D continuous)
+Action: torque in [-2.0, 2.0] (1D continuous) — interpreted as raw torque
+        (matches PendulumEnv V1 and Gymnasium Pendulum-v1). Callers whose
+        policy emits a different range (e.g. tanh-squashed [-1, +1]) must
+        scale on their side; out-of-range values are clamped.
 Reward: -(θ² + 0.1*θ_dot² + 0.001*torque²)
 
 Episode never terminates naturally (always runs for max_steps=200).
@@ -19,7 +22,6 @@ from std.math import sqrt, cos, sin, pi
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
-from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from std.memory import alloc
 
@@ -56,7 +58,7 @@ from mojo_rl.physics2d import dtype, TPB
 # =============================================================================
 
 
-struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
+struct PendulumV2[DTYPE: DType](
     BoxContinuousActionEnv,
     BoxDiscreteActionEnv,
     Copyable,
@@ -130,8 +132,17 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     var num_bins_angle: Int
     var num_bins_velocity: Int
 
+    # Deterministic Philox RNG state (replaces std.random.random_float64 in
+    # reset_obs_list). Per-instance so multiple envs can be seeded
+    # independently; counter advances on each reset so subsequent resets of
+    # the same env produce different but reproducible initial states.
+    # Mirrors the V2 GPU reset path (which also uses Philox) so CPU-vs-GPU
+    # parity is no longer confounded by RNG-source mismatch.
+    var rng_seed: UInt64
+    var rng_counter: UInt64
+
     # Renderer (RenderableEnv)
-    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -139,13 +150,19 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     # =========================================================================
 
     def __init__(
-        out self, num_bins_angle: Int = 15, num_bins_velocity: Int = 15
+        out self,
+        num_bins_angle: Int = 15,
+        num_bins_velocity: Int = 15,
+        seed: UInt64 = 0,
     ):
         """Initialize Pendulum with default physics parameters.
 
         Args:
             num_bins_angle: Number of bins for angle discretization.
             num_bins_velocity: Number of bins for velocity discretization.
+            seed: Per-instance Philox seed for `reset_obs_list`. Pass a
+                unique value per env when running multi-env CPU baselines so
+                each env explores a different initial-state distribution.
         """
         # Physics constants from Gymnasium
         self.max_speed = Scalar[Self.dtype](PConstants.MAX_SPEED)
@@ -170,8 +187,12 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         self.num_bins_angle = num_bins_angle
         self.num_bins_velocity = num_bins_velocity
 
+        # Philox RNG state (replaces std.random.random_float64).
+        self.rng_seed = seed
+        self.rng_counter = 0
+
         # Renderer
-        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer = None
         self._renderer_initialized = False
 
     def __init__(out self, *, copy: Self):
@@ -191,8 +212,10 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         self.last_torque = copy.last_torque
         self.num_bins_angle = copy.num_bins_angle
         self.num_bins_velocity = copy.num_bins_velocity
+        self.rng_seed = copy.rng_seed
+        self.rng_counter = copy.rng_counter
         # Do not copy renderer — reset to null
-        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer = None
         self._renderer_initialized = False
 
     def __init__(out self, *, deinit take: Self):
@@ -212,6 +235,8 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         self.last_torque = take.last_torque
         self.num_bins_angle = take.num_bins_angle
         self.num_bins_velocity = take.num_bins_velocity
+        self.rng_seed = take.rng_seed
+        self.rng_counter = take.rng_counter
         # Transfer renderer ownership
         self._renderer = take._renderer
         self._renderer_initialized = take._renderer_initialized
@@ -236,12 +261,12 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
-        workspace_ptr: UnsafePointer[
-            Scalar[dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Perform one environment step with continuous actions (GPUContinuousEnv trait).
 
@@ -322,7 +347,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             # Pendulum never terminates, only truncates at max steps
             terminated_out[env] = Scalar[dtype](0.0)
 
-        ctx.enqueue_function[step_wrapper, step_wrapper](
+        ctx.enqueue_function[step_wrapper](
             states_tensor,
             actions_tensor,
             rewards_tensor,
@@ -376,7 +401,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
                 states, env, combined_seed
             )
 
-        ctx.enqueue_function[reset_wrapper, reset_wrapper](
+        ctx.enqueue_function[reset_wrapper](
             states_tensor,
             Scalar[dtype](rng_seed),
             grid_dim=(BLOCKS,),
@@ -392,12 +417,12 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
-        workspace_ptr: UnsafePointer[
-            Scalar[dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Reset only done environments (GPUContinuousEnv trait).
 
@@ -421,16 +446,18 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        if rng_counter_ptr:
+        if Bool(rng_counter_ptr):
             var counter_t = LayoutTensor[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
-            ](rng_counter_ptr)
+            ](rng_counter_ptr.value())
 
             @parameter
             @always_inline
             def selective_reset_counter_wrapper(
                 states: LayoutTensor[
-                    dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                    MutAnyOrigin,
                 ],
                 dones: LayoutTensor[
                     dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -443,16 +470,17 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
                 if env >= BATCH_SIZE:
                     return
                 if rebind[Scalar[dtype]](dones[env]) > Scalar[dtype](0.5):
-                    var combined_seed = Int(rebind[Scalar[DType.uint64]](counter[0])) * 2654435761 + env * 12345
-                    PendulumV2[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
-                        states, env, combined_seed
+                    var combined_seed = (
+                        Int(rebind[Scalar[DType.uint64]](counter[0]))
+                        * 2654435761
+                        + env * 12345
                     )
+                    PendulumV2[Self.dtype]._reset_env_gpu[
+                        BATCH_SIZE, STATE_SIZE
+                    ](states, env, combined_seed)
                     dones[env] = Scalar[dtype](0.0)
 
-            ctx.enqueue_function[
-                selective_reset_counter_wrapper,
-                selective_reset_counter_wrapper,
-            ](
+            ctx.enqueue_function[selective_reset_counter_wrapper](
                 states_tensor,
                 dones_tensor,
                 counter_t,
@@ -465,7 +493,9 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             @always_inline
             def selective_reset_wrapper(
                 states: LayoutTensor[
-                    dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                    MutAnyOrigin,
                 ],
                 dones: LayoutTensor[
                     dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -479,12 +509,12 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
                 if rebind[Scalar[dtype]](dones[env]) > Scalar[dtype](0.5):
                     # Combine seed with env index using prime multiplier for good distribution
                     var combined_seed = Int(seed) * 2654435761 + env * 12345
-                    PendulumV2[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
-                        states, env, combined_seed
-                    )
+                    PendulumV2[Self.dtype]._reset_env_gpu[
+                        BATCH_SIZE, STATE_SIZE
+                    ](states, env, combined_seed)
                     dones[env] = Scalar[dtype](0.0)
 
-            ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
+            ctx.enqueue_function[selective_reset_wrapper](
                 states_tensor,
                 dones_tensor,
                 Scalar[dtype](rng_seed),
@@ -531,7 +561,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             for d in range(OBS_DIM_VAL):
                 obs[i, d] = states[i, d]
 
-        ctx.enqueue_function[extract_obs, extract_obs](
+        ctx.enqueue_function[extract_obs](
             states,
             obs,
             grid_dim=(BLOCKS,),
@@ -625,11 +655,13 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             states[env, META_OFF + META_TOTAL_REWARD]
         )
 
-        # Get action and scale from [-1, 1] to [-MAX_TORQUE, MAX_TORQUE]
-        # PPO continuous outputs actions in [-1, 1] after tanh squashing
-        var raw_action = rebind[Scalar[dtype]](actions[env, 0])
-        var u = raw_action * MAX_TORQUE
-        # Clamp just in case action is slightly out of bounds
+        # Action is interpreted as raw torque, clamped to ±MAX_TORQUE.
+        # Matches PendulumEnv (V1) and Gymnasium Pendulum-v1's contract:
+        # callers emit actions in the env's natural torque range
+        # [-MAX_TORQUE, +MAX_TORQUE]. Agents whose policy outputs a
+        # different range (e.g. tanh-squashed [-1, +1]) must scale on
+        # their side before calling this kernel.
+        var u = rebind[Scalar[dtype]](actions[env, 0])
         if u > MAX_TORQUE:
             u = MAX_TORQUE
         elif u < -MAX_TORQUE:
@@ -767,11 +799,31 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     # =========================================================================
 
     def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
-        """Reset environment and return initial observation as list."""
+        """Reset environment and return initial observation as list.
+
+        Uses the per-instance Philox stream (seed=`self.rng_seed`,
+        offset=`self.rng_counter`) to sample (θ, θ_dot) deterministically,
+        then advances the counter. This replaces the previous
+        `random_float64()` calls so the V2 CPU path no longer depends on
+        the global `std.random` state, matching the V2 GPU `_reset_env_gpu`
+        path which also uses Philox.
+
+        To get distinct initial states across multiple envs, construct each
+        env with a unique `seed=` (e.g. `PendulumV2(seed=2026 + env_id)`).
+        """
+        var rng = PhiloxRandom(seed=self.rng_seed, offset=self.rng_counter)
+        var rand_vals = rng.step_uniform()
+        self.rng_counter += 1
+
+        # PhiloxRandom.step_uniform() returns Float32; cast to Self.dtype.
+        var u0 = Scalar[Self.dtype](rand_vals[0])
+        var u1 = Scalar[Self.dtype](rand_vals[1])
+
+        var PI = Scalar[Self.dtype](pi)
         # Random initial angle in [-π, π]
-        self.theta = Scalar[Self.dtype]((random_float64() * 2.0 - 1.0) * pi)
+        self.theta = (u0 * Scalar[Self.dtype](2.0) - Scalar[Self.dtype](1.0)) * PI
         # Random initial angular velocity in [-1, 1]
-        self.theta_dot = Scalar[Self.dtype](random_float64() * 2.0 - 1.0)
+        self.theta_dot = u1 * Scalar[Self.dtype](2.0) - Scalar[Self.dtype](1.0)
 
         self.steps = 0
         self.done = False
@@ -808,15 +860,13 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     ) -> Tuple[List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool]:
         """Take continuous action and return (obs, reward, done).
 
-        Action is expected in [-1, 1] range (normalized).
-        This method scales it by MAX_TORQUE to match GPU behavior.
+        Action is interpreted as raw torque in [-MAX_TORQUE, +MAX_TORQUE],
+        matching PendulumEnv (V1) and Gymnasium Pendulum-v1. Out-of-range
+        values are clamped inside `_step_with_torque`.
         """
-        var raw_action = Scalar[Self.dtype](action[0]) if len(
+        var torque = Scalar[Self.dtype](action[0]) if len(
             action
         ) > 0 else Scalar[Self.dtype](0.0)
-        # Scale action from [-1, 1] to [-MAX_TORQUE, MAX_TORQUE]
-        # This matches the GPU step kernel behavior
-        var torque = raw_action * self.max_torque
         var result = self._step_with_torque(torque)
         var obs = List[Scalar[DTYPE_VEC]](capacity=3)
         obs.append(Scalar[DTYPE_VEC](cos(Float64(self.theta))))
@@ -910,6 +960,16 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
 
         self.last_torque = u
 
+        # Reward computed from PRE-step state (Gymnasium Pendulum-v1 order).
+        # Older V2 CPU computed reward POST-step using the updated θ/θ_dot,
+        # which diverged from V1 / V2 GPU / Gymnasium and made the env
+        # materially harder for value-based agents. Fixed 2026-05-15.
+        var reward = -(
+            self.theta * self.theta
+            + Scalar[Self.dtype](0.1) * self.theta_dot * self.theta_dot
+            + Scalar[Self.dtype](0.001) * u * u
+        )
+
         # Physics: θ'' = (3g/2L) * sin(θ) + (3/mL²) * u
         var sin_theta = Scalar[Self.dtype](sin(Float64(self.theta)))
         var theta_acc = (Scalar[Self.dtype](3.0) * self.g) / (
@@ -918,27 +978,21 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             Scalar[Self.dtype](3.0) / (self.m * self.l * self.l)
         ) * u
 
-        # Euler integration
+        # Euler integration — Gymnasium clips θ_dot BEFORE the θ update.
+        # Older V2 CPU updated θ first and then clamped θ_dot, which let
+        # over-MAX_SPEED velocity propagate into θ for one step.
+        # Fixed 2026-05-15.
         self.theta_dot = self.theta_dot + theta_acc * self.dt
-        self.theta = self.theta + self.theta_dot * self.dt
-
-        # Clip angular velocity
         if self.theta_dot > self.max_speed:
             self.theta_dot = self.max_speed
         elif self.theta_dot < -self.max_speed:
             self.theta_dot = -self.max_speed
+        self.theta = self.theta + self.theta_dot * self.dt
 
         # Normalize angle to [-π, π]
         self.theta = self._angle_normalize(self.theta)
 
         self.steps += 1
-
-        # Compute reward: -(θ² + 0.1*θ_dot² + 0.001*u²)
-        var reward = -(
-            self.theta * self.theta
-            + Scalar[Self.dtype](0.1) * self.theta_dot * self.theta_dot
-            + Scalar[Self.dtype](0.001) * u * u
-        )
         self.total_reward += reward
 
         # Pendulum never terminates early, only truncates at max_steps
@@ -1085,8 +1139,8 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     def close(mut self):
         """Clean up resources."""
         if self._renderer_initialized:
-            self._renderer[].close()
-            self._renderer.free()
+            self._renderer.value()[].close()
+            self._renderer.value().free()
             self._renderer_initialized = False
 
     # =========================================================================
@@ -1169,7 +1223,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.init_pointee_move(Renderer2D())
+        self._renderer.value().init_pointee_move(Renderer2D())
         self._renderer_initialized = True
         return True
 
@@ -1177,33 +1231,33 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         """Render the current frame using the internal renderer."""
         if not self._renderer_initialized:
             return
-        self.render(self._renderer[])
+        self.render(self._renderer.value()[])
 
     def close_renderer(mut self) raises -> None:
         """Close and free the SDL2 renderer."""
         if not self._renderer_initialized:
             return
-        self._renderer[].close()
-        self._renderer.free()
+        self._renderer.value()[].close()
+        self._renderer.value().free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
         """Return True if the renderer window is open."""
         if not self._renderer_initialized:
             return False
-        return not self._renderer[].get_should_quit()
+        return not self._renderer.value()[].get_should_quit()
 
     def check_renderer_quit(mut self) -> Bool:
         """Return True if the renderer has received a quit event."""
         if not self._renderer_initialized:
             return False
-        return self._renderer[].get_should_quit()
+        return self._renderer.value()[].get_should_quit()
 
     def renderer_delay(self, ms: Int) -> None:
         """Delay for frame rate control."""
         if not self._renderer_initialized:
             return
-        self._renderer[].renderer_delay(ms)
+        self._renderer.value()[].renderer_delay(ms)
 
     def renderer_is_paused(self) -> Bool:
         return False

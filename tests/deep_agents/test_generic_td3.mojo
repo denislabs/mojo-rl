@@ -15,31 +15,31 @@ def main() raises:
     print("=== Generic TD3 Test ===\n")
 
     # Test 1: DDPG still works after refactor
-    print("1. DDPG (5 episodes)...")
+    print("1. DDPG (1000 steps)...")
     seed(42)
     var ddpg = GenericOffPolicyAgent[DDPGConfig[3, 1, 64, 1000, 32]](
         action_scale=2.0
     )
     var env1 = PendulumEnv[DType.float64]()
-    var m1 = ddpg.train(env1, num_episodes=5)
+    var m1 = ddpg.train(env1, num_steps=1000)
     print("   steps:", ddpg.train_step_count, " OK")
 
     # Test 2: TD3 trains
-    print("\n2. TD3 Generic (5 episodes)...")
+    print("\n2. TD3 Generic (1000 steps)...")
     seed(42)
     var td3 = GenericOffPolicyAgent[TD3Config[3, 1, 64, 1000, 32]](
         action_scale=2.0
     )
     var env2 = PendulumEnv[DType.float64]()
-    var m2 = td3.train(env2, num_episodes=5)
+    var m2 = td3.train(env2, num_steps=1000)
     print("   steps:", td3.train_step_count, " OK")
 
     # Test 3: Old TD3 for comparison
-    print("\n3. Old DeepTD3Agent (5 episodes)...")
+    print("\n3. Old DeepTD3Agent (1000 steps)...")
     seed(42)
     var old_td3 = DeepTD3Agent[3, 1, 64, 1000, 32](action_scale=2.0)
     var env3 = PendulumEnv[DType.float64]()
-    var m3 = old_td3.train(env3, num_episodes=5)
+    var m3 = old_td3.train(env3, num_steps=1000)
     print("   steps:", old_td3.train_step_count, " OK")
 
     # Comparison

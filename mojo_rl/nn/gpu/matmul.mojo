@@ -497,7 +497,7 @@ def gpu_matmul[
         else:
             _tiled_2x2_kernel[dtype, M, N, K](output, a, b)
 
-    ctx.enqueue_function[kernel, kernel](
+    ctx.enqueue_function[kernel](
         output,
         a,
         b,

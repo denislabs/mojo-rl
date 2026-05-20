@@ -40,6 +40,7 @@ from mojo_rl.core import (
     BoxContinuousActionEnv,
 )
 from mojo_rl.core.logger import Logger, NoOpLogger
+from mojo_rl.utils.progress import print_progress_bar, clear_progress_bar
 from ..checkpoint_trait import Checkpointable
 
 
@@ -498,7 +499,7 @@ def run_offpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for discrete-action off-policy agents.
 
@@ -597,9 +598,9 @@ def run_offpolicy_discrete_train[
         )
 
         # Logger: per-episode reward
-        if logger:
-            logger[].log_scalar("episode_reward", episode_reward, total_steps)
-            logger[].log_scalar(
+        if Bool(logger):
+            logger.value()[].log_scalar("episode_reward", episode_reward, total_steps)
+            logger.value()[].log_scalar(
                 "explore_rate", agent.get_explore_rate(), total_steps
             )
 
@@ -608,12 +609,12 @@ def run_offpolicy_discrete_train[
                 checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
             )
 
-        if (verbose or (logger and logger[].is_active())) and (
+        if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             episode + 1
         ) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)
-            if logger:
-                logger[].log_scalar("avg_reward", avg_reward, total_steps)
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_reward", avg_reward, total_steps)
 
             if verbose:
                 print(
@@ -627,8 +628,8 @@ def run_offpolicy_discrete_train[
                     + String(total_steps)
                 )
 
-    if logger:
-        logger[].flush()
+    if Bool(logger):
+        logger.value()[].flush()
     return metrics^
 
 
@@ -655,7 +656,7 @@ def run_offpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for OffPolicyDiscreteAgent (DQN family).
 
@@ -755,9 +756,9 @@ def run_offpolicy_discrete_train[
         )
 
         # Logger: per-episode reward
-        if logger:
-            logger[].log_scalar("episode_reward", episode_reward, total_steps)
-            logger[].log_scalar(
+        if Bool(logger):
+            logger.value()[].log_scalar("episode_reward", episode_reward, total_steps)
+            logger.value()[].log_scalar(
                 "explore_rate", agent.get_explore_rate(), total_steps
             )
 
@@ -766,12 +767,12 @@ def run_offpolicy_discrete_train[
                 checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
             )
 
-        if (verbose or (logger and logger[].is_active())) and (
+        if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             episode + 1
         ) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)
-            if logger:
-                logger[].log_scalar("avg_reward", avg_reward, total_steps)
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_reward", avg_reward, total_steps)
 
             if verbose:
                 print(
@@ -785,8 +786,8 @@ def run_offpolicy_discrete_train[
                     + String(total_steps)
                 )
 
-    if logger:
-        logger[].flush()
+    if Bool(logger):
+        logger.value()[].flush()
     return metrics^
 
 
@@ -812,7 +813,7 @@ def run_offpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for continuous-action off-policy agents.
 
@@ -917,9 +918,9 @@ def run_offpolicy_continuous_train[
         )
 
         # Logger: per-episode reward
-        if logger:
-            logger[].log_scalar("episode_reward", episode_reward, total_steps)
-            logger[].log_scalar(
+        if Bool(logger):
+            logger.value()[].log_scalar("episode_reward", episode_reward, total_steps)
+            logger.value()[].log_scalar(
                 "explore_rate", agent.get_explore_rate(), total_steps
             )
 
@@ -928,12 +929,12 @@ def run_offpolicy_continuous_train[
                 checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
             )
 
-        if (verbose or (logger and logger[].is_active())) and (
+        if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             episode + 1
         ) % print_every == 0:
             var avg_reward = metrics.mean_reward_last_n(print_every)
-            if logger:
-                logger[].log_scalar("avg_reward", avg_reward, total_steps)
+            if Bool(logger):
+                logger.value()[].log_scalar("avg_reward", avg_reward, total_steps)
 
             if verbose:
                 print(
@@ -947,8 +948,8 @@ def run_offpolicy_continuous_train[
                     + String(total_steps)
                 )
 
-    if logger:
-        logger[].flush()
+    if Bool(logger):
+        logger.value()[].flush()
     return metrics^
 
 
@@ -965,24 +966,29 @@ def run_offpolicy_continuous_train[
     mut agent: A,
     mut cpu_state: A.CPUStateType,
     mut env: E,
-    num_episodes: Int,
+    num_steps: Int,
     max_steps_per_episode: Int = 1000,
     warmup_steps: Int = 1000,
     train_every: Int = 1,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
     verbose: Bool = False,
-    print_every: Int = 10,
+    print_every: Int = 10_000,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> TrainingMetrics:
-    """Warmup + episode training loop for OffPolicyContinuousAgent (DDPG/TD3/SAC).
+    """Warmup + step-based training loop for OffPolicyContinuousAgent (DDPG/TD3/SAC).
 
     Symmetric with run_offpolicy_continuous_train_gpu:
         - cpu_state is passed explicitly (not owned by the agent).
         - The loop calls cpu_state.is_ready() directly.
         - The loop calls agent.do_cpu_train_step(cpu_state).
+        - Training stops when `num_steps` env transitions have been
+          collected, mirroring the GPU loop. Episodes that exceed the
+          budget exit at the next env step.
+        - Progress bar + status line + logging are step-based (every
+          `print_every` env transitions).
 
     Parameters:
         E: Environment type implementing BoxContinuousActionEnv.
@@ -993,16 +999,16 @@ def run_offpolicy_continuous_train[
         agent: Off-policy agent (hyperparameters + algorithm only).
         cpu_state: CPU state buffer (networks + replay + scratch).
         env: Continuous-action environment.
-        num_episodes: Number of training episodes.
-        max_steps_per_episode: Maximum steps per episode (default: 1000).
+        num_steps: Total env transitions to collect (loop exits when reached).
+        max_steps_per_episode: Per-episode time limit for truncation (default: 1000).
         warmup_steps: Random exploration steps before training (default: 1000).
         train_every: Call do_cpu_train_step every N steps (default: 1).
-        checkpoint_every: Save checkpoint every N episodes (default: 0).
+        checkpoint_every: Save checkpoint every N env transitions (default: 0).
         checkpoint_path: Path to save checkpoint (default: "").
-        verbose: Print progress (default: False).
-        print_every: Print every N episodes if verbose (default: 10).
+        verbose: Print progress bar + periodic status line (default: False).
+        print_every: Print/log cadence in env transitions (default: 10_000).
         environment_name: Name for metrics labeling.
-        algorithm_name: Name for metrics labeling.
+        algorithm_name: Name for metrics labeling and status-line prefix.
         logger: Optional metrics logger pointer (default: null = no logging).
 
     Returns:
@@ -1012,6 +1018,21 @@ def run_offpolicy_continuous_train[
         algorithm_name=algorithm_name,
         environment_name=environment_name,
     )
+
+    # Step-based triggers (mirror GPU loop semantics)
+    var progress_interval = print_every // 20
+    if progress_interval < 1:
+        progress_interval = 1
+    var next_print = print_every
+    var next_progress = progress_interval
+    var next_checkpoint = checkpoint_every
+
+    var total_steps = 0
+    var total_train_steps = 0
+    var completed_episodes = 0
+    var interval_reward_sum: Float64 = 0.0
+    var interval_episode_count = 0
+    var last_avg_reward: Float64 = 0.0
 
     # --- Warmup: fill buffer with random transitions ---
     var warmup_obs = env.reset_obs_list()
@@ -1037,9 +1058,8 @@ def run_offpolicy_continuous_train[
         else:
             warmup_obs = next_obs^
 
-    # --- Training loop ---
-    var total_steps = 0
-    for episode in range(num_episodes):
+    # --- Training loop (step-budget driven) ---
+    while total_steps < num_steps:
         var obs_raw = env.reset_obs_list()
         var obs = List[Float64]()
         for i in range(len(obs_raw)):
@@ -1065,53 +1085,134 @@ def run_offpolicy_continuous_train[
 
             if cpu_state.is_ready() and total_steps % train_every == 0:
                 _ = agent.do_cpu_train_step(cpu_state)
+                total_train_steps += 1
 
             episode_reward += reward
             total_steps += 1
             obs = next_obs^
 
+            # Step-based progress bar (CPU-only counters, no overhead)
+            if verbose and total_steps >= next_progress:
+                var interval_start = next_print - print_every
+                print_progress_bar(
+                    total_steps - interval_start,
+                    print_every,
+                    total_train_steps,
+                    algorithm_name,
+                )
+                next_progress += progress_interval
+
+            # Step-based checkpoint (overwrites a single file, like GPU loop)
+            if checkpoint_every > 0 and total_steps >= next_checkpoint:
+                agent.save_checkpoint(checkpoint_path)
+                next_checkpoint += checkpoint_every
+
+            # Step-based print/log at interval boundaries
+            if (
+                verbose or (Bool(logger) and logger.value()[].is_active())
+            ) and total_steps >= next_print:
+                if interval_episode_count > 0:
+                    last_avg_reward = (
+                        interval_reward_sum / Float64(interval_episode_count)
+                    )
+
+                if Bool(logger):
+                    logger.value()[].log_scalar(
+                        "avg_reward", last_avg_reward, total_steps
+                    )
+                    logger.value()[].log_scalar(
+                        "episodes", Float64(completed_episodes), total_steps
+                    )
+                    logger.value()[].log_scalar(
+                        "train_steps",
+                        Float64(total_train_steps),
+                        total_steps,
+                    )
+                    logger.value()[].log_scalar(
+                        "explore_rate",
+                        agent.get_explore_rate(),
+                        total_steps,
+                    )
+
+                if verbose:
+                    clear_progress_bar()
+                    var status_line = (
+                        algorithm_name
+                        + " | Step "
+                        + String(total_steps)
+                        + " / "
+                        + String(num_steps)
+                        + " | Ep: "
+                        + String(completed_episodes)
+                        + " | AvgR: "
+                        + String(last_avg_reward)[byte=:7]
+                        + " | Train: "
+                        + String(total_train_steps)
+                    )
+                    print(status_line)
+
+                # Reset interval accumulators
+                interval_reward_sum = 0.0
+                interval_episode_count = 0
+                next_print += print_every
+
             if done:
                 break
 
+            # Early exit if the step budget is exhausted mid-episode
+            if total_steps >= num_steps:
+                break
+
+        # End-of-episode bookkeeping
+        completed_episodes += 1
+        interval_reward_sum += episode_reward
+        interval_episode_count += 1
+
         agent.decay_explore()
         metrics.log_episode(
-            episode,
+            completed_episodes - 1,
             Scalar[DType.float64](episode_reward),
             episode_steps,
             agent.get_explore_rate(),
         )
 
-        # Logger: per-episode reward
-        if logger:
-            logger[].log_scalar("episode_reward", episode_reward, total_steps)
-            logger[].log_scalar(
-                "explore_rate", agent.get_explore_rate(), total_steps
+    # Final flush + status line
+    if interval_episode_count > 0:
+        last_avg_reward = (
+            interval_reward_sum / Float64(interval_episode_count)
+        )
+
+    if Bool(logger):
+        if logger.value()[].is_active():
+            logger.value()[].log_scalar(
+                "avg_reward", last_avg_reward, total_steps
             )
-
-        if checkpoint_every > 0 and (episode + 1) % checkpoint_every == 0:
-            agent.save_checkpoint(
-                checkpoint_path + "_episode_" + String(episode + 1) + ".ckpt"
+            logger.value()[].log_scalar(
+                "episodes", Float64(completed_episodes), total_steps
             )
+            logger.value()[].log_scalar(
+                "train_steps", Float64(total_train_steps), total_steps
+            )
+        logger.value()[].flush()
 
-        if (verbose or (logger and logger[].is_active())) and (
-            episode + 1
-        ) % print_every == 0:
-            var avg_reward = metrics.mean_reward_last_n(print_every)
-            if logger:
-                logger[].log_scalar("avg_reward", avg_reward, total_steps)
+    if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
+        agent.save_checkpoint(checkpoint_path)
 
-            if verbose:
-                print(
-                    "Episode "
-                    + String(episode + 1)
-                    + " | Avg reward: "
-                    + String(avg_reward)[byte=:7]
-                    + " | Explore: "
-                    + String(agent.get_explore_rate())[byte=:5]
-                    + " | Steps: "
-                    + String(total_steps)
-                )
+    if verbose:
+        clear_progress_bar()
+        print(
+            algorithm_name
+            + " | Step "
+            + String(total_steps)
+            + " / "
+            + String(num_steps)
+            + " | Ep: "
+            + String(completed_episodes)
+            + " | AvgR: "
+            + String(last_avg_reward)[byte=:7]
+            + " | Train: "
+            + String(total_train_steps)
+            + " [DONE]"
+        )
 
-    if logger:
-        logger[].flush()
     return metrics^

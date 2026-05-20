@@ -30,6 +30,7 @@ from .fused.activation import (
 )
 from layout import LayoutTensor, Layout
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
+from std.memory import alloc
 
 
 # =============================================================================
@@ -1948,12 +1949,13 @@ struct AutoFused[*OPS: DiffOp, USE_MAX_KERNELS: Bool = True](Model):
         ],
     ):
         # state is unused — DiffOp primitives are stateless (STATE_SIZE == 0).
-        var inter_size = BATCH * Self.WORKSPACE_SIZE_PER_SAMPLE
-        var inter_storage = List[Scalar[dtype]](
-            capacity=inter_size if inter_size > 0 else 1
-        )
-        for _ in range(inter_size if inter_size > 0 else 1):
-            inter_storage.append(0)
+        # Heap-allocated uninit (no zero-fill — written before read).
+        var _inter_cap = BATCH * Self.WORKSPACE_SIZE_PER_SAMPLE
+        if _inter_cap < 1:
+            _inter_cap = 1
+        var inter_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](_inter_cap)
 
         _auto_fused_forward[
             BATCH,
@@ -1965,11 +1967,12 @@ struct AutoFused[*OPS: DiffOp, USE_MAX_KERNELS: Bool = True](Model):
             output.ptr,
             params.ptr,
             cache.ptr,
-            inter_storage.unsafe_ptr(),
+            inter_ptr,
             0,
             0,
             0,
         )
+        inter_ptr.free()
 
     # =========================================================================
     # CPU Forward (no cache — inference)
@@ -1993,16 +1996,19 @@ struct AutoFused[*OPS: DiffOp, USE_MAX_KERNELS: Bool = True](Model):
         ],
     ):
         # state is unused — DiffOp primitives are stateless (STATE_SIZE == 0).
-        var cap = BATCH * Self.CACHE_SIZE if Self.CACHE_SIZE > 0 else 1
-        var dummy_cache = List[Scalar[dtype]](capacity=cap)
-        for _ in range(cap):
-            dummy_cache.append(0)
+        # Heap-allocated uninit dummy cache (cache is written but never read
+        # in the no-cache path — no zero-fill needed).
+        var _cap = BATCH * Self.CACHE_SIZE if Self.CACHE_SIZE > 0 else 1
+        var dummy_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](_cap)
         var c = LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
-        ](dummy_cache.unsafe_ptr())
+        ](dummy_ptr)
         Self.forward[BATCH](input, output, params, state, c)
+        dummy_ptr.free()
 
     # =========================================================================
     # CPU Backward
@@ -2032,12 +2038,13 @@ struct AutoFused[*OPS: DiffOp, USE_MAX_KERNELS: Bool = True](Model):
         ],
     ):
         # state is unused — DiffOp primitives are stateless (STATE_SIZE == 0).
-        var gi_size = BATCH * Self.WORKSPACE_SIZE_PER_SAMPLE
-        var gi_storage = List[Scalar[dtype]](
-            capacity=gi_size if gi_size > 0 else 1
-        )
-        for _ in range(gi_size if gi_size > 0 else 1):
-            gi_storage.append(0)
+        # Heap-allocated uninit grad-inter scratch (no zero-fill).
+        var _gi_cap = BATCH * Self.WORKSPACE_SIZE_PER_SAMPLE
+        if _gi_cap < 1:
+            _gi_cap = 1
+        var gi_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](_gi_cap)
 
         _auto_fused_backward[
             BATCH,
@@ -2050,11 +2057,12 @@ struct AutoFused[*OPS: DiffOp, USE_MAX_KERNELS: Bool = True](Model):
             params.ptr,
             cache.ptr,
             grads.ptr,
-            gi_storage.unsafe_ptr(),
+            gi_ptr,
             0,
             0,
             0,
         )
+        gi_ptr.free()
 
     # =========================================================================
     # GPU Forward (with cache)

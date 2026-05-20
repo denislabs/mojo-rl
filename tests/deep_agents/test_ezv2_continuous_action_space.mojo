@@ -67,6 +67,7 @@ def run_via_trait[
     ],
     loss_scale: Scalar[dtype],
     ent_scale: Scalar[dtype],
+    seed: UInt64,
 ) raises:
     AS.policy_loss_grad_gpu[BATCH, PRED_OUT, POL_TGT_DIM, dtype](
         ctx,
@@ -76,6 +77,7 @@ def run_via_trait[
         per_sample_loss,
         loss_scale,
         ent_scale,
+        seed,
     )
 
 
@@ -191,6 +193,9 @@ def main() raises:
     var ent_scale = Scalar[dtype](0.05)
     var max_action_s = Scalar[dtype](MAX_ACTION)
     var min_std_s = Scalar[dtype](MIN_STD)
+    # All three paths must use the same seed so the MC entropy estimator
+    # draws bit-identical Philox streams (parity gate).
+    var test_seed = UInt64(0xDEADBEEFCAFEBABE)
 
     # ── Path A: inlined kernel call ─────────────────────────────────────
     comptime kernel_a = ezv2_policy_loss_grad_continuous_kernel[
@@ -205,6 +210,7 @@ def main() raises:
         ent_scale,
         max_action_s,
         min_std_s,
+        test_seed,
         grid_dim=(BATCH_BLOCKS,),
         block_dim=(TPB,),
     )
@@ -220,6 +226,7 @@ def main() raises:
         loss_b_t,
         loss_scale,
         ent_scale,
+        test_seed,
     )
 
     # ── Path C: via trait-bound generic helper ──────────────────────────
@@ -232,6 +239,7 @@ def main() raises:
         loss_c_t,
         loss_scale,
         ent_scale,
+        test_seed,
     )
 
     ctx.synchronize()
@@ -383,6 +391,7 @@ def main() raises:
                 ent_scale,
                 max_action_s,
                 min_std_s,
+                test_seed,
                 grid_dim=(BATCH_BLOCKS,),
                 block_dim=(TPB,),
             )
@@ -401,6 +410,7 @@ def main() raises:
                 ent_scale,
                 max_action_s,
                 min_std_s,
+                test_seed,
                 grid_dim=(BATCH_BLOCKS,),
                 block_dim=(TPB,),
             )

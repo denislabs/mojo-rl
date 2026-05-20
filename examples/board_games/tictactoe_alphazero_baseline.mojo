@@ -29,7 +29,7 @@ def main() raises:
     var agent = GenericAlphaZeroAgent[Config, 64, 64]()
 
     _ = agent.train_selfplay_gpu[
-        TTT, RandomOpponent, GPUMinimaxTicTacToe, USE_CUDA_GRAPH=False
+        TTT, RandomOpponent, GPUMinimaxTicTacToe
     ](
         ctx,
         num_iters=100,

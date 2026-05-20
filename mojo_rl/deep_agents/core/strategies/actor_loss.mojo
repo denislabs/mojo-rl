@@ -481,7 +481,7 @@ struct DPGLoss(ActorLoss):
         ):
             concat_obs_action_kernel[dtype, BATCH, OBS, ACTIONS](d, o, a)
 
-        ctx.enqueue_function[concat_new_ci, concat_new_ci](
+        ctx.enqueue_function[concat_new_ci](
             new_ci_t,
             obs,
             act_for_concat_t,
@@ -541,7 +541,7 @@ struct DPGLoss(ActorLoss):
                 dtype, BATCH, OBS, ActorModel.OUT_DIM
             ](da, dnc)
 
-        ctx.enqueue_function[extract_act_grad, extract_act_grad](
+        ctx.enqueue_function[extract_act_grad](
             d_act_t,
             d_ci_t,
             grid_dim=(ACT_BLOCKS,),
@@ -1073,7 +1073,7 @@ struct MaxEntLoss[
         # Legacy MaxEntLoss does not plumb action_scale through the trait;
         # pass 1.0 here (use AutodiffMaxEntLoss for action_scale != 1.0).
         var action_scale_s = Scalar[dtype](1.0)
-        ctx.enqueue_function[curr_rsample, curr_rsample](
+        ctx.enqueue_function[curr_rsample](
             curr_act_t,
             curr_lp_t,
             eps_cache_t,
@@ -1104,7 +1104,7 @@ struct MaxEntLoss[
         ):
             concat_obs_action_kernel[dtype, BATCH, OBS, ACTIONS](d, o, a)
 
-        ctx.enqueue_function[concat_new_ci, concat_new_ci](
+        ctx.enqueue_function[concat_new_ci](
             new_ci_t,
             obs,
             curr_act_t,
@@ -1155,7 +1155,7 @@ struct MaxEntLoss[
         ):
             min_q_dq_kernel[dtype, BATCH](dq1, dq2, q1, q2)
 
-        ctx.enqueue_function[min_q_mask, min_q_mask](
+        ctx.enqueue_function[min_q_mask](
             dq_t,
             dq2_t,
             new_q_t,
@@ -1206,7 +1206,7 @@ struct MaxEntLoss[
         ):
             add_ci_grads_kernel[dtype, BATCH, CRITIC_IN](dst, src)
 
-        ctx.enqueue_function[add_grads, add_grads](
+        ctx.enqueue_function[add_grads](
             d_ci_t,
             d_ci2_t,
             grid_dim=(ELEM_BLOCKS,),
@@ -1230,7 +1230,7 @@ struct MaxEntLoss[
         ):
             actor_grad_from_critic_kernel[dtype, BATCH, OBS, ACTIONS](da, dnc)
 
-        ctx.enqueue_function[extract_act_grad, extract_act_grad](
+        ctx.enqueue_function[extract_act_grad](
             grad_act_t,
             d_ci_t,
             grid_dim=(ACT_BLOCKS,),
@@ -1278,7 +1278,7 @@ struct MaxEntLoss[
 
         # Legacy MaxEntLoss forward used action_scale=1.0, so backward matches.
         var bwd_action_scale = Scalar[dtype](1.0)
-        ctx.enqueue_function[rsample_bwd, rsample_bwd](
+        ctx.enqueue_function[rsample_bwd](
             actor_grad_t,
             grad_act_t,
             alpha_t,
@@ -1693,7 +1693,7 @@ struct AutodiffMaxEntLoss[
             dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
         ](critic2_params.ptr)
 
-        ctx.enqueue_function[concat_params_kernel, concat_params_kernel](
+        ctx.enqueue_function[concat_params_kernel](
             params_t,
             actor_params,
             critic_params,
@@ -1744,7 +1744,7 @@ struct AutodiffMaxEntLoss[
             if Int(thread_idx.x) == 0 and Int(block_idx.x) == 0:
                 dst.ptr[0] = Scalar[dtype](src.ptr[0])
 
-        ctx.enqueue_function[copy_rng_to_ws_k, copy_rng_to_ws_k](
+        ctx.enqueue_function[copy_rng_to_ws_k](
             seed_dst,
             rng_t,
             grid_dim=(1,),
@@ -1805,7 +1805,7 @@ struct AutodiffMaxEntLoss[
                 seed[b, 0] = neg_inv_batch
                 seed[b, 1] = ab.ptr[0] / Scalar[dtype](BATCH)
 
-        ctx.enqueue_function[fill_seed_k, fill_seed_k](
+        ctx.enqueue_function[fill_seed_k](
             grad_out_t,
             neg_inv_batch_s,
             alpha_t,
@@ -1831,7 +1831,7 @@ struct AutodiffMaxEntLoss[
             if i < TOTAL_PS:
                 dst.ptr[i] = 0.0
 
-        ctx.enqueue_function[zero_grads_k, zero_grads_k](
+        ctx.enqueue_function[zero_grads_k](
             graph_grads,
             grid_dim=(PARAM_BLOCKS,),
             block_dim=(TPB,),
@@ -1876,7 +1876,7 @@ struct AutodiffMaxEntLoss[
             elif i >= CRITIC2_OFF and i < CRITIC2_OFF + CRITIC_PS:
                 c2g.ptr[i - CRITIC2_OFF] = src.ptr[i]
 
-        ctx.enqueue_function[scatter_grads_kernel, scatter_grads_kernel](
+        ctx.enqueue_function[scatter_grads_kernel](
             grads_t,
             actor_grads,
             critic_grads,
@@ -1907,7 +1907,7 @@ struct AutodiffMaxEntLoss[
             if b < BATCH:
                 dst[b] = src[b, 1]  # log_prob is 2nd column
 
-        ctx.enqueue_function[extract_lp_k, extract_lp_k](
+        ctx.enqueue_function[extract_lp_k](
             strat_lp_t,
             output_t,
             grid_dim=(BATCH_BLOCKS,),
@@ -2220,7 +2220,7 @@ struct AutodiffDPGLoss(ActorLoss):
                 # Padding region — zero it
                 dst.ptr[i] = 0.0
 
-        ctx.enqueue_function[concat_params_kernel, concat_params_kernel](
+        ctx.enqueue_function[concat_params_kernel](
             params_t,
             actor_params,
             critic_params,
@@ -2288,7 +2288,7 @@ struct AutodiffDPGLoss(ActorLoss):
             if b < BATCH:
                 seed[b, 0] = inv_batch
 
-        ctx.enqueue_function[fill_seed_k, fill_seed_k](
+        ctx.enqueue_function[fill_seed_k](
             grad_out_t,
             inv_batch_s,
             grid_dim=(BATCH_BLOCKS,),
@@ -2313,7 +2313,7 @@ struct AutodiffDPGLoss(ActorLoss):
             if i < TOTAL_PS:
                 dst.ptr[i] = 0.0
 
-        ctx.enqueue_function[zero_grads_k, zero_grads_k](
+        ctx.enqueue_function[zero_grads_k](
             graph_grads,
             grid_dim=(PARAM_BLOCKS,),
             block_dim=(TPB,),
@@ -2352,7 +2352,7 @@ struct AutodiffDPGLoss(ActorLoss):
             elif i >= CRITIC_OFF and i < CRITIC_OFF + CRITIC_PS:
                 cg.ptr[i - CRITIC_OFF] = src.ptr[i]
 
-        ctx.enqueue_function[scatter_grads_kernel, scatter_grads_kernel](
+        ctx.enqueue_function[scatter_grads_kernel](
             grads_t,
             actor_grads,
             critic_grads,
@@ -2686,7 +2686,7 @@ struct AutodiffTD3Loss(ActorLoss):
             dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
         ](critic2_params.ptr)
 
-        ctx.enqueue_function[concat_params_kernel, concat_params_kernel](
+        ctx.enqueue_function[concat_params_kernel](
             params_t,
             actor_params,
             critic_params,
@@ -2755,7 +2755,7 @@ struct AutodiffTD3Loss(ActorLoss):
             if b < BATCH:
                 seed[b, 0] = inv_batch
 
-        ctx.enqueue_function[fill_seed_k, fill_seed_k](
+        ctx.enqueue_function[fill_seed_k](
             grad_out_t,
             inv_batch_s,
             grid_dim=(BATCH_BLOCKS,),
@@ -2780,7 +2780,7 @@ struct AutodiffTD3Loss(ActorLoss):
             if i < TOTAL_PS:
                 dst.ptr[i] = 0.0
 
-        ctx.enqueue_function[zero_grads_k, zero_grads_k](
+        ctx.enqueue_function[zero_grads_k](
             graph_grads,
             grid_dim=(PARAM_BLOCKS,),
             block_dim=(TPB,),
@@ -2825,7 +2825,7 @@ struct AutodiffTD3Loss(ActorLoss):
             elif i >= CRITIC2_OFF and i < CRITIC2_OFF + CRITIC_PS:
                 c2g.ptr[i - CRITIC2_OFF] = src.ptr[i]
 
-        ctx.enqueue_function[scatter_grads_kernel, scatter_grads_kernel](
+        ctx.enqueue_function[scatter_grads_kernel](
             grads_t,
             actor_grads,
             critic_grads,

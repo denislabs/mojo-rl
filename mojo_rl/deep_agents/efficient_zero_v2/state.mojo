@@ -30,13 +30,14 @@ The reward-prefix LSTM head (paper App. G) is intentionally absent —
 risk register defers it until after CartPole converges.
 """
 
-from std.memory import alloc, memset
+from std.memory import alloc, memset, memcpy
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.initializer import Kaiming, Xavier
 from mojo_rl.nn.training import NetworkState, GPUNetworkState
 from mojo_rl.nn.model import LSTMCell
+from mojo_rl.core.sum_tree import SumTree
 from mojo_rl.deep_agents.core.replay.sequence_replay_buffer import (
     SequenceReplayBuffer,
 )
@@ -46,6 +47,52 @@ from mojo_rl.deep_agents.efficient_zero_v2.gpu_mcts import (
     EZV2GPUMCTSState,
     run_gumbel_search_gpu,
 )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 2 staging helper (EZV2_CONTINUOUS_TRAINING_PERF.md)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def copy_window_dtype[
+    ELEM: Int
+](
+    dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    src: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    start: Int,
+    n_rows: Int,
+    capacity: Int,
+):
+    """Copy `n_rows` consecutive ELEM-wide rows from a circular source
+    array (`src`, capacity `capacity` rows) to a packed destination.
+
+    Source row k starts at `src[((start + k) % capacity) * ELEM]`.
+    Destination row k starts at `dst[k * ELEM]`.
+
+    Splits into two memcpys when start + n_rows > capacity (wraparound).
+    Replaces the per-(sample, k, d) scalar copy loops in the
+    `train_step_gpu` staging block (Phase 2). For OBS=17, K_ROOT*ACT=96,
+    K+1=6 rows per sample × 256 samples, this collapses ~210k scalar
+    reads/writes into a few hundred memcpys.
+    """
+    var pre_wrap = capacity - start
+    if pre_wrap >= n_rows:
+        memcpy(
+            dest=dst,
+            src=src + start * ELEM,
+            count=n_rows * ELEM,
+        )
+    else:
+        memcpy(
+            dest=dst,
+            src=src + start * ELEM,
+            count=pre_wrap * ELEM,
+        )
+        memcpy(
+            dest=dst + pre_wrap * ELEM,
+            src=src,
+            count=(n_rows - pre_wrap) * ELEM,
+        )
 
 
 struct EZV2DiscreteCPUState[
@@ -83,12 +130,8 @@ struct EZV2DiscreteCPUState[
     var representation: NetworkState[Self.Config.RepModel, Self.Config.OptType]
     var dynamics: NetworkState[Self.Config.DynModel, Self.Config.OptType]
     var prediction: NetworkState[Self.Config.PredModel, Self.Config.OptType]
-    var projector: NetworkState[
-        Self.Config.ProjectorModel, Self.Config.OptType
-    ]
-    var predictor: NetworkState[
-        Self.Config.PredictorModel, Self.Config.OptType
-    ]
+    var projector: NetworkState[Self.Config.ProjectorModel, Self.Config.OptType]
+    var predictor: NetworkState[Self.Config.PredictorModel, Self.Config.OptType]
 
     # Target networks for MuZero-style Reanalyze (paper App. A): a
     # slowly-tracking copy of rep / dyn / pred is used to re-run Gumbel
@@ -99,9 +142,7 @@ struct EZV2DiscreteCPUState[
     var representation_target: NetworkState[
         Self.Config.RepModel, Self.Config.OptType
     ]
-    var dynamics_target: NetworkState[
-        Self.Config.DynModel, Self.Config.OptType
-    ]
+    var dynamics_target: NetworkState[Self.Config.DynModel, Self.Config.OptType]
     var prediction_target: NetworkState[
         Self.Config.PredModel, Self.Config.OptType
     ]
@@ -120,9 +161,21 @@ struct EZV2DiscreteCPUState[
         Scalar[dtype], MutAnyOrigin
     ]  # [_CAP * ACT]
     var mcts_values: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [_CAP]
-    var mcts_to_play: UnsafePointer[
-        Scalar[DType.uint8], MutAnyOrigin
-    ]  # [_CAP]
+    var mcts_to_play: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]  # [_CAP]
+
+    # Continuous-action EZ-V2 full-π loss (paper Eq. 6) targets.
+    # `mcts_sampled_actions`: K root-sampled candidate action vectors per
+    # replay slot. `mcts_improved_policy`: softmax(completed_Q + log_prior
+    # + gumbel) weights over those K candidates. Used by the new
+    # `ezv2_policy_loss_grad_continuous_fullpi_kernel` when action_dim==1.
+    # For discrete configs or action_dim>1, these stay zero-initialized
+    # and the simple-best path (which reads `mcts_policies`) is used.
+    var mcts_sampled_actions: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [_CAP * K_ROOT * ACT]
+    var mcts_improved_policy: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [_CAP * K_ROOT]
 
     # `train_step_count` at the time each transition was written. Used by
     # the mixed-value-target blend (paper Eq. 16) to compute per-sample
@@ -139,6 +192,16 @@ struct EZV2DiscreteCPUState[
     # so future samples bias toward the windows where the current model
     # is most uncertain.
     var priorities: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [_CAP]
+
+    # Sum-tree mirror of `priorities`, gated by K-step window validity:
+    # `priority_tree.get(j)` = max(priorities[j], 1e-8) when slot j is a
+    # valid K-step window start (not in the leading edge, no `done` in
+    # `dones[j..j+K-1]`), else 0. Lets `train_step_gpu` sample BATCH
+    # window starts in O(BATCH * log _CAP) instead of the O(_CAP * BATCH)
+    # cum_prio linear scan. Maintained incrementally by `on_flush_write`
+    # and the post-train priority writeback. See
+    # docs/EZV2_CONTINUOUS_TRAINING_PERF.md (Phase 1).
+    var priority_tree: SumTree[dtype]
 
     # ── K-step unroll scratch (dynamics branch) ──────────────────────────
     var _hidden_states: UnsafePointer[
@@ -216,7 +279,9 @@ struct EZV2DiscreteCPUState[
     # is *not* Model-trait-conforming (it has explicit (h, c) plumbing
     # for BPTT), so we manage its params/grads/Adam state by hand — but
     # the post-LSTM MLP head IS a `Sequential` that fits `NetworkState`.
-    comptime _LSTMHead = LSTMCell[Self.Config.latent_dim, Self.Config.lstm_hidden]
+    comptime _LSTMHead = LSTMCell[
+        Self.Config.latent_dim, Self.Config.lstm_hidden
+    ]
     comptime _RewardPrefixMLPModel = RewardPrefixHeadMLP[
         Self.Config.lstm_hidden,
         Self.Config.lstm_mlp_hidden,
@@ -257,9 +322,7 @@ struct EZV2DiscreteCPUState[
 
     # Cumulative reward target scratch — `cum_rewards[b, k] = Σ_{j≤k} reward[b, j]`,
     # filled on-the-fly per batch.
-    var _cum_rewards: UnsafePointer[
-        Scalar[dtype], MutAnyOrigin
-    ]  # [BATCH * K]
+    var _cum_rewards: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH * K]
 
     # ══════════════════════════════════════════════════════════════════════
     # Constructors
@@ -269,19 +332,29 @@ struct EZV2DiscreteCPUState[
         """Allocate networks, replay buffer, and all scratch buffers."""
 
         # ── Networks ─────────────────────────────────────────────────────
-        self.representation = NetworkState[Self.Config.RepModel, Self.Config.OptType]()
+        self.representation = NetworkState[
+            Self.Config.RepModel, Self.Config.OptType
+        ]()
         self.representation.initialize[Kaiming[]]()
 
-        self.dynamics = NetworkState[Self.Config.DynModel, Self.Config.OptType]()
+        self.dynamics = NetworkState[
+            Self.Config.DynModel, Self.Config.OptType
+        ]()
         self.dynamics.initialize[Kaiming[]]()
 
-        self.prediction = NetworkState[Self.Config.PredModel, Self.Config.OptType]()
+        self.prediction = NetworkState[
+            Self.Config.PredModel, Self.Config.OptType
+        ]()
         self.prediction.initialize[Kaiming[]]()
 
-        self.projector = NetworkState[Self.Config.ProjectorModel, Self.Config.OptType]()
+        self.projector = NetworkState[
+            Self.Config.ProjectorModel, Self.Config.OptType
+        ]()
         self.projector.initialize[Kaiming[]]()
 
-        self.predictor = NetworkState[Self.Config.PredictorModel, Self.Config.OptType]()
+        self.predictor = NetworkState[
+            Self.Config.PredictorModel, Self.Config.OptType
+        ]()
         self.predictor.initialize[Kaiming[]]()
 
         # Target networks: independent Kaiming init; the agent
@@ -311,6 +384,16 @@ struct EZV2DiscreteCPUState[
         self.mcts_policies = alloc[Scalar[dtype]](POLICY_SIZE)
         memset(self.mcts_policies, 0, POLICY_SIZE)
 
+        comptime SAMP_ACTIONS_SIZE = (
+            Self._CAP * Self.Config.num_root_candidates * Self.ACT
+        )
+        self.mcts_sampled_actions = alloc[Scalar[dtype]](SAMP_ACTIONS_SIZE)
+        memset(self.mcts_sampled_actions, 0, SAMP_ACTIONS_SIZE)
+
+        comptime IPI_SIZE = (Self._CAP * Self.Config.num_root_candidates)
+        self.mcts_improved_policy = alloc[Scalar[dtype]](IPI_SIZE)
+        memset(self.mcts_improved_policy, 0, IPI_SIZE)
+
         self.mcts_values = alloc[Scalar[dtype]](Self._CAP)
         memset(self.mcts_values, 0, Self._CAP)
 
@@ -322,6 +405,8 @@ struct EZV2DiscreteCPUState[
 
         self.priorities = alloc[Scalar[dtype]](Self._CAP)
         memset(self.priorities, 0, Self._CAP)
+
+        self.priority_tree = SumTree[dtype](capacity=Self._CAP)
 
         # ── K-step unroll scratch (dynamics branch) ──────────────────────
         comptime HIDDEN_SIZE = (Self.K + 1) * Self.BATCH * Self.LATENT
@@ -459,10 +544,13 @@ struct EZV2DiscreteCPUState[
         self.prediction_target = take.prediction_target^
         self.buffer = take.buffer^
         self.mcts_policies = take.mcts_policies
+        self.mcts_sampled_actions = take.mcts_sampled_actions
+        self.mcts_improved_policy = take.mcts_improved_policy
         self.mcts_values = take.mcts_values
         self.mcts_to_play = take.mcts_to_play
         self.step_at_write = take.step_at_write
         self.priorities = take.priorities
+        self.priority_tree = take.priority_tree^
         self._hidden_states = take._hidden_states
         self._pred_outputs = take._pred_outputs
         self._dyn_reward_logits = take._dyn_reward_logits
@@ -494,6 +582,8 @@ struct EZV2DiscreteCPUState[
 
     def __del__(deinit self):
         self.mcts_policies.free()
+        self.mcts_sampled_actions.free()
+        self.mcts_improved_policy.free()
         self.mcts_values.free()
         self.mcts_to_play.free()
         self.step_at_write.free()
@@ -539,6 +629,100 @@ struct EZV2DiscreteCPUState[
         comptime needed = Self.K + Self.N + 1
         return self.buffer.size >= needed
 
+    # ══════════════════════════════════════════════════════════════════════
+    # Priority-tree maintenance (Phase 1 of EZV2_CONTINUOUS_TRAINING_PERF)
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _window_is_valid(self, idx: Int) -> Bool:
+        """True iff the K-step window starting at `idx` has no `done` in
+        slots `idx..idx+K-1` (mod _CAP). Matches the linear-scan validity
+        rule in the OLD `train_step_gpu` sampling block — used by
+        `on_flush_write` to gate tree priorities."""
+        for k in range(Self.K):
+            var iidx = (idx + k) % Self._CAP
+            if Float64(self.buffer.dones[iidx]) > 0.5:
+                return False
+        return True
+
+    def on_flush_write(mut self, p: Int):
+        """Maintain `priority_tree` after a single `buffer.add_with_termination`
+        write at slot `p`. Must be called AFTER `priorities[p]` has been
+        set to `max_priority`.
+
+        Invariants enforced:
+          • `priority_tree.get(p) = 0` — slot p just entered the K-wide
+            "leading edge" (its window extends past the newest slot).
+          • `priority_tree.get(p-K+1)` = max(priorities[p-K+1], 1e-8) iff
+            slot `(p-K+1) mod _CAP` is a valid K-step start (no done in
+            `dones[p-K+1..p]`), else 0. This is the "newly maturing" slot
+            on each write — at the same distance K-1 from the new buffer
+            head that the old linear scan would have just included.
+
+        The 1e-8 floor mirrors the OLD scan's `if p < 1e-8: p = 1e-8`
+        guard.
+        """
+        # Slot p enters leading edge. Zero its tree weight (overwrites any
+        # stale priority left from the previous lap when the buffer wraps).
+        self.priority_tree.update(p, Scalar[dtype](0.0))
+
+        # Mature slot (p - K + 1) iff the buffer now has at least K
+        # transitions — fewer than K writes can't form a complete window.
+        if self.buffer.size >= Self.K:
+            var j = (p - Self.K + 1 + Self._CAP) % Self._CAP
+            if self._window_is_valid(j):
+                var pr = Float64(self.priorities[j])
+                if pr < 1e-8:
+                    pr = 1e-8
+                self.priority_tree.update(j, Scalar[dtype](pr))
+            # else: tree[j] already at 0 (set when slot j entered the
+            # leading edge K-1 writes ago); no update needed.
+
+    def on_priority_writeback(mut self, idx: Int, new_priority: Float64):
+        """Mirror a per-batch priority update onto the tree. `idx` is one
+        of the slots returned by `priority_tree.sample` during the
+        current train step — so it's known-valid by construction; no
+        re-validation needed. Floors below 1e-8 to mirror the OLD scan.
+        """
+        var pr = new_priority
+        if pr < 1e-8:
+            pr = 1e-8
+        self.priority_tree.update(idx, Scalar[dtype](pr))
+
+    def rebuild_priority_tree(mut self):
+        """Rebuild `priority_tree` from current `priorities` + `dones` +
+        `buffer.ptr` + `buffer.size`. O(_CAP * K) — for tests or callers
+        that pre-populate the buffer by directly mutating `priorities` /
+        `buffer.dones` without going through `_flush_episode`. The normal
+        training path uses incremental maintenance via `on_flush_write`
+        and `on_priority_writeback`.
+
+        Encodes the same validity rule as the OLD linear scan in
+        `train_step_gpu`:
+          • Slot j is sampleable iff j is at offset 0..buf_size-K-1 from
+            `oldest` (so [j..j+K-1] is fully within the buffered range),
+          • AND `dones[j..j+K-1]` are all 0.
+        """
+        var bsize = self.buffer.size
+        if bsize <= Self.K:
+            # No valid windows possible — zero every leaf.
+            for j in range(Self._CAP):
+                self.priority_tree.update(j, Scalar[dtype](0.0))
+            return
+
+        var oldest = (self.buffer.ptr - bsize + Self._CAP) % Self._CAP
+        # First, zero every slot — including those outside the
+        # buffered range and the K-wide leading edge.
+        for j in range(Self._CAP):
+            self.priority_tree.update(j, Scalar[dtype](0.0))
+        # Then mark every valid window start with its (floored) priority.
+        for offset in range(bsize - Self.K):
+            var j = (oldest + offset) % Self._CAP
+            if self._window_is_valid(j):
+                var pr = Float64(self.priorities[j])
+                if pr < 1e-8:
+                    pr = 1e-8
+                self.priority_tree.update(j, Scalar[dtype](pr))
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # GPU state — DeviceBuffers + GPUNetworkStates for `train_step_gpu`
@@ -574,7 +758,7 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         (per-sample priorities + the four loss component scalars) paths.
 
     Parameters:
-        Config: same `EZV2DiscreteConfig` used by the CPU state.
+        Config: Same `EZV2DiscreteConfig` used by the CPU state.
     """
 
     # Compile-time constants matching the CPU state's layout.
@@ -594,14 +778,30 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         Self.Config.RepModel, Self.Config.OptType
     ]
     var dynamics: GPUNetworkState[Self.Config.DynModel, Self.Config.OptType]
-    var prediction: GPUNetworkState[
-        Self.Config.PredModel, Self.Config.OptType
-    ]
+    var prediction: GPUNetworkState[Self.Config.PredModel, Self.Config.OptType]
     var projector: GPUNetworkState[
         Self.Config.ProjectorModel, Self.Config.OptType
     ]
     var predictor: GPUNetworkState[
         Self.Config.PredictorModel, Self.Config.OptType
+    ]
+
+    # ── Target networks (Phase 3) ────────────────────────────────────────
+    # MIXED / SARSA value-target modes need a `target-net` forward to
+    # produce boot-V at every (sample, k); same-shape mirrors of the
+    # online rep/dyn/pred networks. Sync from CPU targets at the existing
+    # `target_sync_interval` cadence via `upload_targets_from`. `dyn` is
+    # included here for the Phase 4 GPU-batched reanalyze path; the
+    # MIXED boot-V forward only touches `representation_target` and
+    # `prediction_target`.
+    var representation_target: GPUNetworkState[
+        Self.Config.RepModel, Self.Config.OptType
+    ]
+    var dynamics_target: GPUNetworkState[
+        Self.Config.DynModel, Self.Config.OptType
+    ]
+    var prediction_target: GPUNetworkState[
+        Self.Config.PredModel, Self.Config.OptType
     ]
 
     # ── Sampled batch (uploaded each train step) ─────────────────────────
@@ -613,6 +813,13 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     var batch_mcts_pol_buf: DeviceBuffer[dtype]  # [BATCH * (K+1) * ACT]
     var batch_mcts_val_buf: DeviceBuffer[dtype]  # [BATCH * (K+1)]
     var batch_age_buf: DeviceBuffer[DType.int32]  # [BATCH * (K+1)]
+    # Continuous full-π (paper Eq. 6) targets — K root-sampled candidate
+    # actions and their improved-policy weights per replay slot. Used by
+    # `ezv2_policy_loss_grad_continuous_fullpi_kernel` when action_dim==1.
+    var batch_mcts_samp_act_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * (K+1) * K_ROOT * ACT]
+    var batch_mcts_imp_pi_buf: DeviceBuffer[dtype]  # [BATCH * (K+1) * K_ROOT]
 
     # ── Forward scratch (TIME-MAJOR: hidden[k * BATCH * LATENT + b * LATENT + d]) ─
     var hidden_buf: DeviceBuffer[dtype]  # [(K+1) * BATCH * LATENT]
@@ -620,24 +827,60 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     var pred_out_buf: DeviceBuffer[dtype]  # [(K+1) * BATCH * PRED_OUT]
     var rep_input_buf: DeviceBuffer[dtype]  # [BATCH * OBS] (k=0 obs gathered)
     var dyn_input_buf: DeviceBuffer[dtype]  # [BATCH * DYN_IN]
-    var obs_step_buf: DeviceBuffer[dtype]  # [BATCH * OBS] (k>0 obs gathered, target branch)
-    var rep_obs_buf: DeviceBuffer[dtype]  # [BATCH * LATENT] (rep target output for current k)
+    var obs_step_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * OBS] (k>0 obs gathered, target branch)
+    var rep_obs_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * LATENT] (rep target output for current k)
 
     # ── SimSiam scratch (k = 1..K, indexed by k_offset = k-1) ────────────
     var proj_dyn_buf: DeviceBuffer[dtype]  # [K * BATCH * PROJ]
-    var pred_dyn_buf: DeviceBuffer[dtype]  # [K * BATCH * PROJ] (predictor output)
-    var proj_obs_buf: DeviceBuffer[dtype]  # [K * BATCH * PROJ] (target branch — stop-grad)
+    var pred_dyn_buf: DeviceBuffer[
+        dtype
+    ]  # [K * BATCH * PROJ] (predictor output)
+    var proj_obs_buf: DeviceBuffer[
+        dtype
+    ]  # [K * BATCH * PROJ] (target branch — stop-grad)
 
     # ── Caches (per-network forward → backward) ─────────────────────────
     var rep_cache_buf: DeviceBuffer[dtype]  # [BATCH * RepModel.CACHE_SIZE]
     var dyn_caches_buf: DeviceBuffer[dtype]  # [K * BATCH * DynModel.CACHE_SIZE]
-    var pred_caches_buf: DeviceBuffer[dtype]  # [(K+1) * BATCH * PredModel.CACHE_SIZE]
+    var pred_caches_buf: DeviceBuffer[
+        dtype
+    ]  # [(K+1) * BATCH * PredModel.CACHE_SIZE]
     var proj_dyn_caches_buf: DeviceBuffer[
         dtype
     ]  # [K * BATCH * ProjectorModel.CACHE_SIZE]
     var pred_dyn_caches_buf: DeviceBuffer[
         dtype
     ]  # [K * BATCH * PredictorModel.CACHE_SIZE]
+
+    # Target-branch scratch caches (SimSiam stop-grad).
+    # Used so that the target rep + projector forward can run in
+    # *training-mode* (batch-stat BN), matching the PyTorch reference
+    # where both branches use `train()` mode. The cache writes are wasted
+    # (no backward through the target), but BN normalization stays
+    # consistent between the online and target branches and the trivial
+    # constant-output collapse path is properly killed at every step.
+    # One-slice buffer reused across k=1..K.
+    var rep_obs_cache_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * RepModel.CACHE_SIZE], target rep scratch
+    var proj_obs_cache_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * ProjectorModel.CACHE_SIZE], target proj scratch
+
+    # ── Target-net boot-V scratch (Phase 3b) ────────────────────────────
+    # Per-(sample) staging for `rep_target → pred_target → decode` chain,
+    # called K+1 times per train step (one per timestep k=0..K) under
+    # MIXED/SARSA value-target modes. All overwritten each k_step.
+    # `boot_v_buf` is per-sample-time-major so the Phase 3c kernel can
+    # read it the same way it reads `batch_mcts_val_buf`.
+    var tgt_rep_input_buf: DeviceBuffer[dtype]  # [BATCH * OBS]
+    var tgt_z_buf: DeviceBuffer[dtype]  # [BATCH * LATENT]
+    var tgt_pred_out_buf: DeviceBuffer[dtype]  # [BATCH * PRED_OUT]
+    var boot_v_buf: DeviceBuffer[dtype]  # [BATCH * (K+1)]
 
     # ── Per-output gradient buffers (upstream grads + accumulators) ─────
     var grad_pred_out_buf: DeviceBuffer[dtype]  # [(K+1) * BATCH * PRED_OUT]
@@ -658,7 +901,9 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     # sampling and uploaded as a [BATCH * (K+1)] scalar tensor; per-step
     # gathering + scalar_transform + two-hot encode runs on GPU below.
     var value_target_full_buf: DeviceBuffer[dtype]  # [BATCH * (K+1)] uploaded
-    var value_target_scalar_buf: DeviceBuffer[dtype]  # [BATCH] per-k gathered slice
+    var value_target_scalar_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH] per-k gathered slice
     var value_target_dist_buf: DeviceBuffer[dtype]  # [BATCH * BINS] two-hot
     var reward_target_scalar_buf: DeviceBuffer[dtype]  # [BATCH] reward at k
     var reward_target_dist_buf: DeviceBuffer[dtype]  # [BATCH * BINS] two-hot
@@ -666,14 +911,31 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     # time-major source layout means we can't just `LayoutTensor`-view a
     # slice — gather kernel runs once per k_step.
     var policy_target_step_buf: DeviceBuffer[dtype]  # [BATCH * ACT]
+    # Per-k full-π targets (paper Eq. 6) gathered from the K-candidate
+    # time-major batch buffers each k_step.
+    var fullpi_target_actions_step_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * K_ROOT * ACT]
+    var fullpi_target_policy_step_buf: DeviceBuffer[dtype]  # [BATCH * K_ROOT]
 
     # ── Loss accumulators (1 scalar each; downloaded at end of step) ────
     var L_R_buf: DeviceBuffer[dtype]
     var L_P_buf: DeviceBuffer[dtype]
     var L_V_buf: DeviceBuffer[dtype]
     var L_G_buf: DeviceBuffer[dtype]
-    var per_sample_loss_scratch_buf: DeviceBuffer[dtype]  # [BATCH] reused per kernel
-    var per_sample_v_loss_k0_buf: DeviceBuffer[dtype]  # [BATCH] saved for priority
+    # Diagnostics — written once per train step by `ezv2_z_feature_var_kernel`
+    # / `ezv2_v_pred_var_kernel` on the k=0 outputs of the encoder + value
+    # head. Used to detect SimSiam encoder collapse (z_var ≈ 0) and value-
+    # head state-collapse (v_pred_var ≈ 0) without re-running forwards on
+    # the host. 1 scalar each.
+    var z_var_buf: DeviceBuffer[dtype]
+    var v_pred_var_buf: DeviceBuffer[dtype]
+    var per_sample_loss_scratch_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH] reused per kernel
+    var per_sample_v_loss_k0_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH] saved for priority
     var priorities_out_buf: DeviceBuffer[dtype]  # [BATCH] = v_loss + 1e-3
 
     # ── Network workspace (max across all 5 networks) ────────────────────
@@ -692,6 +954,8 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     var batch_mcts_pol_host: HostBuffer[dtype]
     var batch_mcts_val_host: HostBuffer[dtype]
     var batch_age_host: HostBuffer[DType.int32]
+    var batch_mcts_samp_act_host: HostBuffer[dtype]
+    var batch_mcts_imp_pi_host: HostBuffer[dtype]
     var value_target_full_host: HostBuffer[dtype]
 
     var L_R_host: HostBuffer[dtype]
@@ -699,6 +963,9 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     var L_V_host: HostBuffer[dtype]
     var L_G_host: HostBuffer[dtype]
     var priorities_out_host: HostBuffer[dtype]
+    # Diagnostics host mirrors (read once per train step from the driver).
+    var z_var_host: HostBuffer[dtype]
+    var v_pred_var_host: HostBuffer[dtype]
 
     # ── Reward-prefix LSTM head — GPU buffers (always allocated) ─────────
     # Mirrors the CPU state's LSTM/MLP head fields. Used only when
@@ -740,18 +1007,10 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     ]
 
     # Per-step state buffers (TIME-MAJOR like `hidden_buf`).
-    var lstm_h_states_buf: DeviceBuffer[
-        dtype
-    ]  # [(K+1) * BATCH * LSTM_HIDDEN]
-    var lstm_c_states_buf: DeviceBuffer[
-        dtype
-    ]  # [(K+1) * BATCH * LSTM_HIDDEN]
-    var lstm_caches_buf: DeviceBuffer[
-        dtype
-    ]  # [K * BATCH * LSTM_CS]
-    var mlp_head_caches_buf: DeviceBuffer[
-        dtype
-    ]  # [K * BATCH * MLP_HEAD_CS]
+    var lstm_h_states_buf: DeviceBuffer[dtype]  # [(K+1) * BATCH * LSTM_HIDDEN]
+    var lstm_c_states_buf: DeviceBuffer[dtype]  # [(K+1) * BATCH * LSTM_HIDDEN]
+    var lstm_caches_buf: DeviceBuffer[dtype]  # [K * BATCH * LSTM_CS]
+    var mlp_head_caches_buf: DeviceBuffer[dtype]  # [K * BATCH * MLP_HEAD_CS]
 
     # Per-step input scratch (filled per-k with either the corresponding
     # h/c state slot or zeros at horizon boundary).
@@ -760,28 +1019,18 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
 
     # Reward-prefix loss + grad scratch.
     var rew_pref_logits_buf: DeviceBuffer[dtype]  # [K * BATCH * BINS]
-    var grad_rew_pref_logits_buf: DeviceBuffer[
-        dtype
-    ]  # [K * BATCH * BINS]
+    var grad_rew_pref_logits_buf: DeviceBuffer[dtype]  # [K * BATCH * BINS]
     var rew_pref_target_dist_buf: DeviceBuffer[dtype]  # [BATCH * BINS]
 
     # Backward grad accumulators across LSTM time steps.
-    var grad_h_lstm_buf: DeviceBuffer[
-        dtype
-    ]  # [(K+1) * BATCH * LSTM_HIDDEN]
-    var grad_c_lstm_buf: DeviceBuffer[
-        dtype
-    ]  # [(K+1) * BATCH * LSTM_HIDDEN]
+    var grad_h_lstm_buf: DeviceBuffer[dtype]  # [(K+1) * BATCH * LSTM_HIDDEN]
+    var grad_c_lstm_buf: DeviceBuffer[dtype]  # [(K+1) * BATCH * LSTM_HIDDEN]
 
     # Backward per-step scratch.
     var grad_mlp_in_step_buf: DeviceBuffer[dtype]  # [BATCH * LSTM_HIDDEN]
     var grad_x_lstm_buf: DeviceBuffer[dtype]  # [BATCH * LATENT]
-    var grad_h_prev_lstm_buf: DeviceBuffer[
-        dtype
-    ]  # [BATCH * LSTM_HIDDEN]
-    var grad_c_prev_lstm_buf: DeviceBuffer[
-        dtype
-    ]  # [BATCH * LSTM_HIDDEN]
+    var grad_h_prev_lstm_buf: DeviceBuffer[dtype]  # [BATCH * LSTM_HIDDEN]
+    var grad_c_prev_lstm_buf: DeviceBuffer[dtype]  # [BATCH * LSTM_HIDDEN]
     # `d_combined` workspace required by `LSTMCell.step_backward_gpu` —
     # passes the assembled per-gate pre-activation gradient between the
     # input-grad and param-grad GPU kernels. Shape `[BATCH, 4 * HIDDEN]`.
@@ -796,12 +1045,12 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     # Sized at fixed CAP=50000 to match `train_step_gpu`'s comptime CAP. When
     # `train_step_gpu_with_replay` is the entry point, these replace the host-
     # side cum_prio / cand_starts / batch_start_idx allocations.
-    var cum_prio_buf: DeviceBuffer[dtype]            # [CAP]
-    var cand_starts_buf: DeviceBuffer[DType.int32]   # [CAP]
-    var n_valid_buf: DeviceBuffer[DType.int32]       # [1]
-    var total_prio_buf: DeviceBuffer[dtype]          # [1]
+    var cum_prio_buf: DeviceBuffer[dtype]  # [CAP]
+    var cand_starts_buf: DeviceBuffer[DType.int32]  # [CAP]
+    var n_valid_buf: DeviceBuffer[DType.int32]  # [1]
+    var total_prio_buf: DeviceBuffer[dtype]  # [1]
     var batch_start_idx_buf: DeviceBuffer[DType.int32]  # [BATCH]
-    var batch_start_idx_host: HostBuffer[DType.int32]   # [BATCH]
+    var batch_start_idx_host: HostBuffer[DType.int32]  # [BATCH]
 
     # ══════════════════════════════════════════════════════════════════════
     # Constructor
@@ -827,6 +1076,20 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
             Self.Config.PredictorModel, Self.Config.OptType
         ](ctx)
 
+        # ── Target networks (Phase 3) ───────────────────────────────────
+        # Fresh-allocated; first `upload_targets_from(cpu, ctx)` (called
+        # right after `gpu.upload_from(cpu, ctx)` at training start)
+        # overwrites the random init with CPU target params.
+        self.representation_target = GPUNetworkState[
+            Self.Config.RepModel, Self.Config.OptType
+        ](ctx)
+        self.dynamics_target = GPUNetworkState[
+            Self.Config.DynModel, Self.Config.OptType
+        ](ctx)
+        self.prediction_target = GPUNetworkState[
+            Self.Config.PredModel, Self.Config.OptType
+        ](ctx)
+
         # ── Sampled batch (TIME-MAJOR-PER-SAMPLE) ───────────────────────
         self.batch_obs_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH * (Self.K + 1) * Self.OBS
@@ -845,6 +1108,13 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         )
         self.batch_age_buf = ctx.enqueue_create_buffer[DType.int32](
             Self.BATCH * (Self.K + 1)
+        )
+        comptime _K_ROOT = Self.Config.num_root_candidates
+        self.batch_mcts_samp_act_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * (Self.K + 1) * _K_ROOT * Self.ACT
+        )
+        self.batch_mcts_imp_pi_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * (Self.K + 1) * _K_ROOT
         )
 
         # ── Forward scratch ─────────────────────────────────────────────
@@ -868,6 +1138,20 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         )
         self.rep_obs_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH * Self.LATENT
+        )
+
+        # ── Target-net boot-V scratch (Phase 3b) ────────────────────────
+        self.tgt_rep_input_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.OBS
+        )
+        self.tgt_z_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.LATENT
+        )
+        self.tgt_pred_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.PRED_OUT
+        )
+        self.boot_v_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * (Self.K + 1)
         )
 
         # ── SimSiam scratch ─────────────────────────────────────────────
@@ -901,6 +1185,13 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         )
         self.pred_dyn_caches_buf = ctx.enqueue_create_buffer[dtype](
             Self.K * Self.BATCH * PREDR_CS if PREDR_CS > 0 else 1
+        )
+        # Target-branch scratch caches (single slice, reused per k).
+        self.rep_obs_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * REP_CS if REP_CS > 0 else 1
+        )
+        self.proj_obs_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * PROJ_CS if PROJ_CS > 0 else 1
         )
 
         # ── Gradient buffers ────────────────────────────────────────────
@@ -954,12 +1245,21 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.policy_target_step_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH * Self.ACT
         )
+        self.fullpi_target_actions_step_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * _K_ROOT * Self.ACT
+        )
+        self.fullpi_target_policy_step_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * _K_ROOT
+        )
 
         # ── Loss accumulators (zeroed at the start of every train step) ─
         self.L_R_buf = ctx.enqueue_create_buffer[dtype](1)
         self.L_P_buf = ctx.enqueue_create_buffer[dtype](1)
         self.L_V_buf = ctx.enqueue_create_buffer[dtype](1)
         self.L_G_buf = ctx.enqueue_create_buffer[dtype](1)
+        # Diagnostics (overwritten each train step — no pre-zero needed).
+        self.z_var_buf = ctx.enqueue_create_buffer[dtype](1)
+        self.v_pred_var_buf = ctx.enqueue_create_buffer[dtype](1)
         self.per_sample_loss_scratch_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH
         )
@@ -978,9 +1278,7 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         comptime WS_M2 = WS_M1 if WS_M1 > WS_PRED else WS_PRED
         comptime WS_M3 = WS_M2 if WS_M2 > WS_PROJ else WS_PROJ
         comptime WS_MAX = WS_M3 if WS_M3 > WS_PREDR else WS_PREDR
-        comptime WS_TOTAL = (
-            Self.BATCH * WS_MAX if WS_MAX > 0 else 1
-        )
+        comptime WS_TOTAL = (Self.BATCH * WS_MAX if WS_MAX > 0 else 1)
         self.workspace_buf = ctx.enqueue_create_buffer[dtype](WS_TOTAL)
 
         # Gradient-clipping partial-sums scratch — sized for the largest
@@ -1035,6 +1333,12 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.batch_age_host = ctx.enqueue_create_host_buffer[DType.int32](
             Self.BATCH * (Self.K + 1)
         )
+        self.batch_mcts_samp_act_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * (Self.K + 1) * _K_ROOT * Self.ACT
+        )
+        self.batch_mcts_imp_pi_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * (Self.K + 1) * _K_ROOT
+        )
         self.value_target_full_host = ctx.enqueue_create_host_buffer[dtype](
             Self.BATCH * (Self.K + 1)
         )
@@ -1045,6 +1349,8 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.priorities_out_host = ctx.enqueue_create_host_buffer[dtype](
             Self.BATCH
         )
+        self.z_var_host = ctx.enqueue_create_host_buffer[dtype](1)
+        self.v_pred_var_host = ctx.enqueue_create_host_buffer[dtype](1)
 
         # ── Reward-prefix LSTM head GPU buffers ─────────────────────────
         comptime LSTM_PS = Self._LSTM_PS
@@ -1068,9 +1374,7 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         )
         ctx.enqueue_memset(self.lstm_opt_global_buf, 0)
 
-        self.lstm_params_host = ctx.enqueue_create_host_buffer[dtype](
-            LSTM_PS
-        )
+        self.lstm_params_host = ctx.enqueue_create_host_buffer[dtype](LSTM_PS)
         self.lstm_opt_state_host = ctx.enqueue_create_host_buffer[dtype](
             LSTM_OPT_STATE_SIZE
         )
@@ -1084,12 +1388,8 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         ](ctx)
 
         comptime LSTM_HC_SIZE = (Self.K + 1) * Self.BATCH * LSTM_HIDDEN
-        self.lstm_h_states_buf = ctx.enqueue_create_buffer[dtype](
-            LSTM_HC_SIZE
-        )
-        self.lstm_c_states_buf = ctx.enqueue_create_buffer[dtype](
-            LSTM_HC_SIZE
-        )
+        self.lstm_h_states_buf = ctx.enqueue_create_buffer[dtype](LSTM_HC_SIZE)
+        self.lstm_c_states_buf = ctx.enqueue_create_buffer[dtype](LSTM_HC_SIZE)
         ctx.enqueue_memset(self.lstm_h_states_buf, 0)
         ctx.enqueue_memset(self.lstm_c_states_buf, 0)
 
@@ -1119,12 +1419,8 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
             Self.BATCH * Self.BINS
         )
 
-        self.grad_h_lstm_buf = ctx.enqueue_create_buffer[dtype](
-            LSTM_HC_SIZE
-        )
-        self.grad_c_lstm_buf = ctx.enqueue_create_buffer[dtype](
-            LSTM_HC_SIZE
-        )
+        self.grad_h_lstm_buf = ctx.enqueue_create_buffer[dtype](LSTM_HC_SIZE)
+        self.grad_c_lstm_buf = ctx.enqueue_create_buffer[dtype](LSTM_HC_SIZE)
 
         self.grad_mlp_in_step_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH * LSTM_HIDDEN
@@ -1149,24 +1445,24 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
             Self.BATCH * Self.K
         )
 
-        # GPU sampling scratch — sized for CAP=50000 (matches the
-        # comptime CAP in `train_step_gpu`). Allocated unconditionally
-        # so the move ctor / upload paths don't have a comptime branch;
-        # the cost is ~600KB total which is rounding error vs the
-        # network-state buffers.
-        comptime CAP = 50000
+        # GPU sampling scratch — sized to `Config.buffer_capacity`
+        # (matches the comptime CAP in `train_step_gpu`). Allocated
+        # unconditionally so the move ctor / upload paths don't have a
+        # comptime branch; the cost scales linearly with CAP (~12 bytes
+        # per slot) which is rounding error vs the network-state buffers
+        # at any reasonable buffer size. 2026-05-16: was hardcoded 50000
+        # regardless of Config — now reads Config.buffer_capacity.
+        comptime CAP = Self.Config.buffer_capacity
         self.cum_prio_buf = ctx.enqueue_create_buffer[dtype](CAP)
-        self.cand_starts_buf = ctx.enqueue_create_buffer[DType.int32](
-            CAP
-        )
+        self.cand_starts_buf = ctx.enqueue_create_buffer[DType.int32](CAP)
         self.n_valid_buf = ctx.enqueue_create_buffer[DType.int32](1)
         self.total_prio_buf = ctx.enqueue_create_buffer[dtype](1)
-        self.batch_start_idx_buf = ctx.enqueue_create_buffer[
-            DType.int32
-        ](Self.BATCH)
-        self.batch_start_idx_host = ctx.enqueue_create_host_buffer[
-            DType.int32
-        ](Self.BATCH)
+        self.batch_start_idx_buf = ctx.enqueue_create_buffer[DType.int32](
+            Self.BATCH
+        )
+        self.batch_start_idx_host = ctx.enqueue_create_host_buffer[DType.int32](
+            Self.BATCH
+        )
 
     def __init__(out self, *, deinit take: Self):
         """Move constructor."""
@@ -1175,17 +1471,26 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.prediction = take.prediction^
         self.projector = take.projector^
         self.predictor = take.predictor^
+        self.representation_target = take.representation_target^
+        self.dynamics_target = take.dynamics_target^
+        self.prediction_target = take.prediction_target^
         self.batch_obs_buf = take.batch_obs_buf^
         self.batch_actions_buf = take.batch_actions_buf^
         self.batch_rewards_buf = take.batch_rewards_buf^
         self.batch_mcts_pol_buf = take.batch_mcts_pol_buf^
         self.batch_mcts_val_buf = take.batch_mcts_val_buf^
         self.batch_age_buf = take.batch_age_buf^
+        self.batch_mcts_samp_act_buf = take.batch_mcts_samp_act_buf^
+        self.batch_mcts_imp_pi_buf = take.batch_mcts_imp_pi_buf^
         self.hidden_buf = take.hidden_buf^
         self.dyn_out_buf = take.dyn_out_buf^
         self.pred_out_buf = take.pred_out_buf^
         self.rep_input_buf = take.rep_input_buf^
         self.dyn_input_buf = take.dyn_input_buf^
+        self.tgt_rep_input_buf = take.tgt_rep_input_buf^
+        self.tgt_z_buf = take.tgt_z_buf^
+        self.tgt_pred_out_buf = take.tgt_pred_out_buf^
+        self.boot_v_buf = take.boot_v_buf^
         self.obs_step_buf = take.obs_step_buf^
         self.rep_obs_buf = take.rep_obs_buf^
         self.proj_dyn_buf = take.proj_dyn_buf^
@@ -1196,6 +1501,8 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.pred_caches_buf = take.pred_caches_buf^
         self.proj_dyn_caches_buf = take.proj_dyn_caches_buf^
         self.pred_dyn_caches_buf = take.pred_dyn_caches_buf^
+        self.rep_obs_cache_buf = take.rep_obs_cache_buf^
+        self.proj_obs_cache_buf = take.proj_obs_cache_buf^
         self.grad_pred_out_buf = take.grad_pred_out_buf^
         self.grad_dyn_out_buf = take.grad_dyn_out_buf^
         self.grad_pred_dyn_buf = take.grad_pred_dyn_buf^
@@ -1212,10 +1519,16 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.reward_target_scalar_buf = take.reward_target_scalar_buf^
         self.reward_target_dist_buf = take.reward_target_dist_buf^
         self.policy_target_step_buf = take.policy_target_step_buf^
+        self.fullpi_target_actions_step_buf = (
+            take.fullpi_target_actions_step_buf^
+        )
+        self.fullpi_target_policy_step_buf = take.fullpi_target_policy_step_buf^
         self.L_R_buf = take.L_R_buf^
         self.L_P_buf = take.L_P_buf^
         self.L_V_buf = take.L_V_buf^
         self.L_G_buf = take.L_G_buf^
+        self.z_var_buf = take.z_var_buf^
+        self.v_pred_var_buf = take.v_pred_var_buf^
         self.per_sample_loss_scratch_buf = take.per_sample_loss_scratch_buf^
         self.per_sample_v_loss_k0_buf = take.per_sample_v_loss_k0_buf^
         self.priorities_out_buf = take.priorities_out_buf^
@@ -1227,12 +1540,16 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.batch_mcts_pol_host = take.batch_mcts_pol_host^
         self.batch_mcts_val_host = take.batch_mcts_val_host^
         self.batch_age_host = take.batch_age_host^
+        self.batch_mcts_samp_act_host = take.batch_mcts_samp_act_host^
+        self.batch_mcts_imp_pi_host = take.batch_mcts_imp_pi_host^
         self.value_target_full_host = take.value_target_full_host^
         self.L_R_host = take.L_R_host^
         self.L_P_host = take.L_P_host^
         self.L_V_host = take.L_V_host^
         self.L_G_host = take.L_G_host^
         self.priorities_out_host = take.priorities_out_host^
+        self.z_var_host = take.z_var_host^
+        self.v_pred_var_host = take.v_pred_var_host^
         self.lstm_params_buf = take.lstm_params_buf^
         self.lstm_grads_buf = take.lstm_grads_buf^
         self.lstm_opt_state_buf = take.lstm_opt_state_buf^
@@ -1273,7 +1590,7 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
 
     def upload_from(
         mut self,
-        cpu: EZV2DiscreteCPUState[Self.Config],
+        cpu: EZV2DiscreteCPUState[Self.Config, Self.Config.buffer_capacity],
         ctx: DeviceContext,
     ) raises:
         """Copy network params/optimizer state/model state from the
@@ -1314,18 +1631,34 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         # zero on init and let the kernel manage from there.
         for i in range(OPT_GLOBAL_SIZE):
             self.lstm_opt_global_host[i] = Scalar[dtype](0.0)
-        ctx.enqueue_copy(
-            self.lstm_opt_global_buf, self.lstm_opt_global_host
-        )
+        ctx.enqueue_copy(self.lstm_opt_global_buf, self.lstm_opt_global_host)
         self.lstm_step_num = 0
 
-        self.reward_prefix_mlp_gpu.upload_from(
-            cpu.reward_prefix_mlp, ctx
-        )
+        self.reward_prefix_mlp_gpu.upload_from(cpu.reward_prefix_mlp, ctx)
+
+    def upload_targets_from(
+        mut self,
+        cpu: EZV2DiscreteCPUState[Self.Config, Self.Config.buffer_capacity],
+        ctx: DeviceContext,
+    ) raises:
+        """Mirror the CPU target nets (`representation_target`,
+        `dynamics_target`, `prediction_target`) onto the GPU. Call at
+        training start (right after `upload_from`) and again at every
+        `target_sync_interval` step in the training loop — same cadence
+        as the CPU `update_target_networks(tau=1.0)` call that refreshes
+        the CPU targets.
+
+        Only the trainable params + optimizer state + model state are
+        copied; SimSiam projector/predictor have no target copy (paper:
+        target nets are rep/dyn/pred only).
+        """
+        self.representation_target.upload_from(cpu.representation_target, ctx)
+        self.dynamics_target.upload_from(cpu.dynamics_target, ctx)
+        self.prediction_target.upload_from(cpu.prediction_target, ctx)
 
     def download_to(
         mut self,
-        mut cpu: EZV2DiscreteCPUState[Self.Config],
+        mut cpu: EZV2DiscreteCPUState[Self.Config, Self.Config.buffer_capacity],
         ctx: DeviceContext,
     ) raises:
         """Mirror the GPU networks back to the CPU state. Used after a
@@ -1344,18 +1677,14 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
             LSTM_PS * Self.Config.OptType.STATE_PER_PARAM
         )
         ctx.enqueue_copy(self.lstm_params_host, self.lstm_params_buf)
-        ctx.enqueue_copy(
-            self.lstm_opt_state_host, self.lstm_opt_state_buf
-        )
+        ctx.enqueue_copy(self.lstm_opt_state_host, self.lstm_opt_state_buf)
         ctx.synchronize()
         for i in range(LSTM_PS):
             (cpu.lstm_params + i)[] = self.lstm_params_host[i]
         for i in range(LSTM_OPT_STATE_SIZE):
             (cpu.lstm_opt_state + i)[] = self.lstm_opt_state_host[i]
 
-        self.reward_prefix_mlp_gpu.download_to(
-            cpu.reward_prefix_mlp, ctx
-        )
+        self.reward_prefix_mlp_gpu.download_to(cpu.reward_prefix_mlp, ctx)
 
     # ══════════════════════════════════════════════════════════════════════
     # GPU Gumbel-search wrapper

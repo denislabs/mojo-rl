@@ -36,14 +36,14 @@ comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
 comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 
 # Network architecture
-comptime HIDDEN_DIM = 64
+comptime HIDDEN_DIM = 256
 
 # Off-policy CPU training parameters
 comptime BUFFER_CAPACITY = 100_000
 comptime BATCH_SIZE = 64
 
 # Training duration
-comptime NUM_EPISODES = 1000
+comptime NUM_STEPS = 500_000
 comptime MAX_STEPS_PER_EPISODE = 1000
 comptime WARMUP_STEPS = 1_000
 
@@ -92,7 +92,7 @@ def main() raises:
     print("  Hidden dim: " + String(HIDDEN_DIM))
     print("  Buffer capacity: " + String(BUFFER_CAPACITY))
     print("  Batch size: " + String(BATCH_SIZE))
-    print("  Episodes: " + String(NUM_EPISODES))
+    print("  Total steps: " + String(NUM_STEPS))
     print("  Max steps/episode: " + String(MAX_STEPS_PER_EPISODE))
     print("  Warmup steps: " + String(WARMUP_STEPS))
     print()
@@ -108,12 +108,12 @@ def main() raises:
 
     var metrics = agent.train(
         env,
-        num_episodes=NUM_EPISODES,
+        num_steps=NUM_STEPS,
         max_steps_per_episode=MAX_STEPS_PER_EPISODE,
         warmup_steps=WARMUP_STEPS,
         train_every=1,
         verbose=True,
-        print_every=10,
+        print_every=10_000,
         environment_name="HalfCheetah",
     )
 
@@ -130,7 +130,7 @@ def main() raises:
     print("CPU Training Complete")
     print("=" * 70)
     print()
-    print("Total episodes: " + String(NUM_EPISODES))
+    print("Total steps: " + String(NUM_STEPS))
     print("Training time: " + String(elapsed_s)[byte=:6] + " seconds")
     print()
 

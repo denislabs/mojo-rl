@@ -49,7 +49,7 @@ struct PusherConfig(Phyics3dEnvConfig):
     # === CPU: Integrator step ===
     @staticmethod
     def physics_substep[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -82,7 +82,7 @@ struct PusherConfig(Phyics3dEnvConfig):
     # === CPU: Pre-step hook ===
     @staticmethod
     def pre_step_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -98,7 +98,7 @@ struct PusherConfig(Phyics3dEnvConfig):
     # === CPU: Custom reset — set goal joints to 0 (fixed position) ===
     @staticmethod
     def custom_reset_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -120,7 +120,7 @@ struct PusherConfig(Phyics3dEnvConfig):
     # === CPU: Custom observation extraction ===
     @staticmethod
     def custom_extract_obs_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -156,7 +156,7 @@ struct PusherConfig(Phyics3dEnvConfig):
     # === CPU: Reward + termination ===
     @staticmethod
     def compute_reward_and_done_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -217,7 +217,7 @@ struct PusherConfig(Phyics3dEnvConfig):
     # === GPU: Integrator step ===
     @staticmethod
     def physics_substep_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         NQ: Int,
         NV: Int,

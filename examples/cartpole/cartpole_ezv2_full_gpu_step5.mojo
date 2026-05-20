@@ -186,7 +186,7 @@ def main() raises:
         N_ENVS * NODES * ACT
     )
 
-    var gpu_replay = EZV2GPUReplayBuffer[CAP, OBS, ACT](ctx)
+    var gpu_replay = EZV2GPUReplayBuffer[CAP, OBS, ACT, MAX_K](ctx)
     ctx.synchronize()
     print("    GPU state + replay buffer ready")
 

@@ -162,16 +162,38 @@ struct MixedValueTarget[
     T_FRESH: Int = 20000,
     T_STALE: Int = 40000,
 ](ValueTarget):
-    """Linear blend of SVE → TD as the transition ages (paper Eq. 16).
+    """Reference-parity mixed value target (paper Eq. 16 +
+    `EfficientZeroV2-main/ez/agents/base.py:419-424` +
+    `ez/worker/batch_worker.py:580`).
 
-    Conventions:
-        age ≤ T_FRESH       → pure SVE
-        age ≥ T_STALE       → pure TD
-        T_FRESH < age < T_STALE → linear blend in between
+    The reference combines TWO decisions:
 
-    Defaults match paper Table 3. The thresholds may legitimately be set
-    in either order; the smaller of the two is treated as `T_FRESH` so a
-    swap doesn't silently invert the blend.
+      1. **Training-step gate** (`start_use_mix_training_steps=40000`):
+         Before this many training steps, use pure TD bootstrap (= SARSA).
+         After, fall through to the per-sample decision below.
+         Maps to our `T_STALE` parameter. This gate is applied **by the
+         caller** (not by `compute()`) — `compute()` always returns the
+         per-sample blend; the caller decides whether to consult it.
+
+      2. **Per-sample age switch** (`mixed_value_threshold=20000`):
+         For recent samples (age < threshold), use TD bootstrap — the
+         target-net's value estimate is current. For old samples
+         (age ≥ threshold), use stored SVE — the search value was
+         reliable when computed, and the current target-net estimate of
+         those old states would mix in policy that has drifted.
+         Maps to our `T_FRESH` parameter. Hard switch (no interpolation)
+         — matches reference's binary `top_value_mask ∈ {0, 1}`.
+
+    Direction note (2026-05-13 fix): prior version had this reversed
+    (low age → SVE). Reference is the opposite — recent samples use TD,
+    old samples use SVE.
+
+    Args:
+        T_FRESH: Per-sample age threshold. Sample-age < T_FRESH ⇒ TD;
+            age ≥ T_FRESH ⇒ SVE. Reference `mixed_value_threshold=20000`.
+        T_STALE: Training-step gate. Read by the caller (not by
+            `compute()`) to decide when to switch from pure TD to the
+            per-sample blend. Reference `start_use_mix_training_steps=40000`.
     """
 
     comptime TARGET_TYPE: Int = 2
@@ -180,20 +202,9 @@ struct MixedValueTarget[
 
     @staticmethod
     def compute(sve: Float64, td: Float64, age: Int) -> Float64:
-        var lower = (
-            Self.T_FRESH if Self.T_FRESH < Self.T_STALE else Self.T_STALE
-        )
-        var upper = (
-            Self.T_STALE if Self.T_STALE > Self.T_FRESH else Self.T_FRESH
-        )
-        if age <= lower:
-            return sve
-        if age >= upper:
+        if age < Self.T_FRESH:
             return td
-        var span = Float64(upper - lower)
-        # span > 0 because age strictly between lower and upper.
-        var blend = Float64(age - lower) / span
-        return (Float64(1.0) - blend) * sve + blend * td
+        return sve
 
 
 # ═════════════════════════════════════════════════════════════════════════

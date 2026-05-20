@@ -580,18 +580,9 @@ struct Trainer[
         var final_loss: Float64 = 0.0
 
         # --- Helper: run one training epoch (pure GPU, no host ops) ---
+        @parameter
         @always_inline
-        def _run_one_epoch() raises unified {
-            read ctx,
-            mut state,
-            read input_t,
-            read target_t,
-            mut output_t,
-            mut cache_t,
-            mut grad_out_t,
-            mut grad_in_t,
-            read ws_buf,
-        }:
+        def _run_one_epoch() raises:
             state.zero_grads(ctx)
             var params = state.params_view()
             var grads = state.grads_view()
@@ -801,10 +792,7 @@ struct Trainer[
 
             # Fill indices with [0, 1, ..., N_TOTAL)
             comptime init_blocks = (N_TOTAL + TPB - 1) // TPB
-            ctx.enqueue_function[
-                _init_identity_indices_kernel[N_TOTAL],
-                _init_identity_indices_kernel[N_TOTAL],
-            ](indices_t, grid_dim=(init_blocks,), block_dim=(TPB,))
+            ctx.enqueue_function[_init_identity_indices_kernel[N_TOTAL]](indices_t, grid_dim=(init_blocks,), block_dim=(TPB,))
 
         comptime gather_in_blocks = (BATCH * Self.MODEL.IN_DIM + TPB - 1) // TPB
         comptime gather_tg_blocks = (
@@ -813,31 +801,12 @@ struct Trainer[
 
         # --- Helper: run one training epoch (pure GPU, no host syncs) ---
         # Captures everything it reads/writes so it can be a graph body.
+        @parameter
         @always_inline
-        def _run_one_epoch() raises unified {
-            read ctx,
-            mut state,
-            read input,
-            read target,
-            mut output_t,
-            mut cache_t,
-            mut grad_out_t,
-            mut grad_in_t,
-            mut shuf_input_t,
-            mut shuf_target_t,
-            mut indices_t,
-            mut seed_t,
-            read ws_buf,
-            read shuffle,
-        }:
+        def _run_one_epoch() raises:
             if shuffle:
-                ctx.enqueue_function[
-                    _fisher_yates_shuffle_kernel[N_TOTAL],
-                    _fisher_yates_shuffle_kernel[N_TOTAL],
-                ](indices_t, seed_t, grid_dim=(1,), block_dim=(1,))
-                ctx.enqueue_function[
-                    _increment_seed_kernel, _increment_seed_kernel
-                ](seed_t, grid_dim=(1,), block_dim=(1,))
+                ctx.enqueue_function[_fisher_yates_shuffle_kernel[N_TOTAL]](indices_t, seed_t, grid_dim=(1,), block_dim=(1,))
+                ctx.enqueue_function[_increment_seed_kernel](seed_t, grid_dim=(1,), block_dim=(1,))
 
             for batch_idx in range(NUM_BATCHES):
                 var batch_input: LayoutTensor[
@@ -852,14 +821,9 @@ struct Trainer[
                 ]
 
                 if shuffle:
-                    ctx.enqueue_function[
-                        _gather_rows_kernel[
+                    ctx.enqueue_function[_gather_rows_kernel[
                             N_TOTAL, BATCH, Self.MODEL.IN_DIM, Self.dtype
-                        ],
-                        _gather_rows_kernel[
-                            N_TOTAL, BATCH, Self.MODEL.IN_DIM, Self.dtype
-                        ],
-                    ](
+                        ]](
                         shuf_input_t,
                         input,
                         indices_t,
@@ -867,14 +831,9 @@ struct Trainer[
                         grid_dim=(gather_in_blocks,),
                         block_dim=(TPB,),
                     )
-                    ctx.enqueue_function[
-                        _gather_rows_kernel[
+                    ctx.enqueue_function[_gather_rows_kernel[
                             N_TOTAL, BATCH, Self.MODEL.OUT_DIM, Self.dtype
-                        ],
-                        _gather_rows_kernel[
-                            N_TOTAL, BATCH, Self.MODEL.OUT_DIM, Self.dtype
-                        ],
-                    ](
+                        ]](
                         shuf_target_t,
                         target,
                         indices_t,
@@ -1138,10 +1097,7 @@ struct Trainer[
         ](aug_buf.unsafe_ptr())
 
         comptime copy_blocks = (IN_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[
-            _copy_2d_kernel[N_TRAIN, Self.MODEL.IN_DIM, Self.dtype],
-            _copy_2d_kernel[N_TRAIN, Self.MODEL.IN_DIM, Self.dtype],
-        ](
+        ctx.enqueue_function[_copy_2d_kernel[N_TRAIN, Self.MODEL.IN_DIM, Self.dtype]](
             aug_lt,
             train_input,
             grid_dim=(copy_blocks,),
@@ -1251,20 +1207,12 @@ struct Trainer[
                         s_view,
                         eval_ws_buf,
                     )
-                    ctx.enqueue_function[
-                        argmax_match_kernel[
+                    ctx.enqueue_function[argmax_match_kernel[
                             BATCH,
                             Self.MODEL.OUT_DIM,
                             N_VAL_BATCHES,
                             Self.dtype,
-                        ],
-                        argmax_match_kernel[
-                            BATCH,
-                            Self.MODEL.OUT_DIM,
-                            N_VAL_BATCHES,
-                            Self.dtype,
-                        ],
-                    ](
+                        ]](
                         per_batch_correct_lt,
                         eval_output_lt,
                         batch_labels,
@@ -1272,20 +1220,12 @@ struct Trainer[
                         grid_dim=(1,),
                         block_dim=(TPB,),
                     )
-                    ctx.enqueue_function[
-                        ce_loss_from_labels_kernel[
+                    ctx.enqueue_function[ce_loss_from_labels_kernel[
                             BATCH,
                             Self.MODEL.OUT_DIM,
                             N_VAL_BATCHES,
                             Self.dtype,
-                        ],
-                        ce_loss_from_labels_kernel[
-                            BATCH,
-                            Self.MODEL.OUT_DIM,
-                            N_VAL_BATCHES,
-                            Self.dtype,
-                        ],
-                    ](
+                        ]](
                         per_batch_loss_lt,
                         eval_output_lt,
                         batch_labels,
@@ -1448,14 +1388,9 @@ struct Trainer[
             Self.MODEL.forward_gpu_no_cache[BATCH](
                 ctx, output_lt, batch_input, p_view, s_view, ws_buf
             )
-            ctx.enqueue_function[
-                argmax_match_kernel[
+            ctx.enqueue_function[argmax_match_kernel[
                     BATCH, Self.MODEL.OUT_DIM, N_VAL_BATCHES, Self.dtype
-                ],
-                argmax_match_kernel[
-                    BATCH, Self.MODEL.OUT_DIM, N_VAL_BATCHES, Self.dtype
-                ],
-            ](
+                ]](
                 per_batch_correct_lt,
                 output_lt,
                 batch_labels,
@@ -1463,14 +1398,9 @@ struct Trainer[
                 grid_dim=(1,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[
-                ce_loss_from_labels_kernel[
+            ctx.enqueue_function[ce_loss_from_labels_kernel[
                     BATCH, Self.MODEL.OUT_DIM, N_VAL_BATCHES, Self.dtype
-                ],
-                ce_loss_from_labels_kernel[
-                    BATCH, Self.MODEL.OUT_DIM, N_VAL_BATCHES, Self.dtype
-                ],
-            ](
+                ]](
                 per_batch_loss_lt,
                 output_lt,
                 batch_labels,

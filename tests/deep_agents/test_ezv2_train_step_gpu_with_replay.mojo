@@ -123,7 +123,10 @@ def main() raises:
     print()
     print("--- Allocating GPU replay buffer + syncing from CPU ---")
     var gpu_replay = EZV2GPUReplayBuffer[
-        50000, Config.obs_dim, Config.action_dim
+        50000,
+        Config.obs_dim,
+        Config.action_dim,
+        Config.num_root_candidates,
     ](ctx)
     gpu_replay.upload_from_cpu(agent.state, ctx)
     gpu_replay.max_priority = agent.max_priority

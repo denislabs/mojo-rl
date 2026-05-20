@@ -642,7 +642,7 @@ struct FlatTerrainCollision(CollisionSystem):
                 BODIES_OFFSET,
             ](state, shapes, contacts, contact_counts, ground_y)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             shapes,
             contacts,

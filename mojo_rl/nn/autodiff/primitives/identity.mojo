@@ -123,7 +123,7 @@ struct IdentityOp[dim: Int](DiffOp):
                 return
             o.ptr[idx] = i.ptr[idx]
 
-        ctx.enqueue_function[copy_fwd, copy_fwd](
+        ctx.enqueue_function[copy_fwd](
             output, input_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )
 
@@ -170,6 +170,6 @@ struct IdentityOp[dim: Int](DiffOp):
                 return
             gi.ptr[idx] = go.ptr[idx]
 
-        ctx.enqueue_function[copy_bwd, copy_bwd](
+        ctx.enqueue_function[copy_bwd](
             grad_input, go_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )

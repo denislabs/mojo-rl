@@ -586,7 +586,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dst.ptr[row * TOTAL_OUT + BRANCH_OFF + col] = src.ptr[tid]
 
             var grid_x = (BATCH * BRANCH_OUT + TPB - 1) // TPB
-            ctx.enqueue_function[copy_branch_fwd, copy_branch_fwd](
+            ctx.enqueue_function[copy_branch_fwd](
                 output,
                 buf_i_immut,
                 grid_dim=(grid_x,),
@@ -691,7 +691,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dst.ptr[row * TOTAL_OUT + BRANCH_OFF + col] = src.ptr[tid]
 
             var grid_x = (BATCH * BRANCH_OUT + TPB - 1) // TPB
-            ctx.enqueue_function[copy_branch_fwd_nc, copy_branch_fwd_nc](
+            ctx.enqueue_function[copy_branch_fwd_nc](
                 output,
                 buf_i_immut,
                 grid_dim=(grid_x,),
@@ -792,7 +792,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 gi.ptr[tid] = go.ptr[row * TOTAL_OUT + BRANCH_OFF + col]
 
             var grid_x = (BATCH * BRANCH_OUT + TPB - 1) // TPB
-            ctx.enqueue_function[split_branch, split_branch](
+            ctx.enqueue_function[split_branch](
                 grad_i,
                 go_immut,
                 grid_dim=(grid_x,),
@@ -889,7 +889,7 @@ struct Parallel[*BRANCHES: Model](Model):
             dst.ptr[tid] = s
 
         var grid_sum = (BATCH * Self.IN_DIM + TPB - 1) // TPB
-        ctx.enqueue_function[sum_gi_wrapper, sum_gi_wrapper](
+        ctx.enqueue_function[sum_gi_wrapper](
             grad_input,
             gi_immut,
             grid_dim=(grid_sum,),
@@ -1004,7 +1004,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dst.ptr[row * TOTAL_OUT + BRANCH_OFF + col] = src.ptr[tid]
 
             var grid_x = (BATCH * BRANCH_OUT + TPB - 1) // TPB
-            ctx.enqueue_function[copy_branch_fwd, copy_branch_fwd](
+            ctx.enqueue_function[copy_branch_fwd](
                 output,
                 buf_i_immut,
                 grid_dim=(grid_x,),
@@ -1082,7 +1082,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 gi.ptr[tid] = go.ptr[row * TOTAL_OUT + BRANCH_OFF + col]
 
             var grid_x = (BATCH * BRANCH_OUT + TPB - 1) // TPB
-            ctx.enqueue_function[split_branch, split_branch](
+            ctx.enqueue_function[split_branch](
                 grad_i,
                 go_immut,
                 grid_dim=(grid_x,),
@@ -1179,7 +1179,7 @@ struct Parallel[*BRANCHES: Model](Model):
             dst.ptr[tid] = s
 
         var grid_sum = (BATCH * Self.IN_DIM + TPB - 1) // TPB
-        ctx.enqueue_function[sum_gi_wrapper, sum_gi_wrapper](
+        ctx.enqueue_function[sum_gi_wrapper](
             grad_input,
             gi_immut,
             grid_dim=(grid_sum,),

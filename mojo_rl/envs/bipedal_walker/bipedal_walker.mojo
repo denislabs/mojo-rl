@@ -103,7 +103,7 @@ from mojo_rl.physics2d import (
 
 
 struct BipedalWalker[
-    DTYPE: DType where DTYPE.is_floating_point(),
+    DTYPE: DType,
 ](
     BoxContinuousActionEnv,
     Copyable,
@@ -180,7 +180,7 @@ struct BipedalWalker[
     var cached_state: BipedalWalkerState[Self.dtype]
 
     # Renderer (RenderableEnv)
-    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -240,7 +240,7 @@ struct BipedalWalker[
         self.cached_state = BipedalWalkerState[Self.dtype]()
 
         # Renderer
-        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer = None
         self._renderer_initialized = False
 
         # Initialize physics shapes
@@ -288,7 +288,7 @@ struct BipedalWalker[
         self.edge_collision = EdgeTerrainCollision(1)
         self.cached_state = copy.cached_state
         # Do not copy renderer — reset to null
-        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer = None
         self._renderer_initialized = False
         self._init_physics_shapes()
         self._reset_cpu()
@@ -1212,8 +1212,8 @@ struct BipedalWalker[
     def close(mut self):
         """Clean up resources."""
         if self._renderer_initialized:
-            self._renderer[].close()
-            self._renderer.free()
+            self._renderer.value()[].close()
+            self._renderer.value().free()
             self._renderer_initialized = False
 
     # =========================================================================
@@ -1225,7 +1225,7 @@ struct BipedalWalker[
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.init_pointee_move(Renderer2D())
+        self._renderer.value().init_pointee_move(Renderer2D())
         self._renderer_initialized = True
         return True
 
@@ -1233,33 +1233,33 @@ struct BipedalWalker[
         """Render the current frame using the internal renderer."""
         if not self._renderer_initialized:
             return
-        self.render(self._renderer[])
+        self.render(self._renderer.value()[])
 
     def close_renderer(mut self) raises -> None:
         """Close and free the SDL2 renderer."""
         if not self._renderer_initialized:
             return
-        self._renderer[].close()
-        self._renderer.free()
+        self._renderer.value()[].close()
+        self._renderer.value().free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
         """Return True if the renderer window is open."""
         if not self._renderer_initialized:
             return False
-        return not self._renderer[].get_should_quit()
+        return not self._renderer.value()[].get_should_quit()
 
     def check_renderer_quit(mut self) -> Bool:
         """Return True if the renderer has received a quit event."""
         if not self._renderer_initialized:
             return False
-        return self._renderer[].get_should_quit()
+        return self._renderer.value()[].get_should_quit()
 
     def renderer_delay(self, ms: Int) -> None:
         """Delay for frame rate control."""
         if not self._renderer_initialized:
             return
-        self._renderer[].renderer_delay(ms)
+        self._renderer.value()[].renderer_delay(ms)
 
     def renderer_is_paused(self) -> Bool:
         return False
@@ -1476,12 +1476,12 @@ struct BipedalWalker[
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
-        workspace_ptr: UnsafePointer[
-            Scalar[dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """GPU step kernel for batched continuous actions."""
         # Workspace layout (total = SHAPES_SIZE + BATCH * PER_ENV_SIZE):
@@ -1500,15 +1500,15 @@ struct BipedalWalker[
         var edge_counts_buf: DeviceBuffer[dtype]
         var joint_counts_buf: DeviceBuffer[dtype]
 
-        if workspace_ptr:
+        if Bool(workspace_ptr):
             # Reuse pre-allocated workspace
             shapes_buf = DeviceBuffer[dtype](
                 ctx,
-                workspace_ptr,
+                workspace_ptr.value(),
                 SHAPES_SIZE,
                 owning=False,
             )
-            var per_env_ptr = workspace_ptr + SHAPES_SIZE
+            var per_env_ptr = workspace_ptr.value() + SHAPES_SIZE
             contacts_buf = DeviceBuffer[dtype](
                 ctx,
                 per_env_ptr,
@@ -1595,7 +1595,7 @@ struct BipedalWalker[
                 states, i, combined_seed
             )
 
-        ctx.enqueue_function[reset_wrapper, reset_wrapper](
+        ctx.enqueue_function[reset_wrapper](
             states,
             Scalar[dtype](rng_seed),
             grid_dim=(BLOCKS,),
@@ -1611,12 +1611,12 @@ struct BipedalWalker[
         mut states_buf: DeviceBuffer[dtype],
         mut dones_buf: DeviceBuffer[dtype],
         rng_seed: UInt64,
-        workspace_ptr: UnsafePointer[
-            Scalar[dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """GPU selective reset kernel - resets only done environments."""
         var states = LayoutTensor[
@@ -1628,16 +1628,18 @@ struct BipedalWalker[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        if rng_counter_ptr:
+        if Bool(rng_counter_ptr):
             var counter_t = LayoutTensor[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
-            ](rng_counter_ptr)
+            ](rng_counter_ptr.value())
 
             @parameter
             @always_inline
             def selective_reset_counter_wrapper(
                 states: LayoutTensor[
-                    dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                    MutAnyOrigin,
                 ],
                 dones: LayoutTensor[
                     dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -1651,16 +1653,17 @@ struct BipedalWalker[
                     return
                 var done_val = dones[i]
                 if done_val > Scalar[dtype](0.5):
-                    var combined_seed = Int(rebind[Scalar[DType.uint64]](counter[0])) * 2654435761 + (i + 1) * 12345
+                    var combined_seed = (
+                        Int(rebind[Scalar[DType.uint64]](counter[0]))
+                        * 2654435761
+                        + (i + 1) * 12345
+                    )
                     BipedalWalker[Self.dtype]._reset_env_gpu[
                         BATCH_SIZE, STATE_SIZE
                     ](states, i, combined_seed)
                     dones[i] = Scalar[dtype](0.0)
 
-            ctx.enqueue_function[
-                selective_reset_counter_wrapper,
-                selective_reset_counter_wrapper,
-            ](
+            ctx.enqueue_function[selective_reset_counter_wrapper](
                 states,
                 dones,
                 counter_t,
@@ -1673,7 +1676,9 @@ struct BipedalWalker[
             @always_inline
             def selective_reset_wrapper(
                 states: LayoutTensor[
-                    dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                    MutAnyOrigin,
                 ],
                 dones: LayoutTensor[
                     dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -1691,7 +1696,7 @@ struct BipedalWalker[
                     ](states, i, combined_seed)
                     dones[i] = Scalar[dtype](0.0)
 
-            ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
+            ctx.enqueue_function[selective_reset_wrapper](
                 states,
                 dones,
                 Scalar[dtype](rng_seed),
@@ -1738,7 +1743,7 @@ struct BipedalWalker[
             for d in range(OBS_DIM_VAL):
                 obs[i, d] = states[i, d]
 
-        ctx.enqueue_function[extract_obs, extract_obs](
+        ctx.enqueue_function[extract_obs](
             states,
             obs,
             grid_dim=(BLOCKS,),
@@ -2258,7 +2263,7 @@ struct BipedalWalker[
                 shapes[base + 8] = Scalar[dtype](BWConstants.LOWER_LEG_W / 2)
                 shapes[base + 9] = Scalar[dtype](BWConstants.LOWER_LEG_H / 2)
 
-        ctx.enqueue_function[init_shapes_wrapper, init_shapes_wrapper](
+        ctx.enqueue_function[init_shapes_wrapper](
             shapes,
             grid_dim=(1,),
             block_dim=(1,),
@@ -2615,7 +2620,7 @@ struct BipedalWalker[
             dones[env] = done
             terminated_out[env] = is_terminated
 
-        ctx.enqueue_function[step_wrapper, step_wrapper](
+        ctx.enqueue_function[step_wrapper](
             states,
             shapes,
             contacts,

@@ -409,7 +409,7 @@ def get_audio_recording_devices(
             count: Ptr[c_int, MutAnyOrigin]
         ) thin -> Ptr[AudioDeviceID, MutAnyOrigin],
     ]()(count)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -436,7 +436,7 @@ def get_audio_device_name(
         "SDL_GetAudioDeviceName",
         def(devid: AudioDeviceID) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(devid)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -1071,7 +1071,7 @@ def create_audio_stream(
             dst_spec: Ptr[AudioSpec, ImmutAnyOrigin],
         ) thin -> Ptr[AudioStream, MutAnyOrigin],
     ]()(src_spec, dst_spec)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -2225,7 +2225,7 @@ def open_audio_device_stream(
             userdata: Ptr[NoneType, MutAnyOrigin],
         ) thin -> Ptr[AudioStream, MutAnyOrigin],
     ]()(devid, spec, callback, userdata)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 

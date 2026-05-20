@@ -90,7 +90,7 @@ comptime PONG_MAX_STEPS: Int = 5000
 # ============================================================================
 
 
-struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
+struct PongEnv[DTYPE: DType](
     BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv
 ):
     """Native Pong environment — CPU+GPU dual path.
@@ -126,7 +126,7 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
     var _rng_counter: UInt32
 
     # Renderer
-    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self):
@@ -135,7 +135,7 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         )
         self.done = False
         self._rng_counter = 42
-        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer = None
         self._renderer_initialized = False
 
     # ========================================================================
@@ -318,8 +318,8 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
     def close(mut self):
         if self._renderer_initialized:
-            self._renderer[].close()
-            self._renderer.free()
+            self._renderer.value()[].close()
+            self._renderer.value().free()
             self._renderer_initialized = False
 
     def action_from_index(self, action_idx: Int) -> ArcadeGameAction:
@@ -370,14 +370,14 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.init_pointee_move(Renderer2D())
+        self._renderer.value().init_pointee_move(Renderer2D())
         self._renderer_initialized = True
         return True
 
     def render_frame(mut self) raises -> None:
         if not self._renderer_initialized:
             return
-        self._render(self._renderer[])
+        self._render(self._renderer.value()[])
 
     @staticmethod
     def _draw_7seg_digit(
@@ -631,24 +631,24 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
     def close_renderer(mut self) raises -> None:
         if not self._renderer_initialized:
             return
-        self._renderer[].close()
-        self._renderer.free()
+        self._renderer.value()[].close()
+        self._renderer.value().free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
         if not self._renderer_initialized:
             return False
-        return not self._renderer[].get_should_quit()
+        return not self._renderer.value()[].get_should_quit()
 
     def check_renderer_quit(mut self) -> Bool:
         if not self._renderer_initialized:
             return False
-        return self._renderer[].get_should_quit()
+        return self._renderer.value()[].get_should_quit()
 
     def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:
             return
-        self._renderer[].renderer_delay(ms)
+        self._renderer.value()[].renderer_delay(ms)
 
     def renderer_is_paused(self) -> Bool:
         return False
@@ -948,12 +948,12 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         mut terminated_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
-        workspace_ptr: UnsafePointer[
-            Scalar[gpu_dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -1032,7 +1032,7 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
                     SCREEN_H
                 )
 
-        ctx.enqueue_function[step_wrapper, step_wrapper](
+        ctx.enqueue_function[step_wrapper](
             states,
             actions,
             rewards,
@@ -1070,7 +1070,7 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         ):
             Self.reset_kernel[BATCH_SIZE, STATE_SIZE](states)
 
-        ctx.enqueue_function[reset_wrapper, reset_wrapper](
+        ctx.enqueue_function[reset_wrapper](
             states,
             grid_dim=(BLOCKS,),
             block_dim=(Self.TPB,),
@@ -1085,12 +1085,12 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
         mut states_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
-        workspace_ptr: UnsafePointer[
-            Scalar[gpu_dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -1101,10 +1101,10 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
-        if rng_counter_ptr:
+        if Bool(rng_counter_ptr):
             var counter_t = LayoutTensor[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
-            ](rng_counter_ptr)
+            ](rng_counter_ptr.value())
 
             @parameter
             @always_inline
@@ -1122,13 +1122,14 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 ],
             ):
                 Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
-                    states, dones, Scalar[DType.uint32](rebind[Scalar[DType.uint64]](counter[0]))
+                    states,
+                    dones,
+                    Scalar[DType.uint32](
+                        rebind[Scalar[DType.uint64]](counter[0])
+                    ),
                 )
 
-            ctx.enqueue_function[
-                selective_reset_counter_wrapper,
-                selective_reset_counter_wrapper,
-            ](
+            ctx.enqueue_function[selective_reset_counter_wrapper](
                 states,
                 dones,
                 counter_t,
@@ -1155,7 +1156,7 @@ struct PongEnv[DTYPE: DType where DTYPE.is_floating_point()](
                     states, dones, Scalar[DType.uint32](rng_seed)
                 )
 
-            ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
+            ctx.enqueue_function[selective_reset_wrapper](
                 states,
                 dones,
                 seed,

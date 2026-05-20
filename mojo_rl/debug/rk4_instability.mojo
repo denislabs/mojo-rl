@@ -301,7 +301,7 @@ def _gpu_stage[
     ]
     comptime STEP_ENV_TPB = TPB // STEP_THREADS
     comptime STEP_ENV_BLOCKS = (GPU_BATCH + STEP_ENV_TPB - 1) // STEP_ENV_TPB
-    ctx.enqueue_function[kernel, kernel](
+    ctx.enqueue_function[kernel](
         state_lt,
         model_lt,
         ws_lt,
@@ -344,7 +344,7 @@ def _gpu_solver(
         0,
         NSITE,
     ]
-    ctx.enqueue_function[kernel, kernel](
+    ctx.enqueue_function[kernel](
         state_lt,
         model_lt,
         ws_lt,
@@ -382,7 +382,7 @@ def _gpu_combine(
         WS_SIZE,
         SOLVER_WS,
     ]
-    ctx.enqueue_function[kernel, kernel](
+    ctx.enqueue_function[kernel](
         state_lt,
         model_lt,
         ws_lt,

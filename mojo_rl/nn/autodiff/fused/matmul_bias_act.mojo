@@ -28,13 +28,19 @@ from .activation import Activation
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext, DeviceStream
-from std.runtime.asyncrt import DeviceContextPtr
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
-from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
+from std.sys import (
+    is_nvidia_gpu,
+    has_nvidia_gpu_accelerator,
+    simd_width_of,
+    CompilationTarget,
+)
+from ..apple_cblas import apple_sgemm_accum
 from std.gpu.compute.mma import mma
 from linalg.matmul import matmul as max_matmul
 from layout.tile_tensor import lt_to_tt
+from std.memory import alloc
 
 
 struct FusedMatMulBiasActivation[
@@ -48,13 +54,15 @@ struct FusedMatMulBiasActivation[
     PARAM_SIZE = in_dim * out_dim + out_dim  (W then b)
     CACHE_SIZE = in_dim + out_dim  (input for dW, activation cache for backward)
 
-    USE_MAX_KERNELS (NVIDIA only): when True, route the matmul portion through
-    `linalg.matmul.matmul` (max_matmul) and apply bias+activation via a
-    separate kernel. Backward uses max_matmul for dx and dW after
-    materializing masked_dy = grad_output * act_grad in scratch; db keeps its
-    own kernel. Apple is unaffected — always uses the 2x2 tiled fallback.
-    `eval_gpu_on_stream` ignores this flag (always custom MMA — matches
-    phase 1 limitation on stream dispatch).
+    USE_MAX_KERNELS: when True (default), route the matmul portion through
+    `linalg.matmul.matmul`; bias + activation + db are applied via simple
+    loops. Backward materializes masked_dy = grad_output * act_grad in scratch
+    then calls matmul twice.
+      - CPU: target="cpu" (vendor BLAS / Modular CPU GEMM).
+      - NVIDIA GPU: target="gpu".
+    When False, naive triple-loop on CPU and custom MMA on NVIDIA. Apple GPU is
+    unaffected — always uses the 2x2 tiled fallback. `eval_gpu_on_stream`
+    ignores this flag (always custom MMA — phase 1 stream dispatch limit).
     """
 
     comptime OP_ID: Int = Self.ACT.FUSED_OP_ID
@@ -103,20 +111,87 @@ struct FusedMatMulBiasActivation[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
         ](params.ptr + Self.in_dim * Self.out_dim)
 
+        # Cache input.
         for ba in range(BATCH):
-            # Cache input
             for i in range(Self.in_dim):
                 cache[ba, i] = input[ba, i]
 
-            for j in range(Self.out_dim):
-                var acc: output.element_type = b[j]
+        comptime if Self.USE_MAX_KERNELS:
+            comptime if BATCH == 1:
+                # M=1 GEMV fast path: BLAS's cblas_sgemm has high per-call
+                # dispatch overhead at M=1 (Modular's apple_gemv comment
+                # confirms this), so for action-selection latency we do
+                # the GEMV + bias + activation by hand with SIMD.
+                comptime W_SIMD = simd_width_of[dtype]()
+                var in_p = input.ptr
+                var W_p = W.ptr
+                var out_p = output.ptr
+                var b_p = b.ptr
+                # output[0, :] = b[:]
+                var j0 = 0
+                while j0 + W_SIMD <= Self.out_dim:
+                    out_p.store(j0, b_p.load[width=W_SIMD](j0))
+                    j0 += W_SIMD
+                while j0 < Self.out_dim:
+                    out_p[j0] = b_p[j0]
+                    j0 += 1
+                # output[0, j] += sum_k input[0, k] * W[k, j]
                 for k in range(Self.in_dim):
-                    acc += input[ba, k] * W[k, j]
-                # Apply activation and cache
-                var pre_act = rebind[Scalar[dtype]](acc)
-                var act_out = Self.ACT.forward(pre_act)
-                cache[ba, Self.in_dim + j] = Self.ACT.cache(pre_act, act_out)
-                output[ba, j] = act_out
+                    var x_k = SIMD[dtype, W_SIMD](
+                        rebind[Scalar[dtype]](in_p[k])
+                    )
+                    var W_row = k * Self.out_dim
+                    var j1 = 0
+                    while j1 + W_SIMD <= Self.out_dim:
+                        var W_vec = W_p.load[width=W_SIMD](W_row + j1)
+                        var o_vec = out_p.load[width=W_SIMD](j1)
+                        out_p.store(j1, o_vec + x_k * W_vec)
+                        j1 += W_SIMD
+                    var x_k_s = rebind[Scalar[dtype]](in_p[k])
+                    while j1 < Self.out_dim:
+                        out_p[j1] = (
+                            out_p[j1] + x_k_s * W_p[W_row + j1]
+                        )
+                        j1 += 1
+                # Apply activation + write activation cache (out_dim small).
+                for j in range(Self.out_dim):
+                    var pre_act = rebind[Scalar[dtype]](output[0, j])
+                    var act_out = Self.ACT.forward(pre_act)
+                    cache[0, Self.in_dim + j] = Self.ACT.cache(
+                        pre_act, act_out
+                    )
+                    output[0, j] = act_out
+            else:
+                # 1) output = input @ W (BLAS)
+                try:
+                    max_matmul[target="cpu"](
+                        lt_to_tt(output), lt_to_tt(input), lt_to_tt(W), None
+                    )
+                except e:
+                    pass
+                # 2) Add bias, apply activation, write activation cache.
+                for ba in range(BATCH):
+                    for j in range(Self.out_dim):
+                        var pre_act = rebind[Scalar[dtype]](
+                            output[ba, j]
+                        ) + rebind[Scalar[dtype]](b[j])
+                        var act_out = Self.ACT.forward(pre_act)
+                        cache[ba, Self.in_dim + j] = Self.ACT.cache(
+                            pre_act, act_out
+                        )
+                        output[ba, j] = act_out
+        else:
+            for ba in range(BATCH):
+                for j in range(Self.out_dim):
+                    var acc: output.element_type = b[j]
+                    for k in range(Self.in_dim):
+                        acc += input[ba, k] * W[k, j]
+                    var pre_act = rebind[Scalar[dtype]](acc)
+                    var act_out = Self.ACT.forward(pre_act)
+                    cache[ba, Self.in_dim + j] = Self.ACT.cache(
+                        pre_act, act_out
+                    )
+                    output[ba, j] = act_out
 
     @staticmethod
     def vjp[
@@ -149,29 +224,128 @@ struct FusedMatMulBiasActivation[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
         ](grad_params.ptr + Self.in_dim * Self.out_dim)
 
-        for ba in range(BATCH):
-            # dx = masked_dy @ W.T
-            for i in range(Self.in_dim):
-                var acc: grad_output.element_type = 0
+        comptime if Self.USE_MAX_KERNELS:
+            # Materialize masked_dy[b, j] = ACT.backward(cache_act[b, j],
+            # grad_output[b, j]). Dense matrix needed for both:
+            #   1) dx = masked_dy @ W.T  (uses max_matmul w/ transpose_b)
+            #   2) dW += cache.T @ masked_dy  (Apple: direct cblas_sgemm
+            #      w/ transpose_a + beta=1; other targets: workaround below)
+            var masked_arr = InlineArray[
+                Scalar[dtype], BATCH * Self.out_dim
+            ](uninitialized=True)
+            var masked_dy = LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
+            ](masked_arr.unsafe_ptr())
+            for ba in range(BATCH):
+                for j in range(Self.out_dim):
+                    var cache_val = rebind[Scalar[dtype]](
+                        cache[ba, Self.in_dim + j]
+                    )
+                    var grad_val = rebind[Scalar[dtype]](grad_output[ba, j])
+                    masked_dy[ba, j] = Self.ACT.backward(cache_val, grad_val)
+
+            # dx = masked_dy @ W.T (overwrite) — same on all platforms.
+            try:
+                max_matmul[transpose_b=True, target="cpu"](
+                    lt_to_tt(grad_input),
+                    lt_to_tt(masked_dy),
+                    lt_to_tt(W),
+                    None,
+                )
+            except e:
+                pass
+
+            comptime if CompilationTarget.is_macos() and dtype == DType.float32:
+                # Apple Accelerate: dW += cache.T @ masked_dy in ONE call.
+                # cache is row-major (BATCH, CACHE_SIZE) with CACHE_SIZE =
+                # in_dim + out_dim; the input cache occupies cols [0, in_dim).
+                # cblas_sgemm accepts lda > cols of op(A), so we pass cache.ptr
+                # directly with lda = CACHE_SIZE and let TRANSA=T do the work.
+                # No materialization, no dW_tmp, no manual dW += loop.
+                try:
+                    apple_sgemm_accum[transpose_a=True, transpose_b=False](
+                        Self.in_dim,
+                        Self.out_dim,
+                        BATCH,
+                        Float32(1.0),
+                        rebind[
+                            UnsafePointer[Float32, ImmutAnyOrigin]
+                        ](cache.ptr),
+                        Self.CACHE_SIZE,
+                        rebind[
+                            UnsafePointer[Float32, ImmutAnyOrigin]
+                        ](masked_arr.unsafe_ptr()),
+                        Self.out_dim,
+                        Float32(1.0),
+                        rebind[UnsafePointer[Float32, MutAnyOrigin]](dW.ptr),
+                        Self.out_dim,
+                    )
+                except e:
+                    pass
+            else:
+                # Non-macOS (or non-fp32) fallback: physical transpose +
+                # 2nd max_matmul + manual dW accumulation.
+                var cache_T_arr = InlineArray[
+                    Scalar[dtype], Self.in_dim * BATCH
+                ](uninitialized=True)
+                var cache_T = LayoutTensor[
+                    dtype, Layout.row_major(Self.in_dim, BATCH), MutAnyOrigin
+                ](cache_T_arr.unsafe_ptr())
+                for ba in range(BATCH):
+                    for i in range(Self.in_dim):
+                        cache_T[i, ba] = rebind[Scalar[dtype]](cache[ba, i])
+
+                var dW_tmp_arr = InlineArray[
+                    Scalar[dtype], Self.in_dim * Self.out_dim
+                ](uninitialized=True)
+                var dW_tmp = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.in_dim, Self.out_dim),
+                    MutAnyOrigin,
+                ](dW_tmp_arr.unsafe_ptr())
+                try:
+                    max_matmul[target="cpu"](
+                        lt_to_tt(dW_tmp),
+                        lt_to_tt(cache_T),
+                        lt_to_tt(masked_dy),
+                        None,
+                    )
+                except e:
+                    pass
+                for i in range(Self.in_dim):
+                    for j in range(Self.out_dim):
+                        dW[i, j] = dW[i, j] + dW_tmp[i, j]
+
+            # db += sum(masked_dy, axis=0)
+            for j in range(Self.out_dim):
+                var sb: Scalar[dtype] = 0
+                for ba in range(BATCH):
+                    sb += rebind[Scalar[dtype]](masked_dy[ba, j])
+                db[j] = db[j] + sb
+        else:
+            for ba in range(BATCH):
+                # dx = masked_dy @ W.T
+                for i in range(Self.in_dim):
+                    var acc: grad_output.element_type = 0
+                    for j in range(Self.out_dim):
+                        var cache_val = rebind[Scalar[dtype]](
+                            cache[ba, Self.in_dim + j]
+                        )
+                        var grad_val = rebind[Scalar[dtype]](grad_output[ba, j])
+                        var masked_dy = Self.ACT.backward(cache_val, grad_val)
+                        acc += masked_dy * W[i, j]
+                    grad_input[ba, i] = acc
+
+                # dW += x.T @ masked_dy, db += masked_dy
                 for j in range(Self.out_dim):
                     var cache_val = rebind[Scalar[dtype]](
                         cache[ba, Self.in_dim + j]
                     )
                     var grad_val = rebind[Scalar[dtype]](grad_output[ba, j])
                     var masked_dy = Self.ACT.backward(cache_val, grad_val)
-                    acc += masked_dy * W[i, j]
-                grad_input[ba, i] = acc
-
-            # dW += x.T @ masked_dy, db += masked_dy
-            for j in range(Self.out_dim):
-                var cache_val = rebind[Scalar[dtype]](
-                    cache[ba, Self.in_dim + j]
-                )
-                var grad_val = rebind[Scalar[dtype]](grad_output[ba, j])
-                var masked_dy = Self.ACT.backward(cache_val, grad_val)
-                db[j] = db[j] + masked_dy
-                for i in range(Self.in_dim):
-                    dW[i, j] = dW[i, j] + cache[ba, i] * masked_dy
+                    db[j] = db[j] + masked_dy
+                    for i in range(Self.in_dim):
+                        dW[i, j] = dW[i, j] + cache[ba, i] * masked_dy
 
     # =========================================================================
     # GPU kernel implementations — tiled (Apple fallback)
@@ -1281,7 +1455,7 @@ struct FusedMatMulBiasActivation[
                     var col = idx % Self.in_dim
                     cache[row, col] = input[row, col]
 
-            ctx.enqueue_function[cache_input_wrapper, cache_input_wrapper](
+            ctx.enqueue_function[cache_input_wrapper](
                 cache_full,
                 input_immut,
                 grid_dim=(cache_in_blocks,),
@@ -1298,7 +1472,7 @@ struct FusedMatMulBiasActivation[
                 lt_to_tt(output),
                 lt_to_tt(input_mm),
                 lt_to_tt(W_mm),
-                DeviceContextPtr(ctx),
+                ctx,
             )
 
             comptime out_elems = BATCH * Self.out_dim
@@ -1334,7 +1508,7 @@ struct FusedMatMulBiasActivation[
                         rebind[Scalar[dtype]](pre_act), act_out
                     )
 
-            ctx.enqueue_function[bias_act_wrapper, bias_act_wrapper](
+            ctx.enqueue_function[bias_act_wrapper](
                 output,
                 b,
                 cache_full,
@@ -1373,7 +1547,7 @@ struct FusedMatMulBiasActivation[
                 else:
                     Self.eval_kernel_2x2[BATCH, dtype](output, input, W, b, cache)
 
-            ctx.enqueue_function[wrapper, wrapper](
+            ctx.enqueue_function[wrapper](
                 output,
                 input_immut,
                 W,
@@ -1449,7 +1623,7 @@ struct FusedMatMulBiasActivation[
             else:
                 Self.eval_kernel_2x2[BATCH, dtype](output, input, W, b, cache)
 
-        var compiled = ctx.compile_function[wrapper, wrapper]()
+        var compiled = ctx.compile_function[wrapper]()
         stream.enqueue_function(
             compiled,
             output,
@@ -1542,7 +1716,7 @@ struct FusedMatMulBiasActivation[
                     )
                     masked[row, col] = Self.ACT.backward(cache_val, grad_val)
 
-            ctx.enqueue_function[apply_act_grad_wrapper, apply_act_grad_wrapper](
+            ctx.enqueue_function[apply_act_grad_wrapper](
                 masked_dy,
                 grad_output_immut,
                 cache_immut,
@@ -1561,7 +1735,7 @@ struct FusedMatMulBiasActivation[
                 lt_to_tt(grad_input_mm),
                 lt_to_tt(masked_dy),
                 lt_to_tt(W_for_dx),
-                DeviceContextPtr(ctx),
+                ctx,
             )
 
             # dW = cache_input^T @ masked_dy. Routed through the MMA kernel
@@ -1597,7 +1771,7 @@ struct FusedMatMulBiasActivation[
                     dW, cache, grad_output
                 )
 
-            ctx.enqueue_function[dW_wrapper_max, dW_wrapper_max](
+            ctx.enqueue_function[dW_wrapper_max](
                 dW,
                 cache_immut,
                 grad_output_immut,
@@ -1628,7 +1802,7 @@ struct FusedMatMulBiasActivation[
             ):
                 Self.backward_db_kernel[BATCH, dtype](db, grad_output, cache)
 
-            ctx.enqueue_function[db_wrapper, db_wrapper](
+            ctx.enqueue_function[db_wrapper](
                 db,
                 grad_output_immut,
                 cache_immut,
@@ -1669,7 +1843,7 @@ struct FusedMatMulBiasActivation[
                         grad_input, grad_output, W, cache
                     )
 
-            ctx.enqueue_function[dx_wrapper, dx_wrapper](
+            ctx.enqueue_function[dx_wrapper](
                 grad_input,
                 grad_output_immut,
                 W,
@@ -1702,7 +1876,7 @@ struct FusedMatMulBiasActivation[
                 else:
                     Self.backward_dW_kernel_2x2[BATCH, dtype](dW, cache, grad_output)
 
-            ctx.enqueue_function[dW_wrapper, dW_wrapper](
+            ctx.enqueue_function[dW_wrapper](
                 dW,
                 cache_immut,
                 grad_output_immut,
@@ -1730,7 +1904,7 @@ struct FusedMatMulBiasActivation[
             ):
                 Self.backward_db_kernel[BATCH, dtype](db, grad_output, cache)
 
-            ctx.enqueue_function[db_wrapper_mma, db_wrapper_mma](
+            ctx.enqueue_function[db_wrapper_mma](
                 db,
                 grad_output_immut,
                 cache_immut,

@@ -658,7 +658,7 @@ def open_haptic(
         "SDL_OpenHaptic",
         def(instance_id: HapticID) thin -> Ptr[Haptic, MutAnyOrigin],
     ]()(instance_id)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -752,7 +752,7 @@ def open_haptic_from_mouse(out ret: Ptr[Haptic, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib, "SDL_OpenHapticFromMouse", def() thin -> Ptr[Haptic, MutAnyOrigin]
     ]()()
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -804,7 +804,7 @@ def open_haptic_from_joystick(
         "SDL_OpenHapticFromJoystick",
         def(joystick: Ptr[Joystick, MutAnyOrigin]) thin -> Ptr[Haptic, MutAnyOrigin],
     ]()(joystick)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 

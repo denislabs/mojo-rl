@@ -99,7 +99,7 @@ struct PendulumAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Float64(self.direction - 1) * 2.0
 
 
-struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
+struct PendulumEnv[DTYPE: DType](
     BoxDiscreteActionEnv
     & DiscreteEnv
     & BoxContinuousActionEnv
@@ -153,7 +153,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
     var num_bins_velocity: Int
 
     # Renderer (RenderableEnv)
-    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self, *, copy: Self):
@@ -174,7 +174,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self.num_bins_angle = copy.num_bins_angle
         self.num_bins_velocity = copy.num_bins_velocity
         # Do not copy renderer — reset to null
-        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer = None
         self._renderer_initialized = False
 
     def __init__(out self, *, deinit take: Self):
@@ -231,7 +231,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self.num_bins_velocity = num_bins_velocity
 
         # Renderer
-        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer = None
         self._renderer_initialized = False
 
     # ========================================================================
@@ -635,8 +635,8 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
     def close(mut self):
         """Clean up resources."""
         if self._renderer_initialized:
-            self._renderer[].close()
-            self._renderer.free()
+            self._renderer.value()[].close()
+            self._renderer.value().free()
             self._renderer_initialized = False
 
     def is_done(self) -> Bool:
@@ -796,7 +796,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.init_pointee_move(Renderer2D())
+        self._renderer.value().init_pointee_move(Renderer2D())
         self._renderer_initialized = True
         return True
 
@@ -804,33 +804,33 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         """Render the current frame using the internal renderer."""
         if not self._renderer_initialized:
             return
-        self.render(self._renderer[])
+        self.render(self._renderer.value()[])
 
     def close_renderer(mut self) raises -> None:
         """Close and free the SDL2 renderer."""
         if not self._renderer_initialized:
             return
-        self._renderer[].close()
-        self._renderer.free()
+        self._renderer.value()[].close()
+        self._renderer.value().free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
         """Return True if the renderer window is open."""
         if not self._renderer_initialized:
             return False
-        return not self._renderer[].get_should_quit()
+        return not self._renderer.value()[].get_should_quit()
 
     def check_renderer_quit(mut self) -> Bool:
         """Return True if the renderer has received a quit event."""
         if not self._renderer_initialized:
             return False
-        return self._renderer[].get_should_quit()
+        return self._renderer.value()[].get_should_quit()
 
     def renderer_delay(self, ms: Int) -> None:
         """Delay for frame rate control."""
         if not self._renderer_initialized:
             return
-        self._renderer[].renderer_delay(ms)
+        self._renderer.value()[].renderer_delay(ms)
 
     def renderer_is_paused(self) -> Bool:
         return False

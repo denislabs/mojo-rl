@@ -461,9 +461,9 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     var done: Bool
 
     # Renderer
-    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
     var _renderer_initialized: Bool
-    var _sprite_pixels: UnsafePointer[UInt8, MutAnyOrigin]
+    var _sprite_pixels: Optional[UnsafePointer[UInt8, MutAnyOrigin]]
     var _has_sprites: Bool
 
     def __init__(out self):
@@ -471,9 +471,9 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         for _ in range(72):
             self.state.append(Scalar[Self.dtype](0.0))
         self.done = False
-        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer = None
         self._renderer_initialized = False
-        self._sprite_pixels = UnsafePointer[UInt8, MutAnyOrigin]()
+        self._sprite_pixels = None
         self._has_sprites = False
 
     # ========================================================================
@@ -1000,8 +1000,8 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
     def close(mut self):
         if self._renderer_initialized:
-            self._renderer[].close()
-            self._renderer.free()
+            self._renderer.value()[].close()
+            self._renderer.value().free()
             self._renderer_initialized = False
 
     def action_from_index(self, action_idx: Int) -> BoardGameAction:
@@ -1155,7 +1155,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.init_pointee_move(
+        self._renderer.value().init_pointee_move(
             Renderer2D(width=536, height=586, fps=30, title="Chess")
         )
         self._renderer_initialized = True
@@ -1168,7 +1168,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     def render_frame(mut self) raises -> None:
         if not self._renderer_initialized:
             return
-        self._render(self._renderer[])
+        self._render(self._renderer.value()[])
 
     def _piece_to_sprite_idx(self, piece: Int) -> Int:
         """Map piece ID (1-12) to sprite sheet index (0-11).
@@ -1238,7 +1238,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
         # Create texture from sprite pixels (recreated each frame for simplicity)
         var has_texture = False
-        var texture = UnsafePointer[Texture, MutAnyOrigin]()
+        var texture = UnsafePointer[Texture, MutAnyOrigin](unsafe_from_address=0)
         if self._has_sprites:
             try:
                 var surface = create_surface_from(
@@ -1390,27 +1390,27 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     def close_renderer(mut self) raises -> None:
         if not self._renderer_initialized:
             return
-        self._renderer[].close()
-        self._renderer.free()
+        self._renderer.value()[].close()
+        self._renderer.value().free()
         self._renderer_initialized = False
         if self._has_sprites:
-            self._sprite_pixels.free()
+            self._sprite_pixels.value().free()
             self._has_sprites = False
 
     def is_renderer_open(self) -> Bool:
         if not self._renderer_initialized:
             return False
-        return not self._renderer[].get_should_quit()
+        return not self._renderer.value()[].get_should_quit()
 
     def check_renderer_quit(mut self) -> Bool:
         if not self._renderer_initialized:
             return False
-        return self._renderer[].get_should_quit()
+        return self._renderer.value()[].get_should_quit()
 
     def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:
             return
-        self._renderer[].renderer_delay(ms)
+        self._renderer.value()[].renderer_delay(ms)
 
     def renderer_is_paused(self) -> Bool:
         return False
@@ -2356,9 +2356,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         mut obs_buf: DeviceBuffer[board_dtype],
         mut legal_masks_buf: DeviceBuffer[board_dtype],
         rng_seed: UInt64 = 0,
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -2421,7 +2419,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, 4672
             ](states, obs, legal_masks)
 
-        ctx.enqueue_function[step_wrapper, step_wrapper](
+        ctx.enqueue_function[step_wrapper](
             states,
             actions,
             rewards,
@@ -2458,7 +2456,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         ):
             ChessEnv.reset_kernel[BATCH_SIZE, STATE_SIZE](states)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             states, grid_dim=(BLOCKS,), block_dim=(Self.TPB,)
         )
 
@@ -2471,9 +2469,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         mut states_buf: DeviceBuffer[board_dtype],
         mut dones_buf: DeviceBuffer[board_dtype],
         rng_seed: UInt64,
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -2499,7 +2495,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                 states, dones
             )
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             states, dones, grid_dim=(BLOCKS,), block_dim=(Self.TPB,)
         )
 
@@ -2548,6 +2544,6 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, 4672
             ](states, obs, legal_masks)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             states, obs, legal_masks, grid_dim=(BLOCKS,), block_dim=(Self.TPB,)
         )

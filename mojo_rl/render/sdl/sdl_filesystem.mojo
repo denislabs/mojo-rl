@@ -681,7 +681,7 @@ def glob_directory(
         flags,
         count,
     )
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 

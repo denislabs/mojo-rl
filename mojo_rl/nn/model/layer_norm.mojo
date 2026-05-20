@@ -554,7 +554,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
                 output, input, params, cache, eps
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             output,
             input_immut,
             params_immut,
@@ -612,7 +612,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
                 output, input, params, eps
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             output,
             input_immut,
             params_immut,
@@ -707,7 +707,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
                 grad_input, grad_output, params, cache, grads
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             grad_input,
             grad_output_immut,
             params_immut,
@@ -735,7 +735,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
                 grad_output, cache, grads
             )
 
-        ctx.enqueue_function[param_kernel_wrapper, param_kernel_wrapper](
+        ctx.enqueue_function[param_kernel_wrapper](
             grad_output_immut,
             cache_immut,
             grads,

@@ -206,6 +206,8 @@ struct GumbelMCTS[
         pred_state: NetworkState[PredModel, PredOpt],
         v_min: Float64,
         v_max: Float64,
+        reward_min: Float64 = -0.732_050_807_568_877_3,
+        reward_max: Float64 = 0.732_050_807_568_877_3,
         legal_mask: List[Bool] = List[Bool](),
     ) -> InlineArray[Float64, Self.ACTION_DIM]:
         """Run Gumbel search and return the improved policy.
@@ -222,6 +224,10 @@ struct GumbelMCTS[
             pred_state: Prediction network state.
             v_min: Minimum value-support bin.
             v_max: Maximum value-support bin.
+            reward_min: Minimum reward-support bin (separate from value
+                support — paper carries `reward_support: range=[-2, 2]`
+                and `value_support: range=[-299, 299]`). Default `h(-2)`.
+            reward_max: Maximum reward-support bin. Default `h(2)`.
             legal_mask: Optional mask over root actions. Empty = all legal.
 
         Returns:
@@ -362,7 +368,13 @@ struct GumbelMCTS[
                     self._simulate[
                         DynModel, PredModel, DynOpt, PredOpt
                     ](
-                        root_action, dyn_state, pred_state, v_min, v_max
+                        root_action,
+                        dyn_state,
+                        pred_state,
+                        v_min,
+                        v_max,
+                        reward_min,
+                        reward_max,
                     )
                     sims_used += 1
 
@@ -388,6 +400,8 @@ struct GumbelMCTS[
                 pred_state,
                 v_min,
                 v_max,
+                reward_min,
+                reward_max,
             )
             sims_used += 1
 
@@ -662,6 +676,8 @@ struct GumbelMCTS[
         pred_state: NetworkState[PredModel, PredOpt],
         v_min: Float64,
         v_max: Float64,
+        reward_min: Float64,
+        reward_max: Float64,
     ):
         """One simulation: take `root_action` from the root, traverse the
         non-root subtree by the visit-balance rule until an unexpanded leaf,
@@ -705,6 +721,8 @@ struct GumbelMCTS[
             pred_state,
             v_min,
             v_max,
+            reward_min,
+            reward_max,
         )
 
         self._backup(search_path, actions_path, leaf_value)
@@ -723,6 +741,8 @@ struct GumbelMCTS[
         pred_state: NetworkState[PredModel, PredOpt],
         v_min: Float64,
         v_max: Float64,
+        reward_min: Float64,
+        reward_max: Float64,
     ) -> Float64:
         """Run dynamics + prediction at (parent.hidden, action), append the
         new child to the tree, and return the predicted scalar value at the
@@ -760,8 +780,10 @@ struct GumbelMCTS[
         var child_h_offset = child_hidden_idx * Self.LATENT_DIM
         for i in range(Self.LATENT_DIM):
             (self.hidden_states + child_h_offset + i)[] = dyn_output_ptr[i]
+        # Reward uses the reward-head support (paper separate from value
+        # support — `dmc_state.yaml: reward_support: range=[-2, 2]`).
         var reward = self._decode_value(
-            dyn_output_ptr + Self.LATENT_DIM, v_min, v_max
+            dyn_output_ptr + Self.LATENT_DIM, reward_min, reward_max
         )
 
         dyn_input_ptr.free()

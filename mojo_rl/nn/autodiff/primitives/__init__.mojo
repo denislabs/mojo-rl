@@ -27,3 +27,7 @@ from .gaussian_log_prob import GaussianLogProbOp
 from .mse_op import MSEOp
 from .huber_op import HuberOp
 from .identity import IdentityOp
+from .modulate import ModulateOp
+from .gate import GateOp
+from .sigreg import SIGRegOp
+from .layer_norm_no_affine import LayerNormNoAffineOp

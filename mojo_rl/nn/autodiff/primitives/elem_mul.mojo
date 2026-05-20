@@ -4,6 +4,10 @@ from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.gpu.primitives import block
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct ElemMul[dim: Int](DiffOp):
@@ -50,11 +54,24 @@ struct ElemMul[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
+        comptime W = _CPU_SIMD_W
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var c_p = cache.ptr
+        var p_p = params.ptr
         for b in range(BATCH):
-            for i in range(Self.dim):
-                var x = input[b, i]
-                cache[b, i] = x
-                output[b, i] = x * params[i]
+            var off = b * Self.dim
+            var j = 0
+            while j + W <= Self.dim:
+                var x = in_p.load[width=W](off + j)
+                c_p.store(off + j, x)
+                out_p.store(off + j, x * p_p.load[width=W](j))
+                j += W
+            while j < Self.dim:
+                var x = in_p[off + j]
+                c_p[off + j] = x
+                out_p[off + j] = x * p_p[j]
+                j += 1
 
     @staticmethod
     def vjp[
@@ -76,14 +93,29 @@ struct ElemMul[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
+        comptime W = _CPU_SIMD_W
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var c_p = cache.ptr
+        var p_p = params.ptr
+        var gp_p = grad_params.ptr
         for b in range(BATCH):
-            for i in range(Self.dim):
+            var off = b * Self.dim
+            var j = 0
+            while j + W <= Self.dim:
+                var go = go_p.load[width=W](off + j)
                 # dx = grad * gamma
-                grad_input[b, i] = grad_output[b, i] * params[i]
-                # dgamma += grad * x (accumulate over batch)
-                grad_params[i] = (
-                    grad_params[i] + grad_output[b, i] * cache[b, i]
+                gi_p.store(off + j, go * p_p.load[width=W](j))
+                # dgamma += grad * x
+                gp_p.store(
+                    j, gp_p.load[width=W](j) + go * c_p.load[width=W](off + j)
                 )
+                j += W
+            while j < Self.dim:
+                var go = go_p[off + j]
+                gi_p[off + j] = go * p_p[j]
+                gp_p[j] = gp_p[j] + go * c_p[off + j]
+                j += 1
 
     # =========================================================================
     # GPU kernels
@@ -223,7 +255,7 @@ struct ElemMul[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, gamma, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             gamma,
@@ -286,7 +318,7 @@ struct ElemMul[dim: Int](DiffOp):
         ):
             Self.backward_dx_kernel_impl[BATCH, dtype](grad_input, grad_output, gamma)
 
-        ctx.enqueue_function[dx_wrapper, dx_wrapper](
+        ctx.enqueue_function[dx_wrapper](
             grad_input,
             grad_output_immut,
             gamma,
@@ -310,7 +342,7 @@ struct ElemMul[dim: Int](DiffOp):
         ):
             Self.backward_dgamma_kernel_impl[BATCH, dtype](dgamma, grad_output, cache)
 
-        ctx.enqueue_function[dgamma_wrapper, dgamma_wrapper](
+        ctx.enqueue_function[dgamma_wrapper](
             dgamma,
             grad_output_immut,
             cache_immut,

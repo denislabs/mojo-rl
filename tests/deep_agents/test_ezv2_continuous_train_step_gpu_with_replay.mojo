@@ -63,6 +63,8 @@ def _fill_canned_transitions[
         )
         state.step_at_write[slot] = Scalar[DType.uint32](0)
         state.priorities[slot] = Scalar[dtype](1.0)
+        # Phase 1 (sum-tree PER): keep tree in sync with raw priorities.
+        state.on_flush_write(slot)
 
 
 def _is_finite(x: Float64) -> Bool:
@@ -140,7 +142,10 @@ def main() raises:
     var gpu = EZV2GPUStateBase[Config](ctx)
     gpu.upload_from(agent.state, ctx)
     var gpu_replay = EZV2GPUReplayBuffer[
-        50000, Config.obs_dim, Config.action_dim
+        50000,
+        Config.obs_dim,
+        Config.action_dim,
+        Config.num_root_candidates,
     ](ctx)
     gpu_replay.upload_from_cpu(agent.state, ctx)
     gpu_replay.max_priority = agent.max_priority

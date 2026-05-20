@@ -17,9 +17,10 @@ from std.random import seed, random_float64
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 from mojo_rl.deep_agents.efficient_zero_v2 import (
-    EZV2ContinuousMLPConfig,
+    EZV2ContinuousMLPShallowConfig,
     EZV2GPUStateBase,
     GenericEZV2ContinuousAgent,
+    VALUE_TARGET_SARSA,
 )
 from mojo_rl.envs.pendulum import PendulumEnv
 from mojo_rl.nn.constants import dtype
@@ -57,7 +58,7 @@ def main() raises:
     comptime LOG_EVERY_BATCHES = NUM_ENV_STEPS // (N_ENVS * 50)
     comptime EPISODE_REWARD_TARGET = Float64(-200.0)
 
-    comptime Config = EZV2ContinuousMLPConfig[
+    comptime Config = EZV2ContinuousMLPShallowConfig[
         OBS=3,
         ACT_DIM=1,
         LATENT=64,
@@ -70,17 +71,23 @@ def main() raises:
         N_TD=5,
         SIMS=32,
         NODES=128,
-        K_ROOT=16,                 # ← experiment knob (was 8)
-        K_NON_ROOT=8,              # ← also doubled
+        K_ROOT=16,  # ← experiment knob (was 8)
+        K_NON_ROOT=8,  # ← also doubled
         MAX_ACTION=2.0,
-        MIN_STD=0.1,
+        MIN_STD=0.5,  # ← exploration fix (was 0.1)
         STD_MAGNIFICATION=3.0,
+        ENT_WEIGHT=0.05,  # ← exploration fix (was 0.005, 10×)
+        # Use bootstrapped TD value targets (reference's choice for DMC
+        # state envs). SVE-based SEARCH targets caused value-head
+        # overestimation feedback — see
+        # `docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md`.
+        VALUE_TARGET_MODE=VALUE_TARGET_SARSA,
     ]
 
     seed(2026)
     var agent = GenericEZV2ContinuousAgent[Config](
         gamma=0.99,
-        v_min=-20.0,
+        v_min=-50.0,
         v_max=2.0,
         temperature=1.0,
         temperature_decay_steps=10_000_000,
@@ -90,6 +97,8 @@ def main() raises:
     var ctx = DeviceContext()
     var gpu = EZV2GPUStateBase[Config](ctx)
     gpu.upload_from(agent.state, ctx)
+    # Phase 3: mirror CPU target nets onto GPU for MIXED/SARSA boot-V.
+    gpu.upload_targets_from(agent.state, ctx)
     ctx.synchronize()
 
     var envs = List[UnsafePointer[PendulumEnv[dtype], MutAnyOrigin]]()
@@ -109,15 +118,24 @@ def main() raises:
     print("--- Run config ---")
     print("    N_ENVS                =", N_ENVS)
     print("    NUM_ENV_STEPS         =", NUM_ENV_STEPS, "(across all envs)")
-    print("    K_ROOT                =", Config.num_root_candidates, "(experiment)")
     print(
-        "    BS=", Config.batch_size,
-        " K_UNROLL=", Config.unroll_steps,
-        " N_TD=", Config.td_steps,
+        "    K_ROOT                =",
+        Config.num_root_candidates,
+        "(experiment)",
     )
     print(
-        "    SIMS=", Config.num_simulations,
-        " ENT_WEIGHT=", Config.entropy_weight,
+        "    BS=",
+        Config.batch_size,
+        " K_UNROLL=",
+        Config.unroll_steps,
+        " N_TD=",
+        Config.td_steps,
+    )
+    print(
+        "    SIMS=",
+        Config.num_simulations,
+        " ENT_WEIGHT=",
+        Config.entropy_weight,
     )
     print()
 
@@ -139,17 +157,38 @@ def main() raises:
         for env_id in range(N_ENVS):
             var action_vec = List[Scalar[dtype]](capacity=Config.action_dim)
             var root_value = Float64(0.0)
+            comptime K_ROOT_C = Config.num_root_candidates
+            var sampled_actions_vec = List[Scalar[dtype]](
+                capacity=K_ROOT_C * Config.action_dim
+            )
+            var improved_policy_vec = List[Scalar[dtype]](capacity=K_ROOT_C)
             if total_transitions < START_TRANSITIONS:
                 for _ in range(Config.action_dim):
                     action_vec.append(
                         Scalar[dtype](random_float64(-1.0, 1.0) * 2.0)
                     )
+                # Random-action warmup: one-hot improved policy on the
+                # chosen action so the full-π kernel reduces to simple-
+                # best NLL on it (zero candidate variance is fine for
+                # warmup — value head is the dominant signal there).
+                for _ in range(K_ROOT_C * Config.action_dim):
+                    sampled_actions_vec.append(Scalar[dtype](0.0))
+                for _ in range(K_ROOT_C):
+                    improved_policy_vec.append(Scalar[dtype](0.0))
+                for d in range(Config.action_dim):
+                    sampled_actions_vec[d] = action_vec[d]
+                improved_policy_vec[0] = Scalar[dtype](1.0)
             else:
-                var sel = agent.select_action(
-                    obs_list[env_id], training=True
-                )
+                var sel = agent.select_action(obs_list[env_id], training=True)
                 action_vec = sel[0].copy()
                 root_value = sel[1]
+                sampled_actions_vec = sel[2].copy()
+                improved_policy_vec = sel[3].copy()
+                # Diagnostic probe: dump root stats every ~3000 batches
+                # for env_id=0 so we can see whether MCTS Q-values
+                # differentiate candidates or stay uniform.
+                if env_id == 0 and (batch + 1) % 3000 == 0:
+                    agent.inspect_root(tag=String("batch=") + String(batch + 1))
 
             var step_result = envs[env_id][].step_continuous_vec(action_vec)
             var next_obs = step_result[0].copy()
@@ -165,6 +204,8 @@ def main() raises:
                 action_vec,
                 reward,
                 root_value,
+                sampled_actions_vec,
+                improved_policy_vec,
                 done_or_trunc,
                 env_id=env_id,
             )
@@ -200,6 +241,8 @@ def main() raises:
 
             if num_train_calls % TARGET_SYNC_INTERVAL == 0:
                 agent.update_target_networks(tau=1.0)
+                # Phase 3: mirror fresh CPU targets onto GPU.
+                gpu.upload_targets_from(agent.state, ctx)
 
         if (batch + 1) % LOG_EVERY_BATCHES == 0:
             var t_now = perf_counter_ns()
@@ -213,17 +256,34 @@ def main() raises:
             var rmean = _mean(recent)
             if len(recent) >= 10 and rmean > best_recent_mean:
                 best_recent_mean = rmean
-            var best_display = best_recent_mean if best_recent_mean > -1e8 else 0.0
+            var best_display = (
+                best_recent_mean if best_recent_mean > -1e8 else 0.0
+            )
             print(
-                "[batch ", batch + 1,
-                " step ", total_transitions,
-                " eps=", n_eps,
-                " train=", num_train_calls,
-                " wall=", wall_s, "s",
-                "] mean10=", rmean,
-                "  best10=", best_display,
-                "  L=(", last_L_R, " ", last_L_P, " ",
-                last_L_V, " ", last_L_G, ")",
+                "[batch ",
+                batch + 1,
+                " step ",
+                total_transitions,
+                " eps=",
+                n_eps,
+                " train=",
+                num_train_calls,
+                " wall=",
+                wall_s,
+                "s",
+                "] mean10=",
+                rmean,
+                "  best10=",
+                best_display,
+                "  L=(",
+                last_L_R,
+                " ",
+                last_L_P,
+                " ",
+                last_L_V,
+                " ",
+                last_L_G,
+                ")",
             )
 
     print()

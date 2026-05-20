@@ -407,7 +407,7 @@ struct ProjectedResidual[Inner: Model, Skip: Model](Model):
                 return
             a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
 
-        ctx.enqueue_function[add_k, add_k](
+        ctx.enqueue_function[add_k](
             output, skip_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )
 
@@ -504,7 +504,7 @@ struct ProjectedResidual[Inner: Model, Skip: Model](Model):
                 return
             a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
 
-        ctx.enqueue_function[add_k, add_k](
+        ctx.enqueue_function[add_k](
             output, skip_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )
 
@@ -644,7 +644,7 @@ struct ProjectedResidual[Inner: Model, Skip: Model](Model):
                 return
             a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
 
-        ctx.enqueue_function[add_k, add_k](
+        ctx.enqueue_function[add_k](
             grad_input, gi_skip_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )
 
@@ -751,7 +751,7 @@ struct ProjectedResidual[Inner: Model, Skip: Model](Model):
                 return
             a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
 
-        ctx.enqueue_function[add_k, add_k](
+        ctx.enqueue_function[add_k](
             output, skip_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )
 
@@ -863,6 +863,6 @@ struct ProjectedResidual[Inner: Model, Skip: Model](Model):
                 return
             a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
 
-        ctx.enqueue_function[add_k, add_k](
+        ctx.enqueue_function[add_k](
             grad_input, gi_skip_immut, grid_dim=(grid_x,), block_dim=(TPB,)
         )

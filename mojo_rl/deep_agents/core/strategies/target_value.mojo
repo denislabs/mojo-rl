@@ -146,7 +146,7 @@ struct SingleQTarget(TargetValue):
                 td_targets, rew, next_q, dn, g
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             targets,
             rewards,
             q1,
@@ -233,7 +233,7 @@ struct TwinQTarget(TargetValue):
                 td_targets, rew, q1_v, q2_v, dn, lp, g, a
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             targets,
             rewards,
             q1,
@@ -326,7 +326,7 @@ struct EntropicTwinQTarget(TargetValue):
                 td_targets, rew, q1_v, q2_v, dn, lp, g, a
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             targets,
             rewards,
             q1,

@@ -1086,7 +1086,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         var d = idx % dim0
                         dst.ptr[b * NI + d] = src.ptr[b * Self.IN_DIM + d]
 
-                    ctx.enqueue_function[copy_s0_ext, copy_s0_ext](
+                    ctx.enqueue_function[copy_s0_ext](
                         concat_t,
                         s0_src,
                         grid_dim=(s0_grid,),
@@ -1123,7 +1123,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         var d = idx % dim0
                         dst.ptr[b * NI + d] = src.ptr[b * dim0 + d]
 
-                    ctx.enqueue_function[copy_s0_node, copy_s0_node](
+                    ctx.enqueue_function[copy_s0_node](
                         concat_t,
                         s0_src,
                         grid_dim=(s0_grid,),
@@ -1164,7 +1164,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                             b * Self.IN_DIM + d
                         ]
 
-                    ctx.enqueue_function[copy_s1_ext, copy_s1_ext](
+                    ctx.enqueue_function[copy_s1_ext](
                         concat_t,
                         s1_src,
                         grid_dim=(s1_grid,),
@@ -1201,7 +1201,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         var d = idx % dim1
                         dst.ptr[b * NI + dim0 + d] = src.ptr[b * dim1 + d]
 
-                    ctx.enqueue_function[copy_s1_node, copy_s1_node](
+                    ctx.enqueue_function[copy_s1_node](
                         concat_t,
                         s1_src,
                         grid_dim=(s1_grid,),
@@ -1243,7 +1243,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 return
             dst.ptr[idx] = src.ptr[idx]
 
-        ctx.enqueue_function[copy_output_kernel, copy_output_kernel](
+        ctx.enqueue_function[copy_output_kernel](
             output,
             last_act_immut,
             grid_dim=(copy_grid,),
@@ -1362,7 +1362,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         var ga_flat = LayoutTensor[
             dtype, Layout.row_major(GA_TOTAL, 1), MutAnyOrigin
         ](ga_ptr)
-        ctx.enqueue_function[zero_ga_kernel, zero_ga_kernel](
+        ctx.enqueue_function[zero_ga_kernel](
             ga_flat, grid_dim=(ga_grid,), block_dim=(TPB,)
         )
 
@@ -1402,7 +1402,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             Layout.row_major(BATCH, Self.OUT_DIM),
             ImmutAnyOrigin,
         ](grad_output.ptr)
-        ctx.enqueue_function[init_last_grad_kernel, init_last_grad_kernel](
+        ctx.enqueue_function[init_last_grad_kernel](
             ga_last,
             go_immut,
             grid_dim=(init_grid,),
@@ -1427,7 +1427,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 return
             dst.ptr[idx] = Scalar[dtype](0.0)
 
-        ctx.enqueue_function[zero_gi_kernel, zero_gi_kernel](
+        ctx.enqueue_function[zero_gi_kernel](
             grad_input, grid_dim=(gi_grid,), block_dim=(TPB,)
         )
 
@@ -1525,7 +1525,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                             return
                         dst.ptr[idx] = dst.ptr[idx] + src.ptr[idx]
 
-                    ctx.enqueue_function[add_to_gi_single, add_to_gi_single](
+                    ctx.enqueue_function[add_to_gi_single](
                         grad_input,
                         gi_immut,
                         grid_dim=(add_grid,),
@@ -1569,9 +1569,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                             return
                         dst.ptr[idx] = dst.ptr[idx] + src.ptr[idx]
 
-                    ctx.enqueue_function[
-                        add_to_pred_single, add_to_pred_single
-                    ](
+                    ctx.enqueue_function[add_to_pred_single](
                         dst_t,
                         gi_immut,
                         grid_dim=(add_grid,),
@@ -1618,7 +1616,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         Layout.row_major(BATCH, NODE_IN),
                         ImmutAnyOrigin,
                     ](gi_scratch_ptr)
-                    ctx.enqueue_function[scatter_to_gi_s0, scatter_to_gi_s0](
+                    ctx.enqueue_function[scatter_to_gi_s0](
                         grad_input,
                         gi_node_immut,
                         grid_dim=(s0_grid,),
@@ -1665,9 +1663,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         Layout.row_major(BATCH, NODE_IN),
                         ImmutAnyOrigin,
                     ](gi_scratch_ptr)
-                    ctx.enqueue_function[
-                        scatter_to_pred_s0, scatter_to_pred_s0
-                    ](
+                    ctx.enqueue_function[scatter_to_pred_s0](
                         dst0_t,
                         gi_node_immut,
                         grid_dim=(s0_grid,),
@@ -1708,7 +1704,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         Layout.row_major(BATCH, NODE_IN),
                         ImmutAnyOrigin,
                     ](gi_scratch_ptr)
-                    ctx.enqueue_function[scatter_to_gi_s1, scatter_to_gi_s1](
+                    ctx.enqueue_function[scatter_to_gi_s1](
                         grad_input,
                         gi_node_immut_s1,
                         grid_dim=(s1_grid,),
@@ -1756,9 +1752,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         Layout.row_major(BATCH, NODE_IN),
                         ImmutAnyOrigin,
                     ](gi_scratch_ptr)
-                    ctx.enqueue_function[
-                        scatter_to_pred_s1, scatter_to_pred_s1
-                    ](
+                    ctx.enqueue_function[scatter_to_pred_s1](
                         dst1_t,
                         gi_node_immut_s1,
                         grid_dim=(s1_grid,),

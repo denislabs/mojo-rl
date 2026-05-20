@@ -28,7 +28,7 @@ from .offpolicy_agent import GenericOffPolicyAgent
 from ..configs.offpolicy_config import DDPGConfig, TD3Config, SACConfig
 from .onpolicy_agent import GenericOnPolicyAgent
 from .onpolicy_continuous_agent import GenericOnPolicyContinuousAgent
-from ..configs.onpolicy_config import PPOConfig, A2CConfig, ContinuousPPOConfig, PPOCNNConfig
+from ..configs.onpolicy_config import PPOConfig, A2CConfig, ContinuousPPOConfig, PPOCNNConfig, PPOCraftaxCNNConfig
 
 
 # =============================================================================
@@ -306,6 +306,21 @@ comptime DeepPPOCNNAgent[
     critic_lr: Float64 = 0.00025,
 ] = GenericOnPolicyAgent[
     PPOCNNConfig[num_actions, rollout_len, actor_lr, critic_lr],
+    n_envs,
+    gpu_minibatch_size,
+]
+
+
+# PPO with the Craftax-spec 3×90×90 CNN (matches paper's pixel-obs format).
+comptime DeepPPOCraftaxCNNAgent[
+    num_actions: Int,
+    rollout_len: Int = 128,
+    n_envs: Int = 64,
+    gpu_minibatch_size: Int = 256,
+    actor_lr: Float64 = 0.00025,
+    critic_lr: Float64 = 0.00025,
+] = GenericOnPolicyAgent[
+    PPOCraftaxCNNConfig[num_actions, rollout_len, actor_lr, critic_lr],
     n_envs,
     gpu_minibatch_size,
 ]

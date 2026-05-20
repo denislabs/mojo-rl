@@ -274,7 +274,7 @@ struct CrossEntropyLoss(LossFunction):
         ):
             Self.forward_kernel_impl[BATCH, OUT_DIM, dtype](loss, predictions, targets)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             loss,
             predictions,
             targets,
@@ -319,7 +319,7 @@ struct CrossEntropyLoss(LossFunction):
                 grad_output, predictions, targets
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             grad_output,
             predictions,
             targets,

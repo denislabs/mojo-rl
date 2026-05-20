@@ -21,7 +21,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.initializer import Xavier
-from mojo_rl.experimental.nn_pc_v2 import (
+from mojo_rl.experimental.pcn import (
     PCBlock,
     PCSequential,
     PCIdentity,
@@ -55,7 +55,7 @@ comptime TRAINER = PCTrainer[
 
 def main() raises:
     print("=" * 60)
-    print("nn_pc_v2 compute_grads_only benchmark")
+    print("pcn compute_grads_only benchmark")
     print("=" * 60)
     print("  arch       : 784 → 512 → 512 → 256 → 10")
     print("  PARAM_SIZE :", NET.PARAM_SIZE)

@@ -22,8 +22,13 @@ from ...constants import dtype, TPB
 from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
 from std.math import abs
+from std.math import abs as math_abs
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct HuberOp[delta: Float64 = 1.0](DiffOp):
@@ -74,18 +79,39 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
     ):
         comptime d = Self.delta
         comptime half_d_sq = 0.5 * d * d
-        for b in range(BATCH):
-            var pred = rebind[Scalar[dtype]](input[b, 0])
-            var target = rebind[Scalar[dtype]](input[b, 1])
-            var residual = pred - target
-            cache[b, 0] = residual
-            var abs_r = abs(residual)
-            if Float64(abs_r) <= d:
-                output[b, 0] = Scalar[dtype](0.5) * residual * residual
+        comptime W = _CPU_SIMD_W
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var c_p = cache.ptr
+        var delta_v = SIMD[dtype, W](d)
+        var half_v = SIMD[dtype, W](0.5)
+        var hds_v = SIMD[dtype, W](half_d_sq)
+        var b = 0
+        while b + W <= BATCH:
+            var pair = in_p.load[width=2 * W](2 * b).deinterleave()
+            # deinterleave() returns SIMD[dtype, (2*W)/2] tuple — Mojo nightly
+            # doesn't fold the width back to W. Explicit rebind required.
+            var pred_v = rebind[SIMD[dtype, W]](pair[0])
+            var target_v = rebind[SIMD[dtype, W]](pair[1])
+            var r = pred_v - target_v
+            c_p.store(b, r)
+            var abs_r = math_abs(r)
+            # Both branches computed; select by |r| <= delta mask.
+            var quad = half_v * r * r
+            var lin = delta_v * abs_r - hds_v
+            out_p.store(b, abs_r.le(delta_v).select(quad, lin))
+            b += W
+        while b < BATCH:
+            var pred = in_p[2 * b]
+            var target = in_p[2 * b + 1]
+            var r = pred - target
+            c_p[b] = r
+            var ar = r if r >= 0 else -r
+            if Float64(ar) <= d:
+                out_p[b] = Scalar[dtype](0.5) * r * r
             else:
-                output[b, 0] = Scalar[dtype](d) * abs_r - Scalar[dtype](
-                    half_d_sq
-                )
+                out_p[b] = Scalar[dtype](d) * ar - Scalar[dtype](half_d_sq)
+            b += 1
 
     @staticmethod
     def vjp[
@@ -108,19 +134,34 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
         ],
     ):
         comptime d = Self.delta
-        for b in range(BATCH):
-            var g = rebind[Scalar[dtype]](grad_output[b, 0])
-            var residual = rebind[Scalar[dtype]](cache[b, 0])
-            var abs_r = abs(residual)
-            if Float64(abs_r) <= d:
-                grad_input[b, 0] = residual * g
+        comptime W = _CPU_SIMD_W
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var c_p = cache.ptr
+        var delta_v = SIMD[dtype, W](d)
+        var pos_v = SIMD[dtype, W](1)
+        var neg_v = SIMD[dtype, W](-1)
+        var zero_v = SIMD[dtype, W](0)
+        var b = 0
+        while b + W <= BATCH:
+            var g = go_p.load[width=W](b)
+            var r = c_p.load[width=W](b)
+            var abs_r = math_abs(r)
+            var sign = r.ge(zero_v).select(pos_v, neg_v)
+            var d_pred = abs_r.le(delta_v).select(r * g, delta_v * sign * g)
+            gi_p.store(2 * b, d_pred.interleave(zero_v))
+            b += W
+        while b < BATCH:
+            var g = go_p[b]
+            var r = c_p[b]
+            var ar = r if r >= 0 else -r
+            if Float64(ar) <= d:
+                gi_p[2 * b] = r * g
             else:
-                var sign = Scalar[dtype](1.0) if residual > Scalar[dtype](
-                    0.0
-                ) else Scalar[dtype](-1.0)
-                grad_input[b, 0] = Scalar[dtype](d) * sign * g
-            # Target is frozen
-            grad_input[b, 1] = Scalar[dtype](0.0)
+                var sgn: Scalar[dtype] = 1 if r > 0 else -1
+                gi_p[2 * b] = Scalar[dtype](d) * sgn * g
+            gi_p[2 * b + 1] = 0
+            b += 1
 
     # =========================================================================
     # GPU kernels
@@ -216,7 +257,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](o, i, c)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             cache,
@@ -263,7 +304,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
         ):
             Self.backward_kernel_impl[BATCH, dtype](gi, go, c)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input,
             go_immut,
             c_immut,

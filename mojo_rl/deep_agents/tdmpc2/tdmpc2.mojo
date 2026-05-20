@@ -25,7 +25,7 @@ Reference: Hansen et al., 2023 — TD-MPC2: Scalable, Robust World Models
            for Continuous Control
 """
 
-from std.math import exp, log, sqrt, tanh
+from std.math import cos, exp, log, sqrt, tanh
 from std.gpu import thread_idx
 from std.random import random_float64, seed
 from std.random.philox import Random as PhiloxRandom
@@ -65,12 +65,16 @@ from mojo_rl.deep_agents.core.utils import (
 from .state import (
     TDMPC2GPUState,
     TDMPC2CPUState,
-    MPPIGPUBuffers,
-    BatchedMPPIGPUBuffers,
 )
 from .world_model import WorldModel, decode_value_batch_scalar
 from mojo_rl.core.logger import Logger, NoOpLogger
-from .mppi import plan, plan_gpu, plan_gpu_batched
+# MPPI planning lives in mojo_rl/planners/trajectory/; the tdmpc2
+# package supplies thin world-model adapters.
+from .mppi_callback import (
+    TDMPC2RolloutCallback,
+    TDMPC2CPURolloutCallback,
+)
+from mojo_rl.planners.trajectory import MPPICPU, MPPIGPUBatched
 from .kernels import (
     tdmpc2_random_actions_kernel,
     tdmpc2_sample_actions_kernel,
@@ -143,6 +147,7 @@ struct TDMPC2Agent[
         buffer_capacity: Replay buffer capacity (default: 100_000).
         num_samples: MPPI candidate trajectories (default: 512).
         num_pi_trajs: Policy-seeded MPPI trajectories (default: 24).
+        num_elites: Number of elite trajectories (default: 64).
         num_iterations: MPPI optimization iterations (default: 6).
         v_min: Minimum value for distribution (default: -10.0).
         v_max: Maximum value for distribution (default: 10.0).
@@ -259,12 +264,20 @@ struct TDMPC2Agent[
     var running_scale: Float64
 
     # Diagnostics
-    var logger: UnsafePointer[Self.L, MutAnyOrigin]
+    var logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]]
     var diag_every: Int
 
-    # MPPI warm-start state
-    var _prev_mean: List[Float64]
-    var _episode_t0: Bool
+    # CPU MPPI planner — owns its own warm-start / episode state.
+    # Used by select_action (eval path).
+    var _cpu_planner: MPPICPU[
+        Self.LATENT,
+        Self.ACT,
+        Self.H,
+        Self.num_samples,
+        Self.num_pi_trajs,
+        Self.num_iterations,
+        Self.num_elites,
+    ]
 
     def __init__(
         out self,
@@ -287,7 +300,7 @@ struct TDMPC2Agent[
         discount_min: Float64 = 0.95,
         discount_max: Float64 = 0.995,
         diag_every: Int = 0,
-    ):
+    ) raises:
         """Initialize TDMPC2 agent.
 
         Args:
@@ -339,10 +352,17 @@ struct TDMPC2Agent[
         self.total_steps = 0
         self.train_step_count = 0
         self.running_scale = 1.0
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         self.diag_every = diag_every
-        self._prev_mean = List[Float64]()
-        self._episode_t0 = True
+        self._cpu_planner = MPPICPU[
+            Self.LATENT,
+            Self.ACT,
+            Self.H,
+            Self.num_samples,
+            Self.num_pi_trajs,
+            Self.num_iterations,
+            Self.num_elites,
+        ]()
 
     # =========================================================================
     # Action Selection
@@ -352,7 +372,7 @@ struct TDMPC2Agent[
         mut self,
         obs: InlineArray[Scalar[dtype], Self.OBS],
         deterministic: Bool = False,
-    ) -> InlineArray[Scalar[dtype], Self.ACT]:
+    ) raises -> InlineArray[Scalar[dtype], Self.ACT]:
         """Select action using MPPI planning in latent space.
 
         During warmup (total_steps < warmup_steps), returns random actions.
@@ -363,6 +383,10 @@ struct TDMPC2Agent[
 
         Returns:
             Selected action [ACTION_DIM].
+
+        Warm-start state lives on ``self._cpu_planner``; the training
+        loop resets it at episode boundaries via
+        ``self._cpu_planner.start_episode()``.
         """
         # Warmup: random actions
         if self.total_steps < self.warmup_steps:
@@ -386,14 +410,9 @@ struct TDMPC2Agent[
         ](z.unsafe_ptr())
         self.state.world_model.encode[1](obs_t, z_t)
 
-        # Extract z0 as single-sample array
-        var z0 = InlineArray[Scalar[dtype], Self.LATENT](uninitialized=True)
-        for i in range(Self.LATENT):
-            z0[i] = z[i]
-
-        # MPPI planning with warm-start
-
-        var action = plan[
+        # MPPI plan via the agent-owned CPU planner. Callback wraps
+        # the world model; planner owns the warm-start state.
+        var cb = TDMPC2CPURolloutCallback[
             Self.OBS,
             Self.ACT,
             Self.LATENT,
@@ -404,23 +423,25 @@ struct TDMPC2Agent[
             Self.simplex_dim,
             Self.v_min,
             Self.v_max,
-            Self.H,
-            Self.num_samples,
-            Self.num_pi_trajs,
-            Self.num_iterations,
-        ](
-            z0,
-            self.state.world_model,
+        ](UnsafePointer(to=self.state.world_model))
+
+        var z0_list = List[Float64](length=Self.LATENT, fill=0.0)
+        for i in range(Self.LATENT):
+            z0_list[i] = Float64(z[i])
+
+        var action_list = self._cpu_planner.plan(
+            cb,
+            z0_list,
             self.gamma,
             self.temperature,
-            self._prev_mean,
             self.action_scale,
             deterministic,
-            self._episode_t0,
         )
-        # After first call in episode, subsequent calls warm-start
-        self._episode_t0 = False
-        return action^
+
+        var result = InlineArray[Scalar[dtype], Self.ACT](fill=0)
+        for i in range(Self.ACT):
+            result[i] = Scalar[dtype](action_list[i])
+        return result^
 
     # =========================================================================
     # Store Transition
@@ -857,20 +878,24 @@ struct TDMPC2Agent[
         self.state.world_model.update_world_model_params()
 
         # Log world model diagnostics
-        if self.logger and (
+        if Bool(self.logger) and (
             self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
-                self.logger[].log_scalar("loss", total_loss, step)
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar("loss", total_loss, step)
+                self.logger.value()[].log_scalar(
                     "consistency_loss",
                     total_consistency_loss,
                     step,
                 )
-                self.logger[].log_scalar("reward_loss", total_reward_loss, step)
-                self.logger[].log_scalar("value_loss", total_value_loss, step)
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
+                    "reward_loss", total_reward_loss, step
+                )
+                self.logger.value()[].log_scalar(
+                    "value_loss", total_value_loss, step
+                )
+                self.logger.value()[].log_scalar(
                     "terminal_loss", total_terminal_loss, step
                 )
             except:
@@ -960,10 +985,17 @@ struct TDMPC2Agent[
                     if log_std > 2.0:
                         log_std = 2.0
                     var std_val = exp(log_std)
-                    # Reparameterized sample: a = tanh(mean + std * noise)
-                    var noise = _gaussian_sample()
+                    # Reparameterized sample: a = tanh(mean + std * noise).
+                    # Box-Muller transform for the standard-normal noise.
+                    var u1 = random_float64()
+                    var u2 = random_float64()
+                    if u1 < 1e-10:
+                        u1 = 1e-10
+                    var noise = sqrt(-2.0 * log(u1)) * cos(
+                        2.0 * 3.14159265358979 * u2
+                    )
                     var u = mean_val + std_val * noise
-                    var act_val = _tanh(u)
+                    var act_val = Float64(tanh(Float32(u)))
                     if act_val < -1.0:
                         act_val = -1.0
                     if act_val > 1.0:
@@ -1069,26 +1101,30 @@ struct TDMPC2Agent[
         self.state.world_model.update_policy_params()
 
         # Log policy diagnostics
-        if self.logger and (
+        if Bool(self.logger) and (
             self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
-                self.logger[].log_scalar("policy_loss", policy_loss, step)
+                self.logger.value()[].log_scalar(
+                    "policy_loss", policy_loss, step
+                )
                 if total_q_count > 0:
-                    self.logger[].log_scalar(
+                    self.logger.value()[].log_scalar(
                         "q_mean",
                         total_q_sum / Float64(total_q_count),
                         step,
                     )
-                    self.logger[].log_scalar("q_min", total_q_min, step)
-                    self.logger[].log_scalar("q_max", total_q_max, step)
-                self.logger[].log_scalar(
+                    self.logger.value()[].log_scalar("q_min", total_q_min, step)
+                    self.logger.value()[].log_scalar("q_max", total_q_max, step)
+                self.logger.value()[].log_scalar(
                     "entropy",
                     total_entropy / Float64(Self.H),
                     step,
                 )
-                self.logger[].log_scalar("pi_scale", self.running_scale, step)
+                self.logger.value()[].log_scalar(
+                    "pi_scale", self.running_scale, step
+                )
             except:
                 pass
 
@@ -1308,10 +1344,7 @@ struct TDMPC2Agent[
             var z_hist_t = LayoutTensor[
                 dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
             ](gpu_state.z_history_buf.unsafe_ptr() + t * Self.B_LATENT)
-            ctx.enqueue_function[
-                copy_buffer_kernel[dtype, Self.B_LATENT],
-                copy_buffer_kernel[dtype, Self.B_LATENT],
-            ](
+            ctx.enqueue_function[copy_buffer_kernel[dtype, Self.B_LATENT]](
                 z_hist_t,
                 z_flat_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
@@ -1322,10 +1355,7 @@ struct TDMPC2Agent[
             ctx.enqueue_function[
                 tdmpc2_extract_all_build_za_kernel[
                     dtype, Self.BATCH, Self.OBS, Self.ACT, Self.LATENT, Self.H
-                ],
-                tdmpc2_extract_all_build_za_kernel[
-                    dtype, Self.BATCH, Self.OBS, Self.ACT, Self.LATENT, Self.H
-                ],
+                ]
             ](
                 batch_act_flat_tensor,
                 batch_obs_flat_tensor,
@@ -1354,10 +1384,7 @@ struct TDMPC2Agent[
 
             # Advance z ← z_pred for next step
             if t < Self.H - 1:
-                ctx.enqueue_function[
-                    copy_buffer_kernel[dtype, Self.B_LATENT],
-                    copy_buffer_kernel[dtype, Self.B_LATENT],
-                ](
+                ctx.enqueue_function[copy_buffer_kernel[dtype, Self.B_LATENT]](
                     z_flat_tensor,
                     z_pred_flat_tensor,
                     grid_dim=(Self.BATCH_BLOCKS,),
@@ -1372,10 +1399,7 @@ struct TDMPC2Agent[
         var z_hist_H = LayoutTensor[
             dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
         ](gpu_state.z_history_buf.unsafe_ptr() + Self.H * Self.B_LATENT)
-        ctx.enqueue_function[
-            copy_buffer_kernel[dtype, Self.B_LATENT],
-            copy_buffer_kernel[dtype, Self.B_LATENT],
-        ](
+        ctx.enqueue_function[copy_buffer_kernel[dtype, Self.B_LATENT]](
             z_hist_H,
             z_pred_flat_tensor,
             grid_dim=(Self.BATCH_BLOCKS,),
@@ -1398,10 +1422,7 @@ struct TDMPC2Agent[
             var z_hist_t = LayoutTensor[
                 dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
             ](gpu_state.z_history_buf.unsafe_ptr() + t * Self.B_LATENT)
-            ctx.enqueue_function[
-                copy_buffer_kernel[dtype, Self.B_LATENT],
-                copy_buffer_kernel[dtype, Self.B_LATENT],
-            ](
+            ctx.enqueue_function[copy_buffer_kernel[dtype, Self.B_LATENT]](
                 z_flat_tensor,
                 z_hist_t,
                 grid_dim=(Self.BATCH_BLOCKS,),
@@ -1412,10 +1433,7 @@ struct TDMPC2Agent[
             ctx.enqueue_function[
                 tdmpc2_extract_all_build_za_kernel[
                     dtype, Self.BATCH, Self.OBS, Self.ACT, Self.LATENT, Self.H
-                ],
-                tdmpc2_extract_all_build_za_kernel[
-                    dtype, Self.BATCH, Self.OBS, Self.ACT, Self.LATENT, Self.H
-                ],
+                ]
             ](
                 batch_act_flat_tensor,
                 batch_obs_flat_tensor,
@@ -1461,10 +1479,7 @@ struct TDMPC2Agent[
             ctx.enqueue_function[
                 tdmpc2_consistency_loss_grad_kernel[
                     dtype, Self.BATCH, Self.LATENT
-                ],
-                tdmpc2_consistency_loss_grad_kernel[
-                    dtype, Self.BATCH, Self.LATENT
-                ],
+                ]
             ](
                 z_pred_tensor,
                 z_next_tensor,
@@ -1476,10 +1491,7 @@ struct TDMPC2Agent[
 
             # ── BPTT: add gradient carry from future steps ──
             # grad_z_pred += grad_z_carry (because z[t+1] = z_pred[t])
-            ctx.enqueue_function[
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-            ](
+            ctx.enqueue_function[tdmpc2_add_into_kernel[dtype, Self.B_LATENT]](
                 grad_z_pred_flat_tensor,
                 grad_z_carry_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
@@ -1502,10 +1514,7 @@ struct TDMPC2Agent[
             ctx.enqueue_function[
                 tdmpc2_extract_z_from_za_grad_kernel[
                     dtype, Self.BATCH, Self.LATENT, Self.ACT
-                ],
-                tdmpc2_extract_z_from_za_grad_kernel[
-                    dtype, Self.BATCH, Self.LATENT, Self.ACT
-                ],
+                ]
             ](
                 grad_za_tensor,
                 grad_z_dyn_2d_tensor,
@@ -1513,10 +1522,7 @@ struct TDMPC2Agent[
                 block_dim=(TPB,),
             )
             # Initialize carry with dynamics z-gradient
-            ctx.enqueue_function[
-                copy_buffer_kernel[dtype, Self.B_LATENT],
-                copy_buffer_kernel[dtype, Self.B_LATENT],
-            ](
+            ctx.enqueue_function[copy_buffer_kernel[dtype, Self.B_LATENT]](
                 grad_z_carry_tensor,
                 grad_z_dyn_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
@@ -1541,8 +1547,7 @@ struct TDMPC2Agent[
                 dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
             ](gpu_state.rew_targets_buf.unsafe_ptr() + t * Self.B_BINS)
             ctx.enqueue_function[
-                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
+                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS]
             ](
                 logits_tensor,
                 tgt_t_tensor,
@@ -1565,20 +1570,14 @@ struct TDMPC2Agent[
             ctx.enqueue_function[
                 tdmpc2_extract_z_from_za_grad_kernel[
                     dtype, Self.BATCH, Self.LATENT, Self.ACT
-                ],
-                tdmpc2_extract_z_from_za_grad_kernel[
-                    dtype, Self.BATCH, Self.LATENT, Self.ACT
-                ],
+                ]
             ](
                 grad_za_tensor,
                 grad_z_dyn_2d_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-            ](
+            ctx.enqueue_function[tdmpc2_add_into_kernel[dtype, Self.B_LATENT]](
                 grad_z_carry_tensor,
                 grad_z_dyn_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
@@ -1605,8 +1604,7 @@ struct TDMPC2Agent[
             )
             ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
             ctx.enqueue_function[
-                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
+                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS]
             ](
                 logits_tensor,
                 tgt_t_tensor_q,
@@ -1628,20 +1626,14 @@ struct TDMPC2Agent[
             ctx.enqueue_function[
                 tdmpc2_extract_z_from_za_grad_kernel[
                     dtype, Self.BATCH, Self.LATENT, Self.ACT
-                ],
-                tdmpc2_extract_z_from_za_grad_kernel[
-                    dtype, Self.BATCH, Self.LATENT, Self.ACT
-                ],
+                ]
             ](
                 grad_za_tensor,
                 grad_z_dyn_2d_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-            ](
+            ctx.enqueue_function[tdmpc2_add_into_kernel[dtype, Self.B_LATENT]](
                 grad_z_carry_tensor,
                 grad_z_dyn_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
@@ -1660,8 +1652,7 @@ struct TDMPC2Agent[
             )
             ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
             ctx.enqueue_function[
-                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
+                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS]
             ](
                 logits_tensor,
                 tgt_t_tensor_q,
@@ -1683,20 +1674,14 @@ struct TDMPC2Agent[
             ctx.enqueue_function[
                 tdmpc2_extract_z_from_za_grad_kernel[
                     dtype, Self.BATCH, Self.LATENT, Self.ACT
-                ],
-                tdmpc2_extract_z_from_za_grad_kernel[
-                    dtype, Self.BATCH, Self.LATENT, Self.ACT
-                ],
+                ]
             ](
                 grad_za_tensor,
                 grad_z_dyn_2d_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-            ](
+            ctx.enqueue_function[tdmpc2_add_into_kernel[dtype, Self.B_LATENT]](
                 grad_z_carry_tensor,
                 grad_z_dyn_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
@@ -1715,8 +1700,7 @@ struct TDMPC2Agent[
             )
             ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
             ctx.enqueue_function[
-                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
+                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS]
             ](
                 logits_tensor,
                 tgt_t_tensor_q,
@@ -1738,20 +1722,14 @@ struct TDMPC2Agent[
             ctx.enqueue_function[
                 tdmpc2_extract_z_from_za_grad_kernel[
                     dtype, Self.BATCH, Self.LATENT, Self.ACT
-                ],
-                tdmpc2_extract_z_from_za_grad_kernel[
-                    dtype, Self.BATCH, Self.LATENT, Self.ACT
-                ],
+                ]
             ](
                 grad_za_tensor,
                 grad_z_dyn_2d_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-            ](
+            ctx.enqueue_function[tdmpc2_add_into_kernel[dtype, Self.B_LATENT]](
                 grad_z_carry_tensor,
                 grad_z_dyn_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
@@ -1770,8 +1748,7 @@ struct TDMPC2Agent[
             )
             ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
             ctx.enqueue_function[
-                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
+                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS]
             ](
                 logits_tensor,
                 tgt_t_tensor_q,
@@ -1793,20 +1770,14 @@ struct TDMPC2Agent[
             ctx.enqueue_function[
                 tdmpc2_extract_z_from_za_grad_kernel[
                     dtype, Self.BATCH, Self.LATENT, Self.ACT
-                ],
-                tdmpc2_extract_z_from_za_grad_kernel[
-                    dtype, Self.BATCH, Self.LATENT, Self.ACT
-                ],
+                ]
             ](
                 grad_za_tensor,
                 grad_z_dyn_2d_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-            ](
+            ctx.enqueue_function[tdmpc2_add_into_kernel[dtype, Self.B_LATENT]](
                 grad_z_carry_tensor,
                 grad_z_dyn_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
@@ -1825,8 +1796,7 @@ struct TDMPC2Agent[
             )
             ctx.enqueue_memset(gpu_state.grad_logits_buf, 0)
             ctx.enqueue_function[
-                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
-                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS],
+                tdmpc2_two_hot_loss_grad_kernel[dtype, Self.BATCH, Self.BINS]
             ](
                 logits_tensor,
                 tgt_t_tensor_q,
@@ -1848,20 +1818,14 @@ struct TDMPC2Agent[
             ctx.enqueue_function[
                 tdmpc2_extract_z_from_za_grad_kernel[
                     dtype, Self.BATCH, Self.LATENT, Self.ACT
-                ],
-                tdmpc2_extract_z_from_za_grad_kernel[
-                    dtype, Self.BATCH, Self.LATENT, Self.ACT
-                ],
+                ]
             ](
                 grad_za_tensor,
                 grad_z_dyn_2d_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-            ](
+            ctx.enqueue_function[tdmpc2_add_into_kernel[dtype, Self.B_LATENT]](
                 grad_z_carry_tensor,
                 grad_z_dyn_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
@@ -1881,8 +1845,7 @@ struct TDMPC2Agent[
             ctx.enqueue_memset(gpu_state.grad_term_prob_buf, 0)
             var term_rho = rho_t * Scalar[dtype](self.terminal_coef)
             ctx.enqueue_function[
-                tdmpc2_bce_loss_grad_kernel[dtype, Self.BATCH],
-                tdmpc2_bce_loss_grad_kernel[dtype, Self.BATCH],
+                tdmpc2_bce_loss_grad_kernel[dtype, Self.BATCH]
             ](
                 term_prob_tensor,
                 done_step_tensor,
@@ -1902,10 +1865,7 @@ struct TDMPC2Agent[
                 gpu_state.term_batch_ws_buf,
             )
             # Add termination z gradient to carry
-            ctx.enqueue_function[
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-                tdmpc2_add_into_kernel[dtype, Self.B_LATENT],
-            ](
+            ctx.enqueue_function[tdmpc2_add_into_kernel[dtype, Self.B_LATENT]](
                 grad_z_carry_tensor,
                 grad_z_term_tensor,
                 grid_dim=(Self.BATCH_BLOCKS,),
@@ -1967,6 +1927,11 @@ struct TDMPC2Agent[
 
         Returns:
             TrainingMetrics with episode rewards and statistics.
+
+        MPPI planning is delegated to ``MPPIGPUBatched`` +
+        ``TDMPC2RolloutCallback`` from ``mojo_rl/planners/``. The planner
+        owns its own per-env warm-start state; the training loop calls
+        ``new_planner.start_episode(env_idx)`` at episode boundaries.
         """
         var metrics = TrainingMetrics(
             algorithm_name="TD-MPC2 (GPU)",
@@ -2309,11 +2274,16 @@ struct TDMPC2Agent[
         ctx.enqueue_copy(gs.bins_buf, bins_host)
 
         # =================================================================
-        # MPPI GPU buffers (allocated if use_mppi=True)
+        # MPPI GPU planner + callback (allocated if use_mppi=True)
         # =================================================================
-        comptime BatchedMPPIBufs = BatchedMPPIGPUBuffers[
-            Self.WM.DynModel,  # EncModel placeholder
-            Self.WMOpt,  # EncOpt placeholder
+        # The callback wraps the world-model networks via raw pointers
+        # (agent owns the buffers); the planner owns its own per-env
+        # warm-start state internally, so there are no host-side
+        # env_prev_means / env_t0_flags lists to maintain.
+        comptime NEW_MPPI_BATCH = n_envs * (
+            Self.num_samples + Self.num_pi_trajs
+        )
+        var new_callback = TDMPC2RolloutCallback[
             Self.WM.DynModel,
             Self.WMOpt,
             Self.WM.RewModel,
@@ -2322,25 +2292,29 @@ struct TDMPC2Agent[
             Self.PIOpt,
             Self.WM.QModel,
             Self.WMOpt,
-            Self.ACT,
             Self.LATENT,
+            Self.ACT,
             Self.BINS,
+            Self.num_q,
+            NEW_MPPI_BATCH,
+        ](
+            ctx,
+            gs.dyn.params_view().ptr,
+            gs.rew.params_view().ptr,
+            gs.pol.params_view().ptr,
+            qt_param_ptrs,
+            gs.bins_buf.unsafe_ptr(),
+        )
+        var new_planner = MPPIGPUBatched[
+            Self.LATENT,
+            Self.ACT,
+            Self.H,
             Self.num_samples,
             Self.num_pi_trajs,
-            Self.H,
+            Self.num_elites,
+            Self.num_iterations,
             n_envs,
-            Self.mlp_dim,
-            Self.num_q,
-        ]
-        # Allocate batched MPPI buffers (all envs planned in one GPU call)
-        var mppi_bufs = BatchedMPPIBufs(ctx)
-
-        # Per-env MPPI warm-start state
-        var env_prev_means = List[List[Float64]](capacity=n_envs)
-        var env_t0_flags = List[Bool](capacity=n_envs)
-        for _ in range(n_envs):
-            env_prev_means.append(List[Float64]())
-            env_t0_flags.append(True)
+        ](ctx)
 
         # =================================================================
         # Initialize environments
@@ -2428,7 +2402,7 @@ struct TDMPC2Agent[
             var _t0_dc = perf_counter_ns()
             if total_steps < self.warmup_steps:
                 # Warmup: random actions
-                ctx.enqueue_function[random_act_wrapper, random_act_wrapper](
+                ctx.enqueue_function[random_act_wrapper](
                     env_act_tensor,
                     Scalar[DType.uint32](rng_seed),
                     grid_dim=(ENV_BLOCKS,),
@@ -2447,48 +2421,18 @@ struct TDMPC2Agent[
 
                 # Plan all envs in one batched GPU call (no per-env loop)
                 var mppi_seed = UInt32(total_steps * 1000003 + 7)
-                plan_gpu_batched[
-                    Self.OBS,
-                    Self.ACT,
-                    Self.LATENT,
-                    Self.mlp_dim,
-                    Self.BINS,
-                    Self.num_q,
-                    Self.simplex_dim,
-                    Self.v_min,
-                    Self.v_max,
-                    Self.H,
-                    Self.num_samples,
-                    Self.num_pi_trajs,
-                    Self.num_elites,
-                    Self.num_iterations,
-                    Self.WM.DynModel,
-                    Self.WMOpt,
-                    Self.WM.RewModel,
-                    Self.WMOpt,
-                    Self.WM.PolModel,
-                    Self.PIOpt,
-                    Self.WM.QModel,
-                    Self.WMOpt,
-                    n_envs,
-                ](
+                var out_act_view = LayoutTensor[
+                    dtype,
+                    Layout.row_major(n_envs * Self.ACT),
+                    MutAnyOrigin,
+                ](gs.env_act_buf.unsafe_ptr())
+                new_planner.plan_gpu(
                     ctx,
+                    new_callback,
                     env_z_tensor,
-                    dyn_params_tensor,
-                    rew_params_tensor,
-                    pol_params_tensor,
-                    qt_param_ptrs,
-                    bins_tensor,
-                    mppi_bufs,
+                    out_act_view,
                     self.gamma,
                     self.temperature,
-                    env_prev_means,
-                    env_t0_flags,
-                    LayoutTensor[
-                        dtype,
-                        Layout.row_major(n_envs * Self.ACT),
-                        MutAnyOrigin,
-                    ](gs.env_act_buf.unsafe_ptr()),
                     self.action_scale,
                     False,  # not deterministic (exploration)
                     mppi_seed,
@@ -2513,7 +2457,7 @@ struct TDMPC2Agent[
                     pol_model_state_tensor,
                     gs.pol_env_ws_buf,
                 )
-                ctx.enqueue_function[sample_act_wrapper, sample_act_wrapper](
+                ctx.enqueue_function[sample_act_wrapper](
                     env_pi_out_tensor,
                     env_act_tensor,
                     Scalar[DType.uint32](rng_seed + 1),
@@ -2601,22 +2545,21 @@ struct TDMPC2Agent[
                     cpu_ep_rewards[env_idx] = 0.0
                     # Reset MPPI warm-start for this env
                     if use_mppi:
-                        env_t0_flags[env_idx] = True
-                        env_prev_means[env_idx] = List[Float64]()
+                        new_planner.start_episode(env_idx)
 
-            if self.logger and nb_done > 0:
+            if Bool(self.logger) and nb_done > 0:
                 try:
-                    self.logger[].log_scalar(
+                    self.logger.value()[].log_scalar(
                         "episode_reward",
                         sum_rew / Float64(nb_done),
                         total_steps,
                     )
-                    self.logger[].log_scalar(
+                    self.logger.value()[].log_scalar(
                         "episodes",
                         Float64(completed_episodes),
                         total_steps,
                     )
-                    self.logger[].log_scalar(
+                    self.logger.value()[].log_scalar(
                         "train_steps",
                         Float64(self.train_step_count),
                         total_steps,
@@ -2789,10 +2732,7 @@ struct TDMPC2Agent[
                     ctx.enqueue_function[
                         tdmpc2_extract_obs_rew_done_kernel[
                             dtype, Self.BATCH, Self.OBS, Self.H
-                        ],
-                        tdmpc2_extract_obs_rew_done_kernel[
-                            dtype, Self.BATCH, Self.OBS, Self.H
-                        ],
+                        ]
                     ](
                         batch_obs_flat_tensor,
                         batch_rew_flat_tensor,
@@ -2833,10 +2773,7 @@ struct TDMPC2Agent[
                     ctx.enqueue_function[
                         tdmpc2_apply_tanh_build_za_kernel[
                             dtype, Self.BATCH, Self.ACT, Self.LATENT
-                        ],
-                        tdmpc2_apply_tanh_build_za_kernel[
-                            dtype, Self.BATCH, Self.ACT, Self.LATENT
-                        ],
+                        ]
                     ](
                         pi_out_tensor,
                         pi_act_tensor,
@@ -2862,8 +2799,7 @@ struct TDMPC2Agent[
                         gs.qt_batch_ws_buf,
                     )
                     ctx.enqueue_function[
-                        tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
-                        tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
+                        tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS]
                     ](
                         logits_tensor,
                         bins_tensor,
@@ -2882,8 +2818,9 @@ struct TDMPC2Agent[
                         gs.qt_batch_ws_buf,
                     )
                     ctx.enqueue_function[
-                        tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS],
-                        tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS],
+                        tdmpc2_decode_and_min_kernel[
+                            dtype, Self.BATCH, Self.BINS
+                        ]
                     ](
                         logits_tensor,
                         bins_tensor,
@@ -2894,16 +2831,15 @@ struct TDMPC2Agent[
 
                     # Compute two-hot TD target and store at step t's offset
                     var tgt_t_tensor = LayoutTensor[
-                        dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
+                        dtype,
+                        Layout.row_major(Self.BATCH, Self.BINS),
+                        MutAnyOrigin,
                     ](gs.td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
 
                     ctx.enqueue_function[
                         tdmpc2_compute_td_targets_kernel[
                             dtype, Self.BATCH, Self.BINS
-                        ],
-                        tdmpc2_compute_td_targets_kernel[
-                            dtype, Self.BATCH, Self.BINS
-                        ],
+                        ]
                     ](
                         rew_step_tensor,
                         done_step_tensor,
@@ -2918,16 +2854,15 @@ struct TDMPC2Agent[
 
                     # Compute two-hot IMMEDIATE reward target for reward head
                     var rew_tgt_t_tensor = LayoutTensor[
-                        dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
+                        dtype,
+                        Layout.row_major(Self.BATCH, Self.BINS),
+                        MutAnyOrigin,
                     ](gs.rew_targets_buf.unsafe_ptr() + t * Self.B_BINS)
 
                     ctx.enqueue_function[
                         tdmpc2_compute_reward_targets_kernel[
                             dtype, Self.BATCH, Self.BINS
-                        ],
-                        tdmpc2_compute_reward_targets_kernel[
-                            dtype, Self.BATCH, Self.BINS
-                        ],
+                        ]
                     ](
                         rew_step_tensor,
                         rew_tgt_t_tensor,
@@ -2961,10 +2896,7 @@ struct TDMPC2Agent[
                 ctx.enqueue_function[
                     tdmpc2_extract_obs_step_kernel[
                         dtype, Self.BATCH, Self.OBS, Self.H
-                    ],
-                    tdmpc2_extract_obs_step_kernel[
-                        dtype, Self.BATCH, Self.OBS, Self.H
-                    ],
+                    ]
                 ](
                     batch_obs_flat_tensor,
                     0,
@@ -2989,10 +2921,7 @@ struct TDMPC2Agent[
                 ctx.enqueue_function[
                     gradient_norm_kernel[
                         dtype, Self.ENC_P, Self.ENC_GRAD_BLOCKS, TPB
-                    ],
-                    gradient_norm_kernel[
-                        dtype, Self.ENC_P, Self.ENC_GRAD_BLOCKS, TPB
-                    ],
+                    ]
                 ](
                     enc_grad_ps_tensor,
                     enc_grads_tensor,
@@ -3002,10 +2931,7 @@ struct TDMPC2Agent[
                 ctx.enqueue_function[
                     gradient_reduce_apply_fused_kernel[
                         dtype, Self.ENC_P, Self.ENC_GRAD_BLOCKS, TPB
-                    ],
-                    gradient_reduce_apply_fused_kernel[
-                        dtype, Self.ENC_P, Self.ENC_GRAD_BLOCKS, TPB
-                    ],
+                    ]
                 ](
                     enc_grads_tensor,
                     enc_grad_ps_tensor,
@@ -3026,10 +2952,7 @@ struct TDMPC2Agent[
                 ctx.enqueue_function[
                     gradient_norm_kernel[
                         dtype, Self.DYN_P, Self.DYN_GRAD_BLOCKS, TPB
-                    ],
-                    gradient_norm_kernel[
-                        dtype, Self.DYN_P, Self.DYN_GRAD_BLOCKS, TPB
-                    ],
+                    ]
                 ](
                     dyn_grad_ps_tensor,
                     dyn_grads_tensor,
@@ -3039,10 +2962,7 @@ struct TDMPC2Agent[
                 ctx.enqueue_function[
                     gradient_reduce_apply_fused_kernel[
                         dtype, Self.DYN_P, Self.DYN_GRAD_BLOCKS, TPB
-                    ],
-                    gradient_reduce_apply_fused_kernel[
-                        dtype, Self.DYN_P, Self.DYN_GRAD_BLOCKS, TPB
-                    ],
+                    ]
                 ](
                     dyn_grads_tensor,
                     dyn_grad_ps_tensor,
@@ -3063,10 +2983,7 @@ struct TDMPC2Agent[
                 ctx.enqueue_function[
                     gradient_norm_kernel[
                         dtype, Self.REW_P, Self.REW_GRAD_BLOCKS, TPB
-                    ],
-                    gradient_norm_kernel[
-                        dtype, Self.REW_P, Self.REW_GRAD_BLOCKS, TPB
-                    ],
+                    ]
                 ](
                     rew_grad_ps_tensor,
                     rew_grads_tensor,
@@ -3076,10 +2993,7 @@ struct TDMPC2Agent[
                 ctx.enqueue_function[
                     gradient_reduce_apply_fused_kernel[
                         dtype, Self.REW_P, Self.REW_GRAD_BLOCKS, TPB
-                    ],
-                    gradient_reduce_apply_fused_kernel[
-                        dtype, Self.REW_P, Self.REW_GRAD_BLOCKS, TPB
-                    ],
+                    ]
                 ](
                     rew_grads_tensor,
                     rew_grad_ps_tensor,
@@ -3100,10 +3014,7 @@ struct TDMPC2Agent[
                 ctx.enqueue_function[
                     gradient_norm_kernel[
                         dtype, Self.TERM_P, Self.TERM_GRAD_BLOCKS, TPB
-                    ],
-                    gradient_norm_kernel[
-                        dtype, Self.TERM_P, Self.TERM_GRAD_BLOCKS, TPB
-                    ],
+                    ]
                 ](
                     term_grad_ps_tensor,
                     term_grads_tensor,
@@ -3113,10 +3024,7 @@ struct TDMPC2Agent[
                 ctx.enqueue_function[
                     gradient_reduce_apply_fused_kernel[
                         dtype, Self.TERM_P, Self.TERM_GRAD_BLOCKS, TPB
-                    ],
-                    gradient_reduce_apply_fused_kernel[
-                        dtype, Self.TERM_P, Self.TERM_GRAD_BLOCKS, TPB
-                    ],
+                    ]
                 ](
                     term_grads_tensor,
                     term_grad_ps_tensor,
@@ -3138,10 +3046,7 @@ struct TDMPC2Agent[
                 ctx.enqueue_function[
                     tdmpc2_gradient_norm_5q_kernel[
                         dtype, Self.Q_P, Self.Q_GRAD_BLOCKS, TPB
-                    ],
-                    tdmpc2_gradient_norm_5q_kernel[
-                        dtype, Self.Q_P, Self.Q_GRAD_BLOCKS, TPB
-                    ],
+                    ]
                 ](
                     q_grad_ps_tensor,
                     q1_grads_tensor,
@@ -3155,10 +3060,7 @@ struct TDMPC2Agent[
                 ctx.enqueue_function[
                     tdmpc2_gradient_reduce_apply_5q_kernel[
                         dtype, Self.Q_P, Self.Q_GRAD_BLOCKS, TPB
-                    ],
-                    tdmpc2_gradient_reduce_apply_5q_kernel[
-                        dtype, Self.Q_P, Self.Q_GRAD_BLOCKS, TPB
-                    ],
+                    ]
                 ](
                     q1_grads_tensor,
                     q2_grads_tensor,
@@ -3200,7 +3102,7 @@ struct TDMPC2Agent[
                     if Int(thread_idx.x) == 0:
                         c[0] = c[0] + UInt32(1)
 
-                ctx.enqueue_function[q1_bump_kernel, q1_bump_kernel](
+                ctx.enqueue_function[q1_bump_kernel](
                     q1_counter,
                     grid_dim=(1,),
                     block_dim=(1,),
@@ -3289,7 +3191,7 @@ struct TDMPC2Agent[
                         log_beta2,
                     )
 
-                ctx.enqueue_function[adam_5q_wrapper, adam_5q_wrapper](
+                ctx.enqueue_function[adam_5q_wrapper](
                     q1_params_tensor,
                     q1_grads_tensor,
                     q1_state_tensor,
@@ -3342,9 +3244,7 @@ struct TDMPC2Agent[
                 # gradient is H+1× too large; pre-autodiff-fix the overwrite bug
                 # masked it by retaining only the last step's contribution.
                 var entropy_coef_scalar = Scalar[dtype](
-                    self.entropy_coef
-                    * Float64(Self.ACT)
-                    / Float64(Self.H + 1)
+                    self.entropy_coef * Float64(Self.ACT) / Float64(Self.H + 1)
                 )
                 var scale_scalar = Scalar[dtype](self.running_scale)
                 var inv_HP1 = Scalar[dtype](1.0) / Scalar[dtype](Self.H + 1)
@@ -3365,12 +3265,9 @@ struct TDMPC2Agent[
                     # `zs.detach()` semantics).
                     var z_hist_t = LayoutTensor[
                         dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
-                    ](
-                        gs.z_history_buf.unsafe_ptr() + t * Self.B_LATENT
-                    )
+                    ](gs.z_history_buf.unsafe_ptr() + t * Self.B_LATENT)
                     ctx.enqueue_function[
-                        copy_buffer_kernel[dtype, Self.B_LATENT],
-                        copy_buffer_kernel[dtype, Self.B_LATENT],
+                        copy_buffer_kernel[dtype, Self.B_LATENT]
                     ](
                         z_flat_tensor,
                         z_hist_t,
@@ -3399,10 +3296,7 @@ struct TDMPC2Agent[
                     ctx.enqueue_function[
                         tdmpc2_apply_tanh_build_za_kernel[
                             dtype, Self.BATCH, Self.ACT, Self.LATENT
-                        ],
-                        tdmpc2_apply_tanh_build_za_kernel[
-                            dtype, Self.BATCH, Self.ACT, Self.LATENT
-                        ],
+                        ]
                     ](
                         pi_out_tensor,
                         pi_act_tensor,
@@ -3439,8 +3333,7 @@ struct TDMPC2Agent[
                         )
                         # Decode logits → scalar Q-values into q_min_tensor
                         ctx.enqueue_function[
-                            tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
-                            tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
+                            tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS]
                         ](
                             logits_tensor,
                             bins_tensor,
@@ -3544,10 +3437,7 @@ struct TDMPC2Agent[
                         ctx.enqueue_function[
                             tdmpc2_q_decode_backward_kernel[
                                 dtype, Self.BATCH, Self.BINS
-                            ],
-                            tdmpc2_q_decode_backward_kernel[
-                                dtype, Self.BATCH, Self.BINS
-                            ],
+                            ]
                         ](
                             logits_tensor,
                             bins_tensor,
@@ -3574,10 +3464,7 @@ struct TDMPC2Agent[
                         ctx.enqueue_function[
                             tdmpc2_action_tanh_chain_kernel[
                                 dtype, Self.BATCH, Self.ACT, Self.LATENT
-                            ],
-                            tdmpc2_action_tanh_chain_kernel[
-                                dtype, Self.BATCH, Self.ACT, Self.LATENT
-                            ],
+                            ]
                         ](
                             grad_za_pi_tensor,
                             pi_out_tensor,
@@ -3600,7 +3487,7 @@ struct TDMPC2Agent[
                     # ctx.synchronize() below.
                     if (
                         t == 0
-                        and self.logger
+                        and Bool(self.logger)
                         and self.diag_every > 0
                         and (self.train_step_count + 1) % self.diag_every == 0
                     ):
@@ -3615,10 +3502,7 @@ struct TDMPC2Agent[
                         ctx.enqueue_function[
                             tdmpc2_compute_entropy_grad_kernel[
                                 dtype, Self.BATCH, Self.ACT
-                            ],
-                            tdmpc2_compute_entropy_grad_kernel[
-                                dtype, Self.BATCH, Self.ACT
-                            ],
+                            ]
                         ](
                             pi_out_tensor,
                             grad_pi_ent_tensor,
@@ -3659,10 +3543,7 @@ struct TDMPC2Agent[
                 ctx.enqueue_function[
                     gradient_norm_kernel[
                         dtype, Self.POL_P, Self.POL_GRAD_BLOCKS, TPB
-                    ],
-                    gradient_norm_kernel[
-                        dtype, Self.POL_P, Self.POL_GRAD_BLOCKS, TPB
-                    ],
+                    ]
                 ](
                     pol_grad_ps_tensor,
                     pol_grads_tensor,
@@ -3672,10 +3553,7 @@ struct TDMPC2Agent[
                 ctx.enqueue_function[
                     gradient_reduce_apply_fused_kernel[
                         dtype, Self.POL_P, Self.POL_GRAD_BLOCKS, TPB
-                    ],
-                    gradient_reduce_apply_fused_kernel[
-                        dtype, Self.POL_P, Self.POL_GRAD_BLOCKS, TPB
-                    ],
+                    ]
                 ](
                     pol_grads_tensor,
                     pol_grad_ps_tensor,
@@ -3701,8 +3579,7 @@ struct TDMPC2Agent[
 
                 # Fused: soft update all 5 Q-target networks (5 kernels → 1)
                 ctx.enqueue_function[
-                    tdmpc2_soft_update_5q_kernel[dtype, Self.Q_P],
-                    tdmpc2_soft_update_5q_kernel[dtype, Self.Q_P],
+                    tdmpc2_soft_update_5q_kernel[dtype, Self.Q_P]
                 ](
                     q1t_params_tensor,
                     q1_params_tensor,
@@ -3732,14 +3609,16 @@ struct TDMPC2Agent[
                 # to compute value/reward losses and mean targets — same idea as
                 # SAC's diag block in core/agents/offpolicy_agent.mojo.
                 if (
-                    self.logger
+                    Bool(self.logger)
                     and self.diag_every > 0
                     and self.train_step_count % self.diag_every == 0
                 ):
                     try:
                         # ── Fresh post-update forward passes on (z_0, a_buf_0) ──
                         # obs_step_buf still holds obs_0 from earlier in this iter.
-                        Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                        Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[
+                            Self.BATCH
+                        ](
                             ctx,
                             z_tensor,
                             obs_step_tensor,
@@ -3748,7 +3627,9 @@ struct TDMPC2Agent[
                             gs.enc_batch_ws_buf,
                         )
                         # Policy forward at z_0 → pi_out (mean | raw_log_std)
-                        Self.WM.PolicyNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                        Self.WM.PolicyNet.MODEL.forward_gpu_no_cache[
+                            Self.BATCH
+                        ](
                             ctx,
                             pi_out_tensor,
                             z_tensor,
@@ -3760,10 +3641,7 @@ struct TDMPC2Agent[
                         ctx.enqueue_function[
                             tdmpc2_extract_act_step_kernel[
                                 dtype, Self.BATCH, Self.ACT, Self.H
-                            ],
-                            tdmpc2_extract_act_step_kernel[
-                                dtype, Self.BATCH, Self.ACT, Self.H
-                            ],
+                            ]
                         ](
                             LayoutTensor[
                                 dtype,
@@ -3783,10 +3661,7 @@ struct TDMPC2Agent[
                         ctx.enqueue_function[
                             tdmpc2_build_za_kernel[
                                 dtype, Self.BATCH, Self.LATENT, Self.ACT
-                            ],
-                            tdmpc2_build_za_kernel[
-                                dtype, Self.BATCH, Self.LATENT, Self.ACT
-                            ],
+                            ]
                         ](
                             z_tensor,
                             LayoutTensor[
@@ -3809,7 +3684,9 @@ struct TDMPC2Agent[
                         )
                         ctx.enqueue_copy(gs.diag_logits_host, gs.logits_buf)
                         # Reward forward → logits (overwrites), download
-                        Self.WM.RewardNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                        Self.WM.RewardNet.MODEL.forward_gpu_no_cache[
+                            Self.BATCH
+                        ](
                             ctx,
                             logits_tensor,
                             za_tensor,
@@ -3836,10 +3713,7 @@ struct TDMPC2Agent[
                         ctx.enqueue_function[
                             tdmpc2_extract_obs_step_kernel[
                                 dtype, Self.BATCH, Self.OBS, Self.H
-                            ],
-                            tdmpc2_extract_obs_step_kernel[
-                                dtype, Self.BATCH, Self.OBS, Self.H
-                            ],
+                            ]
                         ](
                             batch_obs_flat_tensor,
                             1,
@@ -3858,9 +3732,7 @@ struct TDMPC2Agent[
                             gs.enc_batch_ws_buf,
                         )
                         ctx.enqueue_copy(gs.diag_z_pred_host, gs.z_pred_buf)
-                        ctx.enqueue_copy(
-                            gs.diag_z_enc_next_host, gs.z_next_buf
-                        )
+                        ctx.enqueue_copy(gs.diag_z_enc_next_host, gs.z_next_buf)
                         # Download targets + raw signals + policy out
                         ctx.enqueue_copy(gs.diag_rew_host, gs.batch_rew_buf)
                         ctx.enqueue_copy(gs.diag_done_host, gs.batch_done_buf)
@@ -3919,9 +3791,7 @@ struct TDMPC2Agent[
                                     gs.diag_z_pred_host[b * Self.LATENT + k]
                                 )
                                 var e = Float64(
-                                    gs.diag_z_enc_next_host[
-                                        b * Self.LATENT + k
-                                    ]
+                                    gs.diag_z_enc_next_host[b * Self.LATENT + k]
                                 )
                                 var diff = p - e
                                 consistency_loss += diff * diff
@@ -3931,26 +3801,22 @@ struct TDMPC2Agent[
                                 sumsq_e += e * e
                             mean_p /= Float64(Self.BATCH)
                             mean_e /= Float64(Self.BATCH)
-                            var var_p = (
-                                sumsq_p / Float64(Self.BATCH)
-                            ) - (mean_p * mean_p)
-                            var var_e = (
-                                sumsq_e / Float64(Self.BATCH)
-                            ) - (mean_e * mean_e)
+                            var var_p = (sumsq_p / Float64(Self.BATCH)) - (
+                                mean_p * mean_p
+                            )
+                            var var_e = (sumsq_e / Float64(Self.BATCH)) - (
+                                mean_e * mean_e
+                            )
                             if var_p < 0.0:
                                 var_p = 0.0
                             if var_e < 0.0:
                                 var_e = 0.0
                             sum_std_z_pred += sqrt(var_p)
                             sum_std_z_enc += sqrt(var_e)
-                        consistency_loss /= Float64(
-                            Self.BATCH * Self.LATENT
-                        )
-                        var std_z_pred = (
-                            sum_std_z_pred / Float64(Self.LATENT)
-                        )
-                        var std_z_enc_next = (
-                            sum_std_z_enc / Float64(Self.LATENT)
+                        consistency_loss /= Float64(Self.BATCH * Self.LATENT)
+                        var std_z_pred = sum_std_z_pred / Float64(Self.LATENT)
+                        var std_z_enc_next = sum_std_z_enc / Float64(
+                            Self.LATENT
                         )
 
                         # mean_abs_action computed on tanh(mean) (deterministic
@@ -4088,9 +3954,7 @@ struct TDMPC2Agent[
                                 )
                             value_loss += ce
                             var ats = (
-                                tgt_symlog
-                                if tgt_symlog >= 0.0
-                                else -tgt_symlog
+                                tgt_symlog if tgt_symlog >= 0.0 else -tgt_symlog
                             )
                             var dec_target = (exp(ats) - 1.0) if (
                                 tgt_symlog >= 0.0
@@ -4098,9 +3962,8 @@ struct TDMPC2Agent[
                             mean_target += dec_target
                             sumsq_target += dec_target * dec_target
                             var aps = (
-                                pred_symlog
-                                if pred_symlog >= 0.0
-                                else -pred_symlog
+                                pred_symlog if pred_symlog
+                                >= 0.0 else -pred_symlog
                             )
                             var dec_pred_q = (exp(aps) - 1.0) if (
                                 pred_symlog >= 0.0
@@ -4161,9 +4024,8 @@ struct TDMPC2Agent[
                                 )
                             reward_loss += ce
                             var aps = (
-                                pred_symlog
-                                if pred_symlog >= 0.0
-                                else -pred_symlog
+                                pred_symlog if pred_symlog
+                                >= 0.0 else -pred_symlog
                             )
                             var dec_pred = (exp(aps) - 1.0) if (
                                 pred_symlog >= 0.0
@@ -4173,77 +4035,85 @@ struct TDMPC2Agent[
                         mean_pred_reward /= Float64(BS)
 
                         var step = self.train_step_count
-                        self.logger[].log_scalar("q_mean", diag_q_mean, step)
-                        self.logger[].log_scalar("q_min", diag_q_min, step)
-                        self.logger[].log_scalar("q_max", diag_q_max, step)
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
+                            "q_mean", diag_q_mean, step
+                        )
+                        self.logger.value()[].log_scalar(
+                            "q_min", diag_q_min, step
+                        )
+                        self.logger.value()[].log_scalar(
+                            "q_max", diag_q_max, step
+                        )
+                        self.logger.value()[].log_scalar(
                             "pi_scale", self.running_scale, step
                         )
-                        self.logger[].log_scalar("gamma", self.gamma, step)
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
+                            "gamma", self.gamma, step
+                        )
+                        self.logger.value()[].log_scalar(
                             "value_loss", value_loss, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "reward_loss", reward_loss, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "mean_target", mean_target, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "mean_pred_reward", mean_pred_reward, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "mean_reward", mean_reward, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "mean_done", mean_done, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "mean_abs_action", mean_abs_action, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "mean_log_std", mean_log_std, step
                         )
-                        self.logger[].log_scalar("std_q", std_q, step)
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar("std_q", std_q, step)
+                        self.logger.value()[].log_scalar(
                             "std_target", std_target, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "std_reward", std_reward, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "consistency_loss", consistency_loss, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "std_z_pred", std_z_pred, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "std_z_enc_next", std_z_enc_next, step
                         )
                         # Stage-3 grad-magnitude split (Q vs entropy on pi_out
                         # at policy-update t=0). See `tdmpc2_compute_entropy_grad_kernel`.
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "pi_grad_full_mean_l2", l2_full_mean, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "pi_grad_ent_mean_l2", l2_ent_mean, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "pi_grad_q_mean_l2", l2_q_mean, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "pi_grad_q_over_ent_mean", ratio_mean, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "pi_grad_full_lstd_l2", l2_full_lstd, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "pi_grad_ent_lstd_l2", l2_ent_lstd, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "pi_grad_q_lstd_l2", l2_q_lstd, step
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "pi_grad_q_over_ent_lstd", ratio_lstd, step
                         )
                     except:
@@ -4257,9 +4127,7 @@ struct TDMPC2Agent[
                 # the scan cheap.
                 # ──────────────────────────────────────────────────────
                 var nan_scan_every = 1 if self.train_step_count < 100 else 10
-                if (
-                    self.train_step_count % nan_scan_every == 0
-                ):
+                if self.train_step_count % nan_scan_every == 0:
                     var nan_names = List[String]()
 
                     @parameter
@@ -4281,8 +4149,7 @@ struct TDMPC2Agent[
                         ](nan_flag_buf.unsafe_ptr())
                         comptime SCAN_BLOCKS = (SIZE + TPB - 1) // TPB
                         ctx.enqueue_function[
-                            tdmpc2_has_nan_kernel[dtype, SIZE],
-                            tdmpc2_has_nan_kernel[dtype, SIZE],
+                            tdmpc2_has_nan_kernel[dtype, SIZE]
                         ](
                             params_t,
                             flag_t,
@@ -4456,7 +4323,7 @@ struct TDMPC2Agent[
         updates_per_step: Int = 1,
         verbose: Bool = True,
         print_every: Int = 10,
-    ) -> TrainingMetrics:
+    ) raises -> TrainingMetrics:
         """Run the TDMPC2 training loop.
 
         Args:
@@ -4493,7 +4360,7 @@ struct TDMPC2Agent[
             var done = False
             var steps = 0
             # Reset MPPI warm-start for new episode
-            self._episode_t0 = True
+            self._cpu_planner.start_episode()
 
             while not done:
                 # Build obs InlineArray from list
@@ -4624,26 +4491,3 @@ struct TDMPC2Agent[
         return metrics
 
 
-@always_inline
-def _gaussian_sample() -> Float64:
-    """Box-Muller transform for standard normal sample."""
-    from std.math import log as mlog, cos as mcos, sqrt as msqrt
-
-    var u1 = random_float64()
-    var u2 = random_float64()
-    if u1 < 1e-10:
-        u1 = 1e-10
-    return msqrt(-2.0 * mlog(u1)) * mcos(2.0 * 3.14159265358979 * u2)
-
-
-@always_inline
-def _tanh(x: Float64) -> Float64:
-    from std.math import exp as mexp
-
-    if x > 20.0:
-        return 1.0
-    if x < -20.0:
-        return -1.0
-    var ep = mexp(x)
-    var en = mexp(-x)
-    return (ep - en) / (ep + en)

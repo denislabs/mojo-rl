@@ -4,6 +4,11 @@ from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.math import log
+from std.math import abs as math_abs
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct SymlogOp[dim: Int](DiffOp):
@@ -55,14 +60,35 @@ struct SymlogOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        for b in range(BATCH):
-            for i in range(Self.dim):
-                var val = rebind[Scalar[dtype]](input[b, i])
-                cache[b, i] = val
-                var x = Float64(val)
-                var sign: Float64 = 1.0 if x >= 0.0 else -1.0
-                var abs_x = x if x >= 0.0 else -x
-                output[b, i] = Scalar[dtype](sign * log(1.0 + abs_x))
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
+
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var cache_p = cache.ptr
+        var one_v = SIMD[dtype, W](1)
+        var pos_v = SIMD[dtype, W](1)
+        var neg_v = SIMD[dtype, W](-1)
+        var zero_v = SIMD[dtype, W](0)
+        var i = 0
+        while i + W <= N:
+            var x = in_p.load[width=W](i)
+            cache_p.store(i, x)
+            var abs_x = math_abs(x)
+            var sign = x.ge(zero_v).select(pos_v, neg_v)
+            out_p.store(i, sign * log(one_v + abs_x))
+            i += W
+        var one = Scalar[dtype](1)
+        while i < N:
+            var x = in_p[i]
+            cache_p[i] = x
+            var ax = x if x >= 0 else -x
+            var sgn: Scalar[dtype] = 1 if x >= 0 else -1
+            out_p[i] = sgn * log(one + ax)
+            i += 1
 
     @staticmethod
     def vjp[
@@ -84,13 +110,24 @@ struct SymlogOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        for b in range(BATCH):
-            for i in range(Self.dim):
-                var x = Float64(rebind[Scalar[dtype]](cache[b, i]))
-                var abs_x = x if x >= 0.0 else -x
-                var dy = Float64(rebind[Scalar[dtype]](grad_output[b, i]))
-                # d/dx symlog(x) = 1 / (1 + |x|)
-                grad_input[b, i] = Scalar[dtype](dy / (1.0 + abs_x))
+        comptime W = _CPU_SIMD_W
+        comptime N = BATCH * Self.dim
+        var c_p = cache.ptr
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var one_v = SIMD[dtype, W](1)
+        var i = 0
+        while i + W <= N:
+            var x = c_p.load[width=W](i)
+            var dy = go_p.load[width=W](i)
+            gi_p.store(i, dy / (one_v + math_abs(x)))
+            i += W
+        var one = Scalar[dtype](1)
+        while i < N:
+            var x = c_p[i]
+            var ax = x if x >= 0 else -x
+            gi_p[i] = go_p[i] / (one + ax)
+            i += 1
 
     # =========================================================================
     # GPU kernels
@@ -111,7 +148,9 @@ struct SymlogOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
@@ -197,7 +236,7 @@ struct SymlogOp[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             cache,
@@ -249,9 +288,11 @@ struct SymlogOp[dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](
+                grad_input, grad_output, cache
+            )
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input,
             grad_output_immut,
             cache_immut,

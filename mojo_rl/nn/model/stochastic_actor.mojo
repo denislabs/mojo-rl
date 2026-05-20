@@ -1008,7 +1008,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
                 cache,
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             output,
             input_immut,
             W_mean,
@@ -1084,7 +1084,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
                 output, input, W_mean, b_mean, log_std
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             output,
             input_immut,
             W_mean,
@@ -1186,7 +1186,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
                 grad_input, grad_output, W_mean
             )
 
-        ctx.enqueue_function[dx_fused_kernel_wrapper, dx_fused_kernel_wrapper](
+        ctx.enqueue_function[dx_fused_kernel_wrapper](
             grad_input,
             grad_output_immut,
             W_mean,
@@ -1219,9 +1219,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
                 grads, cache, grad_output
             )
 
-        ctx.enqueue_function[
-            dW_db_fused_kernel_wrapper, dW_db_fused_kernel_wrapper
-        ](
+        ctx.enqueue_function[dW_db_fused_kernel_wrapper](
             grads,
             cache_immut,
             grad_output_immut,
@@ -1750,7 +1748,7 @@ def rsample_backward_gpu[
             grad_log_std,
         )
 
-    ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+    ctx.enqueue_function[kernel_wrapper](
         grad_action,
         grad_log_prob,
         action,

@@ -4,6 +4,7 @@ from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
+from std.memory import alloc
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 
 
@@ -285,13 +286,11 @@ struct Sequential[*LAYERS: Model](Model):
             ](cache.ptr)
             Self.model_types[0].forward[BATCH, dtype](in_v, out_v, p_v, s_v, c_v)
         else:
-            # Flat intermediate buffer for all N-1 inter-layer activations
-            var inter_storage = List[Scalar[dtype]](
-                capacity=BATCH * Self._total_inter()
-            )
-            for _ in range(BATCH * Self._total_inter()):
-                inter_storage.append(0)
-            var inter_ptr = inter_storage.unsafe_ptr()
+            # Flat intermediate buffer for all N-1 inter-layer activations.
+            # Heap-allocated uninit (no zero-fill — fully written before read).
+            var inter_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](BATCH * Self._total_inter())
 
             comptime for i in range(Self.N):
                 var li_p = LayoutTensor[
@@ -352,6 +351,7 @@ struct Sequential[*LAYERS: Model](Model):
                     Self.model_types[i].forward[BATCH, dtype](
                         li_in, li_out, li_p, li_s, li_c
                     )
+            inter_ptr.free()
 
     # =========================================================================
     # CPU Forward (no cache)
@@ -397,12 +397,10 @@ struct Sequential[*LAYERS: Model](Model):
             ](state.ptr)
             Self.model_types[0].forward[BATCH, dtype](in_v, out_v, p_v, s_v)
         else:
-            var inter_storage = List[Scalar[dtype]](
-                capacity=BATCH * Self._total_inter()
-            )
-            for _ in range(BATCH * Self._total_inter()):
-                inter_storage.append(0)
-            var inter_ptr = inter_storage.unsafe_ptr()
+            # Heap-allocated uninit inter buffer (no zero-fill).
+            var inter_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](BATCH * Self._total_inter())
 
             comptime for i in range(Self.N):
                 var li_p = LayoutTensor[
@@ -452,6 +450,7 @@ struct Sequential[*LAYERS: Model](Model):
                         MutAnyOrigin,
                     ](inter_ptr + BATCH * Self._inter_offset[i]())
                     Self.model_types[i].forward[BATCH, dtype](li_in, li_out, li_p, li_s)
+            inter_ptr.free()
 
     # =========================================================================
     # CPU Backward
@@ -513,13 +512,11 @@ struct Sequential[*LAYERS: Model](Model):
             ](grads.ptr)
             Self.model_types[0].backward[BATCH, dtype](go_v, gi_v, p_v, s_v, c_v, g_v)
         else:
-            # Gradient intermediate buffer (same layout as forward inter)
-            var grad_inter_storage = List[Scalar[dtype]](
-                capacity=BATCH * Self._total_inter()
-            )
-            for _ in range(BATCH * Self._total_inter()):
-                grad_inter_storage.append(0)
-            var gi_ptr = grad_inter_storage.unsafe_ptr()
+            # Gradient intermediate buffer (same layout as forward inter).
+            # Heap-allocated uninit (no zero-fill — fully written before read).
+            var gi_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](BATCH * Self._total_inter())
 
             # Reverse iteration
             comptime for _ri in range(Self.N):
@@ -591,6 +588,7 @@ struct Sequential[*LAYERS: Model](Model):
                     Self.model_types[i].backward[BATCH, dtype](
                         li_go, li_gi, li_p, li_s, li_c, li_g
                     )
+            gi_ptr.free()
 
     # =========================================================================
     # GPU Forward (with cache)
@@ -630,7 +628,7 @@ struct Sequential[*LAYERS: Model](Model):
 
         # Save caller's _mark so L3 timing doesn't clobber L2's mark
         var saved_mark: UInt = 0
-        if perf:
+        if Int(perf) != 0:
             saved_mark = perf.bitcast[PerfTimer[True]]()[]._mark
 
         comptime if Self.N == 1:
@@ -663,12 +661,12 @@ struct Sequential[*LAYERS: Model](Model):
                     MutAnyOrigin,
                 ]
             ](input)
-            if perf:
+            if Int(perf) != 0:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
             Self.model_types[0].forward_gpu[BATCH, dtype](
                 ctx, out_rb, in_rb, p_v, s_v, c_v, workspace
             )
-            if perf:
+            if Int(perf) != 0:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
                     perf_slot, ctx
                 )
@@ -701,7 +699,7 @@ struct Sequential[*LAYERS: Model](Model):
                     owning=False,
                 )
 
-                if perf:
+                if Int(perf) != 0:
                     perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
 
                 comptime if i == 0:
@@ -753,13 +751,13 @@ struct Sequential[*LAYERS: Model](Model):
                         ctx, inter_out, inter_in, li_p, li_s, li_c, li_ws
                     )
 
-                if perf:
+                if Int(perf) != 0:
                     perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
                         perf_slot + i, ctx
                     )
 
         # Restore caller's _mark so L2 timing measures the full span
-        if perf:
+        if Int(perf) != 0:
             perf.bitcast[PerfTimer[True]]()[]._mark = saved_mark
 
     # =========================================================================
@@ -789,7 +787,7 @@ struct Sequential[*LAYERS: Model](Model):
     ) raises:
         # Save caller's _mark so L3 timing doesn't clobber L2's mark
         var saved_mark: UInt = 0
-        if perf:
+        if Int(perf) != 0:
             saved_mark = perf.bitcast[PerfTimer[True]]()[]._mark
 
         comptime if Self.N == 1:
@@ -817,12 +815,12 @@ struct Sequential[*LAYERS: Model](Model):
                     MutAnyOrigin,
                 ]
             ](input)
-            if perf:
+            if Int(perf) != 0:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
             Self.model_types[0].forward_gpu_no_cache[BATCH, dtype](
                 ctx, out_rb, in_rb, p_v, s_v, workspace
             )
-            if perf:
+            if Int(perf) != 0:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
                     perf_slot, ctx
                 )
@@ -850,7 +848,7 @@ struct Sequential[*LAYERS: Model](Model):
                     owning=False,
                 )
 
-                if perf:
+                if Int(perf) != 0:
                     perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
 
                 comptime if i == 0:
@@ -902,13 +900,13 @@ struct Sequential[*LAYERS: Model](Model):
                         ctx, inter_out, inter_in, li_p, li_s, li_ws
                     )
 
-                if perf:
+                if Int(perf) != 0:
                     perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
                         perf_slot + i, ctx
                     )
 
         # Restore caller's _mark so L2 timing measures the full span
-        if perf:
+        if Int(perf) != 0:
             perf.bitcast[PerfTimer[True]]()[]._mark = saved_mark
 
     # =========================================================================
@@ -1075,7 +1073,7 @@ struct Sequential[*LAYERS: Model](Model):
 
         # Save caller's _mark so L3 timing doesn't clobber L2's mark
         var saved_mark: UInt = 0
-        if perf:
+        if Int(perf) != 0:
             saved_mark = perf.bitcast[PerfTimer[True]]()[]._mark
 
         comptime if Self.N == 1:
@@ -1113,12 +1111,12 @@ struct Sequential[*LAYERS: Model](Model):
                     MutAnyOrigin,
                 ]
             ](grad_output)
-            if perf:
+            if Int(perf) != 0:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
             Self.model_types[0].backward_gpu[BATCH, dtype](
                 ctx, gi_rb, go_rb, p_v, s_v, c_v, g_v, workspace
             )
-            if perf:
+            if Int(perf) != 0:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
                     perf_slot, ctx
                 )
@@ -1159,7 +1157,7 @@ struct Sequential[*LAYERS: Model](Model):
                     owning=False,
                 )
 
-                if perf:
+                if Int(perf) != 0:
                     perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
 
                 comptime if i == Self.N - 1:
@@ -1214,13 +1212,13 @@ struct Sequential[*LAYERS: Model](Model):
                         ctx, gi, go, li_p, li_s, li_c, li_g, li_ws
                     )
 
-                if perf:
+                if Int(perf) != 0:
                     perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
                         perf_slot + _ri, ctx
                     )
 
         # Restore caller's _mark so L2 timing measures the full span
-        if perf:
+        if Int(perf) != 0:
             perf.bitcast[PerfTimer[True]]()[]._mark = saved_mark
 
     # =========================================================================
@@ -1259,7 +1257,7 @@ struct Sequential[*LAYERS: Model](Model):
 
         # Save caller's _mark so L3 timing doesn't clobber L2's mark
         var saved_mark: UInt = 0
-        if perf:
+        if Int(perf) != 0:
             saved_mark = perf.bitcast[PerfTimer[True]]()[]._mark
 
         comptime if Self.N == 1:
@@ -1292,12 +1290,12 @@ struct Sequential[*LAYERS: Model](Model):
                     MutAnyOrigin,
                 ]
             ](input)
-            if perf:
+            if Int(perf) != 0:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
             Self.model_types[0].forward_gpu_inference_with_cache[BATCH, dtype](
                 ctx, out_rb, in_rb, p_v, s_v, c_v, workspace
             )
-            if perf:
+            if Int(perf) != 0:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
                     perf_slot, ctx
                 )
@@ -1330,7 +1328,7 @@ struct Sequential[*LAYERS: Model](Model):
                     owning=False,
                 )
 
-                if perf:
+                if Int(perf) != 0:
                     perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
 
                 comptime if i == 0:
@@ -1382,13 +1380,13 @@ struct Sequential[*LAYERS: Model](Model):
                         ctx, inter_out, inter_in, li_p, li_s, li_c, li_ws
                     )
 
-                if perf:
+                if Int(perf) != 0:
                     perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
                         perf_slot + i, ctx
                     )
 
         # Restore caller's _mark so L2 timing measures the full span
-        if perf:
+        if Int(perf) != 0:
             perf.bitcast[PerfTimer[True]]()[]._mark = saved_mark
 
     # =========================================================================
@@ -1431,7 +1429,7 @@ struct Sequential[*LAYERS: Model](Model):
 
         # Save caller's _mark so L3 timing doesn't clobber L2's mark
         var saved_mark: UInt = 0
-        if perf:
+        if Int(perf) != 0:
             saved_mark = perf.bitcast[PerfTimer[True]]()[]._mark
 
         comptime if Self.N == 1:
@@ -1469,12 +1467,12 @@ struct Sequential[*LAYERS: Model](Model):
                     MutAnyOrigin,
                 ]
             ](grad_output)
-            if perf:
+            if Int(perf) != 0:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
             Self.model_types[0].backward_gpu_inference[BATCH, dtype](
                 ctx, gi_rb, go_rb, p_v, s_v, c_v, g_v, workspace
             )
-            if perf:
+            if Int(perf) != 0:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
                     perf_slot, ctx
                 )
@@ -1515,7 +1513,7 @@ struct Sequential[*LAYERS: Model](Model):
                     owning=False,
                 )
 
-                if perf:
+                if Int(perf) != 0:
                     perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
 
                 comptime if i == Self.N - 1:
@@ -1570,13 +1568,13 @@ struct Sequential[*LAYERS: Model](Model):
                         ctx, gi, go, li_p, li_s, li_c, li_g, li_ws
                     )
 
-                if perf:
+                if Int(perf) != 0:
                     perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
                         perf_slot + _ri, ctx
                     )
 
         # Restore caller's _mark so L2 timing measures the full span
-        if perf:
+        if Int(perf) != 0:
             perf.bitcast[PerfTimer[True]]()[]._mark = saved_mark
 
     # =========================================================================

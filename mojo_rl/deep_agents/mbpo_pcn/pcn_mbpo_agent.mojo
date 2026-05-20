@@ -52,7 +52,7 @@ from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
 from mojo_rl.deep_agents.core.utils import obs_to_inline
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.deep_agents.mbpo_pcn.pcn_mbpo_config import PCNMBPOConfig
-from mojo_rl.experimental.nn_pc_v2 import (
+from mojo_rl.experimental.pcn import (
     PCDynamicsEnsembleInstanceCPU,
     PCDynamicsEnsembleInstanceGPU,
 )
@@ -98,6 +98,7 @@ from mojo_rl.core import (
     GPUContinuousEnv,
     RenderableEnv,
 )
+
 # `run_mbpo_train` / `run_mbpo_train_gpu` from core.training.mbpo_train are
 # vanilla-MBPO-typed wrappers; PCN-MBPO callers use `agent.train()` /
 # `agent.train_gpu()` (defined further below) which dispatch directly to the
@@ -144,8 +145,11 @@ def pcn_build_dyn_target_kernel[
     reward_mean: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
     reward_std: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
 ):
-    """target[b, d<OBS_DIM] = next_obs[b,d] - obs[b,d]
-       target[b, OBS_DIM]   = (reward[b] - reward_mean) / reward_std
+    """
+    Build dynamics training target: [reward, delta_obs].
+
+    target[b, d < OBS_DIM] = next_obs[b,d] - obs[b,d]
+    target[b, OBS_DIM]   = (reward[b] - reward_mean) / reward_std
 
     The reward dim is normalized so PCN's unweighted-MSE loss treats it
     on the same scale as the Δobs dims. Without this, the reward (raw σ
@@ -168,9 +172,7 @@ def pcn_build_dyn_target_kernel[
     else:
         var mu = rebind[Scalar[dtype]](reward_mean[0])
         var sigma = rebind[Scalar[dtype]](reward_std[0])
-        target[b, d] = (
-            rebind[Scalar[dtype]](s_rew[b]) - mu
-        ) / sigma
+        target[b, d] = (rebind[Scalar[dtype]](s_rew[b]) - mu) / sigma
 
 
 def pcn_sample_elite_output_kernel[
@@ -191,9 +193,7 @@ def pcn_sample_elite_output_kernel[
     elite_slot: LayoutTensor[
         DType.int32, Layout.row_major(BATCH), MutAnyOrigin
     ],
-    rng_counter: LayoutTensor[
-        DType.uint32, Layout.row_major(1), MutAnyOrigin
-    ],
+    rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
     noise_scale: Scalar[dtype],
     noise_floor: Scalar[dtype],
     noise_cap: Scalar[dtype],
@@ -248,9 +248,7 @@ def pcn_sample_elite_output_kernel[
     var mu = mean_acc / Scalar[dtype](NUM_ELITES)
     var var_acc = Scalar[dtype](0.0)
     for k in range(NUM_ELITES):
-        var diff = (
-            rebind[Scalar[dtype]](dyn_output_all[k, b, d]) - mu
-        )
+        var diff = rebind[Scalar[dtype]](dyn_output_all[k, b, d]) - mu
         var_acc += diff * diff
     var sigma = sqrt(var_acc / Scalar[dtype](NUM_ELITES))
     # Clip to [noise_floor, noise_cap] so we always inject some noise but
@@ -272,13 +270,9 @@ def pcn_sample_elite_output_kernel[
     var u1 = Float32(rand_vals[0]) + Float32(1e-8)
     var u2 = Float32(rand_vals[1])
     var mag = sqrt(Float32(-2.0) * log(u1))
-    var z = Scalar[dtype](
-        mag * cos(u2 * Float32(6.283185307179586))
-    )
+    var z = Scalar[dtype](mag * cos(u2 * Float32(6.283185307179586)))
 
-    var sample = (
-        rebind[Scalar[dtype]](dyn_output_all[slot, b, d]) + sigma * z
-    )
+    var sample = rebind[Scalar[dtype]](dyn_output_all[slot, b, d]) + sigma * z
     if d < OBS_DIM:
         next_obs[b, d] = obs[b, d] + sample
     else:
@@ -631,7 +625,7 @@ struct PCNMBPOAgent[
     var checkpoint_path: String
 
     # Logging
-    var logger: UnsafePointer[Self.L, MutAnyOrigin]
+    var logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]]
     var diag_every: Int
 
     def __init__(
@@ -707,8 +701,10 @@ struct PCNMBPOAgent[
                 real_ratio,
                 " differs from REAL_RATIO_PCT (",
                 rr_from_comptime,
-                "); using the comptime value. Set PCNMBPOAgent[...,"
-                " REAL_RATIO_PCT=N] to change the GPU batch split.",
+                (
+                    "); using the comptime value. Set PCNMBPOAgent[...,"
+                    " REAL_RATIO_PCT=N] to change the GPU batch split."
+                ),
             )
         self.real_ratio = rr_from_comptime
         self.sac_updates_per_step = sac_updates_per_step
@@ -725,7 +721,7 @@ struct PCNMBPOAgent[
 
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         self.diag_every = diag_every
 
     # =========================================================================
@@ -937,12 +933,16 @@ struct PCNMBPOAgent[
         # Forward all target critics
         # Zero-length model state slice (critic is stateless; CriticGroup has no model_state_view)
         var critic_state = LayoutTensor[
-            dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.Config.CriticModel.STATE_SIZE),
+            MutAnyOrigin,
         ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
         for i in range(Self.Config.NUM_CRITICS):
             var next_qi_t = ws.next_q(i)
             var p_ct = cpu_state.critics.target_params_view(i)
-            Self.CriticNet.forward[Self.BATCH](next_ci_t, next_qi_t, p_ct, critic_state)
+            Self.CriticNet.forward[Self.BATCH](
+                next_ci_t, next_qi_t, p_ct, critic_state
+            )
 
         # TD targets
         var q1_tv = LayoutTensor[
@@ -1012,24 +1012,26 @@ struct PCNMBPOAgent[
                 critic_loss = (critic_loss + ci_loss) / 2.0
 
         # Diagnostic logging
-        if self.logger and (
+        if Bool(self.logger) and (
             self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
-                self.logger[].log_scalar("critic_loss", critic_loss, step)
-                self.logger[].log_scalar("alpha", self.alpha, step)
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
+                    "critic_loss", critic_loss, step
+                )
+                self.logger.value()[].log_scalar("alpha", self.alpha, step)
+                self.logger.value()[].log_scalar(
                     "real_buffer_size",
                     Float64(cpu_state.real_buffer.size),
                     step,
                 )
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "synth_buffer_size",
                     Float64(cpu_state.synth_buffer.size),
                     step,
                 )
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "rollout_length", Float64(self.rollout_length), step
                 )
             except:
@@ -1223,12 +1225,11 @@ struct PCNMBPOAgent[
             return 0.0
         return total_reward / Float64(completed)
 
-
     # =========================================================================
     # MBPO-specific methods
     # =========================================================================
 
-    def train_dynamics(mut self, mut cpu_state: Self.CPUStateType):
+    def train_dynamics(mut self, mut cpu_state: Self.CPUStateType) raises:
         """Train dynamics ensemble on real buffer data."""
         cpu_state.dynamics.train_model[Self.Config.buffer_capacity](
             cpu_state.real_buffer,
@@ -1355,8 +1356,8 @@ struct PCNMBPOAgent[
         `n_minibatches=-1` (default) uses `self.dyn_train_minibatches_per_call`.
         """
         var n_iters = (
-            n_minibatches if n_minibatches >= 0
-            else self.dyn_train_minibatches_per_call
+            n_minibatches if n_minibatches
+            >= 0 else self.dyn_train_minibatches_per_call
         )
         if n_iters <= 0:
             return
@@ -1377,9 +1378,9 @@ struct PCNMBPOAgent[
         var dyn_rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu_dynamics.r_elite_rng.unsafe_ptr())
-        ctx.enqueue_function[
-            increment_rng_counter_kernel, increment_rng_counter_kernel
-        ](dyn_rng_t, grid_dim=(1,), block_dim=(1,))
+        ctx.enqueue_function[increment_rng_counter_kernel](
+            dyn_rng_t, grid_dim=(1,), block_dim=(1,)
+        )
 
         # Refit the input scaler on the current real buffer (per-dim
         # mean/std of [obs || act]). Required for BLOCK0's `tanh(x_below)`
@@ -1410,9 +1411,9 @@ struct PCNMBPOAgent[
         # ~MSE 0.3, and SAC trains on garbage synth rollouts.
         for batch_iter in range(n_iters):
             # Bump RNG so each outer iteration draws a fresh minibatch.
-            ctx.enqueue_function[
-                increment_rng_counter_kernel, increment_rng_counter_kernel
-            ](dyn_rng_t, grid_dim=(1,), block_dim=(1,))
+            ctx.enqueue_function[increment_rng_counter_kernel](
+                dyn_rng_t, grid_dim=(1,), block_dim=(1,)
+            )
 
             for m in range(Self.Config.ENSEMBLE_SIZE):
                 # 1. Sample DB transitions from gpu_buffer into s_obs/s_act/...
@@ -1441,8 +1442,10 @@ struct PCNMBPOAgent[
                 var s_a_t = LayoutTensor[
                     dtype, Layout.row_major(DB, DYN_IN), MutAnyOrigin
                 ](gpu_dynamics.s_a_dbuf.unsafe_ptr())
-                ctx.enqueue_function[concat_k, concat_k](
-                    s_a_t, s_obs_t, s_act_t,
+                ctx.enqueue_function[concat_k](
+                    s_a_t,
+                    s_obs_t,
+                    s_act_t,
                     grid_dim=(DB_IN_BLOCKS,),
                     block_dim=(TPB_VAL,),
                 )
@@ -1454,8 +1457,10 @@ struct PCNMBPOAgent[
                 var std_t = LayoutTensor[
                     dtype, Layout.row_major(DYN_IN), MutAnyOrigin
                 ](gpu_dynamics.input_std.unsafe_ptr())
-                ctx.enqueue_function[norm_k, norm_k](
-                    s_a_t, mean_t, std_t,
+                ctx.enqueue_function[norm_k](
+                    s_a_t,
+                    mean_t,
+                    std_t,
                     grid_dim=(DB_IN_BLOCKS,),
                     block_dim=(TPB_VAL,),
                 )
@@ -1479,9 +1484,13 @@ struct PCNMBPOAgent[
                 var rstd_t = LayoutTensor[
                     dtype, Layout.row_major(1), MutAnyOrigin
                 ](gpu_dynamics.reward_std.unsafe_ptr())
-                ctx.enqueue_function[build_target_k, build_target_k](
-                    target_t, s_obs_t, s_nobs_t, s_rew_t,
-                    rmean_t, rstd_t,
+                ctx.enqueue_function[build_target_k](
+                    target_t,
+                    s_obs_t,
+                    s_nobs_t,
+                    s_rew_t,
+                    rmean_t,
+                    rstd_t,
                     grid_dim=(DB_OUT_BLOCKS,),
                     block_dim=(TPB_VAL,),
                 )
@@ -1491,9 +1500,14 @@ struct PCNMBPOAgent[
 
         # ── Refresh elite indices from a fresh holdout batch ───────────────
         gpu_buffer.sample[DB](
-            ctx, gpu_dynamics.r_elite_rng,
-            gpu_dynamics.s_obs, gpu_dynamics.s_act, gpu_dynamics.s_rew,
-            gpu_dynamics.s_nobs, gpu_dynamics.s_done, gpu_dynamics.s_idx,
+            ctx,
+            gpu_dynamics.r_elite_rng,
+            gpu_dynamics.s_obs,
+            gpu_dynamics.s_act,
+            gpu_dynamics.s_rew,
+            gpu_dynamics.s_nobs,
+            gpu_dynamics.s_done,
+            gpu_dynamics.s_idx,
         )
         var hs_obs_t = LayoutTensor[
             dtype, Layout.row_major(DB, Self.Config.obs_dim), MutAnyOrigin
@@ -1504,8 +1518,10 @@ struct PCNMBPOAgent[
         var hs_a_t = LayoutTensor[
             dtype, Layout.row_major(DB, DYN_IN), MutAnyOrigin
         ](gpu_dynamics.s_a_dbuf.unsafe_ptr())
-        ctx.enqueue_function[concat_k, concat_k](
-            hs_a_t, hs_obs_t, hs_act_t,
+        ctx.enqueue_function[concat_k](
+            hs_a_t,
+            hs_obs_t,
+            hs_act_t,
             grid_dim=(DB_IN_BLOCKS,),
             block_dim=(TPB_VAL,),
         )
@@ -1516,29 +1532,35 @@ struct PCNMBPOAgent[
         var h_std_t = LayoutTensor[
             dtype, Layout.row_major(DYN_IN), MutAnyOrigin
         ](gpu_dynamics.input_std.unsafe_ptr())
-        ctx.enqueue_function[norm_k, norm_k](
-            hs_a_t, h_mean_t, h_std_t,
+        ctx.enqueue_function[norm_k](
+            hs_a_t,
+            h_mean_t,
+            h_std_t,
             grid_dim=(DB_IN_BLOCKS,),
             block_dim=(TPB_VAL,),
         )
         var hs_nobs_t = LayoutTensor[
             dtype, Layout.row_major(DB, Self.Config.obs_dim), MutAnyOrigin
         ](gpu_dynamics.s_nobs.unsafe_ptr())
-        var hs_rew_t = LayoutTensor[
-            dtype, Layout.row_major(DB), MutAnyOrigin
-        ](gpu_dynamics.s_rew.unsafe_ptr())
+        var hs_rew_t = LayoutTensor[dtype, Layout.row_major(DB), MutAnyOrigin](
+            gpu_dynamics.s_rew.unsafe_ptr()
+        )
         var ht_t = LayoutTensor[
             dtype, Layout.row_major(DB, READOUT), MutAnyOrigin
         ](gpu_dynamics.target_dbuf.unsafe_ptr())
-        var hrmean_t = LayoutTensor[
-            dtype, Layout.row_major(1), MutAnyOrigin
-        ](gpu_dynamics.reward_mean.unsafe_ptr())
-        var hrstd_t = LayoutTensor[
-            dtype, Layout.row_major(1), MutAnyOrigin
-        ](gpu_dynamics.reward_std.unsafe_ptr())
-        ctx.enqueue_function[build_target_k, build_target_k](
-            ht_t, hs_obs_t, hs_nobs_t, hs_rew_t,
-            hrmean_t, hrstd_t,
+        var hrmean_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
+            gpu_dynamics.reward_mean.unsafe_ptr()
+        )
+        var hrstd_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
+            gpu_dynamics.reward_std.unsafe_ptr()
+        )
+        ctx.enqueue_function[build_target_k](
+            ht_t,
+            hs_obs_t,
+            hs_nobs_t,
+            hs_rew_t,
+            hrmean_t,
+            hrstd_t,
             grid_dim=(DB_OUT_BLOCKS,),
             block_dim=(TPB_VAL,),
         )
@@ -1566,7 +1588,9 @@ struct PCNMBPOAgent[
         ],
         mut gpu_state: Self.GPUStateType,
         mut synth_buffer: GPUReplayBuffer[
-            Self.Config.SYNTH_CAPACITY, Self.Config.obs_dim, Self.Config.action_dim
+            Self.Config.SYNTH_CAPACITY,
+            Self.Config.obs_dim,
+            Self.Config.action_dim,
         ],
     ) raises:
         """GPU model rollouts: sample starts from real buffer, store in synth buffer.
@@ -1631,13 +1655,20 @@ struct PCNMBPOAgent[
         var rollout_rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu_state.rng_counter.unsafe_ptr())
-        ctx.enqueue_function[rollout_incr_k, rollout_incr_k](
-            rollout_rng_t, grid_dim=(1,), block_dim=(1,),
+        ctx.enqueue_function[rollout_incr_k](
+            rollout_rng_t,
+            grid_dim=(1,),
+            block_dim=(1,),
         )
         gpu_state.buffer.sample[RB](
-            ctx, gpu_state.rng_counter,
-            gpu_dynamics.s_obs, gpu_dynamics.s_act, gpu_dynamics.s_rew,
-            gpu_dynamics.s_nobs, gpu_dynamics.s_done, gpu_dynamics.s_idx,
+            ctx,
+            gpu_state.rng_counter,
+            gpu_dynamics.s_obs,
+            gpu_dynamics.s_act,
+            gpu_dynamics.s_rew,
+            gpu_dynamics.s_nobs,
+            gpu_dynamics.s_done,
+            gpu_dynamics.s_idx,
         )
         # Use sampled obs as rollout starts.
         ctx.enqueue_copy(gpu_dynamics.r_obs, gpu_dynamics.s_obs)
@@ -1659,22 +1690,28 @@ struct PCNMBPOAgent[
             var p_actor = gpu_state.actor.online.params_view()
             var s_actor = gpu_state.actor.online.model_state_view()
             Self.ActorNet.forward_gpu[RB](
-                ctx, r_obs_t, raw_t, p_actor, s_actor, gpu_dynamics.r_ws,
+                ctx,
+                r_obs_t,
+                raw_t,
+                p_actor,
+                s_actor,
+                gpu_dynamics.r_ws,
             )
 
             # 2. SAC stochastic action sample (mean + std → tanh).
             comptime sac_k = sac_sample_actions_kernel[
-                dtype, RB, Self.ACTIONS, Self.ACTOR_OUT,
+                dtype,
+                RB,
+                Self.ACTIONS,
+                Self.ACTOR_OUT,
             ]
-            ctx.enqueue_function[sac_k, sac_k](
+            ctx.enqueue_function[sac_k](
                 r_act_t,
                 raw_t,
                 Scalar[dtype](self.action_scale),
                 Scalar[dtype](-5.0),
                 Scalar[dtype](2.0),
-                Scalar[DType.uint32](
-                    UInt32(self.total_steps + step)
-                ),
+                Scalar[DType.uint32](UInt32(self.total_steps + step)),
                 grid_dim=(RB_BLOCKS,),
                 block_dim=(TPB_VAL,),
             )
@@ -1683,9 +1720,12 @@ struct PCNMBPOAgent[
             var r_dyn_in_t = LayoutTensor[
                 dtype, Layout.row_major(RB, DYN_IN), MutAnyOrigin
             ](gpu_dynamics.r_dyn_input.unsafe_ptr())
-            ctx.enqueue_function[concat_k, concat_k](
-                r_dyn_in_t, r_obs_t, r_act_t,
-                grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
+            ctx.enqueue_function[concat_k](
+                r_dyn_in_t,
+                r_obs_t,
+                r_act_t,
+                grid_dim=(DYN_IN_BLOCKS,),
+                block_dim=(TPB_VAL,),
             )
             # 3b. Normalize the dynamics input the same way training did.
             # Without this, BLOCK0's tanh saturates on raw obs/action.
@@ -1695,9 +1735,12 @@ struct PCNMBPOAgent[
             var r_std_t = LayoutTensor[
                 dtype, Layout.row_major(DYN_IN), MutAnyOrigin
             ](gpu_dynamics.input_std.unsafe_ptr())
-            ctx.enqueue_function[r_norm_k, r_norm_k](
-                r_dyn_in_t, r_mean_t, r_std_t,
-                grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
+            ctx.enqueue_function[r_norm_k](
+                r_dyn_in_t,
+                r_mean_t,
+                r_std_t,
+                grid_dim=(DYN_IN_BLOCKS,),
+                block_dim=(TPB_VAL,),
             )
 
             # 4. For each elite slot, predict its forward into r_dyn_output_all.
@@ -1711,15 +1754,19 @@ struct PCNMBPOAgent[
             var elite_rng_t = LayoutTensor[
                 DType.uint32, Layout.row_major(1), MutAnyOrigin
             ](gpu_dynamics.r_elite_rng.unsafe_ptr())
-            ctx.enqueue_function[rollout_incr_k, rollout_incr_k](
-                elite_rng_t, grid_dim=(1,), block_dim=(1,),
+            ctx.enqueue_function[rollout_incr_k](
+                elite_rng_t,
+                grid_dim=(1,),
+                block_dim=(1,),
             )
             var elite_slot_t = LayoutTensor[
                 DType.int32, Layout.row_major(RB), MutAnyOrigin
             ](gpu_dynamics.r_elite_idx_per_sample.unsafe_ptr())
-            ctx.enqueue_function[elite_assign_k, elite_assign_k](
-                elite_slot_t, elite_rng_t,
-                grid_dim=(RB_BLOCKS,), block_dim=(TPB_VAL,),
+            ctx.enqueue_function[elite_assign_k](
+                elite_slot_t,
+                elite_rng_t,
+                grid_dim=(RB_BLOCKS,),
+                block_dim=(TPB_VAL,),
             )
 
             # 6. PCN sample with ensemble-disagreement Gaussian noise →
@@ -1739,8 +1786,10 @@ struct PCNMBPOAgent[
             ](gpu_dynamics.r_dyn_output_all.unsafe_ptr())
             # Bump the elite-RNG counter once per rollout step so each
             # sample-kernel call uses a fresh Philox seed.
-            ctx.enqueue_function[rollout_incr_k, rollout_incr_k](
-                elite_rng_t, grid_dim=(1,), block_dim=(1,),
+            ctx.enqueue_function[rollout_incr_k](
+                elite_rng_t,
+                grid_dim=(1,),
+                block_dim=(1,),
             )
             var rsamp_mean_t = LayoutTensor[
                 dtype, Layout.row_major(1), MutAnyOrigin
@@ -1748,21 +1797,25 @@ struct PCNMBPOAgent[
             var rsamp_std_t = LayoutTensor[
                 dtype, Layout.row_major(1), MutAnyOrigin
             ](gpu_dynamics.reward_std.unsafe_ptr())
-            ctx.enqueue_function[sample_k, sample_k](
-                r_next_t, r_rew_t,
-                r_dyn_out_all_t, r_obs_t, elite_slot_t,
+            ctx.enqueue_function[sample_k](
+                r_next_t,
+                r_rew_t,
+                r_dyn_out_all_t,
+                r_obs_t,
+                elite_slot_t,
                 elite_rng_t,
                 Scalar[dtype](self.dyn_noise_scale),
                 Scalar[dtype](self.dyn_noise_floor),
                 Scalar[dtype](self.dyn_noise_cap),
-                rsamp_mean_t, rsamp_std_t,
+                rsamp_mean_t,
+                rsamp_std_t,
                 grid_dim=(SAMPLE_BLOCKS,),
                 block_dim=(TPB_VAL,),
             )
 
             # 7. Clamp synthetic rewards to prevent NaN cascades.
             comptime clamp_k = clamp_rewards_kernel[dtype, RB]
-            ctx.enqueue_function[clamp_k, clamp_k](
+            ctx.enqueue_function[clamp_k](
                 r_rew_t,
                 Scalar[dtype](-100.0),
                 Scalar[dtype](100.0),
@@ -1783,24 +1836,31 @@ struct PCNMBPOAgent[
             var dones_t = LayoutTensor[
                 dtype, Layout.row_major(RB), MutAnyOrigin
             ](gpu_dynamics.r_dones.unsafe_ptr())
-            ctx.enqueue_function[mask_dead_k, mask_dead_k](
-                alive_t, r_rew_t, dones_t,
-                grid_dim=(RB_BLOCKS,), block_dim=(TPB_VAL,),
+            ctx.enqueue_function[mask_dead_k](
+                alive_t,
+                r_rew_t,
+                dones_t,
+                grid_dim=(RB_BLOCKS,),
+                block_dim=(TPB_VAL,),
             )
 
             # 10. Store synthetic transitions in synth GPU buffer.
             synth_buffer.store[RB](
                 ctx,
-                gpu_dynamics.r_obs, gpu_dynamics.r_actions,
-                gpu_dynamics.r_rewards, gpu_dynamics.r_next_obs,
+                gpu_dynamics.r_obs,
+                gpu_dynamics.r_actions,
+                gpu_dynamics.r_rewards,
+                gpu_dynamics.r_next_obs,
                 gpu_dynamics.r_dones,
             )
 
             # 11. Update alive mask: alive[b] *= (1 - dones[b]).
             comptime update_alive_k = update_alive_mask_kernel[dtype, RB]
-            ctx.enqueue_function[update_alive_k, update_alive_k](
-                alive_t, dones_t,
-                grid_dim=(RB_BLOCKS,), block_dim=(TPB_VAL,),
+            ctx.enqueue_function[update_alive_k](
+                alive_t,
+                dones_t,
+                grid_dim=(RB_BLOCKS,),
+                block_dim=(TPB_VAL,),
             )
 
             # 12. r_obs ← r_next_obs for next step.
@@ -1815,7 +1875,9 @@ struct PCNMBPOAgent[
         cpu_state: Self.CPUStateType,
         mut gpu_state: Self.GPUStateType,
         mut synth_buffer: GPUReplayBuffer[
-            Self.Config.SYNTH_CAPACITY, Self.Config.obs_dim, Self.Config.action_dim
+            Self.Config.SYNTH_CAPACITY,
+            Self.Config.obs_dim,
+            Self.Config.action_dim,
         ],
         ctx: DeviceContext,
     ) raises:
@@ -1857,7 +1919,7 @@ struct PCNMBPOAgent[
         comptime sac_explore_k = sac_sample_actions_kernel[
             dtype, N_ENVS, Self.ACTIONS, Self.ACTOR_OUT
         ]
-        ctx.enqueue_function[sac_explore_k, sac_explore_k](
+        ctx.enqueue_function[sac_explore_k](
             act_t,
             raw_t,
             Scalar[dtype](self.action_scale),
@@ -1906,7 +1968,7 @@ struct PCNMBPOAgent[
         var rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu_state.rng_counter.unsafe_ptr())
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -1940,7 +2002,7 @@ struct PCNMBPOAgent[
         )
 
         # Increment RNG again for independent synthetic sampling
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -2025,12 +2087,14 @@ struct PCNMBPOAgent[
         var p_critic_t = gpu_state.critics.target_params_view(0)
         # Zero-length model state for critics (GPUCriticGroup has no model_state_view)
         var s_critic = LayoutTensor[
-            dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.Config.CriticModel.STATE_SIZE),
+            MutAnyOrigin,
         ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
         # Phase 2: Target actions (SAC: use online actor, no target)
         # Increment RNG counter before target action
-        ctx.enqueue_function[incr_k, incr_k](
+        ctx.enqueue_function[incr_k](
             rng_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -2056,7 +2120,7 @@ struct PCNMBPOAgent[
 
         # Concat next_obs + next_act → next_ci, forward target critics
         var next_ci_t = gpu_state.next_ci_view[BS]()
-        ctx.enqueue_function[concat_k, concat_k](
+        ctx.enqueue_function[concat_k](
             next_ci_t,
             nobs_t,
             next_act_t,
@@ -2102,7 +2166,7 @@ struct PCNMBPOAgent[
         var q_grad_t = gpu_state.q_grad_view[BS]()
         var d_ci_t = gpu_state.d_ci_view[BS]()
 
-        ctx.enqueue_function[concat_k, concat_k](
+        ctx.enqueue_function[concat_k](
             ci_t,
             obs_t,
             act_t,
@@ -2118,7 +2182,7 @@ struct PCNMBPOAgent[
             q_cache_t,
             gpu_state.critic_ws,
         )
-        ctx.enqueue_function[mse_grad_k, mse_grad_k](
+        ctx.enqueue_function[mse_grad_k](
             q_grad_t,
             q_t,
             targets_t,
@@ -2151,13 +2215,13 @@ struct PCNMBPOAgent[
                 dtype, Layout.row_major(C_BLOCKS), MutAnyOrigin
             ](gpu_state.grad_clip_ps.unsafe_ptr())
 
-            ctx.enqueue_function[c_norm_k, c_norm_k](
+            ctx.enqueue_function[c_norm_k](
                 c_ps_t,
                 g_critic,
                 grid_dim=(C_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[c_clip_k, c_clip_k](
+            ctx.enqueue_function[c_clip_k](
                 g_critic,
                 c_ps_t,
                 Scalar[dtype](self.max_grad_norm),
@@ -2180,7 +2244,7 @@ struct PCNMBPOAgent[
                 q2_cache_t,
                 gpu_state.critic2_ws,
             )
-            ctx.enqueue_function[mse_grad_k, mse_grad_k](
+            ctx.enqueue_function[mse_grad_k](
                 q_grad_t,
                 q2_out_t,
                 targets_t,
@@ -2213,13 +2277,13 @@ struct PCNMBPOAgent[
                     dtype, Layout.row_major(C_BLOCKS2), MutAnyOrigin
                 ](gpu_state.grad_clip_ps.unsafe_ptr())
 
-                ctx.enqueue_function[c2_norm_k, c2_norm_k](
+                ctx.enqueue_function[c2_norm_k](
                     c2_ps_t,
                     g_c2,
                     grid_dim=(C_BLOCKS2,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function[c2_clip_k, c2_clip_k](
+                ctx.enqueue_function[c2_clip_k](
                     g_c2,
                     c2_ps_t,
                     Scalar[dtype](self.max_grad_norm),
@@ -2243,7 +2307,7 @@ struct PCNMBPOAgent[
                 p_c2 = gpu_state.critics.online_params_view(1)
                 c2_ws = gpu_state.critic2_ws
             # Increment RNG counter before actor loss
-            ctx.enqueue_function[incr_k, incr_k](
+            ctx.enqueue_function[incr_k](
                 rng_t,
                 grid_dim=(1,),
                 block_dim=(1,),
@@ -2287,13 +2351,13 @@ struct PCNMBPOAgent[
                     dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
                 ](gpu_state.grad_clip_ps.unsafe_ptr())
 
-                ctx.enqueue_function[a_norm_k, a_norm_k](
+                ctx.enqueue_function[a_norm_k](
                     a_ps_t,
                     a_grads,
                     grid_dim=(A_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function[a_clip_k, a_clip_k](
+                ctx.enqueue_function[a_clip_k](
                     a_grads,
                     a_ps_t,
                     Scalar[dtype](self.max_grad_norm),
@@ -2353,9 +2417,7 @@ struct PCNMBPOAgent[
                     # collapses to max-entropy and never recovers.
                     # lp_clip=50 bounds per-sample log_pi so a single
                     # tanh-saturated batch element can't poison Adam's moments.
-                    ctx.enqueue_function[
-                        mbpo_alpha_wrapper, mbpo_alpha_wrapper
-                    ](
+                    ctx.enqueue_function[mbpo_alpha_wrapper](
                         scalars_t,
                         src_lp,
                         Scalar[dtype](0.5),
@@ -2383,7 +2445,7 @@ struct PCNMBPOAgent[
         # GPU Diagnostic logging (periodic)
         comptime BS = Self.BATCH
         if (
-            self.logger
+            Bool(self.logger)
             and self.diag_every > 0
             and self.train_step_count % self.diag_every == 0
         ):
@@ -2430,24 +2492,28 @@ struct PCNMBPOAgent[
                 mean_abs_act /= Float64(BS * Self.ACTIONS)
 
                 var step = self.train_step_count
-                self.logger[].log_scalar("critic_loss", critic_loss, step)
-                self.logger[].log_scalar("mean_q", mean_q, step)
-                self.logger[].log_scalar("mean_target", mean_tgt, step)
-                self.logger[].log_scalar("mean_reward", mean_rew, step)
-                self.logger[].log_scalar("mean_next_q", mean_nq, step)
-                self.logger[].log_scalar("mean_done", mean_done, step)
-                self.logger[].log_scalar("mean_abs_action", mean_abs_act, step)
+                self.logger.value()[].log_scalar(
+                    "critic_loss", critic_loss, step
+                )
+                self.logger.value()[].log_scalar("mean_q", mean_q, step)
+                self.logger.value()[].log_scalar("mean_target", mean_tgt, step)
+                self.logger.value()[].log_scalar("mean_reward", mean_rew, step)
+                self.logger.value()[].log_scalar("mean_next_q", mean_nq, step)
+                self.logger.value()[].log_scalar("mean_done", mean_done, step)
+                self.logger.value()[].log_scalar(
+                    "mean_abs_action", mean_abs_act, step
+                )
                 # Read alpha from GPU (not self.alpha — that's only synced at
                 # print boundaries by the training loop). Uses caller-supplied
                 # pre-allocated alpha_host to avoid per-diag allocation.
                 comptime if Self.Config.ActorLoss.HAS_ALPHA:
                     ctx.enqueue_copy(alpha_host, gpu_state.gpu_scalars)
                     ctx.synchronize()
-                    self.logger[].log_scalar(
+                    self.logger.value()[].log_scalar(
                         "alpha", Float64(alpha_host[0]), step
                     )
                 else:
-                    self.logger[].log_scalar("alpha", self.alpha, step)
+                    self.logger.value()[].log_scalar("alpha", self.alpha, step)
             except:
                 pass
 
@@ -2470,8 +2536,10 @@ struct PCNMBPOAgent[
         var rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu_state.rng_counter.unsafe_ptr())
-        ctx.enqueue_function[incr_k, incr_k](
-            rng_t, grid_dim=(1,), block_dim=(1,),
+        ctx.enqueue_function[incr_k](
+            rng_t,
+            grid_dim=(1,),
+            block_dim=(1,),
         )
         gpu_state.buffer.sample[BS](
             ctx,
@@ -2492,7 +2560,9 @@ struct PCNMBPOAgent[
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
         synth_buffer: GPUReplayBuffer[
-            Self.Config.SYNTH_CAPACITY, Self.Config.obs_dim, Self.Config.action_dim
+            Self.Config.SYNTH_CAPACITY,
+            Self.Config.obs_dim,
+            Self.Config.action_dim,
         ],
         s_real_idx: DeviceBuffer[DType.int32],
         s_synth_idx: DeviceBuffer[DType.int32],
@@ -2677,9 +2747,7 @@ struct PCNMBPOAgent[
         verbose: Bool = False,
         print_every: Int = 1,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
     ) raises -> TrainingMetrics:
         """MBPO CPU training loop body. See `train()` and `run_mbpo_train`."""
         var metrics = TrainingMetrics(
@@ -2739,7 +2807,9 @@ struct PCNMBPOAgent[
                 var reward = Float64(result[1])
                 var done = result[2]
                 episode_steps += 1
-                var terminated = done and (episode_steps < max_steps_per_episode)
+                var terminated = done and (
+                    episode_steps < max_steps_per_episode
+                )
                 self.store_transition(
                     cpu_state, obs_f64, action, reward, next_obs, terminated
                 )
@@ -2774,8 +2844,8 @@ struct PCNMBPOAgent[
                         episode_steps,
                         self.get_explore_rate(),
                     )
-                    if logger:
-                        logger[].log_scalar(
+                    if Bool(logger):
+                        logger.value()[].log_scalar(
                             "episode_reward", episode_reward, total_env_steps
                         )
                     episode_obs = env.reset_obs_list()
@@ -2810,8 +2880,10 @@ struct PCNMBPOAgent[
 
                 var avg_eval = eval_total / Float64(eval_episodes)
 
-                if logger:
-                    logger[].log_scalar("eval_reward", avg_eval, total_env_steps)
+                if Bool(logger):
+                    logger.value()[].log_scalar(
+                        "eval_reward", avg_eval, total_env_steps
+                    )
 
                 if verbose and (epoch + 1) % print_every == 0:
                     print(
@@ -2834,8 +2906,8 @@ struct PCNMBPOAgent[
             ):
                 self.save_checkpoint(cpu_state, self.checkpoint_path)
 
-        if logger:
-            logger[].flush()
+        if Bool(logger):
+            logger.value()[].flush()
         return metrics^
 
     def _run_train_gpu_impl[
@@ -2850,11 +2922,10 @@ struct PCNMBPOAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
     ) raises -> TrainingMetrics:
-        """MBPO GPU training loop body. See `train_gpu()` and `run_mbpo_train_gpu`."""
+        """MBPO GPU training loop body. See `train_gpu()` and `run_mbpo_train_gpu`.
+        """
         comptime n_envs = Self.GPU_N_ENVS
 
         var metrics = TrainingMetrics(
@@ -2922,7 +2993,9 @@ struct PCNMBPOAgent[
         var states_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.STATE_SIZE)
         var obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
         var prev_obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
-        var actions_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.ACTION_DIM)
+        var actions_buf = ctx.enqueue_create_buffer[dtype](
+            n_envs * E.ACTION_DIM
+        )
         var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
         var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
         var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
@@ -2943,8 +3016,15 @@ struct PCNMBPOAgent[
 
         E.reset_kernel_gpu[n_envs, E.STATE_SIZE](ctx, states_buf, rng_seed=0)
         E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM](
-            ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf,
-            obs_buf, rng_seed=0, workspace_ptr=workspace_buf.unsafe_ptr(),
+            ctx,
+            states_buf,
+            actions_buf,
+            rewards_buf,
+            dones_buf,
+            terminated_buf,
+            obs_buf,
+            rng_seed=0,
+            workspace_ptr=workspace_buf.unsafe_ptr(),
         )
 
         ctx.enqueue_memset(episode_rewards_buf, 0)
@@ -2980,7 +3060,6 @@ struct PCNMBPOAgent[
         var next_progress = progress_interval
 
         while total_steps < num_steps:
-
             ctx.enqueue_copy(prev_obs_buf, obs_buf)
 
             if total_steps < warmup_steps:
@@ -2989,7 +3068,7 @@ struct PCNMBPOAgent[
                     Layout.row_major(n_envs, E.ACTION_DIM),
                     MutAnyOrigin,
                 ](actions_buf.unsafe_ptr())
-                ctx.enqueue_function[warmup_k, warmup_k](
+                ctx.enqueue_function[warmup_k](
                     act_t,
                     action_scale_val,
                     Scalar[DType.uint32](step_seed),
@@ -3004,8 +3083,14 @@ struct PCNMBPOAgent[
             self.total_steps += n_envs
 
             E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM](
-                ctx, states_buf, actions_buf, rewards_buf, dones_buf,
-                terminated_buf, obs_buf, rng_seed=UInt64(step_seed),
+                ctx,
+                states_buf,
+                actions_buf,
+                rewards_buf,
+                dones_buf,
+                terminated_buf,
+                obs_buf,
+                rng_seed=UInt64(step_seed),
                 workspace_ptr=workspace_buf.unsafe_ptr(),
             )
 
@@ -3030,26 +3115,39 @@ struct PCNMBPOAgent[
             var dones_t = LayoutTensor[
                 dtype, Layout.row_major(n_envs), MutAnyOrigin
             ](dones_buf.unsafe_ptr())
-            var rsum_t = LayoutTensor[
-                dtype, Layout.row_major(1), MutAnyOrigin
-            ](gpu_reward_sum_buf.unsafe_ptr())
+            var rsum_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
+                gpu_reward_sum_buf.unsafe_ptr()
+            )
             var ecount_t = LayoutTensor[
                 dtype, Layout.row_major(1), MutAnyOrigin
             ](gpu_episode_count_buf.unsafe_ptr())
 
-            ctx.enqueue_function[accum_k, accum_k](
-                ep_rew_t, rew_t, grid_dim=(env_blocks,), block_dim=(tpb,),
+            ctx.enqueue_function[accum_k](
+                ep_rew_t,
+                rew_t,
+                grid_dim=(env_blocks,),
+                block_dim=(tpb,),
             )
-            ctx.enqueue_function[incr_k, incr_k](
-                ep_steps_t, grid_dim=(env_blocks,), block_dim=(tpb,),
+            ctx.enqueue_function[incr_k](
+                ep_steps_t,
+                grid_dim=(env_blocks,),
+                block_dim=(tpb,),
             )
-            ctx.enqueue_function[log_reset_k, log_reset_k](
-                dones_t, ep_rew_t, ep_steps_t, rsum_t, ecount_t,
-                grid_dim=(1,), block_dim=(1,),
+            ctx.enqueue_function[log_reset_k](
+                dones_t,
+                ep_rew_t,
+                ep_steps_t,
+                rsum_t,
+                ecount_t,
+                grid_dim=(1,),
+                block_dim=(1,),
             )
 
             E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
-                ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1),
+                ctx,
+                states_buf,
+                dones_buf,
+                rng_seed=UInt64(step_seed + 1),
                 workspace_ptr=workspace_buf.unsafe_ptr(),
             )
             E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
@@ -3061,22 +3159,29 @@ struct PCNMBPOAgent[
                     comptime if USE_CUDA_GRAPH and has_nvidia_gpu_accelerator():
                         if not _train_graph:
                             self._gpu_train_kernels(
-                                ctx, gpu_state, synth_buffer,
-                                s_real_idx, s_synth_idx,
+                                ctx,
+                                gpu_state,
+                                synth_buffer,
+                                s_real_idx,
+                                s_synth_idx,
                             )
                             self.soft_update_targets_gpu(ctx, gpu_state)
                             ctx.synchronize()
                             var graph = CUDAGraph(ctx)
                             graph.begin_capture()
                             self._gpu_train_kernels(
-                                ctx, gpu_state, synth_buffer,
-                                s_real_idx, s_synth_idx,
+                                ctx,
+                                gpu_state,
+                                synth_buffer,
+                                s_real_idx,
+                                s_synth_idx,
                             )
                             self.soft_update_targets_gpu(ctx, gpu_state)
                             graph.end_capture()
                             if verbose:
                                 print(
-                                    "[CUDA Graph] Captured MBPO SAC train step with "
+                                    "[CUDA Graph] Captured MBPO SAC train step"
+                                    " with "
                                     + String(graph.num_nodes())
                                     + " nodes"
                                 )
@@ -3085,13 +3190,20 @@ struct PCNMBPOAgent[
                             _train_graph.value().replay_async()
                         _train_graph.value().sync()
                         self._gpu_train_diagnostics(
-                            ctx, gpu_state, self.sac_updates_per_step, alpha_host
+                            ctx,
+                            gpu_state,
+                            self.sac_updates_per_step,
+                            alpha_host,
                         )
                     else:
                         for _ in range(self.sac_updates_per_step):
                             self.do_gpu_train_step(
-                                ctx, gpu_state, synth_buffer,
-                                s_real_idx, s_synth_idx, alpha_host,
+                                ctx,
+                                gpu_state,
+                                synth_buffer,
+                                s_real_idx,
+                                s_synth_idx,
+                                alpha_host,
                             )
                             self.soft_update_targets_gpu(ctx, gpu_state)
                 else:
@@ -3124,7 +3236,9 @@ struct PCNMBPOAgent[
                         " minibatches/member ...",
                     )
                 self.train_dynamics_gpu(
-                    ctx, gpu_dynamics, gpu_state.buffer,
+                    ctx,
+                    gpu_dynamics,
+                    gpu_state.buffer,
                     n_minibatches=self.dyn_warmup_minibatches,
                 )
                 self._dyn_pretrained = True
@@ -3144,7 +3258,7 @@ struct PCNMBPOAgent[
                 # `refresh_elites` call but not returned. Re-run holdout
                 # eval per member here for logging only (cheap: NUM_ENSEMBLE
                 # forwards on a DYN_BATCH-sized batch already on device).
-                if logger:
+                if Bool(logger):
                     # Per-member holdout MSE — total + obs-only + reward-only
                     # so we can see if reward MSE is hidden behind aggregate.
                     var loss_sum: Float64 = 0.0
@@ -3153,8 +3267,12 @@ struct PCNMBPOAgent[
                     var obs_sum: Float64 = 0.0
                     var rew_sum: Float64 = 0.0
                     for m in range(Self.Config.ENSEMBLE_SIZE):
-                        var (L, L_obs, L_rew) = (
-                            gpu_dynamics.eval_member_holdout_mse_breakdown(ctx, m)
+                        var (
+                            L,
+                            L_obs,
+                            L_rew,
+                        ) = gpu_dynamics.eval_member_holdout_mse_breakdown(
+                            ctx, m
                         )
                         loss_sum += L
                         obs_sum += L_obs
@@ -3164,32 +3282,32 @@ struct PCNMBPOAgent[
                         if L > loss_max:
                             loss_max = L
                     var n_ens_f = Float64(Self.Config.ENSEMBLE_SIZE)
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "dyn_holdout_mse_mean", loss_sum / n_ens_f, total_steps
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "dyn_holdout_mse_min", loss_min, total_steps
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "dyn_holdout_mse_max", loss_max, total_steps
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "dyn_holdout_spread",
                         loss_max - loss_min,
                         total_steps,
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "dyn_holdout_mse_obs",
                         obs_sum / n_ens_f,
                         total_steps,
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "dyn_holdout_mse_reward",
                         rew_sum / n_ens_f,
                         total_steps,
                     )
                     var input_std_mean = gpu_dynamics.download_input_std(ctx)
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "dyn_input_std_mean", input_std_mean, total_steps
                     )
 
@@ -3214,7 +3332,7 @@ struct PCNMBPOAgent[
                 next_progress += progress_interval
 
             if (
-                verbose or (logger and logger[].is_active())
+                verbose or (Bool(logger) and logger.value()[].is_active())
             ) and total_steps >= next_print:
                 ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
                 ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
@@ -3224,7 +3342,10 @@ struct PCNMBPOAgent[
                 self.log_alpha = Float64(alpha_host[GPUStateT.GPU_LOG_ALPHA])
 
                 var raw_count = Float64(host_episode_count[0])
-                var recent_count = Int(raw_count) if raw_count > 0.0 and raw_count == raw_count else 0
+                var recent_count = (
+                    Int(raw_count) if raw_count > 0.0
+                    and raw_count == raw_count else 0
+                )
                 var raw_sum = Float64(host_reward_sum[0])
                 var recent_sum = raw_sum if raw_sum == raw_sum else 0.0
                 if recent_count > 0 and raw_sum != raw_sum:
@@ -3247,33 +3368,35 @@ struct PCNMBPOAgent[
                 ctx.enqueue_memset(gpu_reward_sum_buf, 0)
                 ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
-                if logger:
-                    logger[].log_scalar(
+                if Bool(logger):
+                    logger.value()[].log_scalar(
                         "avg_reward", last_avg_reward, total_steps
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "episodes", Float64(completed_episodes), total_steps
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "train_steps", Float64(total_train_steps), total_steps
                     )
-                    logger[].log_scalar("alpha", self.alpha, total_steps)
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
+                        "alpha", self.alpha, total_steps
+                    )
+                    logger.value()[].log_scalar(
                         "rollout_length",
                         Float64(self.rollout_length),
                         total_steps,
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "real_buffer_size",
                         Float64(gpu_state.buffer.size),
                         total_steps,
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "synth_buffer_size",
                         Float64(synth_buffer.size),
                         total_steps,
                     )
-                    logger[].log_scalar(
+                    logger.value()[].log_scalar(
                         "model_epoch", Float64(epoch), total_steps
                     )
 
@@ -3315,7 +3438,9 @@ struct PCNMBPOAgent[
         ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
         ctx.synchronize()
         var final_raw = Float64(host_episode_count[0])
-        var final_count = Int(final_raw) if final_raw > 0.0 and final_raw == final_raw else 0
+        var final_count = (
+            Int(final_raw) if final_raw > 0.0 and final_raw == final_raw else 0
+        )
         if final_count > 0:
             var final_avg = Float64(host_reward_sum[0]) / Float64(final_count)
             completed_episodes += final_count
@@ -3326,14 +3451,11 @@ struct PCNMBPOAgent[
         gpu_state.critics.download_to(cpu_state.critics, ctx)
         ctx.synchronize()
 
-        if (
-            self.checkpoint_every > 0
-            and self.checkpoint_path.byte_length() > 0
-        ):
+        if self.checkpoint_every > 0 and self.checkpoint_path.byte_length() > 0:
             self.save_checkpoint(cpu_state, self.checkpoint_path)
 
-        if logger:
-            logger[].flush()
+        if Bool(logger):
+            logger.value()[].flush()
         return metrics^
 
     # =========================================================================
@@ -3354,9 +3476,7 @@ struct PCNMBPOAgent[
         verbose: Bool = False,
         print_every: Int = 1,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
     ) raises -> TrainingMetrics:
         """CPU MBPO training convenience wrapper.
 
@@ -3392,9 +3512,7 @@ struct PCNMBPOAgent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
     ) raises -> TrainingMetrics:
         """GPU MBPO training convenience wrapper.
 

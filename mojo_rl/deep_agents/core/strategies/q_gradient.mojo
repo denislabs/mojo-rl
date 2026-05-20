@@ -175,7 +175,7 @@ struct ManualQGradient(QGradient):
                     grd[b, a] = Scalar[dtype](0.0)
 
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
-        ctx.enqueue_function[kernel, kernel](
+        ctx.enqueue_function[kernel](
             grad_q,
             q_values,
             targets,
@@ -431,7 +431,7 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
             dst[b, ACTIONS] = act[b]
             dst[b, ACTIONS + 1] = tgt[b]
 
-        ctx.enqueue_function[pack_k, pack_k](
+        ctx.enqueue_function[pack_k](
             loss_in_t,
             q_values,
             actions,
@@ -477,7 +477,7 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
                 return
             seed[b, 0] = Scalar[dtype](1.0 / Float64(BATCH))
 
-        ctx.enqueue_function[fill_seed_k, fill_seed_k](
+        ctx.enqueue_function[fill_seed_k](
             grad_seed_t,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
@@ -512,7 +512,7 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
             for a in range(ACTIONS):
                 dst[b, a] = src[b, a]
 
-        ctx.enqueue_function[extract_k, extract_k](
+        ctx.enqueue_function[extract_k](
             grad_q,
             grad_in_t,
             grid_dim=(BATCH_BLOCKS,),

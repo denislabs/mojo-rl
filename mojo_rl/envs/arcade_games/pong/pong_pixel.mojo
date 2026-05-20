@@ -197,7 +197,7 @@ def _resize_and_push[
 
 
 struct PongPixelEnv[
-    DTYPE: DType where DTYPE.is_floating_point(),
+    DTYPE: DType,
     FRAME_SKIP: Int = 1,
 ](BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv):
     """Native Pong with pixel observations for CNN-based training.
@@ -245,9 +245,9 @@ struct PongPixelEnv[
             self._frame_stack[i] = 0
 
     def __del__(deinit self):
-        if self._frame_buf:
+        if Int(self._frame_buf) != 0:
             self._frame_buf.free()
-        if self._frame_stack:
+        if Int(self._frame_stack) != 0:
             self._frame_stack.free()
 
     # ========================================================================
@@ -413,12 +413,12 @@ struct PongPixelEnv[
         mut terminated_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
-        workspace_ptr: UnsafePointer[
-            Scalar[gpu_dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -477,7 +477,9 @@ struct PongPixelEnv[
             # Frame skip: repeat physics with same action, accumulate rewards
             comptime for _skip in range(Self.FRAME_SKIP - 1):
                 # Skip remaining frames if episode already done
-                if rebind[Scalar[gpu_dtype]](dones[idx]) < Scalar[gpu_dtype](0.5):
+                if rebind[Scalar[gpu_dtype]](dones[idx]) < Scalar[gpu_dtype](
+                    0.5
+                ):
                     var prev_reward = rebind[Scalar[gpu_dtype]](rewards[idx])
                     PongEnv[DType.float32].step_kernel[BATCH_SIZE, STATE_SIZE](
                         states, actions, rewards, dones, rng_seed
@@ -502,13 +504,13 @@ struct PongPixelEnv[
                 Int(states[idx, S_CPU_SCORE]),
             )
 
-        ctx.enqueue_function[physics_render_wrapper, physics_render_wrapper](
+        ctx.enqueue_function[physics_render_wrapper](
             states,
             actions,
             rewards,
             dones,
             terminated_out,
-            workspace_ptr,
+            workspace_ptr.value(),
             seed,
             grid_dim=(BLOCKS,),
             block_dim=(Self.TPB,),
@@ -575,8 +577,8 @@ struct PongPixelEnv[
                     read_base + pixel_idx
                 ]
 
-        ctx.enqueue_function[resize_stack_wrapper, resize_stack_wrapper](
-            workspace_ptr,
+        ctx.enqueue_function[resize_stack_wrapper](
+            workspace_ptr.value(),
             obs_ptr,
             grid_dim=(RESIZE_BLOCKS,),
             block_dim=(RESIZE_TPB,),
@@ -599,10 +601,8 @@ struct PongPixelEnv[
                 (slot + 1) % FRAME_STACK
             )
 
-        ctx.enqueue_function[
-            advance_frame_idx_wrapper, advance_frame_idx_wrapper
-        ](
-            workspace_ptr,
+        ctx.enqueue_function[advance_frame_idx_wrapper](
+            workspace_ptr.value(),
             grid_dim=(BLOCKS,),
             block_dim=(Self.TPB,),
         )
@@ -635,7 +635,7 @@ struct PongPixelEnv[
         ):
             PongEnv[DType.float32].reset_kernel[BATCH_SIZE, STATE_SIZE](states)
 
-        ctx.enqueue_function[reset_wrapper, reset_wrapper](
+        ctx.enqueue_function[reset_wrapper](
             states,
             grid_dim=(BLOCKS,),
             block_dim=(Self.TPB,),
@@ -650,12 +650,12 @@ struct PongPixelEnv[
         mut states_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
-        workspace_ptr: UnsafePointer[
-            Scalar[gpu_dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Reset done environments and clear their frame stacks."""
         var states = LayoutTensor[
@@ -667,10 +667,10 @@ struct PongPixelEnv[
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
-        if rng_counter_ptr:
+        if Bool(rng_counter_ptr):
             var counter_t = LayoutTensor[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
-            ](rng_counter_ptr)
+            ](rng_counter_ptr.value())
 
             @parameter
             @always_inline
@@ -697,7 +697,13 @@ struct PongPixelEnv[
                 # Reset physics
                 PongEnv[DType.float32].selective_reset_kernel[
                     BATCH_SIZE, STATE_SIZE
-                ](states, dones, Scalar[DType.uint32](rebind[Scalar[DType.uint64]](counter[0])))
+                ](
+                    states,
+                    dones,
+                    Scalar[DType.uint32](
+                        rebind[Scalar[DType.uint64]](counter[0])
+                    ),
+                )
 
                 # Clear frame stack for this env
                 var env_ws = ws_ptr + idx * PIXEL_WS_PER_ENV
@@ -707,13 +713,10 @@ struct PongPixelEnv[
                 # Reset frame index
                 env_ws[FRAME_BUF_F32_SIZE + FRAME_STACK_F32_SIZE] = 0.0
 
-            ctx.enqueue_function[
-                selective_reset_counter_wrapper,
-                selective_reset_counter_wrapper,
-            ](
+            ctx.enqueue_function[selective_reset_counter_wrapper](
                 states,
                 dones,
-                workspace_ptr,
+                workspace_ptr.value(),
                 counter_t,
                 grid_dim=(BLOCKS,),
                 block_dim=(Self.TPB,),
@@ -754,10 +757,10 @@ struct PongPixelEnv[
                 # Reset frame index
                 env_ws[FRAME_BUF_F32_SIZE + FRAME_STACK_F32_SIZE] = 0.0
 
-            ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
+            ctx.enqueue_function[selective_reset_wrapper](
                 states,
                 dones,
-                workspace_ptr,
+                workspace_ptr.value(),
                 seed,
                 grid_dim=(BLOCKS,),
                 block_dim=(Self.TPB,),
@@ -783,7 +786,7 @@ struct PongPixelEnv[
                 return
             ws[i] = 0.0
 
-        ctx.enqueue_function[init_ws_wrapper, init_ws_wrapper](
+        ctx.enqueue_function[init_ws_wrapper](
             ws_ptr,
             grid_dim=(BLOCKS,),
             block_dim=(256,),

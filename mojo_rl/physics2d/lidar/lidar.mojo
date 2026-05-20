@@ -350,7 +350,7 @@ struct Lidar:
                 MAX_EDGES,
             ](state, obs, lidar_range)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             obs,
             lidar_range,

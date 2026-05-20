@@ -61,6 +61,7 @@ def run_via_trait[
     ],
     loss_scale: Scalar[dtype],
     ent_scale: Scalar[dtype],
+    seed: UInt64,
 ) raises:
     """The shape of the call site inside `ezv2_train_step_gpu_core`.
 
@@ -76,6 +77,7 @@ def run_via_trait[
         per_sample_loss,
         loss_scale,
         ent_scale,
+        seed,
     )
 
 
@@ -196,6 +198,9 @@ def main() raises:
         block_dim=(TPB,),
     )
 
+    # Discrete path ignores the seed, but the trait method takes it.
+    var test_seed = UInt64(0)
+
     # ── Path B: concrete struct dispatch ────────────────────────────────
     DiscreteActionSpace[ACT, 4].policy_loss_grad_gpu[
         BATCH, PRED_OUT, ACT, dtype
@@ -207,6 +212,7 @@ def main() raises:
         loss_b_t,
         loss_scale,
         ent_scale,
+        test_seed,
     )
 
     # ── Path C: via trait-bound generic helper ──────────────────────────
@@ -219,6 +225,7 @@ def main() raises:
         loss_c_t,
         loss_scale,
         ent_scale,
+        test_seed,
     )
 
     ctx.synchronize()

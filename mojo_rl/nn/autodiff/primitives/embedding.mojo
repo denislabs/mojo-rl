@@ -288,7 +288,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, W, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             W,
@@ -359,7 +359,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
         ):
             Self.backward_dx_kernel_impl[BATCH, dtype](grad_input, grad_output, W)
 
-        ctx.enqueue_function[dx_wrapper, dx_wrapper](
+        ctx.enqueue_function[dx_wrapper](
             grad_input,
             grad_output_immut,
             W,
@@ -392,7 +392,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
         ):
             Self.backward_dW_kernel_impl[BATCH, dtype](dW, grad_output, cache)
 
-        ctx.enqueue_function[dW_wrapper, dW_wrapper](
+        ctx.enqueue_function[dW_wrapper](
             dW,
             grad_output_immut,
             cache_immut,

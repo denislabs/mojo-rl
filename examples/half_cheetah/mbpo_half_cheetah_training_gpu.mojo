@@ -222,7 +222,6 @@ def main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            agent.logger = UnsafePointer(to=logger)
             var metrics = agent.train_gpu[
                 HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=False],
             ](

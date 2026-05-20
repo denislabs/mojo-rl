@@ -88,7 +88,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     var _visited: List[Bool]
 
     # Renderer
-    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self):
@@ -100,7 +100,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         self._visited = List[Bool](capacity=Self.BOARD_SIZE)
         for _ in range(Self.BOARD_SIZE):
             self._visited.append(False)
-        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer = None
         self._renderer_initialized = False
 
     # ========================================================================
@@ -474,8 +474,8 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
 
     def close(mut self):
         if self._renderer_initialized:
-            self._renderer[].close()
-            self._renderer.free()
+            self._renderer.value()[].close()
+            self._renderer.value().free()
             self._renderer_initialized = False
 
     def action_from_index(self, action_idx: Int) -> BoardGameAction:
@@ -613,7 +613,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         var win_w = 2 * margin + (Self.SIZE - 1) * cell_size
         var win_h = 2 * margin + (Self.SIZE - 1) * cell_size + 50
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.init_pointee_move(
+        self._renderer.value().init_pointee_move(
             Renderer2D(width=win_w, height=win_h, fps=30, title="Go " + String(Self.SIZE) + "x" + String(Self.SIZE))
         )
         self._renderer_initialized = True
@@ -622,7 +622,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     def render_frame(mut self) raises -> None:
         if not self._renderer_initialized:
             return
-        self._render(self._renderer[])
+        self._render(self._renderer.value()[])
 
     def _render(self, mut renderer: Renderer2D):
         """Render Go board state using SDL3."""
@@ -726,24 +726,24 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     def close_renderer(mut self) raises -> None:
         if not self._renderer_initialized:
             return
-        self._renderer[].close()
-        self._renderer.free()
+        self._renderer.value()[].close()
+        self._renderer.value().free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
         if not self._renderer_initialized:
             return False
-        return not self._renderer[].get_should_quit()
+        return not self._renderer.value()[].get_should_quit()
 
     def check_renderer_quit(mut self) -> Bool:
         if not self._renderer_initialized:
             return False
-        return self._renderer[].get_should_quit()
+        return self._renderer.value()[].get_should_quit()
 
     def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:
             return
-        self._renderer[].renderer_delay(ms)
+        self._renderer.value()[].renderer_delay(ms)
 
     def renderer_is_paused(self) -> Bool:
         return False
@@ -1190,9 +1190,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         mut obs_buf: DeviceBuffer[board_dtype],
         mut legal_masks_buf: DeviceBuffer[board_dtype],
         rng_seed: UInt64 = 0,
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -1241,7 +1239,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
                 states_read, obs, legal_masks
             )
 
-        ctx.enqueue_function[step_wrapper, step_wrapper](
+        ctx.enqueue_function[step_wrapper](
             states, actions, rewards, dones, terminated_out, obs, legal_masks,
             grid_dim=(BLOCKS,), block_dim=(Self.TPB,),
         )
@@ -1267,7 +1265,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         ):
             GoEnv[Self.SIZE].reset_kernel[BATCH_SIZE, STATE_SIZE](states)
 
-        ctx.enqueue_function[reset_wrapper, reset_wrapper](
+        ctx.enqueue_function[reset_wrapper](
             states, grid_dim=(BLOCKS,), block_dim=(Self.TPB,),
         )
 
@@ -1280,9 +1278,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         mut states_buf: DeviceBuffer[board_dtype],
         mut dones_buf: DeviceBuffer[board_dtype],
         rng_seed: UInt64,
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -1300,7 +1296,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         ):
             GoEnv[Self.SIZE].selective_reset_kernel[BATCH_SIZE, STATE_SIZE](states, dones)
 
-        ctx.enqueue_function[sel_reset_wrapper, sel_reset_wrapper](
+        ctx.enqueue_function[sel_reset_wrapper](
             states, dones, grid_dim=(BLOCKS,), block_dim=(Self.TPB,),
         )
 
@@ -1337,6 +1333,6 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
                 states, obs, legal_masks
             )
 
-        ctx.enqueue_function[extract_wrapper, extract_wrapper](
+        ctx.enqueue_function[extract_wrapper](
             states, obs, legal_masks, grid_dim=(BLOCKS,), block_dim=(Self.TPB,),
         )

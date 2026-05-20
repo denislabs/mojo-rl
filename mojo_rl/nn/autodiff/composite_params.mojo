@@ -174,7 +174,7 @@ struct CompositeParams[*MODELS: Model]:
             )
 
             comptime BLOCKS = (SZ + TPB - 1) // TPB
-            ctx.enqueue_function[_cp_assemble_kernel, _cp_assemble_kernel](
+            ctx.enqueue_function[_cp_assemble_kernel](
                 d_t,
                 s_t,
                 grid_dim=(BLOCKS,),
@@ -218,9 +218,7 @@ struct CompositeParams[*MODELS: Model]:
             )
 
             comptime BLOCKS = (SZ + TPB - 1) // TPB
-            ctx.enqueue_function[
-                _cp_scatter_add_kernel, _cp_scatter_add_kernel
-            ](
+            ctx.enqueue_function[_cp_scatter_add_kernel](
                 d_t,
                 s_t,
                 grid_dim=(BLOCKS,),

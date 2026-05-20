@@ -1131,7 +1131,7 @@ struct ImpulseSolver(ConstraintSolver):
                 BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
             ](state, contacts, contact_counts, friction, restitution)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             contacts,
             contact_counts,
@@ -1196,7 +1196,7 @@ struct ImpulseSolver(ConstraintSolver):
                 BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
             ](state, contacts, contact_counts, baumgarte, slop)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             contacts,
             contact_counts,

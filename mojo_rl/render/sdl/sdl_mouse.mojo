@@ -269,7 +269,7 @@ def get_mice(
         "SDL_GetMice",
         def(count: Ptr[c_int, MutAnyOrigin]) thin -> Ptr[MouseID, MutAnyOrigin],
     ]()(count)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -298,7 +298,7 @@ def get_mouse_name_for_id(
         "SDL_GetMouseNameForID",
         def(instance_id: MouseID) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(instance_id)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -744,7 +744,7 @@ def create_color_cursor(
             surface: Ptr[Surface, MutAnyOrigin], hot_x: c_int, hot_y: c_int
         ) thin -> Ptr[Cursor, MutAnyOrigin],
     ]()(surface, hot_x, hot_y)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -771,7 +771,7 @@ def create_system_cursor(
         "SDL_CreateSystemCursor",
         def(id: SystemCursor) thin -> Ptr[Cursor, MutAnyOrigin],
     ]()(id)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 

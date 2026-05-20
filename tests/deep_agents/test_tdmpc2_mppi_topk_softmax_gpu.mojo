@@ -26,7 +26,9 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype, TPB
-from mojo_rl.deep_agents.tdmpc2.kernels import mppi_softmax_weights_kernel
+from mojo_rl.planners.trajectory.mppi_kernels import (
+    mppi_softmax_weights_kernel,
+)
 
 
 comptime N_ENVS = 1

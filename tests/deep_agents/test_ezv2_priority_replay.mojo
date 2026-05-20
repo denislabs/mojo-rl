@@ -184,6 +184,11 @@ def main():
     for i in range(n):
         agent.state.priorities[i] = Scalar[dtype](0.0)
     agent.state.priorities[pinned_idx] = Scalar[dtype](1.0e6)
+    # Phase 1 (sum-tree PER): the sum-tree is the source of truth for
+    # sampling weights now; rebuild it from the freshly-mutated
+    # `priorities` + `dones` state so the next train_step honours the
+    # pinned weight.
+    agent.state.rebuild_priority_tree()
 
     # Run another train_step and see which indices got overwritten.
     seed(42)

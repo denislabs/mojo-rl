@@ -26,7 +26,7 @@ from mojo_rl.nn.constants import dtype, TPB
 
 @always_inline
 def _vanilla_pg_actor_grad_kernel[
-    d: DType where d.is_floating_point(),
+    d: DType,
     BATCH_SIZE: Int,
     NUM_ACTIONS: Int,
 ](
@@ -47,7 +47,7 @@ def _vanilla_pg_actor_grad_kernel[
     clip_epsilon: Scalar[d],
     entropy_coef: Scalar[d],
     batch_size: Int,
-):
+) where d.is_floating_point():
     """Vanilla policy gradient kernel for A2C (GPU).
 
     Same signature as ppo_actor_grad_with_kl_kernel so the agent can dispatch
@@ -248,7 +248,7 @@ struct VanillaPG(PolicyGradient):
             dtype, BATCH_SIZE, NUM_ACTIONS
         ]
         comptime blocks = (BATCH_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[kernel, kernel](
+        ctx.enqueue_function[kernel](
             grad_logits,
             kl_divergences,
             entropies,
@@ -360,7 +360,7 @@ struct ClippedSurrogate(PolicyGradient):
             dtype, BATCH_SIZE, NUM_ACTIONS
         ]
         comptime blocks = (BATCH_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[kernel, kernel](
+        ctx.enqueue_function[kernel](
             grad_logits,
             kl_divergences,
             entropies,
@@ -384,7 +384,7 @@ struct ClippedSurrogate(PolicyGradient):
 
 @always_inline
 def _autodiff_vanilla_pg_actor_grad_kernel[
-    d: DType where d.is_floating_point(),
+    d: DType,
     BATCH_SIZE: Int,
     NUM_ACTIONS: Int,
 ](
@@ -403,7 +403,7 @@ def _autodiff_vanilla_pg_actor_grad_kernel[
     clip_epsilon: Scalar[d],
     entropy_coef: Scalar[d],
     batch_size: Int,
-):
+) where d.is_floating_point():
     """Autodiff-style vanilla PG kernel (GPU).
 
     Uses CategoricalLogProbOp backward math: d(log_softmax[i])/d(logit[j]) = delta_ij - softmax_j.
@@ -465,7 +465,7 @@ def _autodiff_vanilla_pg_actor_grad_kernel[
 
 @always_inline
 def _autodiff_clipped_surrogate_actor_grad_kernel[
-    d: DType where d.is_floating_point(),
+    d: DType,
     BATCH_SIZE: Int,
     NUM_ACTIONS: Int,
     eps: Float64 = 0.2,
@@ -485,7 +485,7 @@ def _autodiff_clipped_surrogate_actor_grad_kernel[
     clip_epsilon: Scalar[d],
     entropy_coef: Scalar[d],
     batch_size: Int,
-):
+) where d.is_floating_point():
     """Autodiff-style PPO clipped surrogate kernel (GPU).
 
     Chains DiffOp backward math:
@@ -672,7 +672,7 @@ struct AutodiffVanillaPG(PolicyGradient):
             dtype, BATCH_SIZE, NUM_ACTIONS
         ]
         comptime blocks = (BATCH_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[kernel, kernel](
+        ctx.enqueue_function[kernel](
             grad_logits,
             kl_divergences,
             entropies,
@@ -819,7 +819,7 @@ struct AutodiffClippedSurrogate[clip_eps: Float64 = 0.2](PolicyGradient):
             dtype, BATCH_SIZE, NUM_ACTIONS, Self.clip_eps
         ]
         comptime blocks = (BATCH_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[kernel, kernel](
+        ctx.enqueue_function[kernel](
             grad_logits,
             kl_divergences,
             entropies,

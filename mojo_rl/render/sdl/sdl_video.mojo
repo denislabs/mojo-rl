@@ -759,7 +759,7 @@ def get_displays(
         "SDL_GetDisplays",
         def(count: Ptr[c_int, MutAnyOrigin]) thin -> Ptr[DisplayID, MutAnyOrigin],
     ]()(count)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -842,7 +842,7 @@ def get_display_name(
         "SDL_GetDisplayName",
         def(display_id: DisplayID) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(display_id)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -1120,7 +1120,7 @@ def get_desktop_display_mode(
         "SDL_GetDesktopDisplayMode",
         def(display_id: DisplayID) thin -> Ptr[DisplayMode, ImmutAnyOrigin],
     ]()(display_id)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -1152,7 +1152,7 @@ def get_current_display_mode(
         "SDL_GetCurrentDisplayMode",
         def(display_id: DisplayID) thin -> Ptr[DisplayMode, ImmutAnyOrigin],
     ]()(display_id)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -1402,7 +1402,7 @@ def get_window_icc_profile(
             size: Ptr[c_size_t, MutAnyOrigin],
         ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(window, size)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -1461,7 +1461,7 @@ def get_windows(
             count: Ptr[c_int, MutAnyOrigin]
         ) thin -> Ptr[Ptr[Window, MutAnyOrigin], MutAnyOrigin],
     ]()(count)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -1569,7 +1569,7 @@ def create_window(
             flags: WindowFlags,
         ) thin -> Ptr[Window, MutAnyOrigin],
     ]()(title.as_c_string_slice().unsafe_ptr(), w, h, flags)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -1666,7 +1666,7 @@ def create_popup_window(
             flags: WindowFlags,
         ) thin -> Ptr[Window, MutAnyOrigin],
     ]()(parent, offset_x, offset_y, w, h, flags)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -1804,7 +1804,7 @@ def create_window_with_properties(
         "SDL_CreateWindowWithProperties",
         def(props: PropertiesID) thin -> Ptr[Window, MutAnyOrigin],
     ]()(props)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -3118,7 +3118,7 @@ def get_window_surface(
         "SDL_GetWindowSurface",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(window)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -4308,7 +4308,7 @@ def gl_get_current_window(out ret: Ptr[Window, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib, "SDL_GL_GetCurrentWindow", def() thin -> Ptr[Window, MutAnyOrigin]
     ]()()
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 

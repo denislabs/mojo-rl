@@ -33,8 +33,14 @@ from mojo_rl.deep_agents.efficient_zero_v2.gpu_mcts import EZV2GPUMCTSState
 from mojo_rl.deep_agents.efficient_zero_v2.gpu_replay import (
     EZV2GPUReplayBuffer,
 )
+from mojo_rl.deep_agents.efficient_zero_v2.gpu_trait_adapters import (
+    EZv2RepGPU,
+    EZv2DynGPU,
+    EZv2PredGPU,
+)
 from mojo_rl.deep_agents.efficient_zero_v2.strategies import compute_sve
 from mojo_rl.nn.constants import dtype
+from mojo_rl.planners.tree_search import GumbelGPUMCTS
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -60,6 +66,30 @@ struct EZV2TrainStats(Movable):
     var last_L_V: Float64
     var last_L_G: Float64
 
+    # Diagnostics (added 2026-05-14 to track SimSiam-collapse / MCTS-no-
+    # signal / unreachable-reward failure modes that hyperparam tuning
+    # alone wasn't isolating on HalfCheetah). Updated by the driver:
+    #   • `last_*` mirrors the most recent value (last train step / search
+    #     / env step).
+    #   • `*_sum` + `*_count` (or *_n for the windowed counter) carry the
+    #     running aggregate within a log window so we can print the mean.
+    var last_z_var: Float64
+    var z_var_sum: Float64
+    var z_var_n: Int
+
+    var last_v_pred_var: Float64
+    var v_pred_var_sum: Float64
+    var v_pred_var_n: Int
+
+    var last_mcts_visit_entropy: Float64
+    var mcts_visit_entropy_sum: Float64
+    var mcts_visit_entropy_n: Int
+
+    # Running max of any per-step reward observed across all envs. NOT
+    # reset per log window — the question this answers ("did the agent
+    # ever visit a high-reward state?") is monotonic.
+    var buf_reward_max: Float64
+
     def __init__(out self):
         self.wall_time_s = 0.0
         self.total_env_steps = 0
@@ -76,6 +106,16 @@ struct EZV2TrainStats(Movable):
         self.last_L_P = 0.0
         self.last_L_V = 0.0
         self.last_L_G = 0.0
+        self.last_z_var = 0.0
+        self.z_var_sum = 0.0
+        self.z_var_n = 0
+        self.last_v_pred_var = 0.0
+        self.v_pred_var_sum = 0.0
+        self.v_pred_var_n = 0
+        self.last_mcts_visit_entropy = 0.0
+        self.mcts_visit_entropy_sum = 0.0
+        self.mcts_visit_entropy_n = 0
+        self.buf_reward_max = Float64(-1.0e308)
 
     def __init__(out self, *, deinit take: Self):
         self.wall_time_s = take.wall_time_s
@@ -91,6 +131,16 @@ struct EZV2TrainStats(Movable):
         self.last_L_P = take.last_L_P
         self.last_L_V = take.last_L_V
         self.last_L_G = take.last_L_G
+        self.last_z_var = take.last_z_var
+        self.z_var_sum = take.z_var_sum
+        self.z_var_n = take.z_var_n
+        self.last_v_pred_var = take.last_v_pred_var
+        self.v_pred_var_sum = take.v_pred_var_sum
+        self.v_pred_var_n = take.v_pred_var_n
+        self.last_mcts_visit_entropy = take.last_mcts_visit_entropy
+        self.mcts_visit_entropy_sum = take.mcts_visit_entropy_sum
+        self.mcts_visit_entropy_n = take.mcts_visit_entropy_n
+        self.buf_reward_max = take.buf_reward_max
 
 
 def _is_finite(x: Float64) -> Bool:
@@ -172,12 +222,9 @@ def run_ezv2_train_gpu[
             train_steps as before, so the GPU sees up to that many
             train_steps of stale priorities/transitions between syncs —
             tighten `sync_interval` (or both env-step counts × N_ENVS)
-            for fresher data. Requires
-            `Config.value_target_mode == VALUE_TARGET_SEARCH` (compile-
-            time assert in the agent method); SARSA / MIXED still need
-            the host target-net forward (deferred work item 5 in
-            `EZV2_FULL_GPU_PLAN.md`). Apple-side perf upside is small;
-            the win is on NVIDIA where the host-roundtrip dominates.
+            for fresher data. Phase 3d (2026-05-13): SARSA / MIXED now
+            supported via GPU target-net forward + decode (Phase 3a-c);
+            the old SEARCH-only restriction is gone.
         verbose: Print progress / config / summary.
 
     Returns:
@@ -190,7 +237,7 @@ def run_ezv2_train_gpu[
     comptime SIMS = Config.num_simulations
     comptime NODES = Config.max_nodes
     comptime MAX_K = Config.num_root_candidates
-    comptime CAP = 50000  # matches `EZV2DiscreteCPUState`'s default _CAP
+    comptime CAP = Config.buffer_capacity
 
     comptime STATE_SIZE = Env.STATE_SIZE
     comptime OBS_DIM = Env.OBS_DIM
@@ -214,6 +261,9 @@ def run_ezv2_train_gpu[
     # ─── Allocate GPU state + initial upload ─────────────────────────────
     var gpu = EZV2GPUStateBase[Config](ctx)
     gpu.upload_from(agent.state, ctx)
+    # Phase 3: mirror CPU target nets onto GPU for the MIXED/SARSA boot-V
+    # forward.
+    gpu.upload_targets_from(agent.state, ctx)
     ctx.synchronize()
 
     # ─── GPU env buffers ─────────────────────────────────────────────────
@@ -250,6 +300,20 @@ def run_ezv2_train_gpu[
     comptime MCTS_WS_TOTAL = N_ENVS * MAX_WS if MAX_WS > 0 else 1
     var mcts_workspace = ctx.enqueue_create_buffer[dtype](MCTS_WS_TOTAL)
 
+    # ─── Phase 3 strangler planner ──────────────────────────────────────
+    # Allocated unconditionally so the comptime-gated dispatch below has a
+    # binding for both branches. ~1 extra `EZV2GPUMCTSState` worth of
+    # memory (<1 MB for typical EZv2 configs) — recoverable when the
+    # legacy `mcts_gpu` is removed at strangler end.
+    var planner = GumbelGPUMCTS[
+        N_ENVS, ACT, LATENT, BINS, NODES, MAX_K, SIMS,
+    ](
+        ctx,
+        gamma=agent.gamma,
+        v_min=agent.v_min,
+        v_max=agent.v_max,
+    )
+
     var host_policies = ctx.enqueue_create_host_buffer[dtype](N_ENVS * ACT)
     var host_visits = ctx.enqueue_create_host_buffer[dtype](
         N_ENVS * NODES * ACT
@@ -259,7 +323,7 @@ def run_ezv2_train_gpu[
     )
 
     # ─── GPU-resident replay buffer mirror ──────────────────────────────
-    var gpu_replay = EZV2GPUReplayBuffer[CAP, OBS, ACT](ctx)
+    var gpu_replay = EZV2GPUReplayBuffer[CAP, OBS, ACT, MAX_K](ctx)
     ctx.synchronize()
 
     # ─── Initial reset ──────────────────────────────────────────────────
@@ -323,18 +387,74 @@ def run_ezv2_train_gpu[
                 host_action[e] = Scalar[dtype](Float64(rand_a))
         else:
             # ── 1. GPU MCTS — batched over N_ENVS ──────────────────────
-            gpu.mcts_search[N_ENVS, NODES, MAX_K, SIMS](
-                ctx,
-                mcts_gpu,
-                obs_buf,
-                mcts_workspace,
-                v_min=agent.v_min,
-                v_max=agent.v_max,
-                gamma=agent.gamma,
-                rng_seed=mcts_seed,
-                apply_legal=False,
-                k_actual=MAX_K,
-            )
+            comptime if Config.USE_NEW_MCTS:
+                # New path: drive `GumbelGPUMCTS` via Rep/Dyn/Pred adapters
+                # over the agent's on-device network states. Bit-parity
+                # vs `run_gumbel_search_gpu` is asserted by
+                # `test_mcts_gpu_parity_ezv2.mojo`.
+                var rep = EZv2RepGPU[
+                    OBS, LATENT, Config.RepModel, Config.OptType
+                ](
+                    params=gpu.representation.params_buf.unsafe_ptr(),
+                    model_state=gpu.representation.model_state_buf.unsafe_ptr(),
+                    workspace=mcts_workspace,
+                )
+                var dyn = EZv2DynGPU[
+                    ACT, LATENT, BINS, Config.DynModel, Config.OptType
+                ](
+                    params=gpu.dynamics.params_buf.unsafe_ptr(),
+                    model_state=gpu.dynamics.model_state_buf.unsafe_ptr(),
+                    workspace=mcts_workspace,
+                )
+                var pred = EZv2PredGPU[
+                    ACT, LATENT, BINS, Config.PredModel, Config.OptType
+                ](
+                    params=gpu.prediction.params_buf.unsafe_ptr(),
+                    model_state=gpu.prediction.model_state_buf.unsafe_ptr(),
+                    workspace=mcts_workspace,
+                )
+                var obs_t = LayoutTensor[
+                    dtype, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
+                ](obs_buf.unsafe_ptr())
+                planner.search_gpu[
+                    EZv2RepGPU[OBS, LATENT, Config.RepModel, Config.OptType],
+                    EZv2DynGPU[
+                        ACT, LATENT, BINS, Config.DynModel, Config.OptType
+                    ],
+                    EZv2PredGPU[
+                        ACT, LATENT, BINS, Config.PredModel, Config.OptType
+                    ],
+                ](
+                    ctx, rep, dyn, pred, obs_t,
+                    apply_legal=False,
+                    k_actual=MAX_K,
+                    rng_seed=mcts_seed,
+                )
+                # Mirror orchestrator outputs into the legacy `mcts_gpu`
+                # buffers so the downstream host-side SVE / policy read
+                # code stays unchanged through the strangler period.
+                ctx.enqueue_copy(
+                    mcts_gpu.policies_out, planner.state.policies_out
+                )
+                ctx.enqueue_copy(
+                    mcts_gpu.visit_count, planner.state.visit_count
+                )
+                ctx.enqueue_copy(
+                    mcts_gpu.total_value, planner.state.total_value
+                )
+            else:
+                gpu.mcts_search[N_ENVS, NODES, MAX_K, SIMS](
+                    ctx,
+                    mcts_gpu,
+                    obs_buf,
+                    mcts_workspace,
+                    v_min=agent.v_min,
+                    v_max=agent.v_max,
+                    gamma=agent.gamma,
+                    rng_seed=mcts_seed,
+                    apply_legal=False,
+                    k_actual=MAX_K,
+                )
             mcts_seed += UInt32(1)
 
             ctx.enqueue_copy(
@@ -539,6 +659,8 @@ def run_ezv2_train_gpu[
             # Hard-sync target ← online + reanalyze on CPU.
             if stats.num_train_calls % target_sync_interval == 0:
                 agent.update_target_networks(tau=1.0)
+                # Phase 3: mirror fresh CPU targets onto GPU.
+                gpu.upload_targets_from(agent.state, ctx)
             if (
                 stats.num_train_calls >= reanalyze_warmup
                 and stats.num_train_calls % reanalyze_interval == 0

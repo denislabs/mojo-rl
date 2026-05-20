@@ -221,17 +221,8 @@ struct WorldModel[
         out self,
     ):
         """Initialize WorldModel with all sub-networks."""
-        # Encoder uses 2.5x the std of every other network (0.05 vs 0.02)
-        # to break out of the SimNorm trivial-collapse attractor at init.
-        # With Normal(0, 0.02) on HalfCheetah obs, the post-Linear pre-
-        # SimNorm activations are tiny so per-group softmax is nearly
-        # uniform and z is constant across the batch (std ~0.022 at step 0,
-        # decaying to ~0.0005). 0.05 keeps inputs in a regime where SimNorm
-        # outputs vary across samples. Reference uses 0.02 with trunc-
-        # normal but evidently doesn't hit this attractor; the difference
-        # is likely subtle (input distribution, init seed clustering).
         self.encoder = NetworkState[Self.EncModel, Adam[LR=Self.ENC_LR]]()
-        self.encoder.initialize[Normal[0.0, 0.05]]()
+        self.encoder.initialize[Normal[0.0, 0.02]]()
 
         self.dynamics = NetworkState[Self.DynModel, Adam[LR=Self.WM_LR]]()
         self.dynamics.initialize[Normal[0.0, 0.02]]()

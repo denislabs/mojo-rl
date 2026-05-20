@@ -367,7 +367,7 @@ def open_title_storage(
             override: Ptr[c_char, ImmutAnyOrigin], props: PropertiesID
         ) thin -> Ptr[Storage, MutAnyOrigin],
     ]()(override.as_c_string_slice().unsafe_ptr(), props)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -409,7 +409,7 @@ def open_user_storage(
         app.as_c_string_slice().unsafe_ptr(),
         props,
     )
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -438,7 +438,7 @@ def open_file_storage(
         "SDL_OpenFileStorage",
         def(path: Ptr[c_char, ImmutAnyOrigin]) thin -> Ptr[Storage, MutAnyOrigin],
     ]()(path.as_c_string_slice().unsafe_ptr())
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -477,7 +477,7 @@ def open_storage(
             userdata: Ptr[NoneType, MutAnyOrigin],
         ) thin -> Ptr[Storage, MutAnyOrigin],
     ]()(iface, userdata)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -925,5 +925,5 @@ def glob_storage_directory(
         flags,
         count,
     )
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

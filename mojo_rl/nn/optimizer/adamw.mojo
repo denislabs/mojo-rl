@@ -8,6 +8,10 @@ from layout import LayoutTensor, Layout
 from std.math import sqrt, exp, log
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct AdamW[
@@ -86,22 +90,47 @@ struct AdamW[
         var eps = Scalar[dtype](Self.EPS)
         var wd_factor = Scalar[dtype](1.0 - Self.LR * Self.WEIGHT_DECAY)
 
-        for i in range(PARAM_SIZE):
-            var g = rebind[Scalar[dtype]](grads[i])
-            var m = rebind[Scalar[dtype]](state[i, 0])
-            var v = rebind[Scalar[dtype]](state[i, 1])
-
+        comptime W = _CPU_SIMD_W
+        var p_p = params.ptr
+        var g_p = grads.ptr
+        var s_p = state.ptr
+        var bc1_v = SIMD[dtype, W](bias_correction1)
+        var bc2_v = SIMD[dtype, W](bias_correction2)
+        var omb1_v = SIMD[dtype, W](one_minus_beta1)
+        var omb2_v = SIMD[dtype, W](one_minus_beta2)
+        var b1_v = SIMD[dtype, W](beta1)
+        var b2_v = SIMD[dtype, W](beta2)
+        var lr_v = SIMD[dtype, W](lr)
+        var eps_v = SIMD[dtype, W](eps)
+        var wdf_v = SIMD[dtype, W](wd_factor)
+        var i = 0
+        while i + W <= PARAM_SIZE:
+            var g = g_p.load[width=W](i)
+            var mv = s_p.load[width=2 * W](2 * i).deinterleave()
+            var m = rebind[SIMD[dtype, W]](mv[0])
+            var v = rebind[SIMD[dtype, W]](mv[1])
+            var m_new = b1_v * m + omb1_v * g
+            var v_new = b2_v * v + omb2_v * g * g
+            s_p.store(2 * i, m_new.interleave(v_new))
+            var m_hat = m_new / bc1_v
+            var v_hat = v_new / bc2_v
+            var p = p_p.load[width=W](i)
+            p_p.store(i, p * wdf_v - lr_v * m_hat / (sqrt(v_hat) + eps_v))
+            i += W
+        while i < PARAM_SIZE:
+            var g = grads[i]
+            var m = state[i, 0]
+            var v = state[i, 1]
             var m_new = beta1 * m + one_minus_beta1 * g
             var v_new = beta2 * v + one_minus_beta2 * g * g
-
             state[i, 0] = m_new
             state[i, 1] = v_new
-
             var m_hat = m_new / bias_correction1
             var v_hat = v_new / bias_correction2
-
-            var p = rebind[Scalar[dtype]](params[i])
-            params[i] = p * wd_factor - lr * m_hat / (sqrt(v_hat) + eps)
+            params[i] = params[i] * wd_factor - lr * m_hat / (
+                sqrt(v_hat) + eps
+            )
+            i += 1
 
     # =========================================================================
     # GPU kernel implementation
@@ -215,7 +244,7 @@ struct AdamW[
             if Int(thread_idx.x) == 0:
                 c[0] = c[0] + UInt32(1)
 
-        ctx.enqueue_function[bump_kernel, bump_kernel](
+        ctx.enqueue_function[bump_kernel](
             counter_t,
             grid_dim=(1,),
             block_dim=(1,),
@@ -264,7 +293,7 @@ struct AdamW[
 
         comptime grid_size = (PARAM_SIZE + TPB - 1) // TPB
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             params,
             grads,
             state,

@@ -195,7 +195,7 @@ def main() raises:
     )
 
     # ── Step 4 — GPU replay buffer ──────────────────────────────────────
-    var gpu_replay = EZV2GPUReplayBuffer[CAP, OBS, ACT](ctx)
+    var gpu_replay = EZV2GPUReplayBuffer[CAP, OBS, ACT, MAX_K](ctx)
     ctx.synchronize()
     print("    GPU replay buffer ready (CAP=", CAP, ")")
 

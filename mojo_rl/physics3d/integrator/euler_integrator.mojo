@@ -2317,7 +2317,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 STEP_THREADS,
             ]
 
-            ctx.enqueue_function[mt_kernel_wrapper, mt_kernel_wrapper](
+            ctx.enqueue_function[mt_kernel_wrapper](
                 state,
                 model,
                 workspace,
@@ -2342,7 +2342,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 SPARSE,
             ]
 
-            ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            ctx.enqueue_function[kernel_wrapper](
                 state,
                 model,
                 workspace,
@@ -2364,7 +2364,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             NGEOM,
         ]
 
-        ctx.enqueue_function[contact_kernel_wrapper, contact_kernel_wrapper](
+        ctx.enqueue_function[contact_kernel_wrapper](
             state,
             model,
             grid_dim=(ENV_BLOCKS,),
@@ -2392,7 +2392,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             NSITE,
         ]
 
-        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+        ctx.enqueue_function[solver_wrapper](
             state,
             model,
             workspace,
@@ -2415,7 +2415,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             SPARSE,
         ]
 
-        ctx.enqueue_function[finalize_kernel_wrapper, finalize_kernel_wrapper](
+        ctx.enqueue_function[finalize_kernel_wrapper](
             state,
             model,
             workspace,
@@ -2543,7 +2543,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 SPARSE,
                 STEP_THREADS,
             ]
-            ctx.enqueue_function[mt_kernel_wrapper, mt_kernel_wrapper](
+            ctx.enqueue_function[mt_kernel_wrapper](
                 state,
                 model,
                 workspace,
@@ -2566,7 +2566,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 NM,
                 SPARSE,
             ]
-            ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            ctx.enqueue_function[kernel_wrapper](
                 state,
                 model,
                 workspace,
@@ -2591,7 +2591,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             BATCH,
             NGEOM,
         ]
-        ctx.enqueue_function[contact_kernel_wrapper, contact_kernel_wrapper](
+        ctx.enqueue_function[contact_kernel_wrapper](
             state,
             model,
             grid_dim=(ENV_BLOCKS,),
@@ -2622,7 +2622,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_TENDON,
             NSITE,
         ]
-        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+        ctx.enqueue_function[solver_wrapper](
             state,
             model,
             workspace,
@@ -2649,7 +2649,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             NM,
             SPARSE,
         ]
-        ctx.enqueue_function[finalize_kernel_wrapper, finalize_kernel_wrapper](
+        ctx.enqueue_function[finalize_kernel_wrapper](
             state,
             model,
             workspace,

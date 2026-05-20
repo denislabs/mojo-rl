@@ -331,7 +331,7 @@ struct SmoothedTarget[
                 noisy, clean, ns, nc, amin, amax, rng
             )
 
-        ctx.enqueue_function[noise_wrapper, noise_wrapper](
+        ctx.enqueue_function[noise_wrapper](
             out_actions,
             clean_act_t,
             noise_std_s,
@@ -548,7 +548,7 @@ struct ReparamTarget(TargetAction):
                 acts, lp, eps, ao, lsmin, lsmax, ascale, rng
             )
 
-        ctx.enqueue_function[rsample_wrapper, rsample_wrapper](
+        ctx.enqueue_function[rsample_wrapper](
             out_actions,
             out_log_probs,
             eps_cache_t,

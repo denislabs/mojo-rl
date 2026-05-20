@@ -2694,7 +2694,7 @@ def create_gpu_device(
             name: Ptr[c_char, ImmutAnyOrigin],
         ) thin -> Ptr[GPUDevice, MutAnyOrigin],
     ]()(format_flags, debug_mode, name.as_c_string_slice().unsafe_ptr())
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -2747,7 +2747,7 @@ def create_gpu_device_with_properties(
         "SDL_CreateGPUDeviceWithProperties",
         def(props: PropertiesID) thin -> Ptr[GPUDevice, MutAnyOrigin],
     ]()(props)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -2908,7 +2908,7 @@ def create_gpu_compute_pipeline(
             createinfo: Ptr[GPUComputePipelineCreateInfo, ImmutAnyOrigin],
         ) thin -> Ptr[GPUComputePipeline, MutAnyOrigin],
     ]()(device, createinfo)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -2945,7 +2945,7 @@ def create_gpu_graphics_pipeline(
             createinfo: Ptr[GPUGraphicsPipelineCreateInfo, ImmutAnyOrigin],
         ) thin -> Ptr[GPUGraphicsPipeline, MutAnyOrigin],
     ]()(device, createinfo)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -2982,7 +2982,7 @@ def create_gpu_sampler(
             createinfo: Ptr[GPUSamplerCreateInfo, ImmutAnyOrigin],
         ) thin -> Ptr[GPUSampler, MutAnyOrigin],
     ]()(device, createinfo)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -3072,7 +3072,7 @@ def create_gpu_shader(
             createinfo: Ptr[GPUShaderCreateInfo, ImmutAnyOrigin],
         ) thin -> Ptr[GPUShader, MutAnyOrigin],
     ]()(device, createinfo)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -3136,7 +3136,7 @@ def create_gpu_texture(
             createinfo: Ptr[GPUTextureCreateInfo, ImmutAnyOrigin],
         ) thin -> Ptr[GPUTexture, MutAnyOrigin],
     ]()(device, createinfo)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -3187,7 +3187,7 @@ def create_gpu_buffer(
             createinfo: Ptr[GPUBufferCreateInfo, ImmutAnyOrigin],
         ) thin -> Ptr[GPUBuffer, MutAnyOrigin],
     ]()(device, createinfo)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -3228,7 +3228,7 @@ def create_gpu_transfer_buffer(
             createinfo: Ptr[GPUTransferBufferCreateInfo, ImmutAnyOrigin],
         ) thin -> Ptr[GPUTransferBuffer, MutAnyOrigin],
     ]()(device, createinfo)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -3584,7 +3584,7 @@ def acquire_gpu_command_buffer(
             device: Ptr[GPUDevice, MutAnyOrigin]
         ) thin -> Ptr[GPUCommandBuffer, MutAnyOrigin],
     ]()(device)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -5444,7 +5444,7 @@ def submit_gpu_command_buffer_and_acquire_fence(
             command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]
         ) thin -> Ptr[GPUFence, MutAnyOrigin],
     ]()(command_buffer)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 

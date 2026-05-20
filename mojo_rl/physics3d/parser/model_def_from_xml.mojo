@@ -894,7 +894,7 @@ struct ModelDefFromXML[
                     workspace[0, scratch2 + d]
                 )
 
-        ctx.enqueue_function[invweight0_kernel, invweight0_kernel](
+        ctx.enqueue_function[invweight0_kernel](
             state,
             model,
             workspace,
@@ -965,7 +965,7 @@ struct ModelDefFromXML[
                         ctrl = Scalar[DTYPE](c_min)
                     states[env, qfrc_base + dof] = Scalar[DTYPE](gear) * ctrl
 
-        ctx.enqueue_function[apply_kernel, apply_kernel](
+        ctx.enqueue_function[apply_kernel](
             states,
             actions,
             grid_dim=(BLOCKS,),
@@ -1012,7 +1012,7 @@ struct ModelDefFromXML[
                     elif qpos > Scalar[DTYPE](rmax):
                         states[env, qpos_base + qp_adr] = Scalar[DTYPE](rmax)
 
-        ctx.enqueue_function[limits_kernel, limits_kernel](
+        ctx.enqueue_function[limits_kernel](
             states,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
@@ -1056,7 +1056,7 @@ struct ModelDefFromXML[
                 states, obs, env
             )
 
-        ctx.enqueue_function[obs_kernel, obs_kernel](
+        ctx.enqueue_function[obs_kernel](
             states,
             obs,
             grid_dim=(BLOCKS,),

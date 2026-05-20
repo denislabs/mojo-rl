@@ -406,7 +406,7 @@ struct SemiImplicitEuler(Integrator):
                 BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET, FORCES_OFFSET
             ](state, gravity_x, gravity_y, dt)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             gravity_x,
             gravity_y,
@@ -455,7 +455,7 @@ struct SemiImplicitEuler(Integrator):
                 BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET
             ](state, dt)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             dt,
             grid_dim=(BLOCKS,),

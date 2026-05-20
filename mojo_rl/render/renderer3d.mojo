@@ -408,27 +408,27 @@ struct Renderer3D(Movable):
         )
 
         # Null handles
-        self.window = Ptr[Window, MutAnyOrigin]()
-        self.device = Ptr[GPUDevice, MutAnyOrigin]()
-        self.solid_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin]()
-        self.ground_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin]()
-        self.line_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin]()
-        self.shadow_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin]()
-        self.reflection_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin]()
-        self.skybox_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin]()
-        self.depth_texture = Ptr[GPUTexture, MutAnyOrigin]()
-        self.shadow_map = Ptr[GPUTexture, MutAnyOrigin]()
-        self.shadow_sampler = Ptr[GPUSampler, MutAnyOrigin]()
+        self.window = Ptr[Window, MutAnyOrigin](unsafe_from_address=0)
+        self.device = Ptr[GPUDevice, MutAnyOrigin](unsafe_from_address=0)
+        self.solid_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin](unsafe_from_address=0)
+        self.ground_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin](unsafe_from_address=0)
+        self.line_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin](unsafe_from_address=0)
+        self.shadow_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin](unsafe_from_address=0)
+        self.reflection_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin](unsafe_from_address=0)
+        self.skybox_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin](unsafe_from_address=0)
+        self.depth_texture = Ptr[GPUTexture, MutAnyOrigin](unsafe_from_address=0)
+        self.shadow_map = Ptr[GPUTexture, MutAnyOrigin](unsafe_from_address=0)
+        self.shadow_sampler = Ptr[GPUSampler, MutAnyOrigin](unsafe_from_address=0)
         self.shadow_uniforms = ShadowUniforms()
         self.ground_z = 0.0
-        self.line_vertex_buffer = Ptr[GPUBuffer, MutAnyOrigin]()
-        self.line_transfer_buffer = Ptr[GPUTransferBuffer, MutAnyOrigin]()
-        self.text_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin]()
-        self.font_atlas_tex = Ptr[GPUTexture, MutAnyOrigin]()
-        self.font_sampler = Ptr[GPUSampler, MutAnyOrigin]()
-        self.text_vertex_buffer = Ptr[GPUBuffer, MutAnyOrigin]()
-        self.text_index_buffer = Ptr[GPUBuffer, MutAnyOrigin]()
-        self.text_transfer_buffer = Ptr[GPUTransferBuffer, MutAnyOrigin]()
+        self.line_vertex_buffer = Ptr[GPUBuffer, MutAnyOrigin](unsafe_from_address=0)
+        self.line_transfer_buffer = Ptr[GPUTransferBuffer, MutAnyOrigin](unsafe_from_address=0)
+        self.text_pipeline = Ptr[GPUGraphicsPipeline, MutAnyOrigin](unsafe_from_address=0)
+        self.font_atlas_tex = Ptr[GPUTexture, MutAnyOrigin](unsafe_from_address=0)
+        self.font_sampler = Ptr[GPUSampler, MutAnyOrigin](unsafe_from_address=0)
+        self.text_vertex_buffer = Ptr[GPUBuffer, MutAnyOrigin](unsafe_from_address=0)
+        self.text_index_buffer = Ptr[GPUBuffer, MutAnyOrigin](unsafe_from_address=0)
+        self.text_transfer_buffer = Ptr[GPUTransferBuffer, MutAnyOrigin](unsafe_from_address=0)
         self.text_vertex_data = List[Float32]()
         self.text_uniforms = TextUniforms()
         self.swapchain_format = (
@@ -445,8 +445,8 @@ struct Renderer3D(Movable):
 
         # Texture cache
         self.texture_cache = List[TextureCacheEntry]()
-        self.default_texture = Ptr[GPUTexture, MutAnyOrigin]()
-        self.default_tex_sampler = Ptr[GPUSampler, MutAnyOrigin]()
+        self.default_texture = Ptr[GPUTexture, MutAnyOrigin](unsafe_from_address=0)
+        self.default_tex_sampler = Ptr[GPUSampler, MutAnyOrigin](unsafe_from_address=0)
 
         # Line data
         self.line_vertex_data = List[Float32]()
@@ -476,7 +476,7 @@ struct Renderer3D(Movable):
         self.screenshot_requested = False
         self.screenshot_counter = 0
         self.recorder = VideoRecorder()
-        self.recording_tb = Ptr[GPUTransferBuffer, MutAnyOrigin]()
+        self.recording_tb = Ptr[GPUTransferBuffer, MutAnyOrigin](unsafe_from_address=0)
         self.recording_tb_size = 0
         self.default_eye = camera.eye
         self.default_target = camera.target
@@ -599,7 +599,7 @@ struct Renderer3D(Movable):
         ]()(
             Self._shader_format(),
             True,
-            Ptr[c_char, ImmutAnyOrigin](),  # NULL = auto-select driver
+            Ptr[c_char, ImmutAnyOrigin](unsafe_from_address=0),  # NULL = auto-select driver
         )
 
         # 4. Claim window
@@ -1188,7 +1188,7 @@ struct Renderer3D(Movable):
             target_info=GPUGraphicsPipelineTargetInfo(
                 color_target_descriptions=Ptr[
                     GPUColorTargetDescription, ImmutAnyOrigin
-                ](),
+                ](unsafe_from_address=0),
                 num_color_targets=0,
                 depth_stencil_format=GPUTextureFormat.GPU_TEXTUREFORMAT_D32_FLOAT,
                 has_depth_stencil_target=True,
@@ -1361,9 +1361,9 @@ struct Renderer3D(Movable):
         var skybox_vi = GPUVertexInputState(
             vertex_buffer_descriptions=Ptr[
                 GPUVertexBufferDescription, ImmutAnyOrigin
-            ](),
+            ](unsafe_from_address=0),
             num_vertex_buffers=0,
-            vertex_attributes=Ptr[GPUVertexAttribute, ImmutAnyOrigin](),
+            vertex_attributes=Ptr[GPUVertexAttribute, ImmutAnyOrigin](unsafe_from_address=0),
             num_vertex_attributes=0,
         )
 
@@ -2946,7 +2946,7 @@ struct Renderer3D(Movable):
 
             var shadow_pass = begin_gpu_render_pass(
                 cmd_buf,
-                Ptr[GPUColorTargetInfo, ImmutAnyOrigin](),  # No color targets
+                Ptr[GPUColorTargetInfo, ImmutAnyOrigin](unsafe_from_address=0),  # No color targets
                 0,
                 Ptr(to=shadow_depth_info),
             )
@@ -2987,7 +2987,7 @@ struct Renderer3D(Movable):
         # ====================================================================
         # Acquire swapchain texture
         # ====================================================================
-        var swapchain_tex = Ptr[GPUTexture, MutAnyOrigin]()
+        var swapchain_tex = Ptr[GPUTexture, MutAnyOrigin](unsafe_from_address=0)
         var sc_w = UInt32(0)
         var sc_h = UInt32(0)
         wait_and_acquire_gpu_swapchain_texture(
@@ -2998,7 +2998,7 @@ struct Renderer3D(Movable):
             Ptr(to=sc_h),
         )
 
-        if not swapchain_tex:
+        if Int(swapchain_tex) == 0:
             submit_gpu_command_buffer(cmd_buf)
             return
 
@@ -3024,7 +3024,7 @@ struct Renderer3D(Movable):
             clear_color=FColor(bg_r, bg_g, bg_b, 1.0),
             load_op=GPULoadOp.GPU_LOADOP_CLEAR,
             store_op=GPUStoreOp.GPU_STOREOP_STORE,
-            resolve_texture=Ptr[GPUTexture, MutAnyOrigin](),
+            resolve_texture=Ptr[GPUTexture, MutAnyOrigin](unsafe_from_address=0),
             resolve_mip_level=0,
             resolve_layer=0,
             cycle=True,
@@ -3333,7 +3333,7 @@ struct Renderer3D(Movable):
 
         # Screenshot capture: append a download copy pass before submitting.
         # The transfer buffer pointer is non-null only if setup succeeded.
-        var screenshot_tb = Ptr[GPUTransferBuffer, MutAnyOrigin]()
+        var screenshot_tb = Ptr[GPUTransferBuffer, MutAnyOrigin](unsafe_from_address=0)
         if self.screenshot_requested:
             self.screenshot_requested = False
             try:
@@ -3375,15 +3375,15 @@ struct Renderer3D(Movable):
                 end_gpu_copy_pass(dl_copy_pass)
             except e:
                 print("Screenshot setup failed: " + String(e))
-                if screenshot_tb:
+                if Int(screenshot_tb) != 0:
                     release_gpu_transfer_buffer(self.device, screenshot_tb)
-                    screenshot_tb = Ptr[GPUTransferBuffer, MutAnyOrigin]()
+                    screenshot_tb = Ptr[GPUTransferBuffer, MutAnyOrigin](unsafe_from_address=0)
 
         # Always submit the command buffer (screenshot download included if set up).
         submit_gpu_command_buffer(cmd_buf)
 
         # If a download was queued, wait for the GPU to finish, then save via imageio.
-        if screenshot_tb:
+        if Int(screenshot_tb) != 0:
             try:
                 wait_for_gpu_idle(self.device)
                 var pixels = map_gpu_transfer_buffer(
@@ -3406,9 +3406,9 @@ struct Renderer3D(Movable):
             var needed = self.width * self.height * 4
             # Reallocate the persistent transfer buffer if size changed
             if needed != self.recording_tb_size:
-                if self.recording_tb:
+                if Int(self.recording_tb) != 0:
                     release_gpu_transfer_buffer(self.device, self.recording_tb)
-                    self.recording_tb = Ptr[GPUTransferBuffer, MutAnyOrigin]()
+                    self.recording_tb = Ptr[GPUTransferBuffer, MutAnyOrigin](unsafe_from_address=0)
                     self.recording_tb_size = 0
                 try:
                     var tb_info = GPUTransferBufferCreateInfo(
@@ -3426,7 +3426,7 @@ struct Renderer3D(Movable):
                         + String(e)
                     )
             # If we have a valid buffer, queue download in a new command buffer
-            if self.recording_tb:
+            if Int(self.recording_tb) != 0:
                 try:
                     var rec_cmd = acquire_gpu_command_buffer(self.device)
                     var rec_copy = begin_gpu_copy_pass(rec_cmd)
@@ -3480,9 +3480,9 @@ struct Renderer3D(Movable):
     def stop_recording(mut self) raises:
         """Stop video recording and flush the file."""
         self.recorder.stop()
-        if self.recording_tb:
+        if Int(self.recording_tb) != 0:
             release_gpu_transfer_buffer(self.device, self.recording_tb)
-            self.recording_tb = Ptr[GPUTransferBuffer, MutAnyOrigin]()
+            self.recording_tb = Ptr[GPUTransferBuffer, MutAnyOrigin](unsafe_from_address=0)
             self.recording_tb_size = 0
 
     def _build_scene_uniforms(mut self):
@@ -3798,9 +3798,9 @@ struct Renderer3D(Movable):
         # Stop any active recording and release the persistent transfer buffer
         if self.recorder.is_recording:
             self.recorder.stop()
-        if self.recording_tb:
+        if Int(self.recording_tb) != 0:
             release_gpu_transfer_buffer(self.device, self.recording_tb)
-            self.recording_tb = Ptr[GPUTransferBuffer, MutAnyOrigin]()
+            self.recording_tb = Ptr[GPUTransferBuffer, MutAnyOrigin](unsafe_from_address=0)
             self.recording_tb_size = 0
 
         # Release capsule cache meshes
@@ -3827,7 +3827,7 @@ struct Renderer3D(Movable):
             release_gpu_sampler(self.device, self.texture_cache[i].sampler)
 
         # Release default texture resources
-        if self.default_texture:
+        if Int(self.default_texture) != 0:
             release_gpu_texture(self.device, self.default_texture)
             release_gpu_sampler(self.device, self.default_tex_sampler)
 

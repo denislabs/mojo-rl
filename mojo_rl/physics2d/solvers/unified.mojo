@@ -276,7 +276,7 @@ struct UnifiedConstraintSolver:
                 dt,
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             contacts,
             contact_counts,
@@ -366,7 +366,7 @@ struct UnifiedConstraintSolver:
                 POS_ITERATIONS,
             ](state, contacts, contact_counts, joint_counts, baumgarte, slop)
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             state,
             contacts,
             contact_counts,

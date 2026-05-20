@@ -57,12 +57,17 @@ comptime SHAPE_MAX_SIZE: Int = 20  # Max floats per shape (polygon with 8 vertic
 comptime SHAPE_POLYGON: Int = 0
 comptime SHAPE_CIRCLE: Int = 1
 comptime SHAPE_EDGE: Int = 2
+comptime SHAPE_COMPOUND: Int = 3
 
 # Polygon layout: [type, n_verts, v0x, v0y, v1x, v1y, ..., v7x, v7y]
 comptime MAX_POLYGON_VERTS: Int = 8
 
 # Circle layout: [type, radius, center_x, center_y]
 # Edge layout: [type, v0x, v0y, v1x, v1y, normal_x, normal_y]
+# Compound layout: [type, n_subshapes, sub_idx_0, sub_idx_1, ..., sub_idx_7]
+# Sub-shapes must be SHAPE_POLYGON (convex). Used to model concave bodies like
+# the PushT T-block as a union of convex sub-polygons that share one rigid body.
+comptime MAX_COMPOUND_SUBSHAPES: Int = 8
 
 # =============================================================================
 # Contact Layout

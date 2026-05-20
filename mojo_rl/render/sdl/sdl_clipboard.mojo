@@ -120,7 +120,7 @@ def get_clipboard_text(out ret: Ptr[c_char, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib, "SDL_GetClipboardText", def() thin -> Ptr[c_char, MutAnyOrigin]
     ]()()
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
@@ -350,7 +350,7 @@ def get_clipboard_data(
             size: Ptr[c_size_t, MutAnyOrigin],
         ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(mime_type.as_c_string_slice().unsafe_ptr(), size)
-    if not ret:
+    if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 

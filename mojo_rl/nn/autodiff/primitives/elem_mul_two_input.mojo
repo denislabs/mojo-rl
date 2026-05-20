@@ -209,7 +209,7 @@ struct ElemMulTwoInputOp[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             cache,
@@ -265,7 +265,7 @@ struct ElemMulTwoInputOp[dim: Int](DiffOp):
                 grad_input, grad_output, cache
             )
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             grad_input,
             grad_output_immut,
             cache_immut,

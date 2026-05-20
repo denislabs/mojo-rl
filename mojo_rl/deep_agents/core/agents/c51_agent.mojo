@@ -501,7 +501,7 @@ struct GenericC51Agent[
     var checkpoint_path: String
 
     # Logger
-    var logger: UnsafePointer[Self.L, MutAnyOrigin]
+    var logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]]
     var diag_every: Int
 
     def __init__(
@@ -530,7 +530,7 @@ struct GenericC51Agent[
         self._target_update_ctr = 0
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         self.diag_every = 0
 
     def make_cpu_state(self) -> Self.CPUStateType:
@@ -792,7 +792,7 @@ struct GenericC51Agent[
         self.train_step_count += 1
 
         # ---- Diagnostic logging ----
-        if self.logger and (
+        if Bool(self.logger) and (
             self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
@@ -816,16 +816,16 @@ struct GenericC51Agent[
                         q_min = v
                     if v > q_max:
                         q_max = v
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "q_mean",
                     q_sum / Float64(Self.BATCH * Self.ACTIONS),
                     step,
                 )
-                self.logger[].log_scalar("q_min", q_min, step)
-                self.logger[].log_scalar("q_max", q_max, step)
+                self.logger.value()[].log_scalar("q_min", q_min, step)
+                self.logger.value()[].log_scalar("q_max", q_max, step)
 
                 # CE loss
-                self.logger[].log_scalar("loss", loss, step)
+                self.logger.value()[].log_scalar("loss", loss, step)
 
                 # Distribution entropy (how peaked/spread the predicted dist is)
                 var entropy_sum: Float64 = 0.0
@@ -847,7 +847,7 @@ struct GenericC51Agent[
                         if p > 1e-8:
                             h -= p * log(p)
                     entropy_sum += h
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "dist_entropy_mean",
                     entropy_sum / Float64(Self.BATCH),
                     step,
@@ -982,9 +982,7 @@ struct GenericC51Agent[
         verbose: Bool = False,
         print_every: Int = 10,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train C51 agent on a discrete-action environment."""
@@ -1014,7 +1012,7 @@ struct GenericC51Agent[
             logger=logger,
         )
         self.state = cpu_state^
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         return metrics
 
     # =========================================================================
@@ -1187,7 +1185,7 @@ struct GenericC51Agent[
                     best_action = a
             acts[b] = Scalar[dtype](best_action)
 
-        ctx.enqueue_function[c51_select_kernel, c51_select_kernel](
+        ctx.enqueue_function[c51_select_kernel](
             epsilon_s,
             raw_t,
             q_t,
@@ -1335,7 +1333,7 @@ struct GenericC51Agent[
                     expected += prob * rebind[Scalar[dtype]](bins[i])
                 eq[b, a] = expected
 
-        ctx.enqueue_function[expected_q_kernel, expected_q_kernel](
+        ctx.enqueue_function[expected_q_kernel](
             online_next_q_raw_t,
             bins_t,
             next_eq_t,
@@ -1458,7 +1456,7 @@ struct GenericC51Agent[
                 )
                 grad[b, p_base + i] = (sm - projected[i]) / Scalar[dtype](BATCH)
 
-        ctx.enqueue_function[c51_project_grad_kernel, c51_project_grad_kernel](
+        ctx.enqueue_function[c51_project_grad_kernel](
             q_raw_t,
             next_q_raw_t,
             next_eq_t,
@@ -1494,7 +1492,7 @@ struct GenericC51Agent[
 
         # ---- GPU Diagnostic logging ----
         if (
-            self.logger
+            Bool(self.logger)
             and self.diag_every > 0
             and self.train_step_count % self.diag_every == 0
         ):
@@ -1542,13 +1540,13 @@ struct GenericC51Agent[
                         q_min = v
                     if v > q_max:
                         q_max = v
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "q_mean",
                     q_sum / Float64(BATCH * Self.ACTIONS),
                     step,
                 )
-                self.logger[].log_scalar("q_min", q_min, step)
-                self.logger[].log_scalar("q_max", q_max, step)
+                self.logger.value()[].log_scalar("q_min", q_min, step)
+                self.logger.value()[].log_scalar("q_max", q_max, step)
 
                 # Done fraction and reward stats from sampled batch
                 var done_count: Float64 = 0.0
@@ -1563,18 +1561,18 @@ struct GenericC51Agent[
                         rew_min = r
                     if r > rew_max:
                         rew_max = r
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "done_fraction",
                     done_count / Float64(BATCH),
                     step,
                 )
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "reward_mean",
                     rew_sum / Float64(BATCH),
                     step,
                 )
-                self.logger[].log_scalar("reward_min", rew_min, step)
-                self.logger[].log_scalar("reward_max", rew_max, step)
+                self.logger.value()[].log_scalar("reward_min", rew_min, step)
+                self.logger.value()[].log_scalar("reward_max", rew_max, step)
 
                 # Distribution entropy (how peaked/spread the predicted dist is)
                 var entropy_sum: Float64 = 0.0
@@ -1604,7 +1602,7 @@ struct GenericC51Agent[
                         if p > 1e-8:
                             h -= p * log(p)
                     entropy_sum += h
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "dist_entropy_mean",
                     entropy_sum / Float64(BATCH),
                     step,
@@ -1667,9 +1665,7 @@ struct GenericC51Agent[
         verbose: Bool = False,
         print_every: Int = 50_000,
         environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         target_total_steps: Int = 0,
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:

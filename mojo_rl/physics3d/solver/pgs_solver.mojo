@@ -15,6 +15,7 @@ Reference: MuJoCo's constraint solver + existing Cartesian PGS in pgs_solver.moj
 """
 
 from std.math import sqrt
+from std.sys import simd_width_of
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from ..types import Model, Data, _max_one
@@ -82,6 +83,11 @@ from ..constraints.constraint_builder_gpu import (
 comptime PGS_ITERATIONS: Int = 100
 # Minimum K for friction tangent rows — below this, direction is degenerate
 comptime FRICTION_K_MIN: Float64 = 1e-6
+# Manual SIMD on the PYRAMIDAL inner loops (J·qacc dot + MinvJT axpy). Benched
+# 3.7× on Hopper NV=11 Float32 (benchmarks/benchmark_pgs_inner.mojo). Flip to
+# False to revert to the scalar code path if a regression is found; correctness
+# noise vs scalar is ~Float32 epsilon (2e-7 qacc).
+comptime USE_PGS_SIMD: Bool = True
 
 
 struct PGSSolver(ConstraintSolver):
@@ -197,14 +203,36 @@ struct PGSSolver(ConstraintSolver):
         # Coupled PGS iterations
         # Reference: mj_solPGS in engine_solver.c lines 316-531
         comptime MINVAL: Float64 = 1e-10
+        # Hoisted for SIMD inner-loop ports below (PYRAMIDAL + ELLIPTIC +
+        # limit/equality all use these). USE_PGS_SIMD comptime-gates the
+        # SIMD path; scalar fallback kept inline as oracle.
+        comptime W = simd_width_of[DTYPE]()
         for _ in range(PGS_ITERATIONS):
+            var J_ptr = constraints.J.unsafe_ptr()
+            var MJ_ptr = constraints.MinvJT.unsafe_ptr()
+            var qacc_ptr = qacc.unsafe_ptr()
             comptime if CONE_TYPE == ConeType.PYRAMIDAL:
                 # === PYRAMIDAL CONE: Independent PGS on normals + edge constraints ===
+
                 # Normal constraints: simple λ≥0 PGS
                 for normal_r in range(num_normals):
-                    var a_n: Scalar[DTYPE] = 0
-                    for i in range(NV):
-                        a_n += constraints.J[normal_r * NV + i] * qacc[i]
+                    var a_n: Scalar[DTYPE]
+                    var row_off_n = normal_r * NV
+                    comptime if USE_PGS_SIMD:
+                        var acc_v = SIMD[DTYPE, W](0)
+                        var ii = 0
+                        while ii + W <= NV:
+                            acc_v += J_ptr.load[width=W](
+                                row_off_n + ii
+                            ) * qacc_ptr.load[width=W](ii)
+                            ii += W
+                        a_n = acc_v.reduce_add()
+                        while ii < NV:
+                            a_n += J_ptr[row_off_n + ii] * qacc_ptr[ii]
+                            ii += 1
+                    else:
+                        for i in range(NV):
+                            a_n += constraints.J[row_off_n + i] * qacc[i]
                     var R_n = (
                         Scalar[DTYPE](1.0)
                         / constraints.rows[normal_r].inv_K_imp
@@ -228,17 +256,45 @@ struct PGSSolver(ConstraintSolver):
                         constraints.rows[normal_r].lambda_val - old_lambda_n
                     )
                     if actual_n != Scalar[DTYPE](0):
-                        for i in range(NV):
-                            qacc[i] += (
-                                constraints.MinvJT[normal_r * NV + i] * actual_n
-                            )
+                        comptime if USE_PGS_SIMD:
+                            var s_v = SIMD[DTYPE, W](actual_n)
+                            var jj = 0
+                            while jj + W <= NV:
+                                var q = qacc_ptr.load[width=W](jj)
+                                var m = MJ_ptr.load[width=W](row_off_n + jj)
+                                qacc_ptr.store(jj, q + m * s_v)
+                                jj += W
+                            while jj < NV:
+                                qacc_ptr[jj] += (
+                                    MJ_ptr[row_off_n + jj] * actual_n
+                                )
+                                jj += 1
+                        else:
+                            for i in range(NV):
+                                qacc[i] += (
+                                    constraints.MinvJT[row_off_n + i] * actual_n
+                                )
 
                 # Pyramid edge constraints: each edge is λ≥0
                 for r_off in range(num_friction):
                     var r = friction_start + r_off
-                    var a_edge: Scalar[DTYPE] = 0
-                    for i in range(NV):
-                        a_edge += constraints.J[r * NV + i] * qacc[i]
+                    var row_off_e = r * NV
+                    var a_edge: Scalar[DTYPE]
+                    comptime if USE_PGS_SIMD:
+                        var acc_v = SIMD[DTYPE, W](0)
+                        var ii = 0
+                        while ii + W <= NV:
+                            acc_v += J_ptr.load[width=W](
+                                row_off_e + ii
+                            ) * qacc_ptr.load[width=W](ii)
+                            ii += W
+                        a_edge = acc_v.reduce_add()
+                        while ii < NV:
+                            a_edge += J_ptr[row_off_e + ii] * qacc_ptr[ii]
+                            ii += 1
+                    else:
+                        for i in range(NV):
+                            a_edge += constraints.J[row_off_e + i] * qacc[i]
                     var R_edge = (
                         Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
                         - constraints.rows[r].K
@@ -261,10 +317,25 @@ struct PGSSolver(ConstraintSolver):
                         constraints.rows[r].lambda_val - old_lambda_edge
                     )
                     if actual_edge != Scalar[DTYPE](0):
-                        for i in range(NV):
-                            qacc[i] += (
-                                constraints.MinvJT[r * NV + i] * actual_edge
-                            )
+                        comptime if USE_PGS_SIMD:
+                            var s_v = SIMD[DTYPE, W](actual_edge)
+                            var jj = 0
+                            while jj + W <= NV:
+                                var q = qacc_ptr.load[width=W](jj)
+                                var m = MJ_ptr.load[width=W](row_off_e + jj)
+                                qacc_ptr.store(jj, q + m * s_v)
+                                jj += W
+                            while jj < NV:
+                                qacc_ptr[jj] += (
+                                    MJ_ptr[row_off_e + jj] * actual_edge
+                                )
+                                jj += 1
+                        else:
+                            for i in range(NV):
+                                qacc[i] += (
+                                    constraints.MinvJT[row_off_e + i]
+                                    * actual_edge
+                                )
             else:
                 # === ELLIPTIC CONE: MuJoCo-style block QCQP updates ===
                 var fric_idx = 0
@@ -294,13 +365,30 @@ struct PGSSolver(ConstraintSolver):
                         fill=Scalar[DTYPE](0)
                     )
                     for bi in range(dim):
+                        var bi_off = row_idx[bi] * NV
                         for bj in range(dim):
-                            var a_val: Scalar[DTYPE] = 0
-                            for k in range(NV):
-                                a_val += (
-                                    constraints.J[row_idx[bi] * NV + k]
-                                    * constraints.MinvJT[row_idx[bj] * NV + k]
-                                )
+                            var bj_off = row_idx[bj] * NV
+                            var a_val: Scalar[DTYPE]
+                            comptime if USE_PGS_SIMD:
+                                var acc_v = SIMD[DTYPE, W](0)
+                                var kk = 0
+                                while kk + W <= NV:
+                                    acc_v += J_ptr.load[width=W](
+                                        bi_off + kk
+                                    ) * MJ_ptr.load[width=W](bj_off + kk)
+                                    kk += W
+                                a_val = acc_v.reduce_add()
+                                while kk < NV:
+                                    a_val += (
+                                        J_ptr[bi_off + kk] * MJ_ptr[bj_off + kk]
+                                    )
+                                    kk += 1
+                            else:
+                                for k in range(NV):
+                                    a_val += (
+                                        constraints.J[bi_off + k]
+                                        * constraints.MinvJT[bj_off + k]
+                                    )
                             if bi == bj:
                                 var R_row = (
                                     Scalar[DTYPE](1.0)
@@ -315,9 +403,23 @@ struct PGSSolver(ConstraintSolver):
                         fill=Scalar[DTYPE](0)
                     )
                     for bj in range(dim):
-                        var a: Scalar[DTYPE] = 0
-                        for k in range(NV):
-                            a += constraints.J[row_idx[bj] * NV + k] * qacc[k]
+                        var bj_off = row_idx[bj] * NV
+                        var a: Scalar[DTYPE]
+                        comptime if USE_PGS_SIMD:
+                            var acc_v = SIMD[DTYPE, W](0)
+                            var kk = 0
+                            while kk + W <= NV:
+                                acc_v += J_ptr.load[width=W](
+                                    bj_off + kk
+                                ) * qacc_ptr.load[width=W](kk)
+                                kk += W
+                            a = acc_v.reduce_add()
+                            while kk < NV:
+                                a += J_ptr[bj_off + kk] * qacc_ptr[kk]
+                                kk += 1
+                        else:
+                            for k in range(NV):
+                                a += constraints.J[bj_off + k] * qacc[k]
                         var R_row = (
                             Scalar[DTYPE](1.0)
                             / constraints.rows[row_idx[bj]].inv_K_imp
@@ -567,11 +669,23 @@ struct PGSSolver(ConstraintSolver):
                             - oldforce[bi]
                         )
                         if actual != Scalar[DTYPE](0):
-                            for k in range(NV):
-                                qacc[k] += (
-                                    constraints.MinvJT[row_idx[bi] * NV + k]
-                                    * actual
-                                )
+                            var bi_off = row_idx[bi] * NV
+                            comptime if USE_PGS_SIMD:
+                                var s_v = SIMD[DTYPE, W](actual)
+                                var jj = 0
+                                while jj + W <= NV:
+                                    var q = qacc_ptr.load[width=W](jj)
+                                    var m = MJ_ptr.load[width=W](bi_off + jj)
+                                    qacc_ptr.store(jj, q + m * s_v)
+                                    jj += W
+                                while jj < NV:
+                                    qacc_ptr[jj] += MJ_ptr[bi_off + jj] * actual
+                                    jj += 1
+                            else:
+                                for k in range(NV):
+                                    qacc[k] += (
+                                        constraints.MinvJT[bi_off + k] * actual
+                                    )
 
                     fric_idx += group_size
 
@@ -598,15 +712,42 @@ struct PGSSolver(ConstraintSolver):
                 if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
                     constraints.rows[r].lambda_val = Scalar[DTYPE](0)
                 var actual = constraints.rows[r].lambda_val - old_lambda
-                for i in range(NV):
-                    qacc[i] += constraints.MinvJT[r * NV + i] * actual
+                var r_off_nv = r * NV
+                comptime if USE_PGS_SIMD:
+                    var s_v = SIMD[DTYPE, W](actual)
+                    var jj = 0
+                    while jj + W <= NV:
+                        var q = qacc_ptr.load[width=W](jj)
+                        var m = MJ_ptr.load[width=W](r_off_nv + jj)
+                        qacc_ptr.store(jj, q + m * s_v)
+                        jj += W
+                    while jj < NV:
+                        qacc_ptr[jj] += MJ_ptr[r_off_nv + jj] * actual
+                        jj += 1
+                else:
+                    for i in range(NV):
+                        qacc[i] += constraints.MinvJT[r_off_nv + i] * actual
 
             # --- Equality constraints (bilateral, NO clamping) ---
             for r_off in range(num_equality):
                 var r = equality_start + r_off
-                var a_eq: Scalar[DTYPE] = 0
-                for i in range(NV):
-                    a_eq += constraints.J[r * NV + i] * qacc[i]
+                var r_off_nv = r * NV
+                var a_eq: Scalar[DTYPE]
+                comptime if USE_PGS_SIMD:
+                    var acc_v = SIMD[DTYPE, W](0)
+                    var ii = 0
+                    while ii + W <= NV:
+                        acc_v += J_ptr.load[width=W](
+                            r_off_nv + ii
+                        ) * qacc_ptr.load[width=W](ii)
+                        ii += W
+                    a_eq = acc_v.reduce_add()
+                    while ii < NV:
+                        a_eq += J_ptr[r_off_nv + ii] * qacc_ptr[ii]
+                        ii += 1
+                else:
+                    for i in range(NV):
+                        a_eq += constraints.J[r_off_nv + i] * qacc[i]
                 var R_eq = (
                     Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
                     - constraints.rows[r].K
@@ -623,8 +764,20 @@ struct PGSSolver(ConstraintSolver):
                 )
                 # Bilateral: no clamping (force can push or pull)
                 var actual = constraints.rows[r].lambda_val - old_lambda
-                for i in range(NV):
-                    qacc[i] += constraints.MinvJT[r * NV + i] * actual
+                comptime if USE_PGS_SIMD:
+                    var s_v = SIMD[DTYPE, W](actual)
+                    var jj = 0
+                    while jj + W <= NV:
+                        var q = qacc_ptr.load[width=W](jj)
+                        var m = MJ_ptr.load[width=W](r_off_nv + jj)
+                        qacc_ptr.store(jj, q + m * s_v)
+                        jj += W
+                    while jj < NV:
+                        qacc_ptr[jj] += MJ_ptr[r_off_nv + jj] * actual
+                        jj += 1
+                else:
+                    for i in range(NV):
+                        qacc[i] += constraints.MinvJT[r_off_nv + i] * actual
 
     @staticmethod
     def solver_threads[
@@ -1003,11 +1156,17 @@ struct PGSSolver(ConstraintSolver):
                         var abs_ny = abs(ny)
                         var abs_nz = abs(nz)
                         if abs_nx <= abs_ny and abs_nx <= abs_nz:
-                            hint_x = Scalar[DTYPE](1); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](0)
+                            hint_x = Scalar[DTYPE](1)
+                            hint_y = Scalar[DTYPE](0)
+                            hint_z = Scalar[DTYPE](0)
                         elif abs_ny <= abs_nz:
-                            hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](1); hint_z = Scalar[DTYPE](0)
+                            hint_x = Scalar[DTYPE](0)
+                            hint_y = Scalar[DTYPE](1)
+                            hint_z = Scalar[DTYPE](0)
                         else:
-                            hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](1)
+                            hint_x = Scalar[DTYPE](0)
+                            hint_y = Scalar[DTYPE](0)
+                            hint_z = Scalar[DTYPE](1)
 
                     # Gram-Schmidt: orthogonalize hint against normal
                     var dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
@@ -1021,11 +1180,17 @@ struct PGSSolver(ConstraintSolver):
                         var abs_ny = abs(ny)
                         var abs_nz = abs(nz)
                         if abs_nx <= abs_ny and abs_nx <= abs_nz:
-                            hint_x = Scalar[DTYPE](1); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](0)
+                            hint_x = Scalar[DTYPE](1)
+                            hint_y = Scalar[DTYPE](0)
+                            hint_z = Scalar[DTYPE](0)
                         elif abs_ny <= abs_nz:
-                            hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](1); hint_z = Scalar[DTYPE](0)
+                            hint_x = Scalar[DTYPE](0)
+                            hint_y = Scalar[DTYPE](1)
+                            hint_z = Scalar[DTYPE](0)
                         else:
-                            hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](1)
+                            hint_x = Scalar[DTYPE](0)
+                            hint_y = Scalar[DTYPE](0)
+                            hint_z = Scalar[DTYPE](1)
                         dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
                         t1x = hint_x - dot_nh * nx
                         t1y = hint_y - dot_nh * ny
@@ -1559,9 +1724,7 @@ struct PGSSolver(ConstraintSolver):
                             workspace[env, ws_diag_n_pgs + c]
                         )
                         var R_n_val = (
-                            (Scalar[DTYPE](1.0) - imp_pgs)
-                            / imp_pgs
-                            * diag_pgs
+                            (Scalar[DTYPE](1.0) - imp_pgs) / imp_pgs * diag_pgs
                         )
                         AR[0] = (
                             rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])

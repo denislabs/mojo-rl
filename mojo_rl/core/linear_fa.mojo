@@ -28,7 +28,7 @@ References:
 - Sutton & Barto, Chapter 10: "On-policy Control with Approximation"
 """
 
-from std.math import sqrt
+from std.math import sqrt, exp
 from std.random import random_float64
 
 
@@ -225,9 +225,7 @@ struct LinearWeights[DTYPE: DType]:
                 self.weights[a][i] += learning_rate * td_error * traces[a][i]
 
 
-struct PolynomialFeatures[dtype: DType where dtype.is_floating_point()](
-    FeatureExtractor
-):
+struct PolynomialFeatures[dtype: DType](FeatureExtractor):
     """Polynomial feature extractor for continuous state spaces.
 
     Generates polynomial features up to a specified degree with state normalization.
@@ -447,9 +445,7 @@ struct PolynomialFeatures[dtype: DType where dtype.is_floating_point()](
         return result
 
 
-struct RBFFeatures[dtype: DType where dtype.is_floating_point()](
-    FeatureExtractor
-):
+struct RBFFeatures[dtype: DType](FeatureExtractor):
     """Radial Basis Function (RBF) feature extractor.
 
     Creates features based on distance to fixed centers:
@@ -542,7 +538,9 @@ struct RBFFeatures[dtype: DType where dtype.is_floating_point()](
         # For x < 0 (which is always the case for RBF), we can use
         # exp(x) ≈ 1 + x + x²/2 + x³/6 + x⁴/24 + x⁵/120
         # But for better accuracy, we'll use the math module
-        from std.math import exp
+        comptime assert (
+            Self.DTYPE.is_floating_point()
+        ), "DTYPE must be floating point"
 
         return exp(x)
 
@@ -673,7 +671,7 @@ def make_grid_rbf_centers[
 
 
 def make_mountain_car_poly_features[
-    DTYPE: DType where DTYPE.is_floating_point()
+    DTYPE: DType
 ](degree: Int = 3) -> PolynomialFeatures[DTYPE]:
     """Create polynomial features for MountainCar (2D state) with normalization.
 

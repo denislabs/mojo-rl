@@ -295,7 +295,7 @@ struct GPUPrioritizedReplayBuffer[
                 dtype, N_ENVS, Self.OBS_DIM, Self.CAPACITY
             ](s, ns, bs, bns, widx)
 
-        ctx.enqueue_function[store_obs_wrapper, store_obs_wrapper](
+        ctx.enqueue_function[store_obs_wrapper](
             states_t,
             next_states_t,
             buf_states_t,
@@ -338,7 +338,7 @@ struct GPUPrioritizedReplayBuffer[
             br[buf_idx] = r[i]
             bd[buf_idx] = d[i]
 
-        ctx.enqueue_function[store_scalars_wrapper, store_scalars_wrapper](
+        ctx.enqueue_function[store_scalars_wrapper](
             actions_t,
             rewards_t,
             dones_t,
@@ -466,7 +466,7 @@ struct GPUPrioritizedReplayBuffer[
                 dtype, BATCH, Self.OBS_DIM, Self.CAPACITY
             ](bs, bns, rbs, rbns, idx)
 
-        ctx.enqueue_function[gather_obs_wrapper, gather_obs_wrapper](
+        ctx.enqueue_function[gather_obs_wrapper](
             sampled_obs_t,
             sampled_next_obs_t,
             buf_states_t,
@@ -519,7 +519,7 @@ struct GPUPrioritizedReplayBuffer[
                 ba, br, bd, rba, rbr, rbd, idx
             )
 
-        ctx.enqueue_function[gather_sc_wrapper, gather_sc_wrapper](
+        ctx.enqueue_function[gather_sc_wrapper](
             sampled_actions_t,
             sampled_rewards_t,
             sampled_dones_t,

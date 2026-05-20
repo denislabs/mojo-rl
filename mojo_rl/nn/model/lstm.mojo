@@ -86,9 +86,7 @@ def _tanh_f64(x: Float64) -> Float64:
 @always_inline
 def _sigmoid[dtype: DType](x: Scalar[dtype]) -> Scalar[dtype]:
     """Numerically stable sigmoid in `dtype`. GPU-safe (no Float64)."""
-    comptime assert (
-        dtype.is_floating_point()
-    ), "dtype must be floating point"
+    comptime assert dtype.is_floating_point(), "dtype must be floating point"
     var zero = Scalar[dtype](0.0)
     var one = Scalar[dtype](1.0)
     if x >= zero:
@@ -101,9 +99,7 @@ def _sigmoid[dtype: DType](x: Scalar[dtype]) -> Scalar[dtype]:
 @always_inline
 def _tanh[dtype: DType](x: Scalar[dtype]) -> Scalar[dtype]:
     """tanh in `dtype`. GPU-safe (no Float64)."""
-    comptime assert (
-        dtype.is_floating_point()
-    ), "dtype must be floating point"
+    comptime assert dtype.is_floating_point(), "dtype must be floating point"
     var ep = exp(x)
     var en = exp(-x)
     return (ep - en) / (ep + en)
@@ -118,7 +114,7 @@ struct LSTMCell[
     IN_DIM: Int,
     HIDDEN: Int,
     FORGET_BIAS_INIT: Float64 = 1.0,
-](Movable, ImplicitlyCopyable):
+](ImplicitlyCopyable, Movable):
     """Single-step LSTM cell.
 
     Parameters:
@@ -178,13 +174,17 @@ struct LSTMCell[
         var w_ih_view = LayoutTensor[
             dtype, Layout.row_major(Self.W_IH_SIZE), MutAnyOrigin
         ](params.ptr)
-        INIT.init[Self.W_IH_SIZE, Self.IN_DIM, 4 * Self.HIDDEN, dtype](w_ih_view)
+        INIT.init[Self.W_IH_SIZE, Self.IN_DIM, 4 * Self.HIDDEN, dtype](
+            w_ih_view
+        )
 
         # W_hh: next W_HH_SIZE elements
         var w_hh_view = LayoutTensor[
             dtype, Layout.row_major(Self.W_HH_SIZE), MutAnyOrigin
         ](params.ptr + Self.W_HH_OFFSET)
-        INIT.init[Self.W_HH_SIZE, Self.HIDDEN, 4 * Self.HIDDEN, dtype](w_hh_view)
+        INIT.init[Self.W_HH_SIZE, Self.HIDDEN, 4 * Self.HIDDEN, dtype](
+            w_hh_view
+        )
 
         # Bias: zeros, except forget-gate bias slot.
         # Gate ordering: (i [0:H], f [H:2H], g [2H:3H], o [3H:4H]).
@@ -238,9 +238,7 @@ struct LSTMCell[
                 for j in range(Self.IN_DIM):
                     var xv = Float64(rebind[Scalar[dtype]](x[b, j]))
                     var w = Float64(
-                        rebind[Scalar[dtype]](
-                            params[j * (4 * H) + k]
-                        )
+                        rebind[Scalar[dtype]](params[j * (4 * H) + k])
                     )
                     pre += xv * w
                 for j in range(H):
@@ -251,9 +249,7 @@ struct LSTMCell[
                         )
                     )
                     pre += hv * w
-                pre += Float64(
-                    rebind[Scalar[dtype]](params[Self.B_OFFSET + k])
-                )
+                pre += Float64(rebind[Scalar[dtype]](params[Self.B_OFFSET + k]))
 
                 # Apply per-gate activation.
                 # k in [0, H)   -> i = sigmoid
@@ -431,15 +427,18 @@ struct LSTMCell[
         """One LSTM-cell backward step on CPU.
 
         Args:
-            dh: dL/dh_t  [BATCH, HIDDEN].
-            dc: dL/dc_t  [BATCH, HIDDEN] (incoming from later time step;
+            dh: Gradient of loss with respect to h_t [BATCH, HIDDEN].
+            dc: Gradient of loss with respect to c_t [BATCH, HIDDEN] (incoming from later time step;
                 pass zero on the last time step).
-            x, h_prev, c_prev: re-supplied from forward (caller has them).
-            params, cache: from forward.
-            dx: dL/dx (written).
-            dh_prev: dL/dh_{t-1} (written; thread back as dh for previous step).
-            dc_prev: dL/dc_{t-1} (written; thread back as dc for previous step).
-            grads: dL/dparams (accumulated — never overwritten).
+            x: Input [BATCH, IN_DIM].
+            h_prev: Previous hidden state [BATCH, HIDDEN].
+            c_prev: Previous cell state [BATCH, HIDDEN].
+            params: LSTM parameters [PARAM_SIZE].
+            cache: LSTM cache [CACHE_SIZE].
+            dx: Gradient of loss with respect to x [BATCH, IN_DIM] (written).
+            dh_prev: Gradient of loss with respect to h_{t-1} [BATCH, HIDDEN] (written; thread back as dh for previous step).
+            dc_prev: Gradient of loss with respect to c_{t-1} [BATCH, HIDDEN] (written; thread back as dc for previous step).
+            grads: Gradient of loss with respect to parameters [PARAM_SIZE] (accumulated — never overwritten).
         """
         var H = Self.HIDDEN
 
@@ -632,18 +631,10 @@ struct LSTMCell[
                     params[Self.W_HH_OFFSET + jj * (4 * H) + 3 * H + j]
                 )
 
-            i_pre += rebind[Scalar[dtype]](
-                params[Self.B_OFFSET + 0 * H + j]
-            )
-            f_pre += rebind[Scalar[dtype]](
-                params[Self.B_OFFSET + 1 * H + j]
-            )
-            g_pre += rebind[Scalar[dtype]](
-                params[Self.B_OFFSET + 2 * H + j]
-            )
-            o_pre += rebind[Scalar[dtype]](
-                params[Self.B_OFFSET + 3 * H + j]
-            )
+            i_pre += rebind[Scalar[dtype]](params[Self.B_OFFSET + 0 * H + j])
+            f_pre += rebind[Scalar[dtype]](params[Self.B_OFFSET + 1 * H + j])
+            g_pre += rebind[Scalar[dtype]](params[Self.B_OFFSET + 2 * H + j])
+            o_pre += rebind[Scalar[dtype]](params[Self.B_OFFSET + 3 * H + j])
 
             # Activations in dtype (Metal doesn't support Float64).
             var i_val = _sigmoid[dtype](i_pre)
@@ -855,6 +846,7 @@ struct LSTMCell[
         # threads in the same block may still be writing different j's,
         # we must barrier here.
         from std.gpu.primitives import block as _block
+
         _block.barrier()
 
         # Phase 2: dx[b, j] = sum_k d_combined[b, k] * W_ih[j, k]
@@ -1077,7 +1069,7 @@ struct LSTMCell[
                 x, h_prev, c_prev, params, h_t, c_t, cache
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             x_immut,
             h_prev_immut,
             c_prev_immut,
@@ -1153,7 +1145,7 @@ struct LSTMCell[
                 x, h_prev, c_prev, params, h_t, c_t
             )
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper](
             x_immut,
             h_prev_immut,
             c_prev_immut,
@@ -1270,11 +1262,18 @@ struct LSTMCell[
             ],
         ):
             Self.backward_input_kernel_impl[BATCH, dtype](
-                dh, dc, c_prev, params, cache,
-                dx, dh_prev, dc_prev, d_combined_buf,
+                dh,
+                dc,
+                c_prev,
+                params,
+                cache,
+                dx,
+                dh_prev,
+                dc_prev,
+                d_combined_buf,
             )
 
-        ctx.enqueue_function[kernel_in, kernel_in](
+        ctx.enqueue_function[kernel_in](
             dh_immut,
             dc_immut,
             c_prev_immut,
@@ -1306,7 +1305,7 @@ struct LSTMCell[
                 x, d_combined_buf, grads
             )
 
-        ctx.enqueue_function[kernel_dWih, kernel_dWih](
+        ctx.enqueue_function[kernel_dWih](
             x_immut,
             dcomb_immut,
             grads,
@@ -1332,7 +1331,7 @@ struct LSTMCell[
                 h_prev, d_combined_buf, grads
             )
 
-        ctx.enqueue_function[kernel_dWhh, kernel_dWhh](
+        ctx.enqueue_function[kernel_dWhh](
             h_prev_immut,
             dcomb_immut,
             grads,
@@ -1353,7 +1352,7 @@ struct LSTMCell[
         ):
             Self.backward_db_kernel_impl[BATCH, dtype](d_combined_buf, grads)
 
-        ctx.enqueue_function[kernel_db, kernel_db](
+        ctx.enqueue_function[kernel_db](
             dcomb_immut,
             grads,
             grid_dim=(4 * Self.HIDDEN,),

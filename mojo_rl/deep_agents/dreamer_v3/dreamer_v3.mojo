@@ -226,7 +226,7 @@ struct DreamerV3Agent[
     var _prev_action: UnsafePointer[Scalar[dtype], MutAnyOrigin]
 
     # Diagnostics
-    var logger: UnsafePointer[Self.L, MutAnyOrigin]
+    var logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]]
     var diag_every: Int
 
     # Step counters
@@ -271,7 +271,7 @@ struct DreamerV3Agent[
         self.slow_critic_tau = slow_critic_tau
         self.return_norm_rate = return_norm_rate
         self.max_grad_norm = max_grad_norm
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.logger = None
         self.diag_every = diag_every
         self.total_steps = 0
         self.train_step_count = 0
@@ -1210,27 +1210,27 @@ struct DreamerV3Agent[
         self.train_step_count += 1
 
         # Log DreamerV3 diagnostics
-        if self.logger and (
+        if Bool(self.logger) and (
             self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
                 # World model losses
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "loss",
                     total_wm_loss + actor_loss + critic_loss,
                     step,
                 )
-                self.logger[].log_scalar("obs_loss", obs_loss, step)
-                self.logger[].log_scalar("reward_loss", rew_loss, step)
-                self.logger[].log_scalar("continue_loss", cont_loss, step)
-                self.logger[].log_scalar("dyn_kl", dyn_kl_total, step)
-                self.logger[].log_scalar("rep_kl", rep_kl_total, step)
+                self.logger.value()[].log_scalar("obs_loss", obs_loss, step)
+                self.logger.value()[].log_scalar("reward_loss", rew_loss, step)
+                self.logger.value()[].log_scalar("continue_loss", cont_loss, step)
+                self.logger.value()[].log_scalar("dyn_kl", dyn_kl_total, step)
+                self.logger.value()[].log_scalar("rep_kl", rep_kl_total, step)
                 # Actor-critic
-                self.logger[].log_scalar("policy_loss", actor_loss, step)
-                self.logger[].log_scalar("value_loss", critic_loss, step)
+                self.logger.value()[].log_scalar("policy_loss", actor_loss, step)
+                self.logger.value()[].log_scalar("value_loss", critic_loss, step)
                 # Return normalization
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "return_scale",
                     Float64(self.state.return_ema_hi)
                     - Float64(self.state.return_ema_lo),
@@ -1240,7 +1240,7 @@ struct DreamerV3Agent[
                 var imag_rew_sum: Float64 = 0.0
                 for i in range(HORIZON * IB):
                     imag_rew_sum += Float64((self.state._imag_rewards + i)[])
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "imagined_reward_mean",
                     imag_rew_sum / Float64(HORIZON * IB),
                     step,
@@ -1249,7 +1249,7 @@ struct DreamerV3Agent[
                 var entropy_sum: Float64 = 0.0
                 for i in range((HORIZON - 1) * IB):
                     entropy_sum -= Float64((self.state._imag_log_probs + i)[])
-                self.logger[].log_scalar(
+                self.logger.value()[].log_scalar(
                     "entropy",
                     entropy_sum / Float64((HORIZON - 1) * IB),
                     step,
@@ -1744,7 +1744,7 @@ struct DreamerV3Agent[
         ]
 
         comptime DEC_DEINT_IB_BLK = (IB_ * OBS + TPB - 1) // TPB
-        ctx.enqueue_function[_deint_dec_ib, _deint_dec_ib](
+        ctx.enqueue_function[_deint_dec_ib](
             dec_out_ib,
             heads_out_flat,
             grid_dim=(DEC_DEINT_IB_BLK,),
@@ -1755,7 +1755,7 @@ struct DreamerV3Agent[
             dtype, Layout.row_major(IB_ * BINS), MutAnyOrigin
         ](gpu_state.rew_logits_buf.unsafe_ptr())
         comptime REW_DEINT_IB_BLK = (IB_ * BINS + TPB - 1) // TPB
-        ctx.enqueue_function[_deint_rew_ib, _deint_rew_ib](
+        ctx.enqueue_function[_deint_rew_ib](
             rew_out_ib,
             heads_out_flat,
             grid_dim=(REW_DEINT_IB_BLK,),
@@ -1766,7 +1766,7 @@ struct DreamerV3Agent[
             dtype, Layout.row_major(IB_), MutAnyOrigin
         ](gpu_state.cont_out_buf.unsafe_ptr())
         comptime CONT_DEINT_IB_BLK = (IB_ + TPB - 1) // TPB
-        ctx.enqueue_function[_deint_cont_ib, _deint_cont_ib](
+        ctx.enqueue_function[_deint_cont_ib](
             cont_out_ib,
             heads_out_flat,
             grid_dim=(CONT_DEINT_IB_BLK,),
@@ -1786,13 +1786,13 @@ struct DreamerV3Agent[
         var bptt_batch_obs = LayoutTensor[
             dtype, Layout.row_major(BPTT_BATCH_OBS_SIZE), MutAnyOrigin
         ](gpu_state.batch_obs.unsafe_ptr())
-        ctx.enqueue_function[run_gather_target, run_gather_target](
+        ctx.enqueue_function[run_gather_target](
             dec_target_ib,
             bptt_batch_obs,
             grid_dim=(IB_OBS_BLK_,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[run_symlog_ib_obs, run_symlog_ib_obs](
+        ctx.enqueue_function[run_symlog_ib_obs](
             dec_target_ib,
             dec_target_ib,
             grid_dim=(IB_OBS_BLK_,),
@@ -1804,7 +1804,7 @@ struct DreamerV3Agent[
         ](gpu_state.dec_grad_out_buf.unsafe_ptr())
         var mse_scale = Scalar[dtype](2.0 / Float64(B * OBS))
         comptime ad_mse_ib = mse_grad_kernel[IB_OBS_]
-        ctx.enqueue_function[ad_mse_ib, ad_mse_ib](
+        ctx.enqueue_function[ad_mse_ib](
             dec_grad_ib,
             dec_out_ib,
             dec_target_ib,
@@ -1827,13 +1827,13 @@ struct DreamerV3Agent[
         ](gpu_state.batch_rewards.unsafe_ptr())
         # Copy rewards to symlog buf then symlog in-place
         comptime copy_rew_ib = copy_kernel[IB_]
-        ctx.enqueue_function[copy_rew_ib, copy_rew_ib](
+        ctx.enqueue_function[copy_rew_ib](
             rew_symlog_ib,
             batch_rew_flat,
             grid_dim=(IB_BLK_,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[run_symlog_ib, run_symlog_ib](
+        ctx.enqueue_function[run_symlog_ib](
             rew_symlog_ib,
             rew_symlog_ib,
             grid_dim=(IB_BLK_,),
@@ -1847,7 +1847,7 @@ struct DreamerV3Agent[
             gpu_state.bins_buf.unsafe_ptr()
         )
         comptime ad_rew_two_hot_ib = two_hot_encode_kernel[IB_, BINS]
-        ctx.enqueue_function[ad_rew_two_hot_ib, ad_rew_two_hot_ib](
+        ctx.enqueue_function[ad_rew_two_hot_ib](
             rew_target_ib,
             rew_symlog_ib,
             bins_1d,
@@ -1863,7 +1863,7 @@ struct DreamerV3Agent[
         ](gpu_state.rew_logits_buf.unsafe_ptr())
         var rew_inv_batch = Scalar[dtype](1.0 / Float64(B))
         comptime ad_rew_ce_ib = two_hot_ce_grad_kernel[IB_, BINS]
-        ctx.enqueue_function[ad_rew_ce_ib, ad_rew_ce_ib](
+        ctx.enqueue_function[ad_rew_ce_ib](
             rew_grad_ib,
             rew_logits_ib_2d,
             rew_target_ib,
@@ -1901,7 +1901,7 @@ struct DreamerV3Agent[
         var rew_grad_flat = LayoutTensor[
             dtype, Layout.row_major(IB_ * BINS), MutAnyOrigin
         ](gpu_state.rew_grad_out_buf.unsafe_ptr())
-        ctx.enqueue_function[run_zero_rew_t0, run_zero_rew_t0](
+        ctx.enqueue_function[run_zero_rew_t0](
             rew_grad_flat,
             grid_dim=(ZERO_REW_BLK,),
             block_dim=(TPB,),
@@ -1909,7 +1909,7 @@ struct DreamerV3Agent[
 
         # 5. Continue loss: sigmoid, 1-done target, BCE grad
         comptime ad_cont_sigmoid_ib = sigmoid_kernel[IB_]
-        ctx.enqueue_function[ad_cont_sigmoid_ib, ad_cont_sigmoid_ib](
+        ctx.enqueue_function[ad_cont_sigmoid_ib](
             cont_out_ib,
             cont_out_ib,
             grid_dim=(IB_BLK_,),
@@ -1923,7 +1923,7 @@ struct DreamerV3Agent[
             dtype, Layout.row_major(IB_), MutAnyOrigin
         ](gpu_state.batch_dones.unsafe_ptr())
         comptime run_one_minus_ib = one_minus_kernel[IB_]
-        ctx.enqueue_function[run_one_minus_ib, run_one_minus_ib](
+        ctx.enqueue_function[run_one_minus_ib](
             cont_target_ib,
             batch_done_flat,
             grid_dim=(IB_BLK_,),
@@ -1940,7 +1940,7 @@ struct DreamerV3Agent[
         ](gpu_state.cont_target_buf.unsafe_ptr())
         var cont_inv_batch = Scalar[dtype](1.0 / Float64(B))
         comptime ad_cont_bce_ib = bce_grad_kernel[IB_]
-        ctx.enqueue_function[ad_cont_bce_ib, ad_cont_bce_ib](
+        ctx.enqueue_function[ad_cont_bce_ib](
             cont_grad_ib,
             cont_pred_ib,
             cont_tgt_ib,
@@ -1954,7 +1954,7 @@ struct DreamerV3Agent[
         var cont_grad_flat = LayoutTensor[
             dtype, Layout.row_major(IB_), MutAnyOrigin
         ](gpu_state.cont_grad_buf.unsafe_ptr())
-        ctx.enqueue_function[run_zero_cont_t0, run_zero_cont_t0](
+        ctx.enqueue_function[run_zero_cont_t0](
             cont_grad_flat,
             grid_dim=(ZERO_CONT_BLK,),
             block_dim=(TPB,),
@@ -1971,7 +1971,7 @@ struct DreamerV3Agent[
             IB_ * OBS, OBS, HEADS_OUT, 0, HEADS_FLAT_IB
         ]
         comptime INT_DEC_IB_BLK = (IB_ * OBS + TPB - 1) // TPB
-        ctx.enqueue_function[_int_dec_ib, _int_dec_ib](
+        ctx.enqueue_function[_int_dec_ib](
             hg_out_ib,
             dg_ib,
             grid_dim=(INT_DEC_IB_BLK,),
@@ -1984,7 +1984,7 @@ struct DreamerV3Agent[
             IB_ * BINS, BINS, HEADS_OUT, OBS, HEADS_FLAT_IB
         ]
         comptime INT_REW_IB_BLK = (IB_ * BINS + TPB - 1) // TPB
-        ctx.enqueue_function[_int_rew_ib, _int_rew_ib](
+        ctx.enqueue_function[_int_rew_ib](
             hg_out_ib,
             rg_ib,
             grid_dim=(INT_REW_IB_BLK,),
@@ -1997,7 +1997,7 @@ struct DreamerV3Agent[
             IB_, 1, HEADS_OUT, OBS + BINS, HEADS_FLAT_IB
         ]
         comptime INT_CONT_IB_BLK = (IB_ + TPB - 1) // TPB
-        ctx.enqueue_function[_int_cont_ib, _int_cont_ib](
+        ctx.enqueue_function[_int_cont_ib](
             hg_out_ib,
             cg_ib,
             grid_dim=(INT_CONT_IB_BLK,),
@@ -2048,7 +2048,7 @@ struct DreamerV3Agent[
             ]
 
             comptime SPLIT_FEAT_BLOCKS = (B * FEAT + TPB - 1) // TPB
-            ctx.enqueue_function[ad_split_feat, ad_split_feat](
+            ctx.enqueue_function[ad_split_feat](
                 d_deter,
                 d_stoch,
                 d_feat_2d,
@@ -2069,7 +2069,7 @@ struct DreamerV3Agent[
             comptime ad_add_rec_stoch = accumulate_kernel[STOCH_FLAT_SZ]
 
             comptime STOCH_BLOCKS = (STOCH_FLAT_SZ + TPB - 1) // TPB
-            ctx.enqueue_function[ad_add_rec_stoch, ad_add_rec_stoch](
+            ctx.enqueue_function[ad_add_rec_stoch](
                 d_stoch_1d,
                 rec_stoch_1d,
                 grid_dim=(STOCH_BLOCKS,),
@@ -2094,7 +2094,7 @@ struct DreamerV3Agent[
             ]
 
             comptime ST_BLOCKS = (B * Self.stoch_dim + TPB - 1) // TPB
-            ctx.enqueue_function[ad_st_vjp, ad_st_vjp](
+            ctx.enqueue_function[ad_st_vjp](
                 d_post_logits,
                 d_stoch,
                 post_probs_t,
@@ -2119,7 +2119,7 @@ struct DreamerV3Agent[
             ]
 
             comptime KL_BLOCKS = (B + TPB - 1) // TPB
-            ctx.enqueue_function[ad_kl_div, ad_kl_div](
+            ctx.enqueue_function[ad_kl_div](
                 kl_val,
                 post_probs_t,
                 prior_probs_t,
@@ -2144,7 +2144,7 @@ struct DreamerV3Agent[
             ]
 
             comptime KL_GRAD_BLOCKS = (B * Self.stoch_dim + TPB - 1) // TPB
-            ctx.enqueue_function[ad_kl_grad, ad_kl_grad](
+            ctx.enqueue_function[ad_kl_grad](
                 d_post_kl,
                 d_prior_logits,
                 post_probs_t,
@@ -2170,7 +2170,7 @@ struct DreamerV3Agent[
 
             comptime ad_add_kl_post = accumulate_kernel[STOCH_FLAT_SZ]
 
-            ctx.enqueue_function[ad_add_kl_post, ad_add_kl_post](
+            ctx.enqueue_function[ad_add_kl_post](
                 d_post_total_1d,
                 d_post_kl_1d,
                 grid_dim=(STOCH_BLOCKS,),
@@ -2216,7 +2216,7 @@ struct DreamerV3Agent[
             ]
 
             comptime SPLIT_POST_BLOCKS = (B * POST_IN + TPB - 1) // TPB
-            ctx.enqueue_function[ad_split_post_in, ad_split_post_in](
+            ctx.enqueue_function[ad_split_post_in](
                 d_deter_from_post,
                 d_embed,
                 post_grad_in,
@@ -2288,7 +2288,7 @@ struct DreamerV3Agent[
             # d_deter_total already has d_deter_feat from split; add the rest
             comptime ad_add_dd_post = accumulate_kernel[DETER_FLAT]
 
-            ctx.enqueue_function[ad_add_dd_post, ad_add_dd_post](
+            ctx.enqueue_function[ad_add_dd_post](
                 dd_1d,
                 dd_post_1d,
                 grid_dim=(DD_BLOCKS,),
@@ -2297,7 +2297,7 @@ struct DreamerV3Agent[
 
             comptime ad_add_dd_prior = accumulate_kernel[DETER_FLAT]
 
-            ctx.enqueue_function[ad_add_dd_prior, ad_add_dd_prior](
+            ctx.enqueue_function[ad_add_dd_prior](
                 dd_1d,
                 dd_prior_1d,
                 grid_dim=(DD_BLOCKS,),
@@ -2306,7 +2306,7 @@ struct DreamerV3Agent[
 
             comptime ad_add_dd_rec = accumulate_kernel[DETER_FLAT]
 
-            ctx.enqueue_function[ad_add_dd_rec, ad_add_dd_rec](
+            ctx.enqueue_function[ad_add_dd_rec](
                 dd_1d,
                 dd_rec_1d,
                 grid_dim=(DD_BLOCKS,),
@@ -2332,7 +2332,7 @@ struct DreamerV3Agent[
             comptime ad_gru_bwd = gru_gate_backward_kernel[B, DETER]
 
             comptime GRU_BLOCKS = (B * DETER + TPB - 1) // TPB
-            ctx.enqueue_function[ad_gru_bwd, ad_gru_bwd](
+            ctx.enqueue_function[ad_gru_bwd](
                 d_gate,
                 d_prev_deter_gru,
                 d_deter,
@@ -2410,7 +2410,7 @@ struct DreamerV3Agent[
             ]
 
             comptime SPLIT_CONCAT_BLOCKS = (B * GRU_IN + TPB - 1) // TPB
-            ctx.enqueue_function[ad_split_concat, ad_split_concat](
+            ctx.enqueue_function[ad_split_concat](
                 d_prev_deter_concat,
                 d_proj_d,
                 d_proj_s,
@@ -2505,7 +2505,7 @@ struct DreamerV3Agent[
             # Copy d_prev_deter_gru -> d_recurrent_deter
             comptime ad_copy_rec_d = copy_kernel[DETER_FLAT]
 
-            ctx.enqueue_function[ad_copy_rec_d, ad_copy_rec_d](
+            ctx.enqueue_function[ad_copy_rec_d](
                 rec_deter,
                 dpd_gru_1d,
                 grid_dim=(DD_BLOCKS,),
@@ -2515,7 +2515,7 @@ struct DreamerV3Agent[
             # + d_prev_deter_concat
             comptime ad_add_concat_d = accumulate_kernel[DETER_FLAT]
 
-            ctx.enqueue_function[ad_add_concat_d, ad_add_concat_d](
+            ctx.enqueue_function[ad_add_concat_d](
                 rec_deter,
                 dpd_concat_1d,
                 grid_dim=(DD_BLOCKS,),
@@ -2525,7 +2525,7 @@ struct DreamerV3Agent[
             # + d_prev_deter_dproj
             comptime ad_add_dproj_d = accumulate_kernel[DETER_FLAT]
 
-            ctx.enqueue_function[ad_add_dproj_d, ad_add_dproj_d](
+            ctx.enqueue_function[ad_add_dproj_d](
                 rec_deter,
                 dpd_dproj_1d,
                 grid_dim=(DD_BLOCKS,),
@@ -2544,7 +2544,7 @@ struct DreamerV3Agent[
 
             comptime ad_copy_rec_s = copy_kernel[STOCH_FLAT_SZ]
 
-            ctx.enqueue_function[ad_copy_rec_s, ad_copy_rec_s](
+            ctx.enqueue_function[ad_copy_rec_s](
                 rec_stoch_dst,
                 dpstoch_1d,
                 grid_dim=(STOCH_BLOCKS,),
@@ -2558,7 +2558,7 @@ struct DreamerV3Agent[
 
             comptime ad_clamp_rec_d = clamp_kernel[DETER_FLAT]
 
-            ctx.enqueue_function[ad_clamp_rec_d, ad_clamp_rec_d](
+            ctx.enqueue_function[ad_clamp_rec_d](
                 rec_deter,
                 clamp_max,
                 grid_dim=(DD_BLOCKS,),
@@ -2567,7 +2567,7 @@ struct DreamerV3Agent[
 
             comptime ad_clamp_rec_s = clamp_kernel[STOCH_FLAT_SZ]
 
-            ctx.enqueue_function[ad_clamp_rec_s, ad_clamp_rec_s](
+            ctx.enqueue_function[ad_clamp_rec_s](
                 rec_stoch_dst,
                 clamp_max,
                 grid_dim=(STOCH_BLOCKS,),
@@ -2876,7 +2876,7 @@ struct DreamerV3Agent[
         var batch_obs_src = LayoutTensor[
             dtype, Layout.row_major(OBS_SIZE), MutAnyOrigin
         ](gpu_state.batch_obs.unsafe_ptr())
-        ctx.enqueue_function[run_batch_gather, run_batch_gather](
+        ctx.enqueue_function[run_batch_gather](
             all_symlog_flat,
             batch_obs_src,
             grid_dim=(IB_OBS_BLK,),
@@ -2884,7 +2884,7 @@ struct DreamerV3Agent[
         )
         # 2. Symlog in-place on [B*BL*OBS]
         comptime run_symlog_all = symlog_kernel[IB_OBS]
-        ctx.enqueue_function[run_symlog_all, run_symlog_all](
+        ctx.enqueue_function[run_symlog_all](
             all_symlog_flat,
             all_symlog_flat,
             grid_dim=(IB_OBS_BLK,),
@@ -2920,7 +2920,7 @@ struct DreamerV3Agent[
                 var batch_act_at_t = LayoutTensor[
                     dtype, Layout.row_major(ACT_SRC_FLAT), MutAnyOrigin
                 ](gpu_state.batch_actions.unsafe_ptr() + (t - 1) * ACT)
-                ctx.enqueue_function[run_deint_act, run_deint_act](
+                ctx.enqueue_function[run_deint_act](
                     act_step_lt,
                     batch_act_at_t,
                     grid_dim=(ACT_DEINT_BLK,),
@@ -2943,7 +2943,7 @@ struct DreamerV3Agent[
             comptime run_action_norm = action_normalize_kernel[B, ACT]
 
             comptime NORM_BLOCKS = (B * ACT + TPB - 1) // TPB
-            ctx.enqueue_function[run_action_norm, run_action_norm](
+            ctx.enqueue_function[run_action_norm](
                 norm_act_2d,
                 act_2d,
                 grid_dim=(NORM_BLOCKS,),
@@ -2962,7 +2962,7 @@ struct DreamerV3Agent[
             comptime copy_nact = copy_kernel[ACT_SLICE]
 
             comptime COPY_NA_BLOCKS = (ACT_SLICE + TPB - 1) // TPB
-            ctx.enqueue_function[copy_nact, copy_nact](
+            ctx.enqueue_function[copy_nact](
                 all_nact_t,
                 nact_1d,
                 grid_dim=(COPY_NA_BLOCKS,),
@@ -2984,7 +2984,7 @@ struct DreamerV3Agent[
             comptime copy_prev_d = copy_kernel[PREV_D_SLICE]
 
             comptime COPY_PD_BLOCKS = (PREV_D_SLICE + TPB - 1) // TPB
-            ctx.enqueue_function[copy_prev_d, copy_prev_d](
+            ctx.enqueue_function[copy_prev_d](
                 all_prev_deter_t,
                 deter_1d_src,
                 grid_dim=(COPY_PD_BLOCKS,),
@@ -3055,7 +3055,7 @@ struct DreamerV3Agent[
             comptime run_concat_gru = concat_gru_input_kernel[B, DETER, HID]
 
             comptime CONCAT_BLOCKS = (B * GRU_IN + TPB - 1) // TPB
-            ctx.enqueue_function[run_concat_gru, run_concat_gru](
+            ctx.enqueue_function[run_concat_gru](
                 concat_2d,
                 deter_2d,
                 proj_d_2d,
@@ -3116,7 +3116,7 @@ struct DreamerV3Agent[
             comptime copy_gate = copy_kernel[GATE_SLICE]
 
             comptime COPY_G_BLOCKS = (GATE_SLICE + TPB - 1) // TPB
-            ctx.enqueue_function[copy_gate, copy_gate](
+            ctx.enqueue_function[copy_gate](
                 all_gate_t,
                 gate_1d,
                 grid_dim=(COPY_G_BLOCKS,),
@@ -3131,7 +3131,7 @@ struct DreamerV3Agent[
             comptime run_gru_gate = gru_gate_kernel[B, DETER]
 
             comptime GATE_BLOCKS = (B * DETER + TPB - 1) // TPB
-            ctx.enqueue_function[run_gru_gate, run_gru_gate](
+            ctx.enqueue_function[run_gru_gate](
                 new_deter_2d,
                 deter_2d,
                 gate_2d,
@@ -3148,7 +3148,7 @@ struct DreamerV3Agent[
             comptime run_concat_de = concat_deter_embed_kernel[B, DETER, STOCH]
 
             comptime DE_BLOCKS = (B * POST_IN + TPB - 1) // TPB
-            ctx.enqueue_function[run_concat_de, run_concat_de](
+            ctx.enqueue_function[run_concat_de](
                 post_in_2d,
                 new_deter_2d,
                 embed_2d,
@@ -3212,7 +3212,7 @@ struct DreamerV3Agent[
             ]
 
             comptime CAT_BLOCKS = (B * Self.stoch_dim + TPB - 1) // TPB
-            ctx.enqueue_function[run_cat_post, run_cat_post](
+            ctx.enqueue_function[run_cat_post](
                 new_stoch_2d,
                 post_probs_2d,
                 post_logits_2d,
@@ -3237,7 +3237,7 @@ struct DreamerV3Agent[
                 Self.StateType.RSSMType.UNIMIX,
             ]
 
-            ctx.enqueue_function[run_cat_prior, run_cat_prior](
+            ctx.enqueue_function[run_cat_prior](
                 dummy_stoch_2d,
                 prior_probs_2d,
                 prior_logits_2d,
@@ -3255,7 +3255,7 @@ struct DreamerV3Agent[
             comptime run_concat_feat = concat_feat_kernel[B, DETER, STOCH]
 
             comptime FEAT_BLOCKS = (B * FEAT + TPB - 1) // TPB
-            ctx.enqueue_function[run_concat_feat, run_concat_feat](
+            ctx.enqueue_function[run_concat_feat](
                 feat_2d,
                 new_deter_2d,
                 new_stoch_2d,
@@ -3276,7 +3276,7 @@ struct DreamerV3Agent[
             comptime copy_deter = copy_kernel[DETER_SLICE]
 
             comptime COPY_D_BLOCKS = (DETER_SLICE + TPB - 1) // TPB
-            ctx.enqueue_function[copy_deter, copy_deter](
+            ctx.enqueue_function[copy_deter](
                 all_deter_t,
                 new_deter_1d,
                 grid_dim=(COPY_D_BLOCKS,),
@@ -3294,7 +3294,7 @@ struct DreamerV3Agent[
             comptime copy_stoch = copy_kernel[STOCH_SLICE]
 
             comptime COPY_S_BLOCKS = (STOCH_SLICE + TPB - 1) // TPB
-            ctx.enqueue_function[copy_stoch, copy_stoch](
+            ctx.enqueue_function[copy_stoch](
                 all_stoch_t,
                 new_stoch_1d,
                 grid_dim=(COPY_S_BLOCKS,),
@@ -3312,7 +3312,7 @@ struct DreamerV3Agent[
             comptime copy_feat = copy_kernel[FEAT_SLICE]
 
             comptime COPY_F_BLOCKS = (FEAT_SLICE + TPB - 1) // TPB
-            ctx.enqueue_function[copy_feat, copy_feat](
+            ctx.enqueue_function[copy_feat](
                 all_feat_t,
                 feat_1d,
                 grid_dim=(COPY_F_BLOCKS,),
@@ -3329,7 +3329,7 @@ struct DreamerV3Agent[
 
             comptime copy_post_probs = copy_kernel[STOCH_SLICE]
 
-            ctx.enqueue_function[copy_post_probs, copy_post_probs](
+            ctx.enqueue_function[copy_post_probs](
                 all_post_probs_t,
                 post_probs_1d,
                 grid_dim=(COPY_S_BLOCKS,),
@@ -3346,7 +3346,7 @@ struct DreamerV3Agent[
 
             comptime copy_prior_probs = copy_kernel[STOCH_SLICE]
 
-            ctx.enqueue_function[copy_prior_probs, copy_prior_probs](
+            ctx.enqueue_function[copy_prior_probs](
                 all_prior_probs_t,
                 prior_probs_1d,
                 grid_dim=(COPY_S_BLOCKS,),
@@ -3469,7 +3469,7 @@ struct DreamerV3Agent[
         comptime copy_all_deter = copy_kernel[IB_DETER]
 
         comptime INIT_D_BLOCKS = (IB_DETER + TPB - 1) // TPB
-        ctx.enqueue_function[copy_all_deter, copy_all_deter](
+        ctx.enqueue_function[copy_all_deter](
             imag_deter_init,
             all_deter_1d,
             grid_dim=(INIT_D_BLOCKS,),
@@ -3487,7 +3487,7 @@ struct DreamerV3Agent[
         comptime copy_all_stoch = copy_kernel[IB_STOCH]
 
         comptime INIT_S_BLOCKS = (IB_STOCH + TPB - 1) // TPB
-        ctx.enqueue_function[copy_all_stoch, copy_all_stoch](
+        ctx.enqueue_function[copy_all_stoch](
             imag_stoch_init,
             all_stoch_1d,
             grid_dim=(INIT_S_BLOCKS,),
@@ -3540,13 +3540,13 @@ struct DreamerV3Agent[
 
             comptime COPY_ID_BLOCKS = (IMAG_D_SLICE + TPB - 1) // TPB
             comptime COPY_IS_BLOCKS = (IMAG_S_SLICE + TPB - 1) // TPB
-            ctx.enqueue_function[copy_imag_d, copy_imag_d](
+            ctx.enqueue_function[copy_imag_d](
                 save_d,
                 src_d,
                 grid_dim=(COPY_ID_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function[copy_imag_s, copy_imag_s](
+            ctx.enqueue_function[copy_imag_s](
                 save_s,
                 src_s,
                 grid_dim=(COPY_IS_BLOCKS,),
@@ -3554,7 +3554,7 @@ struct DreamerV3Agent[
             )
 
             comptime IB_FEAT_BLOCKS = (IB * FEAT + TPB - 1) // TPB
-            ctx.enqueue_function[run_concat_imag_feat, run_concat_imag_feat](
+            ctx.enqueue_function[run_concat_imag_feat](
                 imag_feat_2d,
                 imag_deter_2d,
                 imag_stoch_2d,
@@ -3599,7 +3599,7 @@ struct DreamerV3Agent[
             comptime copy_ao = copy_kernel[AO_SLICE]
 
             comptime COPY_AO_BLOCKS = (AO_SLICE + TPB - 1) // TPB
-            ctx.enqueue_function[copy_ao, copy_ao](
+            ctx.enqueue_function[copy_ao](
                 save_ao,
                 src_ao,
                 grid_dim=(COPY_AO_BLOCKS,),
@@ -3622,7 +3622,7 @@ struct DreamerV3Agent[
             comptime run_sample_actions = tanh_normal_sample_kernel[IB, ACT]
 
             comptime SAMPLE_BLOCKS = (IB + TPB - 1) // TPB
-            ctx.enqueue_function[run_sample_actions, run_sample_actions](
+            ctx.enqueue_function[run_sample_actions](
                 actions_2d,
                 log_probs_1d,
                 actor_out_2d,
@@ -3643,7 +3643,7 @@ struct DreamerV3Agent[
             comptime copy_imag_a = copy_kernel[IMAG_A_SLICE]
 
             comptime COPY_IA_BLOCKS = (IMAG_A_SLICE + TPB - 1) // TPB
-            ctx.enqueue_function[copy_imag_a, copy_imag_a](
+            ctx.enqueue_function[copy_imag_a](
                 save_a,
                 src_a,
                 grid_dim=(COPY_IA_BLOCKS,),
@@ -3681,7 +3681,7 @@ struct DreamerV3Agent[
 
             comptime run_decode_reward = decode_value_kernel[IB, BINS]
 
-            ctx.enqueue_function[run_decode_reward, run_decode_reward](
+            ctx.enqueue_function[run_decode_reward](
                 rewards_h,
                 rew_logits_2d,
                 bins_1d,
@@ -3713,7 +3713,7 @@ struct DreamerV3Agent[
 
             comptime run_sigmoid = sigmoid_kernel[IB]
 
-            ctx.enqueue_function[run_sigmoid, run_sigmoid](
+            ctx.enqueue_function[run_sigmoid](
                 continues_h,
                 cont_1d_in,
                 grid_dim=(SAMPLE_BLOCKS,),
@@ -3739,7 +3739,7 @@ struct DreamerV3Agent[
 
             comptime run_decode_value = decode_value_kernel[IB, BINS]
 
-            ctx.enqueue_function[run_decode_value, run_decode_value](
+            ctx.enqueue_function[run_decode_value](
                 values_h,
                 critic_logits_2d,
                 bins_1d,
@@ -3767,7 +3767,7 @@ struct DreamerV3Agent[
                 comptime run_imag_act_norm = action_normalize_kernel[IB, ACT]
 
                 comptime IMAG_NORM_BLOCKS = (IB * ACT + TPB - 1) // TPB
-                ctx.enqueue_function[run_imag_act_norm, run_imag_act_norm](
+                ctx.enqueue_function[run_imag_act_norm](
                     imag_norm_act_2d,
                     actions_2d,
                     grid_dim=(IMAG_NORM_BLOCKS,),
@@ -3831,7 +3831,7 @@ struct DreamerV3Agent[
                 ]
 
                 comptime IMAG_CONCAT_BLOCKS = (IB * GRU_IN_IB + TPB - 1) // TPB
-                ctx.enqueue_function[run_imag_concat_gru, run_imag_concat_gru](
+                ctx.enqueue_function[run_imag_concat_gru](
                     imag_concat_2d,
                     imag_deter_2d,
                     imag_proj_d_2d,
@@ -3898,7 +3898,7 @@ struct DreamerV3Agent[
                 comptime copy_imag_gate = copy_kernel[IMAG_GATE_SLICE]
 
                 comptime COPY_IG_BLOCKS = (IMAG_GATE_SLICE + TPB - 1) // TPB
-                ctx.enqueue_function[copy_imag_gate, copy_imag_gate](
+                ctx.enqueue_function[copy_imag_gate](
                     save_gate,
                     src_gate,
                     grid_dim=(COPY_IG_BLOCKS,),
@@ -3909,7 +3909,7 @@ struct DreamerV3Agent[
                 comptime run_imag_gru_gate = gru_gate_kernel[IB, DETER]
 
                 comptime IMAG_GATE_BLOCKS = (IB * DETER + TPB - 1) // TPB
-                ctx.enqueue_function[run_imag_gru_gate, run_imag_gru_gate](
+                ctx.enqueue_function[run_imag_gru_gate](
                     next_deter_2d,
                     imag_deter_2d,
                     imag_gate_2d,
@@ -3951,7 +3951,7 @@ struct DreamerV3Agent[
                 comptime IMAG_CAT_BLOCKS = (
                     IB * Self.stoch_dim + TPB - 1
                 ) // TPB
-                ctx.enqueue_function[run_imag_cat_prior, run_imag_cat_prior](
+                ctx.enqueue_function[run_imag_cat_prior](
                     next_stoch_2d,
                     imag_prior_probs_2d,
                     imag_prior_logits_2d,
@@ -3980,7 +3980,7 @@ struct DreamerV3Agent[
         comptime run_lambda_returns = lambda_returns_kernel[HORIZON, IB]
 
         comptime LAMBDA_BLOCKS = (IB + TPB - 1) // TPB
-        ctx.enqueue_function[run_lambda_returns, run_lambda_returns](
+        ctx.enqueue_function[run_lambda_returns](
             returns_2d,
             rewards_2d,
             values_2d,
@@ -4003,7 +4003,7 @@ struct DreamerV3Agent[
 
         comptime run_minmax = min_max_reduce_kernel[RETURNS_SIZE, TPB]
 
-        ctx.enqueue_function[run_minmax, run_minmax](
+        ctx.enqueue_function[run_minmax](
             minmax_2,
             returns_flat,
             grid_dim=(1,),
@@ -4044,7 +4044,7 @@ struct DreamerV3Agent[
 
             comptime run_adv_precompute = advantage_kernel[IB]
 
-            ctx.enqueue_function[run_adv_precompute, run_adv_precompute](
+            ctx.enqueue_function[run_adv_precompute](
                 adv_h,
                 ret_h,
                 val_h,
@@ -4060,7 +4060,7 @@ struct DreamerV3Agent[
         comptime run_scale_adv = normalize_returns_elementwise_kernel[ADV_TOTAL]
 
         # adv = (adv - 0) * inv_rscale = adv / rscale
-        ctx.enqueue_function[run_scale_adv, run_scale_adv](
+        ctx.enqueue_function[run_scale_adv](
             all_adv,
             Scalar[dtype](0.0),  # no offset
             inv_rscale,
@@ -4071,7 +4071,7 @@ struct DreamerV3Agent[
         # Normalize advantages: (adv - mean) / max(std, 1.0)
         comptime run_norm_adv = normalize_advantages_kernel[ADV_TOTAL, TPB]
 
-        ctx.enqueue_function[run_norm_adv, run_norm_adv](
+        ctx.enqueue_function[run_norm_adv](
             all_adv,
             grid_dim=(1,),
             block_dim=(TPB,),
@@ -4085,7 +4085,7 @@ struct DreamerV3Agent[
             RETURNS_SIZE
         ]
 
-        ctx.enqueue_function[run_norm_returns, run_norm_returns](
+        ctx.enqueue_function[run_norm_returns](
             returns_flat,
             Scalar[dtype](self.state.return_ema_lo),
             Scalar[dtype](1.0 / scale),
@@ -4125,7 +4125,7 @@ struct DreamerV3Agent[
 
         comptime run_concat_ac_feat = concat_feat_kernel[HIB, DETER, STOCH]
         comptime AC_FEAT_BLOCKS = (HIB * FEAT + TPB - 1) // TPB
-        ctx.enqueue_function[run_concat_ac_feat, run_concat_ac_feat](
+        ctx.enqueue_function[run_concat_ac_feat](
             all_ac_feat,
             all_ac_deter,
             all_ac_stoch,
@@ -4163,7 +4163,7 @@ struct DreamerV3Agent[
 
         comptime run_symlog_ret_all = symlog_kernel[HIB]
         comptime HIB_BLOCKS = (HIB + TPB - 1) // TPB
-        ctx.enqueue_function[run_symlog_ret_all, run_symlog_ret_all](
+        ctx.enqueue_function[run_symlog_ret_all](
             symlog_ret_all,
             returns_all,
             grid_dim=(HIB_BLOCKS,),
@@ -4174,7 +4174,7 @@ struct DreamerV3Agent[
             dtype, Layout.row_major(HIB, BINS), MutAnyOrigin
         ](gpu_state.two_hot_targets_buf.unsafe_ptr())
         comptime run_two_hot_all = two_hot_encode_kernel[HIB, BINS]
-        ctx.enqueue_function[run_two_hot_all, run_two_hot_all](
+        ctx.enqueue_function[run_two_hot_all](
             two_hot_all,
             symlog_ret_all,
             bins_1d_ac,
@@ -4186,7 +4186,7 @@ struct DreamerV3Agent[
             dtype, Layout.row_major(HIB, BINS), MutAnyOrigin
         ](gpu_state.critic_grad_buf.unsafe_ptr())
         comptime run_critic_grad_all = two_hot_ce_grad_kernel[HIB, BINS]
-        ctx.enqueue_function[run_critic_grad_all, run_critic_grad_all](
+        ctx.enqueue_function[run_critic_grad_all](
             critic_grad_all,
             critic_logits_all,
             two_hot_all,
@@ -4247,7 +4247,7 @@ struct DreamerV3Agent[
 
         comptime run_reinforce_all = reinforce_grad_kernel[HIB, ACT]
         comptime HIB_SAMPLE_BLOCKS = (HIB + TPB - 1) // TPB
-        ctx.enqueue_function[run_reinforce_all, run_reinforce_all](
+        ctx.enqueue_function[run_reinforce_all](
             actor_grad_all,
             actor_out_all,
             actions_all,
@@ -4378,28 +4378,28 @@ struct DreamerV3Agent[
             #     + String(actor_grad_norm)
             # )
 
-            if self.logger:
+            if Bool(self.logger):
                 try:
                     var diag_step = self.train_step_count
-                    self.logger[].log_scalar(
+                    self.logger.value()[].log_scalar(
                         "wm_loss", total_wm_loss, diag_step
                     )
-                    self.logger[].log_scalar("obs_loss", obs_loss, diag_step)
-                    self.logger[].log_scalar("reward_loss", rew_loss, diag_step)
-                    self.logger[].log_scalar(
+                    self.logger.value()[].log_scalar("obs_loss", obs_loss, diag_step)
+                    self.logger.value()[].log_scalar("reward_loss", rew_loss, diag_step)
+                    self.logger.value()[].log_scalar(
                         "continue_loss", cont_loss, diag_step
                     )
-                    self.logger[].log_scalar("dyn_kl", dyn_kl_total, diag_step)
-                    self.logger[].log_scalar("rep_kl", rep_kl_total, diag_step)
-                    self.logger[].log_scalar("adv_mean", avg_adv, diag_step)
-                    self.logger[].log_scalar("adv_min", adv_min, diag_step)
-                    self.logger[].log_scalar("adv_max", adv_max, diag_step)
-                    self.logger[].log_scalar("adv_var", adv_var, diag_step)
-                    self.logger[].log_scalar("val_mean", avg_val, diag_step)
-                    self.logger[].log_scalar(
+                    self.logger.value()[].log_scalar("dyn_kl", dyn_kl_total, diag_step)
+                    self.logger.value()[].log_scalar("rep_kl", rep_kl_total, diag_step)
+                    self.logger.value()[].log_scalar("adv_mean", avg_adv, diag_step)
+                    self.logger.value()[].log_scalar("adv_min", adv_min, diag_step)
+                    self.logger.value()[].log_scalar("adv_max", adv_max, diag_step)
+                    self.logger.value()[].log_scalar("adv_var", adv_var, diag_step)
+                    self.logger.value()[].log_scalar("val_mean", avg_val, diag_step)
+                    self.logger.value()[].log_scalar(
                         "actor_grad_norm", actor_grad_norm, diag_step
                     )
-                    self.logger[].log_scalar(
+                    self.logger.value()[].log_scalar(
                         "actor_param_norm", actor_param_norm, diag_step
                     )
                 except:
@@ -4420,9 +4420,7 @@ struct DreamerV3Agent[
         train_every: Int = 5,
         seed_episodes: Int = 5,
         print_every: Int = 10,
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
     ) -> TrainingMetrics:
         """Train DreamerV3 on a continuous control environment (CPU).
@@ -4506,19 +4504,19 @@ struct DreamerV3Agent[
                 )
 
                 # Log episode metrics
-                if self.logger:
+                if Bool(self.logger):
                     try:
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "episode_reward",
                             episode_reward,
                             total_env_steps,
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "episodes",
                             Float64(episode_count),
                             total_env_steps,
                         )
-                        self.logger[].log_scalar(
+                        self.logger.value()[].log_scalar(
                             "train_steps",
                             Float64(self.train_step_count),
                             total_env_steps,
@@ -4589,9 +4587,7 @@ struct DreamerV3Agent[
         sync_every: Int = 50,
         verbose: Bool = True,
         print_every: Int = 50_000,
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
+        logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train DreamerV3 with GPU environments and GPU training.
@@ -4909,13 +4905,13 @@ struct DreamerV3Agent[
         comptime run_zero_s = zero_kernel[n_envs * STOCH]
         comptime run_zero_a = zero_kernel[n_envs * ACT]
 
-        ctx.enqueue_function[run_zero_d, run_zero_d](
+        ctx.enqueue_function[run_zero_d](
             z_d, grid_dim=(COPY_D_BLOCKS,), block_dim=(TPB,)
         )
-        ctx.enqueue_function[run_zero_s, run_zero_s](
+        ctx.enqueue_function[run_zero_s](
             z_s, grid_dim=(COPY_S_BLOCKS,), block_dim=(TPB,)
         )
-        ctx.enqueue_function[run_zero_a, run_zero_a](
+        ctx.enqueue_function[run_zero_a](
             z_a, grid_dim=(COPY_A_BLOCKS,), block_dim=(TPB,)
         )
         ctx.synchronize()
@@ -4935,7 +4931,7 @@ struct DreamerV3Agent[
             else:
                 # Full GPU RSSM observe + actor + sample
                 # 1. Symlog obs
-                ctx.enqueue_function[run_symlog, run_symlog](
+                ctx.enqueue_function[run_symlog](
                     sym_1d,
                     obs_1d,
                     grid_dim=(SYM_BLOCKS,),
@@ -4951,7 +4947,7 @@ struct DreamerV3Agent[
                     inf_ws,
                 )
                 # 3. Action normalize
-                ctx.enqueue_function[run_action_norm, run_action_norm](
+                ctx.enqueue_function[run_action_norm](
                     norm_act_2d,
                     prev_act_2d,
                     grid_dim=(NORM_BLOCKS,),
@@ -4983,7 +4979,7 @@ struct DreamerV3Agent[
                     inf_ws,
                 )
                 # 7. Concat GRU input
-                ctx.enqueue_function[run_concat_gru, run_concat_gru](
+                ctx.enqueue_function[run_concat_gru](
                     concat_2d,
                     deter_2d,
                     proj_d_2d,
@@ -5011,7 +5007,7 @@ struct DreamerV3Agent[
                     inf_ws,
                 )
                 # 10. GRU gate application → new_deter
-                ctx.enqueue_function[run_gru_gate, run_gru_gate](
+                ctx.enqueue_function[run_gru_gate](
                     new_deter_2d,
                     deter_2d,
                     gate_2d,
@@ -5019,7 +5015,7 @@ struct DreamerV3Agent[
                     block_dim=(TPB,),
                 )
                 # 11. Concat deter + embed → posterior input
-                ctx.enqueue_function[run_concat_de, run_concat_de](
+                ctx.enqueue_function[run_concat_de](
                     post_in_2d,
                     new_deter_2d,
                     emb_2d,
@@ -5040,7 +5036,7 @@ struct DreamerV3Agent[
                     UInt32(total_steps + 1)
                     * UInt32(n_envs * Self.stoch_dim * Self.classes + 1)
                 )
-                ctx.enqueue_function[run_cat_sample, run_cat_sample](
+                ctx.enqueue_function[run_cat_sample](
                     new_stoch_2d,
                     post_probs_2d,
                     post_logits_2d,
@@ -5050,7 +5046,7 @@ struct DreamerV3Agent[
                     block_dim=(TPB,),
                 )
                 # 14. Concat feat
-                ctx.enqueue_function[run_concat_feat, run_concat_feat](
+                ctx.enqueue_function[run_concat_feat](
                     feat_2d,
                     new_deter_2d,
                     new_stoch_2d,
@@ -5070,7 +5066,7 @@ struct DreamerV3Agent[
                 var act_seed = Scalar[DType.uint32](
                     UInt32(total_steps + 2) * UInt32(n_envs * ACT + 1)
                 )
-                ctx.enqueue_function[run_sample_actions, run_sample_actions](
+                ctx.enqueue_function[run_sample_actions](
                     act_2d,
                     log_probs_1d,
                     actor_out_2d,
@@ -5079,19 +5075,19 @@ struct DreamerV3Agent[
                     block_dim=(TPB,),
                 )
                 # 17. Update persistent RSSM state
-                ctx.enqueue_function[run_copy_deter, run_copy_deter](
+                ctx.enqueue_function[run_copy_deter](
                     inf_deter_1d,
                     new_deter_1d,
                     grid_dim=(COPY_D_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function[run_copy_stoch, run_copy_stoch](
+                ctx.enqueue_function[run_copy_stoch](
                     inf_stoch_1d,
                     new_stoch_1d,
                     grid_dim=(COPY_S_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function[run_copy_act, run_copy_act](
+                ctx.enqueue_function[run_copy_act](
                     inf_prev_act_1d,
                     act_1d,
                     grid_dim=(COPY_A_BLOCKS,),
@@ -5149,7 +5145,7 @@ struct DreamerV3Agent[
 
             # ── 6. Reset done envs (physics + RSSM) ──────────────────
             # Reset RSSM state for done envs (before done_buf is cleared)
-            ctx.enqueue_function[run_rssm_reset_done, run_rssm_reset_done](
+            ctx.enqueue_function[run_rssm_reset_done](
                 deter_2d,
                 stoch_2d,
                 prev_act_2d,
@@ -5184,19 +5180,19 @@ struct DreamerV3Agent[
                     recent_reward_sum += ep_r
                     recent_ep_count += 1
 
-                    if self.logger:
+                    if Bool(self.logger):
                         try:
-                            self.logger[].log_scalar(
+                            self.logger.value()[].log_scalar(
                                 "episode_reward",
                                 ep_r,
                                 total_steps,
                             )
-                            self.logger[].log_scalar(
+                            self.logger.value()[].log_scalar(
                                 "episodes",
                                 Float64(completed_episodes),
                                 total_steps,
                             )
-                            self.logger[].log_scalar(
+                            self.logger.value()[].log_scalar(
                                 "train_steps",
                                 Float64(self.train_step_count),
                                 total_steps,
@@ -5322,7 +5318,7 @@ def _clip_grads_gpu[
         dtype, PARAM_SIZE, GRAD_BLOCKS, TPB
     ]
 
-    ctx.enqueue_function[run_norm, run_norm](
+    ctx.enqueue_function[run_norm](
         ps,
         grads,
         grid_dim=(GRAD_BLOCKS,),
@@ -5333,7 +5329,7 @@ def _clip_grads_gpu[
         dtype, PARAM_SIZE, GRAD_BLOCKS, TPB
     ]
 
-    ctx.enqueue_function[run_clip, run_clip](
+    ctx.enqueue_function[run_clip](
         grads,
         ps,
         max_grad_norm,

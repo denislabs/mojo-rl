@@ -5,6 +5,10 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.gpu.primitives import block
 from std.math import sqrt
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct RMSNormOp[dim: Int](DiffOp):
@@ -55,26 +59,49 @@ struct RMSNormOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        var eps: Float64 = 1e-5
-        var inv_dim = 1.0 / Float64(Self.dim)
+        # Reductions in Float64 to match original precision (gradcheck-stable);
+        # affine in Float32 SIMD for the speedup.
+        comptime W = _CPU_SIMD_W
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var c_p = cache.ptr
+        var gamma_p = params.ptr
+        var eps64: Float64 = 1e-5
+        var inv_dim64 = 1.0 / Float64(Self.dim)
 
         for b in range(BATCH):
-            # Compute mean(x^2)
-            var mean_sq: Float64 = 0.0
-            for i in range(Self.dim):
-                var x = Float64(rebind[Scalar[dtype]](input[b, i]))
-                mean_sq += x * x
-            mean_sq *= inv_dim
+            var off = b * Self.dim
 
-            var rms_inv = 1.0 / sqrt(mean_sq + eps)
-            cache[b, Self.dim] = Scalar[dtype](rms_inv)
+            # Pass 1: mean(x^2) in Float64.
+            var s_vec64 = SIMD[DType.float64, W](0)
+            var s_tail64 = Float64(0)
+            var j = 0
+            while j + W <= Self.dim:
+                var x64 = in_p.load[width=W](off + j).cast[DType.float64]()
+                s_vec64 += x64 * x64
+                j += W
+            while j < Self.dim:
+                var x = Float64(in_p[off + j])
+                s_tail64 += x * x
+                j += 1
+            var mean_sq64 = (s_vec64.reduce_add() + s_tail64) * inv_dim64
+            var rms_inv64 = 1.0 / sqrt(mean_sq64 + eps64)
+            var rms_inv = Scalar[dtype](rms_inv64)
+            var rms_inv_v = SIMD[dtype, W](rms_inv)
+            c_p[off + Self.dim] = rms_inv
 
-            for i in range(Self.dim):
-                var x = Float64(rebind[Scalar[dtype]](input[b, i]))
-                var x_hat = x * rms_inv
-                cache[b, i] = Scalar[dtype](x_hat)
-                var gamma = Float64(rebind[Scalar[dtype]](params[i]))
-                output[b, i] = Scalar[dtype](gamma * x_hat)
+            # Pass 2: x_hat + gamma * x_hat (Float32 SIMD).
+            j = 0
+            while j + W <= Self.dim:
+                var x_hat = in_p.load[width=W](off + j) * rms_inv_v
+                c_p.store(off + j, x_hat)
+                out_p.store(off + j, gamma_p.load[width=W](j) * x_hat)
+                j += W
+            while j < Self.dim:
+                var x_hat = in_p[off + j] * rms_inv
+                c_p[off + j] = x_hat
+                out_p[off + j] = gamma_p[j] * x_hat
+                j += 1
 
     @staticmethod
     def vjp[
@@ -96,34 +123,54 @@ struct RMSNormOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        var inv_dim = 1.0 / Float64(Self.dim)
+        comptime W = _CPU_SIMD_W
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var c_p = cache.ptr
+        var gamma_p = params.ptr
+        var dgamma_p = grad_params.ptr
+        var inv_dim64 = 1.0 / Float64(Self.dim)
 
         for b in range(BATCH):
-            var rms_inv = Float64(rebind[Scalar[dtype]](cache[b, Self.dim]))
+            var off = b * Self.dim
+            var rms_inv = c_p[off + Self.dim]
+            var rms_inv_v = SIMD[dtype, W](rms_inv)
 
-            # Compute mean(grad * gamma * x_hat)
-            var mean_gx: Float64 = 0.0
-            for i in range(Self.dim):
-                var g = Float64(rebind[Scalar[dtype]](grad_output[b, i]))
-                var gamma = Float64(rebind[Scalar[dtype]](params[i]))
-                var x_hat = Float64(rebind[Scalar[dtype]](cache[b, i]))
+            # Pass 1: mean(g*gamma*x_hat) in Float64 + dgamma accumulation.
+            var m_vec64 = SIMD[DType.float64, W](0)
+            var m_tail64 = Float64(0)
+            var j = 0
+            while j + W <= Self.dim:
+                var g = go_p.load[width=W](off + j)
+                var x_hat = c_p.load[width=W](off + j)
+                var gamma = gamma_p.load[width=W](j)
+                m_vec64 += (g * gamma * x_hat).cast[DType.float64]()
+                dgamma_p.store(j, dgamma_p.load[width=W](j) + g * x_hat)
+                j += W
+            while j < Self.dim:
+                var g = go_p[off + j]
+                var x_hat = c_p[off + j]
+                m_tail64 += Float64(g) * Float64(gamma_p[j]) * Float64(x_hat)
+                dgamma_p[j] = dgamma_p[j] + g * x_hat
+                j += 1
+            var mean_gx64 = (m_vec64.reduce_add() + m_tail64) * inv_dim64
+            var mean_gx = Scalar[dtype](mean_gx64)
+            var mgx_v = SIMD[dtype, W](mean_gx)
 
-                # Accumulate dgamma
-                grad_params[i] = rebind[Scalar[dtype]](grad_params[i]) + Scalar[
-                    dtype
-                ](g * x_hat)
-
-                mean_gx += g * gamma * x_hat
-
-            mean_gx *= inv_dim
-
-            # dx = rms_inv * (grad * gamma - x_hat * mean(grad * gamma * x_hat))
-            for i in range(Self.dim):
-                var g = Float64(rebind[Scalar[dtype]](grad_output[b, i]))
-                var gamma = Float64(rebind[Scalar[dtype]](params[i]))
-                var x_hat = Float64(rebind[Scalar[dtype]](cache[b, i]))
-                var dx = rms_inv * (g * gamma - x_hat * mean_gx)
-                grad_input[b, i] = Scalar[dtype](dx)
+            # Pass 2: dx = rms_inv * (g*gamma - x_hat * mean_gx) (Float32 SIMD).
+            j = 0
+            while j + W <= Self.dim:
+                var g = go_p.load[width=W](off + j)
+                var x_hat = c_p.load[width=W](off + j)
+                var gamma = gamma_p.load[width=W](j)
+                gi_p.store(off + j, rms_inv_v * (g * gamma - x_hat * mgx_v))
+                j += W
+            while j < Self.dim:
+                var g = go_p[off + j]
+                var x_hat = c_p[off + j]
+                var gamma = gamma_p[j]
+                gi_p[off + j] = rms_inv * (g * gamma - x_hat * mean_gx)
+                j += 1
 
     # =========================================================================
     # GPU kernels
@@ -314,7 +361,7 @@ struct RMSNormOp[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, params, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             params_immut,
@@ -378,7 +425,7 @@ struct RMSNormOp[dim: Int](DiffOp):
                 grad_input, grad_output, params, cache
             )
 
-        ctx.enqueue_function[dx_wrapper, dx_wrapper](
+        ctx.enqueue_function[dx_wrapper](
             grad_input,
             grad_output_immut,
             params_immut,
@@ -409,7 +456,7 @@ struct RMSNormOp[dim: Int](DiffOp):
         ):
             Self.backward_dgamma_kernel_impl[BATCH, dtype](dgamma, grad_output, cache)
 
-        ctx.enqueue_function[dgamma_wrapper, dgamma_wrapper](
+        ctx.enqueue_function[dgamma_wrapper](
             dgamma,
             grad_output_immut,
             cache_immut,

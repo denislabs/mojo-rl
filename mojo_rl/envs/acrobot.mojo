@@ -159,7 +159,7 @@ def bound(x: Float64, m: Float64, M: Float64) -> Float64:
     return x
 
 
-struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
+struct AcrobotEnv[DTYPE: DType](
     BoxDiscreteActionEnv
     & DiscreteEnv
     & GPUDiscreteEnv
@@ -237,7 +237,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
     var use_book_dynamics: Bool
 
     # Renderer (RenderableEnv)
-    var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self, num_bins: Int = 6, use_book_dynamics: Bool = True):
@@ -284,7 +284,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self.use_book_dynamics = use_book_dynamics
 
         # Renderer
-        self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
+        self._renderer = None
         self._renderer_initialized = False
 
     def __init__(out self, *, deinit take: Self):
@@ -825,8 +825,8 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
     def close(mut self):
         """Clean up resources."""
         if self._renderer_initialized:
-            self._renderer[].close()
-            self._renderer.free()
+            self._renderer.value()[].close()
+            self._renderer.value().free()
             self._renderer_initialized = False
 
     @always_inline
@@ -986,7 +986,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.init_pointee_move(Renderer2D())
+        self._renderer.value().init_pointee_move(Renderer2D())
         self._renderer_initialized = True
         return True
 
@@ -994,33 +994,33 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         """Render the current frame using the internal renderer."""
         if not self._renderer_initialized:
             return
-        self.render(self._renderer[])
+        self.render(self._renderer.value()[])
 
     def close_renderer(mut self) raises -> None:
         """Close and free the SDL2 renderer."""
         if not self._renderer_initialized:
             return
-        self._renderer[].close()
-        self._renderer.free()
+        self._renderer.value()[].close()
+        self._renderer.value().free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
         """Return True if the renderer window is open."""
         if not self._renderer_initialized:
             return False
-        return not self._renderer[].get_should_quit()
+        return not self._renderer.value()[].get_should_quit()
 
     def check_renderer_quit(mut self) -> Bool:
         """Return True if the renderer has received a quit event."""
         if not self._renderer_initialized:
             return False
-        return self._renderer[].get_should_quit()
+        return self._renderer.value()[].get_should_quit()
 
     def renderer_delay(self, ms: Int) -> None:
         """Delay for frame rate control."""
         if not self._renderer_initialized:
             return
-        self._renderer[].renderer_delay(ms)
+        self._renderer.value()[].renderer_delay(ms)
 
     def renderer_is_paused(self) -> Bool:
         return False
@@ -1176,10 +1176,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var k4 = Self._dsdt_gpu(y0 + dt * k3, torque)
 
         var ns = y0 + dt / Scalar[gpu_dtype](6.0) * (
-            k1
-            + Scalar[gpu_dtype](2.0) * k2
-            + Scalar[gpu_dtype](2.0) * k3
-            + k4
+            k1 + Scalar[gpu_dtype](2.0) * k2 + Scalar[gpu_dtype](2.0) * k3 + k4
         )
 
         # Wrap angles, bound velocities
@@ -1204,16 +1201,16 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         states[i, 4] += Scalar[gpu_dtype](1.0)  # step counter
 
         # Termination: free end above target height
-        var terminated = (
-            -cos(theta1) - cos(theta1 + theta2) > Scalar[gpu_dtype](1.0)
-        )
+        var terminated = -cos(theta1) - cos(theta1 + theta2) > Scalar[
+            gpu_dtype
+        ](1.0)
         var truncated = states[i, 4] >= Scalar[gpu_dtype](ACR_MAX_STEPS)
         var done = terminated or truncated
 
         # Reward: 0 on the terminal step, -1 otherwise
-        var reward = Scalar[gpu_dtype](
-            0.0
-        ) if terminated else Scalar[gpu_dtype](-1.0)
+        var reward = Scalar[gpu_dtype](0.0) if terminated else Scalar[
+            gpu_dtype
+        ](-1.0)
 
         rewards[i] = reward
         dones[i] = Scalar[gpu_dtype](done)
@@ -1326,12 +1323,12 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         mut terminated_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
-        workspace_ptr: UnsafePointer[
-            Scalar[gpu_dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Launch step kernel on GPU with fused obs extraction.
 
@@ -1394,10 +1391,9 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 # Acrobot: terminated = goal-height crossed (not truncation).
                 var theta1 = states[i, 0]
                 var theta2 = states[i, 1]
-                var is_terminated = (
-                    -cos(theta1) - cos(theta1 + theta2)
-                    > Scalar[gpu_dtype](1.0)
-                )
+                var is_terminated = -cos(theta1) - cos(
+                    theta1 + theta2
+                ) > Scalar[gpu_dtype](1.0)
                 terminated_out[i] = Scalar[gpu_dtype](is_terminated)
 
                 # Build observation from state
@@ -1408,7 +1404,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 obs[i, 4] = states[i, 2]
                 obs[i, 5] = states[i, 3]
 
-        ctx.enqueue_function[step_wrapper, step_wrapper](
+        ctx.enqueue_function[step_wrapper](
             states,
             actions,
             rewards,
@@ -1447,7 +1443,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         ):
             Self.reset_kernel[BATCH_SIZE, STATE_SIZE](states)
 
-        ctx.enqueue_function[reset_wrapper, reset_wrapper](
+        ctx.enqueue_function[reset_wrapper](
             states,
             grid_dim=(BLOCKS,),
             block_dim=(Self.TPB,),
@@ -1462,12 +1458,12 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         mut states_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
-        workspace_ptr: UnsafePointer[
-            Scalar[gpu_dtype], MutAnyOrigin
-        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
-        rng_counter_ptr: UnsafePointer[
-            Scalar[DType.uint64], MutAnyOrigin
-        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Launch selective reset kernel on GPU - only resets done envs."""
         var states = LayoutTensor[
@@ -1479,10 +1475,10 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
-        if rng_counter_ptr:
+        if Bool(rng_counter_ptr):
             var counter_t = LayoutTensor[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
-            ](rng_counter_ptr)
+            ](rng_counter_ptr.value())
 
             @parameter
             @always_inline
@@ -1507,10 +1503,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
                     ),
                 )
 
-            ctx.enqueue_function[
-                selective_reset_counter_wrapper,
-                selective_reset_counter_wrapper,
-            ](
+            ctx.enqueue_function[selective_reset_counter_wrapper](
                 states,
                 dones,
                 counter_t,
@@ -1537,9 +1530,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
                     states, dones, Scalar[DType.uint32](rng_seed)
                 )
 
-            ctx.enqueue_function[
-                selective_reset_wrapper, selective_reset_wrapper
-            ](
+            ctx.enqueue_function[selective_reset_wrapper](
                 states,
                 dones,
                 seed,
@@ -1617,7 +1608,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
             o[i, 4] = s[i, 2]
             o[i, 5] = s[i, 3]
 
-        ctx.enqueue_function[extract_wrapper, extract_wrapper](
+        ctx.enqueue_function[extract_wrapper](
             states_t,
             obs_t,
             grid_dim=(BLOCKS,),

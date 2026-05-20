@@ -5,6 +5,10 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.gpu.primitives import block
 from std.math import sqrt
+from std.sys import simd_width_of
+
+
+comptime _CPU_SIMD_W = simd_width_of[dtype]()
 
 
 struct LayerNormOp[dim: Int](DiffOp):
@@ -56,36 +60,71 @@ struct LayerNormOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        var eps: Float64 = 1e-5
-        var inv_dim = 1.0 / Float64(Self.dim)
+        # SIMD path: reductions accumulate in Float64 (matches original
+        # precision); affine pass stays in dtype SIMD for full speedup.
+        # Without the Float64 promotion, NormedLinear[16,8] / [12,24] gradchecks
+        # regress (max_rel jumps from <0.02 to ~0.1-0.2 — see commit log).
+        comptime W = _CPU_SIMD_W
+        var in_p = input.ptr
+        var out_p = output.ptr
+        var c_p = cache.ptr
+        var gamma_p = params.ptr
+        var beta_p = params.ptr + Self.dim
+        var eps64: Float64 = 1e-5
+        var inv_dim64 = 1.0 / Float64(Self.dim)
 
         for b in range(BATCH):
-            # Compute mean
-            var mean: Float64 = 0.0
-            for i in range(Self.dim):
-                mean += Float64(rebind[Scalar[dtype]](input[b, i]))
-            mean *= inv_dim
+            var off = b * Self.dim
 
-            # Compute variance
-            var var_val: Float64 = 0.0
-            for i in range(Self.dim):
-                var diff = Float64(rebind[Scalar[dtype]](input[b, i])) - mean
-                var_val += diff * diff
-            var_val *= inv_dim
+            # Pass 1: mean — Float64 accumulator via SIMD-cast.
+            var s_vec64 = SIMD[DType.float64, W](0)
+            var s_tail64 = Float64(0)
+            var j = 0
+            while j + W <= Self.dim:
+                s_vec64 += in_p.load[width=W](off + j).cast[DType.float64]()
+                j += W
+            while j < Self.dim:
+                s_tail64 += Float64(in_p[off + j])
+                j += 1
+            var mean64 = (s_vec64.reduce_add() + s_tail64) * inv_dim64
+            var mean = Scalar[dtype](mean64)
+            var mean_v = SIMD[dtype, W](mean)
 
-            # inv_std
-            var inv_std = 1.0 / sqrt(var_val + eps)
-            cache[b, Self.dim] = Scalar[dtype](inv_std)
+            # Pass 2: variance — Float64 accumulator.
+            var v_vec64 = SIMD[DType.float64, W](0)
+            var v_tail64 = Float64(0)
+            j = 0
+            while j + W <= Self.dim:
+                var d = in_p.load[width=W](off + j).cast[DType.float64]() - SIMD[
+                    DType.float64, W
+                ](mean64)
+                v_vec64 += d * d
+                j += W
+            while j < Self.dim:
+                var d = Float64(in_p[off + j]) - mean64
+                v_tail64 += d * d
+                j += 1
+            var var_val64 = (v_vec64.reduce_add() + v_tail64) * inv_dim64
+            var inv_std64 = 1.0 / sqrt(var_val64 + eps64)
+            var inv_std = Scalar[dtype](inv_std64)
+            var inv_std_v = SIMD[dtype, W](inv_std)
+            c_p[off + Self.dim] = inv_std
 
-            # Normalize, scale and shift
-            for i in range(Self.dim):
-                var x_hat = (
-                    Float64(rebind[Scalar[dtype]](input[b, i])) - mean
-                ) * inv_std
-                cache[b, i] = Scalar[dtype](x_hat)
-                var gamma = Float64(rebind[Scalar[dtype]](params[i]))
-                var beta = Float64(rebind[Scalar[dtype]](params[Self.dim + i]))
-                output[b, i] = Scalar[dtype](gamma * x_hat + beta)
+            # Pass 3: normalize + affine, cache x_hat (Float32 SIMD).
+            j = 0
+            while j + W <= Self.dim:
+                var x_hat = (in_p.load[width=W](off + j) - mean_v) * inv_std_v
+                c_p.store(off + j, x_hat)
+                out_p.store(
+                    off + j,
+                    gamma_p.load[width=W](j) * x_hat + beta_p.load[width=W](j),
+                )
+                j += W
+            while j < Self.dim:
+                var x_hat = (in_p[off + j] - mean) * inv_std
+                c_p[off + j] = x_hat
+                out_p[off + j] = gamma_p[j] * x_hat + beta_p[j]
+                j += 1
 
     @staticmethod
     def vjp[
@@ -107,46 +146,77 @@ struct LayerNormOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        var inv_dim = 1.0 / Float64(Self.dim)
+        # Same precision discipline as eval: reductions in Float64.
+        comptime W = _CPU_SIMD_W
+        var go_p = grad_output.ptr
+        var gi_p = grad_input.ptr
+        var c_p = cache.ptr
+        var gamma_p = params.ptr
+        var dgamma_p = grad_params.ptr
+        var dbeta_p = grad_params.ptr + Self.dim
+        var inv_dim64 = 1.0 / Float64(Self.dim)
 
         for b in range(BATCH):
-            var inv_std = Float64(rebind[Scalar[dtype]](cache[b, Self.dim]))
+            var off = b * Self.dim
+            var inv_std = c_p[off + Self.dim]
+            var inv_std_v = SIMD[dtype, W](inv_std)
 
-            # Compute dx_hat = grad * gamma, and accumulate dgamma/dbeta
-            # Also compute mean(dx_hat) and mean(dx_hat * x_hat)
-            var mean_dxhat: Float64 = 0.0
-            var mean_dxhat_xhat: Float64 = 0.0
-
-            for i in range(Self.dim):
-                var g = Float64(rebind[Scalar[dtype]](grad_output[b, i]))
-                var x_hat = Float64(rebind[Scalar[dtype]](cache[b, i]))
-                var gamma = Float64(rebind[Scalar[dtype]](params[i]))
-
-                # Accumulate dgamma and dbeta
-                grad_params[i] = rebind[Scalar[dtype]](grad_params[i]) + Scalar[
-                    dtype
-                ](g * x_hat)
-                grad_params[Self.dim + i] = rebind[Scalar[dtype]](
-                    grad_params[Self.dim + i]
-                ) + Scalar[dtype](g)
-
+            # Pass 1: row reductions in Float64 + per-element dgamma/dbeta.
+            var mdx_vec64 = SIMD[DType.float64, W](0)
+            var mdxxh_vec64 = SIMD[DType.float64, W](0)
+            var mdx_tail64 = Float64(0)
+            var mdxxh_tail64 = Float64(0)
+            var j = 0
+            while j + W <= Self.dim:
+                var g = go_p.load[width=W](off + j)
+                var x_hat = c_p.load[width=W](off + j)
+                var gamma = gamma_p.load[width=W](j)
                 var dx_hat = g * gamma
-                mean_dxhat += dx_hat
-                mean_dxhat_xhat += dx_hat * x_hat
-
-            mean_dxhat *= inv_dim
-            mean_dxhat_xhat *= inv_dim
-
-            # dx = inv_std * (dx_hat - mean(dx_hat) - x_hat * mean(dx_hat * x_hat))
-            for i in range(Self.dim):
-                var g = Float64(rebind[Scalar[dtype]](grad_output[b, i]))
-                var x_hat = Float64(rebind[Scalar[dtype]](cache[b, i]))
-                var gamma = Float64(rebind[Scalar[dtype]](params[i]))
+                mdx_vec64 += dx_hat.cast[DType.float64]()
+                mdxxh_vec64 += (dx_hat * x_hat).cast[DType.float64]()
+                dgamma_p.store(j, dgamma_p.load[width=W](j) + g * x_hat)
+                dbeta_p.store(j, dbeta_p.load[width=W](j) + g)
+                j += W
+            while j < Self.dim:
+                var g = go_p[off + j]
+                var x_hat = c_p[off + j]
+                var gamma = gamma_p[j]
                 var dx_hat = g * gamma
-                var dx = inv_std * (
+                mdx_tail64 += Float64(dx_hat)
+                mdxxh_tail64 += Float64(dx_hat) * Float64(x_hat)
+                dgamma_p[j] = dgamma_p[j] + g * x_hat
+                dbeta_p[j] = dbeta_p[j] + g
+                j += 1
+            var mean_dxhat64 = (mdx_vec64.reduce_add() + mdx_tail64) * inv_dim64
+            var mean_dxhat_xhat64 = (
+                mdxxh_vec64.reduce_add() + mdxxh_tail64
+            ) * inv_dim64
+            var mean_dxhat = Scalar[dtype](mean_dxhat64)
+            var mean_dxhat_xhat = Scalar[dtype](mean_dxhat_xhat64)
+            var mdx_v = SIMD[dtype, W](mean_dxhat)
+            var mdxxh_v = SIMD[dtype, W](mean_dxhat_xhat)
+
+            # Pass 2: dx = inv_std * (dx_hat - mean - x_hat * mean_xhat)
+            j = 0
+            while j + W <= Self.dim:
+                var g = go_p.load[width=W](off + j)
+                var x_hat = c_p.load[width=W](off + j)
+                var gamma = gamma_p.load[width=W](j)
+                var dx_hat = g * gamma
+                gi_p.store(
+                    off + j,
+                    inv_std_v * (dx_hat - mdx_v - x_hat * mdxxh_v),
+                )
+                j += W
+            while j < Self.dim:
+                var g = go_p[off + j]
+                var x_hat = c_p[off + j]
+                var gamma = gamma_p[j]
+                var dx_hat = g * gamma
+                gi_p[off + j] = inv_std * (
                     dx_hat - mean_dxhat - x_hat * mean_dxhat_xhat
                 )
-                grad_input[b, i] = Scalar[dtype](dx)
+                j += 1
 
     # =========================================================================
     # GPU kernels
@@ -373,7 +443,7 @@ struct LayerNormOp[dim: Int](DiffOp):
         ):
             Self.eval_kernel_impl[BATCH, dtype](output, input, params, cache)
 
-        ctx.enqueue_function[wrapper, wrapper](
+        ctx.enqueue_function[wrapper](
             output,
             input_immut,
             params_immut,
@@ -435,7 +505,7 @@ struct LayerNormOp[dim: Int](DiffOp):
                 grad_input, grad_output, params, cache
             )
 
-        ctx.enqueue_function[dx_wrapper, dx_wrapper](
+        ctx.enqueue_function[dx_wrapper](
             grad_input,
             grad_output_immut,
             params_immut,
@@ -474,7 +544,7 @@ struct LayerNormOp[dim: Int](DiffOp):
                 dgamma, dbeta, grad_output, cache
             )
 
-        ctx.enqueue_function[dp_wrapper, dp_wrapper](
+        ctx.enqueue_function[dp_wrapper](
             dgamma,
             dbeta,
             grad_output_immut,

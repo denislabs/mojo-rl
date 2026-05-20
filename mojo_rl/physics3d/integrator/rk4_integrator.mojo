@@ -2115,7 +2115,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             STEP_THREADS,
         ]
         comptime if STEP_THREADS > 1:
-            ctx.enqueue_function[stage0_kernel, stage0_kernel](
+            ctx.enqueue_function[stage0_kernel](
                 state,
                 model,
                 workspace,
@@ -2123,7 +2123,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
         else:
-            ctx.enqueue_function[stage0_kernel, stage0_kernel](
+            ctx.enqueue_function[stage0_kernel](
                 state,
                 model,
                 workspace,
@@ -2149,7 +2149,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             MAX_TENDON,
             NSITE,
         ]
-        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+        ctx.enqueue_function[solver_wrapper](
             state,
             model,
             workspace,
@@ -2177,7 +2177,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             STEP_THREADS,
         ]
         comptime if STEP_THREADS > 1:
-            ctx.enqueue_function[stage1_kernel, stage1_kernel](
+            ctx.enqueue_function[stage1_kernel](
                 state,
                 model,
                 workspace,
@@ -2185,14 +2185,14 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
         else:
-            ctx.enqueue_function[stage1_kernel, stage1_kernel](
+            ctx.enqueue_function[stage1_kernel](
                 state,
                 model,
                 workspace,
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
             )
-        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+        ctx.enqueue_function[solver_wrapper](
             state,
             model,
             workspace,
@@ -2220,7 +2220,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             STEP_THREADS,
         ]
         comptime if STEP_THREADS > 1:
-            ctx.enqueue_function[stage2_kernel, stage2_kernel](
+            ctx.enqueue_function[stage2_kernel](
                 state,
                 model,
                 workspace,
@@ -2228,14 +2228,14 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
         else:
-            ctx.enqueue_function[stage2_kernel, stage2_kernel](
+            ctx.enqueue_function[stage2_kernel](
                 state,
                 model,
                 workspace,
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
             )
-        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+        ctx.enqueue_function[solver_wrapper](
             state,
             model,
             workspace,
@@ -2263,7 +2263,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             STEP_THREADS,
         ]
         comptime if STEP_THREADS > 1:
-            ctx.enqueue_function[stage3_kernel, stage3_kernel](
+            ctx.enqueue_function[stage3_kernel](
                 state,
                 model,
                 workspace,
@@ -2271,14 +2271,14 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
         else:
-            ctx.enqueue_function[stage3_kernel, stage3_kernel](
+            ctx.enqueue_function[stage3_kernel](
                 state,
                 model,
                 workspace,
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
             )
-        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+        ctx.enqueue_function[solver_wrapper](
             state,
             model,
             workspace,
@@ -2300,7 +2300,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             WS_SIZE,
             SOLVER_WS,
         ]
-        ctx.enqueue_function[combine_kernel, combine_kernel](
+        ctx.enqueue_function[combine_kernel](
             state,
             model,
             workspace,
@@ -2444,14 +2444,14 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             NM,
             SPARSE,
         ]
-        ctx.enqueue_function[stage0_kernel, stage0_kernel](
+        ctx.enqueue_function[stage0_kernel](
             state,
             model,
             workspace,
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+        ctx.enqueue_function[solver_wrapper](
             state,
             model,
             workspace,
@@ -2481,14 +2481,14 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             NM,
             SPARSE,
         ]
-        ctx.enqueue_function[stage1_kernel, stage1_kernel](
+        ctx.enqueue_function[stage1_kernel](
             state,
             model,
             workspace,
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+        ctx.enqueue_function[solver_wrapper](
             state,
             model,
             workspace,
@@ -2518,14 +2518,14 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             NM,
             SPARSE,
         ]
-        ctx.enqueue_function[stage2_kernel, stage2_kernel](
+        ctx.enqueue_function[stage2_kernel](
             state,
             model,
             workspace,
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+        ctx.enqueue_function[solver_wrapper](
             state,
             model,
             workspace,
@@ -2555,14 +2555,14 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             NM,
             SPARSE,
         ]
-        ctx.enqueue_function[stage3_kernel, stage3_kernel](
+        ctx.enqueue_function[stage3_kernel](
             state,
             model,
             workspace,
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+        ctx.enqueue_function[solver_wrapper](
             state,
             model,
             workspace,
@@ -2588,7 +2588,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             WS_SIZE,
             SOLVER_WS,
         ]
-        ctx.enqueue_function[combine_kernel, combine_kernel](
+        ctx.enqueue_function[combine_kernel](
             state,
             model,
             workspace,
