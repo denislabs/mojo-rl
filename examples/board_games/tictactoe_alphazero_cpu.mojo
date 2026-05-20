@@ -11,8 +11,11 @@ Usage:
     pixi run mojo run -I . examples/board_games/tictactoe_alphazero_cpu.mojo
 """
 
+from std.memory import UnsafePointer
 from std.time import perf_counter_ns
 
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.alphazero import (
     GenericAlphaZeroAgent,
     AlphaZeroTicTacToeConfig,
@@ -27,6 +30,18 @@ from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 def main() raises:
     print("=== AlphaZero CPU on TicTacToe (MLP) ===")
     print()
+
+    # ── Logger setup ────────────────────────────────────────────
+    var env_vars = load_dotenv()
+    var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
+    var url = env_vars.get("RL_MONITOR_URL", "")
+
+    var logger = RemoteLogger(
+        server_url=url,
+        run_name="AlphaZero TicTacToe CPU",
+        buffer_size=13,
+        api_key=api_key,
+    )
 
     # Training-grade config — closer to alpha-zero-general defaults.
     #   HIDDEN=128  : two-layer 128-unit MLP for both heads.
@@ -50,8 +65,16 @@ def main() raises:
         C_PUCT=1.0,
     ]
 
+    logger.set_config("agent", "AlphaZero")
+    logger.set_config("env", "TicTacToe")
+    logger.set_config("network", Config.NAME)
+    logger.set_config("sims", String(Config.num_simulations))
+    logger.set_config("batch_size", String(Config.batch_size))
+    logger.set_config("history_window", String(Config.history_window))
+    logger.set_config("device", "cpu")
+
     var env = TicTacToeEnv[DType.float32]()
-    var agent = GenericAlphaZeroAgent[Config]()
+    var agent = GenericAlphaZeroAgent[Config, 64, 128, RemoteLogger]()
     var random_opp = RandomOpponent()
     var minimax_opp = MinimaxTicTacToe()
 
@@ -87,7 +110,8 @@ def main() raises:
         # Periodic checkpoint so a long run can be resumed.
         checkpoint_every=10,
         checkpoint_path="tictactoe_alphazero_cpu.ckpt",
-        diag_every=200,
+        logger=UnsafePointer(to=logger),
+        diag_every=500,
         verbose=True,
         dump_replay=False,
         # OneCycle LR scaling across each iter's gradient pass.
@@ -96,6 +120,7 @@ def main() raises:
 
     var dt_s = Float64(perf_counter_ns() - t0) / 1e9
 
+    logger.close()
     print()
     print("Train steps:", agent.train_step_count)
     print("Elapsed:    ", dt_s, "s")

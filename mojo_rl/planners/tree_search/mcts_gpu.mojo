@@ -1415,6 +1415,7 @@ def gpu_mcts_batched_select_and_copy_kernel[
     BATCH_SIMS: Int,
     STATE_SIZE: Int,
     dtype: DType,
+    VIRTUAL_LOSS_VAL: Int = 3,
 ](
     # Node storage
     visit_count: LayoutTensor[
@@ -1481,7 +1482,7 @@ def gpu_mcts_batched_select_and_copy_kernel[
     var mx = rebind[Scalar[dtype]](max_q[e])
     var q_range = mx - mn
 
-    comptime VIRTUAL_LOSS: Int = 3
+    comptime VIRTUAL_LOSS: Int = VIRTUAL_LOSS_VAL
 
     # Use shared memory for root visit counts to prevent NVIDIA compiler
     # from caching global memory reads across loop iterations.
@@ -1560,6 +1561,27 @@ def gpu_mcts_batched_select_and_copy_kernel[
 
             action_paths[path_off + depth] = Scalar[dtype](best_action)
 
+            # Apply virtual loss to (node_idx, best_action) at EVERY descent
+            # step — canonical AlphaGo Zero behavior. Without this, batched
+            # sims share the same root→…→leaf-parent path and only diverge
+            # at the leaf action, severely under-exploring root-level
+            # alternatives. The matching subtraction happens during backup
+            # so visit counts stay correct.
+            var na_off = tree_off + node_idx * ACT + best_action
+            visit_count[na_off] = rebind[Scalar[dtype]](
+                visit_count[na_off]
+            ) + Scalar[dtype](VIRTUAL_LOSS)
+            total_visits[tv_off + node_idx] = rebind[Scalar[dtype]](
+                total_visits[tv_off + node_idx]
+            ) + Scalar[dtype](VIRTUAL_LOSS)
+            if node_idx == 0:
+                s_root[s_off + best_action] = rebind[Scalar[dtype]](
+                    s_root[s_off + best_action]
+                ) + Scalar[dtype](VIRTUAL_LOSS)
+                s_root[s_off + ACT] = rebind[Scalar[dtype]](
+                    s_root[s_off + ACT]
+                ) + Scalar[dtype](VIRTUAL_LOSS)
+
             var child = rebind[Scalar[dtype]](
                 child_idx[tree_off + node_idx * ACT + best_action]
             )
@@ -1569,29 +1591,6 @@ def gpu_mcts_batched_select_and_copy_kernel[
                 pending_parents[sim_off] = Scalar[dtype](node_idx)
                 pending_actions[sim_off] = Scalar[dtype](best_action)
                 path_lengths[sim_off] = Scalar[dtype](depth + 1)
-
-                # Apply virtual loss to global memory
-                visit_count[tree_off + node_idx * ACT + best_action] = rebind[
-                    Scalar[dtype]
-                ](
-                    visit_count[tree_off + node_idx * ACT + best_action]
-                ) + Scalar[
-                    dtype
-                ](
-                    VIRTUAL_LOSS
-                )
-                total_visits[tv_off + node_idx] = rebind[Scalar[dtype]](
-                    total_visits[tv_off + node_idx]
-                ) + Scalar[dtype](VIRTUAL_LOSS)
-
-                # Update shared memory for root
-                if node_idx == 0:
-                    s_root[s_off + best_action] = rebind[Scalar[dtype]](
-                        s_root[s_off + best_action]
-                    ) + Scalar[dtype](VIRTUAL_LOSS)
-                    s_root[s_off + ACT] = rebind[Scalar[dtype]](
-                        s_root[s_off + ACT]
-                    ) + Scalar[dtype](VIRTUAL_LOSS)
 
                 # ── Copy parent game state to expansion buffer ──
                 var parent_gs_off = (
@@ -1833,6 +1832,7 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
     NEGATE_BACKUP: Bool,
     VALUE_SQUASH: Bool,
     dtype: DType,
+    VIRTUAL_LOSS_VAL: Int = 3,
 ](
     # Node storage
     visit_count: LayoutTensor[
@@ -1878,10 +1878,12 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
     step_rewards: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
     ],
-    # Done flags from env.step [N_ENVS * BATCH_SIMS]. Single-player path uses
-    # this to set leaf_value=0 vs V_pred. Two-player path infers terminal
-    # from `|step_rewards| > 0.5` and ignores this buffer (so any value is
-    # safe for board games — typically just pass exp_dones).
+    # Done flags from env.step [N_ENVS * BATCH_SIMS]. Both single-player
+    # and two-player paths read this. Two-player MUST read it (not infer
+    # terminal from |reward| > 0.5) because draw terminals carry reward 0
+    # and would otherwise be treated as non-terminal — using network V
+    # instead of the true draw value 0 (a major training-signal bug in
+    # games with frequent draws like TTT / ConnectFour endgames).
     step_dones: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
     ],
@@ -1935,23 +1937,35 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
     var tree_off = e * MAX_NODES * ACT
     var tv_off = e * MAX_NODES
 
-    comptime VIRTUAL_LOSS: Int = 3
+    comptime VIRTUAL_LOSS: Int = VIRTUAL_LOSS_VAL
 
     for s in range(BATCH_SIMS):
         var sim_off = e * BATCH_SIMS + s
         var parent = Int(rebind[Scalar[dtype]](pending_parents[sim_off]))
         var action = Int(rebind[Scalar[dtype]](pending_actions[sim_off]))
         var child_node_idx = Int(rebind[Scalar[dtype]](node_count[e]))
+        var sim_path_off = sim_off * MAX_DEPTH
+        var sim_path_len = Int(
+            rebind[Scalar[dtype]](path_lengths[sim_off])
+        )
 
         if child_node_idx >= MAX_NODES:
-            visit_count[tree_off + parent * ACT + action] = rebind[
-                Scalar[dtype]
-            ](visit_count[tree_off + parent * ACT + action]) - Scalar[dtype](
-                VIRTUAL_LOSS
-            )
-            total_visits[tv_off + parent] = rebind[Scalar[dtype]](
-                total_visits[tv_off + parent]
-            ) - Scalar[dtype](VIRTUAL_LOSS)
+            # Tree full — undo the virtual loss applied along the entire
+            # selection path so the abandoned sim doesn't poison the tree.
+            for i in range(sim_path_len):
+                var pn = Int(rebind[Scalar[dtype]](
+                    search_paths[sim_path_off + i]
+                ))
+                var pa = Int(rebind[Scalar[dtype]](
+                    action_paths[sim_path_off + i]
+                ))
+                var pna = tree_off + pn * ACT + pa
+                visit_count[pna] = rebind[Scalar[dtype]](
+                    visit_count[pna]
+                ) - Scalar[dtype](VIRTUAL_LOSS)
+                total_visits[tv_off + pn] = rebind[Scalar[dtype]](
+                    total_visits[tv_off + pn]
+                ) - Scalar[dtype](VIRTUAL_LOSS)
             continue
 
         # ── Store child game state ──────────────────────────
@@ -2041,14 +2055,19 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
 
         # ── Decode leaf value ───────────────────────────────
         var step_rew = rebind[Scalar[dtype]](step_rewards[sim_off])
+        var was_done = (
+            rebind[Scalar[dtype]](step_dones[sim_off])
+            > Scalar[dtype](0.5)
+        )
         var leaf_value: Scalar[dtype]
         comptime if NEGATE_BACKUP:
-            # Two-player: terminal detected by reward magnitude.
-            var abs_rew = (
-                step_rew if step_rew >= Scalar[dtype](0.0) else -step_rew
-            )
-            if abs_rew > Scalar[dtype](0.5):
-                leaf_value = -step_rew  # Terminal: negate
+            # Two-player: terminal detected via done flag (NOT |reward|>0.5
+            # which mishandles draws where reward=0 + done=True). Leaf
+            # value is the leaf-player's perspective: -step_rew works for
+            # both win (rew=1 → leaf=-1, since the move ending the game
+            # was the opponent's) and draw (rew=0 → leaf=0).
+            if was_done:
+                leaf_value = -step_rew
             else:
                 var raw_v = rebind[Scalar[dtype]](
                     pred_output[pred_off + ACT]
@@ -2066,10 +2085,6 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
         else:
             # Single-player: terminal from explicit done flag; leaf value
             # accumulates step reward + discounted V_pred.
-            var was_done = (
-                rebind[Scalar[dtype]](step_dones[sim_off])
-                > Scalar[dtype](0.5)
-            )
             if was_done:
                 leaf_value = step_rew
             else:
@@ -2088,18 +2103,14 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
                 else:
                     leaf_value = step_rew + gamma * raw_v
 
-        # ── Remove virtual loss ─────────────────────────────
-        visit_count[tree_off + parent * ACT + action] = rebind[Scalar[dtype]](
-            visit_count[tree_off + parent * ACT + action]
-        ) - Scalar[dtype](VIRTUAL_LOSS)
-        total_visits[tv_off + parent] = rebind[Scalar[dtype]](
-            total_visits[tv_off + parent]
-        ) - Scalar[dtype](VIRTUAL_LOSS)
-
-        # ── Backup ──────────────────────────────────────────
+        # ── Backup + remove virtual loss along entire path ──
+        # Virtual loss was applied at every (node, action) during selection
+        # (canonical AlphaGo Zero); undo it at every step here while adding
+        # the real +1 real visit. Net change per step = (1 - VIRTUAL_LOSS).
         var value = leaf_value
         var path_off = sim_off * MAX_DEPTH
         var path_len = Int(rebind[Scalar[dtype]](path_lengths[sim_off]))
+        comptime VLOSS_DELTA: Int = 1 - VIRTUAL_LOSS
 
         for i in range(path_len):
             var idx = path_len - 1 - i
@@ -2112,13 +2123,13 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
             var na_off = tree_off + node * ACT + act
             visit_count[na_off] = rebind[Scalar[dtype]](
                 visit_count[na_off]
-            ) + Scalar[dtype](1.0)
+            ) + Scalar[dtype](VLOSS_DELTA)
             total_value[na_off] = (
                 rebind[Scalar[dtype]](total_value[na_off]) + value
             )
             total_visits[tv_off + node] = rebind[Scalar[dtype]](
                 total_visits[tv_off + node]
-            ) + Scalar[dtype](1.0)
+            ) + Scalar[dtype](VLOSS_DELTA)
 
             var n_a = rebind[Scalar[dtype]](visit_count[na_off])
             var mean_q = rebind[Scalar[dtype]](total_value[na_off]) / n_a
@@ -2157,6 +2168,7 @@ def gpu_mcts_batched_select_and_build_dyn_kernel[
     LATENT: Int,
     DYN_IN: Int,
     dtype: DType,
+    VIRTUAL_LOSS_VAL: Int = 3,
 ](
     # Node storage
     visit_count: LayoutTensor[
@@ -2221,7 +2233,7 @@ def gpu_mcts_batched_select_and_build_dyn_kernel[
     var mx = rebind[Scalar[dtype]](max_q[e])
     var q_range = mx - mn
 
-    comptime VIRTUAL_LOSS: Int = 3
+    comptime VIRTUAL_LOSS: Int = VIRTUAL_LOSS_VAL
 
     for s in range(BATCH_SIMS):
         var node_idx = 0
@@ -2265,6 +2277,17 @@ def gpu_mcts_batched_select_and_build_dyn_kernel[
 
             action_paths[path_off + depth] = Scalar[dtype](best_action)
 
+            # Apply virtual loss along the WHOLE descent path (canonical
+            # AlphaGo Zero), not only at the leaf parent. Removed during
+            # backup so visit counts stay correct.
+            var na_off = tree_off + node_idx * ACT + best_action
+            visit_count[na_off] = rebind[Scalar[dtype]](
+                visit_count[na_off]
+            ) + Scalar[dtype](VIRTUAL_LOSS)
+            total_visits[tv_off + node_idx] = rebind[Scalar[dtype]](
+                total_visits[tv_off + node_idx]
+            ) + Scalar[dtype](VIRTUAL_LOSS)
+
             var child = rebind[Scalar[dtype]](
                 child_idx[tree_off + node_idx * ACT + best_action]
             )
@@ -2273,20 +2296,6 @@ def gpu_mcts_batched_select_and_build_dyn_kernel[
                 pending_parents[sim_off] = Scalar[dtype](node_idx)
                 pending_actions[sim_off] = Scalar[dtype](best_action)
                 path_lengths[sim_off] = Scalar[dtype](depth + 1)
-
-                # Virtual loss
-                visit_count[tree_off + node_idx * ACT + best_action] = rebind[
-                    Scalar[dtype]
-                ](
-                    visit_count[tree_off + node_idx * ACT + best_action]
-                ) + Scalar[
-                    dtype
-                ](
-                    VIRTUAL_LOSS
-                )
-                total_visits[tv_off + node_idx] = rebind[Scalar[dtype]](
-                    total_visits[tv_off + node_idx]
-                ) + Scalar[dtype](VIRTUAL_LOSS)
 
                 # Build dynamics input: [hidden || one_hot_action]
                 var dyn_off = sim_off * DYN_IN
@@ -2324,6 +2333,7 @@ def gpu_mcts_batched_expand_backup_muzero_kernel[
     PRED_OUT: Int,
     DYN_OUT: Int,
     dtype: DType,
+    VIRTUAL_LOSS_VAL: Int = 3,
 ](
     # Node storage
     visit_count: LayoutTensor[
@@ -2401,7 +2411,7 @@ def gpu_mcts_batched_expand_backup_muzero_kernel[
     var tree_off = e * MAX_NODES * ACT
     var tv_off = e * MAX_NODES
 
-    comptime VIRTUAL_LOSS: Int = 3
+    comptime VIRTUAL_LOSS: Int = VIRTUAL_LOSS_VAL
     comptime NUM_VAL_BINS = PRED_OUT - ACT
     comptime NUM_REW_BINS = DYN_OUT - LATENT
 
@@ -2410,16 +2420,27 @@ def gpu_mcts_batched_expand_backup_muzero_kernel[
         var parent = Int(rebind[Scalar[dtype]](pending_parents[sim_off]))
         var action = Int(rebind[Scalar[dtype]](pending_actions[sim_off]))
         var child_node_idx = Int(rebind[Scalar[dtype]](node_count[e]))
-
-        # Remove virtual loss
-        visit_count[tree_off + parent * ACT + action] = rebind[Scalar[dtype]](
-            visit_count[tree_off + parent * ACT + action]
-        ) - Scalar[dtype](VIRTUAL_LOSS)
-        total_visits[tv_off + parent] = rebind[Scalar[dtype]](
-            total_visits[tv_off + parent]
-        ) - Scalar[dtype](VIRTUAL_LOSS)
+        var sim_path_off = sim_off * MAX_DEPTH
+        var sim_path_len = Int(
+            rebind[Scalar[dtype]](path_lengths[sim_off])
+        )
 
         if child_node_idx >= MAX_NODES:
+            # Tree full — undo virtual loss applied along the path.
+            for i in range(sim_path_len):
+                var pn = Int(rebind[Scalar[dtype]](
+                    search_paths[sim_path_off + i]
+                ))
+                var pa = Int(rebind[Scalar[dtype]](
+                    action_paths[sim_path_off + i]
+                ))
+                var pna = tree_off + pn * ACT + pa
+                visit_count[pna] = rebind[Scalar[dtype]](
+                    visit_count[pna]
+                ) - Scalar[dtype](VIRTUAL_LOSS)
+                total_visits[tv_off + pn] = rebind[Scalar[dtype]](
+                    total_visits[tv_off + pn]
+                ) - Scalar[dtype](VIRTUAL_LOSS)
             continue
 
         # 1. Extract hidden state from dyn_output
@@ -2578,10 +2599,14 @@ def gpu_mcts_batched_expand_backup_muzero_kernel[
             )
             leaf_value = sign_v * (f_v * f_v - Scalar[dtype](1.0))
 
-        # 6. Backup (negated or standard)
+        # 6. Backup (negated or standard) + remove virtual loss along path.
+        # Virtual loss was applied at every (node, action) during selection;
+        # subtract it while adding the +1 real visit. Net per step = (1 -
+        # VIRTUAL_LOSS) on visit counts.
         var value = leaf_value
-        var path_off_s = sim_off * MAX_DEPTH
-        var path_len = Int(rebind[Scalar[dtype]](path_lengths[sim_off]))
+        var path_off_s = sim_path_off
+        var path_len = sim_path_len
+        comptime VLOSS_DELTA: Int = 1 - VIRTUAL_LOSS
 
         for i in range(path_len):
             var idx = path_len - 1 - i
@@ -2603,13 +2628,13 @@ def gpu_mcts_batched_expand_backup_muzero_kernel[
             var na_off = tree_off + node * ACT + act
             visit_count[na_off] = rebind[Scalar[dtype]](
                 visit_count[na_off]
-            ) + Scalar[dtype](1.0)
+            ) + Scalar[dtype](VLOSS_DELTA)
             total_value[na_off] = (
                 rebind[Scalar[dtype]](total_value[na_off]) + value
             )
             total_visits[tv_off + node] = rebind[Scalar[dtype]](
                 total_visits[tv_off + node]
-            ) + Scalar[dtype](1.0)
+            ) + Scalar[dtype](VLOSS_DELTA)
 
             var n_a = rebind[Scalar[dtype]](visit_count[na_off])
             var mean_q = rebind[Scalar[dtype]](total_value[na_off]) / n_a

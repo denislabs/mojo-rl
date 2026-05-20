@@ -53,6 +53,9 @@ def main() raises:
         C_PUCT=1.0,
         # GPU MCTS expands BATCH_SIMS paths per round, so SIMS must be a
         # multiple of BATCH_SIMS. 50/10 = 5 rounds, matching CPU SIMS=50.
+        # With path-wide virtual loss (Phase D fix) batched sims diverge
+        # at every tree level, so BATCH_SIMS>1 no longer flattens the
+        # visit distribution.
         BATCH_SIMS=10,
     ]
     # CNN (heavier but better features):
@@ -93,7 +96,7 @@ def main() raises:
         checkpoint_every=10,
         checkpoint_path="tictactoe_alphazero.ckpt",
         logger=UnsafePointer(to=logger),
-        diag_every=100,
+        diag_every=500,
         dump_replay=True,
         use_one_cycle=True,
     )

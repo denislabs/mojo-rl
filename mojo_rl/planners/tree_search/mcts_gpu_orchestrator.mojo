@@ -86,6 +86,7 @@ struct GenericGPUMCTS[
     NOISE: ExplorationNoise,
     PLAYER: PlayerMode,
     STATE_SIZE: Int = 0,
+    VIRTUAL_LOSS: Int = 3,
 ](Movable, ImplicitlyDestructible):
     """GPU MCTS orchestrator for the MuZero batched single-player path.
 
@@ -388,6 +389,7 @@ struct GenericGPUMCTS[
             comptime run_sel_dyn = gpu_mcts_batched_select_and_build_dyn_kernel[
                 Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.BATCH_SIMS,
                 Self.LATENT, Self.DYN_IN, dtype,
+                VIRTUAL_LOSS_VAL=Self.VIRTUAL_LOSS,
             ]
             ctx.enqueue_function[run_sel_dyn](
                 vc_t, tv_t, pr_t, ci_t, tvis_t, nc_t, miq_t, mxq_t, hs_t,
@@ -468,6 +470,7 @@ struct GenericGPUMCTS[
             comptime run_exp_bk = gpu_mcts_batched_expand_backup_muzero_kernel[
                 Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.BATCH_SIMS,
                 Self.LATENT, Self.PRED_OUT, Self.DYN_OUT, dtype,
+                VIRTUAL_LOSS_VAL=Self.VIRTUAL_LOSS,
             ]
             ctx.enqueue_function[run_exp_bk](
                 vc_t, tv_t, pr_t, rw_t, ci_t, tvis_t, nc_t, miq_t, mxq_t,
@@ -711,6 +714,7 @@ struct GenericGPUMCTS[
             comptime run_sel_dyn = gpu_mcts_batched_select_and_build_dyn_kernel[
                 Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.BATCH_SIMS,
                 Self.LATENT, Self.DYN_IN, dtype,
+                VIRTUAL_LOSS_VAL=Self.VIRTUAL_LOSS,
             ]
             ctx.enqueue_function[run_sel_dyn](
                 vc_t, tv_t, pr_t, ci_t, tvis_t, nc_t, miq_t, mxq_t, hs_t,
@@ -781,6 +785,7 @@ struct GenericGPUMCTS[
             comptime run_exp_bk = gpu_mcts_batched_expand_backup_muzero_kernel[
                 Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.BATCH_SIMS,
                 Self.LATENT, Self.PRED_OUT, Self.DYN_OUT, dtype,
+                VIRTUAL_LOSS_VAL=Self.VIRTUAL_LOSS,
             ]
             ctx.enqueue_function[run_exp_bk](
                 vc_t, tv_t, pr_t, rw_t, ci_t, tvis_t, nc_t, miq_t, mxq_t,
@@ -1110,6 +1115,7 @@ struct GenericGPUMCTS[
             comptime run_sel_cp = gpu_mcts_batched_select_and_copy_kernel[
                 Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.BATCH_SIMS,
                 Self.STATE_SIZE, dtype,
+                VIRTUAL_LOSS_VAL=Self.VIRTUAL_LOSS,
             ]
             ctx.enqueue_function[run_sel_cp](
                 vc_t, tv_t, pr_t, ci_t, tvis_t, nc_t, miq_t, mxq_t,
@@ -1173,6 +1179,7 @@ struct GenericGPUMCTS[
                 Self.PLAYER.NEGATE_BACKUP,
                 True,  # VALUE_SQUASH=True for AlphaZero scalar value head
                 dtype,
+                VIRTUAL_LOSS_VAL=Self.VIRTUAL_LOSS,
             ]
             ctx.enqueue_function[run_exp](
                 vc_t, tv_t, pr_t, rw_t, ci_t, tvis_t, nc_t, miq_t, mxq_t,

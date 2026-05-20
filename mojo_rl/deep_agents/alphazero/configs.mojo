@@ -83,6 +83,7 @@ trait AlphaZeroConfig:
     comptime temp_threshold: Int  # Use temp=1 for first N moves, then anneal
     comptime temp_min: Float64  # Min temperature after threshold (0.0=greedy, 0.3=AlphaZero.jl)
     comptime batch_sims: Int  # Parallel MCTS sims per round (8, 16, or 32)
+    comptime virtual_loss: Int  # PUCT virtual-loss magnitude per pick within a round (3=AlphaGo default; lower → more concentrated visits in small-action games)
     comptime invalid_action_penalty: Float64  # Penalty for prob mass on illegal moves (1.0=AlphaZero.jl)
     comptime max_grad_norm: Float64  # Max gradient norm for clipping (0.0=disabled)
 
@@ -139,6 +140,7 @@ struct AlphaZeroTicTacToeConfig[
     NODES: Int = 128,
     C_PUCT: Float64 = 1.0,
     BATCH_SIMS: Int = 8,
+    VLOSS: Int = 3,
 ](AlphaZeroConfig):
     """AlphaZero for TicTacToe (27D obs, 9 actions) — MLP variant."""
 
@@ -164,6 +166,7 @@ struct AlphaZeroTicTacToeConfig[
     comptime temp_threshold: Int = 4  # temp=1 first 4 moves, then temp_min
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = Self.BATCH_SIMS
+    comptime virtual_loss: Int = Self.VLOSS
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
@@ -235,6 +238,7 @@ struct AlphaZeroTicTacToeCNNConfig[
     comptime temp_threshold: Int = 4
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
+    comptime virtual_loss: Int = 3
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
@@ -291,6 +295,7 @@ struct AlphaZeroConnectFourConfig[
     comptime temp_threshold: Int = 20
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
+    comptime virtual_loss: Int = 3
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
@@ -369,6 +374,7 @@ struct AlphaZeroConnectFourCNNConfig[
     comptime temp_threshold: Int = 20
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
+    comptime virtual_loss: Int = 3
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
@@ -491,6 +497,7 @@ struct AlphaZeroConnectFourResNetConfig[
     comptime temp_threshold: Int = 20
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
+    comptime virtual_loss: Int = 3
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
@@ -575,6 +582,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     comptime temp_threshold: Int = 20
     comptime temp_min: Float64 = 0.3  # AlphaZero.jl: temp=0.3 after move 20
     comptime batch_sims: Int = 8
+    comptime virtual_loss: Int = 3
     comptime invalid_action_penalty: Float64 = 1.0  # AlphaZero.jl: nonvalidity_penalty=1.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
@@ -641,6 +649,7 @@ struct AlphaZeroTicTacToeResNetConfig[
     comptime temp_threshold: Int = 4
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
+    comptime virtual_loss: Int = 3
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
@@ -696,6 +705,7 @@ struct AlphaZeroChessConfig[
     comptime temp_threshold: Int = 30
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
+    comptime virtual_loss: Int = 3
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
@@ -760,6 +770,7 @@ struct AlphaZeroCartPoleConfig[
     comptime temp_threshold: Int = 50  # Long horizon — broad exploration
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 5
+    comptime virtual_loss: Int = 3
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
