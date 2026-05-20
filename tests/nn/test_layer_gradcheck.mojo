@@ -37,6 +37,7 @@ from mojo_rl.nn.model import (
     Conv2DReLU,
     Conv2DLayer,
     Conv2DBatchNormReLU,
+    LinearBatchNormReLU,
     FlattenLayer,
     ResBlockConv2D,
     Residual,
@@ -371,6 +372,21 @@ def main() raises:
     # BN gradcheck: eps=1e-3, tol=5% (BN batch stats add finite-diff noise)
     cpu_gradcheck[ResBlockConv2DBN[4, 3, 1, 5, 5]](
         "ResBlockConv2DBN[4ch,3x3,5x5]", tol=0.05,
+    )
+
+    # Fused BN+ReLU leaf layers (same tol=5% as ResBlockConv2DBN — BN batch
+    # stats inject noise into central FD).
+    cpu_gradcheck[Conv2DBatchNormReLU[2, 4, 3, 1, 1, 5, 5]](
+        "Conv2DBatchNormReLU[2,4,3x3,5x5]", tol=0.05,
+    )
+    cpu_gradcheck[Conv2DBatchNormReLU[3, 8, 3, 1, 0, 3, 3]](
+        "Conv2DBatchNormReLU[3,8,3x3,3x3 valid]", tol=0.05,
+    )
+    cpu_gradcheck[LinearBatchNormReLU[16, 8]](
+        "LinearBatchNormReLU[16,8]", tol=0.05,
+    )
+    cpu_gradcheck[LinearBatchNormReLU[8, 16]](
+        "LinearBatchNormReLU[8,16]", tol=0.05,
     )
 
     # ── Group E: Realistic architectures ─────────────────────
