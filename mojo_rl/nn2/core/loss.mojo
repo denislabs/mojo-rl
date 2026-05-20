@@ -1,11 +1,17 @@
 """Loss trait — (logits, targets) → scalar + grad_logits.
 
 Phase 2.4: methods take `target: StaticString` as comptime method param.
-Tensor args use generic `MutOrigin` (see module.mojo for rationale).
+
+Stage B (Phase 10B): tensor args use the partial-spec form
+`TileTensor[mut=..., dtype=DT, address_space=AddressSpace.GENERIC,
+element_size=1, ...]` so callers can pass tiles built from any source
+buffer without intermediate widening. Impls rebind to `MutAnyOrigin`
+only at the kernel-launch boundary.
 """
 
 from std.gpu.host import DeviceContext
-from layout import TileTensor, TensorLayout
+from std.gpu.memory import AddressSpace
+from layout import TileTensor
 
 from ..constants import DT
 from .amp import AMPPolicy, NoAMP
@@ -25,29 +31,30 @@ trait Loss(Defaultable & Movable & ImplicitlyDestructible):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LL: TensorLayout,
-        LT: TensorLayout,
-        OL: MutOrigin,
-        OT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        logits: TileTensor[DT, LL, OL],
-        targets: TileTensor[DT, LT, OT],
+        logits: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        targets: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
     ) raises -> Scalar[DT]:
         ...
 
     def backward[
         target: StaticString,
         BATCH: Int,
-        LT: TensorLayout,
-        LG: TensorLayout,
-        OT: MutOrigin,
-        OG: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        targets: TileTensor[DT, LT, OT],
-        mut grad_logits: TileTensor[DT, LG, OG],
+        targets: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_logits: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         ...

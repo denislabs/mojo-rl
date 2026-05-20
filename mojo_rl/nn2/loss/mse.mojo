@@ -15,7 +15,8 @@ Phase 6.3. AMP: POLICY accepted but ignored (loss math is fp32-only).
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import (
@@ -142,15 +143,15 @@ struct MSELoss[DIM: Int](Loss):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LL: TensorLayout,
-        LT: TensorLayout,
-        OL: MutOrigin,
-        OT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        logits: TileTensor[DT, LL, OL],
-        targets: TileTensor[DT, LT, OT],
+        logits: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        targets: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
     ) raises -> Scalar[DT]:
         comptime assert logits.flat_rank == 2, "logits rank-2"
         comptime assert targets.flat_rank == 2, "targets rank-2"
@@ -162,10 +163,8 @@ struct MSELoss[DIM: Int](Loss):
             # in fp32 modulo rounding — bit-changes vs scalar are negligible
             # against the 1/BATCH normalization).
             self._ensure_cache_cpu(BATCH)
-            var logits_w = rebind[TileTensor[DT, LL, MutAnyOrigin]](logits)
-            var targets_w = rebind[TileTensor[DT, LT, MutAnyOrigin]](targets)
-            var lp = logits_w.ptr
-            var tp = targets_w.ptr
+            var lp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
+            var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
             var cp = self.cache_logits.unsafe_ptr()
             comptime N = BATCH * Self.DIM
             var acc_v = SIMD[DT, CPU_SIMD_W](0)
@@ -190,10 +189,10 @@ struct MSELoss[DIM: Int](Loss):
             var ctx = self.ctx.value()
             comptime mat_layout = Layout.row_major(BATCH, Self.DIM)
             comptime row_layout = Layout.row_major(BATCH)
-            var logits_w = rebind[TileTensor[DT, LL, MutAnyOrigin]](logits)
-            var targets_w = rebind[TileTensor[DT, LT, MutAnyOrigin]](targets)
-            var logits_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](logits_w.ptr)
-            var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](targets_w.ptr)
+            var lp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
+            var tp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
+            var logits_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](lp_w)
+            var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
             var cache_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](
                 self.cache_logits_dev.value()
             )
@@ -202,7 +201,7 @@ struct MSELoss[DIM: Int](Loss):
             )
             # Copy logits to cache so backward kernel can reference them
             # without depending on the caller keeping logits buffer alive.
-            ctx.enqueue_copy(self.cache_logits_dev.value(), logits_w.ptr)
+            ctx.enqueue_copy(self.cache_logits_dev.value(), lp_w)
             comptime TPB = 64
             comptime n_blocks = (BATCH + TPB - 1) // TPB
             comptime kernel = _mse_forward_kernel[BATCH, Self.DIM]
@@ -223,15 +222,16 @@ struct MSELoss[DIM: Int](Loss):
     def backward[
         target: StaticString,
         BATCH: Int,
-        LT: TensorLayout,
-        LG: TensorLayout,
-        OT: MutOrigin,
-        OG: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        targets: TileTensor[DT, LT, OT],
-        mut grad_logits: TileTensor[DT, LG, OG],
+        targets: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_logits: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert targets.flat_rank == 2, "targets rank-2"
         comptime assert grad_logits.flat_rank == 2, "grad_logits rank-2"
@@ -239,11 +239,9 @@ struct MSELoss[DIM: Int](Loss):
 
         comptime if target == "cpu":
             # Phase 8.0: SIMD path.
-            var targets_w = rebind[TileTensor[DT, LT, MutAnyOrigin]](targets)
-            var grad_w = rebind[TileTensor[DT, LG, MutAnyOrigin]](grad_logits)
             var cp = self.cache_logits.unsafe_ptr()
-            var tp = targets_w.ptr
-            var gp = grad_w.ptr
+            var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
+            var gp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_logits.ptr)
             var inv_batch_v = SIMD[DT, CPU_SIMD_W](1.0 / Scalar[DT](BATCH))
             comptime N = BATCH * Self.DIM
             var k = 0
@@ -259,13 +257,13 @@ struct MSELoss[DIM: Int](Loss):
         else:
             var ctx = self.ctx.value()
             comptime mat_layout = Layout.row_major(BATCH, Self.DIM)
-            var targets_w = rebind[TileTensor[DT, LT, MutAnyOrigin]](targets)
-            var grad_w = rebind[TileTensor[DT, LG, MutAnyOrigin]](grad_logits)
+            var tp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
+            var gp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_logits.ptr)
             var cache_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](
                 self.cache_logits_dev.value()
             )
-            var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](targets_w.ptr)
-            var grad_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](grad_w.ptr)
+            var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
+            var grad_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](gp_w)
             comptime TPB = 128
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
             comptime kernel = _mse_backward_kernel[BATCH, Self.DIM]

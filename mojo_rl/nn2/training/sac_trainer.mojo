@@ -60,8 +60,7 @@ from ..core.online_target_pair import OnlineTargetPair
 from ..initializer import Xavier
 from ..optimizer.adam import Adam
 from ..optimizer.scalar_adam import ScalarAdam
-from ..loss.sac_actor_loss_block import SACActorLossOut
-from ..loss.sac_actor_loss_cg import SACActorLossCG as SACActorLoss
+from ..loss.sac_actor_loss_cg import SACActorLossCG as SACActorLoss, SACActorLossOut
 from ..loss.critic_update_block import TwinCriticUpdateBlock
 from ..data.cpu_replay import CPUReplay
 from ..random.box_muller import box_muller_normal

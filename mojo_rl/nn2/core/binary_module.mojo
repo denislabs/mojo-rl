@@ -23,7 +23,8 @@ opt in lazily. Identical pattern to the Module trait extension.
 """
 
 from std.gpu.host import DeviceContext
-from layout import TileTensor, TensorLayout
+from std.gpu.memory import AddressSpace
+from layout import TileTensor
 
 from ..constants import DT
 from .param_visitor import ParamVisitor
@@ -47,54 +48,46 @@ trait BinaryModule(Defaultable & Movable & ImplicitlyDestructible):
     def forward[
         target: StaticString,
         BATCH: Int,
-        L0: TensorLayout,
-        L1: TensorLayout,
-        LOUT: TensorLayout,
-        O0: MutOrigin,
-        O1: MutOrigin,
-        OOUT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        in0: TileTensor[DT, L0, O0],
-        in1: TileTensor[DT, L1, O1],
-        mut output: TileTensor[DT, LOUT, OOUT],
+        in0: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
+        in1: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
     ) raises:
         ...
 
     def backward[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LG0: TensorLayout,
-        LG1: TensorLayout,
-        OGO: MutOrigin,
-        OG0: MutOrigin,
-        OG1: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_in0: TileTensor[DT, LG0, OG0],
-        mut grad_in1: TileTensor[DT, LG1, OG1],
+        grad_output: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
+        mut grad_in0: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_in1: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
     ) raises:
         ...
 
     def backward_input[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LG0: TensorLayout,
-        LG1: TensorLayout,
-        OGO: MutOrigin,
-        OG0: MutOrigin,
-        OG1: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_in0: TileTensor[DT, LG0, OG0],
-        mut grad_in1: TileTensor[DT, LG1, OG1],
+        grad_output: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
+        mut grad_in0: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_in1: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
     ) raises:
         """grad_input-only backward (no grad_w accumulation).
 

@@ -25,7 +25,8 @@ sits at the actor's last layer (HIDDEN × ACT_DIM, ACT_DIM is small —
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
@@ -314,15 +315,16 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LIN: TensorLayout,
-        LOUT: TensorLayout,
-        OIN: MutOrigin,
-        OOUT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[DT, LIN, OIN],
-        mut output: TileTensor[DT, LOUT, OOUT],
+        input: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert input.flat_rank == 2, "input must be rank-2 [BATCH, IN]"
         comptime assert (
@@ -357,15 +359,15 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
         else:
             var ctx = self.ctx.value()
             self._ensure_cache_dev(BATCH * Self.IN)
-            var input_w = rebind[TileTensor[DT, LIN, MutAnyOrigin]](input)
-            var output_w = rebind[TileTensor[DT, LOUT, MutAnyOrigin]](output)
+            var in_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
 
             comptime in_layout = Layout.row_major(BATCH, Self.IN)
             comptime out_layout = Layout.row_major(BATCH, 2 * Self.ACT)
             comptime w_layout = Layout.row_major(Self.IN, Self.ACT)
             comptime b_layout = Layout.row_major(Self.ACT)
 
-            var input_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](input_w.ptr)
+            var input_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](in_p_w)
             var cache_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](
                 self.cache_dev.value()
             )
@@ -379,7 +381,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
                 self.log_std_dev.value()
             )
             var output_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](
-                output_w.ptr
+                out_p_w
             )
 
             comptime TPB = 128
@@ -416,15 +418,16 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
     def backward[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
         comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
@@ -465,12 +468,8 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
                 gls[j] = gls[j] + acc
         else:
             var ctx = self.ctx.value()
-            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
-                grad_output
-            )
-            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
-                grad_input
-            )
+            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
             comptime go_layout = Layout.row_major(BATCH, 2 * Self.ACT)
             comptime gi_layout = Layout.row_major(BATCH, Self.IN)
             comptime w_layout = Layout.row_major(Self.IN, Self.ACT)
@@ -478,10 +477,10 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
             comptime cache_layout = Layout.row_major(BATCH, Self.IN)
 
             var go_lt = LayoutTensor[DT, go_layout, MutAnyOrigin](
-                grad_output_w.ptr
+                go_p_w
             )
             var gi_lt = LayoutTensor[DT, gi_layout, MutAnyOrigin](
-                grad_input_w.ptr
+                gi_p_w
             )
             var w_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
                 self.weight_dev.value()
@@ -549,15 +548,16 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
     def backward_input[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
         comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
@@ -573,20 +573,16 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
                     grad_input[bi, i] = acc
         else:
             var ctx = self.ctx.value()
-            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
-                grad_output
-            )
-            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
-                grad_input
-            )
+            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
             comptime go_layout = Layout.row_major(BATCH, 2 * Self.ACT)
             comptime gi_layout = Layout.row_major(BATCH, Self.IN)
             comptime w_layout = Layout.row_major(Self.IN, Self.ACT)
             var go_lt = LayoutTensor[DT, go_layout, MutAnyOrigin](
-                grad_output_w.ptr
+                go_p_w
             )
             var gi_lt = LayoutTensor[DT, gi_layout, MutAnyOrigin](
-                grad_input_w.ptr
+                gi_p_w
             )
             var w_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
                 self.weight_dev.value()

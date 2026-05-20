@@ -49,7 +49,8 @@ CPU only (Phase 10D). GPU lands when CG v2 is the actual SAC path
 """
 
 from std.gpu.host import DeviceContext
-from layout import TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
@@ -148,15 +149,16 @@ struct ComputeGraph[
     def forward[
         target: StaticString,
         BATCH: Int,
-        LIN: TensorLayout,
-        LOUT: TensorLayout,
-        OIN: MutOrigin,
-        OOUT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[DT, LIN, OIN],
-        mut output: TileTensor[DT, LOUT, OOUT],
+        input: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert input.flat_rank == 2, "input must be rank-2"
         comptime assert output.flat_rank == 2, "output must be rank-2"
@@ -179,15 +181,16 @@ struct ComputeGraph[
     def backward[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
         comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
@@ -202,6 +205,27 @@ struct ComputeGraph[
             raise Error(
                 "ComputeGraph: GPU backward not yet implemented (Phase 10D CPU only)"
             )
+
+    def backward_input[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
+    ) raises:
+        # ComputeGraph's nodes own their own params; backward already
+        # accumulates only what each node opts in to. backward_input is
+        # not a meaningful operation for a graph as a whole — delegate
+        # to backward. Callers that want frozen-params behavior should
+        # wrap individual sub-nets in StopGradParams.
+        self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)
 
     # ──────────────────────────────────────────────────────────────────
     # for_each_param — recurse with `node_name.` prefix.
@@ -235,25 +259,25 @@ struct ComputeGraph[
 def _forward_cpu[
     target: StaticString,
     BATCH: Int,
-    LIN: TensorLayout,
-    LOUT: TensorLayout,
-    OIN: MutOrigin,
-    OOUT: MutOrigin,
     POLICY: AMPPolicy,
     IN_DIM_: Int,
     OUT_DIM_: Int,
     *NODES: GraphNode,
 ](
     mut g: ComputeGraph[IN_DIM_, OUT_DIM_, *NODES],
-    input: TileTensor[DT, LIN, OIN],
-    mut output: TileTensor[DT, LOUT, OOUT],
+    input: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    mut output: TileTensor[
+        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, ...,
+    ],
 ) raises:
     comptime N = NODES.size
 
     # External input pointer, widened to MutAnyOrigin so it satisfies
     # the GraphNode trait's forward_via signature uniformly.
-    var input_w = rebind[TileTensor[DT, LIN, MutAnyOrigin]](input)
-    var input_ptr = input_w.ptr
+    var input_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
 
     # Null sentinel for unary nodes' unused in1 slot.
     var null_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
@@ -286,8 +310,7 @@ def _forward_cpu[
 
     # Copy last node's out_buf into the external output.
     comptime LAST_OUT_DIM = NODES[N - 1].OUT_DIM
-    var out_w = rebind[TileTensor[DT, LOUT, MutAnyOrigin]](output)
-    var out_p = out_w.ptr
+    var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
     var last_out_ptr = g.nodes[N - 1].out_ptr_via()
     var total = BATCH * LAST_OUT_DIM
     for k in range(total):
@@ -297,18 +320,19 @@ def _forward_cpu[
 def _backward_cpu[
     target: StaticString,
     BATCH: Int,
-    LGO: TensorLayout,
-    LGI: TensorLayout,
-    OGO: MutOrigin,
-    OGI: MutOrigin,
     POLICY: AMPPolicy,
     IN_DIM_: Int,
     OUT_DIM_: Int,
     *NODES: GraphNode,
 ](
     mut g: ComputeGraph[IN_DIM_, OUT_DIM_, *NODES],
-    grad_output: TileTensor[DT, LGO, OGO],
-    mut grad_input: TileTensor[DT, LGI, OGI],
+    grad_output: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    mut grad_input: TileTensor[
+        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, ...,
+    ],
 ) raises:
     comptime N = NODES.size
 
@@ -327,8 +351,7 @@ def _backward_cpu[
 
     # Seed last node's grad_out_buf from the external grad_output.
     comptime LAST_OUT_DIM = NODES[N - 1].OUT_DIM
-    var go_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](grad_output)
-    var ext_go_p = go_w.ptr
+    var ext_go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
     var last_go_p = g.nodes[N - 1].grad_out_ptr_via()
     var last_total = BATCH * LAST_OUT_DIM
     for k in range(last_total):
@@ -375,7 +398,6 @@ def _backward_cpu[
                             pred_go_p[k] += gi1_p[k]
 
     # Copy external grad_input_buf into the caller's grad_input tile.
-    var gi_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](grad_input)
-    var gi_p = gi_w.ptr
+    var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
     for k in range(ext_total):
         gi_p[k] = ext_gi_p[k]

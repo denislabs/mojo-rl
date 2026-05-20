@@ -28,7 +28,8 @@ Phase 6.4. CPU + GPU.
 from std.math import exp, log
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
@@ -266,16 +267,20 @@ struct PPOActorLoss[ACT: Int](Defaultable, Movable, ImplicitlyDestructible):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LAO: TensorLayout, LAC: TensorLayout,
-        LOL: TensorLayout, LAD: TensorLayout,
-        OAO: MutOrigin, OAC: MutOrigin,
-        OOL: MutOrigin, OAD: MutOrigin,
     ](
         mut self,
-        actor_output: TileTensor[DT, LAO, OAO],
-        action: TileTensor[DT, LAC, OAC],
-        old_log_prob: TileTensor[DT, LOL, OOL],
-        advantage: TileTensor[DT, LAD, OAD],
+        actor_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        action: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        old_log_prob: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        advantage: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
     ) raises -> Scalar[DT]:
         comptime assert actor_output.flat_rank == 2, "actor_output rank-2"
         comptime assert action.flat_rank == 2, "action rank-2"
@@ -329,14 +334,14 @@ struct PPOActorLoss[ACT: Int](Defaultable, Movable, ImplicitlyDestructible):
             comptime ao_layout = Layout.row_major(BATCH, 2 * Self.ACT)
             comptime ac_layout = Layout.row_major(BATCH, Self.ACT)
             comptime row_layout = Layout.row_major(BATCH)
-            var ao_w = rebind[TileTensor[DT, LAO, MutAnyOrigin]](actor_output)
-            var ac_w = rebind[TileTensor[DT, LAC, MutAnyOrigin]](action)
-            var ol_w = rebind[TileTensor[DT, LOL, MutAnyOrigin]](old_log_prob)
-            var ad_w = rebind[TileTensor[DT, LAD, MutAnyOrigin]](advantage)
-            var ao_lt = LayoutTensor[DT, ao_layout, MutAnyOrigin](ao_w.ptr)
-            var ac_lt = LayoutTensor[DT, ac_layout, MutAnyOrigin](ac_w.ptr)
-            var ol_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](ol_w.ptr)
-            var ad_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](ad_w.ptr)
+            var ao_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](actor_output.ptr)
+            var ac_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](action.ptr)
+            var ol_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](old_log_prob.ptr)
+            var ad_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](advantage.ptr)
+            var ao_lt = LayoutTensor[DT, ao_layout, MutAnyOrigin](ao_p)
+            var ac_lt = LayoutTensor[DT, ac_layout, MutAnyOrigin](ac_p)
+            var ol_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](ol_p)
+            var ad_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](ad_p)
             var pl_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](
                 self.partial_loss_dev.value()
             )
@@ -359,17 +364,24 @@ struct PPOActorLoss[ACT: Int](Defaultable, Movable, ImplicitlyDestructible):
     def backward[
         target: StaticString,
         BATCH: Int,
-        LAO: TensorLayout, LAC: TensorLayout,
-        LOL: TensorLayout, LAD: TensorLayout, LGO: TensorLayout,
-        OAO: MutOrigin, OAC: MutOrigin,
-        OOL: MutOrigin, OAD: MutOrigin, OGO: MutOrigin,
     ](
         mut self,
-        actor_output: TileTensor[DT, LAO, OAO],
-        action: TileTensor[DT, LAC, OAC],
-        old_log_prob: TileTensor[DT, LOL, OOL],
-        advantage: TileTensor[DT, LAD, OAD],
-        mut grad_actor_output: TileTensor[DT, LGO, OGO],
+        actor_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        action: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        old_log_prob: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        advantage: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_actor_output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert actor_output.flat_rank == 2, "actor_output rank-2"
         comptime assert action.flat_rank == 2, "action rank-2"
@@ -450,18 +462,16 @@ struct PPOActorLoss[ACT: Int](Defaultable, Movable, ImplicitlyDestructible):
             comptime ao_layout = Layout.row_major(BATCH, 2 * Self.ACT)
             comptime ac_layout = Layout.row_major(BATCH, Self.ACT)
             comptime row_layout = Layout.row_major(BATCH)
-            var ao_w = rebind[TileTensor[DT, LAO, MutAnyOrigin]](actor_output)
-            var ac_w = rebind[TileTensor[DT, LAC, MutAnyOrigin]](action)
-            var ol_w = rebind[TileTensor[DT, LOL, MutAnyOrigin]](old_log_prob)
-            var ad_w = rebind[TileTensor[DT, LAD, MutAnyOrigin]](advantage)
-            var go_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
-                grad_actor_output
-            )
-            var ao_lt = LayoutTensor[DT, ao_layout, MutAnyOrigin](ao_w.ptr)
-            var ac_lt = LayoutTensor[DT, ac_layout, MutAnyOrigin](ac_w.ptr)
-            var ol_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](ol_w.ptr)
-            var ad_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](ad_w.ptr)
-            var go_lt = LayoutTensor[DT, ao_layout, MutAnyOrigin](go_w.ptr)
+            var ao_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](actor_output.ptr)
+            var ac_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](action.ptr)
+            var ol_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](old_log_prob.ptr)
+            var ad_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](advantage.ptr)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_actor_output.ptr)
+            var ao_lt = LayoutTensor[DT, ao_layout, MutAnyOrigin](ao_p)
+            var ac_lt = LayoutTensor[DT, ac_layout, MutAnyOrigin](ac_p)
+            var ol_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](ol_p)
+            var ad_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](ad_p)
+            var go_lt = LayoutTensor[DT, ao_layout, MutAnyOrigin](go_p)
             comptime TPB = 64
             comptime n_blocks = (BATCH + TPB - 1) // TPB
             comptime kernel = _ppo_actor_backward_kernel[BATCH, Self.ACT]

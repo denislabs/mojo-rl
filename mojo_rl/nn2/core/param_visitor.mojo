@@ -1,10 +1,11 @@
 """ParamVisitor trait — invoked once per parameter during a tree walk.
 
-`visit` is parametric over the TileTensor's layout AND its mutable
-origins so that callers can hand in `TileTensor(buf, layout)` views
-built directly from a DeviceBuffer (narrow origin) without an explicit
-`MutAnyOrigin` widening. Impls that need `MutAnyOrigin` (e.g. to feed a
-GPU kernel) rebind once at the top of the visit body.
+Stage B (Phase 10B): `visit` takes the `param` / `grad` tiles via the
+partial-spec form `TileTensor[mut=True, dtype=DT,
+address_space=AddressSpace.GENERIC, element_size=1, ...]` — `layout`
+and `origin` are inferred from the actual TileTensors passed in. Impls
+that need a `MutAnyOrigin` pointer (e.g. to feed a GPU kernel) rebind
+the `.ptr` once at the kernel boundary.
 
 `n_elems` is passed explicitly. Production version may recover this
 from `param.runtime_layout` (or similar TileTensor instance API) once
@@ -21,20 +22,21 @@ ignore the arg. Layer-local ownership rather than a central name-match
 filter — adding a new layer in Phase 5 is decay-correct by construction.
 """
 
-from layout import TileTensor, TensorLayout
+from std.gpu.memory import AddressSpace
+from layout import TileTensor
 from ..constants import DT
 
 
 trait ParamVisitor(ImplicitlyDestructible):
-    def visit[
-        L: TensorLayout,
-        OP: MutOrigin,
-        OG: MutOrigin,
-    ](
+    def visit(
         mut self,
         name: String,
-        param: TileTensor[DT, L, OP],
-        grad: TileTensor[DT, L, OG],
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         n_elems: Int,
         apply_decay: Bool,
     ) raises:

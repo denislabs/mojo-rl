@@ -3,11 +3,19 @@
 Phase 2.4: `target` is a comptime method param. Modules carry a runtime
 `_target_tag` set by `make[target, INIT]`, asserted by every method.
 
-Tensor args use generic `MutOrigin` so callers can pass `TileTensor`
-views built directly from `DeviceBuffer` (narrow origin) without an
-intermediate `MutAnyOrigin` widening step. Impl bodies that pipe pointers
-into kernels accept the generic origin and rebind to `MutAnyOrigin` only
-at the kernel-launch boundary.
+Stage B (Phase 10B): `forward` / `backward` / `backward_input` take
+`TileTensor` arguments via the partial-spec form
+`TileTensor[mut=..., dtype=DT, address_space=AddressSpace.GENERIC,
+element_size=1, ...]` — `layout` and `origin` are left unspecified so
+callers can pass tiles built from any source buffer without an
+intermediate `MutAnyOrigin` widening. The previous `[LIN, LOUT, OIN,
+OOUT]` per-method generics are inferred from the actual TileTensors at
+the call site. Impl bodies that need a `MutAnyOrigin` pointer (for a
+kernel launch) rebind only the `.ptr` once at the kernel boundary.
+
+The `element_size=1` pin is required so multi-arg arithmetic
+(`out[b, d] = in0[b, d] - in1[b, d]`) typechecks across args. nn2
+doesn't pack SIMD lanes at the tile level — pinning to 1 is zero-cost.
 
 Trait requirements:
   - `Defaultable`: zero-arg `__init__()` yields empty placeholders.
@@ -17,7 +25,8 @@ Trait requirements:
 """
 
 from std.gpu.host import DeviceContext
-from layout import TileTensor, TensorLayout
+from std.gpu.memory import AddressSpace
+from layout import TileTensor
 
 from ..constants import DT
 from .param_visitor import ParamVisitor
@@ -40,45 +49,48 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LIN: TensorLayout,
-        LOUT: TensorLayout,
-        OIN: MutOrigin,
-        OOUT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[DT, LIN, OIN],
-        mut output: TileTensor[DT, LOUT, OOUT],
+        input: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         ...
 
     def backward[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         ...
 
     def backward_input[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         """Backward computing grad_input only — does NOT accumulate
         grad_w / grad_b. Used by `StopGradParams` and by inline frozen-

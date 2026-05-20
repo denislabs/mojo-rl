@@ -35,7 +35,8 @@ update math is identical; only the storage location differs.
 from std.math import sqrt
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import (
@@ -127,13 +128,15 @@ struct _AdamWCPUInitVisitor(ParamVisitor):
     var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
     var apply_decay_ptr: UnsafePointer[List[Bool], MutAnyOrigin]
 
-    def visit[
-        L: TensorLayout, OP: MutOrigin, OG: MutOrigin,
-    ](
+    def visit(
         mut self,
         name: String,
-        param: TileTensor[DT, L, OP],
-        grad: TileTensor[DT, L, OG],
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
@@ -160,13 +163,15 @@ struct _AdamWCPUStepVisitor(ParamVisitor):
     var bc1: Scalar[DT]
     var bc2: Scalar[DT]
 
-    def visit[
-        L: TensorLayout, OP: MutOrigin, OG: MutOrigin,
-    ](
+    def visit(
         mut self,
         name: String,
-        param: TileTensor[DT, L, OP],
-        grad: TileTensor[DT, L, OG],
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
@@ -174,8 +179,8 @@ struct _AdamWCPUStepVisitor(ParamVisitor):
         # v in separate Lists — no AoS deinterleave needed.
         var off = self.offsets_ptr[][self.idx]
         var decay_flag = self.apply_decay_ptr[][self.idx]
-        var p_ptr = param.ptr
-        var g_ptr = grad.ptr
+        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
         var m_ptr = self.m_flat_ptr[].unsafe_ptr() + off
         var v_ptr = self.v_flat_ptr[].unsafe_ptr() + off
         var b1_v = SIMD[DT, CPU_SIMD_W](self.beta1)
@@ -226,17 +231,19 @@ struct _ZeroGradCPUVisitor(ParamVisitor):
     def __init__(out self):
         pass
 
-    def visit[
-        L: TensorLayout, OP: MutOrigin, OG: MutOrigin,
-    ](
+    def visit(
         mut self,
         name: String,
-        param: TileTensor[DT, L, OP],
-        grad: TileTensor[DT, L, OG],
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var g_ptr = grad.ptr
+        var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
         var zero: Scalar[DT] = 0.0
         for i in range(n_elems):
             g_ptr[i] = zero
@@ -253,13 +260,15 @@ struct _AdamWGPUInitVisitor(ParamVisitor):
     var apply_decay_ptr: UnsafePointer[List[Bool], MutAnyOrigin]
     var total_ptr: UnsafePointer[Int, MutAnyOrigin]
 
-    def visit[
-        L: TensorLayout, OP: MutOrigin, OG: MutOrigin,
-    ](
+    def visit(
         mut self,
         name: String,
-        param: TileTensor[DT, L, OP],
-        grad: TileTensor[DT, L, OG],
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
@@ -283,13 +292,15 @@ struct _AdamWGPUStepVisitor(ParamVisitor):
     var eps: Scalar[DT]
     var weight_decay: Scalar[DT]
 
-    def visit[
-        L: TensorLayout, OP: MutOrigin, OG: MutOrigin,
-    ](
+    def visit(
         mut self,
         name: String,
-        param: TileTensor[DT, L, OP],
-        grad: TileTensor[DT, L, OG],
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
@@ -297,12 +308,12 @@ struct _AdamWGPUStepVisitor(ParamVisitor):
         var decay_flag = self.apply_decay_ptr[][self.idx]
         var m_off = self.m_base + off
         var v_off = self.v_base + off
-        var param_w = rebind[TileTensor[DT, L, MutAnyOrigin]](param)
-        var grad_w  = rebind[TileTensor[DT, L, MutAnyOrigin]](grad)
+        var param_w_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var grad_w_ptr  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
         comptime TPB = 128
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_adamw_update_kernel](
-            param_w.ptr, grad_w.ptr, m_off, v_off, self.bc_base, n_elems,
+            param_w_ptr, grad_w_ptr, m_off, v_off, self.bc_base, n_elems,
             self.lr, self.beta1, self.beta2, self.eps,
             self.weight_decay,
             Int(1) if decay_flag else Int(0),
@@ -315,21 +326,23 @@ struct _AdamWGPUStepVisitor(ParamVisitor):
 struct _ZeroGradGPUVisitor(ParamVisitor):
     var ctx: DeviceContext
 
-    def visit[
-        L: TensorLayout, OP: MutOrigin, OG: MutOrigin,
-    ](
+    def visit(
         mut self,
         name: String,
-        param: TileTensor[DT, L, OP],
-        grad: TileTensor[DT, L, OG],
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var grad_w = rebind[TileTensor[DT, L, MutAnyOrigin]](grad)
+        var grad_w_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
         comptime TPB = 128
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_zero_fill_kernel](
-            grad_w.ptr, n_elems, grid_dim=n_blocks, block_dim=TPB,
+            grad_w_ptr, n_elems, grid_dim=n_blocks, block_dim=TPB,
         )
 
 

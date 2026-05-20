@@ -38,7 +38,8 @@ pair — see `tests/nn2/test_rsample.mojo` for the bit-level check.
 
 from std.math import exp, log, tanh
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import TileTensor, TensorLayout
+from std.gpu.memory import AddressSpace
+from layout import TileTensor
 
 from ..constants import DT
 from ..core import (
@@ -145,15 +146,16 @@ struct RSample[ACT: Int](Module):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LIN: TensorLayout,
-        LOUT: TensorLayout,
-        OIN: MutOrigin,
-        OOUT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[DT, LIN, OIN],
-        mut output: TileTensor[DT, LOUT, OOUT],
+        input: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         """Forward = sample fresh z, then squashed-Gaussian forward.
 
@@ -203,15 +205,16 @@ struct RSample[ACT: Int](Module):
     def backward[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         """Backward — split grad_output into [grad_action | grad_log_prob]
         and route through the squashed-Gaussian analytical Jacobian.
@@ -264,15 +267,16 @@ struct RSample[ACT: Int](Module):
     def backward_input[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         # No parameters — backward_input ≡ backward.
         self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)

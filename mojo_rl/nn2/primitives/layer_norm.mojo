@@ -37,7 +37,8 @@ from std.math import sqrt
 from std.gpu import thread_idx, block_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
@@ -328,15 +329,16 @@ struct LayerNorm[DIM: Int](Module):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LIN: TensorLayout,
-        LOUT: TensorLayout,
-        OIN: MutOrigin,
-        OOUT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[DT, LIN, OIN],
-        mut output: TileTensor[DT, LOUT, OOUT],
+        input: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         # LayerNorm contract: force_fp32_input=True. POLICY ignored.
         comptime assert (
@@ -375,10 +377,10 @@ struct LayerNorm[DIM: Int](Module):
             comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
             comptime layout_b  = Layout.row_major(BATCH)
             comptime layout_d  = Layout.row_major(Self.DIM)
-            var input_w  = rebind[TileTensor[DT, LIN, MutAnyOrigin]](input)
-            var output_w = rebind[TileTensor[DT, LOUT, MutAnyOrigin]](output)
-            var in_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](input_w.ptr)
-            var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](output_w.ptr)
+            var in_p_w  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var in_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p_w)
+            var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p_w)
             var g_lt   = LayoutTensor[DT, layout_d, MutAnyOrigin](self.gamma_dev.value())
             var b_lt   = LayoutTensor[DT, layout_d, MutAnyOrigin](self.beta_dev.value())
             var xh_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](self.cache_xhat_dev.value())
@@ -393,15 +395,16 @@ struct LayerNorm[DIM: Int](Module):
     def backward[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
         comptime assert grad_input.flat_rank == 2, "grad_input must be rank-2"
@@ -437,14 +440,10 @@ struct LayerNorm[DIM: Int](Module):
             comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
             comptime layout_b  = Layout.row_major(BATCH)
             comptime layout_d  = Layout.row_major(Self.DIM)
-            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
-                grad_output
-            )
-            var grad_input_w  = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
-                grad_input
-            )
-            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](grad_output_w.ptr)
-            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](grad_input_w.ptr)
+            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p_w)
+            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p_w)
             var g_lt  = LayoutTensor[DT, layout_d, MutAnyOrigin](self.gamma_dev.value())
             var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](self.cache_xhat_dev.value())
             var is_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](self.cache_inv_std_dev.value())
@@ -469,15 +468,16 @@ struct LayerNorm[DIM: Int](Module):
     def backward_input[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         # Phase 8.2: grad_input only; skip dgamma/dbeta accumulation.
         comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
@@ -507,14 +507,10 @@ struct LayerNorm[DIM: Int](Module):
             comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
             comptime layout_b  = Layout.row_major(BATCH)
             comptime layout_d  = Layout.row_major(Self.DIM)
-            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
-                grad_output
-            )
-            var grad_input_w  = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
-                grad_input
-            )
-            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](grad_output_w.ptr)
-            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](grad_input_w.ptr)
+            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p_w)
+            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p_w)
             var g_lt  = LayoutTensor[DT, layout_d, MutAnyOrigin](self.gamma_dev.value())
             var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](self.cache_xhat_dev.value())
             var is_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](self.cache_inv_std_dev.value())

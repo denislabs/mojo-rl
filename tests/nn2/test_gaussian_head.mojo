@@ -15,7 +15,8 @@ Covers:
 from std.math import abs as fabs
 from std.memory import alloc
 from std.testing import assert_equal, assert_true
-from layout import TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import ParamVisitor
@@ -38,13 +39,15 @@ struct WalkVisitor(ParamVisitor):
         self.sizes = List[Int]()
         self.decays = List[Bool]()
 
-    def visit[
-        L: TensorLayout, OP: MutOrigin, OG: MutOrigin
-    ](
+    def visit(
         mut self,
         name: String,
-        param: TileTensor[DT, L, OP],
-        grad: TileTensor[DT, L, OG],
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         n_elems: Int,
         apply_decay: Bool,
     ) raises:

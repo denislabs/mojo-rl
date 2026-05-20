@@ -31,7 +31,8 @@ same shape (one kernel) when the first GPU SAC env lands.
 """
 
 from std.math import exp, log, tanh
-from layout import TileTensor, TensorLayout
+from std.gpu.memory import AddressSpace
+from layout import TileTensor
 
 from ..constants import DT
 
@@ -52,14 +53,22 @@ def _clamp_log_std(ls: Scalar[DT]) -> Scalar[DT]:
 
 def squashed_gaussian_sample[
     ACT: Int, BATCH: Int,
-    LAO: TensorLayout, LZ: TensorLayout, LA: TensorLayout, LLP: TensorLayout,
-    OAO: MutOrigin, OZ: MutOrigin, OA: MutOrigin, OLP: MutOrigin,
 ](
-    actor_output: TileTensor[DT, LAO, OAO],
-    z: TileTensor[DT, LZ, OZ],
+    actor_output: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    z: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
     action_scale: Scalar[DT],
-    mut action: TileTensor[DT, LA, OA],
-    mut log_prob: TileTensor[DT, LLP, OLP],
+    mut action: TileTensor[
+        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, ...,
+    ],
+    mut log_prob: TileTensor[
+        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, ...,
+    ],
 ) raises:
     """Compute action[b, j] and log_prob[b] from (actor_output, z).
 
@@ -105,15 +114,22 @@ def squashed_gaussian_sample[
 
 def sac_actor_backward[
     ACT: Int, BATCH: Int,
-    LAO: TensorLayout, LZ: TensorLayout, LGA: TensorLayout, LGAO: TensorLayout,
-    OAO: MutOrigin, OZ: MutOrigin, OGA: MutOrigin, OGAO: MutOrigin,
 ](
-    actor_output: TileTensor[DT, LAO, OAO],
-    z: TileTensor[DT, LZ, OZ],
-    grad_action: TileTensor[DT, LGA, OGA],
+    actor_output: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    z: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    grad_action: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
     alpha: Scalar[DT],
     action_scale: Scalar[DT],
-    mut grad_actor_output: TileTensor[DT, LGAO, OGAO],
+    mut grad_actor_output: TileTensor[
+        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, ...,
+    ],
 ) raises:
     """Compute grad_actor_output = [d_L/d_mu | d_L/d_log_std].
 
@@ -195,11 +211,13 @@ def sac_actor_backward[
 
 def sac_actor_loss_value[
     BATCH: Int,
-    LLP: TensorLayout, LMQ: TensorLayout,
-    OLP: MutOrigin, OMQ: MutOrigin,
 ](
-    log_prob: TileTensor[DT, LLP, OLP],
-    min_q: TileTensor[DT, LMQ, OMQ],
+    log_prob: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    min_q: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
     alpha: Scalar[DT],
 ) raises -> Scalar[DT]:
     """Loss scalar for logging: mean_b(α · log_prob_b − min_q_b)."""

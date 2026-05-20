@@ -19,7 +19,8 @@ alive. For row-major layouts the pointer + `n_elems` is sufficient to
 reconstruct a `TileTensor` view at the call site.
 """
 
-from layout import TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import TileTensor, row_major
 
 from ..constants import DT
 from .param_visitor import ParamVisitor
@@ -48,25 +49,27 @@ struct _NamedParamCollector(ParamVisitor):
 
     var items_ptr: UnsafePointer[List[NamedParam], MutAnyOrigin]
 
-    def visit[
-        L: TensorLayout, OP: MutOrigin, OG: MutOrigin,
-    ](
+    def visit(
         mut self,
         name: String,
-        param: TileTensor[DT, L, OP],
-        grad: TileTensor[DT, L, OG],
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        # Widen the TileTensor's origin so we can store the raw pointer
-        # in our return list (which is origin-erased).
-        var param_w = rebind[TileTensor[DT, L, MutAnyOrigin]](param)
-        var grad_w  = rebind[TileTensor[DT, L, MutAnyOrigin]](grad)
+        # Widen the pointers so they can be stored in our origin-erased
+        # NamedParam record.
+        var param_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var grad_ptr  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
         self.items_ptr[].append(
             NamedParam(
                 name=name,
-                param_ptr=param_w.ptr,
-                grad_ptr=grad_w.ptr,
+                param_ptr=param_ptr,
+                grad_ptr=grad_ptr,
                 n_elems=n_elems,
                 apply_decay=apply_decay,
             )

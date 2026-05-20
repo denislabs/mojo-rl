@@ -29,7 +29,8 @@ Phase 8.4 ships CPU only. GPU paths raise — no validating user yet.
 
 from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import (
@@ -188,15 +189,16 @@ struct Concat[*BRANCHES: Module](Module):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LIN: TensorLayout,
-        LOUT: TensorLayout,
-        OIN: MutOrigin,
-        OOUT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[DT, LIN, OIN],
-        mut output: TileTensor[DT, LOUT, OOUT],
+        input: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert input.flat_rank == 2, "input rank-2"
         comptime assert output.flat_rank == 2, "output rank-2"
@@ -214,15 +216,16 @@ struct Concat[*BRANCHES: Module](Module):
     def backward[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
         comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
@@ -238,15 +241,16 @@ struct Concat[*BRANCHES: Module](Module):
     def backward_input[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
         comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
@@ -289,16 +293,17 @@ struct Concat[*BRANCHES: Module](Module):
 def _concat_forward_cpu[
     target: StaticString,
     BATCH: Int,
-    LIN: TensorLayout,
-    LOUT: TensorLayout,
-    OIN: MutOrigin,
-    OOUT: MutOrigin,
     POLICY: AMPPolicy,
     *BRANCHES: Module,
 ](
     mut c: Concat[*BRANCHES],
-    input: TileTensor[DT, LIN, OIN],
-    mut output: TileTensor[DT, LOUT, OOUT],
+    input: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    mut output: TileTensor[
+        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, ...,
+    ],
 ) raises:
     comptime assert input.flat_rank == 2, "input rank-2"
     comptime assert output.flat_rank == 2, "output rank-2"
@@ -329,17 +334,18 @@ def _concat_forward_cpu[
 def _concat_backward_cpu[
     target: StaticString,
     BATCH: Int,
-    LGO: TensorLayout,
-    LGI: TensorLayout,
-    OGO: MutOrigin,
-    OGI: MutOrigin,
     POLICY: AMPPolicy,
     use_backward_input: Bool,
     *BRANCHES: Module,
 ](
     mut c: Concat[*BRANCHES],
-    grad_output: TileTensor[DT, LGO, OGO],
-    mut grad_input: TileTensor[DT, LGI, OGI],
+    grad_output: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    mut grad_input: TileTensor[
+        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, ...,
+    ],
 ) raises:
     comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
     comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
@@ -351,8 +357,7 @@ def _concat_backward_cpu[
     c._ensure_gi_temp_cpu(BATCH * IN_DIM)
 
     # Zero the caller's grad_input (we'll accumulate into it).
-    var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](grad_input)
-    var gi_p = grad_input_w.ptr
+    var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
     var zero_v = SIMD[DT, CPU_SIMD_W](0)
     comptime N_TOTAL = BATCH * IN_DIM
     var k0 = 0

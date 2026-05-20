@@ -20,7 +20,7 @@ CPU only for Phase 7 (SAC Pendulum is CPU-only). GPU port follows the
 same shape (kernel per leaf) when the first GPU SAC env lands.
 """
 
-from layout import TileTensor, TensorLayout
+from layout import TileTensor
 
 from ..constants import DT
 from .module import Module

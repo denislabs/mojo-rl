@@ -34,7 +34,8 @@ form (the one PPO's StochasticActor actually needs).
 from std.memory import alloc
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import (
@@ -206,13 +207,16 @@ struct Parallel[A: Module, B: Module](Module):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LIN: TensorLayout, LOUT: TensorLayout,
-        OIN: MutOrigin,    OOUT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[DT, LIN, OIN],
-        mut output: TileTensor[DT, LOUT, OOUT],
+        input: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert input.flat_rank == 2, "input rank-2"
         comptime assert output.flat_rank == 2, "output rank-2"
@@ -232,7 +236,7 @@ struct Parallel[A: Module, B: Module](Module):
                     output[b, Self.OUT_A + j] = out_b[b, j]
         else:
             self._ensure_scratch_gpu(BATCH)
-            var output_w = rebind[TileTensor[DT, LOUT, MutAnyOrigin]](output)
+            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
             var pa: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_a_dev.value().unsafe_ptr()
             var pb: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_b_dev.value().unsafe_ptr()
             var out_a_tt = TileTensor(pa, row_major[BATCH, Self.OUT_A]())
@@ -245,7 +249,7 @@ struct Parallel[A: Module, B: Module](Module):
             comptime layout_p = Layout.row_major(BATCH, Self.OUT_DIM)
             var a_lt = LayoutTensor[DT, layout_a, MutAnyOrigin](self.out_a_dev.value())
             var b_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](self.out_b_dev.value())
-            var p_lt = LayoutTensor[DT, layout_p, MutAnyOrigin](output_w.ptr)
+            var p_lt = LayoutTensor[DT, layout_p, MutAnyOrigin](out_p_w)
             comptime TPB = 128
             comptime n_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
             comptime kernel = _parallel_concat_kernel[BATCH, Self.OUT_A, Self.OUT_B]
@@ -257,13 +261,16 @@ struct Parallel[A: Module, B: Module](Module):
     def backward[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout, LGI: TensorLayout,
-        OGO: MutOrigin,    OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
         comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
@@ -289,12 +296,9 @@ struct Parallel[A: Module, B: Module](Module):
             # BATCH * IN_DIM (the small concat/split loops above are too
             # short per row to matter — branches' output dims are typically
             # ≤ ACT_DIM, e.g. 1-30 for RL).
-            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
-                grad_input
-            )
             var ap = self.gi_a_cpu
             var bp = self.gi_b_cpu
-            var gp = grad_input_w.ptr
+            var gp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
             comptime N = BATCH * Self.IN_DIM
             var k = 0
             while k + CPU_SIMD_W <= N:
@@ -308,8 +312,8 @@ struct Parallel[A: Module, B: Module](Module):
                 k += 1
         else:
             self._ensure_scratch_gpu(BATCH)
-            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](grad_output)
-            var grad_input_w  = rebind[TileTensor[DT, LGI, MutAnyOrigin]](grad_input)
+            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
             var pa: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_a_dev.value().unsafe_ptr()
             var pb: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_b_dev.value().unsafe_ptr()
             var pia: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.gi_a_dev.value().unsafe_ptr()
@@ -319,7 +323,7 @@ struct Parallel[A: Module, B: Module](Module):
             comptime layout_a = Layout.row_major(BATCH, Self.OUT_A)
             comptime layout_b = Layout.row_major(BATCH, Self.OUT_B)
             comptime layout_p = Layout.row_major(BATCH, Self.OUT_DIM)
-            var p_lt = LayoutTensor[DT, layout_p, MutAnyOrigin](grad_output_w.ptr)
+            var p_lt = LayoutTensor[DT, layout_p, MutAnyOrigin](go_p_w)
             var a_lt = LayoutTensor[DT, layout_a, MutAnyOrigin](self.out_a_dev.value())
             var b_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](self.out_b_dev.value())
             comptime TPB = 128
@@ -342,7 +346,7 @@ struct Parallel[A: Module, B: Module](Module):
             comptime layout_in = Layout.row_major(BATCH, Self.IN_DIM)
             var gi_a_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](self.gi_a_dev.value())
             var gi_b_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](self.gi_b_dev.value())
-            var gi_out_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](grad_input_w.ptr)
+            var gi_out_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](gi_p_w)
             comptime n_blocks_sum = (BATCH * Self.IN_DIM + TPB - 1) // TPB
             comptime sum_kernel = _elementwise_add_kernel[BATCH, Self.IN_DIM]
             self.ctx.value().enqueue_function[sum_kernel](
@@ -353,13 +357,16 @@ struct Parallel[A: Module, B: Module](Module):
     def backward_input[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout, LGI: TensorLayout,
-        OGO: MutOrigin,    OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         # Phase 8.2: same split + branch-backward + sum chain, but each
         # branch uses `backward_input` instead of `backward`.
@@ -380,12 +387,9 @@ struct Parallel[A: Module, B: Module](Module):
             var gi_b = TileTensor(self.gi_b_cpu, row_major[BATCH, Self.IN_DIM]())
             self.branch_a.backward_input[target, BATCH, POLICY=POLICY](go_a, gi_a)
             self.branch_b.backward_input[target, BATCH, POLICY=POLICY](go_b, gi_b)
-            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
-                grad_input
-            )
             var ap = self.gi_a_cpu
             var bp = self.gi_b_cpu
-            var gp = grad_input_w.ptr
+            var gp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
             comptime N = BATCH * Self.IN_DIM
             var k = 0
             while k + CPU_SIMD_W <= N:
@@ -399,8 +403,8 @@ struct Parallel[A: Module, B: Module](Module):
                 k += 1
         else:
             self._ensure_scratch_gpu(BATCH)
-            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](grad_output)
-            var grad_input_w  = rebind[TileTensor[DT, LGI, MutAnyOrigin]](grad_input)
+            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
             var pa: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_a_dev.value().unsafe_ptr()
             var pb: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_b_dev.value().unsafe_ptr()
             var pia: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.gi_a_dev.value().unsafe_ptr()
@@ -409,7 +413,7 @@ struct Parallel[A: Module, B: Module](Module):
             comptime layout_a = Layout.row_major(BATCH, Self.OUT_A)
             comptime layout_b = Layout.row_major(BATCH, Self.OUT_B)
             comptime layout_p = Layout.row_major(BATCH, Self.OUT_DIM)
-            var p_lt = LayoutTensor[DT, layout_p, MutAnyOrigin](grad_output_w.ptr)
+            var p_lt = LayoutTensor[DT, layout_p, MutAnyOrigin](go_p_w)
             var a_lt = LayoutTensor[DT, layout_a, MutAnyOrigin](self.out_a_dev.value())
             var b_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](self.out_b_dev.value())
             comptime TPB = 128
@@ -430,7 +434,7 @@ struct Parallel[A: Module, B: Module](Module):
             comptime layout_in = Layout.row_major(BATCH, Self.IN_DIM)
             var gi_a_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](self.gi_a_dev.value())
             var gi_b_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](self.gi_b_dev.value())
-            var gi_out_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](grad_input_w.ptr)
+            var gi_out_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](gi_p_w)
             comptime n_blocks_sum = (BATCH * Self.IN_DIM + TPB - 1) // TPB
             comptime sum_kernel = _elementwise_add_kernel[BATCH, Self.IN_DIM]
             self.ctx.value().enqueue_function[sum_kernel](

@@ -32,7 +32,8 @@ Surface:
             concat_sa → c1.step + c2.step; returns sum of losses.
 """
 
-from layout import TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
@@ -98,14 +99,16 @@ struct CriticUpdateBlock[
 
     def step[
         target: StaticString,
-        LSA: TensorLayout, LY: TensorLayout,
-        OSA: MutOrigin, OY: MutOrigin,
     ](
         mut self,
         mut critic: Self.CRITIC,
         mut opt: Adam,
-        sa_t: TileTensor[DT, LSA, OSA],
-        y_t: TileTensor[DT, LY, OY],
+        sa_t: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        y_t: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
     ) raises -> Scalar[DT]:
         comptime assert target == "cpu", (
             "CriticUpdateBlock.step: GPU path not yet implemented"
@@ -182,7 +185,6 @@ struct TwinCriticUpdateBlock[
 
     def step[
         target: StaticString,
-        LY: TensorLayout, OY: MutOrigin,
     ](
         mut self,
         mut critic1: Self.CRITIC,
@@ -191,7 +193,9 @@ struct TwinCriticUpdateBlock[
         mut critic2_opt: Adam,
         mb_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mb_y_t: TileTensor[DT, LY, OY],
+        mb_y_t: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
     ) raises -> Scalar[DT]:
         comptime assert target == "cpu", (
             "TwinCriticUpdateBlock.step: GPU path not yet implemented"

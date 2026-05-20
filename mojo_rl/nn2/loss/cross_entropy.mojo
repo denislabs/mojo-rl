@@ -7,7 +7,8 @@ Phase 2.4: target is a comptime method param. The loss is Defaultable;
 from std.math import exp, log
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
@@ -146,15 +147,15 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LL: TensorLayout,
-        LT: TensorLayout,
-        OL: MutOrigin,
-        OT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        logits: TileTensor[DT, LL, OL],
-        targets: TileTensor[DT, LT, OT],
+        logits: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        targets: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
     ) raises -> Scalar[DT]:
         # CrossEntropy is `force_fp32_input=True` per the AMP doc — softmax
         # + log/exp need fp32 dynamic range. POLICY is accepted for trait
@@ -185,10 +186,10 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
             var ctx = self.ctx.value()
             comptime mat_layout = Layout.row_major(BATCH, Self.N_CLASSES)
             comptime row_layout = Layout.row_major(BATCH)
-            var logits_w  = rebind[TileTensor[DT, LL, MutAnyOrigin]](logits)
-            var targets_w = rebind[TileTensor[DT, LT, MutAnyOrigin]](targets)
-            var logits_lt  = LayoutTensor[DT, mat_layout, MutAnyOrigin](logits_w.ptr)
-            var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](targets_w.ptr)
+            var lp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
+            var tp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
+            var logits_lt  = LayoutTensor[DT, mat_layout, MutAnyOrigin](lp_w)
+            var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
             var softmax_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](self.softmax_dev.value())
             var partial_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](self.partial_loss_dev.value())
             comptime TPB = 64
@@ -209,15 +210,16 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
     def backward[
         target: StaticString,
         BATCH: Int,
-        LT: TensorLayout,
-        LG: TensorLayout,
-        OT: MutOrigin,
-        OG: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        targets: TileTensor[DT, LT, OT],
-        mut grad_logits: TileTensor[DT, LG, OG],
+        targets: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_logits: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert targets.flat_rank     == 2, "targets must be rank-2"
         comptime assert grad_logits.flat_rank == 2, "grad_logits must be rank-2"
@@ -232,11 +234,11 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
         else:
             var ctx = self.ctx.value()
             comptime mat_layout = Layout.row_major(BATCH, Self.N_CLASSES)
-            var targets_w     = rebind[TileTensor[DT, LT, MutAnyOrigin]](targets)
-            var grad_logits_w = rebind[TileTensor[DT, LG, MutAnyOrigin]](grad_logits)
+            var tp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
+            var gp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_logits.ptr)
             var softmax_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](self.softmax_dev.value())
-            var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](targets_w.ptr)
-            var grad_lt    = LayoutTensor[DT, mat_layout, MutAnyOrigin](grad_logits_w.ptr)
+            var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
+            var grad_lt    = LayoutTensor[DT, mat_layout, MutAnyOrigin](gp_w)
             comptime TPB = 128
             comptime n_blocks = (BATCH * Self.N_CLASSES + TPB - 1) // TPB
             comptime kernel = _ce_backward_kernel[BATCH, Self.N_CLASSES]

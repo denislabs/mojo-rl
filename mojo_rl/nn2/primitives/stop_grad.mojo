@@ -14,7 +14,8 @@ dtype just copies bits; the zero-fill is dtype-uniform).
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
@@ -121,15 +122,16 @@ struct StopGrad[DIM: Int](Module):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LIN: TensorLayout,
-        LOUT: TensorLayout,
-        OIN: MutOrigin,
-        OOUT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[DT, LIN, OIN],
-        mut output: TileTensor[DT, LOUT, OOUT],
+        input: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert (
             input.flat_rank == 2
@@ -145,10 +147,10 @@ struct StopGrad[DIM: Int](Module):
                     output[b, d] = input[b, d]
         else:
             comptime layout = Layout.row_major(BATCH, Self.DIM)
-            var input_w  = rebind[TileTensor[DT, LIN, MutAnyOrigin]](input)
-            var output_w = rebind[TileTensor[DT, LOUT, MutAnyOrigin]](output)
-            var input_lt  = LayoutTensor[DT, layout, MutAnyOrigin](input_w.ptr)
-            var output_lt = LayoutTensor[DT, layout, MutAnyOrigin](output_w.ptr)
+            var in_ptr  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+            var out_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var input_lt  = LayoutTensor[DT, layout, MutAnyOrigin](in_ptr)
+            var output_lt = LayoutTensor[DT, layout, MutAnyOrigin](out_ptr)
             comptime TPB = 128
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
             comptime kernel = _stop_grad_forward_kernel[BATCH, Self.DIM]
@@ -162,15 +164,16 @@ struct StopGrad[DIM: Int](Module):
     def backward[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         # grad_output is discarded — that's the whole point of stop_grad.
         comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
@@ -184,10 +187,10 @@ struct StopGrad[DIM: Int](Module):
                     grad_input[b, d] = zero
         else:
             comptime layout = Layout.row_major(BATCH, Self.DIM)
-            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
-                grad_input
+            var gi_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_input.ptr
             )
-            var gi_lt = LayoutTensor[DT, layout, MutAnyOrigin](grad_input_w.ptr)
+            var gi_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi_ptr)
             comptime TPB = 128
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
             comptime kernel = _stop_grad_backward_kernel[BATCH, Self.DIM]
@@ -200,15 +203,16 @@ struct StopGrad[DIM: Int](Module):
     def backward_input[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         # No params — backward_input is identical to backward (still zeros grad_input).
         self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)

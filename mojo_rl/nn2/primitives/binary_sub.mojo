@@ -14,8 +14,9 @@ packing into `[α·log_prob | min_q]` and calling packed Sub.
 """
 
 from std.gpu.host import DeviceContext
+from std.gpu.memory import AddressSpace
 
-from layout import TileTensor, TensorLayout
+from layout import TileTensor
 
 from ..constants import DT
 from ..core import (
@@ -91,18 +92,14 @@ struct BinarySub[DIM: Int](BinaryModule):
     def forward[
         target: StaticString,
         BATCH: Int,
-        L0: TensorLayout,
-        L1: TensorLayout,
-        LOUT: TensorLayout,
-        O0: MutOrigin,
-        O1: MutOrigin,
-        OOUT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        in0: TileTensor[DT, L0, O0],
-        in1: TileTensor[DT, L1, O1],
-        mut output: TileTensor[DT, LOUT, OOUT],
+        in0: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
+        in1: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
     ) raises:
         comptime assert in0.flat_rank == 2, "in0 rank-2 [BATCH, DIM]"
         comptime assert in1.flat_rank == 2, "in1 rank-2 [BATCH, DIM]"
@@ -119,18 +116,16 @@ struct BinarySub[DIM: Int](BinaryModule):
     def backward[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LG0: TensorLayout,
-        LG1: TensorLayout,
-        OGO: MutOrigin,
-        OG0: MutOrigin,
-        OG1: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_in0: TileTensor[DT, LG0, OG0],
-        mut grad_in1: TileTensor[DT, LG1, OG1],
+        grad_output: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
+        mut grad_in0: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_in1: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
         comptime assert grad_in0.flat_rank == 2, "grad_in0 rank-2"
@@ -149,18 +144,16 @@ struct BinarySub[DIM: Int](BinaryModule):
     def backward_input[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LG0: TensorLayout,
-        LG1: TensorLayout,
-        OGO: MutOrigin,
-        OG0: MutOrigin,
-        OG1: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_in0: TileTensor[DT, LG0, OG0],
-        mut grad_in1: TileTensor[DT, LG1, OG1],
+        grad_output: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
+        mut grad_in0: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_in1: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
     ) raises:
         self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_in0, grad_in1)
 

@@ -11,7 +11,8 @@ runs in DT — bf16 tanh is mantissa-ugly and saves nothing in practice).
 from std.math import tanh
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import (
@@ -144,15 +145,16 @@ struct Tanh[DIM: Int](Module):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LIN: TensorLayout,
-        LOUT: TensorLayout,
-        OIN: MutOrigin,
-        OOUT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[DT, LIN, OIN],
-        mut output: TileTensor[DT, LOUT, OOUT],
+        input: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert (
             input.flat_rank == 2
@@ -165,10 +167,8 @@ struct Tanh[DIM: Int](Module):
         comptime if target == "cpu":
             # Phase 8.0: SIMD path. `tanh` is lane-wise on SIMD.
             self._ensure_cache_cpu(BATCH)
-            var input_w = rebind[TileTensor[DT, LIN, MutAnyOrigin]](input)
-            var output_w = rebind[TileTensor[DT, LOUT, MutAnyOrigin]](output)
-            var in_p = input_w.ptr
-            var out_p = output_w.ptr
+            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
             var cache_p = self.cache.unsafe_ptr()
             comptime N = BATCH * Self.DIM
             var k = 0
@@ -186,10 +186,10 @@ struct Tanh[DIM: Int](Module):
         else:
             self._ensure_cache_gpu(BATCH * Self.DIM)
             comptime layout = Layout.row_major(BATCH, Self.DIM)
-            var input_w = rebind[TileTensor[DT, LIN, MutAnyOrigin]](input)
-            var output_w = rebind[TileTensor[DT, LOUT, MutAnyOrigin]](output)
-            var input_lt = LayoutTensor[DT, layout, MutAnyOrigin](input_w.ptr)
-            var output_lt = LayoutTensor[DT, layout, MutAnyOrigin](output_w.ptr)
+            var in_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+            var out_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var input_lt = LayoutTensor[DT, layout, MutAnyOrigin](in_ptr)
+            var output_lt = LayoutTensor[DT, layout, MutAnyOrigin](out_ptr)
             var cache_lt = LayoutTensor[DT, layout, MutAnyOrigin](
                 self.cache_dev.value()
             )
@@ -207,15 +207,16 @@ struct Tanh[DIM: Int](Module):
     def backward[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
         comptime assert grad_input.flat_rank == 2, "grad_input must be rank-2"
@@ -223,14 +224,8 @@ struct Tanh[DIM: Int](Module):
 
         comptime if target == "cpu":
             # Phase 8.0: SIMD path. grad_in = grad_out * (1 - y^2).
-            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
-                grad_output
-            )
-            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
-                grad_input
-            )
-            var go_p = grad_output_w.ptr
-            var gi_p = grad_input_w.ptr
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
             var c_p = self.cache.unsafe_ptr()
             var one_v = SIMD[DT, CPU_SIMD_W](1)
             comptime N = BATCH * Self.DIM
@@ -246,16 +241,10 @@ struct Tanh[DIM: Int](Module):
                 k += 1
         else:
             comptime layout = Layout.row_major(BATCH, Self.DIM)
-            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
-                grad_output
-            )
-            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
-                grad_input
-            )
-            var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](
-                grad_output_w.ptr
-            )
-            var gi_lt = LayoutTensor[DT, layout, MutAnyOrigin](grad_input_w.ptr)
+            var go_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](go_ptr)
+            var gi_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi_ptr)
             var cache_lt = LayoutTensor[DT, layout, MutAnyOrigin](
                 self.cache_dev.value()
             )
@@ -273,15 +262,16 @@ struct Tanh[DIM: Int](Module):
     def backward_input[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         # No params — backward_input is identical to backward.
         self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)

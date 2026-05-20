@@ -7,6 +7,5 @@ from .sac_actor_loss import (
     sac_actor_backward,
     sac_actor_loss_value,
 )
-from .sac_actor_loss_block import SACActorLoss, SACActorLossOut
-from .sac_actor_loss_cg import SACActorLossCG
+from .sac_actor_loss_cg import SACActorLossCG, SACActorLossOut
 from .critic_update_block import CriticUpdateBlock, TwinCriticUpdateBlock

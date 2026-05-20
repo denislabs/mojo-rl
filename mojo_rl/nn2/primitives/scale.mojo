@@ -13,8 +13,9 @@ No cache (multiplier needed on backward, but it's a field, not derived).
 """
 
 from std.gpu.host import DeviceContext
+from std.gpu.memory import AddressSpace
 
-from layout import TileTensor, TensorLayout
+from layout import TileTensor
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import (
@@ -79,25 +80,24 @@ struct Scale[DIM: Int](Module):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LIN: TensorLayout,
-        LOUT: TensorLayout,
-        OIN: MutOrigin,
-        OOUT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[DT, LIN, OIN],
-        mut output: TileTensor[DT, LOUT, OOUT],
+        input: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert input.flat_rank == 2, "input rank-2 [BATCH, DIM]"
         comptime assert output.flat_rank == 2, "output rank-2 [BATCH, DIM]"
         self._assert_tag[target]()
 
         comptime if target == "cpu":
-            var input_w = rebind[TileTensor[DT, LIN, MutAnyOrigin]](input)
-            var output_w = rebind[TileTensor[DT, LOUT, MutAnyOrigin]](output)
-            var in_p = input_w.ptr
-            var out_p = output_w.ptr
+            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
             var m_v = SIMD[DT, CPU_SIMD_W](self.multiplier)
             comptime N = BATCH * Self.DIM
             var k = 0
@@ -113,25 +113,24 @@ struct Scale[DIM: Int](Module):
     def backward[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
         comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
         self._assert_tag[target]()
 
         comptime if target == "cpu":
-            var go_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](grad_output)
-            var gi_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](grad_input)
-            var go_p = go_w.ptr
-            var gi_p = gi_w.ptr
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
             var m_v = SIMD[DT, CPU_SIMD_W](self.multiplier)
             comptime N = BATCH * Self.DIM
             var k = 0
@@ -147,15 +146,16 @@ struct Scale[DIM: Int](Module):
     def backward_input[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         # No parameters — backward_input ≡ backward.
         self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)

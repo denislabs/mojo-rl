@@ -204,16 +204,18 @@ struct _NameCollector(ParamVisitor):
 
     var names_ptr: UnsafePointer[List[String], MutAnyOrigin]
 
-    def visit[
-        L: TensorLayout, OP: MutOrigin, OG: MutOrigin,
-    ](
+    def visit(
         mut self,
         name: String,
-        param: TileTensor[DT, L, OP],
-        grad: TileTensor[DT, L, OG],
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         n_elems: Int,
         apply_decay: Bool,
-    ) raises:
+        ) raises:
         self.names_ptr[].append(name)
 
 

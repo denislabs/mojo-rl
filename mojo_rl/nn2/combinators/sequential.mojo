@@ -29,7 +29,8 @@ memory at scale — same lesson as nn v1's workspace pattern.
 
 from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
@@ -196,15 +197,16 @@ struct Sequential[*MODULES: Module](Module):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LIN: TensorLayout,
-        LOUT: TensorLayout,
-        OIN: MutOrigin,
-        OOUT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[DT, LIN, OIN],
-        mut output: TileTensor[DT, LOUT, OOUT],
+        input: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert input.flat_rank  == 2, "input must be rank-2"
         comptime assert output.flat_rank == 2, "output must be rank-2"
@@ -225,15 +227,16 @@ struct Sequential[*MODULES: Module](Module):
     def backward[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
         comptime assert grad_input.flat_rank  == 2, "grad_input must be rank-2"
@@ -255,15 +258,16 @@ struct Sequential[*MODULES: Module](Module):
     def backward_input[
         target: StaticString,
         BATCH: Int,
-        LGO: TensorLayout,
-        LGI: TensorLayout,
-        OGO: MutOrigin,
-        OGI: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        mut grad_input: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
+        ],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
         comptime assert grad_input.flat_rank  == 2, "grad_input must be rank-2"
@@ -311,16 +315,17 @@ struct Sequential[*MODULES: Module](Module):
 def _forward_cpu[
     target: StaticString,
     BATCH: Int,
-    LIN: TensorLayout,
-    LOUT: TensorLayout,
-    OIN: MutOrigin,
-    OOUT: MutOrigin,
     POLICY: AMPPolicy,
     *MODULES: Module,
 ](
     mut seq: Sequential[*MODULES],
-    input: TileTensor[DT, LIN, OIN],
-    mut output: TileTensor[DT, LOUT, OOUT],
+    input: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    mut output: TileTensor[
+        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, ...,
+    ],
 ) raises:
     comptime N = MODULES.size
 
@@ -343,16 +348,17 @@ def _forward_cpu[
 def _forward_gpu[
     target: StaticString,
     BATCH: Int,
-    LIN: TensorLayout,
-    LOUT: TensorLayout,
-    OIN: MutOrigin,
-    OOUT: MutOrigin,
     POLICY: AMPPolicy,
     *MODULES: Module,
 ](
     mut seq: Sequential[*MODULES],
-    input: TileTensor[DT, LIN, OIN],
-    mut output: TileTensor[DT, LOUT, OOUT],
+    input: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    mut output: TileTensor[
+        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, ...,
+    ],
 ) raises:
     comptime N = MODULES.size
 
@@ -382,16 +388,17 @@ def _forward_gpu[
 def _backward_cpu[
     target: StaticString,
     BATCH: Int,
-    LGO: TensorLayout,
-    LGI: TensorLayout,
-    OGO: MutOrigin,
-    OGI: MutOrigin,
     POLICY: AMPPolicy,
     *MODULES: Module,
 ](
     mut seq: Sequential[*MODULES],
-    grad_output: TileTensor[DT, LGO, OGO],
-    mut grad_input: TileTensor[DT, LGI, OGI],
+    grad_output: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    mut grad_input: TileTensor[
+        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, ...,
+    ],
 ) raises:
     comptime N = MODULES.size
 
@@ -415,16 +422,17 @@ def _backward_cpu[
 def _backward_gpu[
     target: StaticString,
     BATCH: Int,
-    LGO: TensorLayout,
-    LGI: TensorLayout,
-    OGO: MutOrigin,
-    OGI: MutOrigin,
     POLICY: AMPPolicy,
     *MODULES: Module,
 ](
     mut seq: Sequential[*MODULES],
-    grad_output: TileTensor[DT, LGO, OGO],
-    mut grad_input: TileTensor[DT, LGI, OGI],
+    grad_output: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    mut grad_input: TileTensor[
+        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, ...,
+    ],
 ) raises:
     comptime N = MODULES.size
 
@@ -453,16 +461,17 @@ def _backward_gpu[
 def _backward_input_cpu[
     target: StaticString,
     BATCH: Int,
-    LGO: TensorLayout,
-    LGI: TensorLayout,
-    OGO: MutOrigin,
-    OGI: MutOrigin,
     POLICY: AMPPolicy,
     *MODULES: Module,
 ](
     mut seq: Sequential[*MODULES],
-    grad_output: TileTensor[DT, LGO, OGO],
-    mut grad_input: TileTensor[DT, LGI, OGI],
+    grad_output: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    mut grad_input: TileTensor[
+        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, ...,
+    ],
 ) raises:
     comptime N = MODULES.size
 
@@ -486,16 +495,17 @@ def _backward_input_cpu[
 def _backward_input_gpu[
     target: StaticString,
     BATCH: Int,
-    LGO: TensorLayout,
-    LGI: TensorLayout,
-    OGO: MutOrigin,
-    OGI: MutOrigin,
     POLICY: AMPPolicy,
     *MODULES: Module,
 ](
     mut seq: Sequential[*MODULES],
-    grad_output: TileTensor[DT, LGO, OGO],
-    mut grad_input: TileTensor[DT, LGI, OGI],
+    grad_output: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    mut grad_input: TileTensor[
+        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, ...,
+    ],
 ) raises:
     comptime N = MODULES.size
 

@@ -1,19 +1,23 @@
-"""BinaryElemMin[DIM] — two-input elementwise min. Phase 10C.
+"""BinaryConcat[IN0_DIM, IN1_DIM] — two-input feature concatenation. Cleanup 13.
 
-Sibling of packed `ElemMin[DIM]`; two separate `[BATCH, DIM]` tiles
-instead of a packed `[BATCH, 2*DIM]` input.
+Sibling of `BinarySub` / `BinaryElemMin`; packs two separate
+`[BATCH, IN0_DIM]` + `[BATCH, IN1_DIM]` tiles into a single
+`[BATCH, IN0_DIM + IN1_DIM]` output by horizontal stack.
 
-    output[b, d]   = min(in0[b, d], in1[b, d])
+    output[b, d]              = in0[b, d]                  d in [0, IN0_DIM)
+    output[b, IN0_DIM + d]    = in1[b, d]                  d in [0, IN1_DIM)
+    grad_in0[b, d]            = grad_output[b, d]          d in [0, IN0_DIM)
+    grad_in1[b, d]            = grad_output[b, IN0_DIM + d] d in [0, IN1_DIM)
 
-Backward (subgradient: ties go to `in0`):
-    grad_in0[b, d] = grad_output[b, d] if in0 wins, else 0
-    grad_in1[b, d] = grad_output[b, d] if in1 wins, else 0
+Use cases:
+  - SAC: `concat(s, action) → sa` for critic input, used currently as an
+    inline `_concat_sa` free function. `BinaryConcat` lets the same op
+    live as a node inside a CG v2 graph when gradients must flow back
+    through both inputs.
+  - Dreamer / TD-MPC2: `concat(latent, action)` for dynamics input.
+  - Any DAG with a fan-in concat node.
 
-Cache: one mask byte per output element (1=in0_won, 0=in1_won), stored
-as Scalar[DT] (1.0 / 0.0) to match the packed ElemMin convention.
-
-Use case: SAC twin-critic min — `BinaryElemMin(q1, q2)` instead of
-packing `[q1 | q2]` and calling packed ElemMin.
+Lazy-grown Phase 10A buffer surface — CG v2 wiring ready.
 """
 
 from std.gpu.host import DeviceContext
@@ -35,13 +39,10 @@ from ..core import (
 )
 
 
-struct BinaryElemMin[DIM: Int](BinaryModule):
-    comptime IN0_DIM = Self.DIM
-    comptime IN1_DIM = Self.DIM
-    comptime OUT_DIM = Self.DIM
-
-    var mask: List[Scalar[DT]]
-    var cache_n_batch: Int
+struct BinaryConcat[IN0_DIM_: Int, IN1_DIM_: Int](BinaryModule):
+    comptime IN0_DIM = Self.IN0_DIM_
+    comptime IN1_DIM = Self.IN1_DIM_
+    comptime OUT_DIM = Self.IN0_DIM_ + Self.IN1_DIM_
 
     var ctx: Optional[DeviceContext]
     var _target_tag: Int8
@@ -55,8 +56,6 @@ struct BinaryElemMin[DIM: Int](BinaryModule):
     var _n_batch_buf: Int
 
     def __init__(out self):
-        self.mask = List[Scalar[DT]]()
-        self.cache_n_batch = 0
         self.ctx = None
         self._target_tag = TARGET_UNINIT
         self._inference = False
@@ -69,38 +68,33 @@ struct BinaryElemMin[DIM: Int](BinaryModule):
     @staticmethod
     def make[target: StaticString, INIT: Initializer]() raises -> Self:
         comptime assert target == "cpu", (
-            "BinaryElemMin.make[target='gpu', INIT] requires a DeviceContext"
+            "BinaryConcat.make[target='gpu', INIT] requires a DeviceContext"
         )
-        var m = Self()
-        m._target_tag = TARGET_CPU
-        return m^
+        var s = Self()
+        s._target_tag = TARGET_CPU
+        return s^
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: DeviceContext) raises -> Self:
         comptime assert target == "gpu", (
-            "BinaryElemMin.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+            "BinaryConcat.make[target='cpu', INIT](ctx) — drop ctx for CPU"
         )
-        var m = Self()
-        m.ctx = ctx
-        m._target_tag = TARGET_GPU
-        return m^
+        var s = Self()
+        s.ctx = ctx
+        s._target_tag = TARGET_GPU
+        return s^
 
     def _assert_tag[target: StaticString](self) raises:
         comptime expected = target_tag_for[target]()
         if self._target_tag != expected:
             raise Error(
-                "BinaryElemMin: method called with [target='"
+                "BinaryConcat: method called with [target='"
                 + String(target)
                 + "'] but module was make'd for a different target (tag="
                 + String(Int(self._target_tag)) + ")"
             )
-
-    def _ensure_mask_cpu(mut self, batch: Int):
-        if self.cache_n_batch < batch:
-            self.mask.resize(batch * Self.DIM, Scalar[DT](0.0))
-            self.cache_n_batch = batch
 
     def forward[
         target: StaticString,
@@ -114,26 +108,19 @@ struct BinaryElemMin[DIM: Int](BinaryModule):
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
     ) raises:
-        comptime assert in0.flat_rank == 2, "in0 rank-2 [BATCH, DIM]"
-        comptime assert in1.flat_rank == 2, "in1 rank-2 [BATCH, DIM]"
-        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, DIM]"
+        comptime assert in0.flat_rank == 2, "in0 rank-2 [BATCH, IN0_DIM]"
+        comptime assert in1.flat_rank == 2, "in1 rank-2 [BATCH, IN1_DIM]"
+        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, OUT_DIM]"
         self._assert_tag[target]()
 
         comptime if target == "cpu":
-            self._ensure_mask_cpu(BATCH)
-            var m_p = self.mask.unsafe_ptr()
             for b in range(BATCH):
-                for d in range(Self.DIM):
-                    var a = in0[b, d]
-                    var bv = in1[b, d]
-                    if a < bv:
-                        output[b, d] = a
-                        m_p[b * Self.DIM + d] = Scalar[DT](1.0)
-                    else:
-                        output[b, d] = bv
-                        m_p[b * Self.DIM + d] = Scalar[DT](0.0)
+                for d in range(Self.IN0_DIM):
+                    output[b, d] = in0[b, d]
+                for d in range(Self.IN1_DIM):
+                    output[b, Self.IN0_DIM + d] = in1[b, d]
         else:
-            raise Error("BinaryElemMin: GPU path not yet implemented (Phase 10C CPU only)")
+            raise Error("BinaryConcat: GPU path not yet implemented (CPU only)")
 
     def backward[
         target: StaticString,
@@ -155,19 +142,13 @@ struct BinaryElemMin[DIM: Int](BinaryModule):
         self._assert_tag[target]()
 
         comptime if target == "cpu":
-            var m_p = self.mask.unsafe_ptr()
             for b in range(BATCH):
-                for d in range(Self.DIM):
-                    var mask_v = m_p[b * Self.DIM + d]
-                    var go = grad_output[b, d]
-                    if mask_v > Scalar[DT](0.5):
-                        grad_in0[b, d] = go
-                        grad_in1[b, d] = Scalar[DT](0.0)
-                    else:
-                        grad_in0[b, d] = Scalar[DT](0.0)
-                        grad_in1[b, d] = go
+                for d in range(Self.IN0_DIM):
+                    grad_in0[b, d] = grad_output[b, d]
+                for d in range(Self.IN1_DIM):
+                    grad_in1[b, d] = grad_output[b, Self.IN0_DIM + d]
         else:
-            raise Error("BinaryElemMin: GPU backward not yet implemented (Phase 10C CPU only)")
+            raise Error("BinaryConcat: GPU backward not yet implemented (CPU only)")
 
     def backward_input[
         target: StaticString,

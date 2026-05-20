@@ -45,7 +45,7 @@ CPU only (Phase 10E). GPU lands when CG v2's GPU path lights up
 """
 
 from std.memory import alloc
-from layout import TileTensor, TensorLayout, row_major
+from layout import TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
@@ -63,7 +63,18 @@ from ..primitives.scale import Scale
 from ..primitives.slice import Slice
 from ..primitives.binary_elem_min import BinaryElemMin
 from ..primitives.binary_sub import BinarySub
-from .sac_actor_loss_block import SACActorLossOut
+
+
+@fieldwise_init
+struct SACActorLossOut(Movable & ImplicitlyDestructible):
+    """Result of one `forward_backward` call.
+
+    `loss` is the mean-batch scalar value (for logging).
+    `log_prob_mean` is the mean of log_prob over the batch — caller passes
+    `-(log_prob_mean + target_entropy)` to its α optimizer.
+    """
+    var loss: Scalar[DT]
+    var log_prob_mean: Scalar[DT]
 
 
 struct SACActorLossCG[
