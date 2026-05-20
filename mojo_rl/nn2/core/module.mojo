@@ -115,3 +115,59 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         the flag to every child.
         """
         ...
+
+    # ──────────────────────────────────────────────────────────────────
+    # Phase 10A — Module-owned output / grad buffers.
+    #
+    # Each Module owns three List[Scalar[DT]] buffers that ComputeGraph
+    # v2 (Phase 10D) uses for inter-node wiring:
+    #   - _out_buf      [BATCH, OUT_DIM]   forward writes here
+    #   - _grad_in_buf  [BATCH, IN_DIM]    backward writes here
+    #   - _grad_out_buf [BATCH, OUT_DIM]   graph zeros + consumers
+    #                                       scatter-add into; backward
+    #                                       reads this as grad_output
+    #
+    # Lazy-grown on first `ensure_buffers[BATCH]()` call. The Module's
+    # existing forward/backward signatures (with explicit `output` /
+    # `grad_input` args) stay unchanged — the graph wraps `out_ptr()`
+    # and `grad_in_ptr()` into TileTensors and passes them as those
+    # args. Existing direct callers (tests, hand-orchestrated loss
+    # blocks) keep working unchanged.
+    #
+    # CPU-only contract for now. GPU buffers (DeviceBuffer mirrors)
+    # land alongside CG v2's GPU path in a later phase.
+    # ──────────────────────────────────────────────────────────────────
+
+    def ensure_buffers[BATCH: Int](mut self) raises:
+        """Lazy-grow internal out / grad_in / grad_out buffers to BATCH
+        samples (each sized BATCH × {OUT_DIM, IN_DIM, OUT_DIM}).
+        Idempotent. Called once per BATCH by the graph before forward.
+
+        Default impl: no-op. Modules that participate in ComputeGraph v2
+        (Phase 10D) must override to grow their owned buffers."""
+        pass
+
+    def out_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Pointer into the owned output buffer [BATCH, OUT_DIM].
+        Valid after `ensure_buffers[BATCH]()` has been called.
+
+        Default impl: returns null. Modules that participate in
+        ComputeGraph v2 must override."""
+        return UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
+
+    def grad_in_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Pointer into the owned grad-input buffer [BATCH, IN_DIM].
+        Backward writes its grad_input here; graph reads to forward
+        to predecessors' grad_out_bufs via scatter-add.
+
+        Default impl: returns null."""
+        return UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
+
+    def grad_out_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Pointer into the owned grad-output buffer [BATCH, OUT_DIM].
+        Graph zeros at start of backward; downstream consumers scatter-
+        add their grad_input pieces here; Module's backward reads it
+        as grad_output.
+
+        Default impl: returns null."""
+        return UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)

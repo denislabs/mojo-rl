@@ -1,25 +1,25 @@
-"""Sub[DIM] — elementwise subtract of two packed inputs. Phase 8.4.
+"""BinarySub[DIM] — two-input elementwise subtract. Phase 10C.
 
-Multi-input via the packed-tensor convention (same pattern as ElemMin):
-caller packs both operands side-by-side into a single `[BATCH, 2*DIM]`
-tile `[a | b]`, Sub outputs `a - b` shape `[BATCH, DIM]`.
+Sibling of the packed `Sub[DIM]` (single `[a | b]` input of width
+`2*DIM`); this version takes two separate `[BATCH, DIM]` tiles, which
+is the natural shape for ComputeGraph v2.
 
-    output[b, d]            = input[b, d] - input[b, DIM + d]
+    output[b, d]        = in0[b, d] - in1[b, d]
+    grad_in0[b, d]      =  grad_output[b, d]
+    grad_in1[b, d]      = -grad_output[b, d]
 
-Backward:
-    grad_input[b, d]        =  grad_output[b, d]
-    grad_input[b, DIM + d]  = -grad_output[b, d]
-
-Used in SAC composed actor loss for `α·log_prob - min_q`.
+Use case (post-Phase-10E): SAC composed actor loss's `α·log_prob - min_q`
+will flow as `BinarySub(α·log_prob, min_q)` through CG v2 instead of
+packing into `[α·log_prob | min_q]` and calling packed Sub.
 """
 
 from std.gpu.host import DeviceContext
 
 from layout import TileTensor, TensorLayout
 
-from ..constants import DT, CPU_SIMD_W
+from ..constants import DT
 from ..core import (
-    Module,
+    BinaryModule,
     ParamVisitor,
     Initializer,
     AMPPolicy,
@@ -31,17 +31,19 @@ from ..core import (
 )
 
 
-struct Sub[DIM: Int](Module):
-    comptime IN_DIM = 2 * Self.DIM
+struct BinarySub[DIM: Int](BinaryModule):
+    comptime IN0_DIM = Self.DIM
+    comptime IN1_DIM = Self.DIM
     comptime OUT_DIM = Self.DIM
 
     var ctx: Optional[DeviceContext]
     var _target_tag: Int8
     var _inference: Bool
 
-    # Phase 10A — Module-owned output / grad buffers (CPU only for now).
+    # Phase 10A buffer surface (CG v2 wiring).
     var _out_buf: List[Scalar[DT]]
-    var _grad_in_buf: List[Scalar[DT]]
+    var _grad_in0_buf: List[Scalar[DT]]
+    var _grad_in1_buf: List[Scalar[DT]]
     var _grad_out_buf: List[Scalar[DT]]
     var _n_batch_buf: Int
 
@@ -50,14 +52,15 @@ struct Sub[DIM: Int](Module):
         self._target_tag = TARGET_UNINIT
         self._inference = False
         self._out_buf = List[Scalar[DT]]()
-        self._grad_in_buf = List[Scalar[DT]]()
+        self._grad_in0_buf = List[Scalar[DT]]()
+        self._grad_in1_buf = List[Scalar[DT]]()
         self._grad_out_buf = List[Scalar[DT]]()
         self._n_batch_buf = 0
 
     @staticmethod
     def make[target: StaticString, INIT: Initializer]() raises -> Self:
         comptime assert target == "cpu", (
-            "Sub.make[target='gpu', INIT] requires a DeviceContext"
+            "BinarySub.make[target='gpu', INIT] requires a DeviceContext"
         )
         var s = Self()
         s._target_tag = TARGET_CPU
@@ -68,7 +71,7 @@ struct Sub[DIM: Int](Module):
         target: StaticString, INIT: Initializer
     ](ctx: DeviceContext) raises -> Self:
         comptime assert target == "gpu", (
-            "Sub.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+            "BinarySub.make[target='cpu', INIT](ctx) — drop ctx for CPU"
         )
         var s = Self()
         s.ctx = ctx
@@ -79,7 +82,7 @@ struct Sub[DIM: Int](Module):
         comptime expected = target_tag_for[target]()
         if self._target_tag != expected:
             raise Error(
-                "Sub: method called with [target='"
+                "BinarySub: method called with [target='"
                 + String(target)
                 + "'] but module was make'd for a different target (tag="
                 + String(Int(self._target_tag)) + ")"
@@ -88,67 +91,78 @@ struct Sub[DIM: Int](Module):
     def forward[
         target: StaticString,
         BATCH: Int,
-        LIN: TensorLayout,
+        L0: TensorLayout,
+        L1: TensorLayout,
         LOUT: TensorLayout,
-        OIN: MutOrigin,
+        O0: MutOrigin,
+        O1: MutOrigin,
         OOUT: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[DT, LIN, OIN],
+        in0: TileTensor[DT, L0, O0],
+        in1: TileTensor[DT, L1, O1],
         mut output: TileTensor[DT, LOUT, OOUT],
     ) raises:
-        comptime assert input.flat_rank == 2, "input rank-2 [BATCH, 2*DIM]"
+        comptime assert in0.flat_rank == 2, "in0 rank-2 [BATCH, DIM]"
+        comptime assert in1.flat_rank == 2, "in1 rank-2 [BATCH, DIM]"
         comptime assert output.flat_rank == 2, "output rank-2 [BATCH, DIM]"
         self._assert_tag[target]()
 
         comptime if target == "cpu":
             for b in range(BATCH):
                 for d in range(Self.DIM):
-                    output[b, d] = input[b, d] - input[b, Self.DIM + d]
+                    output[b, d] = in0[b, d] - in1[b, d]
         else:
-            raise Error("Sub: GPU path not yet implemented (Phase 8.4 CPU only)")
+            raise Error("BinarySub: GPU path not yet implemented (Phase 10C CPU only)")
 
     def backward[
         target: StaticString,
         BATCH: Int,
         LGO: TensorLayout,
-        LGI: TensorLayout,
+        LG0: TensorLayout,
+        LG1: TensorLayout,
         OGO: MutOrigin,
-        OGI: MutOrigin,
+        OG0: MutOrigin,
+        OG1: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        mut grad_in0: TileTensor[DT, LG0, OG0],
+        mut grad_in1: TileTensor[DT, LG1, OG1],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
+        comptime assert grad_in0.flat_rank == 2, "grad_in0 rank-2"
+        comptime assert grad_in1.flat_rank == 2, "grad_in1 rank-2"
         self._assert_tag[target]()
 
         comptime if target == "cpu":
             for b in range(BATCH):
                 for d in range(Self.DIM):
                     var go = grad_output[b, d]
-                    grad_input[b, d] = go
-                    grad_input[b, Self.DIM + d] = -go
+                    grad_in0[b, d] = go
+                    grad_in1[b, d] = -go
         else:
-            raise Error("Sub: GPU backward not yet implemented (Phase 8.4 CPU only)")
+            raise Error("BinarySub: GPU backward not yet implemented (Phase 10C CPU only)")
 
     def backward_input[
         target: StaticString,
         BATCH: Int,
         LGO: TensorLayout,
-        LGI: TensorLayout,
+        LG0: TensorLayout,
+        LG1: TensorLayout,
         OGO: MutOrigin,
-        OGI: MutOrigin,
+        OG0: MutOrigin,
+        OG1: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         grad_output: TileTensor[DT, LGO, OGO],
-        mut grad_input: TileTensor[DT, LGI, OGI],
+        mut grad_in0: TileTensor[DT, LG0, OG0],
+        mut grad_in1: TileTensor[DT, LG1, OG1],
     ) raises:
-        self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)
+        self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_in0, grad_in1)
 
     def for_each_param[
         target: StaticString,
@@ -160,14 +174,13 @@ struct Sub[DIM: Int](Module):
     def set_inference(mut self, value: Bool):
         self._inference = value
 
-    # ──────────────────────────────────────────────────────────────────
-    # Phase 10A — Module-owned buffer surface.
-    # ──────────────────────────────────────────────────────────────────
+    # ── Phase 10A buffer surface ──────────────────────────────────────
 
     def ensure_buffers[BATCH: Int](mut self) raises:
         if self._n_batch_buf < BATCH:
             self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
-            self._grad_in_buf.resize(BATCH * Self.IN_DIM, Scalar[DT](0.0))
+            self._grad_in0_buf.resize(BATCH * Self.IN0_DIM, Scalar[DT](0.0))
+            self._grad_in1_buf.resize(BATCH * Self.IN1_DIM, Scalar[DT](0.0))
             self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
             self._n_batch_buf = BATCH
 
@@ -176,9 +189,14 @@ struct Sub[DIM: Int](Module):
             self._out_buf.unsafe_ptr()
         )
 
-    def grad_in_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def grad_in0_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._grad_in_buf.unsafe_ptr()
+            self._grad_in0_buf.unsafe_ptr()
+        )
+
+    def grad_in1_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._grad_in1_buf.unsafe_ptr()
         )
 
     def grad_out_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:

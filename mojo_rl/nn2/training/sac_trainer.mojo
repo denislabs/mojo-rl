@@ -60,13 +60,13 @@ from ..core.online_target_pair import OnlineTargetPair
 from ..initializer import Xavier
 from ..optimizer.adam import Adam
 from ..optimizer.scalar_adam import ScalarAdam
-from ..loss.mse import MSELoss
-from ..loss.sac_actor_loss import squashed_gaussian_sample
-from ..loss.sac_actor_loss_block import SACActorLoss, SACActorLossOut
+from ..loss.sac_actor_loss_block import SACActorLossOut
+from ..loss.sac_actor_loss_cg import SACActorLossCG as SACActorLoss
+from ..loss.critic_update_block import TwinCriticUpdateBlock
 from ..data.cpu_replay import CPUReplay
 from ..random.box_muller import box_muller_normal
 from .episode_tracker import EpisodeTracker
-from .off_policy_critic import concat_sa, twin_critic_update_step
+from .target_y_block import TargetYBlock
 
 
 struct SACTrainer[
@@ -92,7 +92,12 @@ struct SACTrainer[
 
     # ─── Loss objects ─────────────────────────────────────────────────
     var actor_loss: SACActorLoss[Self.ACTOR, Self.CRITIC, Self.BATCH]
-    var mse_loss: MSELoss[1]
+    var twin_critic_block: TwinCriticUpdateBlock[
+        Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+    ]
+    var target_y_block: TargetYBlock[
+        Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+    ]
 
     # ─── Replay + tracker ─────────────────────────────────────────────
     var buf: CPUReplay[Self.OBS_DIM, Self.ACT_DIM, Self.REPLAY_CAPACITY]
@@ -103,30 +108,15 @@ struct SACTrainer[
     var _ao1: UnsafePointer[Scalar[DT], MutAnyOrigin]            # [2*ACT_DIM]
     var _alp1: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [ACT_DIM+1]
 
-    # ─── Minibatch scratch (training) ─────────────────────────────────
+    # ─── Minibatch scratch (training) — only raw replay samples ──────
+    # Target-y compute scratch is owned by `target_y_block` (Phase 10F).
+    # Critic update scratch is owned by `twin_critic_block` (Phase 10F).
     var _mb_s: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [BATCH, OBS]
     var _mb_a: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [BATCH, ACT]
     var _mb_r: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [BATCH]
     var _mb_sp: UnsafePointer[Scalar[DT], MutAnyOrigin]          # [BATCH, OBS]
     var _mb_d: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [BATCH]
-    var _mb_sa: UnsafePointer[Scalar[DT], MutAnyOrigin]          # [BATCH, SA]
-
-    # Target-y compute (no-grad path; free-function squashed_gaussian).
-    var _mb_ao_sp: UnsafePointer[Scalar[DT], MutAnyOrigin]       # [BATCH, 2*ACT]
-    var _mb_z_sp: UnsafePointer[Scalar[DT], MutAnyOrigin]        # [BATCH, ACT]
-    var _mb_act_sp: UnsafePointer[Scalar[DT], MutAnyOrigin]      # [BATCH, ACT]
-    var _mb_lp_sp: UnsafePointer[Scalar[DT], MutAnyOrigin]       # [BATCH]
-    var _mb_q1_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin]      # [BATCH, 1]
-    var _mb_q2_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin]      # [BATCH, 1]
     var _mb_y: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [BATCH, 1]
-
-    # Critic update.
-    var _mb_q1: UnsafePointer[Scalar[DT], MutAnyOrigin]          # [BATCH, 1]
-    var _mb_q2: UnsafePointer[Scalar[DT], MutAnyOrigin]          # [BATCH, 1]
-    var _mb_grad_q1: UnsafePointer[Scalar[DT], MutAnyOrigin]     # [BATCH, 1]
-    var _mb_grad_q2: UnsafePointer[Scalar[DT], MutAnyOrigin]     # [BATCH, 1]
-    var _mb_grad_sa1: UnsafePointer[Scalar[DT], MutAnyOrigin]    # [BATCH, SA]
-    var _mb_grad_sa2: UnsafePointer[Scalar[DT], MutAnyOrigin]    # [BATCH, SA]
 
     # ─── Hyperparameters ──────────────────────────────────────────────
     var gamma: Scalar[DT]
@@ -155,7 +145,12 @@ struct SACTrainer[
         self.actor_loss = SACActorLoss[
             Self.ACTOR, Self.CRITIC, Self.BATCH
         ]()
-        self.mse_loss = MSELoss[1]()
+        self.twin_critic_block = TwinCriticUpdateBlock[
+            Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+        ]()
+        self.target_y_block = TargetYBlock[
+            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+        ]()
         self.buf = CPUReplay[
             Self.OBS_DIM, Self.ACT_DIM, Self.REPLAY_CAPACITY
         ](
@@ -180,20 +175,7 @@ struct SACTrainer[
         self._mb_r = null_p
         self._mb_sp = null_p
         self._mb_d = null_p
-        self._mb_sa = null_p
-        self._mb_ao_sp = null_p
-        self._mb_z_sp = null_p
-        self._mb_act_sp = null_p
-        self._mb_lp_sp = null_p
-        self._mb_q1_tgt = null_p
-        self._mb_q2_tgt = null_p
         self._mb_y = null_p
-        self._mb_q1 = null_p
-        self._mb_q2 = null_p
-        self._mb_grad_q1 = null_p
-        self._mb_grad_q2 = null_p
-        self._mb_grad_sa1 = null_p
-        self._mb_grad_sa2 = null_p
         self.gamma = Scalar[DT](0.99)
         self.tau = Scalar[DT](0.005)
         self.action_scale = Scalar[DT](1.0)
@@ -243,7 +225,12 @@ struct SACTrainer[
         t.actor_loss = SACActorLoss[
             Self.ACTOR, Self.CRITIC, Self.BATCH
         ].make["cpu"](action_scale=action_scale)
-        t.mse_loss = MSELoss[1].make["cpu"]()
+        t.twin_critic_block = TwinCriticUpdateBlock[
+            Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+        ].make["cpu"]()
+        t.target_y_block = TargetYBlock[
+            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+        ].make["cpu"](action_scale=action_scale, gamma=gamma)
         t.buf = CPUReplay[
             Self.OBS_DIM, Self.ACT_DIM, Self.REPLAY_CAPACITY
         ].new()
@@ -260,20 +247,7 @@ struct SACTrainer[
         t._mb_r = alloc[Scalar[DT]](Self.BATCH)
         t._mb_sp = alloc[Scalar[DT]](Self.BATCH * Self.OBS_DIM)
         t._mb_d = alloc[Scalar[DT]](Self.BATCH)
-        t._mb_sa = alloc[Scalar[DT]](Self.BATCH * Self.SA_DIM)
-        t._mb_ao_sp = alloc[Scalar[DT]](Self.BATCH * 2 * Self.ACT_DIM)
-        t._mb_z_sp = alloc[Scalar[DT]](Self.BATCH * Self.ACT_DIM)
-        t._mb_act_sp = alloc[Scalar[DT]](Self.BATCH * Self.ACT_DIM)
-        t._mb_lp_sp = alloc[Scalar[DT]](Self.BATCH)
-        t._mb_q1_tgt = alloc[Scalar[DT]](Self.BATCH)
-        t._mb_q2_tgt = alloc[Scalar[DT]](Self.BATCH)
         t._mb_y = alloc[Scalar[DT]](Self.BATCH)
-        t._mb_q1 = alloc[Scalar[DT]](Self.BATCH)
-        t._mb_q2 = alloc[Scalar[DT]](Self.BATCH)
-        t._mb_grad_q1 = alloc[Scalar[DT]](Self.BATCH)
-        t._mb_grad_q2 = alloc[Scalar[DT]](Self.BATCH)
-        t._mb_grad_sa1 = alloc[Scalar[DT]](Self.BATCH * Self.SA_DIM)
-        t._mb_grad_sa2 = alloc[Scalar[DT]](Self.BATCH * Self.SA_DIM)
 
         t.gamma = gamma
         t.tau = tau
@@ -368,59 +342,23 @@ struct SACTrainer[
         return True
 
     def _train_compute_target_y(mut self, alpha: Scalar[DT]) raises:
-        """y = r + γ·(min Q_target(s', a') − α·log_prob(a'|s'))
-
-        a' is sampled from the *online* actor π(·|s') (CleanRL-style SAC,
-        no target actor). Free-function `squashed_gaussian_sample` is used
-        since no gradient flows back through this path.
-
-        Pendulum truncation: `done` from the env is time-limit truncation,
-        not termination — `nonterm = 1.0` always (bootstrap past `done`).
-        """
-        var mb_sp_t = TileTensor(self._mb_sp, row_major[Self.BATCH, Self.OBS_DIM]())
-        var mb_ao_sp_t = TileTensor(
-            self._mb_ao_sp, row_major[Self.BATCH, 2 * Self.ACT_DIM]()
+        """Delegate to `target_y_block` (Phase 10F): computes
+        y = r + γ·(min Q_target(s', a') − α·log_prob(a'|s')) in-place
+        into `self._mb_y`. All target-y scratch lives in the block."""
+        self.target_y_block.step["cpu"](
+            self.actor, self.pair1.target_net, self.pair2.target_net,
+            self._mb_sp, self._mb_r, alpha, self._mb_y,
         )
-        self.actor.forward["cpu", Self.BATCH](mb_sp_t, mb_ao_sp_t)
-        box_muller_normal(self._mb_z_sp, Self.BATCH * Self.ACT_DIM)
-        var mb_z_sp_t = TileTensor(self._mb_z_sp, row_major[Self.BATCH, Self.ACT_DIM]())
-        var mb_act_sp_t = TileTensor(self._mb_act_sp, row_major[Self.BATCH, Self.ACT_DIM]())
-        var mb_lp_sp_t = TileTensor(self._mb_lp_sp, row_major[Self.BATCH]())
-        squashed_gaussian_sample[Self.ACT_DIM, Self.BATCH](
-            mb_ao_sp_t, mb_z_sp_t, self.action_scale, mb_act_sp_t, mb_lp_sp_t
-        )
-        concat_sa[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH](
-            self._mb_sp, self._mb_act_sp, self._mb_sa
-        )
-        var mb_sa_t = TileTensor(self._mb_sa, row_major[Self.BATCH, Self.SA_DIM]())
-        var mb_q1_tgt_t = TileTensor(self._mb_q1_tgt, row_major[Self.BATCH, 1]())
-        var mb_q2_tgt_t = TileTensor(self._mb_q2_tgt, row_major[Self.BATCH, 1]())
-        self.pair1.target_net.forward["cpu", Self.BATCH](mb_sa_t, mb_q1_tgt_t)
-        self.pair2.target_net.forward["cpu", Self.BATCH](mb_sa_t, mb_q2_tgt_t)
-        for b in range(Self.BATCH):
-            var q1 = self._mb_q1_tgt[b]
-            var q2 = self._mb_q2_tgt[b]
-            var qmin = q1 if q1 < q2 else q2
-            var nonterm: Scalar[DT] = 1.0
-            self._mb_y[b] = self._mb_r[b] + self.gamma * nonterm * (
-                qmin - alpha * self._mb_lp_sp[b]
-            )
 
     def _train_critic_update(mut self) raises -> Scalar[DT]:
         """Twin-critic MSE step against shared target `mb_y`. Returns
-        the sum of both critic losses (for logging). Action comes from
-        replay (`mb_a`), not the actor's resample."""
+        the sum of both critic losses (for logging). All scratch lives
+        in `twin_critic_block` (Phase 10F)."""
         var mb_y_t = TileTensor(self._mb_y, row_major[Self.BATCH, 1]())
-        return twin_critic_update_step[
-            Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM,
-        ](
+        return self.twin_critic_block.step["cpu"](
             self.pair1.online, self.critic1_opt,
             self.pair2.online, self.critic2_opt,
-            self.mse_loss,
-            self._mb_s, self._mb_a, self._mb_sa, mb_y_t,
-            self._mb_q1, self._mb_q2,
-            self._mb_grad_q1, self._mb_grad_q2,
-            self._mb_grad_sa1, self._mb_grad_sa2,
+            self._mb_s, self._mb_a, mb_y_t,
         )
 
     def _train_actor_update(mut self, alpha: Scalar[DT]) raises -> SACActorLossOut:

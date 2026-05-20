@@ -8,4 +8,5 @@ from .off_policy_critic import (
     critic_update_step,
     twin_critic_update_step,
 )
+from .target_y_block import TargetYBlock
 from .sac_trainer import SACTrainer

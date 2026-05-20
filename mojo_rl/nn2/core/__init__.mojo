@@ -2,6 +2,9 @@
 
 from .param_visitor import ParamVisitor
 from .module import Module
+from .binary_module import BinaryModule
+from .ternary_module import TernaryModule
+from .graph_node import GraphNode
 from .optimizer import Optimizer
 from .loss import Loss
 from .initializer import Initializer

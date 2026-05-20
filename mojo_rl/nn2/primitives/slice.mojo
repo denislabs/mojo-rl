@@ -1,23 +1,31 @@
-"""Sub[DIM] — elementwise subtract of two packed inputs. Phase 8.4.
+"""Slice[IN_DIM, START, END] — extract a column range. Phase 10E.
 
-Multi-input via the packed-tensor convention (same pattern as ElemMin):
-caller packs both operands side-by-side into a single `[BATCH, 2*DIM]`
-tile `[a | b]`, Sub outputs `a - b` shape `[BATCH, DIM]`.
+Pure structural op: forward copies `input[b, START:END]` into the
+output; backward writes `grad_output` into `grad_input[b, START:END]`
+and **zeros the rest of `grad_input`**. The zero-fill is what makes
+ComputeGraph v2's scatter-add semantics work: when two Slice nodes
+source from the same predecessor (e.g. `action` cols `[0, ACT)` +
+`log_prob` col `[ACT, ACT+1)` both sourcing from rsample), each
+scatter-adds its full-width grad-in tile into the predecessor's
+`_grad_out_buf`. The zeros outside each slice's range mean the two
+contributions interleave correctly into `[grad_action | grad_lp]`.
 
-    output[b, d]            = input[b, d] - input[b, DIM + d]
+Forward:
+    output[b, j] = input[b, START + j]            j ∈ [0, OUT_DIM)
 
 Backward:
-    grad_input[b, d]        =  grad_output[b, d]
-    grad_input[b, DIM + d]  = -grad_output[b, d]
+    grad_input[b, START + j] = grad_output[b, j]  j ∈ [0, OUT_DIM)
+    grad_input[b, k]         = 0                  otherwise
 
-Used in SAC composed actor loss for `α·log_prob - min_q`.
+Cache: none (slice is value-independent — backward needs only the index
+arithmetic). No parameters.
 """
 
 from std.gpu.host import DeviceContext
 
 from layout import TileTensor, TensorLayout
 
-from ..constants import DT, CPU_SIMD_W
+from ..constants import DT
 from ..core import (
     Module,
     ParamVisitor,
@@ -31,15 +39,15 @@ from ..core import (
 )
 
 
-struct Sub[DIM: Int](Module):
-    comptime IN_DIM = 2 * Self.DIM
-    comptime OUT_DIM = Self.DIM
+struct Slice[IN: Int, START: Int, END: Int](Module):
+    comptime IN_DIM = Self.IN
+    comptime OUT_DIM = Self.END - Self.START
 
     var ctx: Optional[DeviceContext]
     var _target_tag: Int8
     var _inference: Bool
 
-    # Phase 10A — Module-owned output / grad buffers (CPU only for now).
+    # Phase 10A buffer surface (CG v2 wiring).
     var _out_buf: List[Scalar[DT]]
     var _grad_in_buf: List[Scalar[DT]]
     var _grad_out_buf: List[Scalar[DT]]
@@ -57,8 +65,11 @@ struct Sub[DIM: Int](Module):
     @staticmethod
     def make[target: StaticString, INIT: Initializer]() raises -> Self:
         comptime assert target == "cpu", (
-            "Sub.make[target='gpu', INIT] requires a DeviceContext"
+            "Slice.make[target='gpu', INIT] requires a DeviceContext"
         )
+        comptime assert Self.START >= 0, "Slice.START must be >= 0"
+        comptime assert Self.END > Self.START, "Slice.END must be > START"
+        comptime assert Self.END <= Self.IN, "Slice.END must be <= IN_DIM"
         var s = Self()
         s._target_tag = TARGET_CPU
         return s^
@@ -68,8 +79,11 @@ struct Sub[DIM: Int](Module):
         target: StaticString, INIT: Initializer
     ](ctx: DeviceContext) raises -> Self:
         comptime assert target == "gpu", (
-            "Sub.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+            "Slice.make[target='cpu', INIT](ctx) — drop ctx for CPU"
         )
+        comptime assert Self.START >= 0, "Slice.START must be >= 0"
+        comptime assert Self.END > Self.START, "Slice.END must be > START"
+        comptime assert Self.END <= Self.IN, "Slice.END must be <= IN_DIM"
         var s = Self()
         s.ctx = ctx
         s._target_tag = TARGET_GPU
@@ -79,7 +93,7 @@ struct Sub[DIM: Int](Module):
         comptime expected = target_tag_for[target]()
         if self._target_tag != expected:
             raise Error(
-                "Sub: method called with [target='"
+                "Slice: method called with [target='"
                 + String(target)
                 + "'] but module was make'd for a different target (tag="
                 + String(Int(self._target_tag)) + ")"
@@ -98,16 +112,16 @@ struct Sub[DIM: Int](Module):
         input: TileTensor[DT, LIN, OIN],
         mut output: TileTensor[DT, LOUT, OOUT],
     ) raises:
-        comptime assert input.flat_rank == 2, "input rank-2 [BATCH, 2*DIM]"
-        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, DIM]"
+        comptime assert input.flat_rank == 2, "input rank-2 [BATCH, IN_DIM]"
+        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, OUT_DIM]"
         self._assert_tag[target]()
 
         comptime if target == "cpu":
             for b in range(BATCH):
-                for d in range(Self.DIM):
-                    output[b, d] = input[b, d] - input[b, Self.DIM + d]
+                for j in range(Self.OUT_DIM):
+                    output[b, j] = input[b, Self.START + j]
         else:
-            raise Error("Sub: GPU path not yet implemented (Phase 8.4 CPU only)")
+            raise Error("Slice: GPU path not yet implemented (Phase 10E CPU only)")
 
     def backward[
         target: StaticString,
@@ -127,13 +141,16 @@ struct Sub[DIM: Int](Module):
         self._assert_tag[target]()
 
         comptime if target == "cpu":
+            # Zero whole grad_input first so the scatter-add into a
+            # shared predecessor `_grad_out_buf` interleaves correctly.
             for b in range(BATCH):
-                for d in range(Self.DIM):
-                    var go = grad_output[b, d]
-                    grad_input[b, d] = go
-                    grad_input[b, Self.DIM + d] = -go
+                for k in range(Self.IN_DIM):
+                    grad_input[b, k] = Scalar[DT](0.0)
+            for b in range(BATCH):
+                for j in range(Self.OUT_DIM):
+                    grad_input[b, Self.START + j] = grad_output[b, j]
         else:
-            raise Error("Sub: GPU backward not yet implemented (Phase 8.4 CPU only)")
+            raise Error("Slice: GPU backward not yet implemented (Phase 10E CPU only)")
 
     def backward_input[
         target: StaticString,
@@ -148,6 +165,7 @@ struct Sub[DIM: Int](Module):
         grad_output: TileTensor[DT, LGO, OGO],
         mut grad_input: TileTensor[DT, LGI, OGI],
     ) raises:
+        # No parameters — backward_input ≡ backward.
         self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)
 
     def for_each_param[
@@ -160,9 +178,7 @@ struct Sub[DIM: Int](Module):
     def set_inference(mut self, value: Bool):
         self._inference = value
 
-    # ──────────────────────────────────────────────────────────────────
-    # Phase 10A — Module-owned buffer surface.
-    # ──────────────────────────────────────────────────────────────────
+    # ── Phase 10A buffer surface ──────────────────────────────────────
 
     def ensure_buffers[BATCH: Int](mut self) raises:
         if self._n_batch_buf < BATCH:
