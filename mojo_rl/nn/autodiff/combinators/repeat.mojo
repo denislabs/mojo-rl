@@ -22,6 +22,7 @@ from ...initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
+from std.memory import alloc
 
 
 @fieldwise_init
@@ -168,13 +169,10 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
             ](state.ptr)
             Self.Inner.forward[BATCH, dtype](input, output, pi, si, ci)
         else:
-            # Intermediate buffers for n-1 activations
-            var inter_storage = List[Scalar[dtype]](
-                capacity=BATCH * (Self.n - 1) * Self.Inner.OUT_DIM
-            )
-            for _ in range(BATCH * (Self.n - 1) * Self.Inner.OUT_DIM):
-                inter_storage.append(0)
-            var inter_ptr = inter_storage.unsafe_ptr()
+            # Intermediate buffers for n-1 activations. Heap-allocated uninit.
+            var inter_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](BATCH * (Self.n - 1) * Self.Inner.OUT_DIM)
 
             comptime for i in range(Self.n):
                 var ci = LayoutTensor[
@@ -219,6 +217,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         MutAnyOrigin,
                     ](inter_ptr + BATCH * Self._inter_offset[i]())
                     Self.Inner.forward[BATCH, dtype](li_in, li_out, pi, si, ci)
+            inter_ptr.free()
 
     # =========================================================================
     # CPU Forward (no cache — inference)
@@ -241,17 +240,18 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
     ):
-        # Allocate dummy cache and delegate
-        var cap = BATCH * Self.CACHE_SIZE if Self.CACHE_SIZE > 0 else 1
-        var dummy_cache = List[Scalar[dtype]](capacity=cap)
-        for _ in range(cap):
-            dummy_cache.append(0)
+        # Dummy cache (written but never read) — heap, no zero-fill.
+        var _cap = BATCH * Self.CACHE_SIZE if Self.CACHE_SIZE > 0 else 1
+        var dummy_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](_cap)
         var c = LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
-        ](dummy_cache.unsafe_ptr())
+        ](dummy_ptr)
         Self.forward[BATCH, dtype](input, output, params, state, c)
+        dummy_ptr.free()
 
     # =========================================================================
     # CPU Backward
@@ -305,13 +305,10 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                 grad_output, grad_input, pi, si, ci, gi
             )
         else:
-            # Gradient intermediate buffer
-            var grad_inter_storage = List[Scalar[dtype]](
-                capacity=BATCH * (Self.n - 1) * Self.Inner.OUT_DIM
-            )
-            for _ in range(BATCH * (Self.n - 1) * Self.Inner.OUT_DIM):
-                grad_inter_storage.append(0)
-            var gi_ptr = grad_inter_storage.unsafe_ptr()
+            # Gradient intermediate buffer — heap, no zero-fill.
+            var gi_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](BATCH * (Self.n - 1) * Self.Inner.OUT_DIM)
 
             # Reverse iteration
             comptime for _ri in range(Self.n):
@@ -371,6 +368,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         MutAnyOrigin,
                     ](gi_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.Inner.backward[BATCH, dtype](li_go, li_gi, pi, si, ci, gp)
+            gi_ptr.free()
 
     # =========================================================================
     # GPU Forward (with cache)

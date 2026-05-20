@@ -5,6 +5,7 @@ from .op import DiffOp
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
+from std.memory import alloc
 
 # =============================================================================
 # AutoDiffChain — compose DiffOp primitives into a Model
@@ -199,12 +200,10 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
             ](cache.ptr)
             Self.op_types[0].eval[BATCH, dtype](in_v, out_v, p_v, c_v)
         else:
-            var inter_storage = List[Scalar[dtype]](
-                capacity=BATCH * Self._total_inter()
-            )
-            for _ in range(BATCH * Self._total_inter()):
-                inter_storage.append(0)
-            var inter_ptr = inter_storage.unsafe_ptr()
+            # Heap-allocated uninit (no zero-fill — written before read).
+            var inter_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](BATCH * Self._total_inter())
 
             comptime for i in range(Self.N):
                 var li_p = LayoutTensor[
@@ -254,6 +253,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                         MutAnyOrigin,
                     ](inter_ptr + BATCH * Self._inter_offset[i]())
                     Self.op_types[i].eval[BATCH, dtype](li_in, li_out, li_p, li_c)
+            inter_ptr.free()
 
     # =========================================================================
     # CPU Forward (no cache — inference)
@@ -277,19 +277,19 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         ],
     ):
         # state is unused — DiffOp primitives are stateless.
-        # DiffOp.eval always takes a cache param, so allocate a dummy cache.
-        var dummy_cache = List[Scalar[dtype]](
-            capacity=BATCH * Self.CACHE_SIZE if Self.CACHE_SIZE > 0 else 1
-        )
-        var cap = BATCH * Self.CACHE_SIZE if Self.CACHE_SIZE > 0 else 1
-        for _ in range(cap):
-            dummy_cache.append(0)
+        # DiffOp.eval always takes a cache param, so allocate a dummy cache
+        # (written but never read in the no-cache path — no zero-fill needed).
+        var _cap = BATCH * Self.CACHE_SIZE if Self.CACHE_SIZE > 0 else 1
+        var dummy_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+            Scalar[dtype]
+        ](_cap)
         var c = LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
-        ](dummy_cache.unsafe_ptr())
+        ](dummy_ptr)
         Self.forward[BATCH, dtype](input, output, params, state, c)
+        dummy_ptr.free()
 
     # =========================================================================
     # CPU Backward
@@ -347,13 +347,11 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
             ](grads.ptr)
             Self.op_types[0].vjp[BATCH, dtype](go_v, gi_v, p_v, c_v, g_v)
         else:
-            # Gradient intermediate buffer (same layout as forward inter)
-            var grad_inter_storage = List[Scalar[dtype]](
-                capacity=BATCH * Self._total_inter()
-            )
-            for _ in range(BATCH * Self._total_inter()):
-                grad_inter_storage.append(0)
-            var gi_ptr = grad_inter_storage.unsafe_ptr()
+            # Gradient intermediate buffer (same layout as forward inter).
+            # Heap-allocated uninit (no zero-fill — written before read).
+            var gi_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](BATCH * Self._total_inter())
 
             # Reverse iteration
             comptime for _ri in range(Self.N):
@@ -414,6 +412,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                         MutAnyOrigin,
                     ](gi_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.op_types[i].vjp[BATCH, dtype](li_go, li_gi, li_p, li_c, li_g)
+            gi_ptr.free()
 
     # =========================================================================
     # GPU Forward (with cache)

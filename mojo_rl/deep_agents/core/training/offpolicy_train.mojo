@@ -34,7 +34,6 @@ Usage — OffPolicyContinuousAgent style (DDPG / TD3 / SAC):
 
 from std.math import exp
 from std.random import random_float64, seed
-from std.time import perf_counter_ns
 from mojo_rl.core import (
     TrainingMetrics,
     BoxDiscreteActionEnv,
@@ -978,7 +977,6 @@ def run_offpolicy_continuous_train[
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
-    profile: Bool = False,
 ) raises -> TrainingMetrics:
     """Warmup + step-based training loop for OffPolicyContinuousAgent (DDPG/TD3/SAC).
 
@@ -1036,20 +1034,6 @@ def run_offpolicy_continuous_train[
     var interval_episode_count = 0
     var last_avg_reward: Float64 = 0.0
 
-    # --- Per-phase profiling counters (opt-in via `profile`) ---
-    # ns accumulators per phase across all post-warmup env steps.
-    var ns_select_action: Int = 0
-    var ns_env_step: Int = 0
-    var ns_obs_marshal: Int = 0
-    var ns_store: Int = 0
-    var ns_train_step: Int = 0
-    var ns_total_loop: Int = 0
-    var profile_steps: Int = 0
-    var profile_train_calls: Int = 0
-    var profile_start_ns: Int = 0
-    if profile:
-        profile_start_ns = Int(perf_counter_ns())
-
     # --- Warmup: fill buffer with random transitions ---
     var warmup_obs = env.reset_obs_list()
     var warmup_count = 0
@@ -1085,19 +1069,8 @@ def run_offpolicy_continuous_train[
         var episode_steps = 0
 
         for _ in range(max_steps_per_episode):
-            var t_select_a: Int = 0
-            if profile:
-                t_select_a = Int(perf_counter_ns())
             var action = agent.select_action(cpu_state, obs)
-            var t_env_a: Int = 0
-            if profile:
-                t_env_a = Int(perf_counter_ns())
-                ns_select_action += t_env_a - t_select_a
             var result = env.step_continuous_vec(action)
-            var t_obs_a: Int = 0
-            if profile:
-                t_obs_a = Int(perf_counter_ns())
-                ns_env_step += t_obs_a - t_env_a
             var next_obs = List[Float64]()
             for i in range(len(result[0])):
                 next_obs.append(Float64(result[0][i]))
@@ -1106,28 +1079,13 @@ def run_offpolicy_continuous_train[
             episode_steps += 1
             # Store terminated (not done) so Q-targets bootstrap on truncation.
             var terminated = done and (episode_steps < max_steps_per_episode)
-            var t_store_a: Int = 0
-            if profile:
-                t_store_a = Int(perf_counter_ns())
-                ns_obs_marshal += t_store_a - t_obs_a
             agent.store_transition(
                 cpu_state, obs, action, reward, next_obs, terminated
             )
-            var t_train_a: Int = 0
-            if profile:
-                t_train_a = Int(perf_counter_ns())
-                ns_store += t_train_a - t_store_a
 
             if cpu_state.is_ready() and total_steps % train_every == 0:
                 _ = agent.do_cpu_train_step(cpu_state)
                 total_train_steps += 1
-                if profile:
-                    profile_train_calls += 1
-
-            if profile:
-                var t_end = Int(perf_counter_ns())
-                ns_train_step += t_end - t_train_a
-                profile_steps += 1
 
             episode_reward += reward
             total_steps += 1
@@ -1256,91 +1214,5 @@ def run_offpolicy_continuous_train[
             + String(total_train_steps)
             + " [DONE]"
         )
-
-    if profile and profile_steps > 0:
-        ns_total_loop = Int(perf_counter_ns()) - profile_start_ns
-        var fs = Float64(profile_steps)
-        var ft = Float64(max(profile_train_calls, 1))
-        var sum_phases = (
-            ns_select_action
-            + ns_env_step
-            + ns_obs_marshal
-            + ns_store
-            + ns_train_step
-        )
-        var other_ns = ns_total_loop - sum_phases
-        var total_ms = Float64(ns_total_loop) / 1e6
-        var pct_select = 100.0 * Float64(ns_select_action) / Float64(
-            ns_total_loop
-        )
-        var pct_env = 100.0 * Float64(ns_env_step) / Float64(ns_total_loop)
-        var pct_obs = 100.0 * Float64(ns_obs_marshal) / Float64(
-            ns_total_loop
-        )
-        var pct_store = 100.0 * Float64(ns_store) / Float64(ns_total_loop)
-        var pct_train = 100.0 * Float64(ns_train_step) / Float64(
-            ns_total_loop
-        )
-        var pct_other = 100.0 * Float64(other_ns) / Float64(ns_total_loop)
-        print()
-        print("=" * 70)
-        print("Per-phase profiling (post-warmup env steps)")
-        print("=" * 70)
-        print(
-            "Profiled env steps: "
-            + String(profile_steps)
-            + " | Train calls: "
-            + String(profile_train_calls)
-        )
-        print(
-            "Total profiled wall time: "
-            + String(Float64(Int(total_ms * 1000)) / 1000.0)
-            + " ms"
-        )
-        print(
-            "  select_action : "
-            + String(Float64(Int(Float64(ns_select_action) / fs)))
-            + " ns/step ("
-            + String(Float64(Int(pct_select * 100)) / 100.0)
-            + " %)"
-        )
-        print(
-            "  env.step      : "
-            + String(Float64(Int(Float64(ns_env_step) / fs)))
-            + " ns/step ("
-            + String(Float64(Int(pct_env * 100)) / 100.0)
-            + " %)"
-        )
-        print(
-            "  obs marshal   : "
-            + String(Float64(Int(Float64(ns_obs_marshal) / fs)))
-            + " ns/step ("
-            + String(Float64(Int(pct_obs * 100)) / 100.0)
-            + " %)"
-        )
-        print(
-            "  store_trans   : "
-            + String(Float64(Int(Float64(ns_store) / fs)))
-            + " ns/step ("
-            + String(Float64(Int(pct_store * 100)) / 100.0)
-            + " %)"
-        )
-        print(
-            "  train_step    : "
-            + String(Float64(Int(Float64(ns_train_step) / fs)))
-            + " ns/step ("
-            + String(Float64(Int(pct_train * 100)) / 100.0)
-            + " %, "
-            + String(Float64(Int(Float64(ns_train_step) / ft)))
-            + " ns/train_call)"
-        )
-        print(
-            "  loop overhead : "
-            + String(Float64(Int(Float64(other_ns) / fs)))
-            + " ns/step ("
-            + String(Float64(Int(pct_other * 100)) / 100.0)
-            + " %)"
-        )
-        print("=" * 70)
 
     return metrics^
