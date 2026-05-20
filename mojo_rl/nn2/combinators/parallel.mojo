@@ -36,7 +36,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
 
-from ..constants import DT
+from ..constants import DT, CPU_SIMD_W
 from ..core import (
     Module, ParamVisitor, Initializer,
     AMPPolicy, NoAMP,
@@ -285,10 +285,27 @@ struct Parallel[A: Module, B: Module](Module):
             var gi_b = TileTensor(self.gi_b_cpu, row_major[BATCH, Self.IN_DIM]())
             self.branch_a.backward[target, BATCH, POLICY=POLICY](go_a, gi_a)
             self.branch_b.backward[target, BATCH, POLICY=POLICY](go_b, gi_b)
-            # Sum: grad_input = gi_a + gi_b.
-            for b in range(BATCH):
-                for d in range(Self.IN_DIM):
-                    grad_input[b, d] = gi_a[b, d] + gi_b[b, d]
+            # Sum: grad_input = gi_a + gi_b.  Phase 8.0: SIMD pass over
+            # BATCH * IN_DIM (the small concat/split loops above are too
+            # short per row to matter — branches' output dims are typically
+            # ≤ ACT_DIM, e.g. 1-30 for RL).
+            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
+                grad_input
+            )
+            var ap = self.gi_a_cpu
+            var bp = self.gi_b_cpu
+            var gp = grad_input_w.ptr
+            comptime N = BATCH * Self.IN_DIM
+            var k = 0
+            while k + CPU_SIMD_W <= N:
+                gp.store(
+                    k,
+                    ap.load[width=CPU_SIMD_W](k) + bp.load[width=CPU_SIMD_W](k),
+                )
+                k += CPU_SIMD_W
+            while k < N:
+                gp[k] = ap[k] + bp[k]
+                k += 1
         else:
             self._ensure_scratch_gpu(BATCH)
             var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](grad_output)

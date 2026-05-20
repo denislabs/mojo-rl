@@ -13,7 +13,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
 
-from ..constants import DT
+from ..constants import DT, CPU_SIMD_W
 from ..core import (
     Module,
     ParamVisitor,
@@ -163,13 +163,26 @@ struct Tanh[DIM: Int](Module):
         self._assert_tag[target]()
 
         comptime if target == "cpu":
+            # Phase 8.0: SIMD path. `tanh` is lane-wise on SIMD.
             self._ensure_cache_cpu(BATCH)
-            var cache = TileTensor(self.cache, row_major[BATCH, Self.DIM]())
-            for b in range(BATCH):
-                for d in range(Self.DIM):
-                    var y = tanh(input[b, d])
-                    output[b, d] = y
-                    cache[b, d] = y
+            var input_w = rebind[TileTensor[DT, LIN, MutAnyOrigin]](input)
+            var output_w = rebind[TileTensor[DT, LOUT, MutAnyOrigin]](output)
+            var in_p = input_w.ptr
+            var out_p = output_w.ptr
+            var cache_p = self.cache.unsafe_ptr()
+            comptime N = BATCH * Self.DIM
+            var k = 0
+            while k + CPU_SIMD_W <= N:
+                var v = in_p.load[width=CPU_SIMD_W](k)
+                var t = tanh(v)
+                cache_p.store(k, t)
+                out_p.store(k, t)
+                k += CPU_SIMD_W
+            while k < N:
+                var y = tanh(in_p[k])
+                cache_p[k] = y
+                out_p[k] = y
+                k += 1
         else:
             self._ensure_cache_gpu(BATCH * Self.DIM)
             comptime layout = Layout.row_major(BATCH, Self.DIM)
@@ -209,12 +222,28 @@ struct Tanh[DIM: Int](Module):
         self._assert_tag[target]()
 
         comptime if target == "cpu":
-            var cache = TileTensor(self.cache, row_major[BATCH, Self.DIM]())
-            var one: Scalar[DT] = 1.0
-            for b in range(BATCH):
-                for d in range(Self.DIM):
-                    var y = cache[b, d]
-                    grad_input[b, d] = grad_output[b, d] * (one - y * y)
+            # Phase 8.0: SIMD path. grad_in = grad_out * (1 - y^2).
+            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
+                grad_output
+            )
+            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
+                grad_input
+            )
+            var go_p = grad_output_w.ptr
+            var gi_p = grad_input_w.ptr
+            var c_p = self.cache.unsafe_ptr()
+            var one_v = SIMD[DT, CPU_SIMD_W](1)
+            comptime N = BATCH * Self.DIM
+            var k = 0
+            while k + CPU_SIMD_W <= N:
+                var y = c_p.load[width=CPU_SIMD_W](k)
+                var g = go_p.load[width=CPU_SIMD_W](k)
+                gi_p.store(k, g * (one_v - y * y))
+                k += CPU_SIMD_W
+            while k < N:
+                var y = c_p[k]
+                gi_p[k] = go_p[k] * (1.0 - y * y)
+                k += 1
         else:
             comptime layout = Layout.row_major(BATCH, Self.DIM)
             var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](

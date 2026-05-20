@@ -2,3 +2,8 @@
 
 from .cross_entropy import CrossEntropyLoss
 from .mse import MSELoss
+from .sac_actor_loss import (
+    squashed_gaussian_sample,
+    sac_actor_backward,
+    sac_actor_loss_value,
+)

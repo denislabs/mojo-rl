@@ -19,13 +19,14 @@ Optionals). Same as Phase 2.1 — the runtime branch is comptime-erased.
 """
 
 from std.math import ceildiv
+from std.memory import alloc
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.runtime.asyncrt import DeviceContextPtr
 from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
 from linalg.matmul import matmul as max_matmul
 
-from ..constants import DT
+from ..constants import DT, CPU_SIMD_W
 from ..core import (
     Module,
     ParamVisitor,
@@ -331,18 +332,40 @@ struct Linear[IN: Int, OUT: Int](Module):
 
         comptime if target == "cpu":
             # CPU path: ignore POLICY, always fp32 (CPU AMP isn't useful).
+            # Phase 8.0: route the matmul through `linalg.matmul[target="cpu"]`
+            # (vendor BLAS / Modular CPU GEMM) — ~250-760x over the naive
+            # triple loop. Bias-add and cache-memcpy stay manual but SIMD'd.
             self._ensure_cache_cpu(BATCH)
             var w = TileTensor(self.weight, row_major[Self.IN, Self.OUT]())
-            var b = TileTensor(self.bias, row_major[Self.OUT]())
-            var c = TileTensor(self.cache, row_major[BATCH, Self.IN]())
+            var input_w = rebind[TileTensor[DT, LIN, MutAnyOrigin]](input)
+            var output_w = rebind[TileTensor[DT, LOUT, MutAnyOrigin]](output)
+            # output = input @ weight  (overwrite)
+            max_matmul[target="cpu"](output_w, input_w, w, None)
+            # Bias-add: broadcast self.bias across BATCH rows, SIMD per row.
+            var b_ptr = self.bias.unsafe_ptr()
+            var out_ptr = output_w.ptr
             for bi in range(BATCH):
-                for j in range(Self.OUT):
-                    var acc = b[j]
-                    for i in range(Self.IN):
-                        acc += input[bi, i] * w[i, j]
-                    output[bi, j] = acc
-                for i in range(Self.IN):
-                    c[bi, i] = input[bi, i]
+                var row_off = bi * Self.OUT
+                var ij = 0
+                while ij + CPU_SIMD_W <= Self.OUT:
+                    var ov = out_ptr.load[width=CPU_SIMD_W](row_off + ij)
+                    var bv = b_ptr.load[width=CPU_SIMD_W](ij)
+                    out_ptr.store(row_off + ij, ov + bv)
+                    ij += CPU_SIMD_W
+                while ij < Self.OUT:
+                    out_ptr[row_off + ij] = out_ptr[row_off + ij] + b_ptr[ij]
+                    ij += 1
+            # Cache input: SIMD memcpy [BATCH * IN] elements contiguous.
+            var in_ptr = input_w.ptr
+            var cache_ptr = self.cache.unsafe_ptr()
+            comptime cache_n = BATCH * Self.IN
+            var ck = 0
+            while ck + CPU_SIMD_W <= cache_n:
+                cache_ptr.store(ck, in_ptr.load[width=CPU_SIMD_W](ck))
+                ck += CPU_SIMD_W
+            while ck < cache_n:
+                cache_ptr[ck] = in_ptr[ck]
+                ck += 1
         else:
             var ctx = self.ctx.value()
             self._ensure_cache_dev(BATCH * Self.IN)
@@ -470,27 +493,74 @@ struct Linear[IN: Int, OUT: Int](Module):
 
         comptime if target == "cpu":
             # CPU path: ignore POLICY, fp32.
+            # Phase 8.0: matmul through `linalg.matmul[target="cpu"]`.
+            #   grad_input = grad_output @ W^T          (overwrite)
+            #   grad_w    += cache^T @ grad_output      (accumulate; matmul
+            #                overwrites a scratch then sums into grad_w)
+            #   grad_b    += sum_b grad_output[b, :]    (SIMD reduction)
             var w = TileTensor(self.weight, row_major[Self.IN, Self.OUT]())
-            var gw = TileTensor(self.grad_w, row_major[Self.IN, Self.OUT]())
-            var gb = TileTensor(self.grad_b, row_major[Self.OUT]())
             var c = TileTensor(self.cache, row_major[BATCH, Self.IN]())
+            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
+                grad_output
+            )
+            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
+                grad_input
+            )
+
+            # 1) grad_input = grad_output @ W^T
+            max_matmul[transpose_b=True, target="cpu"](
+                grad_input_w, grad_output_w, w, None
+            )
+
+            # 2) grad_w += cache^T @ grad_output
+            # linalg.matmul has no transpose_a, so physically transpose cache
+            # (BATCH, IN) → cache_T (IN, BATCH) in a scratch.
+            comptime cache_n = BATCH * Self.IN
+            comptime gw_n = Self.IN * Self.OUT
+            var cT_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+                Scalar[DT]
+            ](cache_n)
+            var dW_tmp_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+                Scalar[DT]
+            ](gw_n)
+            var cache_ptr = self.cache.unsafe_ptr()
             for bi in range(BATCH):
                 for i in range(Self.IN):
-                    var acc: Scalar[DT] = 0.0
-                    for j in range(Self.OUT):
-                        acc += grad_output[bi, j] * w[i, j]
-                    grad_input[bi, i] = acc
-            for i in range(Self.IN):
-                for j in range(Self.OUT):
-                    var acc: Scalar[DT] = 0.0
-                    for bi in range(BATCH):
-                        acc += c[bi, i] * grad_output[bi, j]
-                    gw[i, j] = gw[i, j] + acc
-            for j in range(Self.OUT):
-                var acc: Scalar[DT] = 0.0
-                for bi in range(BATCH):
-                    acc += grad_output[bi, j]
-                gb[j] = gb[j] + acc
+                    cT_buf[i * BATCH + bi] = cache_ptr[bi * Self.IN + i]
+            var cT_tt = TileTensor(cT_buf, row_major[Self.IN, BATCH]())
+            var dW_tmp_tt = TileTensor(dW_tmp_buf, row_major[Self.IN, Self.OUT]())
+            max_matmul[target="cpu"](
+                dW_tmp_tt, cT_tt, grad_output_w, None
+            )
+            # grad_w += dW_tmp  (SIMD)
+            var gw_ptr = self.grad_w.unsafe_ptr()
+            var dw_i = 0
+            while dw_i + CPU_SIMD_W <= gw_n:
+                var gw_v = gw_ptr.load[width=CPU_SIMD_W](dw_i)
+                var dt_v = dW_tmp_buf.load[width=CPU_SIMD_W](dw_i)
+                gw_ptr.store(dw_i, gw_v + dt_v)
+                dw_i += CPU_SIMD_W
+            while dw_i < gw_n:
+                gw_ptr[dw_i] = gw_ptr[dw_i] + dW_tmp_buf[dw_i]
+                dw_i += 1
+            dW_tmp_buf.free()
+            cT_buf.free()
+
+            # 3) grad_b += column-sum of grad_output. SIMD across OUT for each
+            # row, then scalar-add into grad_b.
+            var gb_ptr = self.grad_b.unsafe_ptr()
+            var go_ptr = grad_output_w.ptr
+            for bi in range(BATCH):
+                var row_off = bi * Self.OUT
+                var gj = 0
+                while gj + CPU_SIMD_W <= Self.OUT:
+                    var gbv = gb_ptr.load[width=CPU_SIMD_W](gj)
+                    var gov = go_ptr.load[width=CPU_SIMD_W](row_off + gj)
+                    gb_ptr.store(gj, gbv + gov)
+                    gj += CPU_SIMD_W
+                while gj < Self.OUT:
+                    gb_ptr[gj] = gb_ptr[gj] + go_ptr[row_off + gj]
+                    gj += 1
         else:
             var ctx = self.ctx.value()
             var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](

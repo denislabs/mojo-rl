@@ -23,7 +23,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
 
-from ..constants import DT
+from ..constants import DT, CPU_SIMD_W
 from ..core import (
     Module, ParamVisitor, Initializer,
     AMPPolicy, NoAMP,
@@ -158,9 +158,23 @@ struct Residual[Inner: Module](Module):
             self._ensure_mid_cpu(BATCH * Self.IN_DIM)
             var mid = TileTensor(self.mid_cpu, row_major[BATCH, Self.IN_DIM]())
             self.inner.forward[target, BATCH, POLICY=POLICY](input, mid)
-            for b in range(BATCH):
-                for d in range(Self.IN_DIM):
-                    output[b, d] = mid[b, d] + input[b, d]
+            # Phase 8.0: SIMD elementwise add.
+            var input_w = rebind[TileTensor[DT, LIN, MutAnyOrigin]](input)
+            var output_w = rebind[TileTensor[DT, LOUT, MutAnyOrigin]](output)
+            var mp = self.mid_cpu
+            var ip = input_w.ptr
+            var op = output_w.ptr
+            comptime N = BATCH * Self.IN_DIM
+            var k = 0
+            while k + CPU_SIMD_W <= N:
+                op.store(
+                    k,
+                    mp.load[width=CPU_SIMD_W](k) + ip.load[width=CPU_SIMD_W](k),
+                )
+                k += CPU_SIMD_W
+            while k < N:
+                op[k] = mp[k] + ip[k]
+                k += 1
         else:
             self._ensure_mid_gpu(BATCH * Self.IN_DIM)
             # Launder pointers through MutAnyOrigin (aliasing-analyzer
@@ -202,9 +216,27 @@ struct Residual[Inner: Module](Module):
             self._ensure_mid_cpu(BATCH * Self.IN_DIM)
             var tmp = TileTensor(self.mid_cpu, row_major[BATCH, Self.IN_DIM]())
             self.inner.backward[target, BATCH, POLICY=POLICY](grad_output, tmp)
-            for b in range(BATCH):
-                for d in range(Self.IN_DIM):
-                    grad_input[b, d] = tmp[b, d] + grad_output[b, d]
+            # Phase 8.0: SIMD elementwise add.
+            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
+                grad_output
+            )
+            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
+                grad_input
+            )
+            var tp = self.mid_cpu
+            var gop = grad_output_w.ptr
+            var gip = grad_input_w.ptr
+            comptime N = BATCH * Self.IN_DIM
+            var k = 0
+            while k + CPU_SIMD_W <= N:
+                gip.store(
+                    k,
+                    tp.load[width=CPU_SIMD_W](k) + gop.load[width=CPU_SIMD_W](k),
+                )
+                k += CPU_SIMD_W
+            while k < N:
+                gip[k] = tp[k] + gop[k]
+                k += 1
         else:
             self._ensure_mid_gpu(BATCH * Self.IN_DIM)
             var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](grad_output)

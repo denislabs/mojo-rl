@@ -17,7 +17,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
 
-from ..constants import DT
+from ..constants import DT, CPU_SIMD_W
 from ..core import (
     Loss, AMPPolicy, NoAMP,
     TARGET_UNINIT, TARGET_CPU, TARGET_GPU, target_tag_for,
@@ -157,16 +157,33 @@ struct MSELoss[DIM: Int](Loss):
         self._assert_tag[target]()
 
         comptime if target == "cpu":
+            # Phase 8.0: SIMD path. Flat sweep over BATCH * DIM since the
+            # reduction doesn't care about row structure (sum is associative
+            # in fp32 modulo rounding — bit-changes vs scalar are negligible
+            # against the 1/BATCH normalization).
             self._ensure_cache_cpu(BATCH)
-            var cache = TileTensor(
-                self.cache_logits, row_major[BATCH, Self.DIM]()
-            )
-            var total: Scalar[DT] = 0.0
-            for b in range(BATCH):
-                for j in range(Self.DIM):
-                    cache[b, j] = logits[b, j]
-                    var d = logits[b, j] - targets[b, j]
-                    total += Scalar[DT](0.5) * d * d
+            var logits_w = rebind[TileTensor[DT, LL, MutAnyOrigin]](logits)
+            var targets_w = rebind[TileTensor[DT, LT, MutAnyOrigin]](targets)
+            var lp = logits_w.ptr
+            var tp = targets_w.ptr
+            var cp = self.cache_logits.unsafe_ptr()
+            comptime N = BATCH * Self.DIM
+            var acc_v = SIMD[DT, CPU_SIMD_W](0)
+            var half_v = SIMD[DT, CPU_SIMD_W](0.5)
+            var k = 0
+            while k + CPU_SIMD_W <= N:
+                var l = lp.load[width=CPU_SIMD_W](k)
+                var t = tp.load[width=CPU_SIMD_W](k)
+                cp.store(k, l)
+                var d = l - t
+                acc_v += half_v * d * d
+                k += CPU_SIMD_W
+            var total: Scalar[DT] = acc_v.reduce_add()
+            while k < N:
+                cp[k] = lp[k]
+                var d = lp[k] - tp[k]
+                total += Scalar[DT](0.5) * d * d
+                k += 1
             return total / Scalar[DT](BATCH)
         else:
             self._ensure_buffers_gpu(BATCH)
@@ -221,13 +238,24 @@ struct MSELoss[DIM: Int](Loss):
         self._assert_tag[target]()
 
         comptime if target == "cpu":
-            var cache = TileTensor(
-                self.cache_logits, row_major[BATCH, Self.DIM]()
-            )
+            # Phase 8.0: SIMD path.
+            var targets_w = rebind[TileTensor[DT, LT, MutAnyOrigin]](targets)
+            var grad_w = rebind[TileTensor[DT, LG, MutAnyOrigin]](grad_logits)
+            var cp = self.cache_logits.unsafe_ptr()
+            var tp = targets_w.ptr
+            var gp = grad_w.ptr
+            var inv_batch_v = SIMD[DT, CPU_SIMD_W](1.0 / Scalar[DT](BATCH))
+            comptime N = BATCH * Self.DIM
+            var k = 0
+            while k + CPU_SIMD_W <= N:
+                var c = cp.load[width=CPU_SIMD_W](k)
+                var t = tp.load[width=CPU_SIMD_W](k)
+                gp.store(k, (c - t) * inv_batch_v)
+                k += CPU_SIMD_W
             var inv_batch: Scalar[DT] = 1.0 / Scalar[DT](BATCH)
-            for b in range(BATCH):
-                for j in range(Self.DIM):
-                    grad_logits[b, j] = (cache[b, j] - targets[b, j]) * inv_batch
+            while k < N:
+                gp[k] = (cp[k] - tp[k]) * inv_batch
+                k += 1
         else:
             var ctx = self.ctx.value()
             comptime mat_layout = Layout.row_major(BATCH, Self.DIM)

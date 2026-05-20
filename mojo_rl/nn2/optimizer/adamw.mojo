@@ -37,7 +37,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, TensorLayout, row_major
 
-from ..constants import DT
+from ..constants import DT, CPU_SIMD_W
 from ..core import (
     Module, ParamVisitor, Optimizer,
     TARGET_UNINIT, TARGET_CPU, TARGET_GPU, target_tag_for,
@@ -170,25 +170,55 @@ struct _AdamWCPUStepVisitor(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
+        # Phase 8.0: SIMD path with branchless decay-mask. nn2 stores m and
+        # v in separate Lists — no AoS deinterleave needed.
         var off = self.offsets_ptr[][self.idx]
         var decay_flag = self.apply_decay_ptr[][self.idx]
         var p_ptr = param.ptr
         var g_ptr = grad.ptr
+        var m_ptr = self.m_flat_ptr[].unsafe_ptr() + off
+        var v_ptr = self.v_flat_ptr[].unsafe_ptr() + off
+        var b1_v = SIMD[DT, CPU_SIMD_W](self.beta1)
+        var b2_v = SIMD[DT, CPU_SIMD_W](self.beta2)
+        var omb1_v = SIMD[DT, CPU_SIMD_W](1.0) - b1_v
+        var omb2_v = SIMD[DT, CPU_SIMD_W](1.0) - b2_v
+        var bc1_v = SIMD[DT, CPU_SIMD_W](self.bc1)
+        var bc2_v = SIMD[DT, CPU_SIMD_W](self.bc2)
+        var lr_v = SIMD[DT, CPU_SIMD_W](self.lr)
+        var eps_v = SIMD[DT, CPU_SIMD_W](self.eps)
+        var wd_scalar: Scalar[DT] = self.weight_decay if decay_flag else 0.0
+        var wd_v = SIMD[DT, CPU_SIMD_W](wd_scalar)
+        var i = 0
+        while i + CPU_SIMD_W <= n_elems:
+            var g = g_ptr.load[width=CPU_SIMD_W](i)
+            var m_old = m_ptr.load[width=CPU_SIMD_W](i)
+            var v_old = v_ptr.load[width=CPU_SIMD_W](i)
+            var m_new = b1_v * m_old + omb1_v * g
+            var v_new = b2_v * v_old + omb2_v * g * g
+            m_ptr.store(i, m_new)
+            v_ptr.store(i, v_new)
+            var m_hat = m_new / bc1_v
+            var v_hat = v_new / bc2_v
+            var p = p_ptr.load[width=CPU_SIMD_W](i)
+            var update = lr_v * (m_hat / (sqrt(v_hat) + eps_v) + wd_v * p)
+            p_ptr.store(i, p - update)
+            i += CPU_SIMD_W
         var one: Scalar[DT] = 1.0
-        for i in range(n_elems):
+        while i < n_elems:
             var g = g_ptr[i]
-            var m_old = self.m_flat_ptr[][off + i]
-            var v_old = self.v_flat_ptr[][off + i]
+            var m_old = m_ptr[i]
+            var v_old = v_ptr[i]
             var m_new = self.beta1 * m_old + (one - self.beta1) * g
             var v_new = self.beta2 * v_old + (one - self.beta2) * g * g
-            self.m_flat_ptr[][off + i] = m_new
-            self.v_flat_ptr[][off + i] = v_new
+            m_ptr[i] = m_new
+            v_ptr[i] = v_new
             var m_hat = m_new / self.bc1
             var v_hat = v_new / self.bc2
             var update = self.lr * m_hat / (sqrt(v_hat) + self.eps)
             if decay_flag:
                 update = update + self.lr * self.weight_decay * p_ptr[i]
             p_ptr[i] = p_ptr[i] - update
+            i += 1
         self.idx += 1
 
 

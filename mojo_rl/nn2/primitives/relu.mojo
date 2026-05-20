@@ -9,7 +9,7 @@ from std.gpu import global_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
 
-from ..constants import DT
+from ..constants import DT, CPU_SIMD_W
 from ..core import (
     Module,
     ParamVisitor,
@@ -162,14 +162,27 @@ struct ReLU[DIM: Int](Module):
         self._assert_tag[target]()
 
         comptime if target == "cpu":
+            # Phase 8.0: SIMD path. Mojo nightly does NOT autovectorize the
+            # scalar `[b, d]` form — manual `load[width=W]` is 3-5x faster.
             self._ensure_cache_cpu(BATCH)
-            var cache = TileTensor(self.cache, row_major[BATCH, Self.DIM]())
-            var zero: Scalar[DT] = 0.0
-            for b in range(BATCH):
-                for d in range(Self.DIM):
-                    var x = input[b, d]
-                    cache[b, d] = x
-                    output[b, d] = x if x > zero else zero
+            var input_w = rebind[TileTensor[DT, LIN, MutAnyOrigin]](input)
+            var output_w = rebind[TileTensor[DT, LOUT, MutAnyOrigin]](output)
+            var in_p = input_w.ptr
+            var out_p = output_w.ptr
+            var cache_p = self.cache.unsafe_ptr()
+            var zero_v = SIMD[DT, CPU_SIMD_W](0)
+            comptime N = BATCH * Self.DIM
+            var k = 0
+            while k + CPU_SIMD_W <= N:
+                var v = in_p.load[width=CPU_SIMD_W](k)
+                cache_p.store(k, v)
+                out_p.store(k, v.gt(zero_v).select(v, zero_v))
+                k += CPU_SIMD_W
+            while k < N:
+                var v = in_p[k]
+                cache_p[k] = v
+                out_p[k] = v if v > 0 else 0
+                k += 1
         else:
             self._ensure_cache_gpu(BATCH * Self.DIM)
             comptime layout = Layout.row_major(BATCH, Self.DIM)
@@ -209,13 +222,27 @@ struct ReLU[DIM: Int](Module):
         self._assert_tag[target]()
 
         comptime if target == "cpu":
-            var cache = TileTensor(self.cache, row_major[BATCH, Self.DIM]())
-            var zero: Scalar[DT] = 0.0
-            for b in range(BATCH):
-                for d in range(Self.DIM):
-                    grad_input[b, d] = (
-                        grad_output[b, d] if cache[b, d] > zero else zero
-                    )
+            # Phase 8.0: SIMD path. grad_input = grad_output where cache > 0.
+            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
+                grad_output
+            )
+            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
+                grad_input
+            )
+            var go_p = grad_output_w.ptr
+            var gi_p = grad_input_w.ptr
+            var c_p = self.cache.unsafe_ptr()
+            var zero_v = SIMD[DT, CPU_SIMD_W](0)
+            comptime N = BATCH * Self.DIM
+            var k = 0
+            while k + CPU_SIMD_W <= N:
+                var c = c_p.load[width=CPU_SIMD_W](k)
+                var g = go_p.load[width=CPU_SIMD_W](k)
+                gi_p.store(k, c.gt(zero_v).select(g, zero_v))
+                k += CPU_SIMD_W
+            while k < N:
+                gi_p[k] = go_p[k] if c_p[k] > 0 else 0
+                k += 1
         else:
             comptime layout = Layout.row_major(BATCH, Self.DIM)
             var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
