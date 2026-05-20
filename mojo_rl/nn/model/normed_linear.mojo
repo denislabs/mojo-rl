@@ -17,7 +17,6 @@ from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
-from std.runtime.asyncrt import DeviceContextPtr
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
 from std.gpu.compute.mma import mma
@@ -2151,7 +2150,7 @@ struct NormedLinear[
                 lt_to_tt(linear_out_mut),
                 lt_to_tt(input_mm),
                 lt_to_tt(W_mm),
-                DeviceContextPtr(ctx),
+                ctx,
             )
 
             comptime bias_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
@@ -2314,7 +2313,7 @@ struct NormedLinear[
                 lt_to_tt(linear_out_mut),
                 lt_to_tt(input_mm),
                 lt_to_tt(W_mm),
-                DeviceContextPtr(ctx),
+                ctx,
             )
 
             comptime bias_blocks_nc = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
@@ -2578,7 +2577,7 @@ struct NormedLinear[
                 lt_to_tt(grad_input),
                 lt_to_tt(d_linear_mm),
                 lt_to_tt(W_for_dx),
-                DeviceContextPtr(ctx),
+                ctx,
             )
 
             # dW = cache_input^T @ d_linear_out. Routed through the MMA

@@ -44,7 +44,6 @@ from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
-from std.runtime.asyncrt import DeviceContextPtr
 from std.gpu.primitives import block
 from std.math import exp, sqrt
 from std.sys import has_nvidia_gpu_accelerator
@@ -846,7 +845,7 @@ struct ScaledDotProductAttention[
             scores_tt,
             packed_q_tt,
             packed_k_tt,
-            context=DeviceContextPtr(ctx),
+            context=ctx,
         )
 
         # ── 3. Softmax: scale + (optional causal) + numerically-stable softmax
@@ -963,7 +962,7 @@ struct ScaledDotProductAttention[
             packed_out_tt,
             scores_tt,
             packed_v_tt,
-            context=DeviceContextPtr(ctx),
+            context=ctx,
         )
 
         # ── 5. Unpack output: (BH, seq, head_dim) → (BATCH, seq, n_heads*head_dim).
@@ -1569,7 +1568,7 @@ struct ScaledDotProductAttention[
             dattn_tt,
             packed_dout_tt,
             packed_v_tt,
-            context=DeviceContextPtr(ctx),
+            context=ctx,
         )
 
         # ── 3. Softmax JVP: dscore = scale * a * (dattn - sum_k a_k * dattn_k).
@@ -1705,7 +1704,7 @@ struct ScaledDotProductAttention[
             dV_tt,
             attn_T_tt,
             packed_dout_tt,
-            context=DeviceContextPtr(ctx),
+            context=ctx,
         )
 
         # ── 6. Transpose dscore in-place into the (now-free) attn_T buffer.
@@ -1754,7 +1753,7 @@ struct ScaledDotProductAttention[
             dK_tt,
             dscore_T_tt,
             packed_q_tt,
-            context=DeviceContextPtr(ctx),
+            context=ctx,
         )
 
         # ── 8. bmm: dQ = dscore @ K.
@@ -1770,7 +1769,7 @@ struct ScaledDotProductAttention[
             dQ_tt,
             dscore_tt,
             packed_k_tt,
-            context=DeviceContextPtr(ctx),
+            context=ctx,
         )
 
         # ── 9. Unpack: dQ/dK/dV → grad_input ([Q_grad | K_grad | V_grad] per

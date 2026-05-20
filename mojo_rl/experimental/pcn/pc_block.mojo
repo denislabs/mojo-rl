@@ -22,7 +22,6 @@ from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
-from std.runtime.asyncrt import DeviceContextPtr
 from std.sys import has_nvidia_gpu_accelerator
 from linalg.matmul import matmul as max_matmul
 from layout.tile_tensor import lt_to_tt
@@ -720,7 +719,7 @@ struct PCBlock[
                 lt_to_tt(mu),
                 lt_to_tt(a_below),
                 lt_to_tt(W),
-                DeviceContextPtr(ctx),
+                ctx,
             )
 
             comptime kb = Self._bias_add_kernel[BATCH, Self.out_dim, dtype]
@@ -810,7 +809,7 @@ struct PCBlock[
                 lt_to_tt(z_below),
                 lt_to_tt(eps_above),
                 lt_to_tt(W),
-                DeviceContextPtr(ctx),
+                ctx,
             )
         else:
             # Fallback (Apple / non-NVIDIA): 2×2 register-tiled GEMM with
@@ -893,7 +892,7 @@ struct PCBlock[
                 lt_to_tt(W_grad),
                 lt_to_tt(a_T),
                 lt_to_tt(eps_above),
-                DeviceContextPtr(ctx),
+                ctx,
             )
 
             # Bake in the −sign expected by Optimizer.step (params -= lr·grads).

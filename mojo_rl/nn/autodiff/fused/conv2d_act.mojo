@@ -28,7 +28,6 @@ from .activation import Activation
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
-from std.runtime.asyncrt import DeviceContextPtr
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
 from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
@@ -1351,7 +1350,7 @@ struct FusedConv2DActivation[
                     lt_to_tt(out_temp),
                     lt_to_tt(col_flat),
                     lt_to_tt(W_mat),
-                    DeviceContextPtr(ctx),
+                    ctx,
                 )
             else:
                 comptime fwd_grid_x = (Self.out_channels + MMA_BLOCK_N - 1) // MMA_BLOCK_N
@@ -1755,7 +1754,7 @@ struct FusedConv2DActivation[
                     lt_to_tt(dcol),
                     lt_to_tt(W_T),
                     lt_to_tt(grad_reshaped),
-                    DeviceContextPtr(ctx),
+                    ctx,
                 )
             else:
                 comptime dx_grid_x_nv = (K_TOTAL + MMA_BLOCK_N - 1) // MMA_BLOCK_N

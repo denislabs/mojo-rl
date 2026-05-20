@@ -16,7 +16,6 @@ from ...autodiff.op import DiffOp, FusedOp, OpID
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext, DeviceStream
-from std.runtime.asyncrt import DeviceContextPtr
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
 from std.sys import (
@@ -1278,7 +1277,7 @@ struct FusedMatMulBias[
                 lt_to_tt(output),
                 lt_to_tt(input_mm),
                 lt_to_tt(W_mm),
-                DeviceContextPtr(ctx),
+                ctx,
             )
 
             comptime out_elems = BATCH * Self.out_dim
@@ -1471,7 +1470,7 @@ struct FusedMatMulBias[
                 lt_to_tt(grad_input_mm),
                 lt_to_tt(grad_output_mm),
                 lt_to_tt(W_for_dx),
-                DeviceContextPtr(ctx),
+                ctx,
             )
 
             # dW = cache^T @ grad_output. Routed through the MMA kernel (not

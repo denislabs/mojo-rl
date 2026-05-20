@@ -19,7 +19,6 @@ from mojo_rl.nn.constants import dtype
 # Max kernels
 import linalg.matmul.vendor.blas as vendor_blas
 from linalg.matmul import matmul as max_matmul
-from std.runtime.asyncrt import DeviceContextPtr
 
 
 def main() raises:
@@ -86,7 +85,7 @@ def main() raises:
         # ── Warmup both ──
         print("Warming up...")
         vendor_blas.matmul(ctx, c1_tensor, a_tensor, b_tensor, c_row_major=True)
-        max_matmul[target="gpu"](c2_tensor, a_tensor, b_tensor, DeviceContextPtr(ctx))
+        max_matmul[target="gpu"](c2_tensor, a_tensor, b_tensor, ctx)
         ctx.synchronize()
 
         # ── Benchmark 1: vendor BLAS (cuBLAS) ──
@@ -113,7 +112,7 @@ def main() raises:
         ctx.synchronize()
         var t2 = perf_counter_ns()
         for _ in range(N_ITERS):
-            max_matmul[target="gpu"](c2_tensor, a_tensor, b_tensor, DeviceContextPtr(ctx))
+            max_matmul[target="gpu"](c2_tensor, a_tensor, b_tensor, ctx)
         ctx.synchronize()
         var t3 = perf_counter_ns()
         var gemm_us = Float64(t3 - t2) / 1000.0 / Float64(N_ITERS)

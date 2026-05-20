@@ -22,7 +22,6 @@ from std.math import ceildiv
 from std.memory import alloc
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-from std.runtime.asyncrt import DeviceContextPtr
 from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
 from linalg.matmul import matmul as max_matmul
 
@@ -392,7 +391,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                     self.weight_dev.value(), row_major[Self.IN, Self.OUT]()
                 )
                 max_matmul[target="gpu"](
-                    output_w, input_w, weight_tt, DeviceContextPtr(ctx)
+                    output_w, input_w, weight_tt, ctx
                 )
             else:
                 # ── bf16 cast-around-matmul path ─────────────────────────
@@ -441,7 +440,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                     self.ou_bf16_dev.value(), row_major[BATCH, Self.OUT]()
                 )
                 max_matmul[target="gpu"](
-                    ou_bf16_tt, in_bf16_tt, w_bf16_tt, DeviceContextPtr(ctx)
+                    ou_bf16_tt, in_bf16_tt, w_bf16_tt, ctx
                 )
 
                 # Cast output bf16 → fp32 (into caller's output buffer).
@@ -579,7 +578,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                     self.weight_dev.value(), row_major[Self.IN, Self.OUT]()
                 )
                 max_matmul[transpose_b=True, target="gpu"](
-                    grad_input_w, grad_output_w, weight_tt, DeviceContextPtr(ctx)
+                    grad_input_w, grad_output_w, weight_tt, ctx
                 )
             else:
                 # ── bf16 cast-around-matmul path ─────────────────────────
@@ -629,7 +628,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                     self.in_bf16_dev.value(), row_major[BATCH, Self.IN]()
                 )
                 max_matmul[transpose_b=True, target="gpu"](
-                    gi_bf16_tt, go_bf16_tt, w_bf16_tt, DeviceContextPtr(ctx)
+                    gi_bf16_tt, go_bf16_tt, w_bf16_tt, ctx
                 )
 
                 # Cast grad_input bf16 → fp32 into caller's buffer.
@@ -736,7 +735,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                     self.weight_dev.value(), row_major[Self.IN, Self.OUT]()
                 )
                 max_matmul[transpose_b=True, target="gpu"](
-                    grad_input_w, grad_output_w, weight_tt, DeviceContextPtr(ctx)
+                    grad_input_w, grad_output_w, weight_tt, ctx
                 )
             else:
                 # bf16 cast-around path. Mirrors the same kernels as
@@ -782,7 +781,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                     self.in_bf16_dev.value(), row_major[BATCH, Self.IN]()
                 )
                 max_matmul[transpose_b=True, target="gpu"](
-                    gi_bf16_tt, go_bf16_tt, w_bf16_tt, DeviceContextPtr(ctx)
+                    gi_bf16_tt, go_bf16_tt, w_bf16_tt, ctx
                 )
 
                 var gi_bf16_lt = LayoutTensor[

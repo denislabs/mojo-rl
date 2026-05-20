@@ -6,7 +6,6 @@ and we'd need a custom bf16 MMA kernel.
 
 from std.math import abs as fabs
 from std.gpu.host import DeviceContext
-from std.runtime.asyncrt import DeviceContextPtr
 from std.testing import assert_true
 from layout import TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
@@ -60,7 +59,7 @@ def test_bf16_matmul() raises:
     var b_tt = TileTensor(b_dev, row_major[K, N]())
     var c_tt = TileTensor(c_dev, row_major[M, N]())
 
-    max_matmul[target="gpu"](c_tt, a_tt, b_tt, DeviceContextPtr(ctx))
+    max_matmul[target="gpu"](c_tt, a_tt, b_tt, ctx)
 
     var c_back_h = ctx.enqueue_create_host_buffer[BF16](M * N)
     ctx.enqueue_copy(c_back_h, c_dev)

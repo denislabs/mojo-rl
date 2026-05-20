@@ -17,7 +17,6 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from layout.tile_tensor import lt_to_tt
 from linalg.matmul import matmul as max_matmul
-from std.runtime.asyncrt import DeviceContextPtr
 
 from mojo_rl.nn.constants import dtype, TPB, MMA_BLOCK_THREADS
 from mojo_rl.nn.autodiff.primitives.matmul import MatMul
@@ -110,7 +109,7 @@ def main() raises:
         for _ in range(5):
             MM.vjp_gpu[BATCH](ctx, go_lt, gi_lt, params_lt, cache_lt, gp_lt, ws)
             FMB.vjp_gpu[BATCH](ctx, go_lt, gi_lt, fmb_params_lt, cache_lt, fmb_gp_lt, ws)
-            max_matmul[target="gpu", transpose_b=True](lt_to_tt(dx_mm), lt_to_tt(go_mm), lt_to_tt(W_mm), DeviceContextPtr(ctx))
+            max_matmul[target="gpu", transpose_b=True](lt_to_tt(dx_mm), lt_to_tt(go_mm), lt_to_tt(W_mm), ctx)
         ctx.synchronize()
 
         # ── Benchmark 1: MatMul.vjp_gpu (hand-written MMA) ──
@@ -135,7 +134,7 @@ def main() raises:
         ctx.synchronize()
         var t4 = perf_counter_ns()
         for _ in range(N_ITERS):
-            max_matmul[target="gpu", transpose_b=True](lt_to_tt(dx_mm), lt_to_tt(go_mm), lt_to_tt(W_mm), DeviceContextPtr(ctx))
+            max_matmul[target="gpu", transpose_b=True](lt_to_tt(dx_mm), lt_to_tt(go_mm), lt_to_tt(W_mm), ctx)
         ctx.synchronize()
         var t5 = perf_counter_ns()
         var linalg_dx_us = Float64(t5 - t4) / 1000.0 / Float64(N_ITERS)
