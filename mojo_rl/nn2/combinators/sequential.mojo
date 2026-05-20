@@ -248,6 +248,36 @@ struct Sequential[*MODULES: Module](Module):
                 _backward_gpu[target, BATCH, POLICY=POLICY](self, grad_output, grad_input)
 
     # ------------------------------------------------------------------
+    # backward_input — same chain as backward, but every child uses its
+    # own `backward_input` so no inner Linear/LayerNorm writes grad_w.
+    # ------------------------------------------------------------------
+
+    def backward_input[
+        target: StaticString,
+        BATCH: Int,
+        LGO: TensorLayout,
+        LGI: TensorLayout,
+        OGO: MutOrigin,
+        OGI: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        grad_output: TileTensor[DT, LGO, OGO],
+        mut grad_input: TileTensor[DT, LGI, OGI],
+    ) raises:
+        comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
+        comptime assert grad_input.flat_rank  == 2, "grad_input must be rank-2"
+        self._assert_tag[target]()
+
+        comptime if Self.N == 1:
+            self.children[0].backward_input[target, BATCH, POLICY=POLICY](grad_output, grad_input)
+        else:
+            comptime if target == "cpu":
+                _backward_input_cpu[target, BATCH, POLICY=POLICY](self, grad_output, grad_input)
+            else:
+                _backward_input_gpu[target, BATCH, POLICY=POLICY](self, grad_output, grad_input)
+
+    # ------------------------------------------------------------------
     # for_each_param — recurse with indexed prefix.
     # ------------------------------------------------------------------
 
@@ -418,3 +448,73 @@ def _backward_gpu[
             var in_grad  = TileTensor(pi, row_major[BATCH, MODULES[i].OUT_DIM]())
             var out_grad = TileTensor(po, row_major[BATCH, MODULES[i].IN_DIM]())
             seq.children[i].backward[target, BATCH, POLICY=POLICY](in_grad, out_grad)
+
+
+def _backward_input_cpu[
+    target: StaticString,
+    BATCH: Int,
+    LGO: TensorLayout,
+    LGI: TensorLayout,
+    OGO: MutOrigin,
+    OGI: MutOrigin,
+    POLICY: AMPPolicy,
+    *MODULES: Module,
+](
+    mut seq: Sequential[*MODULES],
+    grad_output: TileTensor[DT, LGO, OGO],
+    mut grad_input: TileTensor[DT, LGI, OGI],
+) raises:
+    comptime N = MODULES.size
+
+    comptime for i in range(N - 1):
+        seq._ensure_mid_cpu[i](BATCH * MODULES[i].OUT_DIM)
+
+    comptime for j in range(N):
+        comptime i = N - 1 - j
+        comptime if i == N - 1:
+            var out_grad = TileTensor(seq.mid_cpu[N - 2], row_major[BATCH, MODULES[N - 1].IN_DIM]())
+            seq.children[N - 1].backward_input[target, BATCH, POLICY=POLICY](grad_output, out_grad)
+        elif i == 0:
+            var in_grad = TileTensor(seq.mid_cpu[0], row_major[BATCH, MODULES[0].OUT_DIM]())
+            seq.children[0].backward_input[target, BATCH, POLICY=POLICY](in_grad, grad_input)
+        else:
+            var in_grad  = TileTensor(seq.mid_cpu[i],     row_major[BATCH, MODULES[i].OUT_DIM]())
+            var out_grad = TileTensor(seq.mid_cpu[i - 1], row_major[BATCH, MODULES[i].IN_DIM]())
+            seq.children[i].backward_input[target, BATCH, POLICY=POLICY](in_grad, out_grad)
+
+
+def _backward_input_gpu[
+    target: StaticString,
+    BATCH: Int,
+    LGO: TensorLayout,
+    LGI: TensorLayout,
+    OGO: MutOrigin,
+    OGI: MutOrigin,
+    POLICY: AMPPolicy,
+    *MODULES: Module,
+](
+    mut seq: Sequential[*MODULES],
+    grad_output: TileTensor[DT, LGO, OGO],
+    mut grad_input: TileTensor[DT, LGI, OGI],
+) raises:
+    comptime N = MODULES.size
+
+    comptime for i in range(N - 1):
+        seq._ensure_mid_gpu[i](BATCH * MODULES[i].OUT_DIM)
+
+    comptime for j in range(N):
+        comptime i = N - 1 - j
+        comptime if i == N - 1:
+            var p:  UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[N - 2].unsafe_ptr()
+            var out_grad = TileTensor(p, row_major[BATCH, MODULES[N - 1].IN_DIM]())
+            seq.children[N - 1].backward_input[target, BATCH, POLICY=POLICY](grad_output, out_grad)
+        elif i == 0:
+            var p:  UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[0].unsafe_ptr()
+            var in_grad = TileTensor(p, row_major[BATCH, MODULES[0].OUT_DIM]())
+            seq.children[0].backward_input[target, BATCH, POLICY=POLICY](in_grad, grad_input)
+        else:
+            var pi: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i].unsafe_ptr()
+            var po: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i - 1].unsafe_ptr()
+            var in_grad  = TileTensor(pi, row_major[BATCH, MODULES[i].OUT_DIM]())
+            var out_grad = TileTensor(po, row_major[BATCH, MODULES[i].IN_DIM]())
+            seq.children[i].backward_input[target, BATCH, POLICY=POLICY](in_grad, out_grad)

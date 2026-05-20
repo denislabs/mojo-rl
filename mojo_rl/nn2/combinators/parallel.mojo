@@ -350,6 +350,94 @@ struct Parallel[A: Module, B: Module](Module):
                 grid_dim=n_blocks_sum, block_dim=TPB,
             )
 
+    def backward_input[
+        target: StaticString,
+        BATCH: Int,
+        LGO: TensorLayout, LGI: TensorLayout,
+        OGO: MutOrigin,    OGI: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        grad_output: TileTensor[DT, LGO, OGO],
+        mut grad_input: TileTensor[DT, LGI, OGI],
+    ) raises:
+        # Phase 8.2: same split + branch-backward + sum chain, but each
+        # branch uses `backward_input` instead of `backward`.
+        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
+        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
+        self._assert_tag[target]()
+
+        comptime if target == "cpu":
+            self._ensure_scratch_cpu(BATCH)
+            var go_a = TileTensor(self.out_a_cpu, row_major[BATCH, Self.OUT_A]())
+            var go_b = TileTensor(self.out_b_cpu, row_major[BATCH, Self.OUT_B]())
+            for b in range(BATCH):
+                for j in range(Self.OUT_A):
+                    go_a[b, j] = grad_output[b, j]
+                for j in range(Self.OUT_B):
+                    go_b[b, j] = grad_output[b, Self.OUT_A + j]
+            var gi_a = TileTensor(self.gi_a_cpu, row_major[BATCH, Self.IN_DIM]())
+            var gi_b = TileTensor(self.gi_b_cpu, row_major[BATCH, Self.IN_DIM]())
+            self.branch_a.backward_input[target, BATCH, POLICY=POLICY](go_a, gi_a)
+            self.branch_b.backward_input[target, BATCH, POLICY=POLICY](go_b, gi_b)
+            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
+                grad_input
+            )
+            var ap = self.gi_a_cpu
+            var bp = self.gi_b_cpu
+            var gp = grad_input_w.ptr
+            comptime N = BATCH * Self.IN_DIM
+            var k = 0
+            while k + CPU_SIMD_W <= N:
+                gp.store(
+                    k,
+                    ap.load[width=CPU_SIMD_W](k) + bp.load[width=CPU_SIMD_W](k),
+                )
+                k += CPU_SIMD_W
+            while k < N:
+                gp[k] = ap[k] + bp[k]
+                k += 1
+        else:
+            self._ensure_scratch_gpu(BATCH)
+            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](grad_output)
+            var grad_input_w  = rebind[TileTensor[DT, LGI, MutAnyOrigin]](grad_input)
+            var pa: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_a_dev.value().unsafe_ptr()
+            var pb: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_b_dev.value().unsafe_ptr()
+            var pia: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.gi_a_dev.value().unsafe_ptr()
+            var pib: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.gi_b_dev.value().unsafe_ptr()
+
+            comptime layout_a = Layout.row_major(BATCH, Self.OUT_A)
+            comptime layout_b = Layout.row_major(BATCH, Self.OUT_B)
+            comptime layout_p = Layout.row_major(BATCH, Self.OUT_DIM)
+            var p_lt = LayoutTensor[DT, layout_p, MutAnyOrigin](grad_output_w.ptr)
+            var a_lt = LayoutTensor[DT, layout_a, MutAnyOrigin](self.out_a_dev.value())
+            var b_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](self.out_b_dev.value())
+            comptime TPB = 128
+            comptime n_blocks_split = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
+            comptime split_kernel = _parallel_split_kernel[BATCH, Self.OUT_A, Self.OUT_B]
+            self.ctx.value().enqueue_function[split_kernel](
+                p_lt, a_lt, b_lt,
+                grid_dim=n_blocks_split, block_dim=TPB,
+            )
+
+            var go_a_tt = TileTensor(pa, row_major[BATCH, Self.OUT_A]())
+            var go_b_tt = TileTensor(pb, row_major[BATCH, Self.OUT_B]())
+            var gi_a_tt = TileTensor(pia, row_major[BATCH, Self.IN_DIM]())
+            var gi_b_tt = TileTensor(pib, row_major[BATCH, Self.IN_DIM]())
+            self.branch_a.backward_input[target, BATCH, POLICY=POLICY](go_a_tt, gi_a_tt)
+            self.branch_b.backward_input[target, BATCH, POLICY=POLICY](go_b_tt, gi_b_tt)
+
+            comptime layout_in = Layout.row_major(BATCH, Self.IN_DIM)
+            var gi_a_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](self.gi_a_dev.value())
+            var gi_b_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](self.gi_b_dev.value())
+            var gi_out_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](grad_input_w.ptr)
+            comptime n_blocks_sum = (BATCH * Self.IN_DIM + TPB - 1) // TPB
+            comptime sum_kernel = _elementwise_add_kernel[BATCH, Self.IN_DIM]
+            self.ctx.value().enqueue_function[sum_kernel](
+                gi_a_lt, gi_b_lt, gi_out_lt,
+                grid_dim=n_blocks_sum, block_dim=TPB,
+            )
+
     def for_each_param[
         target: StaticString,
         V: ParamVisitor,

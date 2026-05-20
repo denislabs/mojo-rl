@@ -20,7 +20,7 @@ Run:
     pixi run mojo run -I . examples/pendulum/pendulum_ppo_nn2.mojo
 """
 
-from std.math import cos as fcos, log as flog, exp as fexp, sqrt as fsqrt, pi
+from std.math import log as flog, exp as fexp, sqrt as fsqrt
 from std.memory import alloc
 from std.random import seed, random_float64
 from std.time import perf_counter_ns
@@ -35,6 +35,9 @@ from mojo_rl.nn2.initializer import Xavier
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.loss.mse import MSELoss
 from mojo_rl.nn2.loss.ppo_actor_loss import PPOActorLoss
+from mojo_rl.nn2.training.episode_tracker import EpisodeTracker
+from mojo_rl.nn2.training.gae import compute_gae, normalize_in_place
+from mojo_rl.nn2.random.box_muller import box_muller_normal
 
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -100,18 +103,6 @@ def _gaussian_log_prob(
         + Scalar[DT](2.0) * log_std
         + z * z
     )
-
-
-def _gaussian_sample(mu: Scalar[DT], log_std: Scalar[DT]) -> Scalar[DT]:
-    """Sample one value from N(mu, exp(log_std)) via Box-Muller."""
-    var u1 = random_float64()
-    if u1 < 1e-10:
-        u1 = 1e-10
-    var u2 = random_float64()
-    var z = fsqrt(Scalar[DT](-2.0) * flog(Scalar[DT](u1))) * fcos(
-        Scalar[DT](2.0 * pi) * Scalar[DT](u2)
-    )
-    return mu + fexp(log_std) * z
 
 
 def _clamp_log_std(ls: Scalar[DT]) -> Scalar[DT]:
@@ -257,11 +248,15 @@ def main() raises:
     var done_buf = alloc[Scalar[DT]](ROLLOUT_LEN)
     var adv_buf = alloc[Scalar[DT]](ROLLOUT_LEN)
     var ret_buf = alloc[Scalar[DT]](ROLLOUT_LEN)
+    var term_buf = alloc[Scalar[DT]](ROLLOUT_LEN)
+    for _t in range(ROLLOUT_LEN):
+        term_buf[_t] = 0.0
 
     # ── Single-step scratch (BATCH=1 actor/critic forward) ──────────────
     var ob1 = alloc[Scalar[DT]](OBS_DIM)
     var ao1 = alloc[Scalar[DT]](2 * ACT_DIM)
     var v1 = alloc[Scalar[DT]](1)
+    var z_scratch = alloc[Scalar[DT]](ACT_DIM)
 
     # ── Minibatch scratch (BATCH=MINIBATCH train) ───────────────────────
     var mb_obs = alloc[Scalar[DT]](MINIBATCH * OBS_DIM)
@@ -283,10 +278,9 @@ def main() raises:
     _ = env.reset()
 
     # Tracking
-    var ep_return: Scalar[DT] = 0.0
-    var ep_count: Int = 0
-    var ep_returns_window = List[Scalar[DT]](length=10, fill=Scalar[DT](-1600.0))
-    var ep_returns_idx: Int = 0
+    var tracker = EpisodeTracker.new(
+        window_size=10, initial_fill=Scalar[DT](-1600.0)
+    )
 
     var total_steps: Int = 0
     var rollout_idx: Int = 0
@@ -311,12 +305,13 @@ def main() raises:
             actor.forward["cpu", 1](ob1_t, ao1_t)
 
             # Sample action + compute log_prob.
+            box_muller_normal(z_scratch, ACT_DIM)
             var action_t: Scalar[DT] = 0.0
             var lp_total: Scalar[DT] = 0.0
             for j in range(ACT_DIM):
                 var mu = ao1[j]
                 var ls = _clamp_log_std(ao1[ACT_DIM + j])
-                var sample = _gaussian_sample(mu, ls)
+                var sample = mu + fexp(ls) * z_scratch[j]
                 action_t = sample  # ACT_DIM=1: just store once
                 act_buf[t * ACT_DIM + j] = sample
                 lp_total += _gaussian_log_prob(sample, mu, ls)
@@ -339,14 +334,11 @@ def main() raises:
             var done = step_res[2]
             rew_buf[t] = reward
             done_buf[t] = 1.0 if done else 0.0
-            ep_return += reward
+            tracker.add_reward(reward)
             total_steps += 1
 
             if done:
-                ep_returns_window[ep_returns_idx] = ep_return
-                ep_returns_idx = (ep_returns_idx + 1) % 10
-                ep_count += 1
-                ep_return = 0.0
+                tracker.end_episode()
                 _ = env.reset()
                 obs_self = env.get_obs_list()
 
@@ -359,7 +351,10 @@ def main() raises:
         var v1_t = TileTensor(v1, row_major[1, 1]())
         critic.forward["cpu", 1](ob1_t, v1_t)
         var next_value = v1[0]
-        _compute_gae(rew_buf, val_buf, done_buf, next_value, adv_buf, ret_buf)
+        compute_gae(
+            ROLLOUT_LEN, rew_buf, val_buf, term_buf, next_value,
+            GAMMA, GAE_LAMBDA, adv_buf, ret_buf,
+        )
         # NOTE: advantage normalization is done per-minibatch (CleanRL style),
         # not here — moved inside the inner update loop below.
 
@@ -387,19 +382,7 @@ def main() raises:
                     mb_adv[k] = adv_buf[src]
                     mb_ret[k] = ret_buf[src]
                 # Per-minibatch advantage normalization (CleanRL style).
-                var mb_adv_mean: Scalar[DT] = 0.0
-                for k in range(MINIBATCH):
-                    mb_adv_mean += mb_adv[k]
-                mb_adv_mean = mb_adv_mean / Scalar[DT](MINIBATCH)
-                var mb_adv_sq: Scalar[DT] = 0.0
-                for k in range(MINIBATCH):
-                    var d = mb_adv[k] - mb_adv_mean
-                    mb_adv_sq += d * d
-                var mb_adv_std = fsqrt(mb_adv_sq / Scalar[DT](MINIBATCH))
-                for k in range(MINIBATCH):
-                    mb_adv[k] = (mb_adv[k] - mb_adv_mean) / (
-                        mb_adv_std + Scalar[DT](1e-8)
-                    )
+                normalize_in_place(MINIBATCH, mb_adv)
 
                 # ── Actor update ─────────────────────────────────────
                 var mb_obs_t = TileTensor(mb_obs, row_major[MINIBATCH, OBS_DIM]())
@@ -447,11 +430,8 @@ def main() raises:
         # ─────────────────────────────────────────────────────────────
         # Logging
         # ─────────────────────────────────────────────────────────────
-        var mean_ret: Scalar[DT] = 0.0
-        for k in range(10):
-            mean_ret += ep_returns_window[k]
-        mean_ret = mean_ret / Scalar[DT](10.0)
-
+        var mean_ret = tracker.mean_return()
+        var ep_count = tracker.ep_count
         var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
 
         # Read current log_std for trace.
@@ -473,10 +453,7 @@ def main() raises:
     # ── Final report ────────────────────────────────────────────────────
     print("=" * 70)
     print("Training complete.")
-    var final_mean: Scalar[DT] = 0.0
-    for k in range(10):
-        final_mean += ep_returns_window[k]
-    final_mean = final_mean / Scalar[DT](10.0)
+    var final_mean = tracker.mean_return()
     print("Final mean ep return (last 10): ", final_mean)
     if final_mean > -200.0:
         print("EXCELLENT — solved swing-up (>-200).")

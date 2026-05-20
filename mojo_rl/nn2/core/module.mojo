@@ -67,6 +67,31 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
     ) raises:
         ...
 
+    def backward_input[
+        target: StaticString,
+        BATCH: Int,
+        LGO: TensorLayout,
+        LGI: TensorLayout,
+        OGO: MutOrigin,
+        OGI: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        grad_output: TileTensor[DT, LGO, OGO],
+        mut grad_input: TileTensor[DT, LGI, OGI],
+    ) raises:
+        """Backward computing grad_input only — does NOT accumulate
+        grad_w / grad_b. Used by `StopGradParams` and by inline frozen-
+        network paths (e.g. SAC actor update through the twin critics).
+
+        For param-less primitives (ReLU/Tanh/StopGrad/...) this is just
+        a delegate to `backward`. For Linear/LayerNorm it skips the
+        param-grad kernels. For combinators (Sequential/Residual/Parallel)
+        it chains `backward_input` over children so no inner Module
+        writes its grad_w.
+        """
+        ...
+
     def for_each_param[
         target: StaticString,
         V: ParamVisitor,

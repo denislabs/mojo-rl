@@ -257,6 +257,65 @@ struct Residual[Inner: Module](Module):
                 grid_dim=n_blocks, block_dim=TPB,
             )
 
+    def backward_input[
+        target: StaticString,
+        BATCH: Int,
+        LGO: TensorLayout, LGI: TensorLayout,
+        OGO: MutOrigin,    OGI: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        grad_output: TileTensor[DT, LGO, OGO],
+        mut grad_input: TileTensor[DT, LGI, OGI],
+    ) raises:
+        # Phase 8.2: chain through inner.backward_input, then add identity.
+        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
+        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
+        self._assert_tag[target]()
+
+        comptime if target == "cpu":
+            self._ensure_mid_cpu(BATCH * Self.IN_DIM)
+            var tmp = TileTensor(self.mid_cpu, row_major[BATCH, Self.IN_DIM]())
+            self.inner.backward_input[target, BATCH, POLICY=POLICY](grad_output, tmp)
+            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
+                grad_output
+            )
+            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
+                grad_input
+            )
+            var tp = self.mid_cpu
+            var gop = grad_output_w.ptr
+            var gip = grad_input_w.ptr
+            comptime N = BATCH * Self.IN_DIM
+            var k = 0
+            while k + CPU_SIMD_W <= N:
+                gip.store(
+                    k,
+                    tp.load[width=CPU_SIMD_W](k) + gop.load[width=CPU_SIMD_W](k),
+                )
+                k += CPU_SIMD_W
+            while k < N:
+                gip[k] = tp[k] + gop[k]
+                k += 1
+        else:
+            self._ensure_mid_gpu(BATCH * Self.IN_DIM)
+            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](grad_output)
+            var grad_input_w  = rebind[TileTensor[DT, LGI, MutAnyOrigin]](grad_input)
+            var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
+            var tmp = TileTensor(mp, row_major[BATCH, Self.IN_DIM]())
+            self.inner.backward_input[target, BATCH, POLICY=POLICY](grad_output, tmp)
+            comptime layout = Layout.row_major(BATCH, Self.IN_DIM)
+            var tmp_lt = LayoutTensor[DT, layout, MutAnyOrigin](self.mid_dev.value())
+            var go_lt  = LayoutTensor[DT, layout, MutAnyOrigin](grad_output_w.ptr)
+            var gi_lt  = LayoutTensor[DT, layout, MutAnyOrigin](grad_input_w.ptr)
+            comptime TPB = 128
+            comptime n_blocks = (BATCH * Self.IN_DIM + TPB - 1) // TPB
+            comptime kernel = _elementwise_add_kernel[BATCH, Self.IN_DIM]
+            self.ctx.value().enqueue_function[kernel](
+                tmp_lt, go_lt, gi_lt,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
+
     def for_each_param[
         target: StaticString,
         V: ParamVisitor,

@@ -684,6 +684,121 @@ struct Linear[IN: Int, OUT: Int](Module):
             )
 
     # ------------------------------------------------------------------
+    # backward_input — grad_input only (skip grad_w / grad_b kernels).
+    # Phase 8.2. Used by `StopGradParams` and any caller that wants the
+    # gradient flow through this layer without polluting its param grads
+    # (e.g. SAC actor update through the twin critics).
+    # ------------------------------------------------------------------
+
+    def backward_input[
+        target: StaticString,
+        BATCH: Int,
+        LGO: TensorLayout,
+        LGI: TensorLayout,
+        OGO: MutOrigin,
+        OGI: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        grad_output: TileTensor[DT, LGO, OGO],
+        mut grad_input: TileTensor[DT, LGI, OGI],
+    ) raises:
+        comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
+        comptime assert grad_input.flat_rank == 2, "grad_input must be rank-2"
+        self._assert_tag[target]()
+
+        comptime if target == "cpu":
+            # CPU: grad_input = grad_output @ W^T. POLICY ignored on CPU.
+            var w = TileTensor(self.weight, row_major[Self.IN, Self.OUT]())
+            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
+                grad_output
+            )
+            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
+                grad_input
+            )
+            max_matmul[transpose_b=True, target="cpu"](
+                grad_input_w, grad_output_w, w, None
+            )
+        else:
+            var ctx = self.ctx.value()
+            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
+                grad_output
+            )
+            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
+                grad_input
+            )
+
+            comptime TPB = 128
+
+            comptime if POLICY.compute_dtype == DT:
+                # fp32 GPU: single grad_input matmul.
+                var weight_tt = TileTensor(
+                    self.weight_dev.value(), row_major[Self.IN, Self.OUT]()
+                )
+                max_matmul[transpose_b=True, target="gpu"](
+                    grad_input_w, grad_output_w, weight_tt, DeviceContextPtr(ctx)
+                )
+            else:
+                # bf16 cast-around path. Mirrors the same kernels as
+                # `backward`, just without the grad_w / grad_b launches.
+                comptime assert POLICY.compute_dtype == DType.bfloat16, (
+                    "Phase 3 supports only fp32 and bf16 compute_dtype"
+                )
+                self._ensure_amp_buffers_gpu(BATCH)
+
+                var w_fp32_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.W_SIZE), MutAnyOrigin,
+                ](self.weight_dev.value())
+                var w_bf16_lt = LayoutTensor[
+                    DType.bfloat16, Layout.row_major(Self.W_SIZE), MutAnyOrigin,
+                ](self.w_bf16_dev.value())
+                comptime n_blocks_w = (Self.W_SIZE + TPB - 1) // TPB
+                comptime down_w_k = _fp32_to_bf16_kernel[Self.W_SIZE]
+                ctx.enqueue_function[down_w_k](
+                    w_fp32_lt, w_bf16_lt,
+                    grid_dim=n_blocks_w, block_dim=TPB,
+                )
+
+                var go_fp32_lt = LayoutTensor[
+                    DT, Layout.row_major(BATCH * Self.OUT), MutAnyOrigin,
+                ](grad_output_w.ptr)
+                var go_bf16_lt = LayoutTensor[
+                    DType.bfloat16, Layout.row_major(BATCH * Self.OUT), MutAnyOrigin,
+                ](self.ou_bf16_dev.value())
+                comptime n_blocks_go = (BATCH * Self.OUT + TPB - 1) // TPB
+                comptime down_go_k = _fp32_to_bf16_kernel[BATCH * Self.OUT]
+                ctx.enqueue_function[down_go_k](
+                    go_fp32_lt, go_bf16_lt,
+                    grid_dim=n_blocks_go, block_dim=TPB,
+                )
+
+                var go_bf16_tt = TileTensor(
+                    self.ou_bf16_dev.value(), row_major[BATCH, Self.OUT]()
+                )
+                var w_bf16_tt = TileTensor(
+                    self.w_bf16_dev.value(), row_major[Self.IN, Self.OUT]()
+                )
+                var gi_bf16_tt = TileTensor(
+                    self.in_bf16_dev.value(), row_major[BATCH, Self.IN]()
+                )
+                max_matmul[transpose_b=True, target="gpu"](
+                    gi_bf16_tt, go_bf16_tt, w_bf16_tt, DeviceContextPtr(ctx)
+                )
+
+                var gi_bf16_lt = LayoutTensor[
+                    DType.bfloat16, Layout.row_major(BATCH * Self.IN), MutAnyOrigin,
+                ](self.in_bf16_dev.value())
+                var gi_fp32_lt = LayoutTensor[
+                    DT, Layout.row_major(BATCH * Self.IN), MutAnyOrigin,
+                ](grad_input_w.ptr)
+                comptime n_blocks_gi = (BATCH * Self.IN + TPB - 1) // TPB
+                comptime up_gi_k = _bf16_to_fp32_kernel[BATCH * Self.IN]
+                ctx.enqueue_function[up_gi_k](
+                    gi_bf16_lt, gi_fp32_lt,
+                    grid_dim=n_blocks_gi, block_dim=TPB,
+                )
+
+    # ------------------------------------------------------------------
     # zero_grad — clears grad_w + grad_b. Convenience for direct callers;
     # the production path uses Adam.zero_grad which sweeps via
     # for_each_param.

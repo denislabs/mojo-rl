@@ -466,6 +466,65 @@ struct LayerNorm[DIM: Int](Module):
                 block_dim=LN_TPB,
             )
 
+    def backward_input[
+        target: StaticString,
+        BATCH: Int,
+        LGO: TensorLayout,
+        LGI: TensorLayout,
+        OGO: MutOrigin,
+        OGI: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        grad_output: TileTensor[DT, LGO, OGO],
+        mut grad_input: TileTensor[DT, LGI, OGI],
+    ) raises:
+        # Phase 8.2: grad_input only; skip dgamma/dbeta accumulation.
+        comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
+        comptime assert grad_input.flat_rank == 2, "grad_input must be rank-2"
+        self._assert_tag[target]()
+
+        comptime if target == "cpu":
+            var gamma_v = TileTensor(self.gamma, row_major[Self.DIM]())
+            var xhat_v  = TileTensor(self.cache_xhat, row_major[BATCH, Self.DIM]())
+            var inv_v   = TileTensor(self.cache_inv_std, row_major[BATCH]())
+            var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
+            for b in range(BATCH):
+                var inv_std = inv_v[b]
+                var sum_g: Scalar[DT] = 0.0
+                var sum_g_xhat: Scalar[DT] = 0.0
+                for d in range(Self.DIM):
+                    var g = grad_output[b, d] * gamma_v[d]
+                    sum_g      += g
+                    sum_g_xhat += g * xhat_v[b, d]
+                var mean_g      = sum_g * inv_dim
+                var mean_g_xhat = sum_g_xhat * inv_dim
+                for d in range(Self.DIM):
+                    var g  = grad_output[b, d] * gamma_v[d]
+                    var xh = xhat_v[b, d]
+                    grad_input[b, d] = inv_std * (g - mean_g - xh * mean_g_xhat)
+        else:
+            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
+            comptime layout_b  = Layout.row_major(BATCH)
+            comptime layout_d  = Layout.row_major(Self.DIM)
+            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
+                grad_output
+            )
+            var grad_input_w  = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
+                grad_input
+            )
+            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](grad_output_w.ptr)
+            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](grad_input_w.ptr)
+            var g_lt  = LayoutTensor[DT, layout_d, MutAnyOrigin](self.gamma_dev.value())
+            var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](self.cache_xhat_dev.value())
+            var is_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](self.cache_inv_std_dev.value())
+            comptime dx_kernel = _layer_norm_backward_dx_kernel[BATCH, Self.DIM]
+            self.ctx.value().enqueue_function[dx_kernel](
+                go_lt, g_lt, xh_lt, is_lt, gi_lt,
+                grid_dim=BATCH,
+                block_dim=LN_TPB,
+            )
+
     def for_each_param[
         target: StaticString,
         V: ParamVisitor,

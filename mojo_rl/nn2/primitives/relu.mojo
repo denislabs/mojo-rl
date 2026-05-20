@@ -269,6 +269,22 @@ struct ReLU[DIM: Int](Module):
                 block_dim=TPB,
             )
 
+    def backward_input[
+        target: StaticString,
+        BATCH: Int,
+        LGO: TensorLayout,
+        LGI: TensorLayout,
+        OGO: MutOrigin,
+        OGI: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        grad_output: TileTensor[DT, LGO, OGO],
+        mut grad_input: TileTensor[DT, LGI, OGI],
+    ) raises:
+        # No params — backward_input is identical to backward.
+        self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)
+
     def for_each_param[
         target: StaticString,
         V: ParamVisitor,

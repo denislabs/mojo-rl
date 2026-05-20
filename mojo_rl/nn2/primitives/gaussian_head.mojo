@@ -543,6 +543,68 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
             )
 
     # ------------------------------------------------------------------
+    # backward_input — grad_input only (skip grad_w / grad_b / grad_ls)
+    # ------------------------------------------------------------------
+
+    def backward_input[
+        target: StaticString,
+        BATCH: Int,
+        LGO: TensorLayout,
+        LGI: TensorLayout,
+        OGO: MutOrigin,
+        OGI: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        grad_output: TileTensor[DT, LGO, OGO],
+        mut grad_input: TileTensor[DT, LGI, OGI],
+    ) raises:
+        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
+        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
+        self._assert_tag[target]()
+
+        comptime if target == "cpu":
+            var w = TileTensor(self.weight, row_major[Self.IN, Self.ACT]())
+            for bi in range(BATCH):
+                for i in range(Self.IN):
+                    var acc: Scalar[DT] = 0.0
+                    for j in range(Self.ACT):
+                        acc += grad_output[bi, j] * w[i, j]
+                    grad_input[bi, i] = acc
+        else:
+            var ctx = self.ctx.value()
+            var grad_output_w = rebind[TileTensor[DT, LGO, MutAnyOrigin]](
+                grad_output
+            )
+            var grad_input_w = rebind[TileTensor[DT, LGI, MutAnyOrigin]](
+                grad_input
+            )
+            comptime go_layout = Layout.row_major(BATCH, 2 * Self.ACT)
+            comptime gi_layout = Layout.row_major(BATCH, Self.IN)
+            comptime w_layout = Layout.row_major(Self.IN, Self.ACT)
+            var go_lt = LayoutTensor[DT, go_layout, MutAnyOrigin](
+                grad_output_w.ptr
+            )
+            var gi_lt = LayoutTensor[DT, gi_layout, MutAnyOrigin](
+                grad_input_w.ptr
+            )
+            var w_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
+                self.weight_dev.value()
+            )
+            comptime TPB = 128
+            comptime n_blocks_gi = (BATCH * Self.IN + TPB - 1) // TPB
+            comptime gi_kernel = _gauss_head_grad_input_kernel[
+                BATCH, Self.IN, Self.ACT
+            ]
+            ctx.enqueue_function[gi_kernel](
+                go_lt,
+                w_lt,
+                gi_lt,
+                grid_dim=n_blocks_gi,
+                block_dim=TPB,
+            )
+
+    # ------------------------------------------------------------------
     # zero_grad
     # ------------------------------------------------------------------
 

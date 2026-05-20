@@ -202,6 +202,33 @@ struct StochasticActor[
             self.heads.backward[target, BATCH, POLICY=POLICY](grad_output, mid)
             self.trunk.backward[target, BATCH, POLICY=POLICY](mid, grad_input)
 
+    def backward_input[
+        target: StaticString,
+        BATCH: Int,
+        LGO: TensorLayout, LGI: TensorLayout,
+        OGO: MutOrigin,    OGI: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        grad_output: TileTensor[DT, LGO, OGO],
+        mut grad_input: TileTensor[DT, LGI, OGI],
+    ) raises:
+        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
+        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
+        self._assert_tag[target]()
+
+        comptime if target == "cpu":
+            self._ensure_mid_cpu(BATCH * Self.HIDDEN)
+            var mid = TileTensor(self.mid_cpu, row_major[BATCH, Self.HIDDEN]())
+            self.heads.backward_input[target, BATCH, POLICY=POLICY](grad_output, mid)
+            self.trunk.backward_input[target, BATCH, POLICY=POLICY](mid, grad_input)
+        else:
+            self._ensure_mid_gpu(BATCH * Self.HIDDEN)
+            var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
+            var mid = TileTensor(mp, row_major[BATCH, Self.HIDDEN]())
+            self.heads.backward_input[target, BATCH, POLICY=POLICY](grad_output, mid)
+            self.trunk.backward_input[target, BATCH, POLICY=POLICY](mid, grad_input)
+
     def for_each_param[
         target: StaticString,
         V: ParamVisitor,
