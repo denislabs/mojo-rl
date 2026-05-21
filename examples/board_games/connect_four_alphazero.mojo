@@ -1,10 +1,6 @@
 """AlphaZero training on Connect Four — fully GPU with remote logging.
 
-CNN smoke-to-validation: 4× Conv2D+BN+ReLU + FC heads, 128 filters,
-SIMS=100, BATCH_SIMS=1 (sequential MCTS — matches the CPU-validated
-path; see docs/PHASE_D_GPU_MCTS_BUG_HUNT.md). 30 iters × 2000 steps
-with GPUMinimaxConnectFour[5] as the strength oracle. ResNet and
-FusedResNet kept as commented fallbacks for later scaling tests.
+ResNet architecture with 5 residual blocks, 128 filters, 100 MCTS sims.
 
 Usage:
     pixi run -e nvidia mojo run -I . examples/board_games/connect_four_alphazero.mojo
@@ -40,31 +36,17 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="AlphaZero ConnectFour CNN",
+        run_name="AlphaZero Connect Four",
         buffer_size=13,
         api_key=api_key,
     )
 
-    # CNN — graduated from the validated CPU C4-CNN smoke. BATCH_SIMS=1
-    # reuses the CPU-MCTS-equivalent sequential path that fixed TTT's
-    # convergence; ResNet/FusedResNet remain as commented fallbacks for
-    # later scaling-up tests.
-    comptime Config = AlphaZeroConnectFourCNNConfig[
-        FILTERS=128,
-        LR=2e-3,
-        WD=1e-4,
-        BS=64,
-        CAP=400_000,
-        SIMS=100,
-        NODES=256,
-        C_PUCT=2.0,
-        BATCH_SIMS=1,
-        VLOSS=3,
-    ]
-    # MLP (peaked initial policy helps MCTS):
+    # MLP config (best for ConnectFour — peaked initial policy helps MCTS)
     # comptime Config = AlphaZeroConnectFourConfig[]
-    # ResNet (5 residual blocks, closest to original AlphaZero):
-    # comptime Config = AlphaZeroConnectFourFusedResNetConfig[NUM_BLOCKS=5]
+    # CNN (Conv+BN+ReLU, matching alpha-zero-general):
+    # comptime Config = AlphaZeroConnectFourCNNConfig[]
+    # ResNet (closest to original AlphaZero):
+    comptime Config = AlphaZeroConnectFourFusedResNetConfig[NUM_BLOCKS=5]
     # comptime Config = AlphaZeroConnectFourResNetConfig[]
 
     logger.set_config("agent", "AlphaZero")
@@ -86,24 +68,20 @@ def main() raises:
         GPUMinimaxConnectFour[5],
     ](
         ctx,
-        # Smoke-to-validation budget. The full AlphaZero.jl run uses
-        # 50 iters × 110k steps × SIMS=600 — overkill for first GPU
-        # CNN validation. Bump steps_per_iter or SIMS once curves show
-        # consistent improvement on Minimax-depth-5.
-        num_iters=30,
-        steps_per_iter=2000,  # ~80 games/iter at ~25 plies avg
-        train_epochs=10,
+        num_iters=50,
+        steps_per_iter=110_000,  # ~5000 games per iter (matching AlphaZero.jl)
+        train_epochs=2,  # ~2M sample-updates/iter (2 * 1M / 1024 ≈ 1953 batches, matching AlphaZero.jl)
         warmup_iters=1,
         arena_threshold=0.52,  # ~equivalent to avg_reward >= 0.05 (AlphaZero.jl)
         do_eval=True,
-        do_eval2=True,  # Eval vs Minimax depth 5 (strength oracle)
+        do_eval2=True,  # Eval vs Minimax depth 5
         do_arena=True,
-        eval_games=32,
-        arena_games=40,
+        eval_games=64,
+        arena_games=128,
         slow_window_start=4,  # Start with 4 iters of history, grow to full
         slow_window_growth=2,  # Grow by 1 every 2 iterations
         checkpoint_every=10,
-        checkpoint_path="connect_four_alphazero_cnn.ckpt",
+        checkpoint_path="connect_four_alphazero.ckpt",
         logger=UnsafePointer(to=logger),
         diag_every=500,
         dump_replay=True,
