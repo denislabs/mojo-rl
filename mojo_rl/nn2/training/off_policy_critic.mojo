@@ -28,7 +28,9 @@ each `mut` arg distinctly. See memory:
 `feedback_mojo_tile_tensor_generic_origin`.
 """
 
-from layout import TileTensor, TensorLayout, row_major
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
 
 from ..constants import DT
 from ..core.module import Module
@@ -48,6 +50,43 @@ def concat_sa[OBS: Int, ACT: Int, B: Int](
             out_sa[b * SA + d] = obs[b * OBS + d]
         for j in range(ACT):
             out_sa[b * SA + OBS + j] = act[b * ACT + j]
+
+
+def _concat_sa_kernel[OBS: Int, ACT: Int, B: Int](
+    obs: LayoutTensor[DT, Layout.row_major(B, OBS), MutAnyOrigin],
+    act: LayoutTensor[DT, Layout.row_major(B, ACT), MutAnyOrigin],
+    out_sa: LayoutTensor[DT, Layout.row_major(B, OBS + ACT), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    comptime SA = OBS + ACT
+    var total = B * SA
+    if idx < total:
+        var b = idx // SA
+        var d = idx % SA
+        if d < OBS:
+            out_sa[b, d] = rebind[Scalar[DT]](obs[b, d])
+        else:
+            out_sa[b, d] = rebind[Scalar[DT]](act[b, d - OBS])
+
+
+def concat_sa_gpu[OBS: Int, ACT: Int, B: Int](
+    ctx: DeviceContext,
+    obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    act: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    out_sa: UnsafePointer[Scalar[DT], MutAnyOrigin],
+) raises:
+    """GPU `concat_sa` — one thread per [b, d] over the full SA shape."""
+    comptime SA = OBS + ACT
+    var obs_lt = LayoutTensor[DT, Layout.row_major(B, OBS), MutAnyOrigin](obs)
+    var act_lt = LayoutTensor[DT, Layout.row_major(B, ACT), MutAnyOrigin](act)
+    var out_lt = LayoutTensor[DT, Layout.row_major(B, SA), MutAnyOrigin](out_sa)
+    comptime TPB = 128
+    comptime total = B * SA
+    comptime n_blocks = (total + TPB - 1) // TPB
+    comptime kernel = _concat_sa_kernel[OBS, ACT, B]
+    ctx.enqueue_function[kernel](
+        obs_lt, act_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+    )
 
 
 def critic_update_step[

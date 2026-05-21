@@ -10,14 +10,58 @@ Horizontal stack of two `[BATCH, *]` tiles into `[BATCH, IN0_DIM+IN1_DIM]`.
 No params. Conforms to `BinaryModule`.
 """
 
+from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
-from layout import TileTensor
+from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.binary_module import BinaryModule
 from ..core.target_storage import TargetStorage, assert_tag_for
+
+
+def _bconcat_forward_kernel[
+    BATCH: Int, IN0_DIM: Int, IN1_DIM: Int,
+](
+    in0: LayoutTensor[DT, Layout.row_major(BATCH, IN0_DIM), MutAnyOrigin],
+    in1: LayoutTensor[DT, Layout.row_major(BATCH, IN1_DIM), MutAnyOrigin],
+    output: LayoutTensor[
+        DT, Layout.row_major(BATCH, IN0_DIM + IN1_DIM), MutAnyOrigin,
+    ],
+):
+    var idx = Int(global_idx.x)
+    comptime OUT = IN0_DIM + IN1_DIM
+    var total = BATCH * OUT
+    if idx < total:
+        var b = idx // OUT
+        var d = idx % OUT
+        if d < IN0_DIM:
+            output[b, d] = rebind[Scalar[DT]](in0[b, d])
+        else:
+            output[b, d] = rebind[Scalar[DT]](in1[b, d - IN0_DIM])
+
+
+def _bconcat_backward_kernel[
+    BATCH: Int, IN0_DIM: Int, IN1_DIM: Int,
+](
+    grad_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, IN0_DIM + IN1_DIM), MutAnyOrigin,
+    ],
+    grad_in0: LayoutTensor[DT, Layout.row_major(BATCH, IN0_DIM), MutAnyOrigin],
+    grad_in1: LayoutTensor[DT, Layout.row_major(BATCH, IN1_DIM), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    comptime OUT = IN0_DIM + IN1_DIM
+    var total = BATCH * OUT
+    if idx < total:
+        var b = idx // OUT
+        var d = idx % OUT
+        var v = rebind[Scalar[DT]](grad_output[b, d])
+        if d < IN0_DIM:
+            grad_in0[b, d] = v
+        else:
+            grad_in1[b, d - IN0_DIM] = v
 
 
 struct BinaryConcat[IN0_DIM_: Int, IN1_DIM_: Int](BinaryModule):
@@ -79,7 +123,27 @@ struct BinaryConcat[IN0_DIM_: Int, IN1_DIM_: Int](BinaryModule):
                 for d in range(Self.IN1_DIM):
                     output[b, Self.IN0_DIM + d] = in1[b, d]
         else:
-            raise Error("BinaryConcat: GPU path not yet implemented")
+            var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in0.ptr)
+            var i1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in1.ptr)
+            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var i0_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.IN0_DIM), MutAnyOrigin,
+            ](i0_p)
+            var i1_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.IN1_DIM), MutAnyOrigin,
+            ](i1_p)
+            var o_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
+            ](o_p)
+            comptime TPB = 128
+            comptime total = BATCH * Self.OUT_DIM
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime kernel = _bconcat_forward_kernel[
+                BATCH, Self.IN0_DIM, Self.IN1_DIM,
+            ]
+            self.ts.ctx.value().enqueue_function[kernel](
+                i0_lt, i1_lt, o_lt, grid_dim=n_blocks, block_dim=TPB,
+            )
 
     def backward[
         target: StaticString,
@@ -115,4 +179,24 @@ struct BinaryConcat[IN0_DIM_: Int, IN1_DIM_: Int](BinaryModule):
                 for d in range(Self.IN1_DIM):
                     grad_in1[b, d] = grad_output[b, Self.IN0_DIM + d]
         else:
-            raise Error("BinaryConcat: GPU backward not yet implemented")
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in0.ptr)
+            var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in1.ptr)
+            var go_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
+            ](go_p)
+            var gi0_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.IN0_DIM), MutAnyOrigin,
+            ](gi0_p)
+            var gi1_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.IN1_DIM), MutAnyOrigin,
+            ](gi1_p)
+            comptime TPB = 128
+            comptime total = BATCH * Self.OUT_DIM
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime kernel = _bconcat_backward_kernel[
+                BATCH, Self.IN0_DIM, Self.IN1_DIM,
+            ]
+            self.ts.ctx.value().enqueue_function[kernel](
+                go_lt, gi0_lt, gi1_lt, grid_dim=n_blocks, block_dim=TPB,
+            )

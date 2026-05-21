@@ -9,14 +9,63 @@ No params on either struct → no Param wrappers; `for_each_param` is
 a no-op trait conformance.
 """
 
+from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
-from layout import TileTensor
+from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from ..core.module import Module
 from ..core.target_storage import TargetStorage, assert_tag_for
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GPU kernels — one thread per batch row.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _sum_forward_kernel[
+    BATCH: Int, DIM: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b < BATCH:
+        var acc: Scalar[DT] = 0.0
+        for d in range(DIM):
+            acc += rebind[Scalar[DT]](input[b, d])
+        output[b, 0] = acc
+
+
+def _mean_forward_kernel[
+    BATCH: Int, DIM: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b < BATCH:
+        var acc: Scalar[DT] = 0.0
+        for d in range(DIM):
+            acc += rebind[Scalar[DT]](input[b, d])
+        output[b, 0] = acc * (Scalar[DT](1.0) / Scalar[DT](DIM))
+
+
+def _broadcast_kernel[
+    BATCH: Int, DIM: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    multiplier: Scalar[DT],
+):
+    var idx = Int(global_idx.x)
+    var total = BATCH * DIM
+    if idx < total:
+        var b = idx // DIM
+        var d = idx % DIM
+        grad_input[b, d] = rebind[Scalar[DT]](grad_output[b, 0]) * multiplier
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -78,7 +127,20 @@ struct Sum[DIM: Int](Module):
                     acc += input[b, d]
                 output[b, 0] = acc
         else:
-            raise Error("Sum: GPU path not yet implemented")
+            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var in_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin,
+            ](in_p)
+            var out_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
+            ](out_p)
+            comptime TPB = 128
+            comptime n_blocks = (BATCH + TPB - 1) // TPB
+            comptime kernel = _sum_forward_kernel[BATCH, Self.DIM]
+            self.ts.ctx.value().enqueue_function[kernel](
+                in_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+            )
 
     def backward[
         target: StaticString,
@@ -108,7 +170,22 @@ struct Sum[DIM: Int](Module):
                 for d in range(Self.DIM):
                     grad_input[b, d] = go
         else:
-            raise Error("Sum: GPU backward not yet implemented")
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
+            ](go_p)
+            var gi_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin,
+            ](gi_p)
+            comptime TPB = 128
+            comptime total = BATCH * Self.DIM
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime kernel = _broadcast_kernel[BATCH, Self.DIM]
+            self.ts.ctx.value().enqueue_function[kernel](
+                go_lt, gi_lt, Scalar[DT](1.0),
+                grid_dim=n_blocks, block_dim=TPB,
+            )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -171,7 +248,20 @@ struct Mean[DIM: Int](Module):
                     acc += input[b, d]
                 output[b, 0] = acc * Self._INV_DIM
         else:
-            raise Error("Mean: GPU path not yet implemented")
+            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var in_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin,
+            ](in_p)
+            var out_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
+            ](out_p)
+            comptime TPB = 128
+            comptime n_blocks = (BATCH + TPB - 1) // TPB
+            comptime kernel = _mean_forward_kernel[BATCH, Self.DIM]
+            self.ts.ctx.value().enqueue_function[kernel](
+                in_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+            )
 
     def backward[
         target: StaticString,
@@ -201,4 +291,19 @@ struct Mean[DIM: Int](Module):
                 for d in range(Self.DIM):
                     grad_input[b, d] = go_inv
         else:
-            raise Error("Mean: GPU backward not yet implemented")
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
+            ](go_p)
+            var gi_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin,
+            ](gi_p)
+            comptime TPB = 128
+            comptime total = BATCH * Self.DIM
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime kernel = _broadcast_kernel[BATCH, Self.DIM]
+            self.ts.ctx.value().enqueue_function[kernel](
+                go_lt, gi_lt, Self._INV_DIM,
+                grid_dim=n_blocks, block_dim=TPB,
+            )

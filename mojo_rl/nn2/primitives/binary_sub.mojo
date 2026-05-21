@@ -9,14 +9,41 @@ ComputeGraph) owns every slab; `backward[mode]` collapses backward +
 backward_input.
 """
 
+from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
-from layout import TileTensor
+from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.binary_module import BinaryModule
 from ..core.target_storage import TargetStorage, assert_tag_for
+
+
+def _bsub_forward_kernel[
+    N: Int,
+](
+    in0: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    in1: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx < N:
+        output[idx] = rebind[Scalar[DT]](in0[idx]) - rebind[Scalar[DT]](in1[idx])
+
+
+def _bsub_backward_kernel[
+    N: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    grad_in0: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    grad_in1: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx < N:
+        var go = rebind[Scalar[DT]](grad_output[idx])
+        grad_in0[idx] = go
+        grad_in1[idx] = -go
 
 
 struct BinarySub[DIM: Int](BinaryModule):
@@ -76,7 +103,19 @@ struct BinarySub[DIM: Int](BinaryModule):
                 for d in range(Self.DIM):
                     output[b, d] = in0[b, d] - in1[b, d]
         else:
-            raise Error("BinarySub: GPU path not yet implemented")
+            var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in0.ptr)
+            var i1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in1.ptr)
+            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            comptime N = BATCH * Self.DIM
+            var i0_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](i0_p)
+            var i1_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](i1_p)
+            var o_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](o_p)
+            comptime TPB = 128
+            comptime n_blocks = (N + TPB - 1) // TPB
+            comptime kernel = _bsub_forward_kernel[N]
+            self.ts.ctx.value().enqueue_function[kernel](
+                i0_lt, i1_lt, o_lt, grid_dim=n_blocks, block_dim=TPB,
+            )
 
     def backward[
         target: StaticString,
@@ -112,4 +151,16 @@ struct BinarySub[DIM: Int](BinaryModule):
                     grad_in0[b, d] = go
                     grad_in1[b, d] = -go
         else:
-            raise Error("BinarySub: GPU backward not yet implemented")
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in0.ptr)
+            var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in1.ptr)
+            comptime N = BATCH * Self.DIM
+            var go_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](go_p)
+            var gi0_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](gi0_p)
+            var gi1_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](gi1_p)
+            comptime TPB = 128
+            comptime n_blocks = (N + TPB - 1) // TPB
+            comptime kernel = _bsub_backward_kernel[N]
+            self.ts.ctx.value().enqueue_function[kernel](
+                go_lt, gi0_lt, gi1_lt, grid_dim=n_blocks, block_dim=TPB,
+            )

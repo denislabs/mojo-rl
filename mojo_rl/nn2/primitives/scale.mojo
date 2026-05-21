@@ -8,14 +8,27 @@ No cache: multiplier lives on the struct; no need to remember anything
 from forward. Conforms to `Module`.
 """
 
+from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
-from layout import TileTensor
+from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module
 from ..core.target_storage import TargetStorage, assert_tag_for
+
+
+def _scale_kernel[
+    N: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    multiplier: Scalar[DT],
+):
+    var idx = Int(global_idx.x)
+    if idx < N:
+        output[idx] = rebind[Scalar[DT]](input[idx]) * multiplier
 
 
 struct Scale[DIM: Int](Module):
@@ -80,7 +93,22 @@ struct Scale[DIM: Int](Module):
                 out_p[k] = in_p[k] * self.multiplier
                 k += 1
         else:
-            raise Error("Scale: GPU path not yet implemented")
+            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            comptime N = BATCH * Self.DIM
+            var in_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](in_p)
+            var out_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](out_p)
+            comptime TPB = 128
+            comptime n_blocks = (N + TPB - 1) // TPB
+            comptime kernel = _scale_kernel[N]
+            self.ts.ctx.value().enqueue_function[kernel](
+                in_lt, out_lt, self.multiplier,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
 
     def backward[
         target: StaticString,
@@ -117,4 +145,19 @@ struct Scale[DIM: Int](Module):
                 gi_p[k] = go_p[k] * self.multiplier
                 k += 1
         else:
-            raise Error("Scale: GPU backward not yet implemented")
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            comptime N = BATCH * Self.DIM
+            var go_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](go_p)
+            var gi_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](gi_p)
+            comptime TPB = 128
+            comptime n_blocks = (N + TPB - 1) // TPB
+            comptime kernel = _scale_kernel[N]
+            self.ts.ctx.value().enqueue_function[kernel](
+                go_lt, gi_lt, self.multiplier,
+                grid_dim=n_blocks, block_dim=TPB,
+            )

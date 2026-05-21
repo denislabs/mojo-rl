@@ -1,8 +1,8 @@
 """UnaryNode / BinaryNode — GraphNode wrappers around Module / BinaryModule.
 
-Phase 10D. Each wrapper owns its underlying op instance, plus four
-buffers (out, grad_out, grad_in0, grad_in1) used by ComputeGraph v2 for
-inter-node wiring.
+Phase 10D + Block A (GPU). Each wrapper owns its underlying op instance,
+plus four buffers (out, grad_out, grad_in0, grad_in1) used by
+ComputeGraph v2 for inter-node wiring.
 
 `UnaryNode[NAME, M, IN0_NAME]`
     wraps a `M: Module` (1→1). `KIND = 1`, `IN1_NAME = ""`, `IN1_DIM = 0`.
@@ -18,9 +18,15 @@ Backward contract: the wrapper reads its own `_grad_out_buf` as the
 incoming gradient (graph zeros + scatter-adds into this before the
 call), and writes `_grad_in*_buf`. The graph scatter-adds those into
 predecessors' grad_out_bufs after the call returns.
+
+CPU vs GPU storage: each node carries `ts: TargetStorage` (matches the
+rest of nn2). CPU nodes own `List[Scalar[DT]]` for each buffer; GPU
+nodes own `Optional[DeviceBuffer[DT]]`. `*_ptr_via()` dispatches on
+`ts.target_tag` and returns whichever pointer is live; `ensure_buffers_via`
+likewise grows the appropriate storage.
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from ..constants import DT
@@ -32,6 +38,11 @@ from ..core import (
     Initializer,
     AMPPolicy,
     NoAMP,
+    TARGET_GPU,
+)
+from ..core.target_storage import (
+    TargetStorage,
+    ensure_gpu_buffer,
 )
 
 
@@ -55,12 +66,23 @@ struct UnaryNode[
 
     var op: Self.Op
 
-    # Owned buffers (CG v2 wiring).
+    # CPU buffers (used when ts.target_tag == TARGET_CPU).
     var _out_buf: List[Scalar[DT]]       # [BATCH, OUT_DIM]
     var _grad_out_buf: List[Scalar[DT]]  # [BATCH, OUT_DIM]
     var _grad_in0_buf: List[Scalar[DT]]  # [BATCH, IN0_DIM]
-    var _grad_in1_buf: List[Scalar[DT]]  # unused (length 1 stub)
+    var _grad_in1_buf: List[Scalar[DT]]  # length-1 stub for unary nodes
+
+    # GPU buffers (used when ts.target_tag == TARGET_GPU).
+    var _out_buf_dev: Optional[DeviceBuffer[DT]]
+    var _grad_out_buf_dev: Optional[DeviceBuffer[DT]]
+    var _grad_in0_buf_dev: Optional[DeviceBuffer[DT]]
+    var _grad_in1_buf_dev: Optional[DeviceBuffer[DT]]  # null; never sized
+    var _out_buf_dev_n: Int
+    var _grad_out_buf_dev_n: Int
+    var _grad_in0_buf_dev_n: Int
+
     var _n_batch_buf: Int
+    var ts: TargetStorage
 
     def __init__(out self):
         self.op = Self.Op()
@@ -68,7 +90,15 @@ struct UnaryNode[
         self._grad_out_buf = List[Scalar[DT]]()
         self._grad_in0_buf = List[Scalar[DT]]()
         self._grad_in1_buf = List[Scalar[DT]]()
+        self._out_buf_dev = None
+        self._grad_out_buf_dev = None
+        self._grad_in0_buf_dev = None
+        self._grad_in1_buf_dev = None
+        self._out_buf_dev_n = 0
+        self._grad_out_buf_dev_n = 0
+        self._grad_in0_buf_dev_n = 0
         self._n_batch_buf = 0
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make_via[target: StaticString, INIT: Initializer]() raises -> Self:
@@ -77,6 +107,7 @@ struct UnaryNode[
         )
         var n = Self()
         n.op = Self.Op.make[target, INIT]()
+        n.ts = TargetStorage.make_cpu()
         return n^
 
     @staticmethod
@@ -88,29 +119,57 @@ struct UnaryNode[
         )
         var n = Self()
         n.op = Self.Op.make[target, INIT](ctx)
+        n.ts = TargetStorage.make_gpu(ctx)
         return n^
 
     def ensure_buffers_via[BATCH: Int](mut self) raises:
-        if self._n_batch_buf < BATCH:
-            self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
-            self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
-            self._grad_in0_buf.resize(BATCH * Self.IN0_DIM, Scalar[DT](0.0))
-            # _grad_in1_buf stays a length-1 stub for unary nodes
-            if len(self._grad_in1_buf) < 1:
-                self._grad_in1_buf.resize(1, Scalar[DT](0.0))
+        if self.ts.target_tag == TARGET_GPU:
+            var ctx = self.ts.ctx.value()
+            ensure_gpu_buffer(
+                self._out_buf_dev, self._out_buf_dev_n,
+                BATCH * Self.OUT_DIM, ctx,
+            )
+            ensure_gpu_buffer(
+                self._grad_out_buf_dev, self._grad_out_buf_dev_n,
+                BATCH * Self.OUT_DIM, ctx,
+            )
+            ensure_gpu_buffer(
+                self._grad_in0_buf_dev, self._grad_in0_buf_dev_n,
+                BATCH * Self.IN0_DIM, ctx,
+            )
             self._n_batch_buf = BATCH
+        else:
+            if self._n_batch_buf < BATCH:
+                self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
+                self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
+                self._grad_in0_buf.resize(BATCH * Self.IN0_DIM, Scalar[DT](0.0))
+                if len(self._grad_in1_buf) < 1:
+                    self._grad_in1_buf.resize(1, Scalar[DT](0.0))
+                self._n_batch_buf = BATCH
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        if self.ts.target_tag == TARGET_GPU:
+            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._out_buf_dev.value().unsafe_ptr()
+            )
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             self._out_buf.unsafe_ptr()
         )
 
     def grad_out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        if self.ts.target_tag == TARGET_GPU:
+            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._grad_out_buf_dev.value().unsafe_ptr()
+            )
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             self._grad_out_buf.unsafe_ptr()
         )
 
     def grad_in0_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        if self.ts.target_tag == TARGET_GPU:
+            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._grad_in0_buf_dev.value().unsafe_ptr()
+            )
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             self._grad_in0_buf.unsafe_ptr()
         )
@@ -130,9 +189,7 @@ struct UnaryNode[
         in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
-        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._out_buf.unsafe_ptr()
-        )
+        var out_p = self.out_ptr_via()
         var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
         self.op.forward[target, BATCH, POLICY=POLICY](in0_t, out_t)
 
@@ -141,12 +198,8 @@ struct UnaryNode[
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
     ](mut self) raises:
-        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._grad_out_buf.unsafe_ptr()
-        )
-        var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._grad_in0_buf.unsafe_ptr()
-        )
+        var go_p = self.grad_out_ptr_via()
+        var gi0_p = self.grad_in0_ptr_via()
         var go_t = TileTensor(go_p, row_major[BATCH, Self.OUT_DIM]())
         var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
         self.op.backward[target, BATCH, POLICY=POLICY](go_t, gi0_t)
@@ -183,7 +236,18 @@ struct BinaryNode[
     var _grad_out_buf: List[Scalar[DT]]
     var _grad_in0_buf: List[Scalar[DT]]
     var _grad_in1_buf: List[Scalar[DT]]
+
+    var _out_buf_dev: Optional[DeviceBuffer[DT]]
+    var _grad_out_buf_dev: Optional[DeviceBuffer[DT]]
+    var _grad_in0_buf_dev: Optional[DeviceBuffer[DT]]
+    var _grad_in1_buf_dev: Optional[DeviceBuffer[DT]]
+    var _out_buf_dev_n: Int
+    var _grad_out_buf_dev_n: Int
+    var _grad_in0_buf_dev_n: Int
+    var _grad_in1_buf_dev_n: Int
+
     var _n_batch_buf: Int
+    var ts: TargetStorage
 
     def __init__(out self):
         self.op = Self.Op()
@@ -191,7 +255,16 @@ struct BinaryNode[
         self._grad_out_buf = List[Scalar[DT]]()
         self._grad_in0_buf = List[Scalar[DT]]()
         self._grad_in1_buf = List[Scalar[DT]]()
+        self._out_buf_dev = None
+        self._grad_out_buf_dev = None
+        self._grad_in0_buf_dev = None
+        self._grad_in1_buf_dev = None
+        self._out_buf_dev_n = 0
+        self._grad_out_buf_dev_n = 0
+        self._grad_in0_buf_dev_n = 0
+        self._grad_in1_buf_dev_n = 0
         self._n_batch_buf = 0
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make_via[target: StaticString, INIT: Initializer]() raises -> Self:
@@ -200,6 +273,7 @@ struct BinaryNode[
         )
         var n = Self()
         n.op = Self.Op.make[target, INIT]()
+        n.ts = TargetStorage.make_cpu()
         return n^
 
     @staticmethod
@@ -211,32 +285,69 @@ struct BinaryNode[
         )
         var n = Self()
         n.op = Self.Op.make[target, INIT](ctx)
+        n.ts = TargetStorage.make_gpu(ctx)
         return n^
 
     def ensure_buffers_via[BATCH: Int](mut self) raises:
-        if self._n_batch_buf < BATCH:
-            self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
-            self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
-            self._grad_in0_buf.resize(BATCH * Self.IN0_DIM, Scalar[DT](0.0))
-            self._grad_in1_buf.resize(BATCH * Self.IN1_DIM, Scalar[DT](0.0))
+        if self.ts.target_tag == TARGET_GPU:
+            var ctx = self.ts.ctx.value()
+            ensure_gpu_buffer(
+                self._out_buf_dev, self._out_buf_dev_n,
+                BATCH * Self.OUT_DIM, ctx,
+            )
+            ensure_gpu_buffer(
+                self._grad_out_buf_dev, self._grad_out_buf_dev_n,
+                BATCH * Self.OUT_DIM, ctx,
+            )
+            ensure_gpu_buffer(
+                self._grad_in0_buf_dev, self._grad_in0_buf_dev_n,
+                BATCH * Self.IN0_DIM, ctx,
+            )
+            ensure_gpu_buffer(
+                self._grad_in1_buf_dev, self._grad_in1_buf_dev_n,
+                BATCH * Self.IN1_DIM, ctx,
+            )
             self._n_batch_buf = BATCH
+        else:
+            if self._n_batch_buf < BATCH:
+                self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
+                self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
+                self._grad_in0_buf.resize(BATCH * Self.IN0_DIM, Scalar[DT](0.0))
+                self._grad_in1_buf.resize(BATCH * Self.IN1_DIM, Scalar[DT](0.0))
+                self._n_batch_buf = BATCH
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        if self.ts.target_tag == TARGET_GPU:
+            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._out_buf_dev.value().unsafe_ptr()
+            )
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             self._out_buf.unsafe_ptr()
         )
 
     def grad_out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        if self.ts.target_tag == TARGET_GPU:
+            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._grad_out_buf_dev.value().unsafe_ptr()
+            )
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             self._grad_out_buf.unsafe_ptr()
         )
 
     def grad_in0_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        if self.ts.target_tag == TARGET_GPU:
+            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._grad_in0_buf_dev.value().unsafe_ptr()
+            )
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             self._grad_in0_buf.unsafe_ptr()
         )
 
     def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        if self.ts.target_tag == TARGET_GPU:
+            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._grad_in1_buf_dev.value().unsafe_ptr()
+            )
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             self._grad_in1_buf.unsafe_ptr()
         )
@@ -252,9 +363,7 @@ struct BinaryNode[
     ) raises:
         var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
         var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN1_DIM]())
-        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._out_buf.unsafe_ptr()
-        )
+        var out_p = self.out_ptr_via()
         var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
         self.op.forward[target, BATCH, POLICY=POLICY](in0_t, in1_t, out_t)
 
@@ -263,15 +372,9 @@ struct BinaryNode[
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
     ](mut self) raises:
-        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._grad_out_buf.unsafe_ptr()
-        )
-        var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._grad_in0_buf.unsafe_ptr()
-        )
-        var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._grad_in1_buf.unsafe_ptr()
-        )
+        var go_p = self.grad_out_ptr_via()
+        var gi0_p = self.grad_in0_ptr_via()
+        var gi1_p = self.grad_in1_ptr_via()
         var go_t = TileTensor(go_p, row_major[BATCH, Self.OUT_DIM]())
         var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
         var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN1_DIM]())

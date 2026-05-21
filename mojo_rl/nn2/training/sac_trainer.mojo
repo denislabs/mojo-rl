@@ -52,6 +52,7 @@ sub-method stays under the threshold.
 from std.math import exp as fexp, log as flog
 from std.memory import alloc
 from std.random import random_float64
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, TensorLayout, row_major
 
 from ..constants import DT
@@ -106,6 +107,10 @@ struct SACTrainer[
     var _ob1: UnsafePointer[Scalar[DT], MutAnyOrigin]            # [OBS_DIM]
     var _ao1: UnsafePointer[Scalar[DT], MutAnyOrigin]            # [2*ACT_DIM]
     var _alp1: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [ACT_DIM+1]
+    # GPU single-step env-interaction scratch (block D).
+    var _ob1_dev: Optional[DeviceBuffer[DT]]
+    var _ao1_dev: Optional[DeviceBuffer[DT]]
+    var _alp1_dev: Optional[DeviceBuffer[DT]]
 
     # ─── Minibatch scratch (training) — only raw replay samples ──────
     # Target-y compute scratch is owned by `target_y_block` (Phase 10F).
@@ -116,6 +121,14 @@ struct SACTrainer[
     var _mb_sp: UnsafePointer[Scalar[DT], MutAnyOrigin]          # [BATCH, OBS]
     var _mb_d: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [BATCH]
     var _mb_y: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [BATCH, 1]
+    # GPU minibatch scratch (block D). Trainer uploads CPU replay to
+    # these after each `buf.sample` and threads device pointers to the
+    # GPU step methods.
+    var _mb_s_dev: Optional[DeviceBuffer[DT]]
+    var _mb_a_dev: Optional[DeviceBuffer[DT]]
+    var _mb_r_dev: Optional[DeviceBuffer[DT]]
+    var _mb_sp_dev: Optional[DeviceBuffer[DT]]
+    var _mb_y_dev: Optional[DeviceBuffer[DT]]
 
     # ─── Hyperparameters ──────────────────────────────────────────────
     var gamma: Scalar[DT]
@@ -175,6 +188,14 @@ struct SACTrainer[
         self._mb_sp = null_p
         self._mb_d = null_p
         self._mb_y = null_p
+        self._ob1_dev = None
+        self._ao1_dev = None
+        self._alp1_dev = None
+        self._mb_s_dev = None
+        self._mb_a_dev = None
+        self._mb_r_dev = None
+        self._mb_sp_dev = None
+        self._mb_y_dev = None
         self.gamma = Scalar[DT](0.99)
         self.tau = Scalar[DT](0.005)
         self.action_scale = Scalar[DT](1.0)
@@ -203,7 +224,7 @@ struct SACTrainer[
         the Phase 9A actor-loss block, MSE loss, replay buffer, and tracker.
         Allocates all training scratch up front (no per-step allocation)."""
         comptime assert target == "cpu", (
-            "SACTrainer.make[target='gpu'] not yet implemented (Phase 9B CPU only)"
+            "SACTrainer.make[target='gpu'] requires a DeviceContext"
         )
         var t = Self()
         t.actor = Self.ACTOR.make[target="cpu", INIT=Xavier]()
@@ -254,11 +275,104 @@ struct SACTrainer[
         t.learning_starts = learning_starts
         return t^
 
+    @staticmethod
+    def make[target: StaticString](
+        ctx: DeviceContext,
+        actor_lr: Scalar[DT] = Scalar[DT](3e-4),
+        critic_lr: Scalar[DT] = Scalar[DT](1e-3),
+        alpha_lr: Scalar[DT] = Scalar[DT](3e-4),
+        gamma: Scalar[DT] = Scalar[DT](0.99),
+        tau: Scalar[DT] = Scalar[DT](0.005),
+        action_scale: Scalar[DT] = Scalar[DT](1.0),
+        init_alpha: Scalar[DT] = Scalar[DT](0.2),
+        target_entropy: Scalar[DT] = Scalar[DT](-1.0),
+        learning_starts: Int = 1_000,
+        window_size: Int = 10,
+        initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+    ) raises -> Self:
+        """GPU factory. Builds GPU nets + Adams, GPU-allocated critic
+        update block, GPU sub-allocated SACActorLoss + TargetYBlock.
+
+        **Important**: `train_step["gpu"]` and `select_action["gpu"]`
+        currently raise because they depend on GPU box_muller / GPU
+        squashed_gaussian / GPU RSample, all of which are Block D scope
+        in the roadmap. `make["gpu"]` is exposed so callers can build
+        the trainer and stage env-side wiring; full GPU training lands
+        once those primitives ship."""
+        comptime assert target == "gpu", (
+            "SACTrainer.make[target='cpu'](ctx) — drop ctx for CPU"
+        )
+        var t = Self()
+        t.actor = Self.ACTOR.make[target="gpu", INIT=Xavier](ctx)
+        t.pair1 = OnlineTargetPair[Self.CRITIC].make[
+            target="gpu", INIT=Xavier
+        ](ctx)
+        t.pair2 = OnlineTargetPair[Self.CRITIC].make[
+            target="gpu", INIT=Xavier
+        ](ctx)
+        t.actor_opt = Adam.make[target="gpu", M=Self.ACTOR](t.actor, ctx)
+        t.actor_opt.lr = actor_lr
+        t.critic1_opt = Adam.make[target="gpu", M=Self.CRITIC](
+            t.pair1.online, ctx
+        )
+        t.critic1_opt.lr = critic_lr
+        t.critic2_opt = Adam.make[target="gpu", M=Self.CRITIC](
+            t.pair2.online, ctx
+        )
+        t.critic2_opt.lr = critic_lr
+        t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
+        t.actor_loss = SACActorLoss[
+            Self.ACTOR, Self.CRITIC, Self.BATCH
+        ].make["gpu"](ctx, action_scale=action_scale)
+        t.twin_critic_block = TwinCriticUpdateBlock[
+            Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+        ].make["gpu"](ctx)
+        t.target_y_block = TargetYBlock[
+            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+        ].make["gpu"](ctx, action_scale=action_scale, gamma=gamma)
+        # Replay + tracker stay CPU-resident (no GPU replay primitive
+        # in nn2 yet; Block D adds a SequenceReplay variant).
+        t.buf = CPUReplay[
+            Self.OBS_DIM, Self.ACT_DIM, Self.REPLAY_CAPACITY
+        ].new()
+        t.tracker = EpisodeTracker.new(
+            window_size=window_size, initial_fill=initial_episode_fill
+        )
+
+        # CPU scratch is allocated alongside GPU scratch — CPU buffers
+        # are where replay samples land before upload, and where env
+        # observations land before single-step actor forward.
+        t._ob1 = alloc[Scalar[DT]](Self.OBS_DIM)
+        t._ao1 = alloc[Scalar[DT]](2 * Self.ACT_DIM)
+        t._alp1 = alloc[Scalar[DT]](Self.ACT_DIM + 1)
+        t._mb_s = alloc[Scalar[DT]](Self.BATCH * Self.OBS_DIM)
+        t._mb_a = alloc[Scalar[DT]](Self.BATCH * Self.ACT_DIM)
+        t._mb_r = alloc[Scalar[DT]](Self.BATCH)
+        t._mb_sp = alloc[Scalar[DT]](Self.BATCH * Self.OBS_DIM)
+        t._mb_d = alloc[Scalar[DT]](Self.BATCH)
+        t._mb_y = alloc[Scalar[DT]](Self.BATCH)
+        # GPU device buffers.
+        t._ob1_dev = ctx.enqueue_create_buffer[DT](Self.OBS_DIM)
+        t._ao1_dev = ctx.enqueue_create_buffer[DT](2 * Self.ACT_DIM)
+        t._alp1_dev = ctx.enqueue_create_buffer[DT](Self.ACT_DIM + 1)
+        t._mb_s_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OBS_DIM)
+        t._mb_a_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.ACT_DIM)
+        t._mb_r_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
+        t._mb_sp_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OBS_DIM)
+        t._mb_y_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
+
+        t.gamma = gamma
+        t.tau = tau
+        t.action_scale = action_scale
+        t.target_entropy = target_entropy
+        t.learning_starts = learning_starts
+        return t^
+
     # ──────────────────────────────────────────────────────────────────
     # Env-interaction API
     # ──────────────────────────────────────────────────────────────────
 
-    def select_action(
+    def select_action[target: StaticString = "cpu"](
         mut self,
         obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
         action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -271,12 +385,16 @@ struct SACTrainer[
         squashed-Gaussian sample (no log_prob extracted here).
 
         Output is clamped to ±action_scale (the env's valid range).
-        """
+
+        `obs` and `action_out` are always host pointers; on GPU the
+        method internally uploads obs and downloads action."""
         if step_idx < self.learning_starts:
             for j in range(Self.ACT_DIM):
                 var u = Scalar[DT](2.0 * random_float64() - 1.0)
                 action_out[j] = u * self.action_scale
-        else:
+            return
+
+        comptime if target == "cpu":
             for d in range(Self.OBS_DIM):
                 self._ob1[d] = obs[d]
             var ob1_t = TileTensor(self._ob1, row_major[1, Self.OBS_DIM]())
@@ -284,6 +402,37 @@ struct SACTrainer[
             self.actor.forward["cpu", 1](ob1_t, ao1_t)
             var alp1_t = TileTensor(self._alp1, row_major[1, Self.ACT_DIM + 1]())
             self.actor_loss.rsample.forward["cpu", 1](ao1_t, alp1_t)
+            for j in range(Self.ACT_DIM):
+                var a = self._alp1[j]
+                if a > self.action_scale:
+                    a = self.action_scale
+                elif a < -self.action_scale:
+                    a = -self.action_scale
+                action_out[j] = a
+        else:
+            var ctx = self.target_y_block.ts.ctx.value()
+            # Upload obs into _ob1 (CPU) then to _ob1_dev.
+            for d in range(Self.OBS_DIM):
+                self._ob1[d] = obs[d]
+            var ob1_dev = self._ob1_dev.value()
+            ctx.enqueue_copy(ob1_dev, self._ob1)
+            var ob1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                ob1_dev.unsafe_ptr()
+            )
+            var ao1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._ao1_dev.value().unsafe_ptr()
+            )
+            var alp1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._alp1_dev.value().unsafe_ptr()
+            )
+            var ob1_t = TileTensor(ob1_p, row_major[1, Self.OBS_DIM]())
+            var ao1_t = TileTensor(ao1_p, row_major[1, 2 * Self.ACT_DIM]())
+            self.actor.forward["gpu", 1](ob1_t, ao1_t)
+            var alp1_t = TileTensor(alp1_p, row_major[1, Self.ACT_DIM + 1]())
+            self.actor_loss.rsample.forward["gpu", 1](ao1_t, alp1_t)
+            # Download alp1 → CPU buffer, then clamp + write to action_out.
+            ctx.enqueue_copy(self._alp1, self._alp1_dev.value())
+            ctx.synchronize()
             for j in range(Self.ACT_DIM):
                 var a = self._alp1[j]
                 if a > self.action_scale:
@@ -313,11 +462,16 @@ struct SACTrainer[
     # ~20-sequential-def-raises inline-explosion threshold.
     # ──────────────────────────────────────────────────────────────────
 
-    def train_step(mut self, step_idx: Int) raises -> Bool:
+    def train_step[target: StaticString = "cpu"](
+        mut self, step_idx: Int,
+    ) raises -> Bool:
         """One full off-policy SAC update if past warmup.
 
         Returns True if a training step actually ran, False if the call
         was skipped (warmup or under-filled buffer).
+
+        On GPU (`target="gpu"`), the replay sample is uploaded to device
+        buffers once per step; all subsequent compute happens on device.
         """
         if step_idx < self.learning_starts:
             return False
@@ -326,12 +480,44 @@ struct SACTrainer[
         self.buf.sample(
             Self.BATCH, self._mb_s, self._mb_a, self._mb_r, self._mb_sp, self._mb_d
         )
+
+        # Resolve which pointers to thread through the step methods.
+        var mb_s_ptr = self._mb_s
+        var mb_a_ptr = self._mb_a
+        var mb_r_ptr = self._mb_r
+        var mb_sp_ptr = self._mb_sp
+        var mb_y_ptr = self._mb_y
+
+        comptime if target == "gpu":
+            var ctx = self.target_y_block.ts.ctx.value()
+            ctx.enqueue_copy(self._mb_s_dev.value(), self._mb_s)
+            ctx.enqueue_copy(self._mb_a_dev.value(), self._mb_a)
+            ctx.enqueue_copy(self._mb_r_dev.value(), self._mb_r)
+            ctx.enqueue_copy(self._mb_sp_dev.value(), self._mb_sp)
+            mb_s_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._mb_s_dev.value().unsafe_ptr()
+            )
+            mb_a_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._mb_a_dev.value().unsafe_ptr()
+            )
+            mb_r_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._mb_r_dev.value().unsafe_ptr()
+            )
+            mb_sp_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._mb_sp_dev.value().unsafe_ptr()
+            )
+            mb_y_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._mb_y_dev.value().unsafe_ptr()
+            )
+
         var alpha = fexp(self.alpha_opt.value)
-        self._train_compute_target_y(alpha)
-        var crit_loss = self._train_critic_update()
-        var actor_res = self._train_actor_update(alpha)
+        self._train_compute_target_y[target](alpha, mb_sp_ptr, mb_r_ptr, mb_y_ptr)
+        var crit_loss = self._train_critic_update[target](
+            mb_s_ptr, mb_a_ptr, mb_y_ptr,
+        )
+        var actor_res = self._train_actor_update[target](alpha, mb_s_ptr)
         self._train_alpha_update(actor_res.log_prob_mean)
-        self._train_polyak()
+        self._train_polyak[target]()
 
         self._actor_L_accum += actor_res.loss
         self._critic_L_accum += crit_loss
@@ -339,33 +525,39 @@ struct SACTrainer[
         self._update_count += 1
         return True
 
-    def _train_compute_target_y(mut self, alpha: Scalar[DT]) raises:
-        """Delegate to `target_y_block` (Phase 10F): computes
-        y = r + γ·(min Q_target(s', a') − α·log_prob(a'|s')) in-place
-        into `self._mb_y`. All target-y scratch lives in the block."""
-        self.target_y_block.step["cpu"](
+    def _train_compute_target_y[target: StaticString](
+        mut self,
+        alpha: Scalar[DT],
+        mb_sp_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mb_r_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        self.target_y_block.step[target](
             self.actor, self.pair1.target_net, self.pair2.target_net,
-            self._mb_sp, self._mb_r, alpha, self._mb_y,
+            mb_sp_ptr, mb_r_ptr, alpha, mb_y_ptr,
         )
 
-    def _train_critic_update(mut self) raises -> Scalar[DT]:
-        """Twin-critic MSE step against shared target `mb_y`. Returns
-        the sum of both critic losses (for logging). All scratch lives
-        in `twin_critic_block` (Phase 10F)."""
-        var mb_y_t = TileTensor(self._mb_y, row_major[Self.BATCH, 1]())
-        return self.twin_critic_block.step["cpu"](
+    def _train_critic_update[target: StaticString](
+        mut self,
+        mb_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mb_a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises -> Scalar[DT]:
+        var mb_y_t = TileTensor(mb_y_ptr, row_major[Self.BATCH, 1]())
+        return self.twin_critic_block.step[target](
             self.pair1.online, self.critic1_opt,
             self.pair2.online, self.critic2_opt,
-            self._mb_s, self._mb_a, mb_y_t,
+            mb_s_ptr, mb_a_ptr, mb_y_t,
         )
 
-    def _train_actor_update(mut self, alpha: Scalar[DT]) raises -> SACActorLossOut:
-        """One Phase 9A actor-loss-block call — does the full composed-
-        form chain (rsample → twin critics frozen → ElemMin → Scale α →
-        Sub → mean), plus actor.zero_grad/step."""
-        return self.actor_loss.forward_backward["cpu", OPT=Adam](
+    def _train_actor_update[target: StaticString](
+        mut self,
+        alpha: Scalar[DT],
+        mb_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises -> SACActorLossOut:
+        return self.actor_loss.forward_backward[target, OPT=Adam](
             self.actor, self.actor_opt, self.pair1.online, self.pair2.online,
-            self._mb_s, alpha,
+            mb_s_ptr, alpha,
         )
 
     def _train_alpha_update(mut self, log_prob_mean: Scalar[DT]):
@@ -373,10 +565,21 @@ struct SACTrainer[
         ScalarAdam grad = -(log_prob_mean + target_entropy)."""
         self.alpha_opt.step(-(log_prob_mean + self.target_entropy))
 
-    def _train_polyak(mut self) raises:
-        """Polyak τ-soft-update both critic target nets."""
-        self.pair1.polyak_step["cpu"](self.tau)
-        self.pair2.polyak_step["cpu"](self.tau)
+    def _train_polyak[target: StaticString](mut self) raises:
+        """Polyak τ-soft-update both critic target nets.
+
+        GPU path threads the trainer's existing `DeviceContext` (stored in
+        the target_y_block) through to `polyak_update`, so the kernel
+        launcher reuses the queue instead of constructing a fresh
+        `DeviceContext()` per leaf per step (Apple Metal would otherwise
+        exhaust command-queue resources within ~1000 train steps)."""
+        comptime if target == "cpu":
+            self.pair1.polyak_step[target](self.tau)
+            self.pair2.polyak_step[target](self.tau)
+        else:
+            var ctx = self.target_y_block.ts.ctx.value()
+            self.pair1.polyak_step[target](self.tau, ctx)
+            self.pair2.polyak_step[target](self.tau, ctx)
 
     # ──────────────────────────────────────────────────────────────────
     # Logging accessors

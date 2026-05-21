@@ -1,4 +1,4 @@
-"""Canonical squashed-Gaussian forward/backward (Phase E).
+"""Canonical squashed-Gaussian forward/backward (Phase E + Block D).
 
 Single source of truth for the SAC reparameterized squashed-Gaussian
 sampling + log-prob math. Today this math is duplicated in three places
@@ -9,12 +9,10 @@ sampling + log-prob math. Today this math is duplicated in three places
      same as here).
   3. `nn2/loss/sac_actor_loss_cg.mojo` — composes the Module form.
 
-Phase E adds this file as the canonical implementation. `rsample_v2.mojo`,
-`sac_actor_loss_v2.mojo`, and `sac_actor_loss_cg_v2.mojo` all delegate
-here. The split between `grad_action` and `grad_log_prob` in the
-backward (vs v1 SAC's hard-coded fold-in of `α/BATCH`) is the
-ergonomic win: any caller (PPO continuous, max-ent RL, offline) can
-plug in their own scaling.
+Phase E added this file as the canonical CPU implementation. Block D
+(2026-05-21) adds the GPU variants `*_gpu`. Same math, one thread per
+batch row in forward (per-row log-prob reduction), one thread per
+[b, j] in backward.
 
 # Forward
 
@@ -38,13 +36,13 @@ plug in their own scaling.
 Log-std clamp mask: when raw log_std is outside [LOG_STD_MIN,
 LOG_STD_MAX], the un-clamped value didn't affect downstream — its
 grad is zeroed.
-
-CPU only for now. GPU port lands with the first GPU SAC env.
 """
 
 from std.math import exp, log, tanh as ftanh
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
-from layout import TileTensor
+from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT
 
@@ -181,3 +179,169 @@ def squashed_gaussian_backward[ACT: Int, BATCH: Int](
                 grad_actor_output[b, ACT + j] = Scalar[DT](0.0)
             else:
                 grad_actor_output[b, ACT + j] = gls
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GPU kernels — block D. One thread per batch row in forward (does the
+# inner-j reduction sequentially since ACT is small for SAC envs); one
+# thread per [b, j] in backward (no reduction needed there).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _sg_forward_kernel[
+    ACT: Int, BATCH: Int,
+](
+    actor_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin,
+    ],
+    z: LayoutTensor[DT, Layout.row_major(BATCH, ACT), MutAnyOrigin],
+    action_scale: Scalar[DT],
+    action: LayoutTensor[DT, Layout.row_major(BATCH, ACT), MutAnyOrigin],
+    log_prob: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b >= BATCH:
+        return
+    var lp: Scalar[DT] = 0.0
+    for j in range(ACT):
+        var mu = rebind[Scalar[DT]](actor_output[b, j])
+        var ls_raw = rebind[Scalar[DT]](actor_output[b, ACT + j])
+        var ls = ls_raw
+        if ls < LOG_STD_MIN:
+            ls = LOG_STD_MIN
+        elif ls > LOG_STD_MAX:
+            ls = LOG_STD_MAX
+        var std = exp(ls)
+        var zj = rebind[Scalar[DT]](z[b, j])
+        var pre = mu + std * zj
+        var y = ftanh(pre)
+        action[b, j] = action_scale * y
+        var corr = action_scale * (Scalar[DT](1.0) - y * y) + EPS_TANH_CORR
+        lp += (
+            Scalar[DT](-0.5) * zj * zj
+            - ls
+            - Scalar[DT](0.5) * LOG_2PI
+            - log(corr)
+        )
+    log_prob[b] = lp
+
+
+def _sg_backward_kernel[
+    ACT: Int, BATCH: Int,
+](
+    actor_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin,
+    ],
+    z: LayoutTensor[DT, Layout.row_major(BATCH, ACT), MutAnyOrigin],
+    grad_action: LayoutTensor[
+        DT, Layout.row_major(BATCH, ACT), MutAnyOrigin,
+    ],
+    grad_log_prob: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    action_scale: Scalar[DT],
+    grad_actor_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin,
+    ],
+):
+    var idx = Int(global_idx.x)
+    var total = BATCH * ACT
+    if idx >= total:
+        return
+    var b = idx // ACT
+    var j = idx % ACT
+
+    var mu = rebind[Scalar[DT]](actor_output[b, j])
+    var ls_raw = rebind[Scalar[DT]](actor_output[b, ACT + j])
+    var ls = ls_raw
+    var ls_clamped: Bool = False
+    if ls < LOG_STD_MIN:
+        ls = LOG_STD_MIN
+        ls_clamped = True
+    elif ls > LOG_STD_MAX:
+        ls = LOG_STD_MAX
+        ls_clamped = True
+
+    var std = exp(ls)
+    var zj = rebind[Scalar[DT]](z[b, j])
+    var pre = mu + std * zj
+    var y = ftanh(pre)
+    var one_minus_y2 = Scalar[DT](1.0) - y * y
+    var c_om = action_scale * one_minus_y2
+    var corr = c_om + EPS_TANH_CORR
+
+    var da_dmu = c_om
+    var da_dls = c_om * zj * std
+    var dlp_dmu = (Scalar[DT](2.0) * y * c_om) / corr
+    var dlp_dls = (
+        Scalar[DT](-1.0) + (Scalar[DT](2.0) * y * c_om * zj * std) / corr
+    )
+
+    var ga = rebind[Scalar[DT]](grad_action[b, j])
+    var glp = rebind[Scalar[DT]](grad_log_prob[b])
+    var gmu = ga * da_dmu + glp * dlp_dmu
+    var gls = ga * da_dls + glp * dlp_dls
+
+    grad_actor_output[b, j] = gmu
+    if ls_clamped:
+        grad_actor_output[b, ACT + j] = Scalar[DT](0.0)
+    else:
+        grad_actor_output[b, ACT + j] = gls
+
+
+def squashed_gaussian_forward_gpu[ACT: Int, BATCH: Int](
+    ctx: DeviceContext,
+    actor_output_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    z_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    action_scale: Scalar[DT],
+    action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    log_prob_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+) raises:
+    """GPU forward — one thread per batch row, inner-j sequential.
+
+    Pointer-based API (not TileTensor) because callers thread raw
+    DeviceBuffer pointers through the SAC trainer scratch."""
+    var ao_lt = LayoutTensor[
+        DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin,
+    ](actor_output_ptr)
+    var z_lt = LayoutTensor[DT, Layout.row_major(BATCH, ACT), MutAnyOrigin](z_ptr)
+    var a_lt = LayoutTensor[DT, Layout.row_major(BATCH, ACT), MutAnyOrigin](action_ptr)
+    var lp_lt = LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin](log_prob_ptr)
+    comptime TPB = 64
+    comptime n_blocks = (BATCH + TPB - 1) // TPB
+    comptime kernel = _sg_forward_kernel[ACT, BATCH]
+    ctx.enqueue_function[kernel](
+        ao_lt, z_lt, action_scale, a_lt, lp_lt,
+        grid_dim=n_blocks, block_dim=TPB,
+    )
+
+
+def squashed_gaussian_backward_gpu[ACT: Int, BATCH: Int](
+    ctx: DeviceContext,
+    actor_output_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    z_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    grad_action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    grad_log_prob_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    action_scale: Scalar[DT],
+    grad_actor_output_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+) raises:
+    """GPU backward — one thread per [b, j], no reduction."""
+    var ao_lt = LayoutTensor[
+        DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin,
+    ](actor_output_ptr)
+    var z_lt = LayoutTensor[DT, Layout.row_major(BATCH, ACT), MutAnyOrigin](z_ptr)
+    var ga_lt = LayoutTensor[
+        DT, Layout.row_major(BATCH, ACT), MutAnyOrigin,
+    ](grad_action_ptr)
+    var glp_lt = LayoutTensor[
+        DT, Layout.row_major(BATCH), MutAnyOrigin,
+    ](grad_log_prob_ptr)
+    var gao_lt = LayoutTensor[
+        DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin,
+    ](grad_actor_output_ptr)
+    comptime TPB = 128
+    comptime total = BATCH * ACT
+    comptime n_blocks = (total + TPB - 1) // TPB
+    comptime kernel = _sg_backward_kernel[ACT, BATCH]
+    ctx.enqueue_function[kernel](
+        ao_lt, z_lt, ga_lt, glp_lt, action_scale, gao_lt,
+        grid_dim=n_blocks, block_dim=TPB,
+    )

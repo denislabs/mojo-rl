@@ -9,14 +9,50 @@ No params. Conforms to `Module`. Orchestrator owns slabs;
 `backward[mode]` accepted, has no effect (no params to skip).
 """
 
+from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
-from layout import TileTensor
+from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module
 from ..core.target_storage import TargetStorage, assert_tag_for
+
+
+def _slice_forward_kernel[
+    BATCH: Int, IN: Int, START: Int, OUT: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    var total = BATCH * OUT
+    if idx < total:
+        var b = idx // OUT
+        var j = idx % OUT
+        output[b, j] = rebind[Scalar[DT]](input[b, START + j])
+
+
+def _slice_backward_kernel[
+    BATCH: Int, IN: Int, START: Int, OUT: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin],
+):
+    # Zero the whole grad_input and scatter the slice in. One thread
+    # per [b, k] over the FULL input shape — k in [START, START+OUT)
+    # gets grad_output, the rest gets 0.
+    var idx = Int(global_idx.x)
+    var total = BATCH * IN
+    if idx < total:
+        var b = idx // IN
+        var k = idx % IN
+        var zero: Scalar[DT] = 0.0
+        if k >= START and k < START + OUT:
+            grad_input[b, k] = rebind[Scalar[DT]](grad_output[b, k - START])
+        else:
+            grad_input[b, k] = zero
 
 
 struct Slice[IN: Int, START: Int, END: Int](Module):
@@ -77,7 +113,22 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
                 for j in range(Self.OUT_DIM):
                     output[b, j] = input[b, Self.START + j]
         else:
-            raise Error("Slice: GPU path not yet implemented")
+            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var in_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin,
+            ](in_p)
+            var out_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
+            ](out_p)
+            comptime TPB = 128
+            comptime n_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
+            comptime kernel = _slice_forward_kernel[
+                BATCH, Self.IN, Self.START, Self.OUT_DIM,
+            ]
+            self.ts.ctx.value().enqueue_function[kernel](
+                in_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+            )
 
     def backward[
         target: StaticString,
@@ -104,8 +155,8 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
         comptime if target == "cpu":
             # Zero whole grad_input first; scatter the slice in afterward.
             # Zeros required for ComputeGraph scatter-add: when multiple
-        # slicers share a predecessor, each writes its slice range and
-        # leaves the rest at 0 so the scatter-add sums correctly.
+            # slicers share a predecessor, each writes its slice range and
+            # leaves the rest at 0 so the scatter-add sums correctly.
             for b in range(BATCH):
                 for k in range(Self.IN_DIM):
                     grad_input[b, k] = Scalar[DT](0.0)
@@ -113,4 +164,19 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
                 for j in range(Self.OUT_DIM):
                     grad_input[b, Self.START + j] = grad_output[b, j]
         else:
-            raise Error("Slice: GPU backward not yet implemented")
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
+            ](go_p)
+            var gi_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin,
+            ](gi_p)
+            comptime TPB = 128
+            comptime n_blocks = (BATCH * Self.IN + TPB - 1) // TPB
+            comptime kernel = _slice_backward_kernel[
+                BATCH, Self.IN, Self.START, Self.OUT_DIM,
+            ]
+            self.ts.ctx.value().enqueue_function[kernel](
+                go_lt, gi_lt, grid_dim=n_blocks, block_dim=TPB,
+            )

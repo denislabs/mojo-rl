@@ -10,16 +10,58 @@ stored as `Scalar[DT]`. Leaf-owned, no aliasing concern.
 No params. Conforms to `BinaryModule`.
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
-from layout import TileTensor
+from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.binary_module import BinaryModule
 from ..core.target_storage import (
-    TargetStorage, assert_tag_for, ensure_cpu_buffer,
+    TargetStorage, assert_tag_for, ensure_cpu_buffer, ensure_gpu_buffer,
 )
+
+
+def _bemin_forward_kernel[
+    N: Int,
+](
+    in0: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    in1: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    mask: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx < N:
+        var a = rebind[Scalar[DT]](in0[idx])
+        var b = rebind[Scalar[DT]](in1[idx])
+        if a < b:
+            output[idx] = a
+            mask[idx] = Scalar[DT](1.0)
+        else:
+            output[idx] = b
+            mask[idx] = Scalar[DT](0.0)
+
+
+def _bemin_backward_kernel[
+    N: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    mask: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    grad_in0: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    grad_in1: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx < N:
+        var m = rebind[Scalar[DT]](mask[idx])
+        var go = rebind[Scalar[DT]](grad_output[idx])
+        var zero: Scalar[DT] = 0.0
+        if m > Scalar[DT](0.5):
+            grad_in0[idx] = go
+            grad_in1[idx] = zero
+        else:
+            grad_in0[idx] = zero
+            grad_in1[idx] = go
 
 
 struct BinaryElemMin[DIM: Int](BinaryModule):
@@ -27,11 +69,15 @@ struct BinaryElemMin[DIM: Int](BinaryModule):
     comptime IN1_DIM = Self.DIM
     comptime OUT_DIM = Self.DIM
 
-    var mask: List[Scalar[DT]]   # [BATCH, DIM] win-mask cache
+    var mask: List[Scalar[DT]]                   # [BATCH, DIM] CPU mask cache
+    var mask_dev: Optional[DeviceBuffer[DT]]     # [BATCH, DIM] GPU mask cache
+    var _mask_dev_n: Int
     var ts: TargetStorage
 
     def __init__(out self):
         self.mask = List[Scalar[DT]]()
+        self.mask_dev = None
+        self._mask_dev_n = 0
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -90,7 +136,25 @@ struct BinaryElemMin[DIM: Int](BinaryModule):
                         output[b, d] = bv
                         m_p[b * Self.DIM + d] = Scalar[DT](0.0)
         else:
-            raise Error("BinaryElemMin: GPU path not yet implemented")
+            var ctx = self.ts.ctx.value()
+            comptime N = BATCH * Self.DIM
+            ensure_gpu_buffer(self.mask_dev, self._mask_dev_n, N, ctx)
+            var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in0.ptr)
+            var i1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in1.ptr)
+            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var m_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.mask_dev.value().unsafe_ptr()
+            )
+            var i0_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](i0_p)
+            var i1_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](i1_p)
+            var o_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](o_p)
+            var m_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](m_p)
+            comptime TPB = 128
+            comptime n_blocks = (N + TPB - 1) // TPB
+            comptime kernel = _bemin_forward_kernel[N]
+            ctx.enqueue_function[kernel](
+                i0_lt, i1_lt, o_lt, m_lt, grid_dim=n_blocks, block_dim=TPB,
+            )
 
     def backward[
         target: StaticString,
@@ -132,4 +196,21 @@ struct BinaryElemMin[DIM: Int](BinaryModule):
                         grad_in0[b, d] = Scalar[DT](0.0)
                         grad_in1[b, d] = go
         else:
-            raise Error("BinaryElemMin: GPU backward not yet implemented")
+            var ctx = self.ts.ctx.value()
+            comptime N = BATCH * Self.DIM
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in0.ptr)
+            var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in1.ptr)
+            var m_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.mask_dev.value().unsafe_ptr()
+            )
+            var go_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](go_p)
+            var gi0_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](gi0_p)
+            var gi1_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](gi1_p)
+            var m_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](m_p)
+            comptime TPB = 128
+            comptime n_blocks = (N + TPB - 1) // TPB
+            comptime kernel = _bemin_backward_kernel[N]
+            ctx.enqueue_function[kernel](
+                go_lt, m_lt, gi0_lt, gi1_lt, grid_dim=n_blocks, block_dim=TPB,
+            )

@@ -1,4 +1,4 @@
-"""SACActorLossCG — Phase 10E port of SACActorLoss to ComputeGraph v2.
+"""SACActorLossCG — Phase 10E + Block D (GPU).
 
 Drop-in replacement for `SACActorLoss` (Phase 9A) with the same public
 surface (`make[target]`, `forward_backward[target, OPT]`, public
@@ -24,35 +24,33 @@ The original chain split into two parts at the trainer-owned externals:
         BinarySub "loss_per_b" (alpha_lp, min_q) → loss_per_b
       output = loss_per_b [BATCH, 1]
 
-Backward symmetrically:
-      seed dL/dL_per_b = 1/BATCH
-      _post_graph.backward(seed) → grad over [q1 | q2 | log_prob]
-      split → grad_q1, grad_q2, grad_log_prob
-      critic1.backward[mode="input_only"](grad_q1) → grad_sa1
-      critic2.backward[mode="input_only"](grad_q2) → grad_sa2
-      grad_action = grad_sa1[OBS:] + grad_sa2[OBS:]
-      pack [grad_action | grad_log_prob] → grad_alp [BATCH, ACT+1]
-      rsample.backward(grad_alp) → grad_ao [BATCH, 2·ACT]
-      actor.backward(grad_ao) — accumulates actor param grads
+Backward symmetrically.
 
-Bit-identical to `SACActorLoss` (Phase 9A) — same RNG order via the
-single shared `rsample`, same fp32 add order in the critic-grad sum
-(slice + scatter-add cancels into the same sequence), same element-wise
-ops (Scale/Sub/ElemMin/Slice are pure memory copy + arithmetic without
-reduction). Verified by `tests/nn2/test_sac_actor_loss_cg.mojo`.
-
-CPU only (Phase 10E). GPU lands when CG v2's GPU path lights up
-(Phase 10F or later).
+Block D (2026-05-21): GPU path. The pre-critic / post-critic chain is
+mirrored on GPU using:
+  - `actor.forward["gpu"]` + `RSample.forward["gpu"]` (already done)
+  - `_concat_s_action_from_alp_kernel` to fold the alp packing into sa
+  - `critic.forward["gpu"]` (twin)
+  - `_pack_post_in_kernel` to materialize [q1 | q2 | log_prob]
+  - `_post_graph.forward["gpu"]` (CG v2 GPU, Block A)
+  - mean loss / log_prob via small device→host copy + scalar reduce
+  - `_unpack_grad_post_in_kernel`
+  - `critic.backward["gpu", mode="input_only"]` (twin)
+  - `_combine_grad_alp_kernel`
+  - `rsample.backward["gpu"]` + `actor.backward["gpu"]`
 """
 
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.memory import alloc
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
     Module,
     Optimizer,
     Initializer,
+    TARGET_GPU,
 )
 from ..core.target_storage import TargetStorage, assert_tag_for
 from ..initializer import Zero
@@ -63,6 +61,119 @@ from ..primitives.scale import Scale
 from ..primitives.slice import Slice
 from ..primitives.binary_elem_min import BinaryElemMin
 from ..primitives.binary_sub import BinarySub
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Inline GPU glue kernels — block D.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _concat_s_action_from_alp_kernel[
+    OBS: Int, ACT: Int, BATCH: Int,
+](
+    s: LayoutTensor[DT, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+    alp: LayoutTensor[
+        DT, Layout.row_major(BATCH, ACT + 1), MutAnyOrigin,
+    ],
+    sa: LayoutTensor[
+        DT, Layout.row_major(BATCH, OBS + ACT), MutAnyOrigin,
+    ],
+):
+    """sa[b, :OBS] = s[b, :OBS]; sa[b, OBS:] = alp[b, :ACT]. One thread
+    per [b, d] over sa's full shape."""
+    var idx = Int(global_idx.x)
+    comptime SA = OBS + ACT
+    var total = BATCH * SA
+    if idx < total:
+        var b = idx // SA
+        var d = idx % SA
+        if d < OBS:
+            sa[b, d] = rebind[Scalar[DT]](s[b, d])
+        else:
+            sa[b, d] = rebind[Scalar[DT]](alp[b, d - OBS])
+
+
+def _pack_post_in_kernel[
+    ACT: Int, BATCH: Int,
+](
+    q1: LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin],
+    q2: LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin],
+    alp: LayoutTensor[
+        DT, Layout.row_major(BATCH, ACT + 1), MutAnyOrigin,
+    ],
+    post_in: LayoutTensor[
+        DT, Layout.row_major(BATCH, 3), MutAnyOrigin,
+    ],
+):
+    """post_in[b] = (q1[b], q2[b], alp[b, ACT])."""
+    var b = Int(global_idx.x)
+    if b < BATCH:
+        post_in[b, 0] = rebind[Scalar[DT]](q1[b, 0])
+        post_in[b, 1] = rebind[Scalar[DT]](q2[b, 0])
+        post_in[b, 2] = rebind[Scalar[DT]](alp[b, ACT])
+
+
+def _unpack_grad_post_in_kernel[
+    BATCH: Int,
+](
+    grad_post_in: LayoutTensor[
+        DT, Layout.row_major(BATCH, 3), MutAnyOrigin,
+    ],
+    grad_q1: LayoutTensor[
+        DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
+    ],
+    grad_q2: LayoutTensor[
+        DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
+    ],
+):
+    """grad_q1[b, 0] = grad_post_in[b, 0]; grad_q2[b, 0] = grad_post_in[b, 1].
+    grad_log_prob (col 2) is consumed by `_combine_grad_alp_kernel` directly."""
+    var b = Int(global_idx.x)
+    if b < BATCH:
+        grad_q1[b, 0] = rebind[Scalar[DT]](grad_post_in[b, 0])
+        grad_q2[b, 0] = rebind[Scalar[DT]](grad_post_in[b, 1])
+
+
+def _combine_grad_alp_kernel[
+    OBS: Int, ACT: Int, BATCH: Int,
+](
+    grad_sa1: LayoutTensor[
+        DT, Layout.row_major(BATCH, OBS + ACT), MutAnyOrigin,
+    ],
+    grad_sa2: LayoutTensor[
+        DT, Layout.row_major(BATCH, OBS + ACT), MutAnyOrigin,
+    ],
+    grad_post_in: LayoutTensor[
+        DT, Layout.row_major(BATCH, 3), MutAnyOrigin,
+    ],
+    grad_alp: LayoutTensor[
+        DT, Layout.row_major(BATCH, ACT + 1), MutAnyOrigin,
+    ],
+):
+    """grad_alp[b, j] = grad_sa1[b, OBS+j] + grad_sa2[b, OBS+j] for j < ACT;
+    grad_alp[b, ACT] = grad_post_in[b, 2] (the log_prob gradient)."""
+    var idx = Int(global_idx.x)
+    comptime ALP = ACT + 1
+    var total = BATCH * ALP
+    if idx < total:
+        var b = idx // ALP
+        var j = idx % ALP
+        if j < ACT:
+            grad_alp[b, j] = (
+                rebind[Scalar[DT]](grad_sa1[b, OBS + j])
+                + rebind[Scalar[DT]](grad_sa2[b, OBS + j])
+            )
+        else:
+            grad_alp[b, j] = rebind[Scalar[DT]](grad_post_in[b, 2])
+
+
+def _fill_constant_kernel[N: Int](
+    buf: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    value: Scalar[DT],
+):
+    var idx = Int(global_idx.x)
+    if idx < N:
+        buf[idx] = value
 
 
 @fieldwise_init
@@ -86,9 +197,6 @@ struct SACActorLossCG[
     comptime ACT_DIM = Self.ACTOR.OUT_DIM // 2
     comptime SA_DIM = Self.OBS_DIM + Self.ACT_DIM
 
-    # Post-critic graph: [q1 | q2 | log_prob] → loss_per_b.
-    # Node order matters only for compile-time backward dispatch (reverse).
-    # alpha_lp's Scale is at index 4 — `set_alpha` writes its `.multiplier`.
     comptime PostGraph = ComputeGraph[
         3, 1,
         UnaryNode["q1_in",       Slice[3, 0, 1],       "input"],
@@ -99,27 +207,47 @@ struct SACActorLossCG[
         BinaryNode["loss_per_b", BinarySub[1],         "alpha_lp", "min_q"],
     ]
 
-    # rsample is public so the trainer reuses it for env-action sampling.
     var rsample: RSample[Self.ACT_DIM]
     var _post_graph: Self.PostGraph
 
-    # Minimal scratch — five buffers for the manual pre/post-graph glue.
-    var _mb_ao: List[Scalar[DT]]            # [BATCH, 2·ACT]  actor.forward output
-    var _mb_alp: List[Scalar[DT]]           # [BATCH, ACT+1]  rsample output [action | log_prob]
-    var _mb_sa: List[Scalar[DT]]            # [BATCH, SA]     concat(s, action)
-    var _mb_q1: List[Scalar[DT]]            # [BATCH, 1]      critic1 output
-    var _mb_q2: List[Scalar[DT]]            # [BATCH, 1]      critic2 output
-    var _mb_post_in: List[Scalar[DT]]       # [BATCH, 3]      [q1 | q2 | log_prob]
-    var _mb_post_out: List[Scalar[DT]]      # [BATCH, 1]      loss_per_b
-    var _mb_grad_post_out: List[Scalar[DT]] # [BATCH, 1]      seed = 1/BATCH
-    var _mb_grad_post_in: List[Scalar[DT]]  # [BATCH, 3]      grad over [q1 | q2 | log_prob]
-    var _mb_grad_q1: List[Scalar[DT]]       # [BATCH, 1]
-    var _mb_grad_q2: List[Scalar[DT]]       # [BATCH, 1]
-    var _mb_grad_sa1: List[Scalar[DT]]      # [BATCH, SA]
-    var _mb_grad_sa2: List[Scalar[DT]]      # [BATCH, SA]
-    var _mb_grad_alp: List[Scalar[DT]]      # [BATCH, ACT+1]  [grad_action | grad_log_prob]
-    var _mb_grad_ao: List[Scalar[DT]]       # [BATCH, 2·ACT]
-    var _mb_grad_obs_unused: List[Scalar[DT]]  # [BATCH, OBS]  thrown away
+    # CPU scratch.
+    var _mb_ao: List[Scalar[DT]]
+    var _mb_alp: List[Scalar[DT]]
+    var _mb_sa: List[Scalar[DT]]
+    var _mb_q1: List[Scalar[DT]]
+    var _mb_q2: List[Scalar[DT]]
+    var _mb_post_in: List[Scalar[DT]]
+    var _mb_post_out: List[Scalar[DT]]
+    var _mb_grad_post_out: List[Scalar[DT]]
+    var _mb_grad_post_in: List[Scalar[DT]]
+    var _mb_grad_q1: List[Scalar[DT]]
+    var _mb_grad_q2: List[Scalar[DT]]
+    var _mb_grad_sa1: List[Scalar[DT]]
+    var _mb_grad_sa2: List[Scalar[DT]]
+    var _mb_grad_alp: List[Scalar[DT]]
+    var _mb_grad_ao: List[Scalar[DT]]
+    var _mb_grad_obs_unused: List[Scalar[DT]]
+
+    # GPU scratch (block D).
+    var _mb_ao_dev: Optional[DeviceBuffer[DT]]
+    var _mb_alp_dev: Optional[DeviceBuffer[DT]]
+    var _mb_sa_dev: Optional[DeviceBuffer[DT]]
+    var _mb_q1_dev: Optional[DeviceBuffer[DT]]
+    var _mb_q2_dev: Optional[DeviceBuffer[DT]]
+    var _mb_post_in_dev: Optional[DeviceBuffer[DT]]
+    var _mb_post_out_dev: Optional[DeviceBuffer[DT]]
+    var _mb_grad_post_out_dev: Optional[DeviceBuffer[DT]]
+    var _mb_grad_post_in_dev: Optional[DeviceBuffer[DT]]
+    var _mb_grad_q1_dev: Optional[DeviceBuffer[DT]]
+    var _mb_grad_q2_dev: Optional[DeviceBuffer[DT]]
+    var _mb_grad_sa1_dev: Optional[DeviceBuffer[DT]]
+    var _mb_grad_sa2_dev: Optional[DeviceBuffer[DT]]
+    var _mb_grad_alp_dev: Optional[DeviceBuffer[DT]]
+    var _mb_grad_ao_dev: Optional[DeviceBuffer[DT]]
+    var _mb_grad_obs_unused_dev: Optional[DeviceBuffer[DT]]
+    # Host-side staging for mean loss/log_prob (BATCH scalars each).
+    var _mb_post_out_host: Optional[HostBuffer[DT]]
+    var _mb_alp_host: Optional[HostBuffer[DT]]
 
     var ts: TargetStorage
 
@@ -142,6 +270,24 @@ struct SACActorLossCG[
         self._mb_grad_alp = List[Scalar[DT]]()
         self._mb_grad_ao = List[Scalar[DT]]()
         self._mb_grad_obs_unused = List[Scalar[DT]]()
+        self._mb_ao_dev = None
+        self._mb_alp_dev = None
+        self._mb_sa_dev = None
+        self._mb_q1_dev = None
+        self._mb_q2_dev = None
+        self._mb_post_in_dev = None
+        self._mb_post_out_dev = None
+        self._mb_grad_post_out_dev = None
+        self._mb_grad_post_in_dev = None
+        self._mb_grad_q1_dev = None
+        self._mb_grad_q2_dev = None
+        self._mb_grad_sa1_dev = None
+        self._mb_grad_sa2_dev = None
+        self._mb_grad_alp_dev = None
+        self._mb_grad_ao_dev = None
+        self._mb_grad_obs_unused_dev = None
+        self._mb_post_out_host = None
+        self._mb_alp_host = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -149,7 +295,7 @@ struct SACActorLossCG[
         action_scale: Scalar[DT] = Scalar[DT](1.0),
     ) raises -> Self:
         comptime assert target == "cpu", (
-            "SACActorLossCG.make[target='gpu'] not yet implemented (Phase 10E CPU only)"
+            "SACActorLossCG.make[target='gpu'] requires a DeviceContext"
         )
         comptime assert Self.ACTOR.OUT_DIM == 2 * Self.ACT_DIM, (
             "SACActorLossCG: ACTOR.OUT_DIM must equal 2·ACT_DIM"
@@ -187,6 +333,52 @@ struct SACActorLossCG[
         blk.ts = TargetStorage.make_cpu()
         return blk^
 
+    @staticmethod
+    def make[target: StaticString](
+        ctx: DeviceContext,
+        action_scale: Scalar[DT] = Scalar[DT](1.0),
+    ) raises -> Self:
+        """GPU factory — allocates all device scratch and inner sub-graphs."""
+        comptime assert target == "gpu", (
+            "SACActorLossCG.make[target='cpu'](ctx) — drop ctx for CPU"
+        )
+        comptime assert Self.ACTOR.OUT_DIM == 2 * Self.ACT_DIM, (
+            "SACActorLossCG: ACTOR.OUT_DIM must equal 2·ACT_DIM"
+        )
+        comptime assert Self.CRITIC.IN_DIM == Self.SA_DIM, (
+            "SACActorLossCG: CRITIC.IN_DIM must equal OBS_DIM + ACT_DIM"
+        )
+        comptime assert Self.CRITIC.OUT_DIM == 1, (
+            "SACActorLossCG: CRITIC.OUT_DIM must equal 1"
+        )
+
+        var blk = Self()
+        blk.rsample = RSample[Self.ACT_DIM].make[target="gpu", INIT=Zero](ctx)
+        blk.rsample.action_scale = action_scale
+        blk._post_graph = Self.PostGraph.make[target="gpu", INIT=Zero](ctx)
+
+        blk._mb_ao_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * 2 * Self.ACT_DIM)
+        blk._mb_alp_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * (Self.ACT_DIM + 1))
+        blk._mb_sa_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.SA_DIM)
+        blk._mb_q1_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
+        blk._mb_q2_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
+        blk._mb_post_in_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * 3)
+        blk._mb_post_out_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
+        blk._mb_grad_post_out_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
+        blk._mb_grad_post_in_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * 3)
+        blk._mb_grad_q1_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
+        blk._mb_grad_q2_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
+        blk._mb_grad_sa1_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.SA_DIM)
+        blk._mb_grad_sa2_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.SA_DIM)
+        blk._mb_grad_alp_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * (Self.ACT_DIM + 1))
+        blk._mb_grad_ao_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * 2 * Self.ACT_DIM)
+        blk._mb_grad_obs_unused_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OBS_DIM)
+        blk._mb_post_out_host = ctx.enqueue_create_host_buffer[DT](Self.BATCH)
+        blk._mb_alp_host = ctx.enqueue_create_host_buffer[DT](Self.BATCH * (Self.ACT_DIM + 1))
+
+        blk.ts = TargetStorage.make_gpu(ctx)
+        return blk^
+
     def forward_backward[
         target: StaticString,
         OPT: Optimizer,
@@ -199,10 +391,26 @@ struct SACActorLossCG[
         mb_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         alpha: Scalar[DT],
     ) raises -> SACActorLossOut:
-        comptime assert target == "cpu", (
-            "SACActorLossCG.forward_backward: GPU path not yet implemented"
-        )
         assert_tag_for["SACActorLossCG", target](self.ts.target_tag)
+
+        comptime if target == "cpu":
+            return self._forward_backward_cpu[OPT](
+                actor, actor_opt, critic1, critic2, mb_s_ptr, alpha,
+            )
+        else:
+            return self._forward_backward_gpu[OPT](
+                actor, actor_opt, critic1, critic2, mb_s_ptr, alpha,
+            )
+
+    def _forward_backward_cpu[OPT: Optimizer](
+        mut self,
+        mut actor: Self.ACTOR,
+        mut actor_opt: OPT,
+        mut critic1: Self.CRITIC,
+        mut critic2: Self.CRITIC,
+        mb_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        alpha: Scalar[DT],
+    ) raises -> SACActorLossOut:
         comptime BB = Self.BATCH
         comptime ACT = Self.ACT_DIM
         comptime OBS = Self.OBS_DIM
@@ -276,11 +484,7 @@ struct SACActorLossCG[
         for b in range(BB):
             g_q1_p[b] = g_post_in_p[b * 3]
             g_q2_p[b] = g_post_in_p[b * 3 + 1]
-            # g_log_prob = g_post_in_p[b * 3 + 2] — packed into grad_alp below
 
-        # Critic backward in input-only mode (frozen params, Phase 8.2
-        # contract): slim Module trait collapsed backward_input into
-        # backward[mode="input_only"] (audit Follow-up #7).
         var g_q1_t = TileTensor(g_q1_p, row_major[BB, 1]())
         var g_q2_t = TileTensor(g_q2_p, row_major[BB, 1]())
         var g_sa1_p = self._mb_grad_sa1.unsafe_ptr()
@@ -290,7 +494,6 @@ struct SACActorLossCG[
         critic1.backward["cpu", BB, mode="input_only"](g_q1_t, g_sa1_t)
         critic2.backward["cpu", BB, mode="input_only"](g_q2_t, g_sa2_t)
 
-        # Sum action portions; pack [grad_action | grad_log_prob] → grad_alp.
         var g_alp_p = self._mb_grad_alp.unsafe_ptr()
         for b in range(BB):
             for j in range(ACT):
@@ -309,6 +512,214 @@ struct SACActorLossCG[
         actor.backward["cpu", BB](g_ao_t, g_obs_t)
 
         actor_opt.step["cpu", M=Self.ACTOR](actor)
+
+        return SACActorLossOut(
+            loss=loss_sum * inv_b,
+            log_prob_mean=lp_sum * inv_b,
+        )
+
+    def _forward_backward_gpu[OPT: Optimizer](
+        mut self,
+        mut actor: Self.ACTOR,
+        mut actor_opt: OPT,
+        mut critic1: Self.CRITIC,
+        mut critic2: Self.CRITIC,
+        mb_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        alpha: Scalar[DT],
+    ) raises -> SACActorLossOut:
+        comptime BB = Self.BATCH
+        comptime ACT = Self.ACT_DIM
+        comptime OBS = Self.OBS_DIM
+        comptime SA = Self.SA_DIM
+        var ctx = self.ts.ctx.value()
+
+        # Resolve device pointers from scratch.
+        var ao_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_ao_dev.value().unsafe_ptr()
+        )
+        var alp_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_alp_dev.value().unsafe_ptr()
+        )
+        var sa_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_sa_dev.value().unsafe_ptr()
+        )
+        var q1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_q1_dev.value().unsafe_ptr()
+        )
+        var q2_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_q2_dev.value().unsafe_ptr()
+        )
+        var post_in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_post_in_dev.value().unsafe_ptr()
+        )
+        var post_out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_post_out_dev.value().unsafe_ptr()
+        )
+        var g_post_out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_grad_post_out_dev.value().unsafe_ptr()
+        )
+        var g_post_in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_grad_post_in_dev.value().unsafe_ptr()
+        )
+        var g_q1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_grad_q1_dev.value().unsafe_ptr()
+        )
+        var g_q2_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_grad_q2_dev.value().unsafe_ptr()
+        )
+        var g_sa1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_grad_sa1_dev.value().unsafe_ptr()
+        )
+        var g_sa2_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_grad_sa2_dev.value().unsafe_ptr()
+        )
+        var g_alp_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_grad_alp_dev.value().unsafe_ptr()
+        )
+        var g_ao_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_grad_ao_dev.value().unsafe_ptr()
+        )
+        var g_obs_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_grad_obs_unused_dev.value().unsafe_ptr()
+        )
+
+        actor_opt.zero_grad["gpu", M=Self.ACTOR](actor)
+
+        # ── Pre-critic ─────────────────────────────────────────────────
+        var mb_s_t = TileTensor(mb_s_ptr, row_major[BB, OBS]())
+        var ao_t = TileTensor(ao_p, row_major[BB, 2 * ACT]())
+        actor.forward["gpu", BB](mb_s_t, ao_t)
+
+        var alp_t = TileTensor(alp_p, row_major[BB, ACT + 1]())
+        self.rsample.forward["gpu", BB](ao_t, alp_t)
+
+        # concat(s, action) where action comes from alp[:, 0:ACT].
+        var s_lt = LayoutTensor[
+            DT, Layout.row_major(BB, OBS), MutAnyOrigin,
+        ](mb_s_ptr)
+        var alp_lt = LayoutTensor[
+            DT, Layout.row_major(BB, ACT + 1), MutAnyOrigin,
+        ](alp_p)
+        var sa_lt = LayoutTensor[
+            DT, Layout.row_major(BB, SA), MutAnyOrigin,
+        ](sa_p)
+        comptime TPB = 128
+        comptime n_blocks_sa = (BB * SA + TPB - 1) // TPB
+        comptime concat_kernel = _concat_s_action_from_alp_kernel[OBS, ACT, BB]
+        ctx.enqueue_function[concat_kernel](
+            s_lt, alp_lt, sa_lt,
+            grid_dim=n_blocks_sa, block_dim=TPB,
+        )
+
+        # Twin critic forwards.
+        var sa_t = TileTensor(sa_p, row_major[BB, SA]())
+        var q1_t = TileTensor(q1_p, row_major[BB, 1]())
+        var q2_t = TileTensor(q2_p, row_major[BB, 1]())
+        critic1.forward["gpu", BB](sa_t, q1_t)
+        critic2.forward["gpu", BB](sa_t, q2_t)
+
+        # Pack [q1 | q2 | log_prob] into post_in.
+        var q1_lt = LayoutTensor[
+            DT, Layout.row_major(BB, 1), MutAnyOrigin,
+        ](q1_p)
+        var q2_lt = LayoutTensor[
+            DT, Layout.row_major(BB, 1), MutAnyOrigin,
+        ](q2_p)
+        var post_in_lt = LayoutTensor[
+            DT, Layout.row_major(BB, 3), MutAnyOrigin,
+        ](post_in_p)
+        comptime n_blocks_b = (BB + TPB - 1) // TPB
+        comptime pack_kernel = _pack_post_in_kernel[ACT, BB]
+        ctx.enqueue_function[pack_kernel](
+            q1_lt, q2_lt, alp_lt, post_in_lt,
+            grid_dim=n_blocks_b, block_dim=TPB,
+        )
+
+        # Set α on alpha_lp (node index 4).
+        self._post_graph.nodes[4].op.multiplier = alpha
+
+        var post_in_t = TileTensor(post_in_p, row_major[BB, 3]())
+        var post_out_t = TileTensor(post_out_p, row_major[BB, 1]())
+        self._post_graph.forward["gpu", BB](post_in_t, post_out_t)
+
+        # Mean loss + mean log_prob via host-side reduction (BATCH scalars
+        # each — at SAC scales (≤ 1024) this is much cheaper than launching
+        # a reduction kernel + scalar download).
+        ctx.enqueue_copy(self._mb_post_out_host.value(), post_out_p)
+        ctx.enqueue_copy(self._mb_alp_host.value(), alp_p)
+        ctx.synchronize()
+        var loss_sum: Scalar[DT] = 0.0
+        var lp_sum: Scalar[DT] = 0.0
+        var post_out_hp = self._mb_post_out_host.value().unsafe_ptr()
+        var alp_hp = self._mb_alp_host.value().unsafe_ptr()
+        for b in range(BB):
+            loss_sum += post_out_hp[b]
+            lp_sum += alp_hp[b * (ACT + 1) + ACT]
+        var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](BB)
+
+        # Backward: seed grad_post_out = 1/BATCH.
+        var g_post_out_lt = LayoutTensor[
+            DT, Layout.row_major(BB), MutAnyOrigin,
+        ](g_post_out_p)
+        comptime fill_kernel = _fill_constant_kernel[BB]
+        ctx.enqueue_function[fill_kernel](
+            g_post_out_lt, inv_b,
+            grid_dim=n_blocks_b, block_dim=TPB,
+        )
+
+        var g_post_out_t = TileTensor(g_post_out_p, row_major[BB, 1]())
+        var g_post_in_t = TileTensor(g_post_in_p, row_major[BB, 3]())
+        self._post_graph.backward["gpu", BB](g_post_out_t, g_post_in_t)
+
+        # Unpack grad over [q1 | q2 | log_prob].
+        var g_post_in_lt = LayoutTensor[
+            DT, Layout.row_major(BB, 3), MutAnyOrigin,
+        ](g_post_in_p)
+        var g_q1_lt = LayoutTensor[
+            DT, Layout.row_major(BB, 1), MutAnyOrigin,
+        ](g_q1_p)
+        var g_q2_lt = LayoutTensor[
+            DT, Layout.row_major(BB, 1), MutAnyOrigin,
+        ](g_q2_p)
+        comptime unpack_kernel = _unpack_grad_post_in_kernel[BB]
+        ctx.enqueue_function[unpack_kernel](
+            g_post_in_lt, g_q1_lt, g_q2_lt,
+            grid_dim=n_blocks_b, block_dim=TPB,
+        )
+
+        # Twin critic backward in input-only mode.
+        var g_q1_t = TileTensor(g_q1_p, row_major[BB, 1]())
+        var g_q2_t = TileTensor(g_q2_p, row_major[BB, 1]())
+        var g_sa1_t = TileTensor(g_sa1_p, row_major[BB, SA]())
+        var g_sa2_t = TileTensor(g_sa2_p, row_major[BB, SA]())
+        critic1.backward["gpu", BB, mode="input_only"](g_q1_t, g_sa1_t)
+        critic2.backward["gpu", BB, mode="input_only"](g_q2_t, g_sa2_t)
+
+        # Combine: grad_alp[b, j] = grad_sa1[b, OBS+j] + grad_sa2[b, OBS+j]
+        # (for j < ACT); grad_alp[b, ACT] = grad_post_in[b, 2].
+        var g_sa1_lt = LayoutTensor[
+            DT, Layout.row_major(BB, SA), MutAnyOrigin,
+        ](g_sa1_p)
+        var g_sa2_lt = LayoutTensor[
+            DT, Layout.row_major(BB, SA), MutAnyOrigin,
+        ](g_sa2_p)
+        var g_alp_lt = LayoutTensor[
+            DT, Layout.row_major(BB, ACT + 1), MutAnyOrigin,
+        ](g_alp_p)
+        comptime n_blocks_alp = (BB * (ACT + 1) + TPB - 1) // TPB
+        comptime combine_kernel = _combine_grad_alp_kernel[OBS, ACT, BB]
+        ctx.enqueue_function[combine_kernel](
+            g_sa1_lt, g_sa2_lt, g_post_in_lt, g_alp_lt,
+            grid_dim=n_blocks_alp, block_dim=TPB,
+        )
+
+        var g_alp_t = TileTensor(g_alp_p, row_major[BB, ACT + 1]())
+        var g_ao_t = TileTensor(g_ao_p, row_major[BB, 2 * ACT]())
+        self.rsample.backward["gpu", BB](g_alp_t, g_ao_t)
+
+        var g_obs_t = TileTensor(g_obs_p, row_major[BB, OBS]())
+        actor.backward["gpu", BB](g_ao_t, g_obs_t)
+        actor_opt.step["gpu", M=Self.ACTOR](actor)
 
         return SACActorLossOut(
             loss=loss_sum * inv_b,
