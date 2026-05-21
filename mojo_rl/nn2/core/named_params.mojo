@@ -91,5 +91,5 @@ def named_params[
     var collector = _NamedParamCollector(
         items_ptr=UnsafePointer(to=items),
     )
-    model.for_each_param[target](String(""), collector)
+    model.for_each_param[target, _NamedParamCollector](String(""), collector)
     return items^

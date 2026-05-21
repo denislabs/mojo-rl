@@ -1,27 +1,25 @@
-"""Module trait — uniform tree-walk API for leaves and combinators.
+"""Slim Module trait (NN2_AUDIT retrofit).
 
-Phase 2.4: `target` is a comptime method param. Modules carry a runtime
-`_target_tag` set by `make[target, INIT]`, asserted by every method.
+Three properties distinguish this trait from the pre-retrofit shape:
 
-Stage B (Phase 10B): `forward` / `backward` / `backward_input` take
-`TileTensor` arguments via the partial-spec form
-`TileTensor[mut=..., dtype=DT, address_space=AddressSpace.GENERIC,
-element_size=1, ...]` — `layout` and `origin` are left unspecified so
-callers can pass tiles built from any source buffer without an
-intermediate `MutAnyOrigin` widening. The previous `[LIN, LOUT, OIN,
-OOUT]` per-method generics are inferred from the actual TileTensors at
-the call site. Impl bodies that need a `MutAnyOrigin` pointer (for a
-kernel launch) rebind only the `.ptr` once at the kernel boundary.
+  1. **No buffer surface.** No `out_ptr/grad_in_ptr/grad_out_ptr/
+     ensure_buffers` methods. Orchestrators (`Sequential`,
+     `ComputeGraph`) own every inter-module slab (audit Spike #1, the
+     unified-buffer design). Leaves that need an input cache for
+     backward alias the orchestrator's input slab via a pointer field —
+     no copy.
 
-The `element_size=1` pin is required so multi-arg arithmetic
-(`out[b, d] = in0[b, d] - in1[b, d]`) typechecks across args. nn2
-doesn't pack SIMD lanes at the tile level — pinning to 1 is zero-cost.
+  2. **`backward[mode]` collapses backward + backward_input.** A
+     comptime `mode = "all" | "input_only"` param replaces the separate
+     `backward_input` method. Leaves dispatch on `comptime if mode ==
+     "all"` to skip param-grad work when only `grad_input` is needed
+     (e.g. through twin critics during SAC actor update).
 
-Trait requirements:
-  - `Defaultable`: zero-arg `__init__()` yields empty placeholders.
-  - `IN_DIM`, `OUT_DIM`: comptime ints.
-  - `make[target, INIT]()` / `make[target, INIT](ctx)`: static factories.
-  - `forward`, `backward`, `for_each_param`: see signatures below.
+  3. **for_each_param / zero_grad have no-op default impls.**
+     Parameterless leaves (ReLU/Tanh/Scale/Slice/Sub/...) auto-inherit.
+     Parameterised leaves override to call `for_each_param_auto[Self, V,
+     target]` from `walkers.mojo` (reflection over `Param[NAME, DECAY,
+     SIZE]` fields). Combinators override to recurse over children.
 """
 
 from std.gpu.host import DeviceContext
@@ -29,12 +27,26 @@ from std.gpu.memory import AddressSpace
 from layout import TileTensor
 
 from ..constants import DT
-from .param_visitor import ParamVisitor
 from .initializer import Initializer
 from .amp import AMPPolicy, NoAMP
+from .param_visitor import ParamVisitor
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Module — the slim trait.
+#
+# The `backward` mode comptime param uses StaticString for ergonomics
+# (`"all"` / `"input_only"`) matching the existing `target` convention.
+# ──────────────────────────────────────────────────────────────────────
 
 
 trait Module(Defaultable & Movable & ImplicitlyDestructible):
+    """Slim Module trait. Required: `make` factories, `forward`,
+    `backward`. Provided: nothing yet (reflection-derived `zero_grad`
+    etc. ship as free functions in `walkers.mojo`; the trait stays
+    minimal until the Mojo nightly limitation around `conforms_to`-
+    dispatch in trait bodies is lifted — see audit Spike #6 caveat)."""
+
     comptime IN_DIM: Int
     comptime OUT_DIM: Int
 
@@ -43,7 +55,9 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         ...
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer](ctx: DeviceContext) raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: DeviceContext) raises -> Self:
         ...
 
     def forward[
@@ -66,6 +80,7 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
     ](
         mut self,
         grad_output: TileTensor[
@@ -76,110 +91,41 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
             element_size=1, ...,
         ],
     ) raises:
+        """Backward with comptime `mode`:
+          - `"all"` (default): writes grad_input AND accumulates param grads.
+          - `"input_only"`: writes grad_input ONLY; skips param-grad work.
+            Used by `StopGradParams` and SAC actor update through twin
+            critics (audit Spike #1 — replaces the separate
+            `backward_input` method on the old trait).
+
+        Param-less leaves (ReLU/Tanh/StopGrad/...) ignore `mode`.
+        Param-bearing leaves (Linear/LayerNorm/GaussianHead/...) gate
+        their param-grad kernels on `comptime if mode == "all"`.
+
+        BACKWARD-ORDER INVARIANT (audit Spike #1): when this leaf
+        aliases its forward input by pointer (the unified-buffer
+        design), `grad_input.ptr` may equal the cache pointer. Param
+        grads MUST be computed before grad_input is written, or the
+        cache is clobbered mid-read."""
         ...
 
-    def backward_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        mut grad_input: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-    ) raises:
-        """Backward computing grad_input only — does NOT accumulate
-        grad_w / grad_b. Used by `StopGradParams` and by inline frozen-
-        network paths (e.g. SAC actor update through the twin critics).
-
-        For param-less primitives (ReLU/Tanh/StopGrad/...) this is just
-        a delegate to `backward`. For Linear/LayerNorm it skips the
-        param-grad kernels. For combinators (Sequential/Residual/Parallel)
-        it chains `backward_input` over children so no inner Module
-        writes its grad_w.
-        """
-        ...
+    # ──────────────────────────────────────────────────────────────────
+    # Provided (default) methods — leaves opt in by being conformers.
+    # Parameterless leaves (ReLU/Tanh/StopGrad/Scale/Slice/...) inherit
+    # the no-op default. Parameterised leaves and combinators override
+    # to recurse over their Params / children.
+    # ──────────────────────────────────────────────────────────────────
 
     def for_each_param[
         target: StaticString,
         V: ParamVisitor,
-    ](
-        mut self,
-        prefix: String,
-        mut visitor: V,
-    ) raises:
-        ...
-
-    def set_inference(mut self, value: Bool):
-        """Set inference mode on this module and recurse into children.
-
-        When `value=True`, forward should skip side effects that are
-        training-only — dropout sampling, BatchNorm running-stats
-        updates, NoisyLinear noise injection, etc. Current leaves
-        (Linear, ReLU, Tanh, LayerNorm, StopGrad) just store the flag
-        for downstream layers that need it.
-
-        Combinators (Sequential, Residual, Parallel, ...) propagate
-        the flag to every child.
-        """
-        ...
-
-    # ──────────────────────────────────────────────────────────────────
-    # Phase 10A — Module-owned output / grad buffers.
-    #
-    # Each Module owns three List[Scalar[DT]] buffers that ComputeGraph
-    # v2 (Phase 10D) uses for inter-node wiring:
-    #   - _out_buf      [BATCH, OUT_DIM]   forward writes here
-    #   - _grad_in_buf  [BATCH, IN_DIM]    backward writes here
-    #   - _grad_out_buf [BATCH, OUT_DIM]   graph zeros + consumers
-    #                                       scatter-add into; backward
-    #                                       reads this as grad_output
-    #
-    # Lazy-grown on first `ensure_buffers[BATCH]()` call. The Module's
-    # existing forward/backward signatures (with explicit `output` /
-    # `grad_input` args) stay unchanged — the graph wraps `out_ptr()`
-    # and `grad_in_ptr()` into TileTensors and passes them as those
-    # args. Existing direct callers (tests, hand-orchestrated loss
-    # blocks) keep working unchanged.
-    #
-    # CPU-only contract for now. GPU buffers (DeviceBuffer mirrors)
-    # land alongside CG v2's GPU path in a later phase.
-    # ──────────────────────────────────────────────────────────────────
-
-    def ensure_buffers[BATCH: Int](mut self) raises:
-        """Lazy-grow internal out / grad_in / grad_out buffers to BATCH
-        samples (each sized BATCH × {OUT_DIM, IN_DIM, OUT_DIM}).
-        Idempotent. Called once per BATCH by the graph before forward.
-
-        Default impl: no-op. Modules that participate in ComputeGraph v2
-        (Phase 10D) must override to grow their owned buffers."""
+    ](mut self, prefix: String, mut visitor: V) raises:
+        """Default: no params. Parameterised leaves override to
+        call `for_each_param_auto[Self, V, target]` from `walkers.mojo`;
+        combinators override to recurse over children."""
         pass
 
-    def out_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        """Pointer into the owned output buffer [BATCH, OUT_DIM].
-        Valid after `ensure_buffers[BATCH]()` has been called.
-
-        Default impl: returns null. Modules that participate in
-        ComputeGraph v2 must override."""
-        return UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
-
-    def grad_in_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        """Pointer into the owned grad-input buffer [BATCH, IN_DIM].
-        Backward writes its grad_input here; graph reads to forward
-        to predecessors' grad_out_bufs via scatter-add.
-
-        Default impl: returns null."""
-        return UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
-
-    def grad_out_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        """Pointer into the owned grad-output buffer [BATCH, OUT_DIM].
-        Graph zeros at start of backward; downstream consumers scatter-
-        add their grad_input pieces here; Module's backward reads it
-        as grad_output.
-
-        Default impl: returns null."""
-        return UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
+    def zero_grad[target: StaticString](mut self) raises:
+        """Default: no params. Parameterised leaves override to call
+        `zero_grad_auto[Self, target]`; combinators override to recurse."""
+        pass

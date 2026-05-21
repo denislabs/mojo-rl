@@ -36,12 +36,8 @@ from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from ..constants import DT
-from ..core import (
-    Module,
-    TARGET_UNINIT,
-    TARGET_CPU,
-    target_tag_for,
-)
+from ..core.module import Module
+from ..core.target_storage import TargetStorage, assert_tag_for
 from ..optimizer.adam import Adam
 from .mse import MSELoss
 from ..training.off_policy_critic import concat_sa
@@ -58,14 +54,14 @@ struct CriticUpdateBlock[
     var _mb_q: List[Scalar[DT]]          # [BATCH, 1]  critic forward output
     var _mb_grad_q: List[Scalar[DT]]     # [BATCH, 1]  MSE backward output
     var _mb_grad_sa: List[Scalar[DT]]    # [BATCH, SA_DIM]  critic backward output (discarded)
-    var _target_tag: Int8
+    var ts: TargetStorage
 
     def __init__(out self):
         self.mse_loss = MSELoss[1]()
         self._mb_q = List[Scalar[DT]]()
         self._mb_grad_q = List[Scalar[DT]]()
         self._mb_grad_sa = List[Scalar[DT]]()
-        self._target_tag = TARGET_UNINIT
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[target: StaticString]() raises -> Self:
@@ -84,18 +80,8 @@ struct CriticUpdateBlock[
         blk._mb_q.resize(Self.BATCH, zero)
         blk._mb_grad_q.resize(Self.BATCH, zero)
         blk._mb_grad_sa.resize(Self.BATCH * Self.SA_DIM, zero)
-        blk._target_tag = TARGET_CPU
+        blk.ts = TargetStorage.make_cpu()
         return blk^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "CriticUpdateBlock: method called with [target='"
-                + String(target)
-                + "'] but block was make'd for a different target (tag="
-                + String(Int(self._target_tag)) + ")"
-            )
 
     def step[
         target: StaticString,
@@ -113,7 +99,7 @@ struct CriticUpdateBlock[
         comptime assert target == "cpu", (
             "CriticUpdateBlock.step: GPU path not yet implemented"
         )
-        self._assert_tag[target]()
+        assert_tag_for["CriticUpdateBlock", target](self.ts.target_tag)
 
         var mb_q_t = TileTensor(
             self._mb_q.unsafe_ptr(), row_major[Self.BATCH, 1]()
@@ -149,13 +135,13 @@ struct TwinCriticUpdateBlock[
     var c1: CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM]
     var c2: CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM]
     var _mb_sa: List[Scalar[DT]]  # [BATCH, SA_DIM]  concat(s, a)
-    var _target_tag: Int8
+    var ts: TargetStorage
 
     def __init__(out self):
         self.c1 = CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM]()
         self.c2 = CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM]()
         self._mb_sa = List[Scalar[DT]]()
-        self._target_tag = TARGET_UNINIT
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[target: StaticString]() raises -> Self:
@@ -170,18 +156,8 @@ struct TwinCriticUpdateBlock[
             Self.CRITIC, Self.BATCH, Self.SA_DIM
         ].make[target="cpu"]()
         blk._mb_sa.resize(Self.BATCH * Self.SA_DIM, Scalar[DT](0.0))
-        blk._target_tag = TARGET_CPU
+        blk.ts = TargetStorage.make_cpu()
         return blk^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "TwinCriticUpdateBlock: method called with [target='"
-                + String(target)
-                + "'] but block was make'd for a different target (tag="
-                + String(Int(self._target_tag)) + ")"
-            )
 
     def step[
         target: StaticString,
@@ -200,7 +176,7 @@ struct TwinCriticUpdateBlock[
         comptime assert target == "cpu", (
             "TwinCriticUpdateBlock.step: GPU path not yet implemented"
         )
-        self._assert_tag[target]()
+        assert_tag_for["TwinCriticUpdateBlock", target](self.ts.target_tag)
 
         var sa_p = self._mb_sa.unsafe_ptr()
         concat_sa[Self.OBS, Self.ACT, Self.BATCH](mb_s_ptr, mb_a_ptr, sa_p)

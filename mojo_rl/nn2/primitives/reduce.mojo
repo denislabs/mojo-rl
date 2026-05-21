@@ -1,54 +1,37 @@
-"""Reduction Modules — Sum[DIM] and Mean[DIM]. Phase 8.4.
+"""Reduction Modules — retrofit (Phase B).
 
-Reduce across the feature axis (column-wise). BATCH dim is preserved so
-combinators like Sequential can still chain afterward.
+Sum[DIM] and Mean[DIM] across the feature axis. Same algorithm as v1,
+just the scaffold collapses: `ts: TargetStorage` replaces the per-leaf
+tag/inference/ctx triplet, `backward[mode]` collapses `backward` +
+`backward_input`, and Phase 10A buffer surface is dropped.
 
-Sum[DIM]:
-    output[b, 0]     = Σ_d input[b, d]
-    grad_input[b, d] = grad_output[b, 0]
-
-Mean[DIM]:
-    output[b, 0]     = (1/DIM) Σ_d input[b, d]
-    grad_input[b, d] = grad_output[b, 0] / DIM
-
-For a batch-wise scalar reduction (e.g. SAC's final per-batch mean to
-produce the scalar loss), the training loop sums the [BATCH, 1] output
-and divides by BATCH outside the Module chain — Mean here reduces the
-*feature* axis, not the batch axis. This deliberately keeps a single
-clean convention: Modules always have a BATCH-preserving signature.
+No params on either struct → no Param wrappers; `for_each_param` is
+a no-op trait conformance.
 """
 
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
-
 from layout import TileTensor
 
 from ..constants import DT
-from ..core import (
-    Module,
-    ParamVisitor,
-    Initializer,
-    AMPPolicy,
-    NoAMP,
-    TARGET_UNINIT,
-    TARGET_CPU,
-    TARGET_GPU,
-    target_tag_for,
-)
+from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
+from ..core.module import Module
+from ..core.target_storage import TargetStorage, assert_tag_for
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sum
+# ──────────────────────────────────────────────────────────────────────
 
 
 struct Sum[DIM: Int](Module):
     comptime IN_DIM = Self.DIM
     comptime OUT_DIM = 1
 
-    var ctx: Optional[DeviceContext]
-    var _target_tag: Int8
-    var _inference: Bool
+    var ts: TargetStorage
 
     def __init__(out self):
-        self.ctx = None
-        self._target_tag = TARGET_UNINIT
-        self._inference = False
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[target: StaticString, INIT: Initializer]() raises -> Self:
@@ -56,7 +39,7 @@ struct Sum[DIM: Int](Module):
             "Sum.make[target='gpu', INIT] requires a DeviceContext"
         )
         var s = Self()
-        s._target_tag = TARGET_CPU
+        s.ts = TargetStorage.make_cpu()
         return s^
 
     @staticmethod
@@ -67,19 +50,8 @@ struct Sum[DIM: Int](Module):
             "Sum.make[target='cpu', INIT](ctx) — drop ctx for CPU"
         )
         var s = Self()
-        s.ctx = ctx
-        s._target_tag = TARGET_GPU
+        s.ts = TargetStorage.make_gpu(ctx)
         return s^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "Sum: method called with [target='"
-                + String(target)
-                + "'] but module was make'd for a different target (tag="
-                + String(Int(self._target_tag)) + ")"
-            )
 
     def forward[
         target: StaticString,
@@ -97,7 +69,7 @@ struct Sum[DIM: Int](Module):
     ) raises:
         comptime assert input.flat_rank == 2, "input rank-2 [BATCH, DIM]"
         comptime assert output.flat_rank == 2, "output rank-2 [BATCH, 1]"
-        self._assert_tag[target]()
+        assert_tag_for["Sum", target](self.ts.target_tag)
 
         comptime if target == "cpu":
             for b in range(BATCH):
@@ -106,12 +78,13 @@ struct Sum[DIM: Int](Module):
                     acc += input[b, d]
                 output[b, 0] = acc
         else:
-            raise Error("Sum: GPU path not yet implemented (Phase 8.4 CPU only)")
+            raise Error("Sum: GPU path not yet implemented")
 
     def backward[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
     ](
         mut self,
         grad_output: TileTensor[
@@ -124,7 +97,10 @@ struct Sum[DIM: Int](Module):
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
         comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
-        self._assert_tag[target]()
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        assert_tag_for["Sum", target](self.ts.target_tag)
 
         comptime if target == "cpu":
             for b in range(BATCH):
@@ -132,33 +108,12 @@ struct Sum[DIM: Int](Module):
                 for d in range(Self.DIM):
                     grad_input[b, d] = go
         else:
-            raise Error("Sum: GPU backward not yet implemented (Phase 8.4 CPU only)")
+            raise Error("Sum: GPU backward not yet implemented")
 
-    def backward_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        mut grad_input: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-    ) raises:
-        self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)
 
-    def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V,) raises:
-        self._assert_tag[target]()
-        pass
-
-    def set_inference(mut self, value: Bool):
-        self._inference = value
+# ──────────────────────────────────────────────────────────────────────
+# Mean
+# ──────────────────────────────────────────────────────────────────────
 
 
 struct Mean[DIM: Int](Module):
@@ -166,14 +121,10 @@ struct Mean[DIM: Int](Module):
     comptime OUT_DIM = 1
     comptime _INV_DIM: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.DIM)
 
-    var ctx: Optional[DeviceContext]
-    var _target_tag: Int8
-    var _inference: Bool
+    var ts: TargetStorage
 
     def __init__(out self):
-        self.ctx = None
-        self._target_tag = TARGET_UNINIT
-        self._inference = False
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[target: StaticString, INIT: Initializer]() raises -> Self:
@@ -181,7 +132,7 @@ struct Mean[DIM: Int](Module):
             "Mean.make[target='gpu', INIT] requires a DeviceContext"
         )
         var m = Self()
-        m._target_tag = TARGET_CPU
+        m.ts = TargetStorage.make_cpu()
         return m^
 
     @staticmethod
@@ -192,19 +143,8 @@ struct Mean[DIM: Int](Module):
             "Mean.make[target='cpu', INIT](ctx) — drop ctx for CPU"
         )
         var m = Self()
-        m.ctx = ctx
-        m._target_tag = TARGET_GPU
+        m.ts = TargetStorage.make_gpu(ctx)
         return m^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "Mean: method called with [target='"
-                + String(target)
-                + "'] but module was make'd for a different target (tag="
-                + String(Int(self._target_tag)) + ")"
-            )
 
     def forward[
         target: StaticString,
@@ -222,7 +162,7 @@ struct Mean[DIM: Int](Module):
     ) raises:
         comptime assert input.flat_rank == 2, "input rank-2 [BATCH, DIM]"
         comptime assert output.flat_rank == 2, "output rank-2 [BATCH, 1]"
-        self._assert_tag[target]()
+        assert_tag_for["Mean", target](self.ts.target_tag)
 
         comptime if target == "cpu":
             for b in range(BATCH):
@@ -231,12 +171,13 @@ struct Mean[DIM: Int](Module):
                     acc += input[b, d]
                 output[b, 0] = acc * Self._INV_DIM
         else:
-            raise Error("Mean: GPU path not yet implemented (Phase 8.4 CPU only)")
+            raise Error("Mean: GPU path not yet implemented")
 
     def backward[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
     ](
         mut self,
         grad_output: TileTensor[
@@ -249,7 +190,10 @@ struct Mean[DIM: Int](Module):
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
         comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
-        self._assert_tag[target]()
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        assert_tag_for["Mean", target](self.ts.target_tag)
 
         comptime if target == "cpu":
             for b in range(BATCH):
@@ -257,30 +201,4 @@ struct Mean[DIM: Int](Module):
                 for d in range(Self.DIM):
                     grad_input[b, d] = go_inv
         else:
-            raise Error("Mean: GPU backward not yet implemented (Phase 8.4 CPU only)")
-
-    def backward_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        mut grad_input: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-    ) raises:
-        self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)
-
-    def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V,) raises:
-        self._assert_tag[target]()
-        pass
-
-    def set_inference(mut self, value: Bool):
-        self._inference = value
+            raise Error("Mean: GPU backward not yet implemented")

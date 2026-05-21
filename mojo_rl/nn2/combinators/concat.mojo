@@ -1,30 +1,24 @@
-"""Concat[*BRANCHES] — variadic column-concat. Phase 8.4.
+"""Concat[*BRANCHES] — retrofit (Phase C). Variadic column-concat.
 
-Variadic generalization of the Phase 5 `Parallel[A, B]` combinator: N
-branches sharing the same input dimension, outputs concatenated
-side-by-side into a single packed tile.
+Generalization of `Parallel[A, B]` to N branches sharing IN_DIM.
+Each branch's forward output goes into a per-branch slab, then the
+slabs get concatenated into the packed output. Backward splits the
+grad_output into per-branch slices, runs each branch's backward into
+a shared `gi_temp` slab, and accumulates the per-branch grad_inputs.
 
-    output[b, j_block_0]            = BRANCHES[0](input)[b, j_block_0]
-    output[b, sum_{<i}(OUT) + j]    = BRANCHES[i](input)[b, j]
+Constraints (comptime):
+  - N >= 1
+  - All BRANCHES share IN_DIM
+  - OUT_DIM = Σ BRANCHES[i].OUT_DIM
 
-Constraints (comptime-checked):
-    - N >= 1
-    - All BRANCHES share IN_DIM
-    - OUT_DIM = Σ BRANCHES[i].OUT_DIM
+CPU only (matches v1 — no validating GPU user yet).
 
-Backward:
-    grad_input = Σ BRANCHES[i].backward(grad_output_slice_i)
-
-Internal scratch (per-branch, lazy-grown):
-    out_slabs[i] : BATCH × BRANCHES[i].OUT_DIM
-                   forward output of branch i; also reused on backward as
-                   the grad_output slice fed to BRANCHES[i].backward.
-    gi_temp      : BATCH × IN_DIM
-                   shared accumulator for backward — each branch.backward
-                   writes here, and we sum-into-output. First branch
-                   overwrites grad_input; subsequent branches += into it.
-
-Phase 8.4 ships CPU only. GPU paths raise — no validating user yet.
+Differences vs v1 `concat.mojo`:
+  * `Module` conformance.
+  * `backward[mode]` collapses v1's `backward` + `backward_input` —
+    the mode flows into every branch.
+  * `ts: TargetStorage` replaces the per-leaf tag/inference/ctx triplet.
+  * `for_each_param` / `zero_grad` recurse over branches.
 """
 
 from std.memory import alloc
@@ -33,16 +27,14 @@ from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
-from ..core import (
-    Module, ParamVisitor, Initializer,
-    AMPPolicy, NoAMP,
-    TARGET_UNINIT, TARGET_CPU, TARGET_GPU, target_tag_for,
-)
+from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
+from ..core.module import Module
+from ..core.target_storage import TargetStorage, assert_tag_for
 
 
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
 # Comptime helpers for variadic sum and cumulative offsets.
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
 
 
 def _total_out_dim[*BRANCHES: Module]() -> Int:
@@ -53,16 +45,15 @@ def _total_out_dim[*BRANCHES: Module]() -> Int:
 
 
 def _cumulative_offset[index: Int, *BRANCHES: Module]() -> Int:
-    """Σ_{j<index} BRANCHES[j].OUT_DIM."""
     var s: Int = 0
     comptime for j in range(index):
         s += BRANCHES[j].OUT_DIM
     return s
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Concat — variadic column-concat.
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# Concat
+# ──────────────────────────────────────────────────────────────────────
 
 
 struct Concat[*BRANCHES: Module](Module):
@@ -71,21 +62,13 @@ struct Concat[*BRANCHES: Module](Module):
     comptime OUT_DIM = _total_out_dim[*Self.BRANCHES]()
 
     var branches: Tuple[*Self.BRANCHES]
-    var ctx: Optional[DeviceContext]
 
-    # Per-branch output scratch slabs (N entries).
     var out_slabs_cpu: List[UnsafePointer[Scalar[DT], MutAnyOrigin]]
     var out_slab_caps: List[Int]
-    # Shared per-branch grad_input temp.
     var gi_temp_cpu: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var gi_temp_cap: Int
 
-    var _target_tag: Int8
-    var _inference: Bool
-
-    # ------------------------------------------------------------------
-    # Defaultable + ctor.
-    # ------------------------------------------------------------------
+    var ts: TargetStorage
 
     def __init__(out self):
         comptime assert Self.N >= 1, "Concat requires at least one branch"
@@ -94,13 +77,11 @@ struct Concat[*BRANCHES: Module](Module):
                 Self.BRANCHES[i].IN_DIM == Self.BRANCHES[0].IN_DIM
             ), "Concat: all BRANCHES must share IN_DIM"
         self.branches = Tuple[*Self.BRANCHES]()
-        self.ctx = None
         self.out_slabs_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
         self.out_slab_caps = List[Int]()
         self.gi_temp_cpu = alloc[Scalar[DT]](1)
         self.gi_temp_cap = 0
-        self._target_tag = TARGET_UNINIT
-        self._inference = False
+        self.ts = TargetStorage.make_uninit()
 
     def __init__(out self, var *branches: *Self.BRANCHES):
         """CPU variadic constructor — accepts pre-built CPU branches."""
@@ -110,7 +91,6 @@ struct Concat[*BRANCHES: Module](Module):
                 Self.BRANCHES[i].IN_DIM == Self.BRANCHES[0].IN_DIM
             ), "Concat: all BRANCHES must share IN_DIM"
         self.branches = Tuple(*branches^)
-        self.ctx = None
         self.out_slabs_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
         self.out_slab_caps = List[Int]()
         for _ in range(Self.N):
@@ -118,12 +98,7 @@ struct Concat[*BRANCHES: Module](Module):
             self.out_slab_caps.append(0)
         self.gi_temp_cpu = alloc[Scalar[DT]](1)
         self.gi_temp_cap = 0
-        self._target_tag = TARGET_CPU
-        self._inference = False
-
-    # ------------------------------------------------------------------
-    # make[target, INIT] — recursive build.
-    # ------------------------------------------------------------------
+        self.ts = TargetStorage.make_cpu()
 
     @staticmethod
     def make[target: StaticString, INIT: Initializer]() raises -> Self:
@@ -136,7 +111,7 @@ struct Concat[*BRANCHES: Module](Module):
         for _ in range(Self.N):
             c.out_slabs_cpu.append(alloc[Scalar[DT]](1))
             c.out_slab_caps.append(0)
-        c._target_tag = TARGET_CPU
+        c.ts = TargetStorage.make_cpu()
         return c^
 
     @staticmethod
@@ -146,29 +121,16 @@ struct Concat[*BRANCHES: Module](Module):
         comptime assert target == "gpu", (
             "Concat.make[target='cpu', INIT](ctx) — drop ctx for CPU"
         )
-        # GPU make stamps the tag so trait dispatch works, but every
-        # method raises until kernels land (no validating user yet).
         var c = Self()
         comptime for i in range(Self.N):
             c.branches[i] = Self.BRANCHES[i].make[target, INIT](ctx)
-        c.ctx = ctx
-        c._target_tag = TARGET_GPU
+        c.ts = TargetStorage.make_gpu(ctx)
         return c^
 
     def __del__(deinit self):
         for p in self.out_slabs_cpu:
             p.free()
         self.gi_temp_cpu.free()
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "Concat: method called with [target='"
-                + String(target)
-                + "'] but module was make'd for a different target (tag="
-                + String(Int(self._target_tag)) + ")"
-            )
 
     def _ensure_slab_cpu[i: Int](mut self, needed: Int):
         if self.out_slab_caps[i] < needed:
@@ -182,9 +144,7 @@ struct Concat[*BRANCHES: Module](Module):
             self.gi_temp_cpu = alloc[Scalar[DT]](needed)
             self.gi_temp_cap = needed
 
-    # ------------------------------------------------------------------
-    # Forward.
-    # ------------------------------------------------------------------
+    # ----- Forward ---------------------------------------------------------
 
     def forward[
         target: StaticString,
@@ -202,21 +162,20 @@ struct Concat[*BRANCHES: Module](Module):
     ) raises:
         comptime assert input.flat_rank == 2, "input rank-2"
         comptime assert output.flat_rank == 2, "output rank-2"
-        self._assert_tag[target]()
+        assert_tag_for["Concat", target](self.ts.target_tag)
 
         comptime if target == "cpu":
             _concat_forward_cpu[target, BATCH, POLICY=POLICY](self, input, output)
         else:
-            raise Error("Concat: GPU forward not yet implemented (Phase 8.4 CPU only)")
+            raise Error("Concat: GPU forward not yet implemented")
 
-    # ------------------------------------------------------------------
-    # Backward.
-    # ------------------------------------------------------------------
+    # ----- Backward --------------------------------------------------------
 
     def backward[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
     ](
         mut self,
         grad_output: TileTensor[
@@ -229,65 +188,40 @@ struct Concat[*BRANCHES: Module](Module):
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
         comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
-        self._assert_tag[target]()
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        assert_tag_for["Concat", target](self.ts.target_tag)
 
         comptime if target == "cpu":
-            _concat_backward_cpu[target, BATCH, POLICY=POLICY, use_backward_input=False](
-                self, grad_output, grad_input
+            _concat_backward_cpu[target, BATCH, POLICY=POLICY, mode=mode](
+                self, grad_output, grad_input,
             )
         else:
-            raise Error("Concat: GPU backward not yet implemented (Phase 8.4 CPU only)")
+            raise Error("Concat: GPU backward not yet implemented")
 
-    def backward_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        mut grad_input: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-    ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
-        self._assert_tag[target]()
-
-        comptime if target == "cpu":
-            _concat_backward_cpu[target, BATCH, POLICY=POLICY, use_backward_input=True](
-                self, grad_output, grad_input
-            )
-        else:
-            raise Error("Concat: GPU backward_input not yet implemented (Phase 8.4 CPU only)")
-
-    # ------------------------------------------------------------------
-    # for_each_param — recurse with indexed prefix (mirrors Sequential).
-    # ------------------------------------------------------------------
+    # ----- Walkers ---------------------------------------------------------
 
     def for_each_param[
         target: StaticString,
         V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V,) raises:
-        self._assert_tag[target]()
+    ](mut self, prefix: String, mut visitor: V) raises:
+        assert_tag_for["Concat", target](self.ts.target_tag)
         var sep = "." if prefix.byte_length() > 0 else ""
         comptime for i in range(Self.N):
-            self.branches[i].for_each_param[target](
-                prefix + sep + String(i), visitor
+            self.branches[i].for_each_param[target, V](
+                prefix + sep + String(i), visitor,
             )
 
-    def set_inference(mut self, value: Bool):
-        self._inference = value
+    def zero_grad[target: StaticString](mut self) raises:
+        assert_tag_for["Concat", target](self.ts.target_tag)
         comptime for i in range(Self.N):
-            self.branches[i].set_inference(value)
+            self.branches[i].zero_grad[target]()
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Free-function bodies (mirror Sequential's pattern to keep Concat's
-# per-method body short and avoid the inline-call-explosion trap).
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# Free-function bodies (same shape as v1; mode flows into each branch).
+# ──────────────────────────────────────────────────────────────────────
 
 
 def _concat_forward_cpu[
@@ -309,19 +243,14 @@ def _concat_forward_cpu[
     comptime assert output.flat_rank == 2, "output rank-2"
     comptime N = BRANCHES.size
 
-    # Grow per-branch output slabs to BATCH * BRANCHES[i].OUT_DIM.
     comptime for i in range(N):
         c._ensure_slab_cpu[i](BATCH * BRANCHES[i].OUT_DIM)
 
-    # Forward each branch into its slab.
     comptime for i in range(N):
         var slab_ptr = c.out_slabs_cpu[i]
         var slab_tt = TileTensor(slab_ptr, row_major[BATCH, BRANCHES[i].OUT_DIM]())
         c.branches[i].forward[target, BATCH, POLICY=POLICY](input, slab_tt)
 
-    # Concat slabs into packed output. We do the copy row-by-row,
-    # branch-by-branch — at typical RL output sizes (≤30 dims per branch)
-    # this is negligible.
     comptime for i in range(N):
         comptime off = _cumulative_offset[i, *BRANCHES]()
         comptime out_i = BRANCHES[i].OUT_DIM
@@ -335,7 +264,7 @@ def _concat_backward_cpu[
     target: StaticString,
     BATCH: Int,
     POLICY: AMPPolicy,
-    use_backward_input: Bool,
+    mode: StaticString,
     *BRANCHES: Module,
 ](
     mut c: Concat[*BRANCHES],
@@ -356,7 +285,6 @@ def _concat_backward_cpu[
         c._ensure_slab_cpu[i](BATCH * BRANCHES[i].OUT_DIM)
     c._ensure_gi_temp_cpu(BATCH * IN_DIM)
 
-    # Zero the caller's grad_input (we'll accumulate into it).
     var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
     var zero_v = SIMD[DT, CPU_SIMD_W](0)
     comptime N_TOTAL = BATCH * IN_DIM
@@ -372,21 +300,14 @@ def _concat_backward_cpu[
         comptime off = _cumulative_offset[i, *BRANCHES]()
         comptime out_i = BRANCHES[i].OUT_DIM
         var slab_ptr = c.out_slabs_cpu[i]
-        # Split grad_output slice [:, off:off+out_i] → slab[i] (reused as
-        # the grad-output scratch fed to BRANCHES[i].backward).
         for b in range(BATCH):
             for j in range(out_i):
                 slab_ptr[b * out_i + j] = grad_output[b, off + j]
         var go_tt = TileTensor(slab_ptr, row_major[BATCH, out_i]())
-        # Branch backward into gi_temp.
         var gi_temp = TileTensor(c.gi_temp_cpu, row_major[BATCH, IN_DIM]())
-        comptime if use_backward_input:
-            c.branches[i].backward_input[target, BATCH, POLICY=POLICY](
-                go_tt, gi_temp
-            )
-        else:
-            c.branches[i].backward[target, BATCH, POLICY=POLICY](go_tt, gi_temp)
-        # Accumulate gi_temp into grad_input via SIMD add.
+        c.branches[i].backward[
+            target, BATCH, POLICY=POLICY, mode=mode,
+        ](go_tt, gi_temp)
         var ap = c.gi_temp_cpu
         var k = 0
         while k + CPU_SIMD_W <= N_TOTAL:

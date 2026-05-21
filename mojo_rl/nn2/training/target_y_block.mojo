@@ -33,12 +33,8 @@ CPU only (Phase 10F).
 from layout import TileTensor, TensorLayout, row_major
 
 from ..constants import DT
-from ..core import (
-    Module,
-    TARGET_UNINIT,
-    TARGET_CPU,
-    target_tag_for,
-)
+from ..core.module import Module
+from ..core.target_storage import TargetStorage, assert_tag_for
 from ..loss.sac_actor_loss import squashed_gaussian_sample
 from ..random.box_muller import box_muller_normal
 from .off_policy_critic import concat_sa
@@ -63,7 +59,7 @@ struct TargetYBlock[
 
     var action_scale: Scalar[DT]
     var gamma: Scalar[DT]
-    var _target_tag: Int8
+    var ts: TargetStorage
 
     def __init__(out self):
         self._mb_ao_sp = List[Scalar[DT]]()
@@ -75,7 +71,7 @@ struct TargetYBlock[
         self._mb_q2_tgt = List[Scalar[DT]]()
         self.action_scale = Scalar[DT](1.0)
         self.gamma = Scalar[DT](0.99)
-        self._target_tag = TARGET_UNINIT
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[target: StaticString](
@@ -108,18 +104,8 @@ struct TargetYBlock[
         blk._mb_q2_tgt.resize(Self.BATCH, zero)
         blk.action_scale = action_scale
         blk.gamma = gamma
-        blk._target_tag = TARGET_CPU
+        blk.ts = TargetStorage.make_cpu()
         return blk^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "TargetYBlock: method called with [target='"
-                + String(target)
-                + "'] but block was make'd for a different target (tag="
-                + String(Int(self._target_tag)) + ")"
-            )
 
     def step[target: StaticString](
         mut self,
@@ -136,7 +122,7 @@ struct TargetYBlock[
         comptime assert target == "cpu", (
             "TargetYBlock.step: GPU path not yet implemented"
         )
-        self._assert_tag[target]()
+        assert_tag_for["TargetYBlock", target](self.ts.target_tag)
 
         var mb_sp_t = TileTensor(mb_sp_ptr, row_major[Self.BATCH, Self.OBS]())
         var mb_ao_sp_p = self._mb_ao_sp.unsafe_ptr()

@@ -1,25 +1,21 @@
-"""BinaryModule trait — 2-input → 1-output building block. Phase 10C.
+"""Slim BinaryModule trait (NN2_AUDIT retrofit).
 
-Sibling of `Module` (1→1). Unlike the packed-tensor convention used by
-the Phase 8.4 `Sub` / `ElemMin` (single input `[a | b]` of width `2*DIM`),
-`BinaryModule` takes two *separate* input tiles. This is the natural
-shape for ComputeGraph v2 (Phase 10D): the graph routes outputs of two
-predecessor nodes into a binary node's `in0` / `in1` slots directly,
-no pre-pack / post-unpack scratch.
+Same shape as `Module` (Defaultable + Movable + ImplicitlyDestructible)
+but for 2-input → 1-output ops. Scaffold trims:
 
-Shape:
-  - `IN0_DIM`, `IN1_DIM`, `OUT_DIM` — per-side feature widths
-  - forward:  `(in0: [B, IN0_DIM], in1: [B, IN1_DIM]) → output: [B, OUT_DIM]`
-  - backward: `grad_output → (grad_in0, grad_in1)`
-
-Tensor args use generic `MutOrigin` per arg so callers can pass tiles
-built from any source buffer (DeviceBuffer, List, etc.) without
-explicit `MutAnyOrigin` widening.
-
-Phase 10A buffer surface (CG v2 wiring): every BinaryModule owns three
-output / grad buffers (one out, one grad_out, two grad_ins). Default
-impls return null pointers + no-op `ensure_buffers` so concrete impls
-opt in lazily. Identical pattern to the Module trait extension.
+  1. No Phase 10A buffer surface (`ensure_buffers`, `out_ptr`,
+     `grad_in0_ptr`, `grad_in1_ptr`, `grad_out_ptr` removed).
+     Orchestrators own all inter-module slabs.
+  2. `backward_input` collapsed into `backward[mode]`. A
+     `mode = "all" | "input_only"` comptime param replaces the separate
+     method. Param-less leaves ignore `mode`; param-bearing binary
+     leaves (none today, but the slot exists for symmetry) gate their
+     param-grad work on `comptime if mode == "all"`.
+  3. `for_each_param` / `zero_grad` are provided as default no-op
+     methods on the trait — today's binaries (Sub/ElemMin/Concat) are
+     all parameter-less and auto-inherit; future param-bearing binaries
+     override to walk their `Param[NAME, DECAY, SIZE]` fields via
+     reflection (same pattern as `Module`).
 """
 
 from std.gpu.host import DeviceContext
@@ -27,9 +23,9 @@ from std.gpu.memory import AddressSpace
 from layout import TileTensor
 
 from ..constants import DT
-from .param_visitor import ParamVisitor
 from .initializer import Initializer
 from .amp import AMPPolicy, NoAMP
+from .param_visitor import ParamVisitor
 
 
 trait BinaryModule(Defaultable & Movable & ImplicitlyDestructible):
@@ -42,7 +38,9 @@ trait BinaryModule(Defaultable & Movable & ImplicitlyDestructible):
         ...
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer](ctx: DeviceContext) raises -> Self:
+    def make[target: StaticString, INIT: Initializer](
+        ctx: DeviceContext,
+    ) raises -> Self:
         ...
 
     def forward[
@@ -51,10 +49,15 @@ trait BinaryModule(Defaultable & Movable & ImplicitlyDestructible):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        in0: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
-        in1: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
+        in0: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        in1: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
         ],
     ) raises:
         ...
@@ -63,84 +66,43 @@ trait BinaryModule(Defaultable & Movable & ImplicitlyDestructible):
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         mut grad_in0: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
         ],
         mut grad_in1: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, ...,
         ],
     ) raises:
+        """Backward with comptime `mode`:
+          - `"all"` (default): writes both grad inputs AND accumulates
+            param grads (if any).
+          - `"input_only"`: writes both grad inputs ONLY; skips param-grad
+            work. For param-less binaries (Sub/ElemMin/Concat) this is
+            identical to `"all"`."""
         ...
 
-    def backward_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        grad_output: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
-        mut grad_in0: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        mut grad_in1: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-    ) raises:
-        """grad_input-only backward (no grad_w accumulation).
-
-        For param-less ops (Sub, ElemMin, ...) this is a delegate to
-        `backward`. Kept in the trait so combinators can dispatch
-        uniformly when a frozen-grad path is needed.
-        """
-        ...
+    # ──────────────────────────────────────────────────────────────────
+    # Provided (default) methods — mirror `Module`'s pattern. Today's
+    # binaries (BinarySub / BinaryElemMin / BinaryConcat) are all
+    # parameter-less, so the no-op default fits. Future param-bearing
+    # binaries override to walk their Params.
+    # ──────────────────────────────────────────────────────────────────
 
     def for_each_param[
         target: StaticString,
         V: ParamVisitor,
-    ](
-        mut self,
-        prefix: String,
-        mut visitor: V,
-    ) raises:
-        ...
-
-    def set_inference(mut self, value: Bool):
-        ...
-
-    # ──────────────────────────────────────────────────────────────────
-    # Phase 10A-style buffer surface for ComputeGraph v2 wiring.
-    #
-    # Each BinaryModule owns four List[Scalar[DT]] buffers:
-    #   - _out_buf       [BATCH, OUT_DIM]   forward writes here
-    #   - _grad_in0_buf  [BATCH, IN0_DIM]   backward writes here (lhs)
-    #   - _grad_in1_buf  [BATCH, IN1_DIM]   backward writes here (rhs)
-    #   - _grad_out_buf  [BATCH, OUT_DIM]   downstream consumers
-    #                                        scatter-add into; backward
-    #                                        reads as grad_output
-    #
-    # Default impls below: no-op + null pointers. Concrete impls opt
-    # in by overriding (same idiom as Module Phase 10A).
-    # ──────────────────────────────────────────────────────────────────
-
-    def ensure_buffers[BATCH: Int](mut self) raises:
-        """Lazy-grow owned out / grad buffers to BATCH samples. Default no-op."""
+    ](mut self, prefix: String, mut visitor: V) raises:
+        """Default: no params. Override on param-bearing binaries."""
         pass
 
-    def out_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        """Pointer to owned [BATCH, OUT_DIM] output buffer. Default null."""
-        return UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
-
-    def grad_in0_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        """Pointer to owned [BATCH, IN0_DIM] grad-input-0 buffer. Default null."""
-        return UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
-
-    def grad_in1_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        """Pointer to owned [BATCH, IN1_DIM] grad-input-1 buffer. Default null."""
-        return UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
-
-    def grad_out_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        """Pointer to owned [BATCH, OUT_DIM] grad-output buffer. Default null."""
-        return UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
+    def zero_grad[target: StaticString](mut self) raises:
+        """Default: no params. Override on param-bearing binaries."""
+        pass

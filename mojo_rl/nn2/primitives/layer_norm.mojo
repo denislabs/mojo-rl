@@ -1,36 +1,28 @@
-"""LayerNorm[DIM] — per-sample layer normalization. Phase 5.4.
+"""LayerNorm[DIM] — retrofit (Phase B).
 
-Forward:
-    mean = (1/D) Σ_d x[b, d]
-    var  = (1/D) Σ_d (x[b, d] - mean)^2
-    inv_std = 1 / sqrt(var + EPS)
-    x_hat = (x - mean) * inv_std
-    y[b, d] = gamma[d] * x_hat[b, d] + beta[d]
+Same algorithm + kernels as v1 (`layer_norm.mojo`); only the
+parameter/storage scaffolding changes:
 
-Backward (per-sample, D-dim, derived from the affine + normalize chain):
-    g           = grad_output * gamma          (per-element)
-    mean_g      = (1/D) Σ_d g
-    mean_g_xhat = (1/D) Σ_d g * x_hat
-    grad_input  = inv_std * (g - mean_g - x_hat * mean_g_xhat)
-    grad_gamma  += grad_output * x_hat         (reduced over batch)
-    grad_beta   += grad_output                  (reduced over batch)
+  * `ts: TargetStorage` replaces `_target_tag` / `_inference` / `ctx`.
+  * `gamma: Param["gamma", False, DIM]` + `beta: Param["beta", False, DIM]`
+    replace the four lists + four device buffers.
+  * `for_each_param` / `zero_grad` are one-liners delegating to
+    `for_each_param_auto` / `zero_grad_auto`.
+  * `backward[mode]` collapses v1's `backward` + `backward_input`.
+  * Phase 10A buffer surface dropped — orchestrators own slabs.
 
-AMP: `force_fp32_input = True` per AMPPolicy contract — LayerNorm
-ignores POLICY and always runs in DT. Stats become numerically
-unstable in bf16, and Phase 3 ships only fp32 + bf16 anyway.
+Cache stays leaf-owned (output-caching, no aliasing): `cache_xhat`
+[BATCH, DIM] and `cache_inv_std` [BATCH] live on the leaf and are
+read in backward. Backward order doesn't matter for aliasing since
+the cache is in dedicated buffers — kept v1's order (grad_input,
+then dgamma/dbeta) for minimal behavioral change.
 
-apply_decay: False for both γ and β. Layer-local convention; AdamW
-sees `apply_decay=False` and skips the decay term — same trick that
-keeps biases out of decay on Linear.
+AMP: `force_fp32_input = True` — LayerNorm ignores POLICY and always
+runs in DT. Stats are numerically unstable in bf16.
 
-Initialization: γ=1, β=0 (the only universal LayerNorm init). INIT
-is accepted for trait conformance but ignored.
-
-ε: hardcoded to 1e-5 (matches PyTorch + Phase 3 reference). If a use
-case appears, promote to a comptime param later.
-
-Cache: x_hat (BATCH × DIM) + inv_std (BATCH × 1). Two separate
-buffers — simpler than packing into a (BATCH × (DIM+1)) blob.
+Init: γ=1, β=0 (universal LayerNorm init); the supplied `INIT` is
+accepted for trait conformance but ignored — `Param.make_*` zero-fills,
+and we post-fill γ to 1.
 """
 
 from std.math import sqrt
@@ -42,15 +34,19 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
-    Module,
-    ParamVisitor,
     Initializer,
     AMPPolicy,
     NoAMP,
-    TARGET_UNINIT,
-    TARGET_CPU,
-    TARGET_GPU,
-    target_tag_for,
+    Param,
+    ParamVisitor,
+    for_each_param_auto,
+    zero_grad_auto,
+)
+from ..core.module import Module
+from ..core.target_storage import (
+    TargetStorage,
+    assert_tag_for,
+    ensure_cpu_buffer,
 )
 
 
@@ -58,9 +54,10 @@ comptime LN_EPS: Scalar[DT] = 1e-5
 comptime LN_TPB: Int = 128
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# GPU kernels.
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# GPU kernels — copied from v1 verbatim. Kept here so LayerNorm is
+# self-contained; v1 can be deleted after Phase F.
+# ──────────────────────────────────────────────────────────────────────
 
 
 def _layer_norm_forward_kernel[
@@ -74,7 +71,6 @@ def _layer_norm_forward_kernel[
     cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     cache_inv_std: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
 ):
-    """Grid: (BATCH,) Block: (LN_TPB,). One block normalizes one sample."""
     var b = Int(block_idx.x)
     var t = Int(thread_idx.x)
 
@@ -83,7 +79,6 @@ def _layer_norm_forward_kernel[
 
     var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
 
-    # Phase 1: mean via block-reduce.
     var my_sum: Scalar[DT] = 0.0
     var idx = t
     while idx < DIM:
@@ -93,7 +88,6 @@ def _layer_norm_forward_kernel[
         block.sum[block_size=LN_TPB, broadcast=True](val=my_sum) * inv_dim
     )
 
-    # Phase 2: variance via block-reduce.
     var my_var: Scalar[DT] = 0.0
     idx = t
     while idx < DIM:
@@ -108,7 +102,6 @@ def _layer_norm_forward_kernel[
     if t == 0:
         cache_inv_std[b] = inv_std
 
-    # Phase 3: normalize, scale, shift.
     idx = t
     while idx < DIM:
         var x = rebind[Scalar[DT]](input[b, idx])
@@ -130,8 +123,6 @@ def _layer_norm_backward_dx_kernel[
     cache_inv_std: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
     grad_input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
 ):
-    """Grid: (BATCH,) Block: (LN_TPB,). Computes dx only (γ, β handled
-    by a separate column-reduction kernel)."""
     var b = Int(block_idx.x)
     var t = Int(thread_idx.x)
 
@@ -141,7 +132,6 @@ def _layer_norm_backward_dx_kernel[
     var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
     var inv_std = rebind[Scalar[DT]](cache_inv_std[b])
 
-    # Phase 1: mean(g) and mean(g * x_hat) where g = grad_output * gamma.
     var my_g: Scalar[DT] = 0.0
     var my_g_xhat: Scalar[DT] = 0.0
     var idx = t
@@ -160,7 +150,6 @@ def _layer_norm_backward_dx_kernel[
         block.sum[block_size=LN_TPB, broadcast=True](val=my_g_xhat) * inv_dim
     )
 
-    # Phase 2: write grad_input.
     idx = t
     while idx < DIM:
         var go = rebind[Scalar[DT]](grad_output[b, idx])
@@ -180,10 +169,6 @@ def _layer_norm_backward_dparams_kernel[
     grad_gamma: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
     grad_beta:  LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
 ):
-    """Grid: (DIM,) Block: (LN_TPB,). Each block reduces one column
-    over the batch dimension, accumulating into grad_γ/grad_β
-    (caller must zero them first if a fresh accumulation is wanted —
-    matches Linear's grad-accumulate convention)."""
     var col = Int(block_idx.x)
     var t = Int(thread_idx.x)
 
@@ -207,124 +192,83 @@ def _layer_norm_backward_dparams_kernel[
         grad_beta[col]  = rebind[Scalar[DT]](grad_beta[col])  + total_db[0]
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# LayerNorm — method-level target.
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# LayerNorm.
+# ──────────────────────────────────────────────────────────────────────
 
 
 struct LayerNorm[DIM: Int](Module):
     comptime IN_DIM = Self.DIM
     comptime OUT_DIM = Self.DIM
 
-    # CPU storage.
-    var gamma: List[Scalar[DT]]
-    var beta: List[Scalar[DT]]
-    var grad_gamma: List[Scalar[DT]]
-    var grad_beta: List[Scalar[DT]]
-    var cache_xhat: List[Scalar[DT]]
-    var cache_inv_std: List[Scalar[DT]]
+    # Params (decay=False for both; PyTorch + canonical AdamW recipe).
+    var gamma: Param["gamma", False, Self.DIM]
+    var beta:  Param["beta",  False, Self.DIM]
 
-    # GPU storage.
-    var gamma_dev: Optional[DeviceBuffer[DT]]
-    var beta_dev: Optional[DeviceBuffer[DT]]
-    var grad_gamma_dev: Optional[DeviceBuffer[DT]]
-    var grad_beta_dev: Optional[DeviceBuffer[DT]]
+    # Cache (leaf-owned, output-caching).
+    var cache_xhat: List[Scalar[DT]]                # [BATCH, DIM]
+    var cache_inv_std: List[Scalar[DT]]             # [BATCH]
     var cache_xhat_dev: Optional[DeviceBuffer[DT]]
     var cache_inv_std_dev: Optional[DeviceBuffer[DT]]
     var cache_n_batch: Int
-    var ctx: Optional[DeviceContext]
 
-    var _target_tag: Int8
-    var _inference: Bool
+    var ts: TargetStorage
 
     def __init__(out self):
-        self.gamma = List[Scalar[DT]]()
-        self.beta = List[Scalar[DT]]()
-        self.grad_gamma = List[Scalar[DT]]()
-        self.grad_beta = List[Scalar[DT]]()
+        self.gamma = Param["gamma", False, Self.DIM]()
+        self.beta  = Param["beta",  False, Self.DIM]()
         self.cache_xhat = List[Scalar[DT]]()
         self.cache_inv_std = List[Scalar[DT]]()
-        self.gamma_dev = None
-        self.beta_dev = None
-        self.grad_gamma_dev = None
-        self.grad_beta_dev = None
         self.cache_xhat_dev = None
         self.cache_inv_std_dev = None
         self.cache_n_batch = 0
-        self.ctx = None
-        self._target_tag = TARGET_UNINIT
-        self._inference = False
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        """CPU factory. γ=1, β=0 (universal LayerNorm init); INIT ignored."""
-        comptime assert (
-            target == "cpu"
-        ), "LayerNorm.make[target='gpu', INIT] requires a DeviceContext"
+        comptime assert target == "cpu", (
+            "LayerNorm.make[target='gpu', INIT] requires a DeviceContext"
+        )
         var ln = Self()
-        ln.gamma      = List[Scalar[DT]](length=Self.DIM, fill=1.0)
-        ln.beta       = List[Scalar[DT]](length=Self.DIM, fill=0.0)
-        ln.grad_gamma = List[Scalar[DT]](length=Self.DIM, fill=0.0)
-        ln.grad_beta  = List[Scalar[DT]](length=Self.DIM, fill=0.0)
-        ln._target_tag = TARGET_CPU
+        ln.gamma = Param["gamma", False, Self.DIM].make_cpu()
+        ln.beta  = Param["beta",  False, Self.DIM].make_cpu()
+        # Universal LayerNorm init: γ=1, β=0. Param.make_cpu zero-filled;
+        # post-fill gamma to 1.
+        var g_ptr = ln.gamma.value_unsafe_ptr_cpu()
+        for k in range(Self.DIM):
+            g_ptr[k] = Scalar[DT](1.0)
+        ln.ts = TargetStorage.make_cpu()
         return ln^
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: DeviceContext) raises -> Self:
-        """GPU factory."""
-        comptime assert (
-            target == "gpu"
-        ), "LayerNorm.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+        comptime assert target == "gpu", (
+            "LayerNorm.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+        )
         var ln = Self()
-        var gamma_dev = ctx.enqueue_create_buffer[DT](Self.DIM)
-        var beta_dev  = ctx.enqueue_create_buffer[DT](Self.DIM)
-        var gg_dev    = ctx.enqueue_create_buffer[DT](Self.DIM)
-        var gb_dev    = ctx.enqueue_create_buffer[DT](Self.DIM)
-        var cxh_dev   = ctx.enqueue_create_buffer[DT](1)
-        var cis_dev   = ctx.enqueue_create_buffer[DT](1)
-        gamma_dev.enqueue_fill(1.0)
-        beta_dev.enqueue_fill(0.0)
-        gg_dev.enqueue_fill(0.0)
-        gb_dev.enqueue_fill(0.0)
-        ln.gamma_dev = gamma_dev^
-        ln.beta_dev = beta_dev^
-        ln.grad_gamma_dev = gg_dev^
-        ln.grad_beta_dev = gb_dev^
-        ln.cache_xhat_dev = cxh_dev^
-        ln.cache_inv_std_dev = cis_dev^
+        ln.gamma = Param["gamma", False, Self.DIM].make_gpu(ctx)
+        ln.beta  = Param["beta",  False, Self.DIM].make_gpu(ctx)
+        ln.gamma.value_dev.value().enqueue_fill(1.0)
+        ln.beta.value_dev.value().enqueue_fill(0.0)
+        # Tiny placeholder cache buffers — actual sizes set on first forward.
+        ln.cache_xhat_dev    = ctx.enqueue_create_buffer[DT](1)
+        ln.cache_inv_std_dev = ctx.enqueue_create_buffer[DT](1)
         ln.cache_n_batch = 0
-        ln.ctx = ctx
-        ln._target_tag = TARGET_GPU
+        ln.ts = TargetStorage.make_gpu(ctx)
         return ln^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "LayerNorm: method called with [target='"
-                + String(target)
-                + "'] but module was make'd for a different target "
-                + "(tag=" + String(Int(self._target_tag)) + ")"
-            )
-
-    def _ensure_cache_cpu(mut self, batch: Int):
-        var needed_xhat = batch * Self.DIM
-        if len(self.cache_xhat) < needed_xhat:
-            self.cache_xhat.resize(needed_xhat, 0.0)
-        if len(self.cache_inv_std) < batch:
-            self.cache_inv_std.resize(batch, 0.0)
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:
         if self.cache_n_batch < batch:
-            self.cache_xhat_dev = self.ctx.value().enqueue_create_buffer[DT](
+            var ctx = self.ts.ctx.value()
+            self.cache_xhat_dev = ctx.enqueue_create_buffer[DT](
                 batch * Self.DIM
             )
-            self.cache_inv_std_dev = self.ctx.value().enqueue_create_buffer[DT](
-                batch
-            )
+            self.cache_inv_std_dev = ctx.enqueue_create_buffer[DT](batch)
             self.cache_n_batch = batch
+
+    # ----- Forward ---------------------------------------------------------
 
     def forward[
         target: StaticString,
@@ -340,21 +284,23 @@ struct LayerNorm[DIM: Int](Module):
             element_size=1, ...,
         ],
     ) raises:
-        # LayerNorm contract: force_fp32_input=True. POLICY ignored.
-        comptime assert (
-            input.flat_rank == 2
-        ), "input must be rank-2 [BATCH, DIM]"
+        comptime assert input.flat_rank == 2, "input must be rank-2 [BATCH, DIM]"
         comptime assert (
             output.flat_rank == 2
         ), "output must be rank-2 [BATCH, DIM]"
-        self._assert_tag[target]()
+        assert_tag_for["LayerNorm", target](self.ts.target_tag)
 
         comptime if target == "cpu":
-            self._ensure_cache_cpu(BATCH)
-            var gamma_v = TileTensor(self.gamma, row_major[Self.DIM]())
-            var beta_v  = TileTensor(self.beta,  row_major[Self.DIM]())
-            var xhat_v  = TileTensor(self.cache_xhat, row_major[BATCH, Self.DIM]())
-            var inv_v   = TileTensor(self.cache_inv_std, row_major[BATCH]())
+            ensure_cpu_buffer(self.cache_xhat,    BATCH * Self.DIM)
+            ensure_cpu_buffer(self.cache_inv_std, BATCH)
+            var gamma_v = TileTensor(self.gamma.value, row_major[Self.DIM]())
+            var beta_v  = TileTensor(self.beta.value,  row_major[Self.DIM]())
+            var xhat_v  = TileTensor(
+                self.cache_xhat, row_major[BATCH, Self.DIM](),
+            )
+            var inv_v   = TileTensor(
+                self.cache_inv_std, row_major[BATCH](),
+            )
             var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
             for b in range(BATCH):
                 var s: Scalar[DT] = 0.0
@@ -381,21 +327,32 @@ struct LayerNorm[DIM: Int](Module):
             var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
             var in_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p_w)
             var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p_w)
-            var g_lt   = LayoutTensor[DT, layout_d, MutAnyOrigin](self.gamma_dev.value())
-            var b_lt   = LayoutTensor[DT, layout_d, MutAnyOrigin](self.beta_dev.value())
-            var xh_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](self.cache_xhat_dev.value())
-            var is_lt  = LayoutTensor[DT, layout_b, MutAnyOrigin](self.cache_inv_std_dev.value())
+            var g_lt   = LayoutTensor[DT, layout_d, MutAnyOrigin](
+                self.gamma.value_dev.value()
+            )
+            var b_lt   = LayoutTensor[DT, layout_d, MutAnyOrigin](
+                self.beta.value_dev.value()
+            )
+            var xh_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](
+                self.cache_xhat_dev.value()
+            )
+            var is_lt  = LayoutTensor[DT, layout_b, MutAnyOrigin](
+                self.cache_inv_std_dev.value()
+            )
             comptime kernel = _layer_norm_forward_kernel[BATCH, Self.DIM]
-            self.ctx.value().enqueue_function[kernel](
+            self.ts.ctx.value().enqueue_function[kernel](
                 in_lt, out_lt, g_lt, b_lt, xh_lt, is_lt,
                 grid_dim=BATCH,
                 block_dim=LN_TPB,
             )
 
+    # ----- Backward --------------------------------------------------------
+
     def backward[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
     ](
         mut self,
         grad_output: TileTensor[
@@ -408,18 +365,24 @@ struct LayerNorm[DIM: Int](Module):
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
         comptime assert grad_input.flat_rank == 2, "grad_input must be rank-2"
-        self._assert_tag[target]()
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        assert_tag_for["LayerNorm", target](self.ts.target_tag)
 
         comptime if target == "cpu":
-            var gamma_v = TileTensor(self.gamma, row_major[Self.DIM]())
-            var grad_gamma_v = TileTensor(self.grad_gamma, row_major[Self.DIM]())
-            var grad_beta_v  = TileTensor(self.grad_beta,  row_major[Self.DIM]())
-            var xhat_v       = TileTensor(self.cache_xhat, row_major[BATCH, Self.DIM]())
-            var inv_v        = TileTensor(self.cache_inv_std, row_major[BATCH]())
+            var gamma_v       = TileTensor(self.gamma.value, row_major[Self.DIM]())
+            var grad_gamma_v  = TileTensor(self.gamma.grad,  row_major[Self.DIM]())
+            var grad_beta_v   = TileTensor(self.beta.grad,   row_major[Self.DIM]())
+            var xhat_v        = TileTensor(
+                self.cache_xhat, row_major[BATCH, Self.DIM](),
+            )
+            var inv_v         = TileTensor(
+                self.cache_inv_std, row_major[BATCH](),
+            )
             var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
             for b in range(BATCH):
                 var inv_std = inv_v[b]
-                # mean(g) and mean(g * x_hat).
                 var sum_g: Scalar[DT] = 0.0
                 var sum_g_xhat: Scalar[DT] = 0.0
                 for d in range(Self.DIM):
@@ -432,11 +395,12 @@ struct LayerNorm[DIM: Int](Module):
                     var g  = grad_output[b, d] * gamma_v[d]
                     var xh = xhat_v[b, d]
                     grad_input[b, d] = inv_std * (g - mean_g - xh * mean_g_xhat)
-                # Accumulate dgamma / dbeta over batch.
-                for d in range(Self.DIM):
-                    grad_gamma_v[d] += grad_output[b, d] * xhat_v[b, d]
-                    grad_beta_v[d]  += grad_output[b, d]
+                comptime if mode == "all":
+                    for d in range(Self.DIM):
+                        grad_gamma_v[d] += grad_output[b, d] * xhat_v[b, d]
+                        grad_beta_v[d]  += grad_output[b, d]
         else:
+            var ctx = self.ts.ctx.value()
             comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
             comptime layout_b  = Layout.row_major(BATCH)
             comptime layout_d  = Layout.row_major(Self.DIM)
@@ -444,107 +408,47 @@ struct LayerNorm[DIM: Int](Module):
             var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
             var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p_w)
             var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p_w)
-            var g_lt  = LayoutTensor[DT, layout_d, MutAnyOrigin](self.gamma_dev.value())
-            var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](self.cache_xhat_dev.value())
-            var is_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](self.cache_inv_std_dev.value())
-            var gg_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](self.grad_gamma_dev.value())
-            var gb_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](self.grad_beta_dev.value())
-
+            var g_lt  = LayoutTensor[DT, layout_d, MutAnyOrigin](
+                self.gamma.value_dev.value()
+            )
+            var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
+                self.cache_xhat_dev.value()
+            )
+            var is_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](
+                self.cache_inv_std_dev.value()
+            )
             # dx kernel: one block per sample.
             comptime dx_kernel = _layer_norm_backward_dx_kernel[BATCH, Self.DIM]
-            self.ctx.value().enqueue_function[dx_kernel](
+            ctx.enqueue_function[dx_kernel](
                 go_lt, g_lt, xh_lt, is_lt, gi_lt,
                 grid_dim=BATCH,
                 block_dim=LN_TPB,
             )
-            # dgamma/dbeta kernel: one block per column.
-            comptime dp_kernel = _layer_norm_backward_dparams_kernel[BATCH, Self.DIM]
-            self.ctx.value().enqueue_function[dp_kernel](
-                go_lt, xh_lt, gg_lt, gb_lt,
-                grid_dim=Self.DIM,
-                block_dim=LN_TPB,
-            )
+            comptime if mode == "all":
+                var gg_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
+                    self.gamma.grad_dev.value()
+                )
+                var gb_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
+                    self.beta.grad_dev.value()
+                )
+                comptime dp_kernel = _layer_norm_backward_dparams_kernel[
+                    BATCH, Self.DIM
+                ]
+                ctx.enqueue_function[dp_kernel](
+                    go_lt, xh_lt, gg_lt, gb_lt,
+                    grid_dim=Self.DIM,
+                    block_dim=LN_TPB,
+                )
 
-    def backward_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        mut grad_input: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-    ) raises:
-        # Phase 8.2: grad_input only; skip dgamma/dbeta accumulation.
-        comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input must be rank-2"
-        self._assert_tag[target]()
-
-        comptime if target == "cpu":
-            var gamma_v = TileTensor(self.gamma, row_major[Self.DIM]())
-            var xhat_v  = TileTensor(self.cache_xhat, row_major[BATCH, Self.DIM]())
-            var inv_v   = TileTensor(self.cache_inv_std, row_major[BATCH]())
-            var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
-            for b in range(BATCH):
-                var inv_std = inv_v[b]
-                var sum_g: Scalar[DT] = 0.0
-                var sum_g_xhat: Scalar[DT] = 0.0
-                for d in range(Self.DIM):
-                    var g = grad_output[b, d] * gamma_v[d]
-                    sum_g      += g
-                    sum_g_xhat += g * xhat_v[b, d]
-                var mean_g      = sum_g * inv_dim
-                var mean_g_xhat = sum_g_xhat * inv_dim
-                for d in range(Self.DIM):
-                    var g  = grad_output[b, d] * gamma_v[d]
-                    var xh = xhat_v[b, d]
-                    grad_input[b, d] = inv_std * (g - mean_g - xh * mean_g_xhat)
-        else:
-            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
-            comptime layout_b  = Layout.row_major(BATCH)
-            comptime layout_d  = Layout.row_major(Self.DIM)
-            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
-            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p_w)
-            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p_w)
-            var g_lt  = LayoutTensor[DT, layout_d, MutAnyOrigin](self.gamma_dev.value())
-            var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](self.cache_xhat_dev.value())
-            var is_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](self.cache_inv_std_dev.value())
-            comptime dx_kernel = _layer_norm_backward_dx_kernel[BATCH, Self.DIM]
-            self.ctx.value().enqueue_function[dx_kernel](
-                go_lt, g_lt, xh_lt, is_lt, gi_lt,
-                grid_dim=BATCH,
-                block_dim=LN_TPB,
-            )
+    # ----- Walkers ---------------------------------------------------------
 
     def for_each_param[
         target: StaticString,
         V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V,) raises:
-        self._assert_tag[target]()
-        var sep = "." if prefix.byte_length() > 0 else ""
-        # Decay convention: γ and β are both excluded from weight decay
-        # (PyTorch + canonical AdamW transformer recipes).
-        comptime if target == "cpu":
-            var g_view  = TileTensor(self.gamma, row_major[Self.DIM]())
-            var gg_view = TileTensor(self.grad_gamma, row_major[Self.DIM]())
-            var b_view  = TileTensor(self.beta, row_major[Self.DIM]())
-            var gb_view = TileTensor(self.grad_beta, row_major[Self.DIM]())
-            visitor.visit(prefix + sep + "gamma", g_view, gg_view, Self.DIM, False)
-            visitor.visit(prefix + sep + "beta",  b_view, gb_view, Self.DIM, False)
-        else:
-            var g_view  = TileTensor(self.gamma_dev.value(),      row_major[Self.DIM]())
-            var gg_view = TileTensor(self.grad_gamma_dev.value(), row_major[Self.DIM]())
-            var b_view  = TileTensor(self.beta_dev.value(),       row_major[Self.DIM]())
-            var gb_view = TileTensor(self.grad_beta_dev.value(),  row_major[Self.DIM]())
-            visitor.visit(prefix + sep + "gamma", g_view, gg_view, Self.DIM, False)
-            visitor.visit(prefix + sep + "beta",  b_view, gb_view, Self.DIM, False)
+    ](mut self, prefix: String, mut visitor: V) raises:
+        assert_tag_for["LayerNorm", target](self.ts.target_tag)
+        for_each_param_auto[Self, V, target](self, prefix, visitor)
 
-    def set_inference(mut self, value: Bool):
-        # LayerNorm has no train/eval split (no running stats in this
-        # version — by design; BN-style running stats land separately).
-        self._inference = value
+    def zero_grad[target: StaticString](mut self) raises:
+        assert_tag_for["LayerNorm", target](self.ts.target_tag)
+        zero_grad_auto[Self, target](self)

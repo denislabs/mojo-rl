@@ -1,15 +1,21 @@
-"""Adam — Adam optimizer (Kingma & Ba 2014). Phase 2.4: method-level target.
+"""Adam — retrofit (Phase D). Same algorithm + storage as v1 Adam;
+the trait surface drops algorithm-specific hyperparams from `make`
+and exposes them as public mut fields:
 
-Same algorithm + storage layout on both targets:
-  - flat `m`, `v` buffers concatenating all params in walk-order
-  - `offsets` table giving the start index of each param's slice
+    var opt = Adam.make[target="cpu", M=MyModel](model)
+    opt.lr = Scalar[DT](3e-4)   # poke a public field after construction
+    opt.step["cpu", M=MyModel](model)
 
-`make[target]` allocates the matching storage and stamps `_target_tag`.
-`step[target]` and `zero_grad[target]` branch on the comptime target and
-pass it through to `model.for_each_param[target]`.
+The mut-field pattern lets external schedules (cosine LR, SAC alpha
+annealing) update hyperparams per-step without rebuilding the optimizer.
 
-Visitors borrow pointers to Adam's storage (sidesteps Mojo's "field
-destroyed mid-life" rejection).
+Internals carry over from v1:
+  * flat `m_flat`/`v_flat` Lists (CPU) or DeviceBuffers (GPU); offsets
+    table maps each param's walk-order index to its start.
+  * Visitors reach into Adam's storage via raw pointers (sidesteps
+    Mojo's field-destroyed-mid-life rejection).
+  * GPU kernel `_adam_update_kernel` lifted from v1 verbatim — same
+    fp32 Adam math.
 """
 
 from std.math import sqrt
@@ -19,15 +25,16 @@ from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
-from ..core import (
-    Module, ParamVisitor, Optimizer,
-    TARGET_UNINIT, TARGET_CPU, TARGET_GPU, target_tag_for,
-)
+from ..core import ParamVisitor
+from ..core.module import Module
+from ..core.optimizer import Optimizer
+from ..core.target_storage import TargetStorage, assert_tag_for
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# GPU kernels.
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# GPU kernels (lifted from v1).
+# ──────────────────────────────────────────────────────────────────────
+
 
 def _adam_update_kernel(
     param: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -64,9 +71,10 @@ def _zero_fill_kernel(
         ptr[i] = 0.0
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# CPU visitors
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# CPU visitors.
+# ──────────────────────────────────────────────────────────────────────
+
 
 @fieldwise_init
 struct _AdamCPUInitVisitor(ParamVisitor):
@@ -118,9 +126,6 @@ struct _AdamCPUStepVisitor(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        # Phase 8.0: SIMD path. nn2 stores m and v in SEPARATE Lists (SoA),
-        # so we can SIMD-load m / v / param / grad directly — no
-        # deinterleave dance like nn v1's interleaved AoS state.
         var off = self.offsets_ptr[][self.idx]
         var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
         var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
@@ -186,9 +191,10 @@ struct _ZeroGradCPUVisitor(ParamVisitor):
             g_ptr[i] = zero
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# GPU visitors
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# GPU visitors.
+# ──────────────────────────────────────────────────────────────────────
+
 
 @fieldwise_init
 struct _AdamGPUInitVisitor(ParamVisitor):
@@ -240,7 +246,6 @@ struct _AdamGPUStepVisitor(ParamVisitor):
         var off = self.offsets_ptr[][self.idx]
         var m_off = self.m_base + off
         var v_off = self.v_base + off
-        # Rebind narrow-origin pointers to MutAnyOrigin for the kernel.
         var param_w_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
         var grad_w_ptr  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
         comptime TPB = 128
@@ -278,9 +283,10 @@ struct _ZeroGradGPUVisitor(ParamVisitor):
         )
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Adam — method-level target.
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# Adam.
+# ──────────────────────────────────────────────────────────────────────
+
 
 struct Adam(Optimizer):
     # CPU storage
@@ -289,126 +295,100 @@ struct Adam(Optimizer):
     # GPU storage
     var m_dev: Optional[DeviceBuffer[DT]]
     var v_dev: Optional[DeviceBuffer[DT]]
-    var ctx: Optional[DeviceContext]
-    # Shared
+    # Shared bookkeeping
     var offsets: List[Int]
     var total_size: Int
     var step_count: Int
+
+    # Public mut hyperparams. Defaults match Kingma & Ba 2014.
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
     var beta2: Scalar[DT]
     var eps: Scalar[DT]
+
     var beta1_pow_t: Scalar[DT]
     var beta2_pow_t: Scalar[DT]
-    var _target_tag: Int8
+
+    var ts: TargetStorage
 
     def __init__(out self):
         self.m_flat = List[Scalar[DT]]()
         self.v_flat = List[Scalar[DT]]()
         self.m_dev = None
         self.v_dev = None
-        self.ctx = None
         self.offsets = List[Int]()
         self.total_size = 0
         self.step_count = 0
-        self.lr = 0.001
-        self.beta1 = 0.9
-        self.beta2 = 0.999
-        self.eps = 1e-8
-        self.beta1_pow_t = 1.0
-        self.beta2_pow_t = 1.0
-        self._target_tag = TARGET_UNINIT
-
-    # ------------------------------------------------------------------
-    # Factories
-    # ------------------------------------------------------------------
+        self.lr = Scalar[DT](0.001)
+        self.beta1 = Scalar[DT](0.9)
+        self.beta2 = Scalar[DT](0.999)
+        self.eps = Scalar[DT](1e-8)
+        self.beta1_pow_t = Scalar[DT](1.0)
+        self.beta2_pow_t = Scalar[DT](1.0)
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, M: Module](
-        mut model: M,
-        lr: Scalar[DT] = 0.001,
-        beta1: Scalar[DT] = 0.9,
-        beta2: Scalar[DT] = 0.999,
-        eps: Scalar[DT] = 1e-8,
-    ) raises -> Self:
-        """CPU factory. Walks the model to size the flat m/v buffers."""
+    def make[target: StaticString, M: Module](mut model: M) raises -> Self:
+        """CPU factory — no hyperparams. User sets `opt.lr` etc. after."""
         comptime assert target == "cpu", (
-            "Adam.make[target='gpu'] requires a DeviceContext"
+            "Adam.make[target='gpu', M] requires a DeviceContext"
         )
-        var adam = Self()
-        adam.lr = lr; adam.beta1 = beta1; adam.beta2 = beta2; adam.eps = eps
+        var opt = Self()
         var visitor = _AdamCPUInitVisitor(
-            m_flat_ptr=UnsafePointer(to=adam.m_flat),
-            v_flat_ptr=UnsafePointer(to=adam.v_flat),
-            offsets_ptr=UnsafePointer(to=adam.offsets),
+            m_flat_ptr=UnsafePointer(to=opt.m_flat),
+            v_flat_ptr=UnsafePointer(to=opt.v_flat),
+            offsets_ptr=UnsafePointer(to=opt.offsets),
         )
-        model.for_each_param[target](String(""), visitor)
-        adam.total_size = len(adam.m_flat)
-        adam._target_tag = TARGET_CPU
-        return adam^
+        model.for_each_param[target, _AdamCPUInitVisitor](String(""), visitor)
+        opt.total_size = len(opt.m_flat)
+        opt.ts = TargetStorage.make_cpu()
+        return opt^
 
     @staticmethod
     def make[target: StaticString, M: Module](
-        mut model: M,
-        ctx: DeviceContext,
-        lr: Scalar[DT] = 0.001,
-        beta1: Scalar[DT] = 0.9,
-        beta2: Scalar[DT] = 0.999,
-        eps: Scalar[DT] = 1e-8,
+        mut model: M, ctx: DeviceContext,
     ) raises -> Self:
         """GPU factory."""
         comptime assert target == "gpu", (
-            "Adam.make[target='cpu'](model, ctx) — drop ctx for CPU"
+            "Adam.make[target='cpu', M](model, ctx) — drop ctx for CPU"
         )
-        var adam = Self()
-        adam.lr = lr; adam.beta1 = beta1; adam.beta2 = beta2; adam.eps = eps
-        adam.ctx = ctx
-        # First pass: compute total_size + offsets via init visitor.
+        var opt = Self()
         var visitor = _AdamGPUInitVisitor(
-            offsets_ptr=UnsafePointer(to=adam.offsets),
-            total_ptr=UnsafePointer(to=adam.total_size),
+            offsets_ptr=UnsafePointer(to=opt.offsets),
+            total_ptr=UnsafePointer(to=opt.total_size),
         )
-        model.for_each_param[target](String(""), visitor)
-        var m_real = ctx.enqueue_create_buffer[DT](adam.total_size)
-        var v_real = ctx.enqueue_create_buffer[DT](adam.total_size)
+        model.for_each_param[target, _AdamGPUInitVisitor](String(""), visitor)
+        var m_real = ctx.enqueue_create_buffer[DT](opt.total_size)
+        var v_real = ctx.enqueue_create_buffer[DT](opt.total_size)
         m_real.enqueue_fill(0.0)
         v_real.enqueue_fill(0.0)
-        adam.m_dev = m_real^
-        adam.v_dev = v_real^
-        adam._target_tag = TARGET_GPU
-        return adam^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "Adam: method called with [target='" + String(target)
-                + "'] but optimizer was make'd for a different target "
-                + "(tag=" + String(Int(self._target_tag)) + ")"
-            )
+        opt.m_dev = m_real^
+        opt.v_dev = v_real^
+        opt.ts = TargetStorage.make_gpu(ctx)
+        return opt^
 
     def zero_grad[
         target: StaticString,
         M: Module,
     ](mut self, mut model: M) raises:
-        self._assert_tag[target]()
+        assert_tag_for["Adam", target](self.ts.target_tag)
         comptime if target == "cpu":
             var v = _ZeroGradCPUVisitor()
-            model.for_each_param[target](String(""), v)
+            model.for_each_param[target, _ZeroGradCPUVisitor](String(""), v)
         else:
-            var v = _ZeroGradGPUVisitor(ctx=self.ctx.value())
-            model.for_each_param[target](String(""), v)
+            var v = _ZeroGradGPUVisitor(ctx=self.ts.ctx.value())
+            model.for_each_param[target, _ZeroGradGPUVisitor](String(""), v)
 
     def step[
         target: StaticString,
         M: Module,
     ](mut self, mut model: M) raises:
-        self._assert_tag[target]()
+        assert_tag_for["Adam", target](self.ts.target_tag)
         self.step_count += 1
         self.beta1_pow_t = self.beta1_pow_t * self.beta1
         self.beta2_pow_t = self.beta2_pow_t * self.beta2
-        var bc1: Scalar[DT] = 1.0 - self.beta1_pow_t
-        var bc2: Scalar[DT] = 1.0 - self.beta2_pow_t
+        var bc1: Scalar[DT] = Scalar[DT](1.0) - self.beta1_pow_t
+        var bc2: Scalar[DT] = Scalar[DT](1.0) - self.beta2_pow_t
 
         comptime if target == "cpu":
             var visitor = _AdamCPUStepVisitor(
@@ -419,10 +399,10 @@ struct Adam(Optimizer):
                 lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
                 bias_correction1=bc1, bias_correction2=bc2,
             )
-            model.for_each_param[target](String(""), visitor)
+            model.for_each_param[target, _AdamCPUStepVisitor](String(""), visitor)
         else:
             var visitor = _AdamGPUStepVisitor(
-                ctx=self.ctx.value(),
+                ctx=self.ts.ctx.value(),
                 m_base=self.m_dev.value().unsafe_ptr(),
                 v_base=self.v_dev.value().unsafe_ptr(),
                 offsets_ptr=UnsafePointer(to=self.offsets),
@@ -430,4 +410,4 @@ struct Adam(Optimizer):
                 lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
                 bias_correction1=bc1, bias_correction2=bc2,
             )
-            model.for_each_param[target](String(""), visitor)
+            model.for_each_param[target, _AdamGPUStepVisitor](String(""), visitor)

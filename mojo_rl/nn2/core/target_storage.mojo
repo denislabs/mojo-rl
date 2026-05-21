@@ -54,31 +54,34 @@ from .target_tag import (
 
 @fieldwise_init
 struct TargetStorage(Movable & ImplicitlyDestructible):
-    """Bundles `target_tag` + `inference` + `ctx` into one composable
-    field. Every nn2 leaf retrofit owns exactly one of these.
+    """Bundles `target_tag` + `ctx` into one composable field. Every
+    nn2 leaf retrofit owns exactly one of these.
 
     `ctx` is `Some` when the leaf was built via `make[target='gpu', INIT](ctx)`
-    and `None` for CPU leaves."""
+    and `None` for CPU leaves.
+
+    Earlier revisions carried an `inference: Bool` flag for train/eval
+    gating, but no consumer ever read it — `set_inference` was dropped
+    when the slim Module trait landed. The field is gone."""
 
     var target_tag: Int8
-    var inference: Bool
     var ctx: Optional[DeviceContext]
 
     @staticmethod
     def make_uninit() -> Self:
         """Default-constructible factory — produces UNINIT-tagged storage.
         Used by `Defaultable.__init__` overloads on retrofit leaves."""
-        return Self(target_tag=TARGET_UNINIT, inference=False, ctx=None)
+        return Self(target_tag=TARGET_UNINIT, ctx=None)
 
     @staticmethod
     def make_cpu() -> Self:
         """CPU-tagged storage. No DeviceContext."""
-        return Self(target_tag=TARGET_CPU, inference=False, ctx=None)
+        return Self(target_tag=TARGET_CPU, ctx=None)
 
     @staticmethod
     def make_gpu(ctx: DeviceContext) -> Self:
         """GPU-tagged storage with the DeviceContext stamped in."""
-        return Self(target_tag=TARGET_GPU, inference=False, ctx=ctx)
+        return Self(target_tag=TARGET_GPU, ctx=ctx)
 
 
 # ──────────────────────────────────────────────────────────────────────

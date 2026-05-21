@@ -40,7 +40,8 @@ def test_xor_converges() raises:
         Linear[HID, OUT].make["cpu", INIT=Kaiming](),
     )
     var loss_fn = CrossEntropyLoss[OUT].make["cpu"]()
-    var optim = Adam.make["cpu"](net, lr=LR)
+    var optim = Adam.make["cpu", M=type_of(net)](net)
+    optim.lr = LR
 
     # ── XOR data ──────────────────────────────────────────────────────
     # (0, 0) → 0;  (0, 1) → 1;  (1, 0) → 1;  (1, 1) → 0

@@ -1,59 +1,31 @@
-"""SAC actor backward helpers — squashed-Gaussian reparameterized loss.
+"""SAC actor backward helpers — Phase E retrofit.
 
-Phase 7.3. Bespoke (NOT `Loss`-conforming) — SAC actor loss takes 5+
-input tensors (actor_output, z noise, grad_action from twin critics,
-alpha, action_scale) so it would distort the `Loss(logits, targets)`
-trait. Free functions instead of a struct because there is no per-call
-state to amortize (no GPU scratch, no parameters).
+Same surface as v1 `sac_actor_loss.mojo` (free functions; not
+`Loss`-conforming because SAC actor loss takes 5+ tensors which would
+distort the `Loss(logits, targets)` trait). The math body is now thin
+wrappers over the canonical pair in `loss/squashed_gaussian.mojo`.
 
 Loss (mean over batch):
-    L = E_b[α · Σ_j log_prob_j(a_b) − min(Q1(s_b, a_b), Q2(s_b, a_b))]
+    L = E_b[α · log_prob_b − min(Q1(s_b, a_b), Q2(s_b, a_b))]
 
-Squashed-Gaussian reparameterization (CleanRL-style):
-    log_std_j = clamp(actor_output[b, ACT+j], -5, 2)
-    std_j     = exp(log_std_j)
-    pre_j     = actor_output[b, j] + std_j · z[b, j]
-    y_j       = tanh(pre_j)
-    a_j       = action_scale · y_j
-    log_prob_j = log_N(z; 0, 1) − log(std) − log(action_scale·(1 − y²) + ε)
-              = -0.5·z² − log_std − 0.5·log(2π)
-                − log(action_scale·(1 − y²) + ε)
-
-Backward emits grad_actor_output[BATCH, 2*ACT] = [d_L/d_mu | d_L/d_log_std].
-
-The caller pre-supplies grad_action[BATCH, ACT] = d_L/d_a, already
-including the -1/BATCH factor and the min-mask from the twin critic
-backwards. We then add the entropy term (α · d_log_prob/d_·) and chain
-through the reparam squashed-Gaussian to mu and log_std.
-
-Phase 7 ships CPU only (SAC Pendulum is CPU-only). GPU path follows the
-same shape (one kernel) when the first GPU SAC env lands.
+Caller supplies `grad_action[BATCH, ACT] = d_L/d_a` (already
+including the `-1/BATCH` factor and the min-mask from twin-critic
+backwards). This wrapper builds `grad_log_prob[b] = α/BATCH` and
+chains through the canonical squashed-Gaussian backward.
 """
 
-from std.math import exp, log, tanh
 from std.gpu.memory import AddressSpace
-from layout import TileTensor
+from layout import TileTensor, row_major
 
 from ..constants import DT
+from .squashed_gaussian import (
+    squashed_gaussian_forward,
+    squashed_gaussian_backward,
+)
 
 
-comptime LOG_STD_MIN: Scalar[DT] = -5.0
-comptime LOG_STD_MAX: Scalar[DT] = 2.0
-comptime EPS_TANH_CORR: Scalar[DT] = 1e-6  # log(c·(1-y²) + ε)
-comptime LOG_2PI: Scalar[DT] = 1.8378770664093453
-
-
-def _clamp_log_std(ls: Scalar[DT]) -> Scalar[DT]:
-    if ls < LOG_STD_MIN:
-        return LOG_STD_MIN
-    elif ls > LOG_STD_MAX:
-        return LOG_STD_MAX
-    return ls
-
-
-def squashed_gaussian_sample[
-    ACT: Int, BATCH: Int,
-](
+# Re-export the forward under v1's name for backward compatibility.
+def squashed_gaussian_sample[ACT: Int, BATCH: Int](
     actor_output: TileTensor[
         dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
     ],
@@ -70,51 +42,13 @@ def squashed_gaussian_sample[
         element_size=1, ...,
     ],
 ) raises:
-    """Compute action[b, j] and log_prob[b] from (actor_output, z).
-
-    Inputs (all rank-2 except log_prob):
-        actor_output [BATCH, 2*ACT]   [mu | log_std]
-        z           [BATCH, ACT]      pre-sampled noise (caller owns RNG)
-
-    Outputs:
-        action      [BATCH, ACT]      action_scale · tanh(mu + exp(clamp(log_std))·z)
-        log_prob    [BATCH]           per-sample squashed-Gaussian log-prob,
-                                      summed over action dims.
-
-    No clamping on action — already in [-action_scale, action_scale] by tanh.
-    """
-    comptime assert actor_output.flat_rank == 2, "actor_output rank-2"
-    comptime assert z.flat_rank == 2, "z rank-2"
-    comptime assert action.flat_rank == 2, "action rank-2"
-    comptime assert log_prob.flat_rank == 1, "log_prob rank-1"
-    comptime assert ACT >= 1, "ACT >= 1"
-
-    for b in range(BATCH):
-        var lp_total: Scalar[DT] = 0.0
-        for j in range(ACT):
-            var mu = actor_output[b, j]
-            var ls = _clamp_log_std(actor_output[b, ACT + j])
-            var std = exp(ls)
-            var zj = z[b, j]
-            var pre = mu + std * zj
-            var y = tanh(pre)
-            action[b, j] = action_scale * y
-            # Log-prob: log_N(x_t | mu, std) - log(c·(1-y²) + ε)
-            #         = -0.5·z² - log_std - 0.5·log(2π) - log(c·(1-y²) + ε)
-            var one_minus_y2 = Scalar[DT](1.0) - y * y
-            var corr = action_scale * one_minus_y2 + EPS_TANH_CORR
-            lp_total += (
-                Scalar[DT](-0.5) * zj * zj
-                - ls
-                - Scalar[DT](0.5) * LOG_2PI
-                - log(corr)
-            )
-        log_prob[b] = lp_total
+    """v1-compatible alias for `squashed_gaussian_forward`."""
+    squashed_gaussian_forward[ACT, BATCH](
+        actor_output, z, action_scale, action, log_prob,
+    )
 
 
-def sac_actor_backward[
-    ACT: Int, BATCH: Int,
-](
+def sac_actor_backward[ACT: Int, BATCH: Int](
     actor_output: TileTensor[
         dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
     ],
@@ -131,38 +65,15 @@ def sac_actor_backward[
         element_size=1, ...,
     ],
 ) raises:
-    """Compute grad_actor_output = [d_L/d_mu | d_L/d_log_std].
+    """Same surface as v1's `sac_actor_backward`. Internally builds
+    `grad_log_prob = α/BATCH` and delegates to the canonical
+    `squashed_gaussian_backward`.
 
-    Inputs (per batch element b, action dim j):
-        actor_output[b, j]         mu_j   (state-dependent mean)
-        actor_output[b, ACT+j]     log_std_j  (state-dependent log-std)
-        z[b, j]                    reparam noise used during sampling
-        grad_action[b, j]          d_L/d_a_j — from critic backwards;
-                                   ALREADY includes -1/BATCH and min-mask.
-        alpha                      entropy temperature
-        action_scale               env action scale
-
-    The entropy term contributes (α / BATCH) per sample. The squashed-
-    Gaussian Jacobian carries the chain rule through reparameterization.
-
-    Derivation:
-        y       = tanh(mu + std·z)
-        a       = c · y
-        L_b     = α · log_prob_b − min_q_b
-        log_prob_b_j = -0.5·z² − log_std − 0.5·log(2π) − log(c·(1-y²)+ε)
-        d a_j / d mu_j      = c · (1 - y²)
-        d a_j / d log_std_j = c · (1 - y²) · z · std
-        d log_prob_j / d mu_j      = 2·y·c·(1-y²) / (c·(1-y²)+ε)
-        d log_prob_j / d log_std_j = -1 + 2·y·c·(1-y²)·z·std / (c·(1-y²)+ε)
-
-    Total gradient (per b, j):
-        grad_mu       = grad_action · c·(1-y²)
-                      + (α / BATCH) · 2·y·c·(1-y²) / (c·(1-y²)+ε)
-        grad_log_std  = grad_action · c·(1-y²)·z·std
-                      + (α / BATCH) · (-1 + 2·y·c·(1-y²)·z·std/(c·(1-y²)+ε))
-
-    log_std clamp masking: if the un-clamped log_std was outside [-5, 2],
-    the gradient through it should be zero (saturated clamp boundary).
+    The α-fold-in stays here (not in the canonical pair) precisely
+    because SAC chooses to bake α/BATCH into grad_log_prob; PPO or
+    offline algorithms use different coefficients. By keeping the
+    canonical pair pure ("only knows the squashed-Gaussian Jacobian")
+    we let each algorithm decide its own entropy/scaling story.
     """
     comptime assert actor_output.flat_rank == 2, "actor_output rank-2"
     comptime assert z.flat_rank == 2, "z rank-2"
@@ -171,47 +82,18 @@ def sac_actor_backward[
     comptime assert ACT >= 1, "ACT >= 1"
 
     var inv_batch: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](BATCH)
+    var entropy_scalar = alpha * inv_batch
 
-    for b in range(BATCH):
-        for j in range(ACT):
-            var mu = actor_output[b, j]
-            var ls_raw = actor_output[b, ACT + j]
-            var ls = _clamp_log_std(ls_raw)
-            var ls_clamped = (ls_raw < LOG_STD_MIN) or (ls_raw > LOG_STD_MAX)
+    # Build grad_log_prob[b] = α/BATCH (constant across batch).
+    var glp_buf = List[Scalar[DT]](length=BATCH, fill=entropy_scalar)
+    var glp_t = TileTensor(glp_buf, row_major[BATCH]())
 
-            var std = exp(ls)
-            var zj = z[b, j]
-            var pre = mu + std * zj
-            var y = tanh(pre)
-            var one_minus_y2 = Scalar[DT](1.0) - y * y
-            var c_corr = action_scale * one_minus_y2
-            var corr = c_corr + EPS_TANH_CORR
-
-            # Chain factors.
-            var da_dmu = action_scale * one_minus_y2
-            var da_dls = action_scale * one_minus_y2 * zj * std
-            var dlp_dmu = (Scalar[DT](2.0) * y * c_corr) / corr
-            var dlp_dls = (
-                Scalar[DT](-1.0)
-                + (Scalar[DT](2.0) * y * c_corr * zj * std) / corr
-            )
-
-            var ga = grad_action[b, j]
-            var entropy_scalar = alpha * inv_batch
-
-            var gmu = ga * da_dmu + entropy_scalar * dlp_dmu
-            var gls = ga * da_dls + entropy_scalar * dlp_dls
-
-            grad_actor_output[b, j] = gmu
-            if ls_clamped:
-                grad_actor_output[b, ACT + j] = 0.0
-            else:
-                grad_actor_output[b, ACT + j] = gls
+    squashed_gaussian_backward[ACT, BATCH](
+        actor_output, z, grad_action, glp_t, action_scale, grad_actor_output,
+    )
 
 
-def sac_actor_loss_value[
-    BATCH: Int,
-](
+def sac_actor_loss_value[BATCH: Int](
     log_prob: TileTensor[
         dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
     ],

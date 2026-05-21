@@ -19,10 +19,8 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
-from ..core import (
-    Loss, AMPPolicy, NoAMP,
-    TARGET_UNINIT, TARGET_CPU, TARGET_GPU, target_tag_for,
-)
+from ..core import Loss, AMPPolicy, NoAMP
+from ..core.target_storage import TargetStorage, assert_tag_for
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -79,9 +77,8 @@ struct MSELoss[DIM: Int](Loss):
     var partial_loss_dev: Optional[DeviceBuffer[DT]]
     var partial_loss_host: Optional[HostBuffer[DT]]
     var partial_loss_n: Int
-    var ctx: Optional[DeviceContext]
 
-    var _target_tag: Int8
+    var ts: TargetStorage
 
     def __init__(out self):
         self.cache_logits = List[Scalar[DT]]()
@@ -90,8 +87,7 @@ struct MSELoss[DIM: Int](Loss):
         self.partial_loss_dev = None
         self.partial_loss_host = None
         self.partial_loss_n = 0
-        self.ctx = None
-        self._target_tag = TARGET_UNINIT
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[target: StaticString]() raises -> Self:
@@ -99,7 +95,7 @@ struct MSELoss[DIM: Int](Loss):
             "MSELoss.make[target='gpu'] requires a DeviceContext"
         )
         var loss = Self()
-        loss._target_tag = TARGET_CPU
+        loss.ts = TargetStorage.make_cpu()
         return loss^
 
     @staticmethod
@@ -111,18 +107,8 @@ struct MSELoss[DIM: Int](Loss):
         loss.cache_logits_dev = ctx.enqueue_create_buffer[DT](1)
         loss.partial_loss_dev = ctx.enqueue_create_buffer[DT](1)
         loss.partial_loss_host = ctx.enqueue_create_host_buffer[DT](1)
-        loss.ctx = ctx
-        loss._target_tag = TARGET_GPU
+        loss.ts = TargetStorage.make_gpu(ctx)
         return loss^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "MSELoss: method called with [target='" + String(target)
-                + "'] but loss was make'd for a different target "
-                + "(tag=" + String(Int(self._target_tag)) + ")"
-            )
 
     def _ensure_cache_cpu(mut self, batch: Int):
         var needed = batch * Self.DIM
@@ -130,7 +116,7 @@ struct MSELoss[DIM: Int](Loss):
             self.cache_logits.resize(needed, 0.0)
 
     def _ensure_buffers_gpu(mut self, batch: Int) raises:
-        var ctx = self.ctx.value()
+        var ctx = self.ts.ctx.value()
         var c_needed = batch * Self.DIM
         if self.cache_logits_dev_n < c_needed:
             self.cache_logits_dev = ctx.enqueue_create_buffer[DT](c_needed)
@@ -155,7 +141,7 @@ struct MSELoss[DIM: Int](Loss):
     ) raises -> Scalar[DT]:
         comptime assert logits.flat_rank == 2, "logits rank-2"
         comptime assert targets.flat_rank == 2, "targets rank-2"
-        self._assert_tag[target]()
+        assert_tag_for["MSELoss", target](self.ts.target_tag)
 
         comptime if target == "cpu":
             # Phase 8.0: SIMD path. Flat sweep over BATCH * DIM since the
@@ -186,7 +172,7 @@ struct MSELoss[DIM: Int](Loss):
             return total / Scalar[DT](BATCH)
         else:
             self._ensure_buffers_gpu(BATCH)
-            var ctx = self.ctx.value()
+            var ctx = self.ts.ctx.value()
             comptime mat_layout = Layout.row_major(BATCH, Self.DIM)
             comptime row_layout = Layout.row_major(BATCH)
             var lp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
@@ -235,7 +221,7 @@ struct MSELoss[DIM: Int](Loss):
     ) raises:
         comptime assert targets.flat_rank == 2, "targets rank-2"
         comptime assert grad_logits.flat_rank == 2, "grad_logits rank-2"
-        self._assert_tag[target]()
+        assert_tag_for["MSELoss", target](self.ts.target_tag)
 
         comptime if target == "cpu":
             # Phase 8.0: SIMD path.
@@ -255,7 +241,7 @@ struct MSELoss[DIM: Int](Loss):
                 gp[k] = (cp[k] - tp[k]) * inv_batch
                 k += 1
         else:
-            var ctx = self.ctx.value()
+            var ctx = self.ts.ctx.value()
             comptime mat_layout = Layout.row_major(BATCH, Self.DIM)
             var tp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
             var gp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_logits.ptr)

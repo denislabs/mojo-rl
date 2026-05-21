@@ -130,9 +130,10 @@ struct UnaryNode[
         in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
-        var out_t = TileTensor(
-            self._out_buf.unsafe_ptr(), row_major[BATCH, Self.OUT_DIM]()
+        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._out_buf.unsafe_ptr()
         )
+        var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
         self.op.forward[target, BATCH, POLICY=POLICY](in0_t, out_t)
 
     def backward_via[
@@ -140,22 +141,21 @@ struct UnaryNode[
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
     ](mut self) raises:
-        var go_t = TileTensor(
-            self._grad_out_buf.unsafe_ptr(), row_major[BATCH, Self.OUT_DIM]()
+        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._grad_out_buf.unsafe_ptr()
         )
-        var gi0_t = TileTensor(
-            self._grad_in0_buf.unsafe_ptr(), row_major[BATCH, Self.IN0_DIM]()
+        var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._grad_in0_buf.unsafe_ptr()
         )
+        var go_t = TileTensor(go_p, row_major[BATCH, Self.OUT_DIM]())
+        var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
         self.op.backward[target, BATCH, POLICY=POLICY](go_t, gi0_t)
 
     def for_each_param_via[
         target: StaticString,
         V: ParamVisitor,
     ](mut self, prefix: String, mut visitor: V,) raises:
-        self.op.for_each_param[target](prefix, visitor)
-
-    def set_inference_via(mut self, value: Bool):
-        self.op.set_inference(value)
+        self.op.for_each_param[target, V](prefix, visitor)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -252,9 +252,10 @@ struct BinaryNode[
     ) raises:
         var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
         var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN1_DIM]())
-        var out_t = TileTensor(
-            self._out_buf.unsafe_ptr(), row_major[BATCH, Self.OUT_DIM]()
+        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._out_buf.unsafe_ptr()
         )
+        var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
         self.op.forward[target, BATCH, POLICY=POLICY](in0_t, in1_t, out_t)
 
     def backward_via[
@@ -262,22 +263,22 @@ struct BinaryNode[
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
     ](mut self) raises:
-        var go_t = TileTensor(
-            self._grad_out_buf.unsafe_ptr(), row_major[BATCH, Self.OUT_DIM]()
+        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._grad_out_buf.unsafe_ptr()
         )
-        var gi0_t = TileTensor(
-            self._grad_in0_buf.unsafe_ptr(), row_major[BATCH, Self.IN0_DIM]()
+        var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._grad_in0_buf.unsafe_ptr()
         )
-        var gi1_t = TileTensor(
-            self._grad_in1_buf.unsafe_ptr(), row_major[BATCH, Self.IN1_DIM]()
+        var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._grad_in1_buf.unsafe_ptr()
         )
+        var go_t = TileTensor(go_p, row_major[BATCH, Self.OUT_DIM]())
+        var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
+        var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN1_DIM]())
         self.op.backward[target, BATCH, POLICY=POLICY](go_t, gi0_t, gi1_t)
 
     def for_each_param_via[
         target: StaticString,
         V: ParamVisitor,
     ](mut self, prefix: String, mut visitor: V,) raises:
-        self.op.for_each_param[target](prefix, visitor)
-
-    def set_inference_via(mut self, value: Bool):
-        self.op.set_inference(value)
+        self.op.for_each_param[target, V](prefix, visitor)

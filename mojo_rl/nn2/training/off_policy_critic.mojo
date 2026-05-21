@@ -31,7 +31,7 @@ each `mut` arg distinctly. See memory:
 from layout import TileTensor, TensorLayout, row_major
 
 from ..constants import DT
-from ..core import Module
+from ..core.module import Module
 from ..optimizer.adam import Adam
 from ..loss.mse import MSELoss
 

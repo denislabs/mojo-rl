@@ -32,9 +32,7 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
-from ..core import (
-    TARGET_UNINIT, TARGET_CPU, TARGET_GPU, target_tag_for,
-)
+from ..core.target_storage import TargetStorage, assert_tag_for
 
 
 comptime LOG_STD_MIN: Scalar[DT] = -5.0
@@ -203,9 +201,8 @@ struct PPOActorLoss[ACT: Int](Defaultable, Movable, ImplicitlyDestructible):
     var partial_loss_dev: Optional[DeviceBuffer[DT]]
     var partial_loss_host: Optional[HostBuffer[DT]]
     var partial_loss_n: Int
-    var ctx: Optional[DeviceContext]
 
-    var _target_tag: Int8
+    var ts: TargetStorage
 
     def __init__(out self):
         self.clip_eps = 0.2
@@ -213,8 +210,7 @@ struct PPOActorLoss[ACT: Int](Defaultable, Movable, ImplicitlyDestructible):
         self.partial_loss_dev = None
         self.partial_loss_host = None
         self.partial_loss_n = 0
-        self.ctx = None
-        self._target_tag = TARGET_UNINIT
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[target: StaticString](
@@ -227,7 +223,7 @@ struct PPOActorLoss[ACT: Int](Defaultable, Movable, ImplicitlyDestructible):
         var lo = Self()
         lo.clip_eps = clip_eps
         lo.entropy_coef = entropy_coef
-        lo._target_tag = TARGET_CPU
+        lo.ts = TargetStorage.make_cpu()
         return lo^
 
     @staticmethod
@@ -244,22 +240,12 @@ struct PPOActorLoss[ACT: Int](Defaultable, Movable, ImplicitlyDestructible):
         lo.entropy_coef = entropy_coef
         lo.partial_loss_dev = ctx.enqueue_create_buffer[DT](1)
         lo.partial_loss_host = ctx.enqueue_create_host_buffer[DT](1)
-        lo.ctx = ctx
-        lo._target_tag = TARGET_GPU
+        lo.ts = TargetStorage.make_gpu(ctx)
         return lo^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "PPOActorLoss: method called with [target='" + String(target)
-                + "'] but loss was make'd for a different target "
-                + "(tag=" + String(Int(self._target_tag)) + ")"
-            )
 
     def _ensure_partial_gpu(mut self, batch: Int) raises:
         if self.partial_loss_n < batch:
-            var c = self.ctx.value()
+            var c = self.ts.ctx.value()
             self.partial_loss_dev = c.enqueue_create_buffer[DT](batch)
             self.partial_loss_host = c.enqueue_create_host_buffer[DT](batch)
             self.partial_loss_n = batch
@@ -286,7 +272,7 @@ struct PPOActorLoss[ACT: Int](Defaultable, Movable, ImplicitlyDestructible):
         comptime assert action.flat_rank == 2, "action rank-2"
         comptime assert old_log_prob.flat_rank == 1, "old_log_prob rank-1"
         comptime assert advantage.flat_rank == 1, "advantage rank-1"
-        self._assert_tag[target]()
+        assert_tag_for["PPOActorLoss", target](self.ts.target_tag)
 
         comptime if target == "cpu":
             var total: Scalar[DT] = 0.0
@@ -330,7 +316,7 @@ struct PPOActorLoss[ACT: Int](Defaultable, Movable, ImplicitlyDestructible):
             return total / Scalar[DT](BATCH)
         else:
             self._ensure_partial_gpu(BATCH)
-            var ctx = self.ctx.value()
+            var ctx = self.ts.ctx.value()
             comptime ao_layout = Layout.row_major(BATCH, 2 * Self.ACT)
             comptime ac_layout = Layout.row_major(BATCH, Self.ACT)
             comptime row_layout = Layout.row_major(BATCH)
@@ -388,7 +374,7 @@ struct PPOActorLoss[ACT: Int](Defaultable, Movable, ImplicitlyDestructible):
         comptime assert old_log_prob.flat_rank == 1, "old_log_prob rank-1"
         comptime assert advantage.flat_rank == 1, "advantage rank-1"
         comptime assert grad_actor_output.flat_rank == 2, "grad_actor_output rank-2"
-        self._assert_tag[target]()
+        assert_tag_for["PPOActorLoss", target](self.ts.target_tag)
 
         comptime if target == "cpu":
             var inv_batch: Scalar[DT] = 1.0 / Scalar[DT](BATCH)
@@ -458,7 +444,7 @@ struct PPOActorLoss[ACT: Int](Defaultable, Movable, ImplicitlyDestructible):
                         grad_actor_output[b, j] = gmu
                         grad_actor_output[b, Self.ACT + j] = gls
         else:
-            var ctx = self.ctx.value()
+            var ctx = self.ts.ctx.value()
             comptime ao_layout = Layout.row_major(BATCH, 2 * Self.ACT)
             comptime ac_layout = Layout.row_major(BATCH, Self.ACT)
             comptime row_layout = Layout.row_major(BATCH)

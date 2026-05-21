@@ -1,32 +1,31 @@
 """AMP cast-around-matmul scaffolding (audit Follow-up #2).
 
 Two free helpers + one state struct that absorb the bf16 cast bookkeeping
-currently duplicated in `Linear`. Today Linear inlines six copies of
-the same SIMD cast loop (3 method paths × 2 directions); after the
-retrofit those bodies collapse to ~3 lines: bump w_dirty if needed,
-call `cast_fp32_to_bf16`, call `linalg.matmul[target=...]`, call
-`cast_bf16_to_fp32`.
+currently duplicated in `Linear`. Linear used to inline six copies of
+the same SIMD cast loop (3 method paths × 2 directions); these helpers
+collapse those bodies to a single `cast_fp32_to_bf16` /
+`cast_bf16_to_fp32` call around the bf16 `linalg.matmul`.
 
 # Surface
 
   - `cast_fp32_to_bf16[target, N](src, dst, ctx?)` — CPU SIMD or GPU
     kernel, branched on `target`.
   - `cast_bf16_to_fp32[target, N](src, dst, ctx?)` — symmetric upcast.
-  - `LinearAMPState[IN, OUT]` — owns the three bf16 scratches plus a
-    `w_dirty` flag the caller flips after every parameter update.
+  - `LinearAMPState[IN, OUT]` — owns the three bf16 scratches
+    (w_bf16, in_bf16, ou_bf16) for a Linear-shaped leaf.
 
-# Why a `w_dirty` flag
+# Why no `w_dirty` flag
 
-Weights only change on `optimizer.step()`. Today Linear re-casts the
-full IN×OUT bf16 weight on every forward AND every backward. With
-`w_dirty`, we cast once per Adam step. Activations/grad_outputs DO
-change every call, so those casts stay.
+Earlier revisions cached the bf16 weight cast across steps and gated
+on a `w_dirty` flag the optimizer was meant to flip. No optimizer ever
+flipped it, so the cache went stale after the first Adam step and the
+network silently trained against frozen weights (test_mnist_mlp_cpu_amp
+collapsed from 97% to 59%). The cache + flag is gone — Linear re-casts
+the fp32 weight on every fwd/bwd call. Cost is IN*OUT scalar ops vs
+BATCH*IN*OUT in the matmul, so the dirty optimization wasn't worth the
+correctness footgun.
 
-The optimizer is responsible for flipping the flag — when a parameter
-update lands on this Linear's weight, the optimizer (or whatever drove
-the update) sets `linear.amp.w_dirty = True`.
-
-CPU + GPU dual storage; per-instance ~24 bytes for the flags/caps plus
+CPU + GPU dual storage; per-instance ~24 bytes for `batch_cap` plus
 the scratch lists/buffers.
 """
 
@@ -148,11 +147,10 @@ struct LinearAMPState[IN: Int, OUT: Int](Movable & ImplicitlyDestructible):
     """bf16 scratch cluster for the cast-around-matmul path.
 
     Holds:
-      - `w_bf16` — IN*OUT bf16 weight cast. Re-cast only when `w_dirty`.
+      - `w_bf16` — IN*OUT bf16 weight scratch. Re-cast every fwd/bwd.
       - `in_bf16` — BATCH*IN bf16 scratch (input fwd, grad_in bwd).
       - `ou_bf16` — BATCH*OUT bf16 scratch (output fwd, grad_out bwd).
       - `batch_cap` — current BATCH capacity for `in_bf16` / `ou_bf16`.
-      - `w_dirty` — True if `w_bf16` is stale vs. the fp32 weight.
 
     CPU + GPU dual storage; only the matching set is populated based on
     the owning leaf's TargetStorage tag."""
@@ -164,7 +162,6 @@ struct LinearAMPState[IN: Int, OUT: Int](Movable & ImplicitlyDestructible):
     var in_bf16_dev: Optional[DeviceBuffer[DType.bfloat16]]
     var ou_bf16_dev: Optional[DeviceBuffer[DType.bfloat16]]
     var batch_cap: Int
-    var w_dirty: Bool
 
     @staticmethod
     def make() -> Self:
@@ -177,14 +174,12 @@ struct LinearAMPState[IN: Int, OUT: Int](Movable & ImplicitlyDestructible):
             in_bf16_dev=None,
             ou_bf16_dev=None,
             batch_cap=0,
-            w_dirty=True,
         )
 
     def ensure_cpu(mut self, batch_needed: Int):
         var w_size = Self.IN * Self.OUT
         if len(self.w_bf16_cpu) < w_size:
             self.w_bf16_cpu.resize(w_size, Scalar[DType.bfloat16](0.0))
-            self.w_dirty = True  # buffer grew — old cast invalid
         if self.batch_cap < batch_needed:
             self.in_bf16_cpu.resize(
                 batch_needed * Self.IN, Scalar[DType.bfloat16](0.0),
@@ -199,7 +194,6 @@ struct LinearAMPState[IN: Int, OUT: Int](Movable & ImplicitlyDestructible):
             self.w_bf16_dev = ctx.enqueue_create_buffer[DType.bfloat16](
                 Self.IN * Self.OUT,
             )
-            self.w_dirty = True
         if self.batch_cap < batch_needed:
             self.in_bf16_dev = ctx.enqueue_create_buffer[DType.bfloat16](
                 batch_needed * Self.IN,

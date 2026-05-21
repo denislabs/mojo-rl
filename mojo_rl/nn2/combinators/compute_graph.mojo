@@ -59,11 +59,8 @@ from ..core import (
     Initializer,
     AMPPolicy,
     NoAMP,
-    TARGET_UNINIT,
-    TARGET_CPU,
-    TARGET_GPU,
-    target_tag_for,
 )
+from ..core.target_storage import TargetStorage, assert_tag_for
 
 
 struct ComputeGraph[
@@ -76,9 +73,7 @@ struct ComputeGraph[
     comptime N = Self.NODES.size
 
     var nodes: Tuple[*Self.NODES]
-    var ctx: Optional[DeviceContext]
-    var _target_tag: Int8
-    var _inference: Bool
+    var ts: TargetStorage
 
     # External grad sink: scatter-add target for nodes referencing "input"
     # as IN0 or IN1. Sized [BATCH, IN_DIM] on first ensure_buffers.
@@ -92,9 +87,7 @@ struct ComputeGraph[
             "ComputeGraph: last node OUT_DIM must equal graph OUT_DIM"
         )
         self.nodes = Tuple[*Self.NODES]()
-        self.ctx = None
-        self._target_tag = TARGET_UNINIT
-        self._inference = False
+        self.ts = TargetStorage.make_uninit()
         self._grad_input_buf = List[Scalar[DT]]()
         self._n_batch_grad_input = 0
 
@@ -107,7 +100,7 @@ struct ComputeGraph[
         var g = Self()
         comptime for i in range(Self.N):
             g.nodes[i] = Self.NODES[i].make_via[target, INIT]()
-        g._target_tag = TARGET_CPU
+        g.ts = TargetStorage.make_cpu()
         return g^
 
     @staticmethod
@@ -121,19 +114,8 @@ struct ComputeGraph[
         var g = Self()
         comptime for i in range(Self.N):
             g.nodes[i] = Self.NODES[i].make_via[target, INIT](ctx)
-        g.ctx = ctx
-        g._target_tag = TARGET_GPU
+        g.ts = TargetStorage.make_gpu(ctx)
         return g^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "ComputeGraph: method called with [target='"
-                + String(target)
-                + "'] but graph was make'd for a different target (tag="
-                + String(Int(self._target_tag)) + ")"
-            )
 
     def _ensure_all_buffers[BATCH: Int](mut self) raises:
         comptime for i in range(Self.N):
@@ -162,7 +144,7 @@ struct ComputeGraph[
     ) raises:
         comptime assert input.flat_rank == 2, "input must be rank-2"
         comptime assert output.flat_rank == 2, "output must be rank-2"
-        self._assert_tag[target]()
+        assert_tag_for["ComputeGraph", target](self.ts.target_tag)
         self._ensure_all_buffers[BATCH]()
 
         comptime if target == "cpu":
@@ -176,12 +158,21 @@ struct ComputeGraph[
 
     # ──────────────────────────────────────────────────────────────────
     # Backward — reverse topo + scatter-add.
+    #
+    # The `mode` comptime param mirrors `Module.backward[mode]` (audit
+    # Follow-up #7) for parity with the slim trait, but for a graph it's
+    # not a meaningful distinction: each node decides what to accumulate
+    # on its own. Callers that want frozen-params behaviour should wrap
+    # individual sub-nets in `StopGradParams`. `mode` is accepted and
+    # forwarded to every child so leaves can gate their own param-grad
+    # work uniformly.
     # ──────────────────────────────────────────────────────────────────
 
     def backward[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
     ](
         mut self,
         grad_output: TileTensor[
@@ -194,7 +185,10 @@ struct ComputeGraph[
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
         comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
-        self._assert_tag[target]()
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        assert_tag_for["ComputeGraph", target](self.ts.target_tag)
         self._ensure_all_buffers[BATCH]()
 
         comptime if target == "cpu":
@@ -206,27 +200,6 @@ struct ComputeGraph[
                 "ComputeGraph: GPU backward not yet implemented (Phase 10D CPU only)"
             )
 
-    def backward_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        mut grad_input: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-    ) raises:
-        # ComputeGraph's nodes own their own params; backward already
-        # accumulates only what each node opts in to. backward_input is
-        # not a meaningful operation for a graph as a whole — delegate
-        # to backward. Callers that want frozen-params behavior should
-        # wrap individual sub-nets in StopGradParams.
-        self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)
-
     # ──────────────────────────────────────────────────────────────────
     # for_each_param — recurse with `node_name.` prefix.
     # ──────────────────────────────────────────────────────────────────
@@ -235,18 +208,13 @@ struct ComputeGraph[
         target: StaticString,
         V: ParamVisitor,
     ](mut self, prefix: String, mut visitor: V,) raises:
-        self._assert_tag[target]()
+        assert_tag_for["ComputeGraph", target](self.ts.target_tag)
         var sep = "." if prefix.byte_length() > 0 else ""
         comptime for i in range(Self.N):
-            self.nodes[i].for_each_param_via[target](
+            self.nodes[i].for_each_param_via[target, V](
                 prefix + sep + String(Self.NODES[i].NAME),
                 visitor,
             )
-
-    def set_inference(mut self, value: Bool):
-        self._inference = value
-        comptime for i in range(Self.N):
-            self.nodes[i].set_inference_via(value)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -344,7 +312,9 @@ def _backward_cpu[
         var total_i = BATCH * OUT_DIM_i
         for k in range(total_i):
             go_p_i[k] = Scalar[DT](0.0)
-    var ext_gi_p = g._grad_input_buf.unsafe_ptr()
+    var ext_gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        g._grad_input_buf.unsafe_ptr()
+    )
     var ext_total = BATCH * IN_DIM_
     for k in range(ext_total):
         ext_gi_p[k] = Scalar[DT](0.0)

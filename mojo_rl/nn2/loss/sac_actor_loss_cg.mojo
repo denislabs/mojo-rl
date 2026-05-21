@@ -28,7 +28,8 @@ Backward symmetrically:
       seed dL/dL_per_b = 1/BATCH
       _post_graph.backward(seed) → grad over [q1 | q2 | log_prob]
       split → grad_q1, grad_q2, grad_log_prob
-      critic1.backward_input(grad_q1), critic2.backward_input(grad_q2) → grad_sa1, grad_sa2
+      critic1.backward[mode="input_only"](grad_q1) → grad_sa1
+      critic2.backward[mode="input_only"](grad_q2) → grad_sa2
       grad_action = grad_sa1[OBS:] + grad_sa2[OBS:]
       pack [grad_action | grad_log_prob] → grad_alp [BATCH, ACT+1]
       rsample.backward(grad_alp) → grad_ao [BATCH, 2·ACT]
@@ -52,12 +53,11 @@ from ..core import (
     Module,
     Optimizer,
     Initializer,
-    TARGET_UNINIT,
-    TARGET_CPU,
-    target_tag_for,
 )
+from ..core.target_storage import TargetStorage, assert_tag_for
 from ..initializer import Zero
-from ..combinators import ComputeGraph, UnaryNode, BinaryNode
+from ..combinators.compute_graph import ComputeGraph
+from ..combinators.graph_nodes import UnaryNode, BinaryNode
 from ..primitives.rsample import RSample
 from ..primitives.scale import Scale
 from ..primitives.slice import Slice
@@ -121,7 +121,7 @@ struct SACActorLossCG[
     var _mb_grad_ao: List[Scalar[DT]]       # [BATCH, 2·ACT]
     var _mb_grad_obs_unused: List[Scalar[DT]]  # [BATCH, OBS]  thrown away
 
-    var _target_tag: Int8
+    var ts: TargetStorage
 
     def __init__(out self):
         self.rsample = RSample[Self.ACT_DIM]()
@@ -142,7 +142,7 @@ struct SACActorLossCG[
         self._mb_grad_alp = List[Scalar[DT]]()
         self._mb_grad_ao = List[Scalar[DT]]()
         self._mb_grad_obs_unused = List[Scalar[DT]]()
-        self._target_tag = TARGET_UNINIT
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[target: StaticString](
@@ -184,18 +184,8 @@ struct SACActorLossCG[
         blk._mb_grad_ao.resize(Self.BATCH * 2 * Self.ACT_DIM, zero)
         blk._mb_grad_obs_unused.resize(Self.BATCH * Self.OBS_DIM, zero)
 
-        blk._target_tag = TARGET_CPU
+        blk.ts = TargetStorage.make_cpu()
         return blk^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "SACActorLossCG: method called with [target='"
-                + String(target)
-                + "'] but block was make'd for a different target (tag="
-                + String(Int(self._target_tag)) + ")"
-            )
 
     def forward_backward[
         target: StaticString,
@@ -212,7 +202,7 @@ struct SACActorLossCG[
         comptime assert target == "cpu", (
             "SACActorLossCG.forward_backward: GPU path not yet implemented"
         )
-        self._assert_tag[target]()
+        assert_tag_for["SACActorLossCG", target](self.ts.target_tag)
         comptime BB = Self.BATCH
         comptime ACT = Self.ACT_DIM
         comptime OBS = Self.OBS_DIM
@@ -288,15 +278,17 @@ struct SACActorLossCG[
             g_q2_p[b] = g_post_in_p[b * 3 + 1]
             # g_log_prob = g_post_in_p[b * 3 + 2] — packed into grad_alp below
 
-        # Critic backward_input (frozen — Phase 8.2 contract).
+        # Critic backward in input-only mode (frozen params, Phase 8.2
+        # contract): slim Module trait collapsed backward_input into
+        # backward[mode="input_only"] (audit Follow-up #7).
         var g_q1_t = TileTensor(g_q1_p, row_major[BB, 1]())
         var g_q2_t = TileTensor(g_q2_p, row_major[BB, 1]())
         var g_sa1_p = self._mb_grad_sa1.unsafe_ptr()
         var g_sa2_p = self._mb_grad_sa2.unsafe_ptr()
         var g_sa1_t = TileTensor(g_sa1_p, row_major[BB, SA]())
         var g_sa2_t = TileTensor(g_sa2_p, row_major[BB, SA]())
-        critic1.backward_input["cpu", BB](g_q1_t, g_sa1_t)
-        critic2.backward_input["cpu", BB](g_q2_t, g_sa2_t)
+        critic1.backward["cpu", BB, mode="input_only"](g_q1_t, g_sa1_t)
+        critic2.backward["cpu", BB, mode="input_only"](g_q2_t, g_sa2_t)
 
         # Sum action portions; pack [grad_action | grad_log_prob] → grad_alp.
         var g_alp_p = self._mb_grad_alp.unsafe_ptr()

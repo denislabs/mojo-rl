@@ -213,13 +213,12 @@ struct SACTrainer[
         t.pair2 = OnlineTargetPair[Self.CRITIC].make[
             target="cpu", INIT=Xavier
         ]()
-        t.actor_opt = Adam.make[target="cpu", M=Self.ACTOR](t.actor, lr=actor_lr)
-        t.critic1_opt = Adam.make[target="cpu", M=Self.CRITIC](
-            t.pair1.online, lr=critic_lr
-        )
-        t.critic2_opt = Adam.make[target="cpu", M=Self.CRITIC](
-            t.pair2.online, lr=critic_lr
-        )
+        t.actor_opt = Adam.make[target="cpu", M=Self.ACTOR](t.actor)
+        t.actor_opt.lr = actor_lr
+        t.critic1_opt = Adam.make[target="cpu", M=Self.CRITIC](t.pair1.online)
+        t.critic1_opt.lr = critic_lr
+        t.critic2_opt = Adam.make[target="cpu", M=Self.CRITIC](t.pair2.online)
+        t.critic2_opt.lr = critic_lr
         t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
         t.actor_loss = SACActorLoss[
             Self.ACTOR, Self.CRITIC, Self.BATCH

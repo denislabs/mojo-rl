@@ -101,6 +101,3 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
         mut visitor: V,
     ) raises:
         ...
-
-    def set_inference_via(mut self, value: Bool):
-        ...
