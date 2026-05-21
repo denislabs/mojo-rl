@@ -8,7 +8,7 @@ from mojo_rl.deep_agents.muzero import GenericMuZeroAgent, MuZeroMLPConfig
 from mojo_rl.envs.arcade_games.pong import PongEnv
 
 
-def main():
+def main() raises:
     comptime OBS = PongEnv[DType.float64].OBS_DIM  # 6
     comptime ACT = PongEnv[DType.float64].NUM_ACTIONS  # 3
 

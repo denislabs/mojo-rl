@@ -1,17 +1,21 @@
-"""Phase-1 A/B test: Gumbel search vs MuZero PUCT on a TicTacToe-sized
-9-action MLP network.
+"""Phase-1 smoke: Gumbel search on a TicTacToe-sized 9-action MLP network.
 
-We're not training here — both algorithms run against the *same* freshly
-initialized representation/dynamics/prediction triple. The point is to verify
-that:
+We're not training here — Gumbel runs against a freshly initialized
+representation/dynamics/prediction triple. The point is to verify that:
 
   (1) Gumbel runs end-to-end on a non-trivial action space (9 actions, larger
       than the bandit smoke test) without crashing.
-  (2) Gumbel expands ≤ K root actions while PUCT expands all 9, confirming
-      the "K-only fan-out" property of Gumbel-Top-k sampling.
+  (2) Gumbel expands ≤ K root actions, confirming the "K-only fan-out"
+      property of Gumbel-Top-k sampling.
   (3) Gumbel respects a TTT-style legal mask (occupied cells masked).
-  (4) Both algorithms produce valid distributions over legal actions on the
-      same starting position.
+  (4) Gumbel produces a valid distribution over legal actions.
+
+Originally this file A/B-tested Gumbel vs the legacy MuZero ``MCTS``.
+The legacy MCTS was deleted 2026-05-21 when MuZero CPU migrated entirely
+to ``planners.tree_search.GenericCPUMCTS``; the PUCT baseline checks
+were removed alongside (they only validated "policy sums to 1", a
+property the new shared planner has its own parity tests for in
+``tests/planners/tree_search/``).
 
 The paper's "Gumbel n=8 ≥ Sample MCTS n=50" win-rate claim requires a
 pre-trained network and self-play arena, which is deferred until Phase 2 land
@@ -21,7 +25,6 @@ training.
 from std.random import seed
 from mojo_rl.deep_agents.muzero.state import MuZeroCPUState
 from mojo_rl.deep_agents.muzero.configs import MuZeroConfig, MuZeroTicTacToeConfig
-from mojo_rl.deep_agents.muzero.mcts import MCTS
 from mojo_rl.deep_agents.efficient_zero_v2.mcts import GumbelMCTS
 from mojo_rl.nn.constants import dtype
 
@@ -52,38 +55,6 @@ def _gumbel_search[
         state.prediction,
         -10.0,
         10.0,
-        legal_mask,
-    )
-    for a in range(Config.action_dim):
-        visits_out[a] = mcts.nodes[0].visit_count[a]
-    return policy
-
-
-def _puct_search[
-    Config: MuZeroConfig,
-    SIMS: Int,
-    NODES: Int,
-](
-    obs: List[Scalar[dtype]],
-    state: MuZeroCPUState[Config, _CAP=128],
-    legal_mask: List[Bool],
-    mut visits_out: InlineArray[Int, Config.action_dim],
-) -> InlineArray[Float64, Config.action_dim]:
-    var mcts = MCTS[
-        Config.action_dim,
-        Config.latent_dim,
-        Config.num_bins,
-        SIMS,
-        MAX_NODES=NODES,
-    ](gamma=0.997)
-    var policy = mcts.search(
-        obs,
-        state.representation,
-        state.dynamics,
-        state.prediction,
-        -10.0,
-        10.0,
-        add_noise=False,  # deterministic for A/B comparison
         legal_mask=legal_mask,
     )
     for a in range(Config.action_dim):
@@ -92,7 +63,7 @@ def _puct_search[
 
 
 def main():
-    print("=== Phase 1 A/B: Gumbel vs PUCT on a TTT-sized 9-action MLP ===")
+    print("=== Phase 1 smoke: Gumbel on a TTT-sized 9-action MLP ===")
 
     # TTT config: obs=27 (3 planes × 9 cells), 9 actions.
     comptime Config = MuZeroTicTacToeConfig[
@@ -141,23 +112,10 @@ def main():
         obs, state, legal_full, gv
     )
 
-    seed(42)
-    var pv = InlineArray[Int, ACT](uninitialized=True)
-    for a in range(ACT):
-        pv[a] = 0
-    var p_policy = _puct_search[Config, SIMS, NODES](
-        obs, state, legal_full, pv
-    )
-
     print("  Gumbel visits:")
     for a in range(ACT):
         print(
             "    a=", a, "v=", gv[a], "p=", g_policy[a]
-        )
-    print("  PUCT visits:")
-    for a in range(ACT):
-        print(
-            "    a=", a, "v=", pv[a], "p=", p_policy[a]
         )
 
     # Check (2): Gumbel never visits more than K distinct root actions.
@@ -173,24 +131,16 @@ def main():
     else:
         print("FAIL: Gumbel expanded more than K — got", g_distinct)
 
-    # Check (4): both produce valid distributions.
+    # Check (4): Gumbel produces a valid distribution.
     var g_sum = Float64(0.0)
-    var p_sum = Float64(0.0)
     for a in range(ACT):
         g_sum += g_policy[a]
-        p_sum += p_policy[a]
     total += 1
     if g_sum > 0.999 and g_sum < 1.001:
         print("PASS: Gumbel policy sums to 1 (sum=", g_sum, ")")
         passed += 1
     else:
         print("FAIL: Gumbel sum=", g_sum)
-    total += 1
-    if p_sum > 0.999 and p_sum < 1.001:
-        print("PASS: PUCT policy sums to 1 (sum=", p_sum, ")")
-        passed += 1
-    else:
-        print("FAIL: PUCT sum=", p_sum)
 
     # ── K=4 (strict K < ACT) — confirms Gumbel's K-only fan-out ──────────
     print()

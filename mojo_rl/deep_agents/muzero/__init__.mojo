@@ -14,21 +14,31 @@ from .configs import (
     MuZeroLargeConfig,
     EfficientZeroConfig,
     MuZeroTicTacToeConfig,
+    MuZeroTicTacToeCNNConfig,
     MuZeroConnectFourConfig,
 )
-from .strategies import (
+# Strategy + value-encoding traits live in planners. Re-exported here so
+# existing `from mojo_rl.deep_agents.muzero import SelfPlay, ...` style
+# imports still work for downstream consumers.
+from mojo_rl.planners.tree_search.strategies import (
     SearchMode, LearnedDynamics, TrueGameRules,
-    ValueEncoding, CategoricalEncoding, ScalarEncoding, SymlogEncoding,
     HiddenScaling, MinMaxScale, NoScale,
     ExplorationNoise, DirichletNoise, EpsilonNoise, NoNoise,
     PUCTFormula, MuZeroPUCT, AlphaGoPUCT, UCB1Formula,
     BackupMode, NStepBootstrap, MonteCarloReturn, LambdaReturn,
     PlayerMode, SinglePlayer, SelfPlay,
 )
+from mojo_rl.planners.common.value_encoding import (
+    ValueEncoding, CategoricalEncoding, ScalarEncoding, SymlogEncoding,
+)
 from .state import MuZeroCPUState, MuZeroGPUState
 from .muzero import GenericMuZeroAgent
-from .mcts import MCTS, MCTSNode
-from .gpu_mcts import GPUMCTSState
+# Legacy CPU MCTS (.mcts) removed 2026-05-21: all CPU MCTS now routes
+# through ``planners.tree_search.GenericCPUMCTS`` via the agent's
+# ``_mcts_search_visits_cpu`` helper. GPU MCTS state still re-exported
+# via the planner module directly (the legacy ``.gpu_mcts`` shim was
+# also retired in the same pass).
+from mojo_rl.planners.tree_search.mcts_gpu import GPUMCTSState
 from .utils import scalar_transform, inverse_scalar_transform, MinMaxStats
 from .evaluators import (
     Evaluator, GPUEvaluator,

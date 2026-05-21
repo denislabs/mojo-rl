@@ -189,13 +189,12 @@ def main() raises:
     var pair1 = OnlineTargetPair[CriticNet].make[target="cpu", INIT=Xavier]()
     var pair2 = OnlineTargetPair[CriticNet].make[target="cpu", INIT=Xavier]()
 
-    var actor_opt = Adam.make[target="cpu", M=ActorNet](actor, lr=ACTOR_LR)
-    var critic1_opt = Adam.make[target="cpu", M=CriticNet](
-        pair1.online, lr=CRITIC_LR
-    )
-    var critic2_opt = Adam.make[target="cpu", M=CriticNet](
-        pair2.online, lr=CRITIC_LR
-    )
+    var actor_opt = Adam.make[target="cpu", M=ActorNet](actor)
+    actor_opt.lr = ACTOR_LR
+    var critic1_opt = Adam.make[target="cpu", M=CriticNet](pair1.online)
+    critic1_opt.lr = CRITIC_LR
+    var critic2_opt = Adam.make[target="cpu", M=CriticNet](pair2.online)
+    critic2_opt.lr = CRITIC_LR
     var alpha_opt = ScalarAdam.new(flog(INIT_ALPHA), ALPHA_LR)
     var mse_loss = MSELoss[1].make["cpu"]()
 
@@ -392,14 +391,14 @@ def main() raises:
             else:
                 mb_grad_q1[b] = 0.0; mb_grad_q2[b] = -inv_batch
                 min_q_buf[b] = q2b
-        # Phase 8.2: critics are frozen during the actor update — use
-        # `backward_input` so grad_action flows back but grad_w/grad_b on
-        # the critics are not touched. (Previously this called `backward`
-        # which wrote critic grads that we then threw away at the next
-        # zero_grad — wasted work + footgun if zero_grad were ever
-        # skipped.)
-        pair1.online.backward_input["cpu", BATCH](mb_grad_q1_t, mb_grad_sa1_t)
-        pair2.online.backward_input["cpu", BATCH](mb_grad_q2_t, mb_grad_sa2_t)
+        # Phase 8.2: critics are frozen during the actor update — call
+        # `backward[mode="input_only"]` so grad_action flows back but
+        # grad_w/grad_b on the critics are not touched. (Previously this
+        # called `backward` which wrote critic grads that were then thrown
+        # away at the next zero_grad — wasted work + footgun if zero_grad
+        # were ever skipped.)
+        pair1.online.backward["cpu", BATCH, mode="input_only"](mb_grad_q1_t, mb_grad_sa1_t)
+        pair2.online.backward["cpu", BATCH, mode="input_only"](mb_grad_q2_t, mb_grad_sa2_t)
         for k in range(BATCH * ACT_DIM):
             mb_grad_action[k] = 0.0
         _accum_grad_action[BATCH](mb_grad_sa1, mb_grad_action)

@@ -27,14 +27,17 @@ from mojo_rl.nn.model import (
     Sequential,
     Parallel,
 )
-from mojo_rl.nn.model import Conv2DReLU, FlattenLayer
+from mojo_rl.nn.model import (
+    Conv2DReLU,
+    Conv2DBatchNormReLU,
+    LinearBatchNormReLU,
+    FlattenLayer,
+)
 from mojo_rl.nn.optimizer import Optimizer, Adam, AdamW
 from mojo_rl.nn.autodiff.combinators import Residual
-from .strategies import (
+from mojo_rl.planners.tree_search.strategies import (
     SearchMode,
     LearnedDynamics,
-    ValueEncoding,
-    CategoricalEncoding,
     HiddenScaling,
     MinMaxScale,
     ExplorationNoise,
@@ -49,6 +52,25 @@ from .strategies import (
     PlayerMode,
     SinglePlayer,
     SelfPlay,
+)
+from mojo_rl.deep_agents.muzero.policy_mode import (
+    MuZeroPolicyMode,
+    MuZeroPUCTPolicy,
+    GumbelMuZeroPolicy,
+)
+from mojo_rl.planners.common.value_encoding import (
+    ValueEncoding,
+    CategoricalEncoding,
+)
+# Reuse the AlphaZero augmentation primitives — they're agent-agnostic
+# (pure spatial permutation on obs/action vectors). The AZ strategies
+# file's docstring explicitly anticipates this: "Currently AZ-specific;
+# MuZero self-play can import these once it grows board augmentation."
+from mojo_rl.deep_agents.alphazero.strategies import (
+    BoardAugmenter,
+    IdentityAugmenter,
+    D4SquareAugmenter,
+    HFlipColumnAugmenter,
 )
 
 
@@ -96,6 +118,8 @@ trait MuZeroConfig:
     # ── MCTS Hyperparameters ──────────────────────────────────────
     comptime num_simulations: Int # MCTS simulations per action
     comptime max_nodes: Int       # Maximum tree nodes per search
+    comptime batch_sims: Int      # Sims per batch round (1 = pure sequential; >1 = batched with virtual loss for root-action diversification, needed when Dirichlet noise produces spiky priors)
+    comptime virtual_loss: Int    # Magnitude of virtual loss applied at every descent step within a batch round (3 = AlphaGo Zero canonical, 0 = disabled)
 
     # ── Strategy Types ────────────────────────────────────────────
     comptime Search: SearchMode           # Learned dynamics vs true game rules
@@ -105,18 +129,11 @@ trait MuZeroConfig:
     comptime PUCT: PUCTFormula            # UCB exploration formula
     comptime Backup: BackupMode           # Return computation strategy
     comptime Players: PlayerMode          # Single-player vs self-play
+    comptime Aug: BoardAugmenter          # Data augmentation (D4 on TTT, h-flip on C4, identity elsewhere)
+    comptime PolicyMode: MuZeroPolicyMode # MCTS variant selector (PUCT default, Gumbel-MuZero opt-in)
 
     # ── Flags ─────────────────────────────────────────────────────
     comptime USE_REANALYZE: Bool  # Enable MuZero Reanalyze
-
-    # ── Planner refactor toggle ───────────────────────────────────
-    comptime USE_NEW_MCTS: Bool
-    """Route GPU action selection through the shared
-    ``planners.tree_search.GenericGPUMCTS`` orchestrator instead of the
-    inline kernel sequence in ``muzero.train_gpu``. Defaults to ``False``
-    in every concrete config so production training is unchanged until
-    the rewiring is flipped on per-config (see
-    ``docs/PLANNERS_PACKAGE.md`` Phase 3b agent rewiring)."""
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -137,6 +154,7 @@ struct MuZeroMLPConfig[
     N: Int = 10,
     SIMS: Int = 50,
     NODES: Int = 64,
+    POLICY: MuZeroPolicyMode = MuZeroPUCTPolicy,
 ](MuZeroConfig):
     """Standard MuZero with MLP networks for clean observations.
 
@@ -228,6 +246,13 @@ struct MuZeroMLPConfig[
     # MCTS
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
+    # Batched MCTS with virtual loss (matches the legacy
+    # ``muzero/mcts.search_batched`` BATCH_SIMS=8 the CartPole
+    # configuration was tuned against). Required to compensate for
+    # the spiky ``DirichletNoise[0.25, 0.25]`` root prior — sequential
+    # PUCT locks onto whichever action the noise spike picked.
+    comptime batch_sims: Int = 8
+    comptime virtual_loss: Int = 3
 
     # Strategy types
     comptime Search = LearnedDynamics
@@ -256,9 +281,10 @@ struct MuZeroMLPConfig[
     # a separate experiment from the backup-mode change itself.
     comptime Backup = NStepBootstrap
     comptime Players = SinglePlayer
+    comptime Aug = IdentityAugmenter
+    comptime PolicyMode = Self.POLICY
 
     comptime USE_REANALYZE: Bool = False
-    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -358,6 +384,10 @@ struct MuZeroCNNConfig[
     # MCTS
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
+    # Single-player CNN (Atari pixels): batched MCTS with vloss
+    # mirrors AlphaGo Zero / reference muzero.
+    comptime batch_sims: Int = 8
+    comptime virtual_loss: Int = 3
 
     # Strategy types
     comptime Search = LearnedDynamics
@@ -367,9 +397,10 @@ struct MuZeroCNNConfig[
     comptime PUCT = MuZeroPUCT[19652.0, 1.25]
     comptime Backup = NStepBootstrap
     comptime Players = SinglePlayer
+    comptime Aug = IdentityAugmenter
+    comptime PolicyMode = MuZeroPUCTPolicy
 
     comptime USE_REANALYZE: Bool = False
-    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -480,6 +511,9 @@ struct MuZeroResNetConfig[
     # MCTS
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
+    # ResNet single-player: batched MCTS with vloss (reference muzero).
+    comptime batch_sims: Int = 8
+    comptime virtual_loss: Int = 3
 
     # Strategy types
     comptime Search = LearnedDynamics
@@ -489,9 +523,10 @@ struct MuZeroResNetConfig[
     comptime PUCT = MuZeroPUCT[19652.0, 1.25]
     comptime Backup = NStepBootstrap
     comptime Players = SinglePlayer
+    comptime Aug = IdentityAugmenter
+    comptime PolicyMode = MuZeroPUCTPolicy
 
     comptime USE_REANALYZE: Bool = False
-    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -574,6 +609,9 @@ struct MuZeroLargeConfig[
     comptime td_steps: Int = 10
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = 256
+    # Large single-player: batched MCTS with vloss (reference muzero).
+    comptime batch_sims: Int = 8
+    comptime virtual_loss: Int = 3
 
     # Strategy types
     comptime Search = LearnedDynamics
@@ -583,9 +621,10 @@ struct MuZeroLargeConfig[
     comptime PUCT = MuZeroPUCT[19652.0, 1.25]
     comptime Backup = NStepBootstrap
     comptime Players = SinglePlayer
+    comptime Aug = IdentityAugmenter
+    comptime PolicyMode = MuZeroPUCTPolicy
 
     comptime USE_REANALYZE: Bool = True
-    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -675,6 +714,9 @@ struct EfficientZeroConfig[
 
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = 64
+    # EfficientZero single-player: batched MCTS with vloss.
+    comptime batch_sims: Int = 8
+    comptime virtual_loss: Int = 3
 
     # EfficientZero strategy choices:
     comptime Search = LearnedDynamics
@@ -684,9 +726,10 @@ struct EfficientZeroConfig[
     comptime PUCT = MuZeroPUCT[19652.0, 1.25]
     comptime Backup = LambdaReturn[0.95]       # Lambda returns for sample efficiency
     comptime Players = SinglePlayer
+    comptime Aug = IdentityAugmenter
+    comptime PolicyMode = MuZeroPUCTPolicy
 
     comptime USE_REANALYZE: Bool = True         # Always use Reanalyze
-    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -706,6 +749,7 @@ struct MuZeroTicTacToeConfig[
     SIMS: Int = 100,
     NODES: Int = 128,
     C_PUCT: Float64 = 1.0,
+    POLICY: MuZeroPolicyMode = MuZeroPUCTPolicy,
 ](MuZeroConfig):
     """MuZero for TicTacToe via learned dynamics + self-play.
 
@@ -796,6 +840,13 @@ struct MuZeroTicTacToeConfig[
     # MCTS
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
+    # Sequential MCTS for TTT — see Phase D doc "BATCH_SIMS: not a
+    # bug, a budget": for small action spaces (9 cells) with limited
+    # SIMS budget (~50), batched search over-flattens visit
+    # distributions. Confirmed in our 2026-05-21 TTT-MuZero runs:
+    # sequential CPU MCTS hit ``0/20/0`` vs Minimax at iter 5.
+    comptime batch_sims: Int = 1
+    comptime virtual_loss: Int = 3
 
     # Strategy types — board game self-play
     comptime Search = LearnedDynamics
@@ -805,9 +856,141 @@ struct MuZeroTicTacToeConfig[
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
     comptime Backup = MonteCarloReturn
     comptime Players = SelfPlay
+    # D4 dihedral augmentation matches AZ TTT exactly. Each stored
+    # episode is replicated 8× under rotations + reflections, fixing
+    # the P0/P1 self-play distribution skew that surfaced in the
+    # 2026-05-21 reanalyze-amplifies-bias diagnostic.
+    comptime Aug = D4SquareAugmenter[3, 3]
+    comptime PolicyMode = Self.POLICY
 
     comptime USE_REANALYZE: Bool = False
-    comptime USE_NEW_MCTS: Bool = False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MuZero TicTacToe CNN Config (27D obs as 3×3×3 board, 9 actions, self-play)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+struct MuZeroTicTacToeCNNConfig[
+    FILTERS: Int = 64,
+    LATENT: Int = 128,
+    HIDDEN: Int = 128,
+    BINS: Int = 51,
+    LR: Float64 = 1e-3,
+    CAP: Int = 50000,
+    BS: Int = 64,
+    K: Int = 3,
+    N: Int = 5,
+    SIMS: Int = 50,
+    NODES: Int = 128,
+    C_PUCT: Float64 = 1.0,
+](MuZeroConfig):
+    """MuZero for TicTacToe with CNN representation backbone.
+
+    Mirror of ``AlphaZeroTicTacToeCNNConfig`` adapted to MuZero's
+    rep/dyn/pred split:
+
+    * **Representation** uses the same 4×Conv2DBatchNormReLU + 2×
+      LinearBatchNormReLU backbone as AZ TTT CNN, terminated with
+      ``Linear[…, LATENT]`` + ``MinMaxNorm`` so the planner's hidden
+      pool slot stays bounded.
+    * **Dynamics** stays MLP — latents are flat (no spatial structure
+      to exploit) and AZ-style residual-conv dynamics is overkill for
+      9 actions.
+    * **Prediction** stays MLP for the same reason.
+
+    The intent matches the 2026-05-21 MuZero TTT diagnostic: D4
+    augmentation alone (the MLP run) fixed the P0/P1 self-play skew but
+    not the vs-Minimax regression — the MLP rep backbone is the
+    suspected capacity bottleneck. CNN's translation-equivariant
+    inductive bias should make the rep network learn winning-line
+    patterns from many fewer effective samples.
+    """
+
+    comptime NAME: String = "MuZero-TicTacToe-CNN"
+
+    # Dimensions — 27D obs = 3 planes × 3×3 board.
+    comptime obs_dim: Int = 27
+    comptime action_dim: Int = 9
+    comptime latent_dim: Int = Self.LATENT
+    comptime num_bins: Int = Self.BINS
+    comptime DYN_IN: Int = Self.LATENT + 9
+    comptime DYN_OUT: Int = Self.LATENT + Self.BINS
+    comptime PRED_OUT: Int = 9 + Self.BINS
+
+    # CNN Representation: matches the AZ TTT CNN backbone exactly
+    # (alphazero/configs.mojo:216-227) up to the final head — instead
+    # of two parallel policy/value heads, we emit ``LATENT`` then
+    # MinMaxNorm so the planner pool sees a bounded latent.
+    comptime RepModel = Sequential[
+        Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],  # 3ch→F, 3×3→3×3
+        Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],
+        Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],
+        Conv2DBatchNormReLU[
+            Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3
+        ],  # 3×3→1×1 (valid pad)
+        FlattenLayer[Self.FILTERS],
+        LinearBatchNormReLU[Self.FILTERS, Self.FILTERS * 2],
+        LinearBatchNormReLU[Self.FILTERS * 2, Self.FILTERS],
+        Linear[Self.FILTERS, Self.LATENT],
+        MinMaxNorm[Self.LATENT],
+    ]
+
+    # Dynamics: MLP on flat latent. MinMaxNorm only on latent split,
+    # reward bins raw — same pattern as MuZeroTicTacToeConfig.
+    comptime DynModel = Sequential[
+        LinearMish[Self.DYN_IN, Self.HIDDEN],
+        LinearMish[Self.HIDDEN, Self.HIDDEN],
+        Parallel[
+            Sequential[
+                Linear[Self.HIDDEN, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
+    ]
+
+    # Prediction: MLP on flat latent. Two heads (policy / value).
+    comptime PredModel = Sequential[
+        LinearMish[Self.LATENT, Self.HIDDEN],
+        Parallel[
+            Linear[Self.HIDDEN, 9],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
+    ]
+
+    # WEIGHT_DECAY=0 — same rationale as MuZeroTicTacToeConfig:
+    # batch-then-train pattern + small late-training gradients let any
+    # Adam-L2-in-grad term dominate the update and bleed weights to
+    # zero. See the comment block in MuZeroTicTacToeConfig (~line 770)
+    # for the full audit trail.
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=0.0]
+
+    # Training
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+    comptime unroll_steps: Int = Self.K
+    comptime td_steps: Int = Self.N
+
+    # MCTS
+    comptime num_simulations: Int = Self.SIMS
+    comptime max_nodes: Int = Self.NODES
+    # Sequential MCTS for TTT-CNN (same rationale as the MLP variant).
+    comptime batch_sims: Int = 1
+    comptime virtual_loss: Int = 3
+
+    # Strategy types — board game self-play (same as MuZeroTicTacToeConfig).
+    comptime Search = LearnedDynamics
+    comptime Encoding = CategoricalEncoding
+    comptime Scaling = MinMaxScale
+    comptime Noise = DirichletNoise[0.25, 0.25]
+    comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
+    comptime Backup = MonteCarloReturn
+    comptime Players = SelfPlay
+    comptime Aug = D4SquareAugmenter[3, 3]
+    comptime PolicyMode = MuZeroPUCTPolicy
+
+    comptime USE_REANALYZE: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -897,6 +1080,11 @@ struct MuZeroConnectFourConfig[
     # MCTS
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
+    # Sequential MCTS for C4 — 7 actions, SIMS=100 default → ratio
+    # would be ~14 rounds at BATCH_SIMS=8 which sits below the Phase D
+    # doc threshold for healthy batched diversification.
+    comptime batch_sims: Int = 1
+    comptime virtual_loss: Int = 3
 
     # Strategy types — board game self-play
     comptime Search = LearnedDynamics
@@ -906,6 +1094,9 @@ struct MuZeroConnectFourConfig[
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
     comptime Backup = MonteCarloReturn
     comptime Players = SelfPlay
+    # ConnectFour: only horizontal flip is a valid symmetry (vertical
+    # gravity breaks rotations / vertical-flip).
+    comptime Aug = HFlipColumnAugmenter[6, 7, 3]
+    comptime PolicyMode = MuZeroPUCTPolicy
 
     comptime USE_REANALYZE: Bool = False
-    comptime USE_NEW_MCTS: Bool = False

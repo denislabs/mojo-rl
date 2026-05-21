@@ -221,18 +221,16 @@ def main() raises:
 
     # Override the GaussianHead's log_std init.
     # The actor's last child is the GaussianHead; reach in and set.
-    var ls_view = TileTensor(
-        actor.children[4].log_std, row_major[ACT_DIM]()
-    )
+    # log_std is now a `Param["log_std", False, ACT_DIM]` wrapper —
+    # write through `.value` (the underlying List) directly.
+    var ls_ptr = actor.children[4].log_std.value_unsafe_ptr_cpu()
     for k in range(ACT_DIM):
-        ls_view[k] = LOG_STD_INIT
+        ls_ptr[k] = LOG_STD_INIT
 
-    var actor_opt = Adam.make[target="cpu", M=ActorNet](
-        actor, lr=ACTOR_LR
-    )
-    var critic_opt = Adam.make[target="cpu", M=CriticNet](
-        critic, lr=CRITIC_LR
-    )
+    var actor_opt = Adam.make[target="cpu", M=ActorNet](actor)
+    actor_opt.lr = ACTOR_LR
+    var critic_opt = Adam.make[target="cpu", M=CriticNet](critic)
+    critic_opt.lr = CRITIC_LR
 
     var ppo_loss = PPOActorLoss[ACT_DIM].make["cpu"](
         clip_eps=CLIP_EPS, entropy_coef=ENTROPY_COEF
@@ -435,7 +433,7 @@ def main() raises:
         var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
 
         # Read current log_std for trace.
-        var cur_ls = actor.children[4].log_std[0]
+        var cur_ls = actor.children[4].log_std.value[0]
 
         var mean_actor_loss = actor_loss_sum / Scalar[DT](update_count)
         var mean_critic_loss = critic_loss_sum / Scalar[DT](update_count)

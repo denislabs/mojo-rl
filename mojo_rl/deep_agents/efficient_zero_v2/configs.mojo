@@ -49,11 +49,9 @@ from mojo_rl.nn.model import (
 from mojo_rl.nn.autodiff.combinators import SplitApply
 from mojo_rl.nn.optimizer import Optimizer, Adam
 from mojo_rl.deep_agents.muzero.configs import MuZeroConfig
-from mojo_rl.deep_agents.muzero.strategies import (
+from mojo_rl.planners.tree_search.strategies import (
     SearchMode,
     LearnedDynamics,
-    ValueEncoding,
-    CategoricalEncoding,
     HiddenScaling,
     MinMaxScale,
     ExplorationNoise,
@@ -64,6 +62,10 @@ from mojo_rl.deep_agents.muzero.strategies import (
     NStepBootstrap,
     PlayerMode,
     SinglePlayer,
+)
+from mojo_rl.planners.common.value_encoding import (
+    ValueEncoding,
+    CategoricalEncoding,
 )
 from mojo_rl.deep_agents.efficient_zero_v2.networks import (
     ProjectionMLP,

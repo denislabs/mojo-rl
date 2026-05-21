@@ -14,12 +14,12 @@ from mojo_rl.nn.model import Linear, LinearReLU, Sequential, Parallel
 from mojo_rl.nn.optimizer import Adam
 from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
 from mojo_rl.deep_agents.alphazero.configs import AlphaZeroConfig
-from mojo_rl.deep_agents.muzero.strategies import (
+from mojo_rl.planners.tree_search.strategies import (
     DirichletNoise,
     AlphaGoPUCT,
     SelfPlay,
 )
-from mojo_rl.deep_agents.muzero.gpu_mcts import (
+from mojo_rl.planners.tree_search.mcts_gpu import (
     GPUMCTSState,
     gpu_mcts_init_root_kernel,
     gpu_mcts_apply_legal_mask_kernel,

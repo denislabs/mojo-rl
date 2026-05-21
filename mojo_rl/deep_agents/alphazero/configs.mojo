@@ -30,7 +30,7 @@ from mojo_rl.nn.model import (
 from mojo_rl.nn.optimizer import Optimizer, Adam, AdamW
 from mojo_rl.nn.autodiff.combinators import Residual, Repeat
 from mojo_rl.nn.model.resblock_conv2d_bn import ResBlockConv2DBN
-from mojo_rl.deep_agents.muzero.strategies import (
+from mojo_rl.planners.tree_search.strategies import (
     ExplorationNoise,
     DirichletNoise,
     PUCTFormula,
@@ -118,13 +118,6 @@ trait AlphaZeroConfig:
     # ── Strategies (AZ-specific) ──────────────────────────────────
     comptime Aug: BoardAugmenter
 
-    # ── Planner refactor toggle ───────────────────────────────────
-    comptime USE_NEW_MCTS: Bool
-    """Route GPU action selection through
-    ``planners.tree_search.GenericGPUMCTS.search_gpu_alphazero`` instead of
-    the inline kernel block. Defaults to ``False`` so production training
-    is unchanged until the rewiring is flipped on per-config."""
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TicTacToe Config (MLP — lightweight)
@@ -181,7 +174,6 @@ struct AlphaZeroTicTacToeConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = D4SquareAugmenter[3, 3]
-    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -255,7 +247,6 @@ struct AlphaZeroTicTacToeCNNConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = D4SquareAugmenter[3, 3]
-    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -314,7 +305,6 @@ struct AlphaZeroConnectFourConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = HFlipColumnAugmenter[6, 7, 3]
-    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -397,7 +387,6 @@ struct AlphaZeroConnectFourCNNConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = HFlipColumnAugmenter[6, 7, 3]
-    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -520,7 +509,6 @@ struct AlphaZeroConnectFourResNetConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = HFlipColumnAugmenter[6, 7, 3]
-    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -542,6 +530,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     BATCH_SIMS: Int = 8,
     VLOSS: Int = 3,
     MAX_GRAD_NORM: Float64 = 0.0,
+    HISTORY_WINDOW: Int = 20,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour — Fused ResNet matching AlphaZero.jl architecture.
 
@@ -587,7 +576,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
-    comptime history_window: Int = 20
+    comptime history_window: Int = Self.HISTORY_WINDOW
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 20
@@ -608,7 +597,6 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = HFlipColumnAugmenter[6, 7, 3]
-    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -675,7 +663,6 @@ struct AlphaZeroTicTacToeResNetConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = D4SquareAugmenter[3, 3]
-    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -733,7 +720,6 @@ struct AlphaZeroChessConfig[
     comptime Players = SelfPlay
     comptime Backup = MonteCarloReturn
     comptime Aug = IdentityAugmenter
-    comptime USE_NEW_MCTS: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -798,4 +784,3 @@ struct AlphaZeroCartPoleConfig[
     comptime Players = SinglePlayer
     comptime Backup = MonteCarloReturn
     comptime Aug = IdentityAugmenter
-    comptime USE_NEW_MCTS: Bool = False

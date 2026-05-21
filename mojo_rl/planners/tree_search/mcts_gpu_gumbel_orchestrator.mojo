@@ -60,6 +60,9 @@ from .mcts_gpu_gumbel import (
     gz_halve_active_kernel,
     gz_extract_policy_kernel,
 )
+from .strategies import PlayerMode, SinglePlayer
+from std.random.philox import Random as PhiloxRandom
+from std.math import log, exp
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -116,6 +119,119 @@ def gz_extract_root_value_kernel[
     root_value_out[e] = node_value[e * MAX_NODES]
 
 
+def gz_extract_actions_temp_kernel[
+    N_ENVS: Int, ACT: Int, dtype: DType,
+](
+    policies_out: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+    ],
+    legal_masks: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+    ],
+    ep_steps: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    actions_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    temp_threshold: Int,
+    rng_seed: Scalar[DType.uint32],
+    temp_min: Scalar[dtype] = Scalar[dtype](0.0),
+) where dtype.is_floating_point():
+    """Temperature-controlled action sampling from the *improved policy*.
+
+    Reads from the Gumbel-MCTS improved policy in ``policies_out``
+    (already legal-masked + renormalized by ``gz_extract_policy_kernel``)
+    and writes a chosen action per env into ``actions_out``. The
+    ``policies_out`` buffer is left UNTOUCHED — it's still the training
+    target.
+
+    Schedule (per env, matches the vanilla MuZero / AlphaZero convention
+    via ``GenericGPUMCTS.extract_actions_temp``):
+      * ``ep_steps[e] < temp_threshold``  → sample ∝ ``policies_out``.
+      * Else if ``temp_min > 0``           → sample ∝ ``policies_out^(1/τ)``.
+      * Else                               → argmax over legal actions.
+
+    One thread per env. ``USE_LEGAL_MASK=True`` callers (board games)
+    additionally re-mask before sampling; for single-player envs the
+    legal mask is all-ones and the renorm is a no-op."""
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var p_off = e * ACT
+    var move_count = Int(rebind[Scalar[dtype]](ep_steps[e]))
+
+    # ── 1. Apply legal mask to a local probability buffer ───────────────
+    var probs = InlineArray[Scalar[dtype], ACT](uninitialized=True)
+    var total = Scalar[dtype](0.0)
+    var best_action = -1
+    var best_p = Scalar[dtype](-1.0)
+    for a in range(ACT):
+        var legal = rebind[Scalar[dtype]](legal_masks[p_off + a])
+        if legal > Scalar[dtype](0.5):
+            var p = rebind[Scalar[dtype]](policies_out[p_off + a])
+            probs[a] = p
+            total += p
+            if p > best_p:
+                best_p = p
+                best_action = a
+        else:
+            probs[a] = Scalar[dtype](0.0)
+
+    if best_action < 0:
+        # No legal moves — fall back to action 0 (caller should have
+        # ensured at least one legal action exists).
+        actions_out[e] = Scalar[dtype](0.0)
+        return
+
+    # ── 2. Branch on move_count ────────────────────────────────────────
+    if move_count < temp_threshold:
+        # Sample ∝ policies_out (legal-masked).
+        var philox = PhiloxRandom(
+            seed=(
+                UInt64(rng_seed) * UInt64(0x9E3779B97F4A7C15)
+            )
+            + UInt64(e * 2654435761 + 1442695040888963407),
+            offset=0,
+        )
+        var u = philox.step_uniform()
+        var r = Scalar[dtype](u[0]) * total
+        var cum = Scalar[dtype](0.0)
+        var picked = best_action
+        for a in range(ACT):
+            cum += probs[a]
+            if cum >= r:
+                picked = a
+                break
+        actions_out[e] = Scalar[dtype](picked)
+    elif temp_min > Scalar[dtype](0.0):
+        # Sample ∝ p^(1/τ); rebuild a temp-distorted total.
+        var inv_temp = Scalar[dtype](1.0) / temp_min
+        var sharp_total = Scalar[dtype](0.0)
+        for a in range(ACT):
+            if probs[a] > Scalar[dtype](0.0):
+                # ``p^(1/τ)`` — via exp(log) so any τ works.
+                probs[a] = exp(inv_temp * log(probs[a]))
+                sharp_total += probs[a]
+        var philox = PhiloxRandom(
+            seed=(
+                UInt64(rng_seed) * UInt64(0x9E3779B97F4A7C15)
+            )
+            + UInt64(e * 2654435761 + 1442695040888963407),
+            offset=0,
+        )
+        var u = philox.step_uniform()
+        var r = Scalar[dtype](u[0]) * sharp_total
+        var cum = Scalar[dtype](0.0)
+        var picked = best_action
+        for a in range(ACT):
+            cum += probs[a]
+            if cum >= r:
+                picked = a
+                break
+        actions_out[e] = Scalar[dtype](picked)
+    else:
+        # Greedy argmax over legal actions.
+        actions_out[e] = Scalar[dtype](best_action)
+
+
 # ═════════════════════════════════════════════════════════════════════════
 # Orchestrator
 # ═════════════════════════════════════════════════════════════════════════
@@ -129,8 +245,9 @@ struct GumbelGPUMCTS[
     MAX_NODES: Int,
     MAX_K: Int,
     NUM_SIMULATIONS: Int,
+    PLAYER: PlayerMode = SinglePlayer,
 ](Movable, ImplicitlyDestructible):
-    """GPU Gumbel-MCTS orchestrator (EZv2 discrete planner).
+    """GPU Gumbel-MCTS orchestrator (shared across EZv2 + MuZero).
 
     Comptime params:
         N_ENVS: Number of parallel envs / trees.
@@ -142,11 +259,18 @@ struct GumbelGPUMCTS[
             and ≤ ``ACT``; the driver clips at runtime).
         NUM_SIMULATIONS: Total sims per ``search_gpu`` call. Budget split
             across ``log2(K)`` phases by Sequential Halving.
+        PLAYER: ``SinglePlayer`` (default, EZv2 / single-player MuZero)
+            or ``SelfPlay`` (two-player zero-sum, board-game MuZero —
+            backup negates value at each ply; per-edge reward is
+            ignored, matching ``GenericGPUMCTS.search_gpu_selfplay``).
 
     Runtime ctor args:
         gamma, v_min, v_max — categorical decode + discounting.
         c_visit, c_scale — π-improvement σ(Q) scaling (paper defaults
             50.0 and 0.1).
+        gumbel_scale — scale on the root Gumbel noise. mctx convention:
+            1.0 at training / data-collection (default), 0.0 at eval /
+            arena (deterministic root-action ranking).
     """
 
     comptime PRED_OUT: Int = Self.ACT + Self.BINS
@@ -166,11 +290,18 @@ struct GumbelGPUMCTS[
     ``state.node_value[e * MAX_NODES]`` (decoded by
     ``gz_init_root_kernel``)."""
 
+    var actions_out: DeviceBuffer[dtype]
+    """``[N_ENVS]`` chosen action per env, populated by
+    ``extract_actions_argmax`` / ``extract_actions_temp``. EZv2 does
+    not use this (it samples host-side from ``policies_out``); MuZero
+    consumes it directly via the ``mcts_step_*`` agent buffers."""
+
     var gamma: Float64
     var v_min: Float64
     var v_max: Float64
     var c_visit: Float64
     var c_scale: Float64
+    var gumbel_scale: Float64
 
     def __init__(
         out self,
@@ -180,6 +311,7 @@ struct GumbelGPUMCTS[
         v_max: Float64 = 10.0,
         c_visit: Float64 = 50.0,
         c_scale: Float64 = 0.1,
+        gumbel_scale: Float64 = 1.0,
     ) raises:
         if Self.MAX_K > Self.ACT:
             raise Error("GumbelGPUMCTS: MAX_K must be <= ACT")
@@ -189,21 +321,30 @@ struct GumbelGPUMCTS[
             Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.LATENT, Self.BINS,
             Self.MAX_K,
         ](ctx)
+        # Default legal_mask = all ones so callers that don't populate
+        # it (single-player paths, eval_argmax callers) get all-legal
+        # behavior. Self-play / board games overwrite per-step from
+        # the env's legal mask before each ``search_gpu_selfplay`` call.
+        self.state.legal_mask.enqueue_fill(Scalar[dtype](1.0))
         self.root_value_out = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
+        self.actions_out = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
         self.gamma = gamma
         self.v_min = v_min
         self.v_max = v_max
         self.c_visit = c_visit
         self.c_scale = c_scale
+        self.gumbel_scale = gumbel_scale
 
     def __init__(out self, *, deinit take: Self):
         self.state = take.state^
         self.root_value_out = take.root_value_out^
+        self.actions_out = take.actions_out^
         self.gamma = take.gamma
         self.v_min = take.v_min
         self.v_max = take.v_max
         self.c_visit = take.c_visit
         self.c_scale = take.c_scale
+        self.gumbel_scale = take.gumbel_scale
 
     # ══════════════════════════════════════════════════════════════════════
     # Views
@@ -222,6 +363,11 @@ struct GumbelGPUMCTS[
         """``[N_ENVS × ACT]`` legal-action mask; caller populates before
         ``search_gpu(apply_legal=True)`` and re-reads any time."""
         return self.state.legal_mask
+
+    def actions_view(self) -> DeviceBuffer[dtype]:
+        """``[N_ENVS]`` chosen action per env. Valid only after a call
+        to ``extract_actions_argmax`` / ``extract_actions_temp``."""
+        return self.actions_out
 
     # ══════════════════════════════════════════════════════════════════════
     # Public API
@@ -369,6 +515,7 @@ struct GumbelGPUMCTS[
             Scalar[DType.int32](k_clipped),
             Scalar[DType.uint8](1 if apply_legal else 0),
             rng_seed,
+            Scalar[dtype](self.gumbel_scale),
             grid_dim=(Self.ENV_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -494,6 +641,126 @@ struct GumbelGPUMCTS[
         ctx.enqueue_function[run_root_value](
             nv_t,
             rv_t,
+            grid_dim=(Self.ENV_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    def search_gpu_selfplay[
+        REP: RepresentationGPU,
+        DYN: DynamicsGPU,
+        PRED: PredictionGPU,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut rep: REP,
+        mut dyn: DYN,
+        mut pred: PRED,
+        obs: LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS, REP.OBS_DIM), MutAnyOrigin
+        ],
+        k_actual: Int = Self.MAX_K,
+        rng_seed: UInt32 = UInt32(0),
+    ) raises:
+        """Two-player self-play variant of ``search_gpu`` for board games.
+
+        Caller must populate ``state.legal_mask`` ([N_ENVS × ACT]) before
+        invoking — the kernel honors it both at root Gumbel-Top-k
+        sampling and in the improved-policy extraction.
+
+        Identical to ``search_gpu(apply_legal=True)`` except the
+        orchestrator's ``PLAYER`` comptime param is asserted to be
+        ``SelfPlay``-compatible: ``gz_backup_kernel`` uses the negated
+        recurrence (``value = -value`` at every parent), and per-edge
+        rewards are ignored — terminal reward is folded into the leaf
+        value by the expand kernel.
+
+        Use this in MuZero board-game training / evaluation; for
+        single-player envs (CartPole / Atari arcade) call ``search_gpu``
+        directly with ``apply_legal=False``.
+        """
+        # The orchestrator template will fail to instantiate with the
+        # wrong PLAYER (NEGATE_BACKUP threaded into ``gz_backup_kernel``
+        # via ``Self.PLAYER.NEGATE_BACKUP``). Reuse ``search_gpu`` —
+        # ``apply_legal=True`` is the only behavioral difference at the
+        # orchestrator level, the negation lives in the kernel choice.
+        self.search_gpu[REP, DYN, PRED](
+            ctx, rep, dyn, pred, obs,
+            apply_legal=True,
+            k_actual=k_actual,
+            rng_seed=rng_seed,
+        )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Action extraction (composes after search_gpu* — visit-target stays
+    # in ``policies_out``, this only writes ``actions_out``).
+    # ══════════════════════════════════════════════════════════════════════
+
+    def extract_actions_argmax(mut self, ctx: DeviceContext) raises:
+        """Greedy argmax over the legal-masked improved policy.
+
+        For eval / arena, where Gumbel noise is typically also disabled
+        (``gumbel_scale = 0.0`` at ctor time)."""
+        var lm_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
+        ](self.state.legal_mask.unsafe_ptr())
+        var po_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
+        ](self.state.policies_out.unsafe_ptr())
+        var act_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
+        ](self.actions_out.unsafe_ptr())
+        # Zero-fill ep_steps to force the temp=0 (argmax) branch.
+        var ep_buf = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
+        ep_buf.enqueue_fill(Scalar[dtype](0.0))
+        var ep_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
+        ](ep_buf.unsafe_ptr())
+        comptime run_extract = gz_extract_actions_temp_kernel[
+            Self.N_ENVS, Self.ACT, dtype,
+        ]
+        ctx.enqueue_function[run_extract](
+            po_t, lm_t, ep_t, act_t,
+            0,
+            UInt32(0),
+            Scalar[dtype](0.0),
+            grid_dim=(Self.ENV_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    def extract_actions_temp[
+        TEMP_THRESHOLD: Int = 0,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        ep_steps: LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
+        ],
+        rng_seed: UInt32 = UInt32(0),
+        temp_min: Float64 = 0.0,
+    ) raises:
+        """Temperature-controlled action sampling from the improved policy.
+
+        Mirrors ``GenericGPUMCTS.extract_actions_temp`` but reads from
+        ``policies_out`` (the Gumbel-MuZero improved policy) instead of
+        raw visit counts. The policy target stored in replay stays the
+        improved policy — this method only writes ``actions_out``."""
+        var lm_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
+        ](self.state.legal_mask.unsafe_ptr())
+        var po_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
+        ](self.state.policies_out.unsafe_ptr())
+        var act_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
+        ](self.actions_out.unsafe_ptr())
+        comptime run_extract = gz_extract_actions_temp_kernel[
+            Self.N_ENVS, Self.ACT, dtype,
+        ]
+        ctx.enqueue_function[run_extract](
+            po_t, lm_t, ep_steps, act_t,
+            TEMP_THRESHOLD,
+            rng_seed,
+            Scalar[dtype](temp_min),
             grid_dim=(Self.ENV_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -701,9 +968,12 @@ struct GumbelGPUMCTS[
             block_dim=(TPB,),
         )
 
-        # Backup.
+        # Backup. NEGATE_BACKUP comes from the PLAYER comptime param —
+        # SelfPlay flips perspective at every ply; SinglePlayer uses the
+        # standard ``reward + gamma · value`` recurrence.
         comptime run_backup = gz_backup_kernel[
             Self.N_ENVS, Self.MAX_NODES, Self.ACT, dtype,
+            Self.PLAYER.NEGATE_BACKUP,
         ]
         ctx.enqueue_function[run_backup](
             vc_t,
