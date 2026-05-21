@@ -41,11 +41,12 @@ def main() raises:
         api_key=api_key,
     )
 
-    # BATCH_SIMS=7 matches C4's action space: every sim in a round can
-    # pick a distinct action, so no forced collisions. Within-round Q is
-    # still stale (vloss-only diversification), but at SIMS=600 we get
-    # ~85 rounds of refinement — well above the ≥20-round threshold.
-    # Net win: ~7× MCTS speedup vs BATCH_SIMS=1. If convergence stalls,
+    # BATCH_SIMS=6: GenericGPUMCTS requires SIMS % BATCH_SIMS == 0, so
+    # we pick 6 (the largest divisor of 600 that's ≤ action_space=7).
+    # With 6 ≤ 7, every sim in a round can pick a distinct action — no
+    # forced collisions, just within-round Q staleness. At SIMS=600 we
+    # get 100 rounds of refinement, well above the ≥20-round threshold.
+    # Net win: ~6× MCTS speedup vs BATCH_SIMS=1. If convergence stalls,
     # fall back to BATCH_SIMS=1. See docs/PHASE_D_GPU_MCTS_BUG_HUNT.md.
     #
     # MAX_GRAD_NORM=1.0 = AlphaZero.jl standard; required here because
@@ -54,17 +55,17 @@ def main() raises:
     # clipping, the network can't be shoved through bad regions in one
     # step.
     # MLP config (best for ConnectFour — peaked initial policy helps MCTS)
-    # comptime Config = AlphaZeroConnectFourConfig[BATCH_SIMS=7, VLOSS=3]
+    # comptime Config = AlphaZeroConnectFourConfig[BATCH_SIMS=6, VLOSS=3]
     # CNN (Conv+BN+ReLU, matching alpha-zero-general):
-    # comptime Config = AlphaZeroConnectFourCNNConfig[BATCH_SIMS=7, VLOSS=3]
+    # comptime Config = AlphaZeroConnectFourCNNConfig[BATCH_SIMS=6, VLOSS=3]
     # ResNet (closest to original AlphaZero):
     comptime Config = AlphaZeroConnectFourFusedResNetConfig[
         NUM_BLOCKS=5,
-        BATCH_SIMS=7,
+        BATCH_SIMS=6,
         VLOSS=3,
         MAX_GRAD_NORM=1.0,
     ]
-    # comptime Config = AlphaZeroConnectFourResNetConfig[BATCH_SIMS=7, VLOSS=3]
+    # comptime Config = AlphaZeroConnectFourResNetConfig[BATCH_SIMS=6, VLOSS=3]
 
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "ConnectFour")
