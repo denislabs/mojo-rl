@@ -91,7 +91,7 @@ def main() raises:
         checkpoint_every=10,
         checkpoint_path="connect_four_alphazero.ckpt",
         logger=UnsafePointer(to=logger),
-        diag_every=1000,
+        diag_every=50,
         dump_replay=True,
         use_one_cycle=True,
     )
