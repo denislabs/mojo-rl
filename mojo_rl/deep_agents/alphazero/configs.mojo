@@ -329,6 +329,8 @@ struct AlphaZeroConnectFourCNNConfig[
     SIMS: Int = 600,
     NODES: Int = 1024,
     C_PUCT: Float64 = 2.0,
+    BATCH_SIMS: Int = 8,
+    VLOSS: Int = 3,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour — CNN variant.
 
@@ -375,8 +377,8 @@ struct AlphaZeroConnectFourCNNConfig[
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 20
     comptime temp_min: Float64 = 0.0
-    comptime batch_sims: Int = 8
-    comptime virtual_loss: Int = 3
+    comptime batch_sims: Int = Self.BATCH_SIMS
+    comptime virtual_loss: Int = Self.VLOSS
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
