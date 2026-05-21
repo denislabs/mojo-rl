@@ -541,6 +541,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     C_PUCT: Float64 = 2.0,
     BATCH_SIMS: Int = 8,
     VLOSS: Int = 3,
+    MAX_GRAD_NORM: Float64 = 0.0,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour — Fused ResNet matching AlphaZero.jl architecture.
 
@@ -594,7 +595,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     comptime batch_sims: Int = Self.BATCH_SIMS
     comptime virtual_loss: Int = Self.VLOSS
     comptime invalid_action_penalty: Float64 = 1.0  # AlphaZero.jl: nonvalidity_penalty=1.0
-    comptime max_grad_norm: Float64 = 0.0
+    comptime max_grad_norm: Float64 = Self.MAX_GRAD_NORM
     comptime value_target_q_weight: Float64 = 0.0
     comptime value_squash: Bool = True
     comptime max_episode_length: Int = 42

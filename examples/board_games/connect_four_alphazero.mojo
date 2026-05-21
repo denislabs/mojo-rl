@@ -41,21 +41,30 @@ def main() raises:
         api_key=api_key,
     )
 
-    # BATCH_SIMS=1 forces sequential GPU MCTS (every sim sees fresh Q
-    # from the prior sim's backup). Required for C4: action_space=7 is
-    # below the BATCH_SIMS>1 safety threshold (action_space ≥ ~16) —
-    # at BATCH_SIMS=8 two of every 8 sims per round are forced to
-    # collide on the same action, flattening visit distributions.
-    # See docs/PHASE_D_GPU_MCTS_BUG_HUNT.md "BATCH_SIMS: not a bug, a budget".
+    # BATCH_SIMS=7 matches C4's action space: every sim in a round can
+    # pick a distinct action, so no forced collisions. Within-round Q is
+    # still stale (vloss-only diversification), but at SIMS=600 we get
+    # ~85 rounds of refinement — well above the ≥20-round threshold.
+    # Net win: ~7× MCTS speedup vs BATCH_SIMS=1. If convergence stalls,
+    # fall back to BATCH_SIMS=1. See docs/PHASE_D_GPU_MCTS_BUG_HUNT.md.
+    #
+    # MAX_GRAD_NORM=1.0 = AlphaZero.jl standard; required here because
+    # the 5-block ResNet at LR=2e-3 was producing grad_output_norm
+    # spikes >100 → policy_ce spikes 1.5→3.0 → arena regression. With
+    # clipping, the network can't be shoved through bad regions in one
+    # step.
     # MLP config (best for ConnectFour — peaked initial policy helps MCTS)
-    # comptime Config = AlphaZeroConnectFourConfig[BATCH_SIMS=1, VLOSS=3]
+    # comptime Config = AlphaZeroConnectFourConfig[BATCH_SIMS=7, VLOSS=3]
     # CNN (Conv+BN+ReLU, matching alpha-zero-general):
-    # comptime Config = AlphaZeroConnectFourCNNConfig[BATCH_SIMS=1, VLOSS=3]
+    # comptime Config = AlphaZeroConnectFourCNNConfig[BATCH_SIMS=7, VLOSS=3]
     # ResNet (closest to original AlphaZero):
     comptime Config = AlphaZeroConnectFourFusedResNetConfig[
-        NUM_BLOCKS=5, BATCH_SIMS=1, VLOSS=3
+        NUM_BLOCKS=5,
+        BATCH_SIMS=7,
+        VLOSS=3,
+        MAX_GRAD_NORM=1.0,
     ]
-    # comptime Config = AlphaZeroConnectFourResNetConfig[BATCH_SIMS=1, VLOSS=3]
+    # comptime Config = AlphaZeroConnectFourResNetConfig[BATCH_SIMS=7, VLOSS=3]
 
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "ConnectFour")
