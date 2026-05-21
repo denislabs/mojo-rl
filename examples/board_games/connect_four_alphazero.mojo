@@ -41,13 +41,21 @@ def main() raises:
         api_key=api_key,
     )
 
+    # BATCH_SIMS=1 forces sequential GPU MCTS (every sim sees fresh Q
+    # from the prior sim's backup). Required for C4: action_space=7 is
+    # below the BATCH_SIMS>1 safety threshold (action_space ≥ ~16) —
+    # at BATCH_SIMS=8 two of every 8 sims per round are forced to
+    # collide on the same action, flattening visit distributions.
+    # See docs/PHASE_D_GPU_MCTS_BUG_HUNT.md "BATCH_SIMS: not a bug, a budget".
     # MLP config (best for ConnectFour — peaked initial policy helps MCTS)
-    # comptime Config = AlphaZeroConnectFourConfig[]
+    # comptime Config = AlphaZeroConnectFourConfig[BATCH_SIMS=1, VLOSS=3]
     # CNN (Conv+BN+ReLU, matching alpha-zero-general):
-    # comptime Config = AlphaZeroConnectFourCNNConfig[]
+    # comptime Config = AlphaZeroConnectFourCNNConfig[BATCH_SIMS=1, VLOSS=3]
     # ResNet (closest to original AlphaZero):
-    comptime Config = AlphaZeroConnectFourFusedResNetConfig[NUM_BLOCKS=5]
-    # comptime Config = AlphaZeroConnectFourResNetConfig[]
+    comptime Config = AlphaZeroConnectFourFusedResNetConfig[
+        NUM_BLOCKS=5, BATCH_SIMS=1, VLOSS=3
+    ]
+    # comptime Config = AlphaZeroConnectFourResNetConfig[BATCH_SIMS=1, VLOSS=3]
 
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "ConnectFour")
