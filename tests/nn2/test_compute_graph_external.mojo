@@ -178,6 +178,11 @@ def test_external_binary_node() raises:
     a_buf.free()
     b_buf.free()
     out_buf.free()
+    # Mojo nightly: explicitly extend `sub`'s lifetime past `g.forward` so the
+    # pointer stored in the graph by `set_external_binary` isn't dangling.
+    # Without this, the compiler can end `sub`'s lifetime at the
+    # `set_external_binary` call site and zero-fill its storage.
+    _ = sub^
     print("  ok")
 
 
