@@ -1,7 +1,5 @@
 """`map_params` / `polyak_update` — two-tree parameter walker.
 
-Phase 7.2 + Block A (Phase A6, 2026-05-21).
-
 `polyak_update` mutates a target model toward an online model:
 
     target = (1 - tau) * target + tau * online
@@ -13,10 +11,10 @@ Implementation builds on `named_params`: walks both models, validates
 the resulting `List[NamedParam]`s match leaf-for-leaf (same count, same
 names, same sizes), then runs the linear interpolation.
 
-CPU path: scalar loop. GPU path (Block A): one-thread-per-element kernel
-launched per leaf, using the named-params raw pointers (which point at
-the live Param storage — CPU `List` or GPU `DeviceBuffer` depending on
-how the Param was made).
+CPU path: scalar loop. GPU path: one-thread-per-element kernel launched
+per leaf, using the named-params raw pointers (which point at the live
+Param storage — CPU `List` or GPU `DeviceBuffer` depending on how the
+Param was made).
 """
 
 from std.gpu import global_idx

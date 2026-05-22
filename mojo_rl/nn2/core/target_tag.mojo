@@ -13,15 +13,11 @@ Three values:
   - `GPU    = 2`
 
 `target_tag_for[target]()` maps the comptime `StaticString` to the
-runtime `Int8` tag. Use it from method bodies:
-
-```mojo
-from mojo_rl.nn2.core import target_tag_for, TARGET_CPU
-var target_tag = TARGET_CPU
-comptime expected = target_tag_for["cpu"]()
-if target_tag != expected:
-    raise Error("...")
-```
+runtime `Int8` tag. The usual path is the `assert_tag_for` helper in
+`target_storage.mojo`, which wraps the mapping. Direct constant
+imports (`TARGET_GPU` etc.) come from this module — they are not
+re-exported through `core/__init__.mojo`, so import the constant from
+`..core.target_tag` at the use site.
 """
 
 

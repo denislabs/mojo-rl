@@ -1,10 +1,9 @@
 """Trainer[NET, OPT, LOSS, BATCH, target] — owns IO buffers and runs the
 standard supervised forward / backward / step loop.
 
-Phase 2.4: `target` is a comptime struct param on Trainer (per user
-direction — a trainer's identity is tied to one target for its lifetime).
-Internally, Trainer threads `Self.target` to each method call on
-net/optim/loss.
+`target` is a comptime struct param: a trainer's identity is tied to
+one device for its lifetime. Internally, Trainer threads `Self.target`
+to each method call on net / optim / loss.
 
 Two API surfaces:
 
@@ -31,7 +30,8 @@ Construction:
 from std.memory import alloc
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from layout import TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import TileTensor, row_major
 
 from ..constants import DT
 from ..core import Module, Optimizer, Loss, Initializer, AMPPolicy, NoAMP
@@ -243,15 +243,14 @@ struct Trainer[
     # Pipeline core — called by every train_step variant.
     # ------------------------------------------------------------------
 
-    def _train_step_views[
-        LIN: TensorLayout,
-        LT: TensorLayout,
-        OIN: MutOrigin,
-        OT: MutOrigin,
-    ](
+    def _train_step_views(
         mut self,
-        input: TileTensor[DT, LIN, OIN],
-        targets: TileTensor[DT, LT, OT],
+        input: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        targets: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
     ) raises -> Scalar[DT]:
         comptime assert input.flat_rank == 2, "input must be rank-2"
         comptime assert targets.flat_rank == 2, "targets must be rank-2"
@@ -412,14 +411,14 @@ struct Trainer[
 
     def train_gpu[
         N_TRAIN: Int,
-        LXT: TensorLayout,
-        LYT: TensorLayout,
-        OXT: MutOrigin,
-        OYT: MutOrigin,
     ](
         mut self,
-        train_x: TileTensor[DT, LXT, OXT],
-        train_y: TileTensor[DT, LYT, OYT],
+        train_x: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        train_y: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         epochs: Int = 1,
         print_progress: Bool = True,
     ) raises -> TrainResult:
@@ -471,17 +470,17 @@ struct Trainer[
     def train_gpu[
         N_TRAIN: Int,
         N_TEST: Int,
-        LXT: TensorLayout,
-        LYT: TensorLayout,
-        LX2: TensorLayout,
-        OXT: MutOrigin,
-        OYT: MutOrigin,
-        OX2: MutOrigin,
     ](
         mut self,
-        train_x: TileTensor[DT, LXT, OXT],
-        train_y: TileTensor[DT, LYT, OYT],
-        test_x: TileTensor[DT, LX2, OX2],
+        train_x: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        train_y: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        test_x: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         test_y_labels: UnsafePointer[Int32, MutAnyOrigin],
         epochs: Int = 1,
         print_progress: Bool = True,
@@ -548,11 +547,11 @@ struct Trainer[
 
     def eval_top1_gpu[
         N_TEST: Int,
-        LX: TensorLayout,
-        OX: MutOrigin,
     ](
         mut self,
-        test_x: TileTensor[DT, LX, OX],
+        test_x: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
         test_y_labels: UnsafePointer[Int32, MutAnyOrigin],
     ) raises -> Float64:
         comptime assert (

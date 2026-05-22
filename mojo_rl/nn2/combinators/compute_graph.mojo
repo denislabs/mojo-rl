@@ -1,53 +1,61 @@
-"""ComputeGraph v2 — name-based DAG over GraphNode variadic. Phase 10D + Block A.
+"""ComputeGraph — name-based DAG over GraphNode variadic.
 
-Builds a named DAG by composing `UnaryNode` / `BinaryNode` wrappers in
-topological order. Each node carries `NAME` + predecessor names; the
-graph resolves names at compile time via a `comptime for` double-loop.
+Builds a named DAG by composing `InputSlot` / `UnaryNode` / `BinaryNode`
+wrappers in topological order. Each node carries `NAME` + predecessor
+names; the graph resolves names at compile time via a `comptime for`
+double-loop.
 
 ```mojo
 comptime SACActorGraph = ComputeGraph[
-    OBS_DIM, 1,
-    UnaryNode["actor",     ActorModel,         "input"],
-    UnaryNode["rsample",   RSample[ACT_DIM],   "actor"],
-    UnaryNode["q1",        CriticModel,        "input"],   # also takes action
-    # ... etc
+    1,                                          # OUT_DIM
+    InputSlot["latent",    LATENT_DIM],         # one external input
+    InputSlot["action",    ACT_DIM],            # another external input
+    UnaryNode["enc",       Encoder,    "latent"],
+    BinaryNode["q1",       Critic,     "enc", "action"],
+    UnaryNode["loss",      MSEHead,    "q1"],
 ]
 ```
 
-Inputs to the graph come in as the magic name `"input"` (graph external
-input). The last node in `*NODES` is the graph's external output.
+Each external input is an `InputSlot[NAME, DIM]` node. The graph has no
+fixed `IN_DIM`; per-slot dims live on the slot type. The last node in
+`*NODES` is the graph's external output.
 
-Memory: each node owns four buffers (out / grad_out / grad_in0 /
-grad_in1). The graph owns one external `_grad_input_buf` for the
-gradient flowing back to `"input"` (scatter-add target for any node
-whose IN0/IN1 references `"input"`).
+Caller API:
+  g.set_input["latent", BATCH](latent_tile)
+  g.set_input["action", BATCH](action_tile)
+  g.forward[target, BATCH](output_tile)
+  g.backward[target, BATCH](grad_output_tile)
+  var grad_latent_ptr = g.grad_input_ptr["latent"]()
+
+Memory: every node (slot or compute) owns its own `grad_out_buf`.
+InputSlot.grad_out_buf is the gradient accumulator that the caller
+reads via `grad_input_ptr[NAME]` after backward. There is no separate
+external `_grad_input_buf` on the graph — slots own theirs.
 
 Forward (topo order):
   - comptime for each node i:
-      - resolve IN0_NAME → either external `input_t.ptr` or NODES[j].out_ptr
-      - resolve IN1_NAME similarly (or null for unary nodes)
-      - call node_i.forward_via(in0_ptr, in1_ptr)
-  - copy `nodes[N-1].out_ptr` → `output_t`
+      - if KIND == 0 (InputSlot): skip (out_ptr is set externally).
+      - else: resolve IN0_NAME / IN1_NAME via name lookup, call
+        node_i.forward_via(in0_ptr, in1_ptr).
+  - copy `nodes[N-1].out_ptr` → `output_t`.
 
 Backward (reverse topo):
-  - zero all `grad_out_buf`s + the external `_grad_input_buf`
-  - copy `grad_output_t` → `nodes[N-1].grad_out_buf`
+  - zero all `grad_out_buf`s (including slot accumulators).
+  - copy `grad_output_t` → `nodes[N-1].grad_out_buf`.
   - comptime for each node i in reverse:
-      - call node_i.backward_via (reads its grad_out_buf, writes
-        grad_in0/1_buf)
-      - scatter-add `node_i.grad_in0_buf` into predecessor's grad_out_buf
-        (or external `_grad_input_buf` if IN0_NAME == "input")
-      - same for grad_in1_buf if KIND == 2
-  - copy `_grad_input_buf` → `grad_input_t`
+      - if KIND == 0: skip (grad_out_buf already holds the answer).
+      - else: backward_via, then scatter-add grad_in0/1_buf into the
+        predecessor (slot or compute) named by IN0_NAME / IN1_NAME.
 
 Fan-out is handled by `+=` accumulation: when one producer feeds two
 consumers, each consumer's grad_in_* writes scatter-add into the same
 producer.grad_out_buf, naturally summing the gradient contributions.
+Slot consumers contribute the same way.
 
-Block A (Phase A1, 2026-05-21): GPU path. The external `_grad_input_buf`
-gains an Optional[DeviceBuffer] sibling, sized lazily on first call.
-`_forward_gpu` / `_backward_gpu` mirror the CPU bodies; scatter-add and
-zero are GPU kernels.
+GPU path mirrors the CPU bodies via `_forward_gpu` / `_backward_gpu`;
+scatter-add and zero are GPU kernels. Pointer caching on all nodes'
+out / grad_out / grad_in fields + SIMD inter-node bookkeeping helpers
+below.
 """
 
 from std.gpu import global_idx
@@ -55,18 +63,73 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT
+from ..constants import DT, CPU_SIMD_W
 from ..core import (
     GraphNode,
     ParamVisitor,
     Initializer,
     AMPPolicy,
     NoAMP,
-    TARGET_GPU,
 )
+from ..core.target_tag import TARGET_GPU
 from ..core.target_storage import (
     TargetStorage, assert_tag_for, ensure_gpu_buffer,
 )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CPU SIMD helpers — zero / copy / scatter-add on flat float buffers.
+#
+# Used to vectorize the inter-node bookkeeping loops in `_forward_cpu`
+# and `_backward_cpu` (scatter-add into predecessor grad_out_bufs, zero
+# init, last-node output copy). Mojo nightly does not autovectorize
+# scalar `ptr[i]` loops — manual `while i + W <= n: ptr.load[width=W]`
+# is the project's standard idiom (see Adam/AdamW/MSE).
+# ──────────────────────────────────────────────────────────────────────
+
+
+@always_inline
+def _zero_cpu(p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int):
+    var zero_v = SIMD[DT, CPU_SIMD_W](Scalar[DT](0.0))
+    var i = 0
+    while i + CPU_SIMD_W <= n:
+        p.store(i, zero_v)
+        i += CPU_SIMD_W
+    while i < n:
+        p[i] = Scalar[DT](0.0)
+        i += 1
+
+
+@always_inline
+def _copy_cpu(
+    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    src: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    n: Int,
+):
+    var i = 0
+    while i + CPU_SIMD_W <= n:
+        dst.store(i, src.load[width=CPU_SIMD_W](i))
+        i += CPU_SIMD_W
+    while i < n:
+        dst[i] = src[i]
+        i += 1
+
+
+@always_inline
+def _scatter_add_cpu(
+    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    src: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    n: Int,
+):
+    var i = 0
+    while i + CPU_SIMD_W <= n:
+        var d = dst.load[width=CPU_SIMD_W](i)
+        var s = src.load[width=CPU_SIMD_W](i)
+        dst.store(i, d + s)
+        i += CPU_SIMD_W
+    while i < n:
+        dst[i] += src[i]
+        i += 1
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -149,23 +212,14 @@ def _enqueue_copy[N: Int](
 
 
 struct ComputeGraph[
-    IN_DIM_: Int,
     OUT_DIM_: Int,
     *NODES: GraphNode,
 ](Movable & ImplicitlyDestructible):
-    comptime IN_DIM = Self.IN_DIM_
     comptime OUT_DIM = Self.OUT_DIM_
     comptime N = Self.NODES.size
 
     var nodes: Tuple[*Self.NODES]
     var ts: TargetStorage
-
-    # External grad sink: scatter-add target for nodes referencing "input"
-    # as IN0 or IN1. Sized [BATCH, IN_DIM] on first ensure_buffers.
-    var _grad_input_buf: List[Scalar[DT]]
-    var _grad_input_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_input_buf_dev_n: Int
-    var _n_batch_grad_input: Int
 
     def __init__(out self):
         """Defaultable form — empty placeholders, tag=UNINIT."""
@@ -173,12 +227,12 @@ struct ComputeGraph[
         comptime assert Self.NODES[Self.N - 1].OUT_DIM == Self.OUT_DIM, (
             "ComputeGraph: last node OUT_DIM must equal graph OUT_DIM"
         )
+        comptime assert Self.NODES[Self.N - 1].KIND > 0, (
+            "ComputeGraph: last node must be a compute node (KIND>0), "
+            "not an InputSlot"
+        )
         self.nodes = Tuple[*Self.NODES]()
         self.ts = TargetStorage.make_uninit()
-        self._grad_input_buf = List[Scalar[DT]]()
-        self._grad_input_buf_dev = None
-        self._grad_input_buf_dev_n = 0
-        self._n_batch_grad_input = 0
 
     @staticmethod
     def make[target: StaticString, INIT: Initializer]() raises -> Self:
@@ -209,16 +263,69 @@ struct ComputeGraph[
     def _ensure_all_buffers[BATCH: Int](mut self) raises:
         comptime for i in range(Self.N):
             self.nodes[i].ensure_buffers_via[BATCH]()
-        if self.ts.target_tag == TARGET_GPU:
-            ensure_gpu_buffer(
-                self._grad_input_buf_dev, self._grad_input_buf_dev_n,
-                BATCH * Self.IN_DIM, self.ts.ctx.value(),
-            )
-            self._n_batch_grad_input = BATCH
-        else:
-            if self._n_batch_grad_input < BATCH:
-                self._grad_input_buf.resize(BATCH * Self.IN_DIM, Scalar[DT](0.0))
-                self._n_batch_grad_input = BATCH
+
+    # ──────────────────────────────────────────────────────────────────
+    # Block B — multi-external-input plumbing.
+    #
+    # `set_input[NAME, BATCH](tile)` caches `tile.ptr` inside the named
+    # InputSlot. Must be called once per slot before each `forward` (the
+    # slot's _out_ptr is what the graph's forward loop reads for
+    # consumers that reference NAME as IN0/IN1). The cached pointer
+    # survives across calls if the caller's tile pointer is stable —
+    # so for in-place loops over the same scratch buffer, set_input can
+    # be called once at setup.
+    #
+    # `grad_input_ptr[NAME]()` returns the slot's grad accumulator
+    # pointer (its _grad_out_buf). Stable after the first
+    # `ensure_buffers_via[BATCH]` of that slot (which fires inside
+    # `forward` / `backward`).
+    # ──────────────────────────────────────────────────────────────────
+
+    def set_input[
+        slot_name: StaticString,
+        BATCH: Int,
+    ](
+        mut self,
+        input: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+    ) raises:
+        comptime assert input.flat_rank == 2, "set_input: tile must be rank-2"
+        # Note: if `slot_name` matches no InputSlot, the comptime loop is
+        # a no-op (silent) and the slot's _out_ptr stays at the previous
+        # value (null on first call). Caller will see a null deref in the
+        # next forward call — debug-only failure mode; not worth the
+        # comptime mutable-var workaround.
+        #
+        # We don't call _ensure_all_buffers here — forward and backward
+        # do it. set_input just caches a pointer.
+        var p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+        comptime for i in range(Self.N):
+            comptime if (
+                Self.NODES[i].KIND == 0 and Self.NODES[i].NAME == slot_name
+            ):
+                self.nodes[i].set_input_via(p)
+
+    def grad_input_ptr[
+        slot_name: StaticString,
+    ](ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Returns the slot's grad_out_buf pointer.
+
+        The buffer holds the accumulated gradient flowing back to this
+        input after `backward` has run. Sized [BATCH, slot.OUT_DIM].
+        Stable across the lifetime of the graph (resolved once in
+        `ensure_buffers_via`). Returns null if `slot_name` matches no
+        InputSlot in the graph.
+        """
+        var out_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=0
+        )
+        comptime for i in range(Self.N):
+            comptime if (
+                Self.NODES[i].KIND == 0 and Self.NODES[i].NAME == slot_name
+            ):
+                out_p = self.nodes[i].grad_out_ptr_via()
+        return out_p
 
     # ──────────────────────────────────────────────────────────────────
     # Forward — topological walk, comptime name resolution.
@@ -230,15 +337,11 @@ struct ComputeGraph[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank == 2, "input must be rank-2"
         comptime assert output.flat_rank == 2, "output must be rank-2"
         assert_tag_for["ComputeGraph", target](self.ts.target_tag)
         self._ensure_all_buffers[BATCH]()
@@ -246,11 +349,11 @@ struct ComputeGraph[
         comptime if target == "cpu":
             _forward_cpu[
                 target, BATCH, POLICY=POLICY,
-            ](self, input, output)
+            ](self, output)
         else:
             _forward_gpu[
                 target, BATCH, POLICY=POLICY,
-            ](self, input, output)
+            ](self, output)
 
     # ──────────────────────────────────────────────────────────────────
     # Backward — reverse topo + scatter-add.
@@ -274,13 +377,8 @@ struct ComputeGraph[
         grad_output: TileTensor[
             dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        mut grad_input: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
     ) raises:
         comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
@@ -290,11 +388,11 @@ struct ComputeGraph[
         comptime if target == "cpu":
             _backward_cpu[
                 target, BATCH, POLICY=POLICY,
-            ](self, grad_output, grad_input)
+            ](self, grad_output)
         else:
             _backward_gpu[
                 target, BATCH, POLICY=POLICY,
-            ](self, grad_output, grad_input)
+            ](self, grad_output)
 
     # ──────────────────────────────────────────────────────────────────
     # for_each_param — recurse with `node_name.` prefix.
@@ -312,15 +410,6 @@ struct ComputeGraph[
                 visitor,
             )
 
-    def _grad_input_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        if self.ts.target_tag == TARGET_GPU:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._grad_input_buf_dev.value().unsafe_ptr()
-            )
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._grad_input_buf.unsafe_ptr()
-        )
-
 
 # ──────────────────────────────────────────────────────────────────────
 # Free-function forward / backward bodies (so the comptime double loops
@@ -333,14 +422,10 @@ def _forward_cpu[
     target: StaticString,
     BATCH: Int,
     POLICY: AMPPolicy,
-    IN_DIM_: Int,
     OUT_DIM_: Int,
     *NODES: GraphNode,
 ](
-    mut g: ComputeGraph[IN_DIM_, OUT_DIM_, *NODES],
-    input: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-    ],
+    mut g: ComputeGraph[OUT_DIM_, *NODES],
     mut output: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
         element_size=1, ...,
@@ -348,132 +433,103 @@ def _forward_cpu[
 ) raises:
     comptime N = NODES.size
 
-    # External input pointer, widened to MutAnyOrigin so it satisfies
-    # the GraphNode trait's forward_via signature uniformly.
-    var input_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-
     # Null sentinel for unary nodes' unused in1 slot.
     var null_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
 
     comptime for i in range(N):
-        comptime src0 = NODES[i].IN0_NAME
-        comptime src1 = NODES[i].IN1_NAME
         comptime kind = NODES[i].KIND
+        # InputSlot (KIND=0) has no compute and its out_ptr was set
+        # externally via `set_input`.
+        comptime if kind > 0:
+            comptime src0 = NODES[i].IN0_NAME
+            comptime src1 = NODES[i].IN1_NAME
 
-        # Resolve in0_ptr.
-        var in0_ptr = null_ptr
-        comptime if src0 == "input":
-            in0_ptr = input_ptr
-        else:
+            # Resolve in0_ptr by name lookup over all nodes (InputSlots
+            # included — their out_ptr is the externally-set pointer).
+            var in0_ptr = null_ptr
             comptime for j in range(N):
                 comptime if NODES[j].NAME == src0:
                     in0_ptr = g.nodes[j].out_ptr_via()
 
-        # Resolve in1_ptr (only for binary nodes).
-        var in1_ptr = null_ptr
-        comptime if kind == 2:
-            comptime if src1 == "input":
-                in1_ptr = input_ptr
-            else:
+            # Resolve in1_ptr (only for binary nodes).
+            var in1_ptr = null_ptr
+            comptime if kind == 2:
                 comptime for j in range(N):
                     comptime if NODES[j].NAME == src1:
                         in1_ptr = g.nodes[j].out_ptr_via()
 
-        g.nodes[i].forward_via[target, BATCH, POLICY=POLICY](in0_ptr, in1_ptr)
+            g.nodes[i].forward_via[target, BATCH, POLICY=POLICY](
+                in0_ptr, in1_ptr
+            )
 
     # Copy last node's out_buf into the external output.
     comptime LAST_OUT_DIM = NODES[N - 1].OUT_DIM
     var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
     var last_out_ptr = g.nodes[N - 1].out_ptr_via()
     var total = BATCH * LAST_OUT_DIM
-    for k in range(total):
-        out_p[k] = last_out_ptr[k]
+    _copy_cpu(out_p, last_out_ptr, total)
 
 
 def _backward_cpu[
     target: StaticString,
     BATCH: Int,
     POLICY: AMPPolicy,
-    IN_DIM_: Int,
     OUT_DIM_: Int,
     *NODES: GraphNode,
 ](
-    mut g: ComputeGraph[IN_DIM_, OUT_DIM_, *NODES],
+    mut g: ComputeGraph[OUT_DIM_, *NODES],
     grad_output: TileTensor[
         dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-    ],
-    mut grad_input: TileTensor[
-        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
     ],
 ) raises:
     comptime N = NODES.size
 
-    # Zero all node grad_out_bufs (scatter-add targets) + the external
-    # grad_input_buf.
+    # Zero all node grad_out_bufs (scatter-add targets). For InputSlots
+    # this is the gradient accumulator the caller reads after backward;
+    # for compute nodes it's the per-call scratch.
     comptime for i in range(N):
         comptime OUT_DIM_i = NODES[i].OUT_DIM
         var go_p_i = g.nodes[i].grad_out_ptr_via()
-        var total_i = BATCH * OUT_DIM_i
-        for k in range(total_i):
-            go_p_i[k] = Scalar[DT](0.0)
-    var ext_gi_p = g._grad_input_ptr()
-    var ext_total = BATCH * IN_DIM_
-    for k in range(ext_total):
-        ext_gi_p[k] = Scalar[DT](0.0)
+        _zero_cpu(go_p_i, BATCH * OUT_DIM_i)
 
     # Seed last node's grad_out_buf from the external grad_output.
     comptime LAST_OUT_DIM = NODES[N - 1].OUT_DIM
     var ext_go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
     var last_go_p = g.nodes[N - 1].grad_out_ptr_via()
-    var last_total = BATCH * LAST_OUT_DIM
-    for k in range(last_total):
-        last_go_p[k] = ext_go_p[k]
+    _copy_cpu(last_go_p, ext_go_p, BATCH * LAST_OUT_DIM)
 
-    # Reverse topological backward.
+    # Reverse topological backward. Skip InputSlots (KIND=0): their
+    # grad_out_buf is already the accumulator that consumers scatter
+    # into; no compute and no scatter-add of their own.
     comptime for ridx in range(N):
         comptime i = N - 1 - ridx
-        comptime src0 = NODES[i].IN0_NAME
-        comptime src1 = NODES[i].IN1_NAME
         comptime kind = NODES[i].KIND
-        comptime IN0_DIM_i = NODES[i].IN0_DIM
-        comptime IN1_DIM_i = NODES[i].IN1_DIM
+        comptime if kind > 0:
+            comptime src0 = NODES[i].IN0_NAME
+            comptime src1 = NODES[i].IN1_NAME
+            comptime IN0_DIM_i = NODES[i].IN0_DIM
+            comptime IN1_DIM_i = NODES[i].IN1_DIM
 
-        # Run backward: reads node_i.grad_out_buf, writes grad_in0/1_buf.
-        g.nodes[i].backward_via[target, BATCH, POLICY=POLICY]()
+            # Run backward: reads grad_out_buf, writes grad_in0/1_buf.
+            g.nodes[i].backward_via[target, BATCH, POLICY=POLICY]()
 
-        # Scatter-add grad_in0_buf into predecessor's grad_out_buf
-        # (or external _grad_input_buf if IN0_NAME == "input").
-        var gi0_p = g.nodes[i].grad_in0_ptr_via()
-        var total0 = BATCH * IN0_DIM_i
-        comptime if src0 == "input":
-            for k in range(total0):
-                ext_gi_p[k] += gi0_p[k]
-        else:
+            # Scatter-add grad_in0_buf into the predecessor named by
+            # src0 — uniformly handles slots and compute nodes.
+            var gi0_p = g.nodes[i].grad_in0_ptr_via()
+            var total0 = BATCH * IN0_DIM_i
             comptime for j in range(N):
                 comptime if NODES[j].NAME == src0:
                     var pred_go_p = g.nodes[j].grad_out_ptr_via()
-                    for k in range(total0):
-                        pred_go_p[k] += gi0_p[k]
+                    _scatter_add_cpu(pred_go_p, gi0_p, total0)
 
-        # Scatter-add grad_in1_buf (binary nodes only).
-        comptime if kind == 2:
-            var gi1_p = g.nodes[i].grad_in1_ptr_via()
-            var total1 = BATCH * IN1_DIM_i
-            comptime if src1 == "input":
-                for k in range(total1):
-                    ext_gi_p[k] += gi1_p[k]
-            else:
+            # Scatter-add grad_in1_buf (binary nodes only).
+            comptime if kind == 2:
+                var gi1_p = g.nodes[i].grad_in1_ptr_via()
+                var total1 = BATCH * IN1_DIM_i
                 comptime for j in range(N):
                     comptime if NODES[j].NAME == src1:
                         var pred_go_p = g.nodes[j].grad_out_ptr_via()
-                        for k in range(total1):
-                            pred_go_p[k] += gi1_p[k]
-
-    # Copy external grad_input_buf into the caller's grad_input tile.
-    var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
-    for k in range(ext_total):
-        gi_p[k] = ext_gi_p[k]
+                        _scatter_add_cpu(pred_go_p, gi1_p, total1)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -487,14 +543,10 @@ def _forward_gpu[
     target: StaticString,
     BATCH: Int,
     POLICY: AMPPolicy,
-    IN_DIM_: Int,
     OUT_DIM_: Int,
     *NODES: GraphNode,
 ](
-    mut g: ComputeGraph[IN_DIM_, OUT_DIM_, *NODES],
-    input: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-    ],
+    mut g: ComputeGraph[OUT_DIM_, *NODES],
     mut output: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
         element_size=1, ...,
@@ -502,32 +554,28 @@ def _forward_gpu[
 ) raises:
     comptime N = NODES.size
     var ctx = g.ts.ctx.value()
-    var input_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
     var null_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
 
     comptime for i in range(N):
-        comptime src0 = NODES[i].IN0_NAME
-        comptime src1 = NODES[i].IN1_NAME
         comptime kind = NODES[i].KIND
+        comptime if kind > 0:
+            comptime src0 = NODES[i].IN0_NAME
+            comptime src1 = NODES[i].IN1_NAME
 
-        var in0_ptr = null_ptr
-        comptime if src0 == "input":
-            in0_ptr = input_ptr
-        else:
+            var in0_ptr = null_ptr
             comptime for j in range(N):
                 comptime if NODES[j].NAME == src0:
                     in0_ptr = g.nodes[j].out_ptr_via()
 
-        var in1_ptr = null_ptr
-        comptime if kind == 2:
-            comptime if src1 == "input":
-                in1_ptr = input_ptr
-            else:
+            var in1_ptr = null_ptr
+            comptime if kind == 2:
                 comptime for j in range(N):
                     comptime if NODES[j].NAME == src1:
                         in1_ptr = g.nodes[j].out_ptr_via()
 
-        g.nodes[i].forward_via[target, BATCH, POLICY=POLICY](in0_ptr, in1_ptr)
+            g.nodes[i].forward_via[target, BATCH, POLICY=POLICY](
+                in0_ptr, in1_ptr
+            )
 
     # Copy last node's out_buf into the external output.
     comptime LAST_OUT_DIM = NODES[N - 1].OUT_DIM
@@ -541,31 +589,23 @@ def _backward_gpu[
     target: StaticString,
     BATCH: Int,
     POLICY: AMPPolicy,
-    IN_DIM_: Int,
     OUT_DIM_: Int,
     *NODES: GraphNode,
 ](
-    mut g: ComputeGraph[IN_DIM_, OUT_DIM_, *NODES],
+    mut g: ComputeGraph[OUT_DIM_, *NODES],
     grad_output: TileTensor[
         dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-    ],
-    mut grad_input: TileTensor[
-        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
     ],
 ) raises:
     comptime N = NODES.size
     var ctx = g.ts.ctx.value()
 
-    # Zero all node grad_out_bufs + the external grad_input_buf.
+    # Zero all node grad_out_bufs (slot accumulators included).
     comptime for i in range(N):
         comptime OUT_DIM_i = NODES[i].OUT_DIM
         comptime total_i = BATCH * OUT_DIM_i
         var go_p_i = g.nodes[i].grad_out_ptr_via()
         _enqueue_zero[total_i](ctx, go_p_i)
-    var ext_gi_p = g._grad_input_ptr()
-    comptime ext_total = BATCH * IN_DIM_
-    _enqueue_zero[ext_total](ctx, ext_gi_p)
 
     # Seed last node's grad_out_buf from the external grad_output.
     comptime LAST_OUT_DIM = NODES[N - 1].OUT_DIM
@@ -574,38 +614,29 @@ def _backward_gpu[
     var last_go_p = g.nodes[N - 1].grad_out_ptr_via()
     _enqueue_copy[last_total](ctx, last_go_p, ext_go_p)
 
-    # Reverse topological backward.
+    # Reverse topological backward. Skip InputSlots (KIND=0).
     comptime for ridx in range(N):
         comptime i = N - 1 - ridx
-        comptime src0 = NODES[i].IN0_NAME
-        comptime src1 = NODES[i].IN1_NAME
         comptime kind = NODES[i].KIND
-        comptime IN0_DIM_i = NODES[i].IN0_DIM
-        comptime IN1_DIM_i = NODES[i].IN1_DIM
+        comptime if kind > 0:
+            comptime src0 = NODES[i].IN0_NAME
+            comptime src1 = NODES[i].IN1_NAME
+            comptime IN0_DIM_i = NODES[i].IN0_DIM
+            comptime IN1_DIM_i = NODES[i].IN1_DIM
 
-        g.nodes[i].backward_via[target, BATCH, POLICY=POLICY]()
+            g.nodes[i].backward_via[target, BATCH, POLICY=POLICY]()
 
-        var gi0_p = g.nodes[i].grad_in0_ptr_via()
-        comptime total0 = BATCH * IN0_DIM_i
-        comptime if src0 == "input":
-            _enqueue_add[total0](ctx, ext_gi_p, gi0_p)
-        else:
+            var gi0_p = g.nodes[i].grad_in0_ptr_via()
+            comptime total0 = BATCH * IN0_DIM_i
             comptime for j in range(N):
                 comptime if NODES[j].NAME == src0:
                     var pred_go_p = g.nodes[j].grad_out_ptr_via()
                     _enqueue_add[total0](ctx, pred_go_p, gi0_p)
 
-        comptime if kind == 2:
-            var gi1_p = g.nodes[i].grad_in1_ptr_via()
-            comptime total1 = BATCH * IN1_DIM_i
-            comptime if src1 == "input":
-                _enqueue_add[total1](ctx, ext_gi_p, gi1_p)
-            else:
+            comptime if kind == 2:
+                var gi1_p = g.nodes[i].grad_in1_ptr_via()
+                comptime total1 = BATCH * IN1_DIM_i
                 comptime for j in range(N):
                     comptime if NODES[j].NAME == src1:
                         var pred_go_p = g.nodes[j].grad_out_ptr_via()
                         _enqueue_add[total1](ctx, pred_go_p, gi1_p)
-
-    # Copy external grad_input_buf into the caller's grad_input tile.
-    var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
-    _enqueue_copy[ext_total](ctx, gi_p, ext_gi_p)

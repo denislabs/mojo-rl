@@ -1,6 +1,7 @@
-"""Adam — retrofit (Phase D). Same algorithm + storage as v1 Adam;
-the trait surface drops algorithm-specific hyperparams from `make`
-and exposes them as public mut fields:
+"""Adam optimizer.
+
+`make[target, M]` does not take algorithm-specific hyperparams;
+they live as public mut fields on the optimizer struct:
 
     var opt = Adam.make[target="cpu", M=MyModel](model)
     opt.lr = Scalar[DT](3e-4)   # poke a public field after construction
@@ -9,13 +10,12 @@ and exposes them as public mut fields:
 The mut-field pattern lets external schedules (cosine LR, SAC alpha
 annealing) update hyperparams per-step without rebuilding the optimizer.
 
-Internals carry over from v1:
+Internals:
   * flat `m_flat`/`v_flat` Lists (CPU) or DeviceBuffers (GPU); offsets
     table maps each param's walk-order index to its start.
   * Visitors reach into Adam's storage via raw pointers (sidesteps
     Mojo's field-destroyed-mid-life rejection).
-  * GPU kernel `_adam_update_kernel` lifted from v1 verbatim — same
-    fp32 Adam math.
+  * GPU kernel `_adam_update_kernel` — standard fp32 Adam math.
 """
 
 from std.math import sqrt

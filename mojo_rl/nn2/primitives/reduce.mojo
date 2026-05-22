@@ -1,6 +1,6 @@
-"""Reduction Modules — retrofit (Phase B).
+"""Reduction Modules.
 
-Sum[DIM] and Mean[DIM] across the feature axis. Same algorithm as v1,
+Sum[DIM] and Mean[DIM] across the feature axis. The scaffold:
 just the scaffold collapses: `ts: TargetStorage` replaces the per-leaf
 tag/inference/ctx triplet, `backward[mode]` collapses `backward` +
 `backward_input`, and Phase 10A buffer surface is dropped.

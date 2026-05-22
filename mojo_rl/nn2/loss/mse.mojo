@@ -10,7 +10,7 @@ convention as PyTorch `MSELoss(reduction='mean')` which also averages
 over both batch and feature dims, but here we divide by BATCH only to
 match the PPO critic gradient).
 
-Phase 6.3. AMP: POLICY accepted but ignored (loss math is fp32-only).
+AMP: POLICY accepted but ignored (loss math is fp32-only).
 """
 
 from std.gpu import global_idx
@@ -144,10 +144,9 @@ struct MSELoss[DIM: Int](Loss):
         assert_tag_for["MSELoss", target](self.ts.target_tag)
 
         comptime if target == "cpu":
-            # Phase 8.0: SIMD path. Flat sweep over BATCH * DIM since the
-            # reduction doesn't care about row structure (sum is associative
-            # in fp32 modulo rounding — bit-changes vs scalar are negligible
-            # against the 1/BATCH normalization).
+            # SIMD path. Flat sweep over BATCH * DIM — sum is associative in
+            # fp32 modulo rounding, so row structure doesn't matter (the
+            # 1/BATCH normalization dwarfs the rounding delta).
             self._ensure_cache_cpu(BATCH)
             var lp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
             var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
@@ -224,7 +223,7 @@ struct MSELoss[DIM: Int](Loss):
         assert_tag_for["MSELoss", target](self.ts.target_tag)
 
         comptime if target == "cpu":
-            # Phase 8.0: SIMD path.
+            # SIMD path.
             var cp = self.cache_logits.unsafe_ptr()
             var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
             var gp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_logits.ptr)

@@ -1,36 +1,31 @@
-"""Linear[IN, OUT] — retrofit (Phase B, lighthouse).
+"""Linear[IN, OUT] — affine `y = x·W + b`. The lighthouse leaf.
 
-Differences vs `linear.mojo` (v1):
-  * `ts: TargetStorage` + `assert_tag_for` replaces per-leaf
-    `_target_tag` / `_inference` / `ctx` triplet.
+State:
+  * `ts: TargetStorage` carries `target_tag` + (optional) `ctx`; the
+    method-level `assert_tag_for` polices misuse.
   * `weight: Param["weight", True, IN*OUT]` + `bias: Param["bias", False, OUT]`
-    replace the four-list (weight/bias/grad_w/grad_b) + four-buf
-    cluster. `for_each_param` body becomes one call to
-    `for_each_param_auto`; `zero_grad` body becomes one call to
-    `zero_grad_auto`.
-  * `_cached_input_ptr` pointer-alias replaces the COPIED input cache —
-    saves a full `BATCH*IN` write per forward (audit Spike #1). The
-    forward input slab is preserved across backward by the orchestrator
-    (`Sequential` or `ComputeGraph`).
-  * `amp: LinearAMPState[IN, OUT]` + `cast_fp32_to_bf16` /
-    `cast_bf16_to_fp32` helpers replace the six inlined SIMD cast bodies
-    (audit Follow-up #2). The bf16 weight is re-cast on every fwd/bwd
-    call; we used to gate on a `w_dirty` flag, but no caller flipped it
-    back to True after Adam updates, so the cache went stale after step 1.
-    Cost of always re-casting is ~IN*OUT scalar ops vs BATCH*IN*OUT matmul.
-  * `backward[mode]` collapses `backward` + `backward_input` (audit
-    Follow-up #7). `mode="input_only"` skips the param-grad kernels.
-  * Phase 10A buffer surface (`_out_buf` / `_grad_in_buf` / `_grad_out_buf`,
-    `ensure_buffers` / `out_ptr` / `grad_in_ptr` / `grad_out_ptr`)
-    dropped — orchestrators own all inter-module slabs.
+    — `True`/`False` indicates whether AdamW weight-decay applies. The
+    `for_each_param` / `zero_grad` bodies are one call each into the
+    reflection-walked `_auto` helpers.
+  * `_cached_input_ptr` aliases the orchestrator's input slab (no copy).
+    Sequential / ComputeGraph guarantee that slab stays live until
+    backward completes.
+  * `amp: LinearAMPState[IN, OUT]` owns the bf16 scratch + cast helpers
+    when `POLICY.compute_dtype == bf16`. The bf16 weight is re-cast on
+    every fwd/bwd: a `w_dirty` flag was tried, but no caller flipped it
+    after Adam updates so the cache went stale at step 1. Re-casting
+    costs `IN*OUT` scalar ops vs `BATCH*IN*OUT` for the matmul itself —
+    negligible.
+  * `backward[mode]` collapses backward + backward_input; the
+    `mode="input_only"` shortcut skips param grads (used by SAC actor
+    loss propagating through the critic).
 
-**BACKWARD-ORDER INVARIANT** (audit Spike #1, critical): the v1
-ordering of `grad_input → grad_w → grad_b` is REVERSED here to
-`grad_b → grad_w → grad_input`. Because `_cached_input_ptr` aliases
-the orchestrator's input slab, and that same slab is where
-`grad_input` is written, computing `grad_input` first would clobber
-the cache before `grad_w` could read it. Param grads (which need the
-cache) MUST run first.
+**BACKWARD-ORDER INVARIANT (critical)**: param grads run BEFORE
+input grad. `_cached_input_ptr` aliases the orchestrator's input slab
+— the same slab that `grad_input` writes into. If `grad_input` ran
+first, it would clobber the cache before `grad_w` could read it. So
+the order is `grad_b → grad_w → grad_input`, and Sequential's
+backward walks children in the matching reverse-order.
 """
 
 from std.math import ceildiv
@@ -225,7 +220,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                 max_matmul[target="cpu"](output, input, w_tt, None)
             else:
                 comptime assert POLICY.compute_dtype == DType.bfloat16, (
-                    "Phase 8.3 supports only fp32 and bf16 compute_dtype on CPU"
+                    "Linear CPU supports only fp32 and bf16 compute_dtype"
                 )
                 self.amp.ensure_cpu(BATCH)
 
@@ -284,7 +279,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                 max_matmul[target="gpu"](output, input, weight_tt, ctx)
             else:
                 comptime assert POLICY.compute_dtype == DType.bfloat16, (
-                    "Phase 3 supports only fp32 and bf16 compute_dtype"
+                    "Linear supports only fp32 and bf16 compute_dtype"
                 )
                 self.amp.ensure_gpu(BATCH, ctx)
 
@@ -432,7 +427,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                 )
             else:
                 comptime assert POLICY.compute_dtype == DType.bfloat16, (
-                    "Phase 8.3 supports only fp32 and bf16 compute_dtype on CPU"
+                    "Linear CPU supports only fp32 and bf16 compute_dtype"
                 )
                 self.amp.ensure_cpu(BATCH)
 
@@ -520,7 +515,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                 )
             else:
                 comptime assert POLICY.compute_dtype == DType.bfloat16, (
-                    "Phase 3 supports only fp32 and bf16 compute_dtype"
+                    "Linear supports only fp32 and bf16 compute_dtype"
                 )
                 self.amp.ensure_gpu(BATCH, ctx)
 

@@ -5,12 +5,12 @@ and dispatch a visitor / zero_grad action. Replaces the per-leaf
 `for_each_param` / `zero_grad` method bodies on parameterised leaves
 (Linear, LayerNorm, GaussianHead, NormedLinear, ...).
 
-Limitation found in audit Spike #6: Mojo nightly can't dispatch sibling
-trait methods from a trait default-method body via `conforms_to`-filtered
-refs (`trait_downcast[Module](a)` also doesn't help). Walker is therefore
-a FREE function the leaf calls from its tiny `for_each_param` /
-`zero_grad` body. Once Mojo lifts that limitation we promote the walker
-body into a `Module` default method and remove the per-leaf stubs.
+Mojo nightly limitation: trait default-method bodies can't dispatch
+sibling trait methods via `conforms_to`-filtered refs
+(`trait_downcast[Module](a)` doesn't help either). So this is a FREE
+function the leaf calls from its tiny `for_each_param` / `zero_grad`
+body. When Mojo lifts that limitation, the walker body can move into a
+`Module` default method and the per-leaf stubs can be removed.
 """
 
 from std.reflection import reflect

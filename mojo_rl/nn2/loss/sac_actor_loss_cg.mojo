@@ -1,11 +1,9 @@
-"""SACActorLossCG — Phase 10E + Block D (GPU).
+"""SACActorLossCG — SAC actor loss with a ComputeGraph post-critic head.
 
-Drop-in replacement for `SACActorLoss` (Phase 9A) with the same public
-surface (`make[target]`, `forward_backward[target, OPT]`, public
-`rsample` field) but built around a small ComputeGraph v2 DAG that
-absorbs the post-critic chain.
+Public surface: `make[target]`, `forward_backward[target, OPT]`, plus a
+public `rsample` field. CPU + GPU.
 
-The original chain split into two parts at the trainer-owned externals:
+The chain splits in two at the trainer-owned externals:
 
   pre-critic   (manual orchestration in this block):
       actor.forward(s)            →  actor_out [BATCH, 2·ACT]
@@ -14,7 +12,7 @@ The original chain split into two parts at the trainer-owned externals:
       concat(s, action)           →  sa [BATCH, OBS+ACT]
       critic1.forward(sa), critic2.forward(sa) → q1, q2 [BATCH, 1] each
 
-  post-critic  (one CG v2 graph, `_post_graph`):
+  post-critic  (one ComputeGraph, `_post_graph`):
       input = [q1 | q2 | log_prob] [BATCH, 3]
         Slice "q1_in"        cols [0, 1) → q1_in
         Slice "q2_in"        cols [1, 2) → q2_in
@@ -24,20 +22,10 @@ The original chain split into two parts at the trainer-owned externals:
         BinarySub "loss_per_b" (alpha_lp, min_q) → loss_per_b
       output = loss_per_b [BATCH, 1]
 
-Backward symmetrically.
-
-Block D (2026-05-21): GPU path. The pre-critic / post-critic chain is
-mirrored on GPU using:
-  - `actor.forward["gpu"]` + `RSample.forward["gpu"]` (already done)
-  - `_concat_s_action_from_alp_kernel` to fold the alp packing into sa
-  - `critic.forward["gpu"]` (twin)
-  - `_pack_post_in_kernel` to materialize [q1 | q2 | log_prob]
-  - `_post_graph.forward["gpu"]` (CG v2 GPU, Block A)
-  - mean loss / log_prob via small device→host copy + scalar reduce
-  - `_unpack_grad_post_in_kernel`
-  - `critic.backward["gpu", mode="input_only"]` (twin)
-  - `_combine_grad_alp_kernel`
-  - `rsample.backward["gpu"]` + `actor.backward["gpu"]`
+Backward symmetrically. GPU mirrors the CPU pipeline via the kernels
+`_concat_s_action_from_alp_kernel`, `_pack_post_in_kernel`,
+`_unpack_grad_post_in_kernel`, `_combine_grad_alp_kernel` interleaved
+with `actor`/`critic`/`rsample`/`_post_graph` device dispatches.
 """
 
 from std.gpu import global_idx
@@ -50,17 +38,18 @@ from ..core import (
     Module,
     Optimizer,
     Initializer,
-    TARGET_GPU,
 )
+from ..core.target_tag import TARGET_GPU
 from ..core.target_storage import TargetStorage, assert_tag_for
 from ..initializer import Zero
 from ..combinators.compute_graph import ComputeGraph
-from ..combinators.graph_nodes import UnaryNode, BinaryNode
+from ..combinators.graph_nodes import InputSlot, UnaryNode, BinaryNode
 from ..primitives.rsample import RSample
 from ..primitives.scale import Scale
 from ..primitives.slice import Slice
 from ..primitives.binary_elem_min import BinaryElemMin
 from ..primitives.binary_sub import BinarySub
+from .loss_block import LossBlock
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -192,13 +181,16 @@ struct SACActorLossCG[
     ACTOR: Module,
     CRITIC: Module,
     BATCH: Int,
-](Movable & ImplicitlyDestructible):
+](LossBlock):
     comptime OBS_DIM = Self.ACTOR.IN_DIM
     comptime ACT_DIM = Self.ACTOR.OUT_DIM // 2
     comptime SA_DIM = Self.OBS_DIM + Self.ACT_DIM
 
+    # InputSlot["input", 3] is nodes[0]; q1_in/q2_in/log_prob_in at 1/2/3,
+    # min_q at 4, alpha_lp at 5, loss_per_b at 6.
     comptime PostGraph = ComputeGraph[
-        3, 1,
+        1,
+        InputSlot["input",       3],
         UnaryNode["q1_in",       Slice[3, 0, 1],       "input"],
         UnaryNode["q2_in",       Slice[3, 1, 2],       "input"],
         UnaryNode["log_prob_in", Slice[3, 2, 3],       "input"],
@@ -452,13 +444,15 @@ struct SACActorLossCG[
             mb_post_in_p[b * 3 + 1] = mb_q2_p[b]
             mb_post_in_p[b * 3 + 2] = mb_alp_p[b * (ACT + 1) + ACT]  # log_prob
 
-        # Set α on alpha_lp (node index 4 = "alpha_lp" Scale).
-        self._post_graph.nodes[4].op.multiplier = alpha
+        # Set α on alpha_lp (Block B: InputSlot now at index 0, shifting
+        # alpha_lp from 4 to 5).
+        self._post_graph.nodes[5].op.multiplier = alpha
 
         var mb_post_in_t = TileTensor(mb_post_in_p, row_major[BB, 3]())
         var mb_post_out_p = self._mb_post_out.unsafe_ptr()
         var mb_post_out_t = TileTensor(mb_post_out_p, row_major[BB, 1]())
-        self._post_graph.forward["cpu", BB](mb_post_in_t, mb_post_out_t)
+        self._post_graph.set_input["input", BB](mb_post_in_t)
+        self._post_graph.forward["cpu", BB](mb_post_out_t)
 
         # Mean loss + mean log_prob.
         var loss_sum: Scalar[DT] = 0.0
@@ -474,9 +468,10 @@ struct SACActorLossCG[
             g_post_out_p[b] = inv_b
         var g_post_out_t = TileTensor(g_post_out_p, row_major[BB, 1]())
 
-        var g_post_in_p = self._mb_grad_post_in.unsafe_ptr()
-        var g_post_in_t = TileTensor(g_post_in_p, row_major[BB, 3]())
-        self._post_graph.backward["cpu", BB](g_post_out_t, g_post_in_t)
+        self._post_graph.backward["cpu", BB](g_post_out_t)
+        # Block B: read the grad-of-input directly from the slot's
+        # accumulator. Replaces the old external _mb_grad_post_in path.
+        var g_post_in_p = self._post_graph.grad_input_ptr["input"]()
 
         # Unpack grad over [q1 | q2 | log_prob].
         var g_q1_p = self._mb_grad_q1.unsafe_ptr()
@@ -635,12 +630,13 @@ struct SACActorLossCG[
             grid_dim=n_blocks_b, block_dim=TPB,
         )
 
-        # Set α on alpha_lp (node index 4).
-        self._post_graph.nodes[4].op.multiplier = alpha
+        # Set α on alpha_lp (Block B: index 5 after InputSlot insertion).
+        self._post_graph.nodes[5].op.multiplier = alpha
 
         var post_in_t = TileTensor(post_in_p, row_major[BB, 3]())
         var post_out_t = TileTensor(post_out_p, row_major[BB, 1]())
-        self._post_graph.forward["gpu", BB](post_in_t, post_out_t)
+        self._post_graph.set_input["input", BB](post_in_t)
+        self._post_graph.forward["gpu", BB](post_out_t)
 
         # Mean loss + mean log_prob via host-side reduction (BATCH scalars
         # each — at SAC scales (≤ 1024) this is much cheaper than launching
@@ -668,8 +664,11 @@ struct SACActorLossCG[
         )
 
         var g_post_out_t = TileTensor(g_post_out_p, row_major[BB, 1]())
-        var g_post_in_t = TileTensor(g_post_in_p, row_major[BB, 3]())
-        self._post_graph.backward["gpu", BB](g_post_out_t, g_post_in_t)
+        self._post_graph.backward["gpu", BB](g_post_out_t)
+        # Block B: pull the grad-of-input pointer from the slot's
+        # accumulator and rebind it as the existing g_post_in_p alias so
+        # the downstream unpack kernel below reads the same data.
+        g_post_in_p = self._post_graph.grad_input_ptr["input"]()
 
         # Unpack grad over [q1 | q2 | log_prob].
         var g_post_in_lt = LayoutTensor[

@@ -1,4 +1,4 @@
-"""BinaryElemMin[DIM] — retrofit (Phase B).
+"""BinaryElemMin[DIM] — elementwise min over two batches.
 
   output[b, d]   = min(in0[b, d], in1[b, d])
   grad_in0[b, d] = grad_output[b, d] if in0 wins, else 0

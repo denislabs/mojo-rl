@@ -19,10 +19,10 @@ Output: scalar L = mean over batch of
 
 Backward emits grad_actor_output[BATCH, 2*ACT] = ∂L/∂[mu | log_std].
 Returns 0 for the clipped samples (PyTorch detach semantics on the clip
-branch). Matches v1 `ppo_continuous_actor_grad_kernel` exactly:
+branch). Numerical guards:
     LOG_STD ∈ [-5, 2], log_prob_diff ∈ [-20, 20], grad clip ±10.
 
-Phase 6.4. CPU + GPU.
+CPU + GPU.
 """
 
 from std.math import exp, log

@@ -1,6 +1,6 @@
 """Generalized Advantage Estimation (GAE) helper functions.
 
-Phase 8.1. Walks backward through a rollout, computes:
+Walks backward through a rollout, computes:
 
     delta_t      = r_t + γ · V(s_{t+1}) · (1 − terminated_t) − V(s_t)
     advantage_t  = delta_t + γ · λ · (1 − terminated_t) · advantage_{t+1}
@@ -56,9 +56,8 @@ def compute_gae(
 
     `n_steps` is a *runtime* arg, not comptime — at e.g. ROLLOUT_LEN=2048
     Mojo nightly unrolls the comptime-templated form fully, exploding
-    compile time (multi-hour). Runtime loop bound keeps the loop body
-    as a single function instantiation. (Discovered the hard way during
-    Phase 8.1 — see history in NN2_DESIGN.md.)
+    compile time (multi-hour). Runtime loop bound keeps the loop body as
+    a single function instantiation.
     """
     var last_gae: Scalar[DT] = 0.0
     for t in range(n_steps - 1, -1, -1):

@@ -13,3 +13,6 @@ from .sac_actor_loss import (
 )
 from .sac_actor_loss_cg import SACActorLossCG, SACActorLossOut
 from .critic_update_block import CriticUpdateBlock, TwinCriticUpdateBlock
+from .ddpg_actor_loss import DDPGActorLoss
+from .loss_block import LossBlock
+from .loss_block_bundle import LossBlockBundle

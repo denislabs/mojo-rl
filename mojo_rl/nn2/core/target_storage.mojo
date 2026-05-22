@@ -1,38 +1,21 @@
-"""TargetStorage + free helpers (NN2_AUDIT retrofit).
+"""TargetStorage + free helpers.
 
-Bundles the (`_target_tag`, `_inference`, `ctx`) field cluster that
-every nn2 leaf currently declares as three separate fields into a
-single composable field. Replaces the per-leaf `_assert_tag[target]`
-method with a module-level free function and the per-leaf
-`_ensure_cache_cpu` / `_ensure_cache_gpu` helpers with module-level
-free helpers.
+Bundles a leaf's `(target_tag, ctx)` cluster into a single composable
+field. Every leaf has exactly one `var ts: TargetStorage`. Methods
+gate on `assert_tag_for[name, target](self.ts.target_tag)` to catch
+make-CPU / call-GPU misuse at the entry point.
 
-Per-leaf savings: ~3 fields → 1 field, ~16 LOC of boilerplate methods
-removed. Across 22 leaves: ~350 LOC of pure boilerplate.
+Input-caching leaves alias the orchestrator's input slab through a
+pointer field — no `cache: List[Scalar[DT]]` is needed.
 
-Migration: a leaf that previously declared
-    var _target_tag: Int8
-    var _inference: Bool
-    var ctx: Optional[DeviceContext]
-    var cache: List[Scalar[DT]]
-    var cache_dev: Optional[DeviceBuffer[DT]]
-    var cache_dev_n: Int
+Module-level helpers:
 
-now declares
-    var ts: TargetStorage
-    var cache: List[Scalar[DT]]                 # if it owns a cache
-    var cache_dev: Optional[DeviceBuffer[DT]]
-    var cache_dev_n: Int
+  - `assert_tag_for[name, target](tag)` — raise if `tag` does not match
+    the comptime-resolved `target`.
+  - `ensure_cpu_buffer` / `ensure_gpu_buffer` — lazy-grow CPU `List` /
+    GPU `DeviceBuffer` scratch to a needed length.
 
-(unified-buffer design — Spike #1 — also eliminates the cache fields
-for input-caching layers; this struct only handles the tag/inference/ctx
-cluster.)
-
-The previous per-leaf `_assert_tag[target](self)` method becomes:
-    assert_tag_for[name="Linear", target=target](self.ts.target_tag)
-
-CPU + GPU buffer-grow helpers are extracted similarly. See sibling
-`nn2/core/target_tag.mojo` for the underlying constants and
+See `nn2/core/target_tag.mojo` for the underlying constants and
 `target_tag_for[target]()` mapping.
 """
 

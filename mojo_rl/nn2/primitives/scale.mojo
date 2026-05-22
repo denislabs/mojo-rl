@@ -1,6 +1,6 @@
-"""Scale[DIM] — retrofit (Phase A).
+"""Scale[DIM] — multiplies by a runtime scalar `multiplier`.
 
-Multiplies by a runtime scalar `multiplier`. Forward: `out = m·in`,
+Forward: `out = m·in`,
 Backward: `grad_in = m·grad_out`. The multiplier is a public mut field
 the caller updates per-step (SAC tracks moving α this way).
 

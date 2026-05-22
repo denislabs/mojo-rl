@@ -1,37 +1,17 @@
-"""ReLU[DIM] — retrofit lighthouse (NN2_AUDIT Follow-up #7).
+"""ReLU[DIM] — elementwise rectifier, the template input-caching leaf.
 
-First leaf migrated to the audit-Spike patterns. Sets the template
-that every other leaf will follow. Diffs vs `relu.mojo`:
+`ts: TargetStorage` carries `target_tag` + (optional) `ctx`; methods
+gate on `assert_tag_for["ReLU", target](self.ts.target_tag)`.
 
-  1. **TargetStorage composition.** The 3 fields `_target_tag`,
-     `_inference`, `ctx` collapse to `var ts: TargetStorage`.
+Input-caching pattern: forward records the input pointer (no copy);
+backward reconstructs a TileTensor view from the alias. The
+orchestrator (`Sequential` / `ComputeGraph`) owns the input slab and
+guarantees it survives until backward completes. No cache buffer →
+saves `BATCH * DIM * 4 bytes` per instance.
 
-  2. **Free `assert_tag_for`.** The per-leaf `_assert_tag[target]`
-     method is gone. Method bodies call
-     `assert_tag_for["ReLU", target](self.ts.target_tag)` directly.
-
-  3. **Unified-buffer cache (no owned cache field).** ReLU is
-     input-caching. Forward records the input pointer; backward
-     reconstructs a TileTensor view from it. NO `cache: List[Scalar[DT]]`
-     field, NO `cache_dev: Optional[DeviceBuffer]` field, NO
-     `_ensure_cache_*` helpers. Memory saved per ReLU instance:
-     `BATCH * DIM * 4 bytes` (the cache buffer the v1 leaf would own).
-
-  4. **`backward[mode]` instead of `backward` + `backward_input`.**
-     ReLU is element-wise so `mode` doesn't change behavior, but the
-     uniform signature lets `StopGradParams` and twin-critic actor
-     updates use a single dispatch.
-
-  5. **Slim `Module` conformance.** No Phase 10A `out_ptr/grad_in_ptr/
-     grad_out_ptr/ensure_buffers` to override (those don't exist on
-     `Module`).
-
-LOC: 289 (relu.mojo) → 220 (this file). The remaining headroom comes
-from the SIMD/GPU bodies, which stay mechanically identical to v1.
-
-Validates against the v1 ReLU element-for-element — see
-`tests/nn2/test_relu.mojo`.
-"""
+`backward[mode]` is element-wise so `mode` is a no-op here, but the
+uniform signature lets `StopGradParams` and twin-critic actor updates
+share a single dispatch."""
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext

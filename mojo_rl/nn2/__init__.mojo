@@ -1,11 +1,6 @@
-"""Stateful NN framework redesign.
+"""Stateful NN framework.
 
-See docs/NN2_DESIGN.md for the design. Phase 1 scope:
-  - Module + ParamVisitor traits
-  - Linear, ReLU, Sequential
-  - CrossEntropyLoss
-  - Adam
-  - CPU MNIST MLP end-to-end
-
-Everything in nn2 is built alongside the existing nn/ — both coexist.
-"""
+Trait surfaces, leaf primitives, combinators (Sequential / ComputeGraph),
+optimizers, loss functions and trainers — the primary nn/ surface for
+all current agents. See `docs/NN2.md` for the navigation guide and
+`docs/NN2_DESIGN.md` for the retrofit history."""

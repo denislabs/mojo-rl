@@ -1,4 +1,10 @@
-"""Traits + target-tag infrastructure."""
+"""Traits + target-tag infrastructure.
+
+Note: target-tag constants (`TARGET_UNINIT/CPU/GPU`, `target_tag_for`)
+live in `core/target_tag.mojo` and are no longer re-exported here.
+Import them from `..core.target_tag` directly at the use site — keeps
+the constants close to their docstring and avoids a stale-re-export
+trap if their shape changes."""
 
 from .param_visitor import ParamVisitor
 from .module import Module
@@ -11,12 +17,6 @@ from .amp import AMPPolicy, NoAMP, Bf16Compute
 from .named_params import NamedParam, named_params
 from .map_params import polyak_update, hard_copy_params
 from .online_target_pair import OnlineTargetPair
-from .target_tag import (
-    TARGET_UNINIT,
-    TARGET_CPU,
-    TARGET_GPU,
-    target_tag_for,
-)
 from .param import Param, IsParam
 from .walkers import for_each_param_auto, zero_grad_auto
 from .amp_matmul import (

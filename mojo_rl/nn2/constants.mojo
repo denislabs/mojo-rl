@@ -1,7 +1,7 @@
-"""Constants for nn2/ Phase 1.
+"""Constants for nn2/.
 
-DT is pinned to float32 for Phase 1. Phase 3 (AMP) introduces per-layer
-`compute_dtype` / `accum_dtype` / `param_dtype` and AMPPolicy on DiffOps.
+DT is pinned to float32 at the framework scope; AMP overrides happen at
+the per-call site via `POLICY: AMPPolicy` (see `core/amp.mojo`).
 
 CPU_SIMD_W is the SIMD lane count for `DT` on the host CPU. Used by
 hand-rolled SIMD elementwise paths (ReLU/Tanh/MSE/elementwise) since

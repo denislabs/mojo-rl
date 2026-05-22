@@ -1,4 +1,4 @@
-"""Concat[*BRANCHES] — retrofit (Phase C). Variadic column-concat.
+"""Concat[*BRANCHES] — variadic column-concat.
 
 Generalization of `Parallel[A, B]` to N branches sharing IN_DIM.
 Each branch's forward output goes into a per-branch slab, then the

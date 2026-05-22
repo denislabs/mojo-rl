@@ -1,21 +1,18 @@
 """OnlineTargetPair[M] — online + target net + Polyak soft-update.
 
-Phase 8.1. Wraps the (online, target) net pattern used by SAC / TD3 /
-DDPG / Rainbow target nets. Pair is created via `make[target, INIT]`
-which (a) builds both nets via M's factory, then (b) hard-copies online
-→ target so the two start identical. Per-training-step soft-update:
+Wraps the (online, target) net pattern used by SAC / TD3 / DDPG /
+Rainbow. `make[target, INIT]` builds both nets via M's factory and
+then hard-copies online → target so the two start identical.
+Per-training-step soft-update:
 
-    pair.polyak_step["cpu"](tau)   →   target = (1-τ)·target + τ·online
+    pair.polyak_step[target](tau)  →  target = (1-τ)·target + τ·online
 
-For SAC at τ=0.005 this replaces 4 lines of boilerplate per critic per
-step (declare, hard_copy, polyak_update) with one. The two M instances
-remain accessible as `pair.online` and `pair.target` for direct
-forward/backward — we don't try to wrap the full forward/backward
-surface because each algorithm uses the pair differently (SAC actor
-update reads target's forward via `pair.target.forward(...)`, etc).
+Replaces 4 lines of per-critic boilerplate (declare, hard_copy,
+polyak_update) with one. The two M instances stay accessible as
+`pair.online` and `pair.target_net` because algorithms use the pair
+differently (e.g. SAC reads `pair.target_net.forward(...)` directly).
 
-CPU-only in Phase 8.1; GPU make + GPU polyak follow when the first GPU
-SAC env lands (same shape as the CPU pair).
+CPU + GPU.
 """
 
 from std.gpu.host import DeviceContext
@@ -52,7 +49,7 @@ struct OnlineTargetPair[M: Module](Movable & ImplicitlyDestructible):
         target: StaticString, INIT: Initializer
     ](ctx: DeviceContext) raises -> Self:
         """GPU factory. Builds online + target via M.make[gpu](ctx), then
-        hard-copies online → target. Block A (Phase A6, 2026-05-21)."""
+        hard-copies online → target."""
         comptime assert (
             target == "gpu"
         ), "OnlineTargetPair.make[target='cpu', INIT](ctx) — drop ctx for CPU"

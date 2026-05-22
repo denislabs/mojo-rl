@@ -1,4 +1,4 @@
-"""RSample — retrofit (Phase E) + Block D (GPU).
+"""RSample — squashed-Gaussian reparameterized sample Module (CPU + GPU).
 
 Thin Module wrapper around the canonical `squashed_gaussian_forward` /
 `squashed_gaussian_backward` free functions from

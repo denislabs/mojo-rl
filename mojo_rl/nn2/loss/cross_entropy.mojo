@@ -1,6 +1,6 @@
 """CrossEntropyLoss[N_CLASSES] — softmax + cross-entropy, numerically stable.
 
-Phase 2.4: target is a comptime method param. The loss is Defaultable;
+`target` is a comptime method param. The loss is Defaultable;
 `make[target]` populates the matching scratch buffers and stamps the tag.
 """
 

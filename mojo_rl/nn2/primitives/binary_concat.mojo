@@ -1,4 +1,4 @@
-"""BinaryConcat[IN0_DIM, IN1_DIM] — retrofit (Phase B).
+"""BinaryConcat[IN0_DIM, IN1_DIM].
 
 Horizontal stack of two `[BATCH, *]` tiles into `[BATCH, IN0_DIM+IN1_DIM]`.
 

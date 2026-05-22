@@ -1,9 +1,9 @@
-"""Slim Optimizer trait (NN2_AUDIT retrofit, Follow-up #3).
+"""Slim Optimizer trait.
 
-Successor to `nn2/core/optimizer.mojo`. Difference: algorithm-specific
-hyperparams (lr, β₁, β₂, ε, weight_decay) are NOT in the trait `make`
-signature; they live as public mut fields on the concrete optimizer
-struct.
+Algorithm-specific hyperparams (lr, β₁, β₂, ε, weight_decay) are NOT
+in the trait `make` signature; they live as public mut fields on each
+concrete optimizer struct so external schedules can poke them without
+rebuilding the optimizer.
 
 Concrete usage:
     var opt = Adam.make[target="cpu", M=MyModel](model)

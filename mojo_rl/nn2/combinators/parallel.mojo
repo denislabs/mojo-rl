@@ -1,6 +1,6 @@
-"""Parallel[A, B] — retrofit (Phase C). 2-branch column-concat.
+"""Parallel[A, B] — 2-branch column-concat.
 
-Same scratch + kernels as v1; only the scaffold collapses:
+Scaffold:
 `ts: TargetStorage`, `backward[mode]` collapses `backward` +
 `backward_input` (mode flows into each branch), walkers recurse into
 each branch.

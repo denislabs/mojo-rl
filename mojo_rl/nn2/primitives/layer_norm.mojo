@@ -1,21 +1,17 @@
-"""LayerNorm[DIM] — retrofit (Phase B).
+"""LayerNorm[DIM].
 
-Same algorithm + kernels as v1 (`layer_norm.mojo`); only the
-parameter/storage scaffolding changes:
+State:
 
-  * `ts: TargetStorage` replaces `_target_tag` / `_inference` / `ctx`.
+  * `ts: TargetStorage` carries `target_tag` + (optional) `ctx`.
   * `gamma: Param["gamma", False, DIM]` + `beta: Param["beta", False, DIM]`
-    replace the four lists + four device buffers.
-  * `for_each_param` / `zero_grad` are one-liners delegating to
-    `for_each_param_auto` / `zero_grad_auto`.
-  * `backward[mode]` collapses v1's `backward` + `backward_input`.
-  * Phase 10A buffer surface dropped — orchestrators own slabs.
+    — weight-decay-exempt (γ/β shouldn't decay).
+  * `for_each_param` / `zero_grad` delegate to the reflection-walked
+    `_auto` helpers.
 
-Cache stays leaf-owned (output-caching, no aliasing): `cache_xhat`
-[BATCH, DIM] and `cache_inv_std` [BATCH] live on the leaf and are
-read in backward. Backward order doesn't matter for aliasing since
-the cache is in dedicated buffers — kept v1's order (grad_input,
-then dgamma/dbeta) for minimal behavioral change.
+Cache stays leaf-owned (output-caching, no input aliasing): `cache_xhat`
+[BATCH, DIM] and `cache_inv_std` [BATCH] live on the leaf. Backward
+order is grad_input → dgamma/dbeta — safe because cache is in its own
+buffer, not the input slab.
 
 AMP: `force_fp32_input = True` — LayerNorm ignores POLICY and always
 runs in DT. Stats are numerically unstable in bf16.

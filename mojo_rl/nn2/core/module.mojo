@@ -1,13 +1,12 @@
-"""Slim Module trait (NN2_AUDIT retrofit).
+"""Slim Module trait.
 
-Three properties distinguish this trait from the pre-retrofit shape:
+Three properties define the surface:
 
   1. **No buffer surface.** No `out_ptr/grad_in_ptr/grad_out_ptr/
      ensure_buffers` methods. Orchestrators (`Sequential`,
-     `ComputeGraph`) own every inter-module slab (audit Spike #1, the
-     unified-buffer design). Leaves that need an input cache for
-     backward alias the orchestrator's input slab via a pointer field —
-     no copy.
+     `ComputeGraph`) own every inter-module slab (the unified-buffer
+     design). Leaves that need an input cache for backward alias the
+     orchestrator's input slab via a pointer field — no copy.
 
   2. **`backward[mode]` collapses backward + backward_input.** A
      comptime `mode = "all" | "input_only"` param replaces the separate

@@ -1,11 +1,11 @@
-"""Slim BinaryModule trait (NN2_AUDIT retrofit).
+"""Slim BinaryModule trait.
 
 Same shape as `Module` (Defaultable + Movable + ImplicitlyDestructible)
-but for 2-input → 1-output ops. Scaffold trims:
+but for 2-input → 1-output ops:
 
-  1. No Phase 10A buffer surface (`ensure_buffers`, `out_ptr`,
-     `grad_in0_ptr`, `grad_in1_ptr`, `grad_out_ptr` removed).
-     Orchestrators own all inter-module slabs.
+  1. No buffer surface (no `ensure_buffers`, `out_ptr`, `grad_in0_ptr`,
+     `grad_in1_ptr`, `grad_out_ptr`) — orchestrators own all inter-
+     module slabs.
   2. `backward_input` collapsed into `backward[mode]`. A
      `mode = "all" | "input_only"` comptime param replaces the separate
      method. Param-less leaves ignore `mode`; param-bearing binary

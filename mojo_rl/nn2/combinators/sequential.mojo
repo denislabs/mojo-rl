@@ -1,30 +1,20 @@
-"""Sequential[*MODULES] — retrofit (Phase C, lighthouse combinator).
+"""Sequential[*MODULES] — variadic chain of N `Module` children.
 
-Variadic chain of N `Module` children. Mid-slabs persist on the
-combinator; lazy-grown to `BATCH × MODULES[i].OUT_DIM` on first call.
-Forward and backward share the same slabs.
-
-Differences vs v1 `sequential.mojo`:
-
-  * `Module` children → `for_each_param` / `zero_grad` are provided
-    default methods on the trait, so the comptime-for-over-children
-    recursion uniformly dispatches to leaves (param-bearing leaves
-    override to walk their Params; parameterless leaves inherit no-op).
-  * `backward[mode]` collapses v1's `backward` + `backward_input`. The
-    `mode` comptime param flows through to every child: `mode="all"`
-    accumulates param grads in every child; `mode="input_only"` skips
-    them. Halves the per-leaf method count (audit Follow-up #7).
-  * `ts: TargetStorage` replaces `_target_tag` / `_inference` / `ctx`.
-  * No combinator-owned Phase 10A surface — Sequential IS the
-    orchestrator; the slabs ARE the inter-module wiring.
+Mid-slabs persist on the combinator; lazy-grown to
+`BATCH × MODULES[i].OUT_DIM` on first call. Forward and backward share
+the same slabs — Sequential IS the orchestrator, the slabs ARE the
+inter-module wiring.
 
 Composition rule (checked at compile time): for each adjacent pair
 `(child_i, child_{i+1})`, `child_i.OUT_DIM == child_{i+1}.IN_DIM`.
 
-**Backward-order safety**: child leaves that follow the audit Spike #1
-invariant (param grads BEFORE grad_input write) are safe when their
+`backward[mode]` flows the comptime `mode` to every child: `"all"`
+accumulates param grads, `"input_only"` skips them.
+
+**Backward-order safety**: leaves that obey the param-grads-before-
+grad_input invariant (e.g. Linear) are safe when their
 `_cached_input_ptr` aliases the predecessor's mid slab — the slab
-won't be re-used as a grad target until that child's backward returns.
+isn't reused as a grad target until that child's backward returns.
 """
 
 from std.memory import alloc

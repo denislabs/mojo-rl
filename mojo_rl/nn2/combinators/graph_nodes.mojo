@@ -1,8 +1,14 @@
-"""UnaryNode / BinaryNode — GraphNode wrappers around Module / BinaryModule.
+"""InputSlot / UnaryNode / BinaryNode — GraphNode wrappers.
 
-Phase 10D + Block A (GPU). Each wrapper owns its underlying op instance,
-plus four buffers (out, grad_out, grad_in0, grad_in1) used by
-ComputeGraph v2 for inter-node wiring.
+Each wrapper owns its underlying op instance (or none, for InputSlot)
+plus the buffers used by ComputeGraph for inter-node wiring.
+
+`InputSlot[NAME, DIM]`
+    `KIND = 0`. Represents one named external input to the graph. No
+    compute; its `out_ptr_via()` returns a pointer set per-call by the
+    graph's `set_input[NAME]` method. Its `grad_out_buf` is the
+    accumulator for the input-gradient flowing back from consumers
+    (`get_grad_input[NAME]` / `grad_input_ptr[NAME]` on the graph).
 
 `UnaryNode[NAME, M, IN0_NAME]`
     wraps a `M: Module` (1→1). `KIND = 1`, `IN1_NAME = ""`, `IN1_DIM = 0`.
@@ -17,7 +23,9 @@ ComputeGraph v2 for inter-node wiring.
 Backward contract: the wrapper reads its own `_grad_out_buf` as the
 incoming gradient (graph zeros + scatter-adds into this before the
 call), and writes `_grad_in*_buf`. The graph scatter-adds those into
-predecessors' grad_out_bufs after the call returns.
+predecessors' grad_out_bufs after the call returns. For InputSlot,
+backward_via is a no-op — `_grad_out_buf` already holds the final
+input-gradient by the time it's reached in the reverse-topo walk.
 
 CPU vs GPU storage: each node carries `ts: TargetStorage` (matches the
 rest of nn2). CPU nodes own `List[Scalar[DT]]` for each buffer; GPU
@@ -38,12 +46,159 @@ from ..core import (
     Initializer,
     AMPPolicy,
     NoAMP,
-    TARGET_GPU,
 )
+from ..core.target_tag import TARGET_GPU
 from ..core.target_storage import (
     TargetStorage,
     ensure_gpu_buffer,
 )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# InputSlot — external input to the graph (KIND=0). Block B.
+#
+# No compute, no Op. Holds an externally-set out_ptr (cached via
+# set_input_via) and a grad_out_buf that accumulates the gradient
+# flowing back to this input from all consumer nodes. Looks identical
+# to a regular producer node from the graph's name-resolution loop;
+# the only behavioral difference is that forward_via / backward_via
+# are no-ops (graph zeros grad_out_buf at backward start; predecessors'
+# scatter-add does the rest).
+# ──────────────────────────────────────────────────────────────────────
+
+
+struct InputSlot[
+    slot_name: StaticString,
+    DIM_: Int,
+](GraphNode):
+    comptime NAME = Self.slot_name
+    comptime IN0_NAME = ""
+    comptime IN1_NAME = ""
+    comptime IN0_DIM = 0
+    comptime IN1_DIM = 0
+    comptime OUT_DIM = Self.DIM_
+    comptime KIND = 0
+
+    # CPU/GPU grad accumulator. `_grad_out_buf` for CPU,
+    # `_grad_out_buf_dev` for GPU; matches Unary/BinaryNode layout.
+    var _grad_out_buf: List[Scalar[DT]]
+    var _grad_out_buf_dev: Optional[DeviceBuffer[DT]]
+    var _grad_out_buf_dev_n: Int
+
+    # Block C: cached pointers.
+    #   _out_ptr        — set externally per call via `set_input_via`.
+    #   _grad_out_ptr   — points at the slot's grad accumulator (resolved
+    #                     in ensure_buffers_via, stable thereafter).
+    #   _grad_in0/1_ptr — null; InputSlot has no inputs to receive grad
+    #                     into. Required by GraphNode trait.
+    var _out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _grad_in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _grad_in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+
+    var _n_batch_buf: Int
+    var ts: TargetStorage
+
+    def __init__(out self):
+        self._grad_out_buf = List[Scalar[DT]]()
+        self._grad_out_buf_dev = None
+        self._grad_out_buf_dev_n = 0
+        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=0
+        )
+        self._out_ptr = null_p
+        self._grad_out_ptr = null_p
+        self._grad_in0_ptr = null_p
+        self._grad_in1_ptr = null_p
+        self._n_batch_buf = 0
+        self.ts = TargetStorage.make_uninit()
+
+    @staticmethod
+    def make_via[target: StaticString, INIT: Initializer]() raises -> Self:
+        comptime assert target == "cpu", (
+            "InputSlot.make_via[target='gpu', INIT] requires a DeviceContext"
+        )
+        var n = Self()
+        n.ts = TargetStorage.make_cpu()
+        return n^
+
+    @staticmethod
+    def make_via[
+        target: StaticString, INIT: Initializer
+    ](ctx: DeviceContext) raises -> Self:
+        comptime assert target == "gpu", (
+            "InputSlot.make_via[target='cpu', INIT](ctx) — drop ctx for CPU"
+        )
+        var n = Self()
+        n.ts = TargetStorage.make_gpu(ctx)
+        return n^
+
+    def ensure_buffers_via[BATCH: Int](mut self) raises:
+        if self.ts.target_tag == TARGET_GPU:
+            if self._n_batch_buf < BATCH:
+                var ctx = self.ts.ctx.value()
+                ensure_gpu_buffer(
+                    self._grad_out_buf_dev, self._grad_out_buf_dev_n,
+                    BATCH * Self.OUT_DIM, ctx,
+                )
+                self._grad_out_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._grad_out_buf_dev.value().unsafe_ptr())
+                self._n_batch_buf = BATCH
+        else:
+            if self._n_batch_buf < BATCH:
+                self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
+                self._grad_out_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._grad_out_buf.unsafe_ptr())
+                self._n_batch_buf = BATCH
+
+    def set_input_via(
+        mut self,
+        ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        self._out_ptr = ptr
+
+    def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return self._out_ptr
+
+    def grad_out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return self._grad_out_ptr
+
+    def grad_in0_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return self._grad_in0_ptr  # null — InputSlot has no inputs
+
+    def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return self._grad_in1_ptr  # null — InputSlot has no inputs
+
+    def forward_via[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        # No compute: the slot's out_ptr is whatever the caller set via
+        # graph.set_input[NAME](tile). in0_ptr / in1_ptr are unused.
+        pass
+
+    def backward_via[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+    ](mut self) raises:
+        # No compute: the grad already sits in _grad_out_buf, accumulated
+        # by consumers via scatter-add during the reverse-topo walk.
+        pass
+
+    def for_each_param_via[
+        target: StaticString,
+        V: ParamVisitor,
+    ](mut self, prefix: String, mut visitor: V,) raises:
+        # No params.
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -81,6 +236,15 @@ struct UnaryNode[
     var _grad_out_buf_dev_n: Int
     var _grad_in0_buf_dev_n: Int
 
+    # Block C: cached pointers resolved at `ensure_buffers_via` time. Eliminates
+    # the per-call `target_tag` branch + Optional.value() + rebind inside
+    # `*_ptr_via()` (called O(N) times per forward + O(N) per backward by the
+    # ComputeGraph name-resolution loops; ~30 calls/train_step for SAC).
+    var _out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _grad_in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _grad_in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]  # null for unary
+
     var _n_batch_buf: Int
     var ts: TargetStorage
 
@@ -97,6 +261,13 @@ struct UnaryNode[
         self._out_buf_dev_n = 0
         self._grad_out_buf_dev_n = 0
         self._grad_in0_buf_dev_n = 0
+        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=0
+        )
+        self._out_ptr = null_p
+        self._grad_out_ptr = null_p
+        self._grad_in0_ptr = null_p
+        self._grad_in1_ptr = null_p
         self._n_batch_buf = 0
         self.ts = TargetStorage.make_uninit()
 
@@ -124,20 +295,30 @@ struct UnaryNode[
 
     def ensure_buffers_via[BATCH: Int](mut self) raises:
         if self.ts.target_tag == TARGET_GPU:
-            var ctx = self.ts.ctx.value()
-            ensure_gpu_buffer(
-                self._out_buf_dev, self._out_buf_dev_n,
-                BATCH * Self.OUT_DIM, ctx,
-            )
-            ensure_gpu_buffer(
-                self._grad_out_buf_dev, self._grad_out_buf_dev_n,
-                BATCH * Self.OUT_DIM, ctx,
-            )
-            ensure_gpu_buffer(
-                self._grad_in0_buf_dev, self._grad_in0_buf_dev_n,
-                BATCH * Self.IN0_DIM, ctx,
-            )
-            self._n_batch_buf = BATCH
+            if self._n_batch_buf < BATCH:
+                var ctx = self.ts.ctx.value()
+                ensure_gpu_buffer(
+                    self._out_buf_dev, self._out_buf_dev_n,
+                    BATCH * Self.OUT_DIM, ctx,
+                )
+                ensure_gpu_buffer(
+                    self._grad_out_buf_dev, self._grad_out_buf_dev_n,
+                    BATCH * Self.OUT_DIM, ctx,
+                )
+                ensure_gpu_buffer(
+                    self._grad_in0_buf_dev, self._grad_in0_buf_dev_n,
+                    BATCH * Self.IN0_DIM, ctx,
+                )
+                self._out_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._out_buf_dev.value().unsafe_ptr())
+                self._grad_out_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._grad_out_buf_dev.value().unsafe_ptr())
+                self._grad_in0_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._grad_in0_buf_dev.value().unsafe_ptr())
+                self._n_batch_buf = BATCH
         else:
             if self._n_batch_buf < BATCH:
                 self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
@@ -145,39 +326,30 @@ struct UnaryNode[
                 self._grad_in0_buf.resize(BATCH * Self.IN0_DIM, Scalar[DT](0.0))
                 if len(self._grad_in1_buf) < 1:
                     self._grad_in1_buf.resize(1, Scalar[DT](0.0))
+                self._out_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._out_buf.unsafe_ptr())
+                self._grad_out_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._grad_out_buf.unsafe_ptr())
+                self._grad_in0_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._grad_in0_buf.unsafe_ptr())
                 self._n_batch_buf = BATCH
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        if self.ts.target_tag == TARGET_GPU:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._out_buf_dev.value().unsafe_ptr()
-            )
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._out_buf.unsafe_ptr()
-        )
+        return self._out_ptr
 
     def grad_out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        if self.ts.target_tag == TARGET_GPU:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._grad_out_buf_dev.value().unsafe_ptr()
-            )
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._grad_out_buf.unsafe_ptr()
-        )
+        return self._grad_out_ptr
 
     def grad_in0_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        if self.ts.target_tag == TARGET_GPU:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._grad_in0_buf_dev.value().unsafe_ptr()
-            )
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._grad_in0_buf.unsafe_ptr()
-        )
+        return self._grad_in0_ptr
 
     def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        # Unary node: no in1 buffer. Return a null pointer; callers must
+        # Unary node: no in1 buffer. Null pointer; callers must
         # not dereference (they check IN1_NAME == "" first).
-        return UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
+        return self._grad_in1_ptr
 
     def forward_via[
         target: StaticString,
@@ -246,6 +418,12 @@ struct BinaryNode[
     var _grad_in0_buf_dev_n: Int
     var _grad_in1_buf_dev_n: Int
 
+    # Block C: cached pointers resolved at `ensure_buffers_via` time.
+    var _out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _grad_in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _grad_in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+
     var _n_batch_buf: Int
     var ts: TargetStorage
 
@@ -263,6 +441,13 @@ struct BinaryNode[
         self._grad_out_buf_dev_n = 0
         self._grad_in0_buf_dev_n = 0
         self._grad_in1_buf_dev_n = 0
+        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=0
+        )
+        self._out_ptr = null_p
+        self._grad_out_ptr = null_p
+        self._grad_in0_ptr = null_p
+        self._grad_in1_ptr = null_p
         self._n_batch_buf = 0
         self.ts = TargetStorage.make_uninit()
 
@@ -290,67 +475,68 @@ struct BinaryNode[
 
     def ensure_buffers_via[BATCH: Int](mut self) raises:
         if self.ts.target_tag == TARGET_GPU:
-            var ctx = self.ts.ctx.value()
-            ensure_gpu_buffer(
-                self._out_buf_dev, self._out_buf_dev_n,
-                BATCH * Self.OUT_DIM, ctx,
-            )
-            ensure_gpu_buffer(
-                self._grad_out_buf_dev, self._grad_out_buf_dev_n,
-                BATCH * Self.OUT_DIM, ctx,
-            )
-            ensure_gpu_buffer(
-                self._grad_in0_buf_dev, self._grad_in0_buf_dev_n,
-                BATCH * Self.IN0_DIM, ctx,
-            )
-            ensure_gpu_buffer(
-                self._grad_in1_buf_dev, self._grad_in1_buf_dev_n,
-                BATCH * Self.IN1_DIM, ctx,
-            )
-            self._n_batch_buf = BATCH
+            if self._n_batch_buf < BATCH:
+                var ctx = self.ts.ctx.value()
+                ensure_gpu_buffer(
+                    self._out_buf_dev, self._out_buf_dev_n,
+                    BATCH * Self.OUT_DIM, ctx,
+                )
+                ensure_gpu_buffer(
+                    self._grad_out_buf_dev, self._grad_out_buf_dev_n,
+                    BATCH * Self.OUT_DIM, ctx,
+                )
+                ensure_gpu_buffer(
+                    self._grad_in0_buf_dev, self._grad_in0_buf_dev_n,
+                    BATCH * Self.IN0_DIM, ctx,
+                )
+                ensure_gpu_buffer(
+                    self._grad_in1_buf_dev, self._grad_in1_buf_dev_n,
+                    BATCH * Self.IN1_DIM, ctx,
+                )
+                self._out_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._out_buf_dev.value().unsafe_ptr())
+                self._grad_out_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._grad_out_buf_dev.value().unsafe_ptr())
+                self._grad_in0_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._grad_in0_buf_dev.value().unsafe_ptr())
+                self._grad_in1_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._grad_in1_buf_dev.value().unsafe_ptr())
+                self._n_batch_buf = BATCH
         else:
             if self._n_batch_buf < BATCH:
                 self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
                 self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
                 self._grad_in0_buf.resize(BATCH * Self.IN0_DIM, Scalar[DT](0.0))
                 self._grad_in1_buf.resize(BATCH * Self.IN1_DIM, Scalar[DT](0.0))
+                self._out_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._out_buf.unsafe_ptr())
+                self._grad_out_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._grad_out_buf.unsafe_ptr())
+                self._grad_in0_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._grad_in0_buf.unsafe_ptr())
+                self._grad_in1_ptr = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self._grad_in1_buf.unsafe_ptr())
                 self._n_batch_buf = BATCH
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        if self.ts.target_tag == TARGET_GPU:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._out_buf_dev.value().unsafe_ptr()
-            )
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._out_buf.unsafe_ptr()
-        )
+        return self._out_ptr
 
     def grad_out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        if self.ts.target_tag == TARGET_GPU:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._grad_out_buf_dev.value().unsafe_ptr()
-            )
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._grad_out_buf.unsafe_ptr()
-        )
+        return self._grad_out_ptr
 
     def grad_in0_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        if self.ts.target_tag == TARGET_GPU:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._grad_in0_buf_dev.value().unsafe_ptr()
-            )
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._grad_in0_buf.unsafe_ptr()
-        )
+        return self._grad_in0_ptr
 
     def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        if self.ts.target_tag == TARGET_GPU:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._grad_in1_buf_dev.value().unsafe_ptr()
-            )
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._grad_in1_buf.unsafe_ptr()
-        )
+        return self._grad_in1_ptr
 
     def forward_via[
         target: StaticString,

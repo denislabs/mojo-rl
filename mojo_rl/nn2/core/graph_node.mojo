@@ -11,7 +11,8 @@ Per-node fields:
   - IN1_NAME         predecessor for input slot 1 ("" for unary nodes)
   - IN0_DIM/IN1_DIM  per-slot feature widths (IN1_DIM = 0 for unary)
   - OUT_DIM          output feature width
-  - KIND             1 = unary, 2 = binary (3 reserved for ternary)
+  - KIND             0 = external input slot, 1 = unary, 2 = binary
+                     (3 reserved for ternary)
 
 Per-node lifecycle:
   - `make_via[target, INIT](ctx?)` — recursive factory
@@ -47,7 +48,16 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
     comptime IN0_DIM: Int
     comptime IN1_DIM: Int
     comptime OUT_DIM: Int
-    comptime KIND: Int  # 1 = unary, 2 = binary, 3 = ternary (reserved)
+    comptime KIND: Int  # 0 = input slot, 1 = unary, 2 = binary, 3 = ternary
+
+    # Set the externally-supplied input pointer for InputSlot (KIND=0).
+    # Unary/binary nodes implement this as a no-op — they don't consume
+    # an external pointer (their input comes from a predecessor node).
+    def set_input_via(
+        mut self,
+        ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        pass
 
     @staticmethod
     def make_via[target: StaticString, INIT: Initializer]() raises -> Self:

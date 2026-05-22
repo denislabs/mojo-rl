@@ -1,4 +1,4 @@
-"""StochasticActor — retrofit (Phase C, deferred from Phase B).
+"""StochasticActor — actor head wrapping a feature trunk + GaussianHead.
 
   obs → Sequential[*TRUNK] → (BATCH × HIDDEN)
                              → Parallel[Linear, Linear]

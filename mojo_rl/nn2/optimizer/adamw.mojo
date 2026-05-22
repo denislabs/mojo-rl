@@ -1,9 +1,8 @@
-"""AdamW — retrofit (Phase D).
+"""AdamW optimizer.
 
 Decoupled weight-decay variant of Adam (Loshchilov & Hutter 2019).
-Same math + kernels as v1; the trait surface drops algorithm-specific
-hyperparams from `make`. `lr` / `beta1` / `beta2` / `eps` /
-`weight_decay` are public mut fields.
+`lr` / `beta1` / `beta2` / `eps` / `weight_decay` are public mut fields,
+not `make`-time args.
 
 Per-param `apply_decay` flag is collected at init time (visitor reads it
 from each Param's `decay` bit) and stored in a parallel `apply_decay:

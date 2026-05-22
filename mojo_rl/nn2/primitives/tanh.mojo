@@ -1,20 +1,15 @@
-"""Tanh[DIM] — retrofit (Phase A, output-caching).
-
-Diffs vs `tanh.mojo`:
-  - `TargetStorage` field replaces (_target_tag, _inference, ctx).
-  - Free `assert_tag_for["Tanh", target]` replaces `_assert_tag`.
-  - Free `ensure_cpu_buffer` / `ensure_gpu_buffer` replace per-leaf helpers.
-  - `backward[mode]` replaces separate `backward_input`.
+"""Tanh[DIM] — output-caching elementwise activation.
 
 UNLIKE ReLU/StopGrad, Tanh OWNS ITS CACHE BUFFER. Cache stores
 `y = tanh(x)` because `dy/dx = 1 - y²` is cheaper from `y` than
-recomputing `tanh(x)`. The slab-aliasing trick from audit Spike #1
-doesn't apply: in `Sequential[..., Tanh, OtherLayer, ...]`, slab[i] (=
-Tanh's output) gets clobbered by `OtherLayer.backward` before Tanh's
-backward reads it. So Tanh holds its own buffer. This is option 2 from
-the audit decision.
+recomputing `tanh(x)`. The input-slab-aliasing trick used by ReLU
+doesn't apply: in `Sequential[..., Tanh, OtherLayer, ...]`, slab[i]
+(= Tanh's output) gets clobbered by `OtherLayer.backward` before
+Tanh's backward reads it. So Tanh holds its own buffer.
 
-Conforms to `Module` (slim trait — no Phase 10A buffer surface).
+`ts: TargetStorage`, `assert_tag_for["Tanh", target]`,
+`ensure_cpu_buffer` / `ensure_gpu_buffer` for the cache.
+`backward[mode]` covers both grad-input and (no-op here) param grads.
 """
 
 from std.math import tanh

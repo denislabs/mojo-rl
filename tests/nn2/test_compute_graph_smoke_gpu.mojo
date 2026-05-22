@@ -23,7 +23,9 @@ from std.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.combinators import ComputeGraph, UnaryNode, BinaryNode
+from mojo_rl.nn2.combinators import (
+    ComputeGraph, InputSlot, UnaryNode, BinaryNode,
+)
 from mojo_rl.nn2.primitives.scale import Scale
 from mojo_rl.nn2.primitives.binary_sub import BinarySub
 from mojo_rl.nn2.initializer import Kaiming
@@ -36,7 +38,8 @@ def test_compute_graph_identity_gpu() raises:
     var ctx = DeviceContext()
 
     comptime IdentityGraph = ComputeGraph[
-        1, 1,
+        1,
+        InputSlot["input", 1],
         UnaryNode["a",   Scale[1], "input"],
         UnaryNode["b",   Scale[1], "input"],
         BinaryNode["sub", BinarySub[1], "b", "a"],
@@ -44,8 +47,9 @@ def test_compute_graph_identity_gpu() raises:
 
     var g = IdentityGraph.make[target="gpu", INIT=Kaiming](ctx)
     # Override the Scale multipliers manually.
-    g.nodes[0].op.multiplier = Scalar[DT](1.0)
-    g.nodes[1].op.multiplier = Scalar[DT](2.0)
+    # nodes[0] is the InputSlot; nodes[1] = "a", nodes[2] = "b".
+    g.nodes[1].op.multiplier = Scalar[DT](1.0)
+    g.nodes[2].op.multiplier = Scalar[DT](2.0)
 
     # Host scratch.
     var in_h = ctx.enqueue_create_host_buffer[DT](BATCH)
@@ -62,14 +66,14 @@ def test_compute_graph_identity_gpu() raises:
     var in_d = ctx.enqueue_create_buffer[DT](BATCH)
     var out_d = ctx.enqueue_create_buffer[DT](BATCH)
     var go_d = ctx.enqueue_create_buffer[DT](BATCH)
-    var gi_d = ctx.enqueue_create_buffer[DT](BATCH)
     ctx.enqueue_copy(in_d, in_h)
     ctx.enqueue_copy(go_d, go_h)
     ctx.synchronize()
 
     var in_t = TileTensor(in_d, row_major[BATCH, 1]())
     var out_t = TileTensor(out_d, row_major[BATCH, 1]())
-    g.forward["gpu", BATCH](in_t, out_t)
+    g.set_input["input", BATCH](in_t)
+    g.forward["gpu", BATCH](out_t)
     ctx.enqueue_copy(out_h, out_d)
     ctx.synchronize()
 
@@ -84,9 +88,13 @@ def test_compute_graph_identity_gpu() raises:
         )
 
     var go_t = TileTensor(go_d, row_major[BATCH, 1]())
-    var gi_t = TileTensor(gi_d, row_major[BATCH, 1]())
-    g.backward["gpu", BATCH](go_t, gi_t)
-    ctx.enqueue_copy(gi_h, gi_d)
+    g.backward["gpu", BATCH](go_t)
+    # The slot's grad_out_buf is the input-gradient accumulator. We need
+    # the underlying DeviceBuffer to copy back to the host — the slot
+    # owns it as `nodes[0]._grad_out_buf_dev`.
+    ctx.enqueue_copy(
+        gi_h, g.nodes[0]._grad_out_buf_dev.value(),
+    )
     ctx.synchronize()
 
     print("backward grad_inputs (GPU):")

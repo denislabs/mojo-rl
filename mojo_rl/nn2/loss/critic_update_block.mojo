@@ -1,23 +1,17 @@
-"""CriticUpdateBlock / TwinCriticUpdateBlock — Phase 10F + Block A (GPU).
+"""CriticUpdateBlock / TwinCriticUpdateBlock — critic-update LossBlocks.
 
-Self-contained critic-update blocks that absorb the scratch buffers
-(`mb_q`, `mb_grad_q`, `mb_grad_sa`) the trainer would otherwise own.
-Mirrors the SACActorLossCG (Phase 10E) pattern: block owns its
-intermediates, public `step` method does forward/MSE/backward/opt-step.
+Self-contained: each block absorbs the scratch buffers (`mb_q`,
+`mb_grad_q`, `mb_grad_sa`) the trainer would otherwise own. Mirrors
+the SACActorLossCG ownership pattern but stays linear — the chain is
+a single Module forward + MSELoss + backward + opt step, no fan-out,
+no Slice/Min, so a full ComputeGraph would just add overhead. The win
+here is **scratch ownership**, not DAG topology.
 
-Why "block" not "graph" — the critic-update chain is a *linear* MSE
-regression (one Module forward, one Loss, no fan-out, no Slice/Min).
-ComputeGraph v2's name-resolution machinery would add overhead without
-benefit. The win here is **scratch ownership**, not DAG topology.
+CPU + GPU.
 
 Free helpers `critic_update_step` / `twin_critic_update_step` in
-`training/off_policy_critic.mojo` remain available for prototyping
-new algorithms that don't want the block plumbing. SACTrainer migrates
-to the block.
-
-Block A (Phase A5, 2026-05-21): GPU path. `make[target="gpu"](ctx)`
-allocates Device buffers; `step["gpu"]` runs Linear + MSELoss + Adam
-all on GPU (each conforming surface has a GPU path already).
+`training/off_policy_critic.mojo` stay available for prototyping
+algorithms that don't want the block plumbing.
 
 Surface:
     CriticUpdateBlock[CRITIC, BATCH, SA_DIM]
@@ -41,12 +35,13 @@ from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from ..constants import DT
-from ..core import TARGET_GPU
+from ..core.target_tag import TARGET_GPU
 from ..core.module import Module
 from ..core.target_storage import (
     TargetStorage, assert_tag_for, ensure_gpu_buffer,
 )
 from ..optimizer.adam import Adam
+from .loss_block import LossBlock
 from .mse import MSELoss
 from ..training.off_policy_critic import concat_sa, concat_sa_gpu
 
@@ -55,7 +50,7 @@ struct CriticUpdateBlock[
     CRITIC: Module,
     BATCH: Int,
     SA_DIM: Int,
-](Movable & ImplicitlyDestructible):
+](LossBlock):
     """Single-critic MSE update step. Owns all intermediate scratch."""
 
     var mse_loss: MSELoss[1]
@@ -200,7 +195,7 @@ struct TwinCriticUpdateBlock[
     BATCH: Int,
     OBS: Int,
     ACT: Int,
-](Movable & ImplicitlyDestructible):
+](LossBlock):
     """Twin-critic update against shared target `y`. Owns two
     `CriticUpdateBlock`s + a shared `_mb_sa` scratch."""
 

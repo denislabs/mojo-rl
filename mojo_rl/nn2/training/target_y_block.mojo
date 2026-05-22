@@ -33,11 +33,12 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
 
 from ..constants import DT
-from ..core import TARGET_GPU
+from ..core.target_tag import TARGET_GPU
 from ..core.module import Module
 from ..core.target_storage import (
     TargetStorage, assert_tag_for, ensure_gpu_buffer,
 )
+from ..loss.loss_block import LossBlock
 from ..loss.sac_actor_loss import squashed_gaussian_sample
 from ..loss.squashed_gaussian import squashed_gaussian_forward_gpu
 from ..random.box_muller import box_muller_normal, box_muller_normal_gpu
@@ -72,7 +73,7 @@ struct TargetYBlock[
     BATCH: Int,
     OBS: Int,
     ACT: Int,
-](Movable & ImplicitlyDestructible):
+](LossBlock):
     comptime SA_DIM = Self.OBS + Self.ACT
 
     # CPU scratch.

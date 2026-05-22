@@ -1,6 +1,6 @@
-"""Residual[Inner] — retrofit (Phase C). `y = inner(x) + x`.
+"""Residual[Inner] — `y = inner(x) + x`.
 
-Same kernel as v1; only the scaffold collapses: `ts: TargetStorage`,
+Scaffold: `ts: TargetStorage`,
 `backward[mode]` instead of separate `backward_input`, walkers
 recurse into Inner.
 

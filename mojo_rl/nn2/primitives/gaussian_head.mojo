@@ -1,4 +1,4 @@
-"""GaussianHead[IN, ACT] — retrofit (Phase B).
+"""GaussianHead[IN, ACT] — CleanRL-style PPO actor head.
 
 CleanRL-style PPO actor head: state-dependent mean (Linear) + a single
 learnable state-independent log_std vector. See v1 docstring for the
@@ -40,7 +40,7 @@ from ..core import (
 )
 from ..core.module import Module
 from ..core.target_storage import TargetStorage, assert_tag_for
-from ..core.target_tag import TARGET_CPU
+from ..core.target_tag import TARGET_GPU
 
 
 comptime LOG_STD_MIN: Scalar[DT] = -5.0
@@ -210,12 +210,12 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
 
     def set_log_std_init(mut self, value: Scalar[DT]) raises:
         """Override the default log_std initialization. Call after make."""
-        if self.ts.target_tag == TARGET_CPU:
+        if self.ts.target_tag == TARGET_GPU:
+            self.log_std.value_dev.value().enqueue_fill(value)
+        else:
             var ls_ptr = self.log_std.value_unsafe_ptr_cpu()
             for k in range(Self.LS_SIZE):
                 ls_ptr[k] = value
-        else:
-            self.log_std.value_dev.value().enqueue_fill(value)
 
     # ----- Forward ---------------------------------------------------------
 

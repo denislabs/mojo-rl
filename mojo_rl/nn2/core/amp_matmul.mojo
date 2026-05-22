@@ -1,8 +1,8 @@
-"""AMP cast-around-matmul scaffolding (audit Follow-up #2).
+"""AMP cast-around-matmul scaffolding.
 
-Two free helpers + one state struct that absorb the bf16 cast bookkeeping
-currently duplicated in `Linear`. Linear used to inline six copies of
-the same SIMD cast loop (3 method paths × 2 directions); these helpers
+Two free helpers + one state struct that absorb the bf16 cast
+bookkeeping used by `Linear` when `POLICY.compute_dtype == bf16`. The
+helpers
 collapse those bodies to a single `cast_fp32_to_bf16` /
 `cast_bf16_to_fp32` call around the bf16 `linalg.matmul`.
 

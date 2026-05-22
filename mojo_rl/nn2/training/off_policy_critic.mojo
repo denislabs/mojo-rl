@@ -30,7 +30,8 @@ each `mut` arg distinctly. See memory:
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
+from std.gpu.memory import AddressSpace
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core.module import Module
@@ -91,13 +92,16 @@ def concat_sa_gpu[OBS: Int, ACT: Int, B: Int](
 
 def critic_update_step[
     CRITIC: Module, BATCH: Int, SA_DIM: Int,
-    LSA: TensorLayout, LY: TensorLayout, OSA: MutOrigin, OY: MutOrigin,
 ](
     mut critic: CRITIC,
     mut opt: Adam,
     mut mse_loss: MSELoss[1],
-    mb_sa_t: TileTensor[DT, LSA, OSA],
-    mb_y_t: TileTensor[DT, LY, OY],
+    mb_sa_t: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
+    mb_y_t: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
     mb_q: UnsafePointer[Scalar[DT], MutAnyOrigin],
     mb_grad_q: UnsafePointer[Scalar[DT], MutAnyOrigin],
     mb_grad_sa: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -123,7 +127,6 @@ def critic_update_step[
 
 def twin_critic_update_step[
     CRITIC: Module, BATCH: Int, OBS: Int, ACT: Int,
-    LY: TensorLayout, OY: MutOrigin,
 ](
     mut critic1: CRITIC,
     mut critic1_opt: Adam,
@@ -133,7 +136,9 @@ def twin_critic_update_step[
     mb_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     mb_a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     mb_sa_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    mb_y_t: TileTensor[DT, LY, OY],
+    mb_y_t: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+    ],
     mb_q1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     mb_q2_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     mb_grad_q1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],

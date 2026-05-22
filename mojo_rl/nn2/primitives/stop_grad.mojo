@@ -1,6 +1,6 @@
-"""StopGrad[DIM] — retrofit (Phase A).
+"""StopGrad[DIM] — identity forward, zero-fill backward.
 
-Identity forward, zero-fill backward. Severs gradient flow. No cache —
+Severs gradient flow. No cache —
 the forward just copies input → output, and backward writes zeros
 unconditionally without needing to know what the input was. Even
 simpler than ReLU.

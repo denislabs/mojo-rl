@@ -1,13 +1,12 @@
 """EpisodeTracker — rolling window over recent episode returns.
 
-Encapsulates the "accumulate current episode return + roll past N
-returns into a fixed-size window" pattern that both PPO and SAC
-hand-rolled in Phase 6/7. `mean_return()` reports the windowed mean for
-logging/exit-criterion checks.
+Accumulates the current episode return and rolls past N returns into a
+fixed-size window. `mean_return()` reports the windowed mean for
+logging / exit-criterion checks.
 
 The window is pre-filled with `initial_fill` so early-training prints
-have a sensible value (the Phase 6 PPO example used -1600 for Pendulum;
-Phase 7 SAC used -1250 — these are roughly the random-policy baseline).
+have a sensible value (typical: the random-policy baseline for the env,
+e.g. ~-1600 for Pendulum-PPO, ~-1250 for Pendulum-SAC).
 """
 
 from ..constants import DT

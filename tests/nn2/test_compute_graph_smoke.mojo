@@ -25,7 +25,9 @@ from std.memory import alloc
 from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.combinators import ComputeGraph, UnaryNode, BinaryNode
+from mojo_rl.nn2.combinators import (
+    ComputeGraph, InputSlot, UnaryNode, BinaryNode,
+)
 from mojo_rl.nn2.primitives.scale import Scale
 from mojo_rl.nn2.primitives.binary_sub import BinarySub
 from mojo_rl.nn2.initializer import Kaiming
@@ -37,7 +39,8 @@ def test_compute_graph_identity() raises:
     comptime BATCH = 4
 
     comptime IdentityGraph = ComputeGraph[
-        1, 1,
+        1,
+        InputSlot["input", 1],
         UnaryNode["a",   Scale[1], "input"],
         UnaryNode["b",   Scale[1], "input"],
         BinaryNode["sub", BinarySub[1], "b", "a"],
@@ -45,20 +48,21 @@ def test_compute_graph_identity() raises:
 
     var g = IdentityGraph.make[target="cpu", INIT=Kaiming]()
     # Override the Scale multipliers manually.
-    g.nodes[0].op.multiplier = Scalar[DT](1.0)
-    g.nodes[1].op.multiplier = Scalar[DT](2.0)
+    # nodes[0] is the InputSlot; nodes[1] = "a", nodes[2] = "b".
+    g.nodes[1].op.multiplier = Scalar[DT](1.0)
+    g.nodes[2].op.multiplier = Scalar[DT](2.0)
 
     var in_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
     var out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
     var go_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
-    var gi_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
     for b in range(BATCH):
         in_buf[b] = Scalar[DT](b + 1)
         go_buf[b] = Scalar[DT](0.3 + 0.1 * Float64(b))
 
     var in_t = TileTensor(in_buf, row_major[BATCH, 1]())
     var out_t = TileTensor(out_buf, row_major[BATCH, 1]())
-    g.forward["cpu", BATCH](in_t, out_t)
+    g.set_input["input", BATCH](in_t)
+    g.forward["cpu", BATCH](out_t)
 
     print("forward outputs:")
     for b in range(BATCH):
@@ -72,25 +76,24 @@ def test_compute_graph_identity() raises:
         )
 
     var go_t = TileTensor(go_buf, row_major[BATCH, 1]())
-    var gi_t = TileTensor(gi_buf, row_major[BATCH, 1]())
-    g.backward["cpu", BATCH](go_t, gi_t)
+    g.backward["cpu", BATCH](go_t)
+    var gi_p = g.grad_input_ptr["input"]()
 
     print("backward grad_inputs:")
     for b in range(BATCH):
         print(
             "  b=", b, " go=", Float64(go_buf[b]),
-            " gi=", Float64(gi_buf[b]),
+            " gi=", Float64(gi_p[b]),
         )
         # d(out)/d(in) = d(2·in - 1·in)/d(in) = 1; grad_input = grad_output.
         assert_true(
-            (gi_buf[b] - go_buf[b]).__abs__() < Scalar[DT](1e-5),
+            (gi_p[b] - go_buf[b]).__abs__() < Scalar[DT](1e-5),
             "grad_input must equal grad_output (identity)",
         )
 
     in_buf.free()
     out_buf.free()
     go_buf.free()
-    gi_buf.free()
     print("  test_compute_graph_identity PASSED")
 
 
