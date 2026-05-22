@@ -76,7 +76,7 @@ def test_compute_graph_identity() raises:
         )
 
     var go_t = TileTensor(go_buf, row_major[BATCH, 1]())
-    g.backward["cpu", BATCH](go_t)
+    g.vjp["cpu", BATCH](go_t)
     var gi_p = g.grad_input_ptr["input"]()
 
     print("backward grad_inputs:")

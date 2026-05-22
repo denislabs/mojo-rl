@@ -53,7 +53,7 @@ def test_sum_backward() raises:
     go[1] = Scalar[DT](-2.0)
     var go_t = TileTensor(go, row_major[BATCH, 1]())
     var gi_t = TileTensor(gi, row_major[BATCH, DIM]())
-    op.backward["cpu", BATCH](go_t, gi_t)
+    op.vjp["cpu", BATCH](go_t, gi_t)
     for d in range(DIM):
         assert_true(gi[0 * DIM + d] == Scalar[DT](3.0), "Sum.bwd row 0")
         assert_true(gi[1 * DIM + d] == Scalar[DT](-2.0), "Sum.bwd row 1")
@@ -89,7 +89,7 @@ def test_mean_backward() raises:
     go[1] = Scalar[DT](-8.0)
     var go_t = TileTensor(go, row_major[BATCH, 1]())
     var gi_t = TileTensor(gi, row_major[BATCH, DIM]())
-    op.backward["cpu", BATCH](go_t, gi_t)
+    op.vjp["cpu", BATCH](go_t, gi_t)
     # 4 / 4 = 1, -8 / 4 = -2.
     for d in range(DIM):
         assert_true(gi[0 * DIM + d] == Scalar[DT](1.0), "Mean.bwd row 0")

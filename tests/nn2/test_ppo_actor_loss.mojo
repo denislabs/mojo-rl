@@ -139,7 +139,7 @@ def test_clipped_sample_grad_zero_on_mu() raises:
     var ad = TileTensor(ad_buf, row_major[BATCH]())
     var go = TileTensor(go_buf, row_major[BATCH, 2 * ACT]())
 
-    loss.backward["cpu", BATCH](ao, ac, ol, ad, go)
+    loss.vjp["cpu", BATCH](ao, ac, ol, ad, go)
     # grad_mu = 0; grad_log_std = 0 (entropy_coef=0)
     assert_true(fabs(go[0, 0]) < 1e-6, "grad_mu not zero on clip: " + String(go[0, 0]))
     assert_true(fabs(go[0, 1]) < 1e-6, "grad_log_std not zero on clip: " + String(go[0, 1]))
@@ -206,7 +206,7 @@ def test_gradcheck_fd() raises:
     var ad = TileTensor(ad_buf, row_major[BATCH]())
     var go = TileTensor(go_buf, row_major[BATCH, 2 * ACT]())
 
-    loss.backward["cpu", BATCH](ao, ac, ol, ad, go)
+    loss.vjp["cpu", BATCH](ao, ac, ol, ad, go)
 
     # FD: perturb each entry of actor_output, recompute L.
     var max_rel: Scalar[DT] = 0.0
@@ -316,13 +316,13 @@ def test_gpu_parity() raises:
     for k in range(BATCH * 2 * ACT):
         go_cpu[k] = 0.0
     var go_t_cpu = TileTensor(go_cpu, row_major[BATCH, 2 * ACT]())
-    loss_cpu.backward["cpu", BATCH](
+    loss_cpu.vjp["cpu", BATCH](
         ao_t_cpu, ac_t_cpu, ol_t_cpu, ad_t_cpu, go_t_cpu
     )
 
     var go_dev = ctx.enqueue_create_buffer[DT](BATCH * 2 * ACT)
     var go_t_gpu = TileTensor(go_dev, row_major[BATCH, 2 * ACT]())
-    loss_gpu.backward["gpu", BATCH](
+    loss_gpu.vjp["gpu", BATCH](
         ao_t_gpu, ac_t_gpu, ol_t_gpu, ad_t_gpu, go_t_gpu
     )
     var go_host = ctx.enqueue_create_host_buffer[DT](BATCH * 2 * ACT)

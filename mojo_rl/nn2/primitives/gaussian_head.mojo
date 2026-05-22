@@ -293,7 +293,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
 
     # ----- Backward --------------------------------------------------------
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,

@@ -23,7 +23,7 @@ Per-node compute:
   - `forward_via[target, BATCH](in0_ptr, in1_ptr)`
        reads inputs from raw pointers (owned by caller / predecessors),
        writes output into this node's `_out_buf`. Unary ignores `in1_ptr`.
-  - `backward_via[target, BATCH]()`
+  - `vjp_via[target, BATCH]()`
        reads this node's `_grad_out_buf`, writes `_grad_in0_buf`
        (and `_grad_in1_buf` for binary). The graph scatter-adds those
        into predecessors' `_grad_out_buf`s after the call returns.
@@ -107,7 +107,7 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
     ) raises:
         ...
 
-    def backward_via[
+    def vjp_via[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,

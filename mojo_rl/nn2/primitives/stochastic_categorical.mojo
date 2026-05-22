@@ -174,7 +174,7 @@ struct StochasticCategorical[N: Int](Module):
                 out_p[out_base + c] = Scalar[DT](1.0) if c == best_idx else Scalar[DT](0.0)
             out_p[out_base + Self.N] = in_p[in_base + best_idx] - lse
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,

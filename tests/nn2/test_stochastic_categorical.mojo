@@ -138,7 +138,7 @@ def test_logprob_backward_only() raises:
         go_p[b * (N + 1) + N] = 1.0
     var go_t = TileTensor(go_p, row_major[BATCH, N + 1]())
     var gi_t = TileTensor(gi_p, row_major[BATCH, N]())
-    s.backward["cpu", BATCH](go_t, gi_t)
+    s.vjp["cpu", BATCH](go_t, gi_t)
 
     # Build the expected gradient.
     var max_err: Scalar[DT] = 0.0
@@ -212,7 +212,7 @@ def test_analytical_sample_branch() raises:
     var go_t = TileTensor(go_p, row_major[BATCH, N + 1]())
     var gi_t = TileTensor(gi_p, row_major[BATCH, N]())
     s.forward["cpu", BATCH](lg_t, out_t)
-    s.backward["cpu", BATCH](go_t, gi_t)
+    s.vjp["cpu", BATCH](go_t, gi_t)
 
     # Reference: softmax-grad formula.
     var max_err: Scalar[DT] = 0.0

@@ -81,7 +81,7 @@ struct TernaryConcat[D0_: Int, D1_: Int, D2_: Int](TernaryModule):
             for d in range(Self.IN2_DIM):
                 output[b, Self.IN0_DIM + Self.IN1_DIM + d] = in2[b, d]
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,

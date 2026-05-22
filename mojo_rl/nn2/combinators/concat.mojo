@@ -171,7 +171,7 @@ struct Concat[*BRANCHES: Module](Module):
 
     # ----- Backward --------------------------------------------------------
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -305,7 +305,7 @@ def _concat_backward_cpu[
                 slab_ptr[b * out_i + j] = grad_output[b, off + j]
         var go_tt = TileTensor(slab_ptr, row_major[BATCH, out_i]())
         var gi_temp = TileTensor(c.gi_temp_cpu, row_major[BATCH, IN_DIM]())
-        c.branches[i].backward[
+        c.branches[i].vjp[
             target, BATCH, POLICY=POLICY, mode=mode,
         ](go_tt, gi_temp)
         var ap = c.gi_temp_cpu

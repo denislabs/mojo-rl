@@ -235,7 +235,7 @@ struct SACActorLossCG[
             var grad_p = self._grad_seed.cpu_ptr()
             seed_grad_inv_batch["cpu", BB](grad_p)
             var grad_t = TileTensor(grad_p, row_major[BB, 1]())
-            self.graph.backward["cpu", BB](grad_t)
+            self.graph.vjp["cpu", BB](grad_t)
 
             actor_opt.step["cpu", M=Self.ACTOR](actor)
             return SACActorLossOut(loss=loss_mean, log_prob_mean=lp_mean)
@@ -268,7 +268,7 @@ struct SACActorLossCG[
                 grad_p, Optional[DeviceContext](ctx)
             )
             var grad_t = TileTensor(grad_p, row_major[BB, 1]())
-            self.graph.backward["gpu", BB](grad_t)
+            self.graph.vjp["gpu", BB](grad_t)
 
             actor_opt.step["gpu", M=Self.ACTOR](actor)
             return SACActorLossOut(loss=loss_mean, log_prob_mean=lp_mean)

@@ -81,8 +81,8 @@ def test_xor_converges() raises:
             initial_loss = L
         final_loss = L
 
-        loss_fn.backward["cpu", BATCH](targets, grad_out)
-        net.backward["cpu", BATCH](grad_out, grad_input)
+        loss_fn.vjp["cpu", BATCH](targets, grad_out)
+        net.vjp["cpu", BATCH](grad_out, grad_input)
         optim.step["cpu"](net)
 
     # Loss should drop substantially.

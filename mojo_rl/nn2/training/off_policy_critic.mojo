@@ -118,9 +118,9 @@ def critic_update_step[
     critic.forward["cpu", BATCH](mb_sa_t, mb_q_t)
     var loss = mse_loss.forward["cpu", BATCH](mb_q_t, mb_y_t)
     var mb_grad_q_t = TileTensor(mb_grad_q, row_major[BATCH, 1]())
-    mse_loss.backward["cpu", BATCH](mb_y_t, mb_grad_q_t)
+    mse_loss.vjp["cpu", BATCH](mb_y_t, mb_grad_q_t)
     var mb_grad_sa_t = TileTensor(mb_grad_sa, row_major[BATCH, SA_DIM]())
-    critic.backward["cpu", BATCH](mb_grad_q_t, mb_grad_sa_t)
+    critic.vjp["cpu", BATCH](mb_grad_q_t, mb_grad_sa_t)
     opt.step["cpu", M=CRITIC](critic)
     return loss
 

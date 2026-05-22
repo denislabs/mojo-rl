@@ -258,7 +258,7 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
     # `mode` is a no-op (no params).
     # ------------------------------------------------------------------
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,

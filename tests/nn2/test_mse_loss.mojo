@@ -45,7 +45,7 @@ def test_forward_backward_cpu() raises:
     g_buf[0] = 0.0
     g_buf[1] = 0.0
     var grad = TileTensor(g_buf, row_major[BATCH, OUT]())
-    loss.backward["cpu", BATCH](targets, grad)
+    loss.vjp["cpu", BATCH](targets, grad)
     assert_true(fabs(grad[0, 0] - 1.0) < 1e-6)
     assert_true(fabs(grad[1, 0] - (-1.5)) < 1e-6)
 
@@ -83,7 +83,7 @@ def test_gradcheck_fd() raises:
     for k in range(BATCH * OUT):
         g_buf[k] = 0.0
     var grad = TileTensor(g_buf, row_major[BATCH, OUT]())
-    loss.backward["cpu", BATCH](targets, grad)
+    loss.vjp["cpu", BATCH](targets, grad)
 
     var max_rel: Scalar[DT] = 0.0
     for b in range(BATCH):
@@ -103,7 +103,7 @@ def test_gradcheck_fd() raises:
 
     # Re-do the analytical backward since forward calls above thrashed cache.
     _ = loss.forward["cpu", BATCH](logits, targets)
-    loss.backward["cpu", BATCH](targets, grad)
+    loss.vjp["cpu", BATCH](targets, grad)
 
     print("  MSE FD gradcheck max_rel = ", max_rel)
     assert_true(max_rel < TOL_REL)
@@ -160,11 +160,11 @@ def test_gpu_parity() raises:
     for k in range(BATCH * OUT):
         g_cpu[k] = 0.0
     var grad_cpu = TileTensor(g_cpu, row_major[BATCH, OUT]())
-    loss_cpu.backward["cpu", BATCH](targets_cpu, grad_cpu)
+    loss_cpu.vjp["cpu", BATCH](targets_cpu, grad_cpu)
 
     var g_dev = ctx.enqueue_create_buffer[DT](BATCH * OUT)
     var grad_gpu = TileTensor(g_dev, row_major[BATCH, OUT]())
-    loss_gpu.backward["gpu", BATCH](targets_gpu, grad_gpu)
+    loss_gpu.vjp["gpu", BATCH](targets_gpu, grad_gpu)
 
     var g_host = ctx.enqueue_create_host_buffer[DT](BATCH * OUT)
     ctx.enqueue_copy(g_host, g_dev)

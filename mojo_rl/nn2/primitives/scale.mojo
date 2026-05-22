@@ -110,7 +110,7 @@ struct Scale[DIM: Int](Module):
                 grid_dim=n_blocks, block_dim=TPB,
             )
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,

@@ -106,8 +106,8 @@ def test_sequential_roundtrip_after_training() raises:
         opt.zero_grad["cpu", M=MLP](net)
         net.forward["cpu", BATCH](x_tt, yp_tt)
         _ = loss.forward["cpu", BATCH](yp_tt, yt_tt)
-        loss.backward["cpu", BATCH](yt_tt, go_tt)
-        net.backward["cpu", BATCH](go_tt, gi_tt)
+        loss.vjp["cpu", BATCH](yt_tt, go_tt)
+        net.vjp["cpu", BATCH](go_tt, gi_tt)
         opt.step["cpu", M=MLP](net)
 
     save_params[MLP](net, path)

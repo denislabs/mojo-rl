@@ -146,7 +146,7 @@ struct StochasticActor[
 
     # ----- Backward --------------------------------------------------------
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -171,20 +171,20 @@ struct StochasticActor[
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.HIDDEN)
             var mid = TileTensor(self.mid_cpu, row_major[BATCH, Self.HIDDEN]())
-            self.heads.backward[
+            self.heads.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](grad_output, mid)
-            self.trunk.backward[
+            self.trunk.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](mid, grad_input)
         else:
             self._ensure_mid_gpu(BATCH * Self.HIDDEN)
             var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
             var mid = TileTensor(mp, row_major[BATCH, Self.HIDDEN]())
-            self.heads.backward[
+            self.heads.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](grad_output, mid)
-            self.trunk.backward[
+            self.trunk.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](mid, grad_input)
 

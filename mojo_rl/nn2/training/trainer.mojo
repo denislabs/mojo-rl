@@ -271,10 +271,10 @@ struct Trainer[
             var L = self.loss_fn.forward[
                 Self.target, Self.BATCH, POLICY=Self.POLICY
             ](output, targets)
-            self.loss_fn.backward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+            self.loss_fn.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 targets, grad_out
             )
-            self.net.backward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+            self.net.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 grad_out, grad_in
             )
             self.optim.step[Self.target](self.net)
@@ -306,10 +306,10 @@ struct Trainer[
             var L = self.loss_fn.forward[
                 Self.target, Self.BATCH, POLICY=Self.POLICY
             ](output, targets)
-            self.loss_fn.backward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+            self.loss_fn.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 targets, grad_out
             )
-            self.net.backward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+            self.net.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 grad_out, grad_in
             )
             self.optim.step[Self.target](self.net)

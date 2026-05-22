@@ -80,7 +80,7 @@ def test_external_unary_node_basic() raises:
         )
 
     var go_t = TileTensor(go_buf, row_major[BATCH, 1]())
-    g.backward["cpu", BATCH](go_t)
+    g.vjp["cpu", BATCH](go_t)
     var gi_p = g.grad_input_ptr["s"]()
     for b in range(BATCH):
         # Scale backward: grad_in = 5 * grad_out (multiplier=5 from above).

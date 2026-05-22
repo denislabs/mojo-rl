@@ -141,13 +141,13 @@ struct CriticUpdateBlock[
         var loss = self.mse_loss.forward[target, Self.BATCH](mb_q_t, y_t)
 
         var mb_grad_q_t = TileTensor(mb_grad_q_p, row_major[Self.BATCH, 1]())
-        self.mse_loss.backward[target, Self.BATCH](y_t, mb_grad_q_t)
+        self.mse_loss.vjp[target, Self.BATCH](y_t, mb_grad_q_t)
 
         var mb_grad_sa_t = TileTensor(
             mb_grad_sa_p,
             row_major[Self.BATCH, Self.SA_DIM](),
         )
-        critic.backward[target, Self.BATCH](mb_grad_q_t, mb_grad_sa_t)
+        critic.vjp[target, Self.BATCH](mb_grad_q_t, mb_grad_sa_t)
         opt.step[target, M=Self.CRITIC](critic)
         return loss
 

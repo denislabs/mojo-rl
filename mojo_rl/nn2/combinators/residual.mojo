@@ -7,7 +7,7 @@ recurse into Inner.
 Phase 10A buffer surface dropped; the single mid slab IS the
 inter-module wiring (Residual is itself an orchestrator for one child).
 
-Backward order: `inner.backward[mode]` runs first (writes into mid),
+Backward order: `inner.vjp[mode]` runs first (writes into mid),
 then `grad_input = mid + grad_output` SIMD-add. Identical to v1.
 """
 
@@ -156,7 +156,7 @@ struct Residual[Inner: Module](Module):
 
     # ----- Backward --------------------------------------------------------
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -181,7 +181,7 @@ struct Residual[Inner: Module](Module):
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.IN_DIM)
             var tmp = TileTensor(self.mid_cpu, row_major[BATCH, Self.IN_DIM]())
-            self.inner.backward[
+            self.inner.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](grad_output, tmp)
             var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
@@ -204,7 +204,7 @@ struct Residual[Inner: Module](Module):
             var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
             var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
             var tmp = TileTensor(mp, row_major[BATCH, Self.IN_DIM]())
-            self.inner.backward[
+            self.inner.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](grad_output, tmp)
             comptime layout = Layout.row_major(BATCH, Self.IN_DIM)

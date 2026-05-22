@@ -91,7 +91,7 @@ def test_multi_input_independence() raises:
         )
 
     var go_t = TileTensor(go_buf, row_major[BATCH, 1]())
-    g.backward["cpu", BATCH](go_t)
+    g.vjp["cpu", BATCH](go_t)
     var ga_p = g.grad_input_ptr["a"]()
     var gb_p = g.grad_input_ptr["b"]()
 
@@ -166,7 +166,7 @@ def test_multi_input_fanout() raises:
         )
 
     var go_t = TileTensor(go_buf, row_major[BATCH, 1]())
-    g.backward["cpu", BATCH](go_t)
+    g.vjp["cpu", BATCH](go_t)
     var ga_p = g.grad_input_ptr["a"]()
     var gb_p = g.grad_input_ptr["b"]()
 

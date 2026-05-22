@@ -15,7 +15,7 @@ Minimal validation:
   1. A tiny `IdentityM[DIM]` struct conforming to Module (forward is
      `out = in`, backward is `grad_in = grad_out`).
   2. A `Holder[M]` struct that stores `UnsafePointer[M, MutAnyOrigin]`
-     and exposes `set_external_via` + `forward_via` + `backward_via`.
+     and exposes `set_external_via` + `forward_via` + `vjp_via`.
   3. A driver that allocates an IdentityM externally, sets the pointer,
      and verifies forward/backward results match direct calls.
 """
@@ -81,7 +81,7 @@ struct IdentityM[DIM_: Int](Module):
         for i in range(BATCH * Self.DIM_):
             out_p[i] = in_p[i] + self.tag
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -137,7 +137,7 @@ struct Holder[M: Module]:
         # to a mut Module instance and call forward on it?
         self._module_ptr[].forward[target, BATCH](in_t, out_t)
 
-    def backward_via[
+    def vjp_via[
         target: StaticString,
         BATCH: Int,
         mode: StaticString = "all",
@@ -148,7 +148,7 @@ struct Holder[M: Module]:
     ) raises:
         var go_t = TileTensor(go_ptr, row_major[BATCH, Self.M.OUT_DIM]())
         var gi_t = TileTensor(gi_ptr, row_major[BATCH, Self.M.IN_DIM]())
-        self._module_ptr[].backward[
+        self._module_ptr[].vjp[
             target, BATCH, mode=mode,
         ](go_t, gi_t)
 
@@ -204,7 +204,7 @@ def test_holder_backward() raises:
     for i in range(BATCH * DIM):
         go[i] = Scalar[DT](Float64(i) * 0.5)
 
-    h.backward_via["cpu", BATCH](
+    h.vjp_via["cpu", BATCH](
         rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go),
         rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi),
     )
@@ -214,7 +214,7 @@ def test_holder_backward() raises:
         var expect = Scalar[DT](Float64(i) * 0.5 - 2.0)
         assert_true(
             gi[i] == expect,
-            String("backward_via tag-add failed at i=") + String(i),
+            String("vjp_via tag-add failed at i=") + String(i),
         )
     print("  ok")
 

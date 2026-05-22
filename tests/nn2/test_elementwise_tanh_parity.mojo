@@ -91,8 +91,8 @@ def test_backward_parity() raises:
     new_tanh.forward["cpu", BATCH](x_t, y_new_t)
 
     # Backward both with same grad_output.
-    old_tanh.backward["cpu", BATCH](go_t, gi_old_t)
-    new_tanh.backward["cpu", BATCH](go_t, gi_new_t)
+    old_tanh.vjp["cpu", BATCH](go_t, gi_old_t)
+    new_tanh.vjp["cpu", BATCH](go_t, gi_new_t)
 
     var max_diff: Scalar[DT] = 0.0
     for i in range(N):

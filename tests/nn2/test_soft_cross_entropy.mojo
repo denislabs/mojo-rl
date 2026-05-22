@@ -92,7 +92,7 @@ def test_backward_matches_softmax_minus_target() raises:
 
     var loss = SoftCrossEntropyLoss[NUM].make["cpu"]()
     _ = loss.forward["cpu", BATCH](logits_t, targets_t)
-    loss.backward["cpu", BATCH](targets_t, grad_t)
+    loss.vjp["cpu", BATCH](targets_t, grad_t)
 
     var inv_n = Scalar[DT](1.0) / Scalar[DT](NUM)
     var inv_b = Scalar[DT](1.0) / Scalar[DT](BATCH)
@@ -149,7 +149,7 @@ def test_fd_gradcheck() raises:
     var grad_t    = TileTensor(grad_p,    row_major[BATCH, NUM]())
 
     _ = loss.forward["cpu", BATCH](logits_t, targets_t)
-    loss.backward["cpu", BATCH](targets_t, grad_t)
+    loss.vjp["cpu", BATCH](targets_t, grad_t)
 
     var max_abs: Scalar[DT] = 0.0
     for b in range(BATCH):

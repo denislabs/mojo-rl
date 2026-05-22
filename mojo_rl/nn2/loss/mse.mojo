@@ -204,7 +204,7 @@ struct MSELoss[DIM: Int](Loss):
                 total += hp[b]
             return total / Scalar[DT](BATCH)
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,

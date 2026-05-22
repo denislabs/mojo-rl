@@ -55,7 +55,7 @@ def test_concat_forward_backward() raises:
     var gi0_t = TileTensor(gi0_p, row_major[BATCH, D0]())
     var gi1_t = TileTensor(gi1_p, row_major[BATCH, D1]())
     var gi2_t = TileTensor(gi2_p, row_major[BATCH, D2]())
-    c.backward["cpu", BATCH](go_t, gi0_t, gi1_t, gi2_t)
+    c.vjp["cpu", BATCH](go_t, gi0_t, gi1_t, gi2_t)
 
     for b in range(BATCH):
         for d in range(D0):
@@ -107,7 +107,7 @@ def test_fused_add_forward_backward() raises:
     var gi0_t = TileTensor(gi0_p, row_major[BATCH, DIM]())
     var gi1_t = TileTensor(gi1_p, row_major[BATCH, DIM]())
     var gi2_t = TileTensor(gi2_p, row_major[BATCH, DIM]())
-    a.backward["cpu", BATCH](go_t, gi0_t, gi1_t, gi2_t)
+    a.vjp["cpu", BATCH](go_t, gi0_t, gi1_t, gi2_t)
 
     for k in range(BATCH * DIM):
         assert_true(fabs(gi0_p[k] - go_p[k]) < 1e-6)

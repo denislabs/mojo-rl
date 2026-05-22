@@ -24,7 +24,7 @@ Caller API:
   g.set_input["latent", BATCH](latent_tile)
   g.set_input["action", BATCH](action_tile)
   g.forward[target, BATCH](output_tile)
-  g.backward[target, BATCH](grad_output_tile)
+  g.vjp[target, BATCH](grad_output_tile)
   var grad_latent_ptr = g.grad_input_ptr["latent"]()
 
 Memory: every node (slot or compute) owns its own `grad_out_buf`.
@@ -44,7 +44,7 @@ Backward (reverse topo):
   - copy `grad_output_t` → `nodes[N-1].grad_out_buf`.
   - comptime for each node i in reverse:
       - if KIND == 0: skip (grad_out_buf already holds the answer).
-      - else: backward_via, then scatter-add grad_in0/1_buf into the
+      - else: vjp_via, then scatter-add grad_in0/1_buf into the
         predecessor (slot or compute) named by IN0_NAME / IN1_NAME.
 
 Fan-out is handled by `+=` accumulation: when one producer feeds two
@@ -314,7 +314,7 @@ struct ComputeGraph[
     # `set_external[NAME](mut module)` binds an externally-owned Module
     # instance to a named ExternalUnaryNode / ExternalBinaryNode. The
     # node holds an `UnsafePointer[M, MutAnyOrigin]`; per-call
-    # `forward_via` / `backward_via` derefs and calls
+    # `forward_via` / `vjp_via` derefs and calls
     # `Module.forward` / `Module.backward` on the supplied instance.
     #
     # Caller MUST keep the bound `module` instance alive (and in the
@@ -456,7 +456,7 @@ struct ComputeGraph[
     # ──────────────────────────────────────────────────────────────────
     # Backward — reverse topo + scatter-add.
     #
-    # The `mode` comptime param mirrors `Module.backward[mode]` (audit
+    # The `mode` comptime param mirrors `Module.vjp[mode]` (audit
     # Follow-up #7) for parity with the slim trait, but for a graph it's
     # not a meaningful distinction: each node decides what to accumulate
     # on its own. Callers that want frozen-params behaviour should wrap
@@ -465,7 +465,7 @@ struct ComputeGraph[
     # work uniformly.
     # ──────────────────────────────────────────────────────────────────
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -609,7 +609,7 @@ def _backward_cpu[
             comptime IN1_DIM_i = NODES[i].IN1_DIM
 
             # Run backward: reads grad_out_buf, writes grad_in0/1_buf.
-            g.nodes[i].backward_via[target, BATCH, POLICY=POLICY]()
+            g.nodes[i].vjp_via[target, BATCH, POLICY=POLICY]()
 
             # Scatter-add grad_in0_buf into the predecessor named by
             # src0 — uniformly handles slots and compute nodes.
@@ -722,7 +722,7 @@ def _backward_gpu[
             comptime IN0_DIM_i = NODES[i].IN0_DIM
             comptime IN1_DIM_i = NODES[i].IN1_DIM
 
-            g.nodes[i].backward_via[target, BATCH, POLICY=POLICY]()
+            g.nodes[i].vjp_via[target, BATCH, POLICY=POLICY]()
 
             var gi0_p = g.nodes[i].grad_in0_ptr_via()
             comptime total0 = BATCH * IN0_DIM_i

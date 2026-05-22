@@ -87,8 +87,8 @@ def test_backward_parity() raises:
     old_relu.forward["cpu", BATCH](x_t, y_old_t)
     new_relu.forward["cpu", BATCH](x_t, y_new_t)
 
-    old_relu.backward["cpu", BATCH](go_t, gi_old_t)
-    new_relu.backward["cpu", BATCH](go_t, gi_new_t)
+    old_relu.vjp["cpu", BATCH](go_t, gi_old_t)
+    new_relu.vjp["cpu", BATCH](go_t, gi_new_t)
 
     var max_diff: Scalar[DT] = 0.0
     for i in range(N):

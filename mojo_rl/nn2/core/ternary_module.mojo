@@ -63,7 +63,7 @@ trait TernaryModule(Defaultable & Movable & ImplicitlyDestructible):
     ) raises:
         ...
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -86,6 +86,10 @@ trait TernaryModule(Defaultable & Movable & ImplicitlyDestructible):
             element_size=1, ...,
         ],
     ) raises:
+        """Phase 4 rename of `backward[mode]` — semantics unchanged.
+        Writes three grad inputs; `mode="all"` also accumulates param
+        grads (today's ternary impls are param-less, so identical to
+        `"input_only"`)."""
         ...
 
     def for_each_param[

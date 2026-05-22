@@ -5,7 +5,7 @@ Maximizes E_s[critic(s, π_φ(s))] via:
   loss(φ)        = -mean_b critic(s, π_φ(s))
   ∂loss/∂a       = -1/B
   ∂a/∂φ          via π.backward
-  ∂critic/∂a     via critic.backward[mode="input_only"]
+  ∂critic/∂a     via critic.vjp[mode="input_only"]
                   (NO critic param-grad accumulation — actor update only)
 
 CPU only. GPU mirror is straightforward (every dependency has a GPU
@@ -139,10 +139,10 @@ struct DDPGActorLoss[
         for b in range(Self.BATCH):
             self._mb_grad_q[b] = -inv_B
 
-        # critic.backward[mode="input_only"]: write ∂q/∂sa, skip critic params.
+        # critic.vjp[mode="input_only"]: write ∂q/∂sa, skip critic params.
         var mb_grad_q_t = TileTensor(self._mb_grad_q, row_major[Self.BATCH, 1]())
         var mb_grad_sa_t = TileTensor(self._mb_grad_sa, row_major[Self.BATCH, Self.SA_DIM]())
-        critic.backward[target, Self.BATCH, mode="input_only"](
+        critic.vjp[target, Self.BATCH, mode="input_only"](
             mb_grad_q_t, mb_grad_sa_t,
         )
 
@@ -165,7 +165,7 @@ struct DDPGActorLoss[
         var mb_grad_s_unused_t = TileTensor(
             self._mb_grad_s_unused, row_major[Self.BATCH, Self.OBS_DIM](),
         )
-        actor.backward[target, Self.BATCH](mb_grad_a_t, mb_grad_s_unused_t)
+        actor.vjp[target, Self.BATCH](mb_grad_a_t, mb_grad_s_unused_t)
 
         # Step actor only.
         actor_opt.step[target, M=Self.ACTOR](actor)

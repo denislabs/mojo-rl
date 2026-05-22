@@ -56,7 +56,7 @@ def test_forward_backward_cpu() raises:
         gi_buf[k] = 0.0
     var go_t = TileTensor(go_buf, row_major[BATCH, DIM]())
     var gi_t = TileTensor(gi_buf, row_major[BATCH, DIM]())
-    sym.backward["cpu", BATCH](go_t, gi_t)
+    sym.vjp["cpu", BATCH](go_t, gi_t)
 
     for k in range(BATCH):
         var x = in_buf[k]
@@ -98,7 +98,7 @@ def test_gradcheck_fd_cpu() raises:
         gi_buf[k] = 0.0
     var go_t = TileTensor(go_buf, row_major[BATCH, DIM]())
     var gi_t = TileTensor(gi_buf, row_major[BATCH, DIM]())
-    sym.backward["cpu", BATCH](go_t, gi_t)
+    sym.vjp["cpu", BATCH](go_t, gi_t)
 
     # FD: perturb each input, compare to grad_in[k]
     var max_rel: Scalar[DT] = 0.0
@@ -162,7 +162,7 @@ def test_gpu_parity() raises:
     var go_t_cpu  = TileTensor(go_cpu,  row_major[BATCH, DIM]())
     var gi_t_cpu  = TileTensor(gi_cpu,  row_major[BATCH, DIM]())
     sym_cpu.forward["cpu", BATCH](in_t_cpu, out_t_cpu)
-    sym_cpu.backward["cpu", BATCH](go_t_cpu, gi_t_cpu)
+    sym_cpu.vjp["cpu", BATCH](go_t_cpu, gi_t_cpu)
 
     # GPU
     var in_dev  = ctx.enqueue_create_buffer[DT](BATCH * DIM)
@@ -176,7 +176,7 @@ def test_gpu_parity() raises:
     var go_t_gpu  = TileTensor(go_dev,  row_major[BATCH, DIM]())
     var gi_t_gpu  = TileTensor(gi_dev,  row_major[BATCH, DIM]())
     sym_gpu.forward["gpu", BATCH](in_t_gpu, out_t_gpu)
-    sym_gpu.backward["gpu", BATCH](go_t_gpu, gi_t_gpu)
+    sym_gpu.vjp["gpu", BATCH](go_t_gpu, gi_t_gpu)
 
     var out_host = ctx.enqueue_create_host_buffer[DT](BATCH * DIM)
     var gi_host  = ctx.enqueue_create_host_buffer[DT](BATCH * DIM)

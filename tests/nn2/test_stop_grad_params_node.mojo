@@ -59,7 +59,7 @@ def test_control_linear_grads_flow() raises:
     var go_t = TileTensor(go_buf, row_major[BATCH, 1]())
     g.set_input["x", BATCH](x_t)
     g.forward["cpu", BATCH](y_t)
-    g.backward["cpu", BATCH](go_t)
+    g.vjp["cpu", BATCH](go_t)
 
     # Inspect the Linear leaf at node index 1 (InputSlot is 0).
     var max_w_grad: Scalar[DT] = 0.0
@@ -100,7 +100,7 @@ def test_stop_grad_params_freezes_inner() raises:
     var go_t = TileTensor(go_buf, row_major[BATCH, 1]())
     g.set_input["x", BATCH](x_t)
     g.forward["cpu", BATCH](y_t)
-    g.backward["cpu", BATCH](go_t)
+    g.vjp["cpu", BATCH](go_t)
 
     # Path: graph.nodes[1].op = StopGradParams; .op.inner = Linear.
     var max_w_grad: Scalar[DT] = 0.0
@@ -129,7 +129,7 @@ def test_stop_grad_params_freezes_inner() raises:
     )
 
     # Sanity: grad_input still flowed (StopGradParams routes grad_in via
-    # inner.backward[mode="input_only"], so the slot's grad accumulator
+    # inner.vjp[mode="input_only"], so the slot's grad accumulator
     # must be non-zero).
     var gx_p = g.grad_input_ptr["x"]()
     var max_gx: Scalar[DT] = 0.0

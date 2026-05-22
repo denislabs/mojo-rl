@@ -294,7 +294,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](BinaryModule):
     # Backward.
     # ------------------------------------------------------------------
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,

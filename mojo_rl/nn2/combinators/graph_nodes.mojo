@@ -13,12 +13,12 @@ wiring.
 
 `UnaryNode[NAME, M, IN0_NAME]`
     wraps a `M: Module` (1→1). `KIND = 1`, `IN1_NAME = ""`, `IN1_DIM = 0`.
-    `forward_via(in0, _)` ignores the second input; `backward_via` writes
+    `forward_via(in0, _)` ignores the second input; `vjp_via` writes
     only `_grad_in0_buf`.
 
 `BinaryNode[NAME, BM, IN0_NAME, IN1_NAME]`
     wraps a `BM: BinaryModule` (2→1). `KIND = 2`. `forward_via(in0, in1)`
-    uses both pointers; `backward_via` writes both `_grad_in0_buf` and
+    uses both pointers; `vjp_via` writes both `_grad_in0_buf` and
     `_grad_in1_buf`.
 
 `ExternalUnaryNode[NAME, M, IN0_NAME, MODE="all"]`
@@ -26,7 +26,7 @@ wiring.
     does NOT own its op instance — instead holds `_module_ptr:
     UnsafePointer[M, MutAnyOrigin]` set per-call by the graph's
     `set_external[NAME](mut module)` method. The module lives elsewhere
-    (typically the trainer). `MODE` is plumbed into `M.backward[mode]`
+    (typically the trainer). `MODE` is plumbed into `M.vjp[mode]`
     so a single declaration can express stop-grad-style references —
     e.g. `MODE="input_only"` for the actor-loss view of a critic, which
     skips param-grad accumulation on that path. Phase 3.
@@ -38,7 +38,7 @@ Backward contract: the wrapper reads its own `_grad_out_buf` as the
 incoming gradient (graph zeros + scatter-adds into this before the
 call), and writes `_grad_in*_buf`. The graph scatter-adds those into
 predecessors' grad_out_bufs after the call returns. For InputSlot,
-backward_via is a no-op — `_grad_out_buf` already holds the final
+vjp_via is a no-op — `_grad_out_buf` already holds the final
 input-gradient by the time it's reached in the reverse-topo walk.
 
 CPU vs GPU storage: each node carries `ts: TargetStorage` (matches the
@@ -75,7 +75,7 @@ from ..core.target_storage import (
 # set_input_via) and a grad_out_buf that accumulates the gradient
 # flowing back to this input from all consumer nodes. Looks identical
 # to a regular producer node from the graph's name-resolution loop;
-# the only behavioral difference is that forward_via / backward_via
+# the only behavioral difference is that forward_via / vjp_via
 # are no-ops (graph zeros grad_out_buf at backward start; predecessors'
 # scatter-add does the rest).
 # ──────────────────────────────────────────────────────────────────────
@@ -198,7 +198,7 @@ struct InputSlot[
         # graph.set_input[NAME](tile). in0_ptr / in1_ptr are unused.
         pass
 
-    def backward_via[
+    def vjp_via[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -379,7 +379,7 @@ struct UnaryNode[
         var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
         self.op.forward[target, BATCH, POLICY=POLICY](in0_t, out_t)
 
-    def backward_via[
+    def vjp_via[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -388,7 +388,7 @@ struct UnaryNode[
         var gi0_p = self.grad_in0_ptr_via()
         var go_t = TileTensor(go_p, row_major[BATCH, Self.OUT_DIM]())
         var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
-        self.op.backward[target, BATCH, POLICY=POLICY](go_t, gi0_t)
+        self.op.vjp[target, BATCH, POLICY=POLICY](go_t, gi0_t)
 
     def for_each_param_via[
         target: StaticString,
@@ -572,7 +572,7 @@ struct BinaryNode[
         var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
         self.op.forward[target, BATCH, POLICY=POLICY](in0_t, in1_t, out_t)
 
-    def backward_via[
+    def vjp_via[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -583,7 +583,7 @@ struct BinaryNode[
         var go_t = TileTensor(go_p, row_major[BATCH, Self.OUT_DIM]())
         var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
         var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN1_DIM]())
-        self.op.backward[target, BATCH, POLICY=POLICY](go_t, gi0_t, gi1_t)
+        self.op.vjp[target, BATCH, POLICY=POLICY](go_t, gi0_t, gi1_t)
 
     def for_each_param_via[
         target: StaticString,
@@ -603,10 +603,10 @@ struct BinaryNode[
 # The node holds `_module_ptr: UnsafePointer[M, MutAnyOrigin]` to a
 # Module instance owned by the caller (typically the trainer). The
 # pointer is set per-call via `graph.set_external[NAME](mut module)`;
-# `forward_via` / `backward_via` dereference and invoke the standard
+# `forward_via` / `vjp_via` dereference and invoke the standard
 # `Module.forward` / `Module.backward` methods.
 #
-# `MODE` plumbs into `M.backward[mode]` at comptime — `MODE="input_only"`
+# `MODE` plumbs into `M.vjp[mode]` at comptime — `MODE="input_only"`
 # expresses stop-grad references inline without needing `StopGradParams`.
 # Param accumulation stays on the external instance; the graph never
 # walks the module's params. The trainer's own optimizer step does
@@ -630,7 +630,7 @@ struct ExternalUnaryNode[
 
     # Type-erased so the GraphNode trait can carry a uniform
     # `set_external_via` method. Rebound to UnsafePointer[Self.M] at
-    # every dispatch site (forward_via / backward_via).
+    # every dispatch site (forward_via / vjp_via).
     var _module_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
 
     var _out_buf: List[Scalar[DT]]
@@ -782,7 +782,7 @@ struct ExternalUnaryNode[
         )
         typed_ptr[].forward[target, BATCH, POLICY=POLICY](in0_t, out_t)
 
-    def backward_via[
+    def vjp_via[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -794,7 +794,7 @@ struct ExternalUnaryNode[
         var typed_ptr = rebind[UnsafePointer[Self.M, MutAnyOrigin]](
             self._module_ptr
         )
-        typed_ptr[].backward[
+        typed_ptr[].vjp[
             target, BATCH, POLICY=POLICY, mode=Self.MODE,
         ](go_t, gi0_t)
 
@@ -832,7 +832,7 @@ struct ExternalBinaryNode[
 
     # Type-erased so the GraphNode trait can carry a uniform
     # `set_external_via` method. Rebound to UnsafePointer[Self.M] at
-    # every dispatch site (forward_via / backward_via).
+    # every dispatch site (forward_via / vjp_via).
     var _module_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
 
     var _out_buf: List[Scalar[DT]]
@@ -994,7 +994,7 @@ struct ExternalBinaryNode[
             target, BATCH, POLICY=POLICY,
         ](in0_t, in1_t, out_t)
 
-    def backward_via[
+    def vjp_via[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -1008,7 +1008,7 @@ struct ExternalBinaryNode[
         var typed_ptr = rebind[UnsafePointer[Self.M, MutAnyOrigin]](
             self._module_ptr
         )
-        typed_ptr[].backward[
+        typed_ptr[].vjp[
             target, BATCH, POLICY=POLICY, mode=Self.MODE,
         ](go_t, gi0_t, gi1_t)
 

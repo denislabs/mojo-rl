@@ -88,7 +88,7 @@ def test_compute_graph_identity_gpu() raises:
         )
 
     var go_t = TileTensor(go_d, row_major[BATCH, 1]())
-    g.backward["gpu", BATCH](go_t)
+    g.vjp["gpu", BATCH](go_t)
     # The slot's grad_out_buf is the input-gradient accumulator. We need
     # the underlying DeviceBuffer to copy back to the host — the slot
     # owns it as `nodes[0]._grad_out_buf_dev`.

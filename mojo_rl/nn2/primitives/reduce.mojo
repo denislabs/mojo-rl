@@ -139,7 +139,7 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
                 in_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
             )
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,

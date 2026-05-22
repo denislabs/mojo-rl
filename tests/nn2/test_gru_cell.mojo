@@ -132,7 +132,7 @@ def test_backward_fd_gradcheck() raises:
     g.zero_grad["cpu"]()
 
     g.forward["cpu", BATCH](x_t, h_t, out_t)
-    g.backward["cpu", BATCH](go_t, dx_t, dh_t)
+    g.vjp["cpu", BATCH](go_t, dx_t, dh_t)
 
     @parameter
     def loss_with_inputs() raises -> Scalar[DT]:

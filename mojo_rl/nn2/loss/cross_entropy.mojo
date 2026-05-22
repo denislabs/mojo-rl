@@ -193,7 +193,7 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
                 total += host_ptr[b]
             return total / Scalar[DT](BATCH)
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,

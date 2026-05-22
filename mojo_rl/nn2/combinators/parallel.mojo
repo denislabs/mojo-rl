@@ -227,7 +227,7 @@ struct Parallel[A: Module, B: Module](Module):
 
     # ----- Backward --------------------------------------------------------
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -260,10 +260,10 @@ struct Parallel[A: Module, B: Module](Module):
                     go_b[b, j] = grad_output[b, Self.OUT_A + j]
             var gi_a = TileTensor(self.gi_a_cpu, row_major[BATCH, Self.IN_DIM]())
             var gi_b = TileTensor(self.gi_b_cpu, row_major[BATCH, Self.IN_DIM]())
-            self.branch_a.backward[
+            self.branch_a.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](go_a, gi_a)
-            self.branch_b.backward[
+            self.branch_b.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](go_b, gi_b)
             var ap = self.gi_a_cpu
@@ -309,10 +309,10 @@ struct Parallel[A: Module, B: Module](Module):
             var go_b_tt = TileTensor(pb, row_major[BATCH, Self.OUT_B]())
             var gi_a_tt = TileTensor(pia, row_major[BATCH, Self.IN_DIM]())
             var gi_b_tt = TileTensor(pib, row_major[BATCH, Self.IN_DIM]())
-            self.branch_a.backward[
+            self.branch_a.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](go_a_tt, gi_a_tt)
-            self.branch_b.backward[
+            self.branch_b.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](go_b_tt, gi_b_tt)
 

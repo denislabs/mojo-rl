@@ -6,7 +6,8 @@ but for 2-input → 1-output ops:
   1. No buffer surface (no `ensure_buffers`, `out_ptr`, `grad_in0_ptr`,
      `grad_in1_ptr`, `grad_out_ptr`) — orchestrators own all inter-
      module slabs.
-  2. `backward_input` collapsed into `backward[mode]`. A
+  2. `backward_input` collapsed into `vjp[mode]` (Phase 4 rename of
+     the old `backward[mode]`, semantics unchanged). A
      `mode = "all" | "input_only"` comptime param replaces the separate
      method. Param-less leaves ignore `mode`; param-bearing binary
      leaves (none today, but the slot exists for symmetry) gate their
@@ -62,7 +63,7 @@ trait BinaryModule(Defaultable & Movable & ImplicitlyDestructible):
     ) raises:
         ...
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -81,7 +82,8 @@ trait BinaryModule(Defaultable & Movable & ImplicitlyDestructible):
             element_size=1, ...,
         ],
     ) raises:
-        """Backward with comptime `mode`:
+        """Vector-Jacobian product with comptime `mode` (Phase 4 rename
+        of the old `backward[mode]`, semantics unchanged):
           - `"all"` (default): writes both grad inputs AND accumulates
             param grads (if any).
           - `"input_only"`: writes both grad inputs ONLY; skips param-grad

@@ -8,11 +8,14 @@ Three properties define the surface:
      design). Leaves that need an input cache for backward alias the
      orchestrator's input slab via a pointer field — no copy.
 
-  2. **`backward[mode]` collapses backward + backward_input.** A
+  2. **`vjp[mode]` collapses backward + backward_input.** A
      comptime `mode = "all" | "input_only"` param replaces the separate
      `backward_input` method. Leaves dispatch on `comptime if mode ==
      "all"` to skip param-grad work when only `grad_input` is needed
-     (e.g. through twin critics during SAC actor update).
+     (e.g. through twin critics during SAC actor update). The Phase 4
+     rename from `backward[mode]` to `vjp[mode]` is purely cosmetic —
+     semantics are unchanged. Reads better in graph contexts where
+     "vjp" matches the doc's autograd-lite framing.
 
   3. **for_each_param / zero_grad have no-op default impls.**
      Parameterless leaves (ReLU/Tanh/Scale/Slice/Sub/...) auto-inherit.
@@ -41,7 +44,7 @@ from .param_visitor import ParamVisitor
 
 trait Module(Defaultable & Movable & ImplicitlyDestructible):
     """Slim Module trait. Required: `make` factories, `forward`,
-    `backward`. Provided: nothing yet (reflection-derived `zero_grad`
+    `vjp`. Provided: nothing yet (reflection-derived `zero_grad`
     etc. ship as free functions in `walkers.mojo`; the trait stays
     minimal until the Mojo nightly limitation around `conforms_to`-
     dispatch in trait bodies is lifted — see audit Spike #6 caveat)."""
@@ -75,7 +78,7 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
     ) raises:
         ...
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -90,7 +93,8 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
             element_size=1, ...,
         ],
     ) raises:
-        """Backward with comptime `mode`:
+        """Vector-Jacobian product with comptime `mode` (Phase 4 rename
+        of the old `backward[mode]` — semantics unchanged):
           - `"all"` (default): writes grad_input AND accumulates param grads.
           - `"input_only"`: writes grad_input ONLY; skips param-grad work.
             Used by `StopGradParams` and SAC actor update through twin

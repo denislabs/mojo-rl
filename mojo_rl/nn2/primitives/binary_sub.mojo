@@ -117,7 +117,7 @@ struct BinarySub[DIM: Int](BinaryModule):
                 i0_lt, i1_lt, o_lt, grid_dim=n_blocks, block_dim=TPB,
             )
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,

@@ -78,8 +78,8 @@ def test_backward_parity() raises:
     old_sg.forward["cpu", BATCH](x_t, y_t)
     new_sg.forward["cpu", BATCH](x_t, y_t)
 
-    old_sg.backward["cpu", BATCH](go_t, gi_old_t)
-    new_sg.backward["cpu", BATCH](go_t, gi_new_t)
+    old_sg.vjp["cpu", BATCH](go_t, gi_old_t)
+    new_sg.vjp["cpu", BATCH](go_t, gi_new_t)
 
     var max_diff: Scalar[DT] = 0.0
     var max_abs_old: Scalar[DT] = 0.0

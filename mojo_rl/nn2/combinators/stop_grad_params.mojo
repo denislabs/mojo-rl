@@ -2,9 +2,9 @@
 through the backward path. Phase F0c migration to Module.
 
 Forward     : passthrough to `inner.forward(...)`.
-Backward    : routes to `inner.backward[..., mode="input_only"]` —
+Backward    : routes to `inner.vjp[..., mode="input_only"]` —
               computes grad_input only, does NOT accumulate grad_w / grad_b
-              on Inner. With `Module.backward[mode]`, this is now a
+              on Inner. With `Module.vjp[mode]`, this is now a
               one-liner — no separate `backward_input` method needed.
 for_each_param: passthrough — Inner's params are still visible to the
               optimizer, so other loss paths can still update them.
@@ -97,7 +97,7 @@ struct StopGradParams[Inner: Module](Module):
 
     # ----- Backward — always input_only on Inner --------------------------
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -112,12 +112,12 @@ struct StopGradParams[Inner: Module](Module):
             element_size=1, ...,
         ],
     ) raises:
-        """Always calls `inner.backward[mode="input_only"]` regardless of
+        """Always calls `inner.vjp[mode="input_only"]` regardless of
         the `mode` arg from the caller — that's the whole point of
         StopGradParams: never accumulate Inner's param grads via this
         loss path."""
         assert_tag_for["StopGradParams", target](self.ts.target_tag)
-        self.inner.backward[
+        self.inner.vjp[
             target, BATCH, POLICY=POLICY, mode="input_only",
         ](grad_output, grad_input)
 

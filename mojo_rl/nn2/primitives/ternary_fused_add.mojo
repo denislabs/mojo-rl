@@ -92,7 +92,7 @@ struct TernaryFusedAdd[DIM_: Int](TernaryModule):
             o_p[k] = i0_p[k] + i1_p[k] + i2_p[k]
             k += 1
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
