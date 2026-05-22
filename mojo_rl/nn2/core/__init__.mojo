@@ -19,6 +19,11 @@ from .map_params import polyak_update, hard_copy_params
 from .online_target_pair import OnlineTargetPair
 from .param import Param, IsParam
 from .walkers import for_each_param_auto, zero_grad_auto
+from .element_op import ElementOp
+from .reduce_op import ReduceOp
+from .scratch import Scratch, IsScratch
+from .scratch_walkers import init_scratch_auto
+from .checkpoint import save_params, load_params
 from .amp_matmul import (
     cast_fp32_to_bf16,
     cast_bf16_to_fp32,

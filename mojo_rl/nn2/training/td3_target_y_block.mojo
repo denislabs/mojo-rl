@@ -1,4 +1,8 @@
-"""TD3TargetYBlock — twin-critic target-y with clipped noise (Block E-4).
+"""TD3TargetYBlock — twin-critic target-y with clipped noise.
+
+Phase 2 Track B migration: 5 raw UnsafePointers + manual alloc/free
+replaced with 5 `Scratch[NAME, SIZE]` fields + `init_scratch_auto`. The
+`__del__` deallocator disappears (Scratch owns its CPU lists).
 
 TD3 target-policy smoothing (Fujimoto et al., 2018):
     a'    = clamp(actor_target(s') + clamp(ε, -c, c), -action_scale, action_scale)
@@ -20,11 +24,12 @@ Differences vs SAC target-y:
 CPU only.
 """
 
-from std.memory import alloc
 from layout import TileTensor, row_major
 
 from ..constants import DT
 from ..core.module import Module
+from ..core.scratch import Scratch
+from ..core.scratch_walkers import init_scratch_auto
 from ..core.target_storage import TargetStorage, assert_tag_for
 from ..loss.loss_block import LossBlock
 from ..random.box_muller import box_muller_normal
@@ -40,11 +45,11 @@ struct TD3TargetYBlock[
 ](LossBlock):
     comptime SA_DIM = Self.OBS + Self.ACT
 
-    var _mb_a_sp: UnsafePointer[Scalar[DT], MutAnyOrigin]    # [BATCH, ACT]
-    var _mb_noise: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [BATCH * ACT]
-    var _mb_sa: UnsafePointer[Scalar[DT], MutAnyOrigin]      # [BATCH, SA_DIM]
-    var _mb_q1: UnsafePointer[Scalar[DT], MutAnyOrigin]      # [BATCH, 1]
-    var _mb_q2: UnsafePointer[Scalar[DT], MutAnyOrigin]      # [BATCH, 1]
+    var _mb_a_sp: Scratch["mb_a_sp", Self.BATCH * Self.ACT]
+    var _mb_noise: Scratch["mb_noise", Self.BATCH * Self.ACT]
+    var _mb_sa: Scratch["mb_sa", Self.BATCH * Self.SA_DIM]
+    var _mb_q1: Scratch["mb_q1", Self.BATCH]
+    var _mb_q2: Scratch["mb_q2", Self.BATCH]
 
     var action_scale: Scalar[DT]
     var gamma: Scalar[DT]
@@ -62,12 +67,11 @@ struct TD3TargetYBlock[
         comptime assert Self.CRITIC.OUT_DIM == 1, (
             "TD3TargetYBlock: CRITIC.OUT_DIM must equal 1"
         )
-        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
-        self._mb_a_sp = null_p
-        self._mb_noise = null_p
-        self._mb_sa = null_p
-        self._mb_q1 = null_p
-        self._mb_q2 = null_p
+        self._mb_a_sp = Scratch["mb_a_sp", Self.BATCH * Self.ACT]()
+        self._mb_noise = Scratch["mb_noise", Self.BATCH * Self.ACT]()
+        self._mb_sa = Scratch["mb_sa", Self.BATCH * Self.SA_DIM]()
+        self._mb_q1 = Scratch["mb_q1", Self.BATCH]()
+        self._mb_q2 = Scratch["mb_q2", Self.BATCH]()
         self.action_scale = Scalar[DT](1.0)
         self.gamma = Scalar[DT](0.99)
         self.noise_std = Scalar[DT](0.2)
@@ -83,29 +87,13 @@ struct TD3TargetYBlock[
     ) raises -> Self:
         comptime assert target == "cpu", "TD3TargetYBlock: CPU only"
         var b = Self()
-        b._mb_a_sp = alloc[Scalar[DT]](Self.BATCH * Self.ACT)
-        b._mb_noise = alloc[Scalar[DT]](Self.BATCH * Self.ACT)
-        b._mb_sa = alloc[Scalar[DT]](Self.BATCH * Self.SA_DIM)
-        b._mb_q1 = alloc[Scalar[DT]](Self.BATCH)
-        b._mb_q2 = alloc[Scalar[DT]](Self.BATCH)
+        b.ts = TargetStorage.make_cpu()
+        init_scratch_auto[Self, target="cpu"](b)
         b.action_scale = action_scale
         b.gamma = gamma
         b.noise_std = noise_std
         b.noise_clip = noise_clip
-        b.ts = TargetStorage.make_cpu()
         return b^
-
-    def __del__(deinit self):
-        if Int(self._mb_a_sp) != 0:
-            self._mb_a_sp.free()
-        if Int(self._mb_noise) != 0:
-            self._mb_noise.free()
-        if Int(self._mb_sa) != 0:
-            self._mb_sa.free()
-        if Int(self._mb_q1) != 0:
-            self._mb_q1.free()
-        if Int(self._mb_q2) != 0:
-            self._mb_q2.free()
 
     def step[
         target: StaticString,
@@ -121,38 +109,44 @@ struct TD3TargetYBlock[
         comptime assert target == "cpu", "TD3TargetYBlock: CPU only"
         assert_tag_for["TD3TargetYBlock", target](self.ts.target_tag)
 
+        var a_sp_p = self._mb_a_sp.cpu_ptr()
+        var noise_p = self._mb_noise.cpu_ptr()
+        var sa_p = self._mb_sa.cpu_ptr()
+        var q1_p = self._mb_q1.cpu_ptr()
+        var q2_p = self._mb_q2.cpu_ptr()
+
         var mb_sp_t = TileTensor(mb_sp_ptr, row_major[Self.BATCH, Self.OBS]())
-        var mb_a_sp_t = TileTensor(self._mb_a_sp, row_major[Self.BATCH, Self.ACT]())
+        var mb_a_sp_t = TileTensor(a_sp_p, row_major[Self.BATCH, Self.ACT]())
         actor_target.forward[target, Self.BATCH](mb_sp_t, mb_a_sp_t)
 
         # Sample noise + clamp + add + clamp action to ±action_scale.
-        box_muller_normal(self._mb_noise, Self.BATCH * Self.ACT)
+        box_muller_normal(noise_p, Self.BATCH * Self.ACT)
         var sigma = self.noise_std * self.action_scale
         var clip_lim = self.noise_clip * self.action_scale
         for k in range(Self.BATCH * Self.ACT):
-            var n = self._mb_noise[k] * sigma
+            var n = noise_p[k] * sigma
             if n > clip_lim:
                 n = clip_lim
             elif n < -clip_lim:
                 n = -clip_lim
-            var v = self._mb_a_sp[k] + n
+            var v = a_sp_p[k] + n
             if v > self.action_scale:
                 v = self.action_scale
             elif v < -self.action_scale:
                 v = -self.action_scale
-            self._mb_a_sp[k] = v
+            a_sp_p[k] = v
 
         # sa' = concat(s', a')
         concat_sa[Self.OBS, Self.ACT, Self.BATCH](
-            mb_sp_ptr, self._mb_a_sp, self._mb_sa,
+            mb_sp_ptr, a_sp_p, sa_p,
         )
-        var mb_sa_t = TileTensor(self._mb_sa, row_major[Self.BATCH, Self.SA_DIM]())
-        var mb_q1_t = TileTensor(self._mb_q1, row_major[Self.BATCH, 1]())
-        var mb_q2_t = TileTensor(self._mb_q2, row_major[Self.BATCH, 1]())
+        var mb_sa_t = TileTensor(sa_p, row_major[Self.BATCH, Self.SA_DIM]())
+        var mb_q1_t = TileTensor(q1_p, row_major[Self.BATCH, 1]())
+        var mb_q2_t = TileTensor(q2_p, row_major[Self.BATCH, 1]())
         critic1_target.forward[target, Self.BATCH](mb_sa_t, mb_q1_t)
         critic2_target.forward[target, Self.BATCH](mb_sa_t, mb_q2_t)
 
         # y = r + γ·min(q1, q2). nonterm = 1 (truncation env).
         for b in range(Self.BATCH):
-            var qmin = self._mb_q1[b] if self._mb_q1[b] < self._mb_q2[b] else self._mb_q2[b]
+            var qmin = q1_p[b] if q1_p[b] < q2_p[b] else q2_p[b]
             mb_y_ptr[b] = mb_r_ptr[b] + self.gamma * qmin

@@ -52,6 +52,7 @@ sub-method stays under the threshold.
 from std.math import exp as fexp, log as flog
 from std.memory import alloc
 from std.random import random_float64
+from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, TensorLayout, row_major
 
@@ -67,6 +68,7 @@ from ..data.cpu_replay import CPUReplay
 from ..random.box_muller import box_muller_normal
 from .episode_tracker import EpisodeTracker
 from .target_y_block import TargetYBlock
+from .timer import Timer
 
 
 struct SACTrainer[
@@ -78,6 +80,14 @@ struct SACTrainer[
     REPLAY_CAPACITY: Int,
 ](Movable & ImplicitlyDestructible):
     comptime SA_DIM = Self.OBS_DIM + Self.ACT_DIM
+
+    # Timer section indices. Order matches `add_section` calls in `make`.
+    comptime _T_SAMPLE    = 0
+    comptime _T_TARGET_Y  = 1
+    comptime _T_CRITIC    = 2
+    comptime _T_ACTOR     = 3
+    comptime _T_ALPHA     = 4
+    comptime _T_POLYAK    = 5
 
     # ─── Networks ─────────────────────────────────────────────────────
     var actor: Self.ACTOR
@@ -143,6 +153,13 @@ struct SACTrainer[
     var _alpha_accum: Scalar[DT]
     var _update_count: Int
 
+    # ─── Wall-time introspection ──────────────────────────────────────
+    # Per-sub-step accumulator. On GPU the per-section numbers reflect
+    # enqueue overhead, not real kernel time — accurate per-block GPU
+    # timing requires `ctx.synchronize()` brackets which would wreck
+    # throughput, so we don't insert them by default.
+    var timer: Timer
+
     def __init__(out self):
         self.actor = Self.ACTOR()
         self.pair1 = OnlineTargetPair[Self.CRITIC]()
@@ -205,6 +222,18 @@ struct SACTrainer[
         self._critic_L_accum = Scalar[DT](0.0)
         self._alpha_accum = Scalar[DT](0.0)
         self._update_count = 0
+        self.timer = Timer.new()
+
+    @staticmethod
+    def _init_timer(mut t: Self) raises:
+        """Register the 6 standard train_step sections in declaration order.
+        Index order MUST match the `_T_*` comptime constants on the struct."""
+        t.timer.add_section("sample")
+        t.timer.add_section("target_y")
+        t.timer.add_section("critic")
+        t.timer.add_section("actor")
+        t.timer.add_section("alpha")
+        t.timer.add_section("polyak")
 
     @staticmethod
     def make[target: StaticString](
@@ -273,6 +302,7 @@ struct SACTrainer[
         t.action_scale = action_scale
         t.target_entropy = target_entropy
         t.learning_starts = learning_starts
+        Self._init_timer(t)
         return t^
 
     @staticmethod
@@ -366,6 +396,7 @@ struct SACTrainer[
         t.action_scale = action_scale
         t.target_entropy = target_entropy
         t.learning_starts = learning_starts
+        Self._init_timer(t)
         return t^
 
     # ──────────────────────────────────────────────────────────────────
@@ -477,6 +508,8 @@ struct SACTrainer[
             return False
         if self.buf.size < Self.BATCH:
             return False
+
+        var t_sample = perf_counter_ns()
         self.buf.sample(
             Self.BATCH, self._mb_s, self._mb_a, self._mb_r, self._mb_sp, self._mb_d
         )
@@ -509,15 +542,31 @@ struct SACTrainer[
             mb_y_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 self._mb_y_dev.value().unsafe_ptr()
             )
+        self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
         var alpha = fexp(self.alpha_opt.value)
+
+        var t_ty = perf_counter_ns()
         self._train_compute_target_y[target](alpha, mb_sp_ptr, mb_r_ptr, mb_y_ptr)
+        self.timer.accumulate(Self._T_TARGET_Y, t_ty)
+
+        var t_crit = perf_counter_ns()
         var crit_loss = self._train_critic_update[target](
             mb_s_ptr, mb_a_ptr, mb_y_ptr,
         )
+        self.timer.accumulate(Self._T_CRITIC, t_crit)
+
+        var t_act = perf_counter_ns()
         var actor_res = self._train_actor_update[target](alpha, mb_s_ptr)
+        self.timer.accumulate(Self._T_ACTOR, t_act)
+
+        var t_alp = perf_counter_ns()
         self._train_alpha_update(actor_res.log_prob_mean)
+        self.timer.accumulate(Self._T_ALPHA, t_alp)
+
+        var t_pol = perf_counter_ns()
         self._train_polyak[target]()
+        self.timer.accumulate(Self._T_POLYAK, t_pol)
 
         self._actor_L_accum += actor_res.loss
         self._critic_L_accum += crit_loss
@@ -607,5 +656,13 @@ struct SACTrainer[
         self._alpha_accum = Scalar[DT](0.0)
         self._update_count = 0
         return out
+
+    def flush_timer_log(mut self) -> String:
+        """Return a formatted per-section wall-time report (one line per
+        sub-step: sample / target_y / critic / actor / alpha / polyak)
+        and reset the accumulators."""
+        var report = self.timer.format_report()
+        self.timer.reset()
+        return report
 
 

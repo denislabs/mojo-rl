@@ -12,6 +12,15 @@ for_each_param: passthrough — Inner's params are still visible to the
 Contrast with `nn2.primitives.StopGrad[DIM]` (which zeros grad_input
 entirely). StopGradParams lets the gradient flow through but blocks
 param updates via the backward path.
+
+NOTE (Phase 3, 2026-05-22): For stop-grad references INSIDE a
+`ComputeGraph`, prefer `ExternalUnaryNode[NAME, M, "src", MODE="input_only"]`
+over `UnaryNode[NAME, StopGradParams[M], "src"]`. The ExternalUnaryNode
+form (a) avoids owning a separate Module copy inside the graph,
+(b) plumbs `mode="input_only"` directly into the referenced module's
+backward, and (c) keeps the trainer as the canonical owner of the
+underlying network. StopGradParams remains useful for compositions
+OUTSIDE a graph context — e.g. inside `Sequential[..., StopGradParams[Linear[...]], ...]`.
 """
 
 from std.gpu.host import DeviceContext

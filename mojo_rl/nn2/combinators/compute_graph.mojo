@@ -66,6 +66,8 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..constants import DT, CPU_SIMD_W
 from ..core import (
     GraphNode,
+    Module,
+    BinaryModule,
     ParamVisitor,
     Initializer,
     AMPPolicy,
@@ -306,6 +308,76 @@ struct ComputeGraph[
             ):
                 self.nodes[i].set_input_via(p)
 
+    # ──────────────────────────────────────────────────────────────────
+    # Phase 3 — External-Module dispatch.
+    #
+    # `set_external[NAME](mut module)` binds an externally-owned Module
+    # instance to a named ExternalUnaryNode / ExternalBinaryNode. The
+    # node holds an `UnsafePointer[M, MutAnyOrigin]`; per-call
+    # `forward_via` / `backward_via` derefs and calls
+    # `Module.forward` / `Module.backward` on the supplied instance.
+    #
+    # Caller MUST keep the bound `module` instance alive (and in the
+    # same address) across subsequent `forward`/`backward` calls. The
+    # typical pattern is to bind once during trainer setup where the
+    # trainer owns the field, then `set_external` is a single pointer
+    # store per re-bind.
+    # ──────────────────────────────────────────────────────────────────
+
+    def set_external[
+        ext_name: StaticString,
+        M: Module,
+    ](mut self, mut module: M) raises:
+        """Bind an external Module to the ExternalUnaryNode named `ext_name`.
+
+        The matching node must have been declared as
+        `ExternalUnaryNode[ext_name, M, ...]` — `M` here is the concrete
+        Module type, deduced at the call site. No-op if no node matches.
+        The pointer is type-erased to `UnsafePointer[Scalar[DT]]` at the
+        trait surface (so it can flow through the GraphNode trait method),
+        and rebound to `UnsafePointer[Self.M]` inside the receiving node.
+        """
+        var typed_ptr = UnsafePointer[M, MutAnyOrigin](to=module)
+        var erased_ptr = rebind[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ](typed_ptr)
+        comptime for i in range(Self.N):
+            comptime if Self.NODES[i].NAME == ext_name:
+                self.nodes[i].set_external_via(erased_ptr)
+
+    def set_external_binary[
+        ext_name: StaticString,
+        M: BinaryModule,
+    ](mut self, mut module: M) raises:
+        """Bind an external BinaryModule to the ExternalBinaryNode named `ext_name`."""
+        var typed_ptr = UnsafePointer[M, MutAnyOrigin](to=module)
+        var erased_ptr = rebind[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ](typed_ptr)
+        comptime for i in range(Self.N):
+            comptime if Self.NODES[i].NAME == ext_name:
+                self.nodes[i].set_external_via(erased_ptr)
+
+    def node_out_ptr[
+        node_name: StaticString,
+    ](ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Returns the named node's output buffer pointer.
+
+        Stable after the first `ensure_buffers_via[BATCH]` of that node
+        (which fires inside `forward` / `backward`). Returns null if
+        `node_name` matches no node in the graph. Used by callers that
+        need access to an intermediate node's output value — e.g. the
+        SAC actor loss reads `log_prob`'s out_ptr to compute its mean
+        for the α optimizer.
+        """
+        var out_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=0
+        )
+        comptime for i in range(Self.N):
+            comptime if Self.NODES[i].NAME == node_name:
+                out_p = self.nodes[i].out_ptr_via()
+        return out_p
+
     def grad_input_ptr[
         slot_name: StaticString,
     ](ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -326,6 +398,32 @@ struct ComputeGraph[
             ):
                 out_p = self.nodes[i].grad_out_ptr_via()
         return out_p
+
+    # ──────────────────────────────────────────────────────────────────
+    # Per-call node attribute mutation. Resolves the target node by
+    # name at comptime; the named node's `op` must have a struct field
+    # matching `ATTR` (e.g. `Scale.multiplier`). Replaces the hard-coded
+    # `self.nodes[5].op.multiplier = alpha` pattern in SACActorLossCG.
+    # ──────────────────────────────────────────────────────────────────
+
+    def set_node_attr[
+        NAME: StaticString, ATTR: StaticString,
+    ](mut self, value: Scalar[DT]):
+        """Set runtime attribute `ATTR` on node `NAME`'s inner op.
+
+        Dispatches via the uniform `GraphNode.set_op_attr_via[ATTR]`
+        trait method (InputSlot's default no-op, UnaryNode/BinaryNode
+        forward to `self.op.set_attr[ATTR](value)`). The matched op
+        must implement `Module.set_attr` for the given `ATTR` — e.g.
+        `Scale.set_attr["multiplier"]` mutates `self.multiplier`.
+        Unrecognised `ATTR` values are silently no-ops on the op.
+
+        Replaces the hard-coded `self.nodes[5].op.multiplier = value`
+        index pattern with a name-resolved comptime lookup.
+        """
+        comptime for i in range(Self.N):
+            comptime if Self.NODES[i].NAME == NAME:
+                self.nodes[i].set_op_attr_via[ATTR](value)
 
     # ──────────────────────────────────────────────────────────────────
     # Forward — topological walk, comptime name resolution.

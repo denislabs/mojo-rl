@@ -1,5 +1,12 @@
 """CriticUpdateBlock / TwinCriticUpdateBlock — critic-update LossBlocks.
 
+Phase 2 Track B migration: pre-Phase-2 each block declared a mix of
+CPU `List` + GPU `Optional[DeviceBuffer]` + `_n` size-tracking fields
+and hand-wrote a 3-arm runtime-tag-branching `_mb_X_ptr()` helper per
+buffer. Post-migration, scratch is a `Scratch[NAME, SIZE]` field and
+the ptr helpers collapse to compile-time `cpu_ptr()` / `dev_ptr()`
+inside a `comptime if target == "cpu"` branch.
+
 Self-contained: each block absorbs the scratch buffers (`mb_q`,
 `mb_grad_q`, `mb_grad_sa`) the trainer would otherwise own. Mirrors
 the SACActorLossCG ownership pattern but stays linear — the chain is
@@ -35,11 +42,10 @@ from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from ..constants import DT
-from ..core.target_tag import TARGET_GPU
 from ..core.module import Module
-from ..core.target_storage import (
-    TargetStorage, assert_tag_for, ensure_gpu_buffer,
-)
+from ..core.scratch import Scratch
+from ..core.scratch_walkers import init_scratch_auto
+from ..core.target_storage import TargetStorage, assert_tag_for
 from ..optimizer.adam import Adam
 from .loss_block import LossBlock
 from .mse import MSELoss
@@ -55,32 +61,17 @@ struct CriticUpdateBlock[
 
     var mse_loss: MSELoss[1]
 
-    # CPU scratch.
-    var _mb_q: List[Scalar[DT]]          # [BATCH, 1]  critic forward output
-    var _mb_grad_q: List[Scalar[DT]]     # [BATCH, 1]  MSE backward output
-    var _mb_grad_sa: List[Scalar[DT]]    # [BATCH, SA_DIM]  critic backward output
-
-    # GPU scratch.
-    var _mb_q_dev: Optional[DeviceBuffer[DT]]
-    var _mb_q_dev_n: Int
-    var _mb_grad_q_dev: Optional[DeviceBuffer[DT]]
-    var _mb_grad_q_dev_n: Int
-    var _mb_grad_sa_dev: Optional[DeviceBuffer[DT]]
-    var _mb_grad_sa_dev_n: Int
+    var _mb_q: Scratch["mb_q", Self.BATCH]
+    var _mb_grad_q: Scratch["mb_grad_q", Self.BATCH]
+    var _mb_grad_sa: Scratch["mb_grad_sa", Self.BATCH * Self.SA_DIM]
 
     var ts: TargetStorage
 
     def __init__(out self):
         self.mse_loss = MSELoss[1]()
-        self._mb_q = List[Scalar[DT]]()
-        self._mb_grad_q = List[Scalar[DT]]()
-        self._mb_grad_sa = List[Scalar[DT]]()
-        self._mb_q_dev = None
-        self._mb_q_dev_n = 0
-        self._mb_grad_q_dev = None
-        self._mb_grad_q_dev_n = 0
-        self._mb_grad_sa_dev = None
-        self._mb_grad_sa_dev_n = 0
+        self._mb_q = Scratch["mb_q", Self.BATCH]()
+        self._mb_grad_q = Scratch["mb_grad_q", Self.BATCH]()
+        self._mb_grad_sa = Scratch["mb_grad_sa", Self.BATCH * Self.SA_DIM]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -96,11 +87,8 @@ struct CriticUpdateBlock[
         )
         var blk = Self()
         blk.mse_loss = MSELoss[1].make[target="cpu"]()
-        var zero: Scalar[DT] = 0.0
-        blk._mb_q.resize(Self.BATCH, zero)
-        blk._mb_grad_q.resize(Self.BATCH, zero)
-        blk._mb_grad_sa.resize(Self.BATCH * Self.SA_DIM, zero)
         blk.ts = TargetStorage.make_cpu()
+        init_scratch_auto[Self, target="cpu"](blk)
         return blk^
 
     @staticmethod
@@ -116,43 +104,9 @@ struct CriticUpdateBlock[
         )
         var blk = Self()
         blk.mse_loss = MSELoss[1].make[target="gpu"](ctx)
-        blk._mb_q_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
-        blk._mb_q_dev_n = Self.BATCH
-        blk._mb_grad_q_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
-        blk._mb_grad_q_dev_n = Self.BATCH
-        blk._mb_grad_sa_dev = ctx.enqueue_create_buffer[DT](
-            Self.BATCH * Self.SA_DIM
-        )
-        blk._mb_grad_sa_dev_n = Self.BATCH * Self.SA_DIM
         blk.ts = TargetStorage.make_gpu(ctx)
+        init_scratch_auto[Self, target="gpu"](blk, Optional[DeviceContext](ctx))
         return blk^
-
-    def _mb_q_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        if self.ts.target_tag == TARGET_GPU:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._mb_q_dev.value().unsafe_ptr()
-            )
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._mb_q.unsafe_ptr()
-        )
-
-    def _mb_grad_q_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        if self.ts.target_tag == TARGET_GPU:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._mb_grad_q_dev.value().unsafe_ptr()
-            )
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._mb_grad_q.unsafe_ptr()
-        )
-
-    def _mb_grad_sa_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        if self.ts.target_tag == TARGET_GPU:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._mb_grad_sa_dev.value().unsafe_ptr()
-            )
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._mb_grad_sa.unsafe_ptr()
-        )
 
     def step[
         target: StaticString,
@@ -169,20 +123,28 @@ struct CriticUpdateBlock[
     ) raises -> Scalar[DT]:
         assert_tag_for["CriticUpdateBlock", target](self.ts.target_tag)
 
-        var mb_q_t = TileTensor(
-            self._mb_q_ptr(), row_major[Self.BATCH, 1]()
-        )
+        var mb_q_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+        var mb_grad_q_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+        var mb_grad_sa_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+        comptime if target == "cpu":
+            mb_q_p = self._mb_q.cpu_ptr()
+            mb_grad_q_p = self._mb_grad_q.cpu_ptr()
+            mb_grad_sa_p = self._mb_grad_sa.cpu_ptr()
+        else:
+            mb_q_p = self._mb_q.dev_ptr()
+            mb_grad_q_p = self._mb_grad_q.dev_ptr()
+            mb_grad_sa_p = self._mb_grad_sa.dev_ptr()
+
+        var mb_q_t = TileTensor(mb_q_p, row_major[Self.BATCH, 1]())
         opt.zero_grad[target, M=Self.CRITIC](critic)
         critic.forward[target, Self.BATCH](sa_t, mb_q_t)
         var loss = self.mse_loss.forward[target, Self.BATCH](mb_q_t, y_t)
 
-        var mb_grad_q_t = TileTensor(
-            self._mb_grad_q_ptr(), row_major[Self.BATCH, 1]()
-        )
+        var mb_grad_q_t = TileTensor(mb_grad_q_p, row_major[Self.BATCH, 1]())
         self.mse_loss.backward[target, Self.BATCH](y_t, mb_grad_q_t)
 
         var mb_grad_sa_t = TileTensor(
-            self._mb_grad_sa_ptr(),
+            mb_grad_sa_p,
             row_major[Self.BATCH, Self.SA_DIM](),
         )
         critic.backward[target, Self.BATCH](mb_grad_q_t, mb_grad_sa_t)
@@ -204,18 +166,14 @@ struct TwinCriticUpdateBlock[
     var c1: CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM]
     var c2: CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM]
 
-    var _mb_sa: List[Scalar[DT]]                  # CPU [BATCH, SA_DIM]
-    var _mb_sa_dev: Optional[DeviceBuffer[DT]]    # GPU [BATCH, SA_DIM]
-    var _mb_sa_dev_n: Int
+    var _mb_sa: Scratch["mb_sa", Self.BATCH * Self.SA_DIM]
 
     var ts: TargetStorage
 
     def __init__(out self):
         self.c1 = CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM]()
         self.c2 = CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM]()
-        self._mb_sa = List[Scalar[DT]]()
-        self._mb_sa_dev = None
-        self._mb_sa_dev_n = 0
+        self._mb_sa = Scratch["mb_sa", Self.BATCH * Self.SA_DIM]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -230,8 +188,8 @@ struct TwinCriticUpdateBlock[
         blk.c2 = CriticUpdateBlock[
             Self.CRITIC, Self.BATCH, Self.SA_DIM
         ].make[target="cpu"]()
-        blk._mb_sa.resize(Self.BATCH * Self.SA_DIM, Scalar[DT](0.0))
         blk.ts = TargetStorage.make_cpu()
+        init_scratch_auto[Self, target="cpu"](blk)
         return blk^
 
     @staticmethod
@@ -246,21 +204,9 @@ struct TwinCriticUpdateBlock[
         blk.c2 = CriticUpdateBlock[
             Self.CRITIC, Self.BATCH, Self.SA_DIM
         ].make[target="gpu"](ctx)
-        blk._mb_sa_dev = ctx.enqueue_create_buffer[DT](
-            Self.BATCH * Self.SA_DIM
-        )
-        blk._mb_sa_dev_n = Self.BATCH * Self.SA_DIM
         blk.ts = TargetStorage.make_gpu(ctx)
+        init_scratch_auto[Self, target="gpu"](blk, Optional[DeviceContext](ctx))
         return blk^
-
-    def _mb_sa_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        if self.ts.target_tag == TARGET_GPU:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._mb_sa_dev.value().unsafe_ptr()
-            )
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._mb_sa.unsafe_ptr()
-        )
 
     def step[
         target: StaticString,
@@ -278,12 +224,14 @@ struct TwinCriticUpdateBlock[
     ) raises -> Scalar[DT]:
         assert_tag_for["TwinCriticUpdateBlock", target](self.ts.target_tag)
 
-        var sa_p = self._mb_sa_ptr()
+        var sa_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
         comptime if target == "cpu":
+            sa_p = self._mb_sa.cpu_ptr()
             concat_sa[Self.OBS, Self.ACT, Self.BATCH](
                 mb_s_ptr, mb_a_ptr, sa_p
             )
         else:
+            sa_p = self._mb_sa.dev_ptr()
             concat_sa_gpu[Self.OBS, Self.ACT, Self.BATCH](
                 self.ts.ctx.value(), mb_s_ptr, mb_a_ptr, sa_p
             )

@@ -1,16 +1,23 @@
-"""SAC training on Pendulum V1 via `SACTrainer`.
+"""SAC Pendulum GPU convergence regression (Phase 0.3).
 
-Phase 9B validating user. The whole SAC pipeline — networks, optimizers,
-replay, target nets, loss block, scratch, Polyak — lives inside the
-trainer. This file is the lean end-to-end view: hyperparameters, the
-network type aliases, and the env loop.
+Runs the GPU SAC trainer against the real Pendulum env for 30k steps and
+asserts `mean10 < -200`. This locks in the end-to-end GPU SAC path that
+Block A + Block D unblocked; previously only a 36-step NaN smoke
+(`test_sac_pendulum_gpu.mojo`) covered the GPU surface.
+
+Reference (CPU baseline): mean10 = -170.2601 at 30k. GPU mean10 differs
+because the GPU box_muller uses Philox vs CPU's std.random; convergence
+target on GPU is the `>-200 EXCELLENT` threshold (consistently hit at
+~-121 on Apple Silicon during Block D validation).
 
 Run:
-    pixi run mojo run -I . examples/pendulum/pendulum_sac_nn2_trainer.mojo
+    pixi run mojo run -I . tests/nn2/test_sac_pendulum_gpu_convergence.mojo
 """
 
+from std.gpu.host import DeviceContext
 from std.memory import alloc
 from std.random import seed
+from std.testing import assert_true
 from std.time import perf_counter_ns
 
 from mojo_rl.nn2.constants import DT
@@ -29,6 +36,7 @@ comptime HIDDEN = 64
 comptime BATCH = 256
 comptime REPLAY_CAPACITY = 50_000
 comptime TOTAL_TIMESTEPS = 30_000
+comptime CONVERGENCE_THRESHOLD = -200.0  # GPU SAC must beat random baseline by a margin
 
 comptime ActorNet = StochasticActor[
     OBS_DIM, ACT_DIM,
@@ -42,15 +50,13 @@ comptime CriticNet = Sequential[
 ]
 
 
-def main() raises:
+def test_sac_pendulum_gpu_convergence() raises:
     seed(42)
-    print("=" * 70)
-    print("nn2 SAC Continuous (Phase 9B SACTrainer) — Pendulum V1 (CPU)")
-    print("=" * 70)
-
+    var ctx = DeviceContext()
     var trainer = SACTrainer[
         ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY
-    ].make["cpu"](
+    ].make["gpu"](
+        ctx,
         actor_lr=Scalar[DT](3e-4), critic_lr=Scalar[DT](1e-3),
         alpha_lr=Scalar[DT](3e-4), gamma=Scalar[DT](0.99),
         tau=Scalar[DT](0.005), action_scale=Scalar[DT](2.0),
@@ -71,7 +77,7 @@ def main() raises:
     while step < TOTAL_TIMESTEPS:
         for d in range(OBS_DIM):
             obs[d] = obs_self[d]
-        trainer.select_action(obs, action, step)
+        trainer.select_action["gpu"](obs, action, step)
         var step_res = env.step_continuous(action[0])
         var nxt = step_res[0].copy()
         var reward = step_res[1]
@@ -89,30 +95,35 @@ def main() raises:
         else:
             obs_self = nxt.copy()
         step += 1
-        _ = trainer.train_step(step)
+        _ = trainer.train_step["gpu"](step)
 
-        if step % 1_000 == 0:
+        if step % 5_000 == 0:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
-            var log = trainer.flush_train_log()
             print(
                 "[step ", step, "] mean_ret(10)=", trainer.mean_return(),
-                " ep=", trainer.ep_count(), " alpha=", log[2],
-                " actor_L=", log[0], " critic_L=", log[1],
+                " ep=", trainer.ep_count(),
                 " elapsed=", elapsed, "s",
             )
 
+    var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
+    var final_mean = Float64(trainer.mean_return())
     print("=" * 70)
-    var final_mean = trainer.mean_return()
-    print("Final mean ep return (last 10): ", final_mean)
-    if final_mean > -200.0:
-        print("EXCELLENT — solved swing-up (>-200).")
-    elif final_mean > -500.0:
-        print("SUCCESS — substantially learned (>-500).")
-    elif final_mean > -1000.0:
-        print("PROGRESS — learning (>-1000).")
-    else:
-        print("EARLY — still exploring (<-1000).")
-    print("=" * 70)
-    print("Per-section wall-time (Phase 0 timer):")
+    print("Final mean10 =", final_mean, " (threshold:", CONVERGENCE_THRESHOLD, ")")
+    print("Total wall-time =", elapsed, "s")
     print(trainer.flush_timer_log())
+    print("=" * 70)
+    assert_true(
+        final_mean > CONVERGENCE_THRESHOLD,
+        "GPU SAC failed convergence regression: mean10 not above threshold"
+    )
+    print("  test_sac_pendulum_gpu_convergence PASSED")
+
+
+def main() raises:
+    print("=" * 70)
+    print("SAC Pendulum GPU convergence regression (Phase 0.3)")
+    print("=" * 70)
+    test_sac_pendulum_gpu_convergence()
+    print("=" * 70)
+    print("ALL PASSED")
     print("=" * 70)

@@ -2,6 +2,7 @@
 
 from .trainer import Trainer
 from .episode_tracker import EpisodeTracker
+from .timer import Timer
 from .gae import compute_gae, normalize_in_place
 from .off_policy_critic import (
     concat_sa,

@@ -128,3 +128,13 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         """Default: no params. Parameterised leaves override to call
         `zero_grad_auto[Self, target]`; combinators override to recurse."""
         pass
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Per-call runtime attribute mutation. Default no-op.
+
+        Modules with mutable runtime state (e.g. `Scale.multiplier`)
+        override this and comptime-branch on `ATTR`. Used by
+        `ComputeGraph.set_node_attr[NAME, ATTR](value)` to set α / β /
+        learning-rate-style scalars on named in-graph nodes between
+        forward passes."""
+        pass

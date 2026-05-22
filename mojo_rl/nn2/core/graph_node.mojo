@@ -59,6 +59,18 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
     ) raises:
         pass
 
+    # Phase 3 — Bind an externally-owned Module instance to an
+    # ExternalUnaryNode / ExternalBinaryNode. The pointer is type-erased
+    # to `UnsafePointer[Scalar[DT]]` at the trait surface; the external-
+    # node implementations `rebind` it back to the typed pointer at the
+    # dispatch site (Self.M is known there). InputSlot / UnaryNode /
+    # BinaryNode inherit the no-op default — they own their op.
+    def set_external_via(
+        mut self,
+        ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        pass
+
     @staticmethod
     def make_via[target: StaticString, INIT: Initializer]() raises -> Self:
         ...
@@ -111,3 +123,11 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
         mut visitor: V,
     ) raises:
         ...
+
+    def set_op_attr_via[ATTR: StaticString](
+        mut self, value: Scalar[DT],
+    ):
+        """Forward an attribute mutation to the inner op. Default
+        no-op for InputSlot (no `.op` field). UnaryNode/BinaryNode
+        override to call `self.op.set_attr[ATTR](value)`."""
+        pass

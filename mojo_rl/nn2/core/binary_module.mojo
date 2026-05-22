@@ -106,3 +106,8 @@ trait BinaryModule(Defaultable & Movable & ImplicitlyDestructible):
     def zero_grad[target: StaticString](mut self) raises:
         """Default: no params. Override on param-bearing binaries."""
         pass
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Default no-op. Override on binaries with mutable runtime
+        state (mirrors `Module.set_attr`)."""
+        pass

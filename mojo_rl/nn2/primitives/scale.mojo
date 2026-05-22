@@ -161,3 +161,10 @@ struct Scale[DIM: Int](Module):
                 go_lt, gi_lt, self.multiplier,
                 grid_dim=n_blocks, block_dim=TPB,
             )
+
+    # Override of Module.set_attr — supports ATTR="multiplier". Other
+    # ATTR strings are no-ops (Mojo nightly can't error on unknown
+    # ATTR from a comptime if without a constexpr-assert).
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        comptime if ATTR == "multiplier":
+            self.multiplier = value
