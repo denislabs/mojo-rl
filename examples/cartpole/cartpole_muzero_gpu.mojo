@@ -1,10 +1,17 @@
 """CartPole with MuZero — Fully GPU (env + MCTS + training).
 
-Uses Gumbel-MuZero (mctx-style) for action selection: Gumbel-Top-k
-root sampling + Sequential Halving + deterministic σ(Q)-N/(1+ΣN)
-interior selection + improved-policy training target. Provably
-better policy improvement at low simulation budgets than PUCT —
-see ``docs/mctx-main/`` and ``docs/mcts_gpu.pdf``.
+Default PUCT path. Gumbel-MuZero is available via
+``POLICY=GumbelMuZeroPolicy[K]`` but for CartPole's 2-action space
+Sequential Halving has no halving to do, so Gumbel offers no
+discrimination advantage over PUCT.
+
+NOTE: GPU MuZero has historically not converged on CartPole — CPU
+``train()`` is the working reference. The Phase-K action-encoding bug
+fix (2026-05-22) unblocked dynamics-network learning (action input
+was being read from a misaligned scalar buffer as if it were one-hot),
+but the policy still doesn't break out of random-play baseline. See
+``docs/MUZERO_GPU_AUDIT_2026-05-22.md`` for the current state of the
+investigation.
 
 Usage (Apple Silicon):
     pixi run -e apple mojo run -I . examples/cartpole/cartpole_muzero_gpu.mojo
@@ -12,27 +19,22 @@ Usage (Apple Silicon):
 
 from std.gpu.host import DeviceContext
 from mojo_rl.deep_agents.muzero import GenericMuZeroAgent, MuZeroMLPConfig
-from mojo_rl.deep_agents.muzero.policy_mode import GumbelMuZeroPolicy
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 
 def main() raises:
-    print("MuZero on CartPole (Fully GPU, Gumbel-MuZero)")
+    print("MuZero on CartPole (Fully GPU)")
 
     var ctx = DeviceContext()
     comptime CartPoleGPU = CartPoleEnv[DType.float32]
 
-    # MAX_K=2 = CartPole's action count. Sequential Halving collapses
-    # to a single phase (log2(2)=1) of 12 sims per action — the SIMS=24
-    # budget chosen to be cleanly divisible (was 25 with PUCT).
     comptime Config = MuZeroMLPConfig[
         CartPoleGPU.OBS_DIM,
         CartPoleGPU.NUM_ACTIONS,
         LATENT=128,
         HIDDEN=128,
         BINS=51,
-        SIMS=24,
-        POLICY=GumbelMuZeroPolicy[2],
+        SIMS=25,
     ]
 
     var agent = GenericMuZeroAgent[Config, 32](  # 32 parallel GPU envs

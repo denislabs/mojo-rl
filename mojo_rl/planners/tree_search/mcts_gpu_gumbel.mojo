@@ -903,6 +903,9 @@ def gz_backup_kernel[
     total_visits: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
     ],
+    node_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
     min_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     max_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     search_paths: LayoutTensor[
@@ -952,9 +955,21 @@ def gz_backup_kernel[
         total_value[na_off] = (
             rebind[Scalar[dtype]](total_value[na_off]) + value
         )
-        total_visits[tv_off + node_idx] = rebind[Scalar[dtype]](
-            total_visits[tv_off + node_idx]
-        ) + Scalar[dtype](1.0)
+        # mctx-style running-mean update on node_value:
+        # ``node_value' = (node_value * count + leaf_value) / (count + 1)``.
+        # ``count`` here is the node's total_visits BEFORE this backup.
+        # Critical for: (a) ``v_mix`` in ``gz_extract_policy_kernel`` (Q
+        # imputed for unvisited actions), and (b) interior selection in
+        # ``gz_select_kernel``. Without this, ``node_value`` stays at the
+        # bare network prediction from ``gz_init_root_kernel`` /
+        # ``gz_expand_kernel`` → ``v_mix`` is stale → improved policy at
+        # depth > 0 is degenerate.
+        var old_count = rebind[Scalar[dtype]](total_visits[tv_off + node_idx])
+        var old_value = rebind[Scalar[dtype]](node_value[tv_off + node_idx])
+        node_value[tv_off + node_idx] = (
+            old_value * old_count + value
+        ) / (old_count + Scalar[dtype](1.0))
+        total_visits[tv_off + node_idx] = old_count + Scalar[dtype](1.0)
 
         var n_a = rebind[Scalar[dtype]](visit_count[na_off])
         var mean_q = rebind[Scalar[dtype]](total_value[na_off]) / n_a
@@ -1762,6 +1777,7 @@ def _run_one_sim_gpu[
         tv_t,
         rw_t,
         tvis_t,
+        nv_t,
         miq_t,
         mxq_t,
         sp_t,

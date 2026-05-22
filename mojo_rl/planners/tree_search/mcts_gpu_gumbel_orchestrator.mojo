@@ -100,8 +100,14 @@ def _largest_power_of_two_le(n: Int) -> Int:
 
 
 def gz_extract_root_value_kernel[
-    N_ENVS: Int, MAX_NODES: Int, dtype: DType,
+    N_ENVS: Int, MAX_NODES: Int, ACT: Int, dtype: DType,
 ](
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
     node_value: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
     ],
@@ -109,14 +115,115 @@ def gz_extract_root_value_kernel[
         dtype, Layout.row_major(N_ENVS), MutAnyOrigin
     ],
 ) where dtype.is_floating_point():
-    """Scatter ``node_value[e * MAX_NODES + 0]`` into ``root_value_out[e]``.
-    One thread per env. Decoded scalar root value was already produced by
-    ``gz_init_root_kernel``; this just hoists it for callers that don't
-    want to walk the per-env stride."""
+    """MCTS-improved root value: ``Σ_a total_value[root,a] / Σ_a N[root,a]``.
+
+    Mirrors ``gpu_mcts_extract_root_value_kernel`` in the vanilla
+    orchestrator. We CANNOT just read ``node_value[root]`` because the
+    Gumbel backup kernel only updates ``total_value`` / ``visit_count``
+    edge stats, not ``node_value``; the latter stays at the network's
+    bare prediction from ``gz_init_root_kernel``. Without this fix the
+    n-step value target bootstraps off the network's own prediction →
+    no learning signal for the value head.
+
+    Falls back to ``node_value[root]`` when total_visits = 0 (e.g. if a
+    search was skipped). One thread per env."""
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
     if e >= N_ENVS:
         return
-    root_value_out[e] = node_value[e * MAX_NODES]
+
+    var tree_off = e * MAX_NODES * ACT
+    var total_v = Scalar[dtype](0.0)
+    var total_n = Scalar[dtype](0.0)
+    for a in range(ACT):
+        var n = rebind[Scalar[dtype]](visit_count[tree_off + a])
+        if n > Scalar[dtype](0.0):
+            total_v += rebind[Scalar[dtype]](total_value[tree_off + a])
+            total_n += n
+
+    if total_n > Scalar[dtype](0.5):
+        root_value_out[e] = total_v / total_n
+    else:
+        # No sims — fall back to the network's raw prediction.
+        root_value_out[e] = node_value[e * MAX_NODES]
+
+
+def gz_extract_actions_gumbel_kernel[
+    N_ENVS: Int, ACT: Int, dtype: DType,
+](
+    policies_out: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+    ],
+    legal_masks: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+    ],
+    actions_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    rng_seed: Scalar[DType.uint32],
+    gumbel_scale: Scalar[dtype] = Scalar[dtype](1.0),
+) where dtype.is_floating_point():
+    """Gumbel-argmax action selection (mctx convention for Gumbel-MuZero).
+
+    Computes ``argmax_a [gumbel_scale · g_a + log(policies_out[a])]`` per
+    env, where ``g_a = -log(-log(u))`` is a fresh Gumbel sample. Because
+    ``log(softmax(scores)) = scores + const``, this is equivalent to
+    ``argmax_a [gumbel_scale · g_a + logits[a] + σ(Q[a])]`` — the
+    canonical Full Gumbel MuZero action choice from mctx.
+
+    Why argmax-with-noise vs sampling-from-policy: the improved policy
+    ``softmax(logits + σ(Q))`` is extremely peaked (σ_scale ≈ 6 typical),
+    so direct sampling collapses all envs onto the same action and
+    kills trajectory diversity. Gumbel-argmax preserves diversity
+    because each env's noise is independent.
+
+    ``gumbel_scale=1.0`` at training, ``0.0`` at eval (mctx default —
+    deterministic argmax over the improved policy).
+
+    One thread per env. Illegal actions are excluded by adding a large
+    negative offset to their log-policy."""
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var p_off = e * ACT
+
+    var philox = PhiloxRandom(
+        seed=(
+            UInt64(rng_seed) * UInt64(0x9E3779B97F4A7C15)
+        )
+        + UInt64(e * 2654435761 + 1442695040888963407),
+        offset=0,
+    )
+
+    var best_score = Scalar[dtype](-1e18)
+    var best_action = -1
+    for a in range(ACT):
+        var legal = rebind[Scalar[dtype]](legal_masks[p_off + a])
+        if legal <= Scalar[dtype](0.5):
+            continue
+        var p = rebind[Scalar[dtype]](policies_out[p_off + a])
+        # Clamp probability to keep log finite for near-zero entries.
+        var p_safe = p
+        if p_safe < Scalar[dtype](1e-12):
+            p_safe = Scalar[dtype](1e-12)
+        var log_p = log(p_safe)
+
+        var g = Scalar[dtype](0.0)
+        if gumbel_scale > Scalar[dtype](0.0):
+            var u = philox.step_uniform()
+            var uv = Scalar[dtype](u[0])
+            if uv < Scalar[dtype](1e-9):
+                uv = Scalar[dtype](1e-9)
+            if uv > Scalar[dtype](1.0) - Scalar[dtype](1e-9):
+                uv = Scalar[dtype](1.0) - Scalar[dtype](1e-9)
+            g = gumbel_scale * -log(-log(uv))
+
+        var score = g + log_p
+        if score > best_score:
+            best_score = score
+            best_action = a
+
+    if best_action < 0:
+        best_action = 0
+    actions_out[e] = Scalar[dtype](best_action)
 
 
 def gz_extract_actions_temp_kernel[
@@ -631,14 +738,17 @@ struct GumbelGPUMCTS[
             block_dim=(TPB,),
         )
 
-        # ── 7. Extract root scalar value ─────────────────────────────────
+        # ── 7. Extract root scalar value (MCTS-improved, not the raw
+        #       network prediction) ──────────────────────────────────────
         var rv_t = LayoutTensor[
             dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
         ](self.root_value_out.unsafe_ptr())
         comptime run_root_value = gz_extract_root_value_kernel[
-            Self.N_ENVS, Self.MAX_NODES, dtype,
+            Self.N_ENVS, Self.MAX_NODES, Self.ACT, dtype,
         ]
         ctx.enqueue_function[run_root_value](
+            vc_t2,
+            tv_t2,
             nv_t,
             rv_t,
             grid_dim=(Self.ENV_BLOCKS,),
@@ -698,8 +808,30 @@ struct GumbelGPUMCTS[
     def extract_actions_argmax(mut self, ctx: DeviceContext) raises:
         """Greedy argmax over the legal-masked improved policy.
 
-        For eval / arena, where Gumbel noise is typically also disabled
-        (``gumbel_scale = 0.0`` at ctor time)."""
+        For eval / arena, where Gumbel noise is disabled. Equivalent to
+        ``extract_actions_gumbel(gumbel_scale=0.0)`` — argmax over
+        ``log(policies_out)`` ignoring noise."""
+        self.extract_actions_gumbel(
+            ctx, rng_seed=UInt32(0), gumbel_scale=0.0
+        )
+
+    def extract_actions_gumbel(
+        mut self,
+        ctx: DeviceContext,
+        rng_seed: UInt32 = UInt32(0),
+        gumbel_scale: Float64 = 1.0,
+    ) raises:
+        """mctx-style action selection: ``argmax_a [g_a + log(π̂[a])]``.
+
+        Adds per-env Gumbel noise to the log-improved-policy and picks
+        the argmax over legal actions. The Gumbel noise preserves
+        trajectory diversity across envs (each env's noise is
+        independent) — direct sampling from ``policies_out`` collapses
+        envs onto the same peaked-policy action and kills the
+        state-discriminative learning signal.
+
+        Pass ``gumbel_scale=0.0`` at eval / arena for deterministic
+        argmax over the improved policy."""
         var lm_t = LayoutTensor[
             dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
         ](self.state.legal_mask.unsafe_ptr())
@@ -709,20 +841,13 @@ struct GumbelGPUMCTS[
         var act_t = LayoutTensor[
             dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
         ](self.actions_out.unsafe_ptr())
-        # Zero-fill ep_steps to force the temp=0 (argmax) branch.
-        var ep_buf = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
-        ep_buf.enqueue_fill(Scalar[dtype](0.0))
-        var ep_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](ep_buf.unsafe_ptr())
-        comptime run_extract = gz_extract_actions_temp_kernel[
+        comptime run_extract = gz_extract_actions_gumbel_kernel[
             Self.N_ENVS, Self.ACT, dtype,
         ]
         ctx.enqueue_function[run_extract](
-            po_t, lm_t, ep_t, act_t,
-            0,
-            UInt32(0),
-            Scalar[dtype](0.0),
+            po_t, lm_t, act_t,
+            rng_seed,
+            Scalar[dtype](gumbel_scale),
             grid_dim=(Self.ENV_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -980,6 +1105,7 @@ struct GumbelGPUMCTS[
             tv_t,
             rw_t,
             tvis_t,
+            nv_t,
             miq_t,
             mxq_t,
             sp_t,

@@ -103,6 +103,7 @@ from .kernels import (
     to_play_from_episode_step_kernel,
     decode_value_dist_kernel,
     action_histogram_kernel,
+    scalar_to_onehot_actions_kernel,
     action_switch_kernel,
 )
 
@@ -4415,6 +4416,13 @@ struct GenericMuZeroAgent[
         var obs_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs * OBS)
         var prev_obs_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs * OBS)
         var actions_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
+        # One-hot action buffer for replay storage — the GPU replay store
+        # kernel reads ACTION_DIM=ACT floats per env, so it expects a
+        # one-hot view. ``actions_buf`` itself stays scalar because the
+        # env.step kernel reads indices, not one-hot.
+        var actions_onehot_buf = ctx.enqueue_create_buffer[dtype](
+            Self.n_envs * ACT
+        )
         var rewards_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var dones_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var terminated_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
@@ -4664,11 +4672,15 @@ struct GenericMuZeroAgent[
                         apply_legal=False,
                         rng_seed=UInt32(total_steps),
                     )
-                    gumbel_planner.extract_actions_temp[TEMP_THRESHOLD=0](
+                    # Gumbel-argmax (mctx convention): adds independent
+                    # Gumbel noise per env to log(π̂) then argmaxes.
+                    # Sampling from π̂ would collapse all envs onto the
+                    # same action because the improved policy is heavily
+                    # peaked (σ_scale × Q_diff dominates the softmax).
+                    gumbel_planner.extract_actions_gumbel(
                         ctx,
-                        ep_t_new,
                         rng_seed=UInt32(total_steps),
-                        temp_min=self.temperature,
+                        gumbel_scale=1.0,
                     )
                     ctx.enqueue_copy(
                         actions_buf, gumbel_planner.actions_out
@@ -4717,6 +4729,44 @@ struct GenericMuZeroAgent[
                         gpu.mcts_step_value_buf,
                         generic_planner.root_value_out,
                     )
+
+            # ── 2.99. Action telemetry — tally per-action selections +
+            # per-env switches (small kernels, only single-threaded over
+            # N_ENVS so cost is trivial). The accumulators are reset in
+            # the print block after each window.
+            var act_hist_in_t = LayoutTensor[
+                dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+            ](actions_buf.unsafe_ptr())
+            var act_hist_out_t = LayoutTensor[
+                dtype, Layout.row_major(ACT), MutAnyOrigin
+            ](action_hist_buf.unsafe_ptr())
+            comptime run_act_hist = action_histogram_kernel[
+                Self.n_envs, ACT, dtype
+            ]
+            ctx.enqueue_function[run_act_hist](
+                act_hist_in_t,
+                act_hist_out_t,
+                grid_dim=(1,),
+                block_dim=(1,),
+            )
+
+            var prev_act_t = LayoutTensor[
+                dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+            ](prev_actions_buf.unsafe_ptr())
+            var sw_count_t = LayoutTensor[
+                dtype, Layout.row_major(1), MutAnyOrigin
+            ](switch_count_buf.unsafe_ptr())
+            comptime run_act_switch = action_switch_kernel[
+                Self.n_envs, dtype
+            ]
+            ctx.enqueue_function[run_act_switch](
+                act_hist_in_t,
+                prev_act_t,
+                sw_count_t,
+                grid_dim=(1,),
+                block_dim=(1,),
+            )
+
             # ── 3. GPU environment step ──────────────────────────────
             E.step_kernel_gpu[Self.n_envs, E.STATE_SIZE, OBS](
                 ctx,
@@ -4735,9 +4785,37 @@ struct GenericMuZeroAgent[
             # terminated_buf (term-only) is the bootstrap mask returned in
             # batch_dones — the n-step TD target uses `(1 - terminated) *
             # V(s_{t+n})` so truncation does NOT zero the bootstrap.
+            #
+            # Convert ``actions_buf`` (scalar [N_ENVS]) → ``actions_onehot_buf``
+            # ([N_ENVS × ACT]) before storing. The replay store kernel
+            # expects ACTION_DIM consecutive floats per env per slot, and
+            # ACTION_DIM = ACT for the MuZero replay (because the dyn
+            # network's action input is one-hot). Without this conversion
+            # the store would read out-of-bounds scalar actions of other
+            # envs as if they were one-hot bits → dyn sees garbage →
+            # action-blind collapse (see ``docs/MUZERO_AUDIT.md``
+            # Phase-K action-encoding fix).
+            var actions_scalar_t = LayoutTensor[
+                dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+            ](actions_buf.unsafe_ptr())
+            var actions_onehot_t = LayoutTensor[
+                dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
+            ](actions_onehot_buf.unsafe_ptr())
+            comptime ONEHOT_TOTAL = Self.n_envs * ACT
+            comptime ONEHOT_BLOCKS = (ONEHOT_TOTAL + TPB - 1) // TPB
+            comptime run_onehot = scalar_to_onehot_actions_kernel[
+                Self.n_envs, ACT, dtype
+            ]
+            ctx.enqueue_function[run_onehot](
+                actions_onehot_t,
+                actions_scalar_t,
+                grid_dim=(ONEHOT_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
             var pre_store_slot = gpu.replay.write_idx
             gpu.replay.store_with_termination(
-                ctx, actions_buf, rewards_buf, dones_buf, terminated_buf
+                ctx, actions_onehot_buf, rewards_buf, dones_buf, terminated_buf
             )
             # PER hook (Phase H13): assign max_priority to the slot just
             # written for every env, so new transitions get sampled at
@@ -5024,6 +5102,367 @@ struct GenericMuZeroAgent[
                 print(act_line)
                 action_hist_buf.enqueue_fill(Scalar[dtype](0.0))
                 switch_count_buf.enqueue_fill(Scalar[dtype](0.0))
+
+                # ── MCTS probe: download a sample env's actions /
+                # improved policy / root value to verify the planner is
+                # actually producing sensible outputs. Synchronize first
+                # so we observe the latest values, not stale ones from
+                # before the previous round of MCTS calls flushed.
+                ctx.synchronize()
+                comptime PROBE_ENVS = 4 if Self.n_envs >= 4 else Self.n_envs
+                var probe_acts = ctx.enqueue_create_host_buffer[dtype](
+                    PROBE_ENVS
+                )
+                var probe_pol = ctx.enqueue_create_host_buffer[dtype](
+                    PROBE_ENVS * ACT
+                )
+                var probe_val = ctx.enqueue_create_host_buffer[dtype](
+                    PROBE_ENVS
+                )
+                # Probe the agent-side buffers that downstream training
+                # consumes — these are the copies of generic_planner /
+                # gumbel_planner outputs.
+                ctx.enqueue_copy(probe_acts, actions_buf)
+                ctx.enqueue_copy(probe_pol, gpu.mcts_step_policy_buf)
+                ctx.enqueue_copy(probe_val, gpu.mcts_step_value_buf)
+                ctx.synchronize()
+
+                var probe_line = String("    MCTS probe (envs 0..")
+                probe_line += String(PROBE_ENVS - 1) + String("): ")
+                for pe in range(PROBE_ENVS):
+                    probe_line += String("env") + String(pe) + String("[a=")
+                    probe_line += String(Int(Float64(probe_acts[pe])))
+                    probe_line += String(" V=")
+                    var v_f = Float64(probe_val[pe])
+                    probe_line += String(
+                        Float64(Int(v_f * 100.0)) / 100.0
+                    )
+                    probe_line += String(" π=[")
+                    for a in range(ACT):
+                        if a > 0:
+                            probe_line += String(",")
+                        var p = Float64(probe_pol[pe * ACT + a])
+                        probe_line += String(
+                            Float64(Int(p * 1000.0)) / 1000.0
+                        )
+                    probe_line += String("]] ")
+                print(probe_line)
+
+                # ── Replay-dump probe: download env-0's last few slots
+                # and print the stored (action, reward, done, π, V) tuples.
+                # If the agent-side MCTS probe above looks reasonable but
+                # what landed in replay is misaligned/garbled, the bug is
+                # in store_with_termination + store_mcts_targets timing
+                # rather than upstream. Reads env 0 only — each per-env
+                # slice is independent in the [N_ENVS, PER_ENV_CAP, ...]
+                # layout. WINDOW slots ending at the most recent write.
+                comptime DUMP_WINDOW = 4
+                var dump_w = gpu.replay.write_idx
+                var dump_start = (
+                    dump_w - DUMP_WINDOW + PER_ENV_CAP
+                ) % PER_ENV_CAP
+
+                # Download env 0's full per-env slices (cheap — single
+                # PER_ENV_CAP-sized chunks). For ACTION_DIM=1 (discrete),
+                # the action buffer stores one float per slot.
+                var dump_obs = ctx.enqueue_create_host_buffer[dtype](
+                    PER_ENV_CAP * OBS
+                )
+                var dump_act = ctx.enqueue_create_host_buffer[dtype](
+                    PER_ENV_CAP
+                )
+                var dump_rew = ctx.enqueue_create_host_buffer[dtype](
+                    PER_ENV_CAP
+                )
+                var dump_done = ctx.enqueue_create_host_buffer[dtype](
+                    PER_ENV_CAP
+                )
+                var dump_pol = ctx.enqueue_create_host_buffer[dtype](
+                    PER_ENV_CAP * ACT
+                )
+                var dump_val = ctx.enqueue_create_host_buffer[dtype](
+                    PER_ENV_CAP
+                )
+
+                # Layouts are [N_ENVS, PER_ENV_CAP, *]; env 0 occupies
+                # the leading slab of size PER_ENV_CAP * (field stride).
+                var obs_e0_ptr = gpu.replay.obs_buf.create_sub_buffer[
+                    dtype
+                ](0, PER_ENV_CAP * OBS)
+                var act_e0_ptr = gpu.replay.actions_buf.create_sub_buffer[
+                    dtype
+                ](0, PER_ENV_CAP)
+                var rew_e0_ptr = gpu.replay.rewards_buf.create_sub_buffer[
+                    dtype
+                ](0, PER_ENV_CAP)
+                var done_e0_ptr = gpu.replay.dones_buf.create_sub_buffer[
+                    dtype
+                ](0, PER_ENV_CAP)
+                var pol_e0_ptr = gpu.mcts_policy_buf.create_sub_buffer[
+                    dtype
+                ](0, PER_ENV_CAP * ACT)
+                var val_e0_ptr = gpu.mcts_value_buf.create_sub_buffer[
+                    dtype
+                ](0, PER_ENV_CAP)
+                ctx.enqueue_copy(dump_obs, obs_e0_ptr)
+                ctx.enqueue_copy(dump_act, act_e0_ptr)
+                ctx.enqueue_copy(dump_rew, rew_e0_ptr)
+                ctx.enqueue_copy(dump_done, done_e0_ptr)
+                ctx.enqueue_copy(dump_pol, pol_e0_ptr)
+                ctx.enqueue_copy(dump_val, val_e0_ptr)
+                ctx.synchronize()
+
+                print(
+                    "    Replay dump (env 0, slots "
+                    + String(Int(dump_start))
+                    + ".."
+                    + String(Int((dump_w - 1 + PER_ENV_CAP) % PER_ENV_CAP))
+                    + ", write_idx="
+                    + String(Int(dump_w))
+                    + "):"
+                )
+                for i in range(DUMP_WINDOW):
+                    var s = (dump_start + i) % PER_ENV_CAP
+                    var dump_l = String("      slot ")
+                    dump_l += String(Int(s)) + String(": obs=[")
+                    for d in range(OBS):
+                        if d > 0:
+                            dump_l += String(",")
+                        var o = Float64(dump_obs[s * OBS + d])
+                        dump_l += String(
+                            Float64(Int(o * 100.0)) / 100.0
+                        )
+                    dump_l += String("] a=")
+                    dump_l += String(Int(Float64(dump_act[s])))
+                    dump_l += String(" r=")
+                    dump_l += String(
+                        Float64(Int(Float64(dump_rew[s]) * 100.0)) / 100.0
+                    )
+                    dump_l += String(" d=")
+                    dump_l += String(Int(Float64(dump_done[s])))
+                    dump_l += String(" π=[")
+                    for a in range(ACT):
+                        if a > 0:
+                            dump_l += String(",")
+                        var p = Float64(dump_pol[s * ACT + a])
+                        dump_l += String(
+                            Float64(Int(p * 1000.0)) / 1000.0
+                        )
+                    dump_l += String("] V=")
+                    var v = Float64(dump_val[s])
+                    dump_l += String(
+                        Float64(Int(v * 100.0)) / 100.0
+                    )
+                    print(dump_l)
+
+                # ── Training target probe: download the value_targets_buf
+                # (in h-transformed space) from the last update_gpu() call
+                # and decode back to raw via h⁻¹. This reveals what the
+                # value head is actually being trained against:
+                #   * If targets ≈ 0 always: value loss has no signal
+                #     (broken n-step kernel or bootstrap).
+                #   * If targets stuck near a constant (e.g. 5): value
+                #     head fits constant, MCTS rollouts return constant Q.
+                #   * If targets reflect real returns (~10-22 for CartPole
+                #     random play): value learning is OK, bug is elsewhere.
+                # Also downloads reward_targets (scalar-transformed; for
+                # CartPole real rewards are +1 → h(1)≈0.42).
+                comptime BATCH_TGT = Self.Config.batch_size
+                comptime K_TGT = Self.Config.unroll_steps
+                comptime VT_SIZE = (K_TGT + 1) * BATCH_TGT
+                comptime RT_SIZE = K_TGT * BATCH_TGT
+                var probe_vt = ctx.enqueue_create_host_buffer[dtype](VT_SIZE)
+                var probe_rt = ctx.enqueue_create_host_buffer[dtype](RT_SIZE)
+                ctx.enqueue_copy(probe_vt, gpu.value_targets_buf)
+                ctx.enqueue_copy(probe_rt, gpu.reward_targets_buf)
+                ctx.synchronize()
+
+                # Summary: mean / min / max of value_target at k=0 and k=K
+                # (first and last unroll step). Apply h⁻¹ to map back to
+                # raw return space for readability.
+                def _h_inv(y: Float64) -> Float64:
+                    var sgn = 1.0 if y >= 0.0 else -1.0
+                    var ay = y if y >= 0.0 else -y
+                    var eps = 0.001
+                    var inner = (1.0 + 4.0 * eps * (ay + 1.0 + eps)) ** 0.5
+                    var f = (inner - 1.0) / (2.0 * eps)
+                    return sgn * (f * f - 1.0)
+
+                # k=0 slice (the most directly bootstrapped target).
+                var vt_sum = 0.0
+                var vt_min = 1e18
+                var vt_max = -1e18
+                for b in range(BATCH_TGT):
+                    var vh = Float64(probe_vt[0 * BATCH_TGT + b])
+                    var vraw = _h_inv(vh)
+                    vt_sum += vraw
+                    if vraw < vt_min:
+                        vt_min = vraw
+                    if vraw > vt_max:
+                        vt_max = vraw
+                var vt_mean_k0 = vt_sum / Float64(BATCH_TGT)
+
+                # k=K slice (last unroll target).
+                var vt_sum_kK = 0.0
+                for b in range(BATCH_TGT):
+                    vt_sum_kK += _h_inv(
+                        Float64(probe_vt[K_TGT * BATCH_TGT + b])
+                    )
+                var vt_mean_kK = vt_sum_kK / Float64(BATCH_TGT)
+
+                # Reward target sample (k=0 slice). For CartPole
+                # h(1.0) ≈ 0.4142 (since (1-1)+0.001*1=0.001 so
+                # f≈(sqrt(1.008)-1)/.002≈2, no wait — h(x)=sgn(x)
+                # (sqrt(|x|+1)-1)+eps·x; h(1)=sqrt(2)-1+0.001=0.4152).
+                # So we expect raw r=1 → stored ≈ 0.415.
+                var rt_sum = 0.0
+                for b in range(BATCH_TGT):
+                    rt_sum += Float64(probe_rt[0 * BATCH_TGT + b])
+                var rt_mean_k0 = rt_sum / Float64(BATCH_TGT)
+
+                var probe_t_line = String("    Train target probe (batch=")
+                probe_t_line += String(BATCH_TGT) + String("): ")
+                probe_t_line += String("V_target k=0 [mean=")
+                probe_t_line += String(
+                    Float64(Int(vt_mean_k0 * 100.0)) / 100.0
+                )
+                probe_t_line += String(", min=")
+                probe_t_line += String(
+                    Float64(Int(vt_min * 100.0)) / 100.0
+                )
+                probe_t_line += String(", max=")
+                probe_t_line += String(
+                    Float64(Int(vt_max * 100.0)) / 100.0
+                )
+                probe_t_line += String("] V_target k=K [mean=")
+                probe_t_line += String(
+                    Float64(Int(vt_mean_kK * 100.0)) / 100.0
+                )
+                probe_t_line += String("] h(R_target) k=0 mean=")
+                probe_t_line += String(
+                    Float64(Int(rt_mean_k0 * 1000.0)) / 1000.0
+                )
+                probe_t_line += String(" (real r≈1 → h(r)≈0.41)")
+                print(probe_t_line)
+
+                # ── Dynamics action-discrimination probe: feed the
+                # same hidden state through ``dyn(s, a=0)`` vs
+                # ``dyn(s, a=1)`` and print L2 differences. If both
+                # outputs are nearly identical, the dynamics network
+                # has collapsed to action-blind — MCTS rollouts return
+                # the same Q for both actions, policy improvement
+                # halts. PUCT path only (probes ``generic_planner``);
+                # extend to Gumbel by switching the source buffer.
+                comptime if not Self.Config.PolicyMode.IS_GUMBEL:
+                    var hidden_host = ctx.enqueue_create_host_buffer[
+                        dtype
+                    ](LATENT)
+                    var hidden_e0 = (
+                        generic_planner.state.hidden_states
+                        .create_sub_buffer[dtype](0, LATENT)
+                    )
+                    ctx.enqueue_copy(hidden_host, hidden_e0)
+                    ctx.synchronize()
+
+                    var probe_din_host = (
+                        ctx.enqueue_create_host_buffer[dtype](2 * DYN_IN)
+                    )
+                    for i in range(LATENT):
+                        probe_din_host[0 * DYN_IN + i] = hidden_host[i]
+                        probe_din_host[1 * DYN_IN + i] = hidden_host[i]
+                    for a in range(ACT):
+                        probe_din_host[0 * DYN_IN + LATENT + a] = (
+                            Scalar[dtype](0.0)
+                        )
+                        probe_din_host[1 * DYN_IN + LATENT + a] = (
+                            Scalar[dtype](0.0)
+                        )
+                    probe_din_host[0 * DYN_IN + LATENT + 0] = (
+                        Scalar[dtype](1.0)
+                    )
+                    probe_din_host[1 * DYN_IN + LATENT + 1] = (
+                        Scalar[dtype](1.0)
+                    )
+
+                    var probe_din_dev = ctx.enqueue_create_buffer[dtype](
+                        2 * DYN_IN
+                    )
+                    var probe_dout_dev = ctx.enqueue_create_buffer[dtype](
+                        2 * DYN_OUT
+                    )
+                    var probe_dyn_ws = (
+                        ctx.enqueue_create_buffer[dtype](
+                            2 * MAX_WS_2 if MAX_WS_2 > 0 else 1
+                        )
+                    )
+                    ctx.enqueue_copy(probe_din_dev, probe_din_host)
+
+                    var probe_din_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(2, DYN_IN_DIM),
+                        MutAnyOrigin,
+                    ](probe_din_dev.unsafe_ptr())
+                    var probe_dout_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(2, DYN_OUT_DIM),
+                        MutAnyOrigin,
+                    ](probe_dout_dev.unsafe_ptr())
+
+                    DynNet.forward_gpu[2](
+                        ctx,
+                        probe_din_t,
+                        probe_dout_t,
+                        gpu.dynamics.params_view(),
+                        gpu.dynamics.model_state_view(),
+                        probe_dyn_ws,
+                    )
+
+                    var probe_dout_host = (
+                        ctx.enqueue_create_host_buffer[dtype](2 * DYN_OUT)
+                    )
+                    ctx.enqueue_copy(probe_dout_host, probe_dout_dev)
+                    ctx.synchronize()
+
+                    # Hidden-prefix L2 distance + norm.
+                    var hd_sq = 0.0
+                    var h0_sq = 0.0
+                    for i in range(LATENT):
+                        var x0 = Float64(probe_dout_host[i])
+                        var x1 = Float64(
+                            probe_dout_host[DYN_OUT + i]
+                        )
+                        hd_sq += (x0 - x1) * (x0 - x1)
+                        h0_sq += x0 * x0
+                    var h_diff = hd_sq ** 0.5
+                    var h_norm = h0_sq ** 0.5
+
+                    # Reward-bins L2 distance.
+                    var rd_sq = 0.0
+                    for i in range(BINS):
+                        var x0 = Float64(
+                            probe_dout_host[LATENT + i]
+                        )
+                        var x1 = Float64(
+                            probe_dout_host[DYN_OUT + LATENT + i]
+                        )
+                        rd_sq += (x0 - x1) * (x0 - x1)
+                    var r_diff = rd_sq ** 0.5
+
+                    var dyn_line = String("    Dyn action-diff: ")
+                    dyn_line += String("Δhidden_L2=") + String(
+                        Float64(Int(h_diff * 10000.0)) / 10000.0
+                    )
+                    dyn_line += String(" (relative ")
+                    dyn_line += String(
+                        Float64(Int(
+                            (h_diff / (h_norm + 1e-9)) * 10000.0
+                        )) / 10000.0
+                    )
+                    dyn_line += String(")  Δreward_logits_L2=")
+                    dyn_line += String(
+                        Float64(Int(r_diff * 10000.0)) / 10000.0
+                    )
+                    print(dyn_line)
 
                 # Log to metrics
                 if total_eps > 0:
@@ -5367,13 +5806,11 @@ struct GenericMuZeroAgent[
                             obs_t_sp,
                             rng_seed=UInt32(total_steps + iter_steps),
                         )
-                        gumbel_planner.extract_actions_temp[
-                            TEMP_THRESHOLD=temp_threshold
-                        ](
+                        # Gumbel-argmax (mctx convention).
+                        gumbel_planner.extract_actions_gumbel(
                             ctx,
-                            ep_steps_t_sp,
                             rng_seed=UInt32(total_steps + iter_steps),
-                            temp_min=Float64(0.0),
+                            gumbel_scale=1.0,
                         )
                         ctx.enqueue_copy(
                             actions_buf, gumbel_planner.actions_out

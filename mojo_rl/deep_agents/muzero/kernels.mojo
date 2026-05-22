@@ -1084,6 +1084,46 @@ def scalar_transform_kernel[
     )
 
 
+def scalar_to_onehot_actions_kernel[
+    N_ENVS: Int,
+    ACT: Int,
+    dtype: DType,
+](
+    onehot_out: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+    ],
+    scalar_in: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+) where dtype.is_floating_point():
+    """Convert ``[N_ENVS]`` scalar action indices into
+    ``[N_ENVS × ACT]`` one-hot rows.
+
+    Required because the GPU replay store kernel expects actions in the
+    one-hot form (its layout reads ``ACTION_DIM`` consecutive floats per
+    env per slot), while MuZero's GPU action selection writes scalar
+    indices. Without this conversion the replay stores misaligned reads
+    of neighbouring envs' scalars as if they were one-hot bits — the
+    dynamics network sees garbage action input and collapses to
+    action-blind (see ``docs/MUZERO_AUDIT.md`` Phase-K action-encoding
+    fix).
+
+    One thread per ``(env, action)`` cell — single-threaded for simplicity
+    given ``N_ENVS × ACT`` is tiny (32 × 2 = 64 for CartPole).
+    """
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= N_ENVS * ACT:
+        return
+    var e = idx // ACT
+    var a = idx % ACT
+    var picked = Int(rebind[Scalar[dtype]](scalar_in[e]))
+    if picked < 0:
+        picked = 0
+    if picked >= ACT:
+        picked = ACT - 1
+    onehot_out[idx] = (
+        Scalar[dtype](1.0) if a == picked else Scalar[dtype](0.0)
+    )
+
+
 def action_histogram_kernel[
     N_ENVS: Int,
     ACT: Int,

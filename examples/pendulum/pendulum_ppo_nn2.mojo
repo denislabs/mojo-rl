@@ -399,11 +399,11 @@ def main() raises:
                     mb_ao_t, mb_act_t, mb_olp_t, mb_adv_t
                 )
                 actor_loss_sum += actor_loss_v
-                ppo_loss.backward["cpu", MINIBATCH](
+                ppo_loss.vjp["cpu", MINIBATCH](
                     mb_ao_t, mb_act_t, mb_olp_t, mb_adv_t, mb_go_t
                 )
                 actor_opt.zero_grad["cpu", M=ActorNet](actor)
-                actor.backward["cpu", MINIBATCH](mb_go_t, mb_gi_t)
+                actor.vjp["cpu", MINIBATCH](mb_go_t, mb_gi_t)
                 actor_opt.step["cpu", M=ActorNet](actor)
 
                 # ── Critic update ────────────────────────────────────
@@ -420,9 +420,9 @@ def main() raises:
                 )
                 critic_loss_sum += critic_loss_v
                 update_count += 1
-                mse_loss.backward["cpu", MINIBATCH](mb_ret_t, mb_gv_t)
+                mse_loss.vjp["cpu", MINIBATCH](mb_ret_t, mb_gv_t)
                 critic_opt.zero_grad["cpu", M=CriticNet](critic)
-                critic.backward["cpu", MINIBATCH](mb_gv_t, mb_gi_critic)
+                critic.vjp["cpu", MINIBATCH](mb_gv_t, mb_gi_critic)
                 critic_opt.step["cpu", M=CriticNet](critic)
 
         # ─────────────────────────────────────────────────────────────

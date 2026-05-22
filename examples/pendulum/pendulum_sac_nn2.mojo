@@ -352,16 +352,16 @@ def main() raises:
         var mb_y_t = TileTensor(mb_y, row_major[BATCH, 1]())
         var loss1 = mse_loss.forward["cpu", BATCH](mb_q1_t, mb_y_t)
         var mb_grad_q1_t = TileTensor(mb_grad_q1, row_major[BATCH, 1]())
-        mse_loss.backward["cpu", BATCH](mb_y_t, mb_grad_q1_t)
+        mse_loss.vjp["cpu", BATCH](mb_y_t, mb_grad_q1_t)
         var mb_grad_sa1_t = TileTensor(mb_grad_sa1, row_major[BATCH, SA_DIM]())
-        pair1.online.backward["cpu", BATCH](mb_grad_q1_t, mb_grad_sa1_t)
+        pair1.online.vjp["cpu", BATCH](mb_grad_q1_t, mb_grad_sa1_t)
         critic1_opt.step["cpu", M=CriticNet](pair1.online)
 
         var loss2 = mse_loss.forward["cpu", BATCH](mb_q2_t, mb_y_t)
         var mb_grad_q2_t = TileTensor(mb_grad_q2, row_major[BATCH, 1]())
-        mse_loss.backward["cpu", BATCH](mb_y_t, mb_grad_q2_t)
+        mse_loss.vjp["cpu", BATCH](mb_y_t, mb_grad_q2_t)
         var mb_grad_sa2_t = TileTensor(mb_grad_sa2, row_major[BATCH, SA_DIM]())
-        pair2.online.backward["cpu", BATCH](mb_grad_q2_t, mb_grad_sa2_t)
+        pair2.online.vjp["cpu", BATCH](mb_grad_q2_t, mb_grad_sa2_t)
         critic2_opt.step["cpu", M=CriticNet](pair2.online)
         critic_L_accum += loss1 + loss2
 
@@ -397,8 +397,8 @@ def main() raises:
         # called `backward` which wrote critic grads that were then thrown
         # away at the next zero_grad — wasted work + footgun if zero_grad
         # were ever skipped.)
-        pair1.online.backward["cpu", BATCH, mode="input_only"](mb_grad_q1_t, mb_grad_sa1_t)
-        pair2.online.backward["cpu", BATCH, mode="input_only"](mb_grad_q2_t, mb_grad_sa2_t)
+        pair1.online.vjp["cpu", BATCH, mode="input_only"](mb_grad_q1_t, mb_grad_sa1_t)
+        pair2.online.vjp["cpu", BATCH, mode="input_only"](mb_grad_q2_t, mb_grad_sa2_t)
         for k in range(BATCH * ACT_DIM):
             mb_grad_action[k] = 0.0
         _accum_grad_action[BATCH](mb_grad_sa1, mb_grad_action)
@@ -421,7 +421,7 @@ def main() raises:
         var mb_grad_obs_t = TileTensor(
             mb_grad_obs_unused, row_major[BATCH, OBS_DIM]()
         )
-        actor.backward["cpu", BATCH](mb_grad_ao_t, mb_grad_obs_t)
+        actor.vjp["cpu", BATCH](mb_grad_ao_t, mb_grad_obs_t)
         actor_opt.step["cpu", M=ActorNet](actor)
 
         # ── Alpha update + Polyak target soft-update ───────────────────
