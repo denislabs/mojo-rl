@@ -37,7 +37,13 @@ def main() raises:
         SIMS=25,
     ]
 
-    var agent = GenericMuZeroAgent[Config, 32](  # 32 parallel GPU envs
+    # Bug fix landed 2026-05-23: GPU MCTS scattered root hidden states
+    # into the wrong tree slots, so envs 1..N-1 ran the search on all-zero
+    # hidden state. Fixed by ``mcts_gpu_scatter_root_hidden_kernel`` in
+    # ``mojo_rl/planners/tree_search/mcts_gpu.mojo``. See
+    # ``tests/deep_agents/test_muzero_gpu_mcts_per_env_isolation.mojo``
+    # for the rigorous diagnostic that surfaced this.
+    var agent = GenericMuZeroAgent[Config, 8](
         gamma=0.997,
         v_min=-100.0,
         v_max=100.0,

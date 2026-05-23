@@ -70,6 +70,7 @@ from .mcts_gpu import (
     gpu_mcts_batched_expand_backup_masked_kernel,
     gpu_mcts_copy_root_state_kernel,
     mcts_gpu_scale_hidden_kernel,
+    mcts_gpu_scatter_root_hidden_kernel,
     mcts_gpu_extract_hidden_kernel,
 )
 
@@ -274,6 +275,35 @@ struct GenericGPUMCTS[
         ctx.enqueue_function[run_scale_root](
             hidden_root_flat,
             grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # 1b. Scatter dense root hidden into strided tree slots. The
+        # rep forward + post-scale write to the dense ``[N_ENVS, LATENT]``
+        # prefix of ``hidden_states`` (env e at offset e*LATENT). But
+        # every MCTS kernel that reads env e's node-0 hidden uses the
+        # strided offset e*MAX_NODES*LATENT. For e=0 the layouts collide
+        # (offset 0), so env 0 gets the correct hidden; for e≥1 the
+        # strided slots are uninitialized (typically zero) and the
+        # search runs with wrong, identical-across-envs hidden states.
+        # See ``tests/deep_agents/test_muzero_gpu_mcts_per_env_isolation.mojo``
+        # and ``test_muzero_network_row_symmetry.mojo`` for the bisection
+        # that surfaced this.
+        var hidden_full_flat = LayoutTensor[
+            dtype,
+            Layout.row_major(
+                Self.N_ENVS * Self.MAX_NODES * Self.LATENT
+            ),
+            MutAnyOrigin,
+        ](self.state.hidden_states.unsafe_ptr())
+        comptime SCATTER_TOTAL = Self.N_ENVS * Self.LATENT
+        comptime SCATTER_BLOCKS = (SCATTER_TOTAL + TPB - 1) // TPB
+        comptime run_scatter_root = mcts_gpu_scatter_root_hidden_kernel[
+            Self.N_ENVS, Self.MAX_NODES, Self.LATENT, dtype
+        ]
+        ctx.enqueue_function[run_scatter_root](
+            hidden_full_flat,
+            grid_dim=(SCATTER_BLOCKS,),
             block_dim=(TPB,),
         )
 
@@ -575,6 +605,33 @@ struct GenericGPUMCTS[
         ctx.enqueue_function[run_scale_root](
             hidden_root_flat,
             grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # 1b. Scatter dense root hidden into strided tree slots. Same
+        # fix as ``search_gpu`` — see the comment block there and
+        # ``tests/deep_agents/test_muzero_gpu_mcts_per_env_isolation.mojo``
+        # for the bisection that surfaced this on the single-player
+        # path. Self-play has the identical dense-vs-strided layout
+        # mismatch (rep forward writes ``[N_ENVS, LATENT]`` but MCTS
+        # kernels read ``[N_ENVS * MAX_NODES * LATENT]``), so the same
+        # scatter is required for envs 1..N-1 to see their own root
+        # hidden state.
+        var hidden_full_flat = LayoutTensor[
+            dtype,
+            Layout.row_major(
+                Self.N_ENVS * Self.MAX_NODES * Self.LATENT
+            ),
+            MutAnyOrigin,
+        ](self.state.hidden_states.unsafe_ptr())
+        comptime SCATTER_TOTAL = Self.N_ENVS * Self.LATENT
+        comptime SCATTER_BLOCKS = (SCATTER_TOTAL + TPB - 1) // TPB
+        comptime run_scatter_root = mcts_gpu_scatter_root_hidden_kernel[
+            Self.N_ENVS, Self.MAX_NODES, Self.LATENT, dtype
+        ]
+        ctx.enqueue_function[run_scatter_root](
+            hidden_full_flat,
+            grid_dim=(SCATTER_BLOCKS,),
             block_dim=(TPB,),
         )
 

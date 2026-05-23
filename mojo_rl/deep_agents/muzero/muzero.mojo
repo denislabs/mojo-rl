@@ -513,17 +513,21 @@ struct GenericMuZeroAgent[
         ctx: DeviceContext,
         mut gpu: MuZeroGPUState[Self.Config, N_ENVS_P, PER_ENV_CAP_P],
     ) raises:
-        """Per-network L2 norm grad clip. CPU roundtrip.
+        """Joint L2 norm grad clip across all three networks. CPU roundtrip.
 
-        We deliberately clip each network independently rather than
-        jointly: rep+dyn naturally have larger gradient norms (the
-        unrolled chain accumulates K reward+value backprops into them),
-        and a JOINT clip would be dominated by their norms — pred's
-        smaller grads then get scaled to the noise floor and pred stops
-        learning. Per-network clipping matches each net's own scale.
+        Computes total L2 across rep+dyn+pred grads; if it exceeds
+        max_grad_norm, scales all three by the same factor. Mirrors
+        CPU `_clip_gradients` bit-for-bit.
 
-        Mirrors the CPU `_clip_gradients` semantics conceptually but
-        applied per-network. Total ~30KB DMA per train step.
+        An earlier revision clipped each network independently with the
+        argument that joint clipping would scale pred's smaller grads to
+        the noise floor. In practice the opposite happened: rep+dyn could
+        each push up to max_grad_norm on their own, so with L2-in-gradient
+        weight decay the effectively larger rep/dyn updates bled their
+        weights to zero (|W| rep/dyn dropping ~5 units / 1k train steps
+        on the CartPole probe). Joint clipping preserves the relative
+        balance the K-step unroll produces. Total ~30KB DMA per train
+        step.
         """
         comptime REP_PS = Self.Config.RepModel.PARAM_SIZE
         comptime DYN_PS = Self.Config.DynModel.PARAM_SIZE
@@ -535,50 +539,31 @@ struct GenericMuZeroAgent[
         ctx.enqueue_copy(gpu.pred_grads_host, gpu.prediction.grads_buf)
         ctx.synchronize()
 
-        # Per-network norms
-        var rep_sq = Float64(0.0)
+        # Joint norm across all three networks
+        var total_sq = Float64(0.0)
         for i in range(REP_PS):
             var v = Float64(gpu.rep_grads_host[i])
-            rep_sq += v * v
-        var dyn_sq = Float64(0.0)
+            total_sq += v * v
         for i in range(DYN_PS):
             var v = Float64(gpu.dyn_grads_host[i])
-            dyn_sq += v * v
-        var pred_sq = Float64(0.0)
+            total_sq += v * v
         for i in range(PRED_PS):
             var v = Float64(gpu.pred_grads_host[i])
-            pred_sq += v * v
+            total_sq += v * v
 
-        var rep_norm = sqrt(rep_sq)
-        var dyn_norm = sqrt(dyn_sq)
-        var pred_norm = sqrt(pred_sq)
+        var total_norm = sqrt(total_sq)
         var thresh = self.max_grad_norm
 
-        var rep_dirty = False
-        var dyn_dirty = False
-        var pred_dirty = False
-
-        if rep_norm > thresh:
-            var s = Scalar[dtype](thresh / rep_norm)
+        if total_norm > thresh:
+            var s = Scalar[dtype](thresh / total_norm)
             for i in range(REP_PS):
                 gpu.rep_grads_host[i] = gpu.rep_grads_host[i] * s
-            rep_dirty = True
-        if dyn_norm > thresh:
-            var s = Scalar[dtype](thresh / dyn_norm)
             for i in range(DYN_PS):
                 gpu.dyn_grads_host[i] = gpu.dyn_grads_host[i] * s
-            dyn_dirty = True
-        if pred_norm > thresh:
-            var s = Scalar[dtype](thresh / pred_norm)
             for i in range(PRED_PS):
                 gpu.pred_grads_host[i] = gpu.pred_grads_host[i] * s
-            pred_dirty = True
-
-        if rep_dirty:
             ctx.enqueue_copy(gpu.representation.grads_buf, gpu.rep_grads_host)
-        if dyn_dirty:
             ctx.enqueue_copy(gpu.dynamics.grads_buf, gpu.dyn_grads_host)
-        if pred_dirty:
             ctx.enqueue_copy(gpu.prediction.grads_buf, gpu.pred_grads_host)
 
     def reset_episode(mut self):
@@ -1044,7 +1029,11 @@ struct GenericMuZeroAgent[
     # Training (K-Step Unrolled Forward/Backward)
     # ══════════════════════════════════════════════════════════════════════
 
-    def update(mut self, use_reanalyze: Bool = False) raises -> Float64:
+    def update(
+        mut self,
+        use_reanalyze: Bool = False,
+        skip_optimizer_step: Bool = False,
+    ) raises -> Float64:
         """Run one training step with K-step unrolled forward/backward.
 
         1. Sample batch of positions from replay buffer
@@ -1052,6 +1041,12 @@ struct GenericMuZeroAgent[
         3. Forward: h(obs) -> s^0, then K steps of f(s^k) and g(s^k, a^k)
         4. Backward: propagate gradients through unrolled chain
         5. Optimizer step on all three networks
+
+        Args:
+            use_reanalyze: Whether to reanalyze old positions.
+            skip_optimizer_step: Test-only — skip the gradient-clip + optimizer
+                step so callers can inspect raw gradients written by backward.
+                Defaults to False (production behavior unchanged).
 
         Returns:
             Total training loss.
@@ -1091,12 +1086,13 @@ struct GenericMuZeroAgent[
         self._backward()
 
         # ── Step 5: Gradient clipping + Optimizer step ─────────────────
-        self._clip_gradients()
-        self.state.representation.optimizer_step()
-        self.state.dynamics.optimizer_step()
-        self.state.prediction.optimizer_step()
+        if not skip_optimizer_step:
+            self._clip_gradients()
+            self.state.representation.optimizer_step()
+            self.state.dynamics.optimizer_step()
+            self.state.prediction.optimizer_step()
 
-        self.train_step_count += 1
+            self.train_step_count += 1
         return total_loss
 
     def _log_cpu_diag(mut self) raises -> None:
@@ -3148,6 +3144,7 @@ struct GenericMuZeroAgent[
         use_reanalyze: Bool = False,
         use_per: Bool = False,
         per_progress: Float64 = 0.0,
+        skip_optimizer_step: Bool = False,
     ) raises -> Float64:
         """Run one GPU-accelerated training step.
 
@@ -3162,6 +3159,10 @@ struct GenericMuZeroAgent[
             use_reanalyze: Whether to reanalyze old positions.
             use_per: Whether to use prioritized experience replay.
             per_progress: Progress of the prioritized experience replay.
+            skip_optimizer_step: Test-only — skip the global gradient clip,
+                optimizer step, polyak target update, and PER priority refresh
+                so callers can inspect raw gradients written by backward.
+                Defaults to False (production behavior unchanged).
 
         Returns:
             Total training loss.
@@ -4282,37 +4283,38 @@ struct GenericMuZeroAgent[
         # Without this the K-step unrolled dynamics chain compounds the
         # reward/value gradient and rep+dyn param norms balloon ~60%
         # in the first 1024 steps (verified with the param-norm diag).
-        if self.max_grad_norm > 0.0:
-            self._global_clip_grad_norm[N_ENVS_P, PER_ENV_CAP_P](ctx, gpu)
+        if not skip_optimizer_step:
+            if self.max_grad_norm > 0.0:
+                self._global_clip_grad_norm[N_ENVS_P, PER_ENV_CAP_P](ctx, gpu)
 
-        # ── Step 5: GPU optimizer step ───────────────────────────────
-        gpu.representation.optimizer_step(ctx)
-        gpu.dynamics.optimizer_step(ctx)
-        gpu.prediction.optimizer_step(ctx)
+            # ── Step 5: GPU optimizer step ───────────────────────────────
+            gpu.representation.optimizer_step(ctx)
+            gpu.dynamics.optimizer_step(ctx)
+            gpu.prediction.optimizer_step(ctx)
 
-        # ── Step 6: Polyak soft-update of target nets (E4) ──────────
-        # Slowly track the online networks. Active only when reanalyze
-        # is on (the only consumer of target params); skip otherwise to
-        # avoid wasted GPU work.
-        if use_reanalyze and self.target_tau > 0.0:
-            gpu.representation_target.soft_update_from_gpu(
-                gpu.representation, self.target_tau, ctx
-            )
-            gpu.prediction_target.soft_update_from_gpu(
-                gpu.prediction, self.target_tau, ctx
-            )
+            # ── Step 6: Polyak soft-update of target nets (E4) ──────────
+            # Slowly track the online networks. Active only when reanalyze
+            # is on (the only consumer of target params); skip otherwise to
+            # avoid wasted GPU work.
+            if use_reanalyze and self.target_tau > 0.0:
+                gpu.representation_target.soft_update_from_gpu(
+                    gpu.representation, self.target_tau, ctx
+                )
+                gpu.prediction_target.soft_update_from_gpu(
+                    gpu.prediction, self.target_tau, ctx
+                )
 
-        # ── Step 7: PER priority refresh (Phase H13) ────────────────
-        # Recompute priority = (|target - pred|)^α for each sampled
-        # position and update the sum-tree. Cheap: BATCH host-side calc
-        # + ~BATCH×log(tree) tree updates. Most accurate when reanalyze
-        # is on (batch_values_buf holds fresh predictions); without
-        # reanalyze it holds the stored MCTS root value at collection
-        # time, which is still meaningful but staler.
-        if use_per:
-            self._per_update_priorities[N_ENVS_P, PER_ENV_CAP_P](ctx, gpu)
+            # ── Step 7: PER priority refresh (Phase H13) ────────────────
+            # Recompute priority = (|target - pred|)^α for each sampled
+            # position and update the sum-tree. Cheap: BATCH host-side calc
+            # + ~BATCH×log(tree) tree updates. Most accurate when reanalyze
+            # is on (batch_values_buf holds fresh predictions); without
+            # reanalyze it holds the stored MCTS root value at collection
+            # time, which is still meaningful but staler.
+            if use_per:
+                self._per_update_priorities[N_ENVS_P, PER_ENV_CAP_P](ctx, gpu)
 
-        self.train_step_count += 1
+            self.train_step_count += 1
         return Float64(0.0)  # Loss computation on GPU would require readback
 
 

@@ -515,7 +515,12 @@ struct MuZeroCPUState[
                     gamma_power *= gamma
                     steps_used += 1
 
-                    if Float64(self.buffer.dones[step_idx]) > 0.5:
+                    # Use TERMINATIONS (term-only). dones[] is term|trunc;
+                    # truncating the bootstrap on time-limit-only steps would
+                    # diverge from the GPU n-step kernel (which reads the
+                    # terminations stream — see kernels.mojo:943 and the
+                    # store-side split at muzero.mojo:3224-3230).
+                    if Float64(self.buffer.terminations[step_idx]) > 0.5:
                         hit_terminal = True
                         break
 
