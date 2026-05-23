@@ -238,35 +238,35 @@ def main() raises:
     var mse_loss = MSELoss[1].make["cpu"]()
 
     # ── Rollout buffers ─────────────────────────────────────────────────
-    var obs_buf = alloc[Scalar[DT]](ROLLOUT_LEN * OBS_DIM)
-    var act_buf = alloc[Scalar[DT]](ROLLOUT_LEN * ACT_DIM)
-    var olp_buf = alloc[Scalar[DT]](ROLLOUT_LEN)
-    var rew_buf = alloc[Scalar[DT]](ROLLOUT_LEN)
-    var val_buf = alloc[Scalar[DT]](ROLLOUT_LEN)
-    var done_buf = alloc[Scalar[DT]](ROLLOUT_LEN)
-    var adv_buf = alloc[Scalar[DT]](ROLLOUT_LEN)
-    var ret_buf = alloc[Scalar[DT]](ROLLOUT_LEN)
-    var term_buf = alloc[Scalar[DT]](ROLLOUT_LEN)
+    var obs_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ROLLOUT_LEN * OBS_DIM)
+    var act_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ROLLOUT_LEN * ACT_DIM)
+    var olp_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ROLLOUT_LEN)
+    var rew_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ROLLOUT_LEN)
+    var val_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ROLLOUT_LEN)
+    var done_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ROLLOUT_LEN)
+    var adv_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ROLLOUT_LEN)
+    var ret_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ROLLOUT_LEN)
+    var term_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ROLLOUT_LEN)
     for _t in range(ROLLOUT_LEN):
         term_buf[_t] = 0.0
 
     # ── Single-step scratch (BATCH=1 actor/critic forward) ──────────────
-    var ob1 = alloc[Scalar[DT]](OBS_DIM)
-    var ao1 = alloc[Scalar[DT]](2 * ACT_DIM)
-    var v1 = alloc[Scalar[DT]](1)
-    var z_scratch = alloc[Scalar[DT]](ACT_DIM)
+    var ob1: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OBS_DIM)
+    var ao1: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](2 * ACT_DIM)
+    var v1: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](1)
+    var z_scratch: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ACT_DIM)
 
     # ── Minibatch scratch (BATCH=MINIBATCH train) ───────────────────────
-    var mb_obs = alloc[Scalar[DT]](MINIBATCH * OBS_DIM)
-    var mb_act = alloc[Scalar[DT]](MINIBATCH * ACT_DIM)
-    var mb_olp = alloc[Scalar[DT]](MINIBATCH)
-    var mb_adv = alloc[Scalar[DT]](MINIBATCH)
-    var mb_ret = alloc[Scalar[DT]](MINIBATCH * 1)
-    var mb_ao = alloc[Scalar[DT]](MINIBATCH * 2 * ACT_DIM)
-    var mb_go = alloc[Scalar[DT]](MINIBATCH * 2 * ACT_DIM)
-    var mb_gi = alloc[Scalar[DT]](MINIBATCH * OBS_DIM)
-    var mb_v = alloc[Scalar[DT]](MINIBATCH * 1)
-    var mb_gv = alloc[Scalar[DT]](MINIBATCH * 1)
+    var mb_obs: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](MINIBATCH * OBS_DIM)
+    var mb_act: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](MINIBATCH * ACT_DIM)
+    var mb_olp: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](MINIBATCH)
+    var mb_adv: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](MINIBATCH)
+    var mb_ret: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](MINIBATCH * 1)
+    var mb_ao: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](MINIBATCH * 2 * ACT_DIM)
+    var mb_go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](MINIBATCH * 2 * ACT_DIM)
+    var mb_gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](MINIBATCH * OBS_DIM)
+    var mb_v: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](MINIBATCH * 1)
+    var mb_gv: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](MINIBATCH * 1)
 
     # ── Index buffer for shuffling ──────────────────────────────────────
     var indices = alloc[Int32](ROLLOUT_LEN)
@@ -300,7 +300,7 @@ def main() raises:
             # Actor forward (BATCH=1) → ao1 = [mu | log_std].
             var ob1_t = TileTensor(ob1, row_major[1, OBS_DIM]())
             var ao1_t = TileTensor(ao1, row_major[1, 2 * ACT_DIM]())
-            actor.forward["cpu", 1](ob1_t, ao1_t)
+            actor.forward["cpu", 1](ob1_t, output=ao1_t)
 
             # Sample action + compute log_prob.
             box_muller_normal(z_scratch, ACT_DIM)
@@ -317,7 +317,7 @@ def main() raises:
 
             # Critic forward (BATCH=1) → v1.
             var v1_t = TileTensor(v1, row_major[1, 1]())
-            critic.forward["cpu", 1](ob1_t, v1_t)
+            critic.forward["cpu", 1](ob1_t, output=v1_t)
             val_buf[t] = v1[0]
 
             # Env step (clamp action to torque range).
@@ -347,7 +347,7 @@ def main() raises:
             ob1[d] = obs_self[d]
         var ob1_t = TileTensor(ob1, row_major[1, OBS_DIM]())
         var v1_t = TileTensor(v1, row_major[1, 1]())
-        critic.forward["cpu", 1](ob1_t, v1_t)
+        critic.forward["cpu", 1](ob1_t, output=v1_t)
         var next_value = v1[0]
         compute_gae(
             ROLLOUT_LEN, rew_buf, val_buf, term_buf, next_value,
@@ -388,7 +388,7 @@ def main() raises:
                 var mb_go_t = TileTensor(mb_go, row_major[MINIBATCH, 2 * ACT_DIM]())
                 var mb_gi_t = TileTensor(mb_gi, row_major[MINIBATCH, OBS_DIM]())
 
-                actor.forward["cpu", MINIBATCH](mb_obs_t, mb_ao_t)
+                actor.forward["cpu", MINIBATCH](mb_obs_t, output=mb_ao_t)
                 var mb_act_t = TileTensor(mb_act, row_major[MINIBATCH, ACT_DIM]())
                 var mb_olp_t = TileTensor(mb_olp, row_major[MINIBATCH]())
                 var mb_adv_t = TileTensor(mb_adv, row_major[MINIBATCH]())
@@ -414,7 +414,7 @@ def main() raises:
                 )
                 var mb_ret_t = TileTensor(mb_ret, row_major[MINIBATCH, 1]())
 
-                critic.forward["cpu", MINIBATCH](mb_obs_t, mb_v_t)
+                critic.forward["cpu", MINIBATCH](mb_obs_t, output=mb_v_t)
                 var critic_loss_v = mse_loss.forward["cpu", MINIBATCH](
                     mb_v_t, mb_ret_t
                 )
