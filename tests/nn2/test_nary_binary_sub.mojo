@@ -33,14 +33,17 @@ def test_forward_bit_identical_to_legacy() raises:
         in0_buf[i] = Scalar[DT](Float64(i) * 0.5)
         in1_buf[i] = Scalar[DT](Float64(i) * 0.3 + 1.0)
 
-    # Legacy run.
+    # Legacy run (rebind to MutAnyOrigin for unified Module variadic API).
     var legacy_out = alloc[Scalar[DT]](N)
     for i in range(N): legacy_out[i] = Scalar[DT](0.0)
     var legacy = BinarySub[DIM].make[target="cpu", INIT=Kaiming]()
-    var legacy_in0 = TileTensor(in0_buf, row_major[BATCH, DIM]())
-    var legacy_in1 = TileTensor(in1_buf, row_major[BATCH, DIM]())
-    var legacy_out_t = TileTensor(legacy_out, row_major[BATCH, DIM]())
-    legacy.forward["cpu", BATCH](legacy_in0, legacy_in1, legacy_out_t)
+    var l_i0 = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in0_buf)
+    var l_i1 = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in1_buf)
+    var l_out = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](legacy_out)
+    var legacy_in0 = TileTensor(l_i0, row_major[BATCH, DIM]())
+    var legacy_in1 = TileTensor(l_i1, row_major[BATCH, DIM]())
+    var legacy_out_t = TileTensor(l_out, row_major[BATCH, DIM]())
+    legacy.forward["cpu", BATCH](legacy_in0, legacy_in1, output=legacy_out_t)
 
     # NaryBinarySub run — caller rebinds inputs to MutAnyOrigin.
     var nary_out = alloc[Scalar[DT]](N)

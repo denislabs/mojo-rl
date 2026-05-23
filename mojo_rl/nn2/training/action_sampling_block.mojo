@@ -177,9 +177,9 @@ struct ActionSamplingBlock[
         comptime if target == "cpu":
             var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
             var ao_t = TileTensor(actor_out_cpu_p, row_major[1, Self.ACTOR_OUT_DIM]())
-            actor.forward["cpu", 1](ob1_t, ao_t)
+            actor.forward["cpu", 1](ob1_t, output=ao_t)
             var sp_t = TileTensor(sampler_out_cpu_p, row_major[1, Self.SAMPLER_OUT_DIM]())
-            sampler.forward["cpu", 1](ao_t, sp_t)
+            sampler.forward["cpu", 1](ao_t, output=sp_t)
             self._clamp_into(sampler_out_cpu_p, action_out, action_scale)
         else:
             var ctx = self.ts.ctx.value()
@@ -190,9 +190,9 @@ struct ActionSamplingBlock[
             ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
             var ob1_t = TileTensor(ob1_dev_p, row_major[1, Self.OBS_DIM]())
             var ao_t = TileTensor(ao_dev_p, row_major[1, Self.ACTOR_OUT_DIM]())
-            actor.forward["gpu", 1](ob1_t, ao_t)
+            actor.forward["gpu", 1](ob1_t, output=ao_t)
             var sp_t = TileTensor(sp_dev_p, row_major[1, Self.SAMPLER_OUT_DIM]())
-            sampler.forward["gpu", 1](ao_t, sp_t)
+            sampler.forward["gpu", 1](ao_t, output=sp_t)
             ctx.enqueue_copy(sampler_out_cpu_p, self._sampler_out.dev.value())
             ctx.synchronize()
             self._clamp_into(sampler_out_cpu_p, action_out, action_scale)
@@ -227,7 +227,7 @@ struct ActionSamplingBlock[
         comptime if target == "cpu":
             var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
             var ao_t = TileTensor(actor_out_cpu_p, row_major[1, Self.ACTOR_OUT_DIM]())
-            actor.forward["cpu", 1](ob1_t, ao_t)
+            actor.forward["cpu", 1](ob1_t, output=ao_t)
             self._clamp_into(actor_out_cpu_p, action_out, action_scale)
         else:
             var ctx = self.ts.ctx.value()
@@ -236,7 +236,7 @@ struct ActionSamplingBlock[
             ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
             var ob1_t = TileTensor(ob1_dev_p, row_major[1, Self.OBS_DIM]())
             var ao_t = TileTensor(ao_dev_p, row_major[1, Self.ACTOR_OUT_DIM]())
-            actor.forward["gpu", 1](ob1_t, ao_t)
+            actor.forward["gpu", 1](ob1_t, output=ao_t)
             ctx.enqueue_copy(actor_out_cpu_p, self._actor_out.dev.value())
             ctx.synchronize()
             self._clamp_into(actor_out_cpu_p, action_out, action_scale)
@@ -281,7 +281,7 @@ struct ActionSamplingBlock[
         comptime if target == "cpu":
             var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
             var ao_t = TileTensor(actor_out_cpu_p, row_major[1, Self.ACTOR_OUT_DIM]())
-            actor.forward["cpu", 1](ob1_t, ao_t)
+            actor.forward["cpu", 1](ob1_t, output=ao_t)
         else:
             var ctx = self.ts.ctx.value()
             var ob1_dev_p = self._ob1.dev_ptr()
@@ -289,7 +289,7 @@ struct ActionSamplingBlock[
             ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
             var ob1_t = TileTensor(ob1_dev_p, row_major[1, Self.OBS_DIM]())
             var ao_t = TileTensor(ao_dev_p, row_major[1, Self.ACTOR_OUT_DIM]())
-            actor.forward["gpu", 1](ob1_t, ao_t)
+            actor.forward["gpu", 1](ob1_t, output=ao_t)
             ctx.enqueue_copy(actor_out_cpu_p, self._actor_out.dev.value())
             ctx.synchronize()
 

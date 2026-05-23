@@ -37,7 +37,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from ..constants import DT, CPU_SIMD_W
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.element_op import ElementOp
-from ..core.module import Module
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
     TargetStorage,
     assert_tag_for,
@@ -100,7 +100,10 @@ def _elementwise_backward_kernel[
 
 
 struct Elementwise[DIM: Int, OP: ElementOp](Module):
+    comptime ARITY: Int = 1
     comptime IN_DIM = Self.DIM
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.DIM
 
     var ts: TargetStorage
@@ -164,23 +167,24 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         # POLICY accepted for trait conformance; Elementwise stays in DT.
-        comptime assert input.flat_rank == 2, "input rank-2 [BATCH, DIM]"
-        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, DIM]"
         assert_tag_for["Elementwise", target](self.ts.target_tag)
+        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
             comptime N = BATCH * Self.DIM
             var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
 
             comptime if Self.OP.owns_cache:
                 # Own cache: write y to both output and cache.
@@ -213,7 +217,7 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
         else:
             comptime layout = Layout.row_major(BATCH, Self.DIM)
             var in_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var out_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             var input_lt = LayoutTensor[DT, layout, MutAnyOrigin](in_ptr)
             var output_lt = LayoutTensor[DT, layout, MutAnyOrigin](out_ptr)
 
@@ -266,23 +270,24 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Elementwise", target](self.ts.target_tag)
+        var go_view = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var gi_view = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
 
         comptime if target == "cpu":
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go_view.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi_view.ptr)
             var c_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
             comptime if Self.OP.owns_cache:
                 c_p = self.cache.unsafe_ptr()
@@ -300,8 +305,8 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
                 k += 1
         else:
             comptime layout = Layout.row_major(BATCH, Self.DIM)
-            var go_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go_view.ptr)
+            var gi_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi_view.ptr)
             var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](go_ptr)
             var gi_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi_ptr)
             var cache_lt: LayoutTensor[DT, layout, MutAnyOrigin]

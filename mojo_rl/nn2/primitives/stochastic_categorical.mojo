@@ -45,7 +45,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for, ensure_cpu_buffer
 
 
@@ -55,7 +55,10 @@ from ..core.target_storage import TargetStorage, assert_tag_for, ensure_cpu_buff
 
 
 struct StochasticCategorical[N: Int](Module):
+    comptime ARITY: Int = 1
     comptime IN_DIM = Self.N
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.N + 1
 
     var ts: TargetStorage
@@ -114,16 +117,15 @@ struct StochasticCategorical[N: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank  == 2, "input rank-2 [BATCH, N]"
-        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, N+1]"
         assert_tag_for["StochasticCategorical", target](self.ts.target_tag)
         comptime assert (
             target == "cpu"
@@ -131,7 +133,7 @@ struct StochasticCategorical[N: Int](Module):
 
         self._ensure_cache_cpu(BATCH)
 
-        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[0].ptr)
         var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
         var sm_p = self._sm.unsafe_ptr()
         var idx_p = self._sample_idx.unsafe_ptr()
@@ -182,15 +184,14 @@ struct StochasticCategorical[N: Int](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2 [BATCH, N+1]"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2 [BATCH, N]"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
@@ -198,7 +199,7 @@ struct StochasticCategorical[N: Int](Module):
         comptime assert target == "cpu", "GPU path not implemented yet"
 
         var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[0].ptr)
         var sm_p = self._sm.unsafe_ptr()
         var idx_p = self._sample_idx.unsafe_ptr()
         comptime OUT = Self.N + 1

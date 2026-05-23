@@ -55,7 +55,6 @@ from ..constants import DT
 from ..core import (
     GraphNode,
     Module,
-    BinaryModule,
     ParamVisitor,
     Initializer,
     AMPPolicy,
@@ -377,7 +376,7 @@ struct UnaryNode[
         var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
         var out_p = self.out_ptr_via()
         var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
-        self.op.forward[target, BATCH, POLICY=POLICY](in0_t, out_t)
+        self.op.forward[target, BATCH, POLICY=POLICY](in0_t, output=out_t)
 
     def vjp_via[
         target: StaticString,
@@ -409,14 +408,14 @@ struct UnaryNode[
 
 struct BinaryNode[
     node_name: StaticString,
-    Op: BinaryModule,
+    Op: Module,
     in0_name: StaticString = "input",
     in1_name: StaticString = "input",
 ](GraphNode):
     comptime NAME = Self.node_name
     comptime IN0_NAME = Self.in0_name
     comptime IN1_NAME = Self.in1_name
-    comptime IN0_DIM = Self.Op.IN0_DIM
+    comptime IN0_DIM = Self.Op.IN_DIM
     comptime IN1_DIM = Self.Op.IN1_DIM
     comptime OUT_DIM = Self.Op.OUT_DIM
     comptime KIND = 2
@@ -570,7 +569,7 @@ struct BinaryNode[
         var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN1_DIM]())
         var out_p = self.out_ptr_via()
         var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
-        self.op.forward[target, BATCH, POLICY=POLICY](in0_t, in1_t, out_t)
+        self.op.forward[target, BATCH, POLICY=POLICY](in0_t, in1_t, output=out_t)
 
     def vjp_via[
         target: StaticString,
@@ -780,7 +779,7 @@ struct ExternalUnaryNode[
         var typed_ptr = rebind[UnsafePointer[Self.M, MutAnyOrigin]](
             self._module_ptr
         )
-        typed_ptr[].forward[target, BATCH, POLICY=POLICY](in0_t, out_t)
+        typed_ptr[].forward[target, BATCH, POLICY=POLICY](in0_t, output=out_t)
 
     def vjp_via[
         target: StaticString,
@@ -817,7 +816,7 @@ struct ExternalUnaryNode[
 
 struct ExternalBinaryNode[
     node_name: StaticString,
-    M: BinaryModule,
+    M: Module,
     in0_name: StaticString = "input",
     in1_name: StaticString = "input",
     MODE: StaticString = "all",
@@ -825,7 +824,7 @@ struct ExternalBinaryNode[
     comptime NAME = Self.node_name
     comptime IN0_NAME = Self.in0_name
     comptime IN1_NAME = Self.in1_name
-    comptime IN0_DIM = Self.M.IN0_DIM
+    comptime IN0_DIM = Self.M.IN_DIM
     comptime IN1_DIM = Self.M.IN1_DIM
     comptime OUT_DIM = Self.M.OUT_DIM
     comptime KIND = 2
@@ -992,7 +991,7 @@ struct ExternalBinaryNode[
         )
         typed_ptr[].forward[
             target, BATCH, POLICY=POLICY,
-        ](in0_t, in1_t, out_t)
+        ](in0_t, in1_t, output=out_t)
 
     def vjp_via[
         target: StaticString,

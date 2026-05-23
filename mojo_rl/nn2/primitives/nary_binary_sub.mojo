@@ -28,19 +28,22 @@ from layout import TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.nary_module import NaryModule, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
-struct NaryBinarySub[DIM_: Int](NaryModule):
-    """Element-wise subtraction (binary, parameter-less). Conforms only
-    to NaryModule — the Phase 4.6a foundation demo."""
+struct NaryBinarySub[DIM_: Int](Module):
+    """Element-wise subtraction (binary, parameter-less). Conforms to
+    the unified Module trait (Phase 4.6b — NaryModule was folded back
+    into Module)."""
 
     comptime DIM: Int = Self.DIM_
     comptime ARITY: Int = 2
-    comptime OUT_DIM: Int = Self.DIM_
+    comptime IN_DIM: Int = Self.DIM_
     comptime IN0_DIM: Int = Self.DIM_
     comptime IN1_DIM: Int = Self.DIM_
+    comptime IN2_DIM: Int = 0
+    comptime OUT_DIM: Int = Self.DIM_
 
     var ts: TargetStorage
 

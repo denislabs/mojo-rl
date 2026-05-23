@@ -15,11 +15,13 @@ from layout import TileTensor
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.ternary_module import TernaryModule
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
-struct TernaryConcat[D0_: Int, D1_: Int, D2_: Int](TernaryModule):
+struct TernaryConcat[D0_: Int, D1_: Int, D2_: Int](Module):
+    comptime ARITY: Int = 3
+    comptime IN_DIM = Self.D0_
     comptime IN0_DIM = Self.D0_
     comptime IN1_DIM = Self.D1_
     comptime IN2_DIM = Self.D2_
@@ -52,34 +54,29 @@ struct TernaryConcat[D0_: Int, D1_: Int, D2_: Int](TernaryModule):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        in0: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        in1: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        in2: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert in0.flat_rank == 2, "in0 rank-2"
-        comptime assert in1.flat_rank == 2, "in1 rank-2"
-        comptime assert in2.flat_rank == 2, "in2 rank-2"
-        comptime assert output.flat_rank == 2, "output rank-2"
         comptime assert target == "cpu", "TernaryConcat: CPU only"
         assert_tag_for["TernaryConcat", target](self.ts.target_tag)
+        var in0 = typed_view[BATCH, Self.IN0_DIM](inputs[0])
+        var in1 = typed_view[BATCH, Self.IN1_DIM](inputs[1])
+        var in2 = typed_view[BATCH, Self.IN2_DIM](inputs[2])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         for b in range(BATCH):
             for d in range(Self.IN0_DIM):
-                output[b, d] = in0[b, d]
+                output_v[b, d] = in0[b, d]
             for d in range(Self.IN1_DIM):
-                output[b, Self.IN0_DIM + d] = in1[b, d]
+                output_v[b, Self.IN0_DIM + d] = in1[b, d]
             for d in range(Self.IN2_DIM):
-                output[b, Self.IN0_DIM + Self.IN1_DIM + d] = in2[b, d]
+                output_v[b, Self.IN0_DIM + Self.IN1_DIM + d] = in2[b, d]
 
     def vjp[
         target: StaticString,
@@ -89,35 +86,28 @@ struct TernaryConcat[D0_: Int, D1_: Int, D2_: Int](TernaryModule):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_in0: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-        mut grad_in1: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-        mut grad_in2: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_in0.flat_rank == 2, "grad_in0 rank-2"
-        comptime assert grad_in1.flat_rank == 2, "grad_in1 rank-2"
-        comptime assert grad_in2.flat_rank == 2, "grad_in2 rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         comptime assert target == "cpu", "TernaryConcat: CPU only"
         assert_tag_for["TernaryConcat", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_in0 = typed_view_mut[BATCH, Self.IN0_DIM](grad_inputs[0])
+        var grad_in1 = typed_view_mut[BATCH, Self.IN1_DIM](grad_inputs[1])
+        var grad_in2 = typed_view_mut[BATCH, Self.IN2_DIM](grad_inputs[2])
 
         for b in range(BATCH):
             for d in range(Self.IN0_DIM):
-                grad_in0[b, d] = grad_output[b, d]
+                grad_in0[b, d] = grad_output_v[b, d]
             for d in range(Self.IN1_DIM):
-                grad_in1[b, d] = grad_output[b, Self.IN0_DIM + d]
+                grad_in1[b, d] = grad_output_v[b, Self.IN0_DIM + d]
             for d in range(Self.IN2_DIM):
-                grad_in2[b, d] = grad_output[b, Self.IN0_DIM + Self.IN1_DIM + d]
+                grad_in2[b, d] = grad_output_v[b, Self.IN0_DIM + Self.IN1_DIM + d]

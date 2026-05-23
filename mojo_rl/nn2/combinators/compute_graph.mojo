@@ -67,7 +67,6 @@ from ..constants import DT, CPU_SIMD_W
 from ..core import (
     GraphNode,
     Module,
-    BinaryModule,
     ParamVisitor,
     Initializer,
     AMPPolicy,
@@ -347,9 +346,10 @@ struct ComputeGraph[
 
     def set_external_binary[
         ext_name: StaticString,
-        M: BinaryModule,
+        M: Module,
     ](mut self, mut module: M) raises:
-        """Bind an external BinaryModule to the ExternalBinaryNode named `ext_name`."""
+        """Bind an external binary-arity Module to the ExternalBinaryNode
+        named `ext_name`. Caller's responsibility: `M.ARITY == 2`."""
         var typed_ptr = UnsafePointer[M, MutAnyOrigin](to=module)
         var erased_ptr = rebind[
             UnsafePointer[Scalar[DT], MutAnyOrigin]

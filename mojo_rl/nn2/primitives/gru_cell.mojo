@@ -63,7 +63,7 @@ from ..core import (
     zero_grad_auto,
     ParamVisitor,
 )
-from ..core.binary_module import BinaryModule
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for, ensure_cpu_buffer
 
 
@@ -81,9 +81,12 @@ def _sigmoid(x: Scalar[DT]) -> Scalar[DT]:
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct GRUCell[IN_: Int, HIDDEN: Int](BinaryModule):
+struct GRUCell[IN_: Int, HIDDEN: Int](Module):
+    comptime ARITY: Int = 2
+    comptime IN_DIM = Self.IN_
     comptime IN0_DIM = Self.IN_
     comptime IN1_DIM = Self.HIDDEN
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.HIDDEN
     comptime W_IH_SIZE = Self.IN_ * (3 * Self.HIDDEN)
     comptime W_HH_SIZE = Self.HIDDEN * (3 * Self.HIDDEN)
@@ -197,20 +200,15 @@ struct GRUCell[IN_: Int, HIDDEN: Int](BinaryModule):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        in0: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        in1: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert in0.flat_rank  == 2, "x rank-2 [BATCH, IN]"
-        comptime assert in1.flat_rank  == 2, "h rank-2 [BATCH, H]"
-        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, H]"
         comptime assert target == "cpu", "GRUCell only supports CPU"
         assert_tag_for["GRUCell", target](self.ts.target_tag)
 
@@ -220,8 +218,8 @@ struct GRUCell[IN_: Int, HIDDEN: Int](BinaryModule):
         comptime THREE_H = 3 * Self.HIDDEN
         comptime IN_ = Self.IN_
 
-        var x_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in0.ptr)
-        var h_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in1.ptr)
+        var x_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[0].ptr)
+        var h_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[1].ptr)
         var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
         self._x_ptr = x_p
         self._h_ptr = h_p
@@ -302,20 +300,14 @@ struct GRUCell[IN_: Int, HIDDEN: Int](BinaryModule):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_in0: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-        mut grad_in1: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_in0.flat_rank == 2, "grad_in0 rank-2"
-        comptime assert grad_in1.flat_rank == 2, "grad_in1 rank-2"
         comptime assert target == "cpu", "GRUCell only supports CPU"
         comptime assert (
             mode == "all" or mode == "input_only"
@@ -340,8 +332,8 @@ struct GRUCell[IN_: Int, HIDDEN: Int](BinaryModule):
         var hn_c = self._hn_pre.unsafe_ptr()
 
         var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-        var dx_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in0.ptr)
-        var dh_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in1.ptr)
+        var dx_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[0].ptr)
+        var dh_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[1].ptr)
 
         # PARAM-GRAD-FIRST INVARIANT: like Linear, x_p and h_p MAY alias
         # the orchestrator's input slabs that dx_p / dh_p write to. We

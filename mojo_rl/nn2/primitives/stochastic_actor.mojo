@@ -21,7 +21,7 @@ from layout import TileTensor, row_major
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
 from ..combinators.sequential import Sequential
 from ..combinators.parallel import Parallel
@@ -33,7 +33,10 @@ struct StochasticActor[
     ACT_DIM: Int,
     *TRUNK: Module,
 ](Module):
+    comptime ARITY: Int = 1
     comptime IN_DIM = Self.OBS_DIM
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = 2 * Self.ACT_DIM
     comptime N_TRUNK = Self.TRUNK.size
     comptime HIDDEN = Self.TRUNK[Self.N_TRUNK - 1].OUT_DIM
@@ -120,29 +123,29 @@ struct StochasticActor[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank == 2, "input rank-2"
-        comptime assert output.flat_rank == 2, "output rank-2"
         assert_tag_for["StochasticActor", target](self.ts.target_tag)
+        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
 
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.HIDDEN)
             var mid = TileTensor(self.mid_cpu, row_major[BATCH, Self.HIDDEN]())
-            self.trunk.forward[target, BATCH, POLICY=POLICY](input, mid)
-            self.heads.forward[target, BATCH, POLICY=POLICY](mid, output)
+            self.trunk.forward[target, BATCH, POLICY=POLICY](input, output=mid)
+            self.heads.forward[target, BATCH, POLICY=POLICY](mid, output=output)
         else:
             self._ensure_mid_gpu(BATCH * Self.HIDDEN)
             var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
             var mid = TileTensor(mp, row_major[BATCH, Self.HIDDEN]())
-            self.trunk.forward[target, BATCH, POLICY=POLICY](input, mid)
-            self.heads.forward[target, BATCH, POLICY=POLICY](mid, output)
+            self.trunk.forward[target, BATCH, POLICY=POLICY](input, output=mid)
+            self.heads.forward[target, BATCH, POLICY=POLICY](mid, output=output)
 
     # ----- Backward --------------------------------------------------------
 
@@ -154,19 +157,19 @@ struct StochasticActor[
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["StochasticActor", target](self.ts.target_tag)
+        var grad_input = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
 
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.HIDDEN)

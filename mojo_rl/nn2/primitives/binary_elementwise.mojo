@@ -38,7 +38,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from ..constants import DT, CPU_SIMD_W
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.binary_element_op import BinaryElementOp
-from ..core.binary_module import BinaryModule
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
     TargetStorage,
     assert_tag_for,
@@ -124,9 +124,12 @@ def _be_backward_kernel_cached[
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](BinaryModule):
+struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
+    comptime ARITY: Int = 2
+    comptime IN_DIM = Self.DIM
     comptime IN0_DIM = Self.DIM
     comptime IN1_DIM = Self.DIM
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.DIM
 
     var ts: TargetStorage
@@ -180,26 +183,21 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](BinaryModule):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        in0: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        in1: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert in0.flat_rank == 2, "in0 rank-2 [BATCH, DIM]"
-        comptime assert in1.flat_rank == 2, "in1 rank-2 [BATCH, DIM]"
-        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, DIM]"
         assert_tag_for["BinaryElementwise", target](self.ts.target_tag)
 
         comptime if target == "cpu":
             comptime N = BATCH * Self.DIM
-            var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in0.ptr)
-            var i1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in1.ptr)
+            var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[0].ptr)
+            var i1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[1].ptr)
             var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
 
             comptime if Self.OP.owns_cache:
@@ -231,8 +229,8 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](BinaryModule):
         else:
             comptime N = BATCH * Self.DIM
             comptime layout = Layout.row_major(N)
-            var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in0.ptr)
-            var i1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in1.ptr)
+            var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[0].ptr)
+            var i1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[1].ptr)
             var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
             var i0_lt = LayoutTensor[DT, layout, MutAnyOrigin](i0_p)
             var i1_lt = LayoutTensor[DT, layout, MutAnyOrigin](i1_p)
@@ -272,20 +270,14 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](BinaryModule):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_in0: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-        mut grad_in1: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_in0.flat_rank == 2, "grad_in0 rank-2"
-        comptime assert grad_in1.flat_rank == 2, "grad_in1 rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
@@ -294,8 +286,8 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](BinaryModule):
         comptime if target == "cpu":
             comptime N = BATCH * Self.DIM
             var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in0.ptr)
-            var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in1.ptr)
+            var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[0].ptr)
+            var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[1].ptr)
 
             comptime if Self.OP.owns_cache:
                 var c_p = self.cache.unsafe_ptr()
@@ -329,8 +321,8 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](BinaryModule):
             comptime N = BATCH * Self.DIM
             comptime layout = Layout.row_major(N)
             var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in0.ptr)
-            var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in1.ptr)
+            var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[0].ptr)
+            var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[1].ptr)
             var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](go_p)
             var gi0_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi0_p)
             var gi1_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi1_p)

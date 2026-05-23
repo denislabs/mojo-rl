@@ -38,7 +38,7 @@ from ..core import (
     for_each_param_auto,
     zero_grad_auto,
 )
-from ..core.module import Module
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
     TargetStorage,
     assert_tag_for,
@@ -194,7 +194,10 @@ def _layer_norm_backward_dparams_kernel[
 
 
 struct LayerNorm[DIM: Int](Module):
+    comptime ARITY: Int = 1
     comptime IN_DIM = Self.DIM
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.DIM
 
     # Params (decay=False for both; PyTorch + canonical AdamW recipe).
@@ -272,19 +275,18 @@ struct LayerNorm[DIM: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank == 2, "input must be rank-2 [BATCH, DIM]"
-        comptime assert (
-            output.flat_rank == 2
-        ), "output must be rank-2 [BATCH, DIM]"
         assert_tag_for["LayerNorm", target](self.ts.target_tag)
+        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
             ensure_cpu_buffer(self.cache_xhat,    BATCH * Self.DIM)
@@ -313,14 +315,14 @@ struct LayerNorm[DIM: Int](Module):
                 for d in range(Self.DIM):
                     var xh = (input[b, d] - mean) * inv_std
                     xhat_v[b, d] = xh
-                    output[b, d] = gamma_v[d] * xh + beta_v[d]
+                    output_v[b, d] = gamma_v[d] * xh + beta_v[d]
         else:
             self._ensure_cache_gpu(BATCH)
             comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
             comptime layout_b  = Layout.row_major(BATCH)
             comptime layout_d  = Layout.row_major(Self.DIM)
             var in_p_w  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             var in_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p_w)
             var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p_w)
             var g_lt   = LayoutTensor[DT, layout_d, MutAnyOrigin](
@@ -352,19 +354,20 @@ struct LayerNorm[DIM: Int](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input must be rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["LayerNorm", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
 
         comptime if target == "cpu":
             var gamma_v       = TileTensor(self.gamma.value, row_major[Self.DIM]())
@@ -382,26 +385,26 @@ struct LayerNorm[DIM: Int](Module):
                 var sum_g: Scalar[DT] = 0.0
                 var sum_g_xhat: Scalar[DT] = 0.0
                 for d in range(Self.DIM):
-                    var g = grad_output[b, d] * gamma_v[d]
+                    var g = grad_output_v[b, d] * gamma_v[d]
                     sum_g       += g
                     sum_g_xhat  += g * xhat_v[b, d]
                 var mean_g       = sum_g       * inv_dim
                 var mean_g_xhat  = sum_g_xhat  * inv_dim
                 for d in range(Self.DIM):
-                    var g  = grad_output[b, d] * gamma_v[d]
+                    var g  = grad_output_v[b, d] * gamma_v[d]
                     var xh = xhat_v[b, d]
-                    grad_input[b, d] = inv_std * (g - mean_g - xh * mean_g_xhat)
+                    grad_input_v[b, d] = inv_std * (g - mean_g - xh * mean_g_xhat)
                 comptime if mode == "all":
                     for d in range(Self.DIM):
-                        grad_gamma_v[d] += grad_output[b, d] * xhat_v[b, d]
-                        grad_beta_v[d]  += grad_output[b, d]
+                        grad_gamma_v[d] += grad_output_v[b, d] * xhat_v[b, d]
+                        grad_beta_v[d]  += grad_output_v[b, d]
         else:
             var ctx = self.ts.ctx.value()
             comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
             comptime layout_b  = Layout.row_major(BATCH)
             comptime layout_d  = Layout.row_major(Self.DIM)
-            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
             var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p_w)
             var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p_w)
             var g_lt  = LayoutTensor[DT, layout_d, MutAnyOrigin](

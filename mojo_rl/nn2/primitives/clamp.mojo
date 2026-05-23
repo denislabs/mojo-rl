@@ -23,7 +23,7 @@ from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -66,7 +66,10 @@ def _clamp_backward_kernel[
 
 
 struct Clamp[DIM: Int](Module):
+    comptime ARITY: Int = 1
     comptime IN_DIM = Self.DIM
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.DIM
 
     var min_val: Scalar[DT]
@@ -111,21 +114,22 @@ struct Clamp[DIM: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank == 2, "input rank-2 [BATCH, DIM]"
-        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, DIM]"
         assert_tag_for["Clamp", target](self.ts.target_tag)
+        var input_v = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             self._cached_input_ptr = in_p
             var min_v = SIMD[DT, CPU_SIMD_W](self.min_val)
             var max_v = SIMD[DT, CPU_SIMD_W](self.max_val)
@@ -147,8 +151,8 @@ struct Clamp[DIM: Int](Module):
                 out_p[k] = v
                 k += 1
         else:
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             self._cached_input_ptr = in_p
             comptime N = BATCH * Self.DIM
             var in_lt = LayoutTensor[
@@ -173,23 +177,24 @@ struct Clamp[DIM: Int](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Clamp", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
 
         comptime if target == "cpu":
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
             var x_p = self._cached_input_ptr
             var min_v = SIMD[DT, CPU_SIMD_W](self.min_val)
             var max_v = SIMD[DT, CPU_SIMD_W](self.max_val)
@@ -211,8 +216,8 @@ struct Clamp[DIM: Int](Module):
                     gi_p[k] = go_p[k]
                 k += 1
         else:
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
             var x_p = self._cached_input_ptr
             comptime N = BATCH * Self.DIM
             var go_lt = LayoutTensor[

@@ -19,7 +19,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -39,7 +39,10 @@ def _elementwise_add_kernel[
 
 
 struct Residual[Inner: Module](Module):
+    comptime ARITY: Int = 1
     comptime IN_DIM = Self.Inner.IN_DIM
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.Inner.OUT_DIM
 
     var inner: Self.Inner
@@ -105,24 +108,25 @@ struct Residual[Inner: Module](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank == 2, "input rank-2"
-        comptime assert output.flat_rank == 2, "output rank-2"
         assert_tag_for["Residual", target](self.ts.target_tag)
+        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.IN_DIM)
             var mid = TileTensor(self.mid_cpu, row_major[BATCH, Self.IN_DIM]())
-            self.inner.forward[target, BATCH, POLICY=POLICY](input, mid)
+            self.inner.forward[target, BATCH, POLICY=POLICY](input, output=mid)
             var ip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             var mp = self.mid_cpu
             comptime N = BATCH * Self.IN_DIM
             var k = 0
@@ -138,10 +142,10 @@ struct Residual[Inner: Module](Module):
         else:
             self._ensure_mid_gpu(BATCH * Self.IN_DIM)
             var in_p_w  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
             var mid = TileTensor(mp, row_major[BATCH, Self.IN_DIM]())
-            self.inner.forward[target, BATCH, POLICY=POLICY](input, mid)
+            self.inner.forward[target, BATCH, POLICY=POLICY](input, output=mid)
             comptime layout = Layout.row_major(BATCH, Self.IN_DIM)
             var mid_lt = LayoutTensor[DT, layout, MutAnyOrigin](self.mid_dev.value())
             var in_lt  = LayoutTensor[DT, layout, MutAnyOrigin](in_p_w)
@@ -164,28 +168,29 @@ struct Residual[Inner: Module](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Residual", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
 
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.IN_DIM)
             var tmp = TileTensor(self.mid_cpu, row_major[BATCH, Self.IN_DIM]())
             self.inner.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
-            ](grad_output, tmp)
-            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            ](grad_output_v, tmp)
+            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+            var gip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
             var tp = self.mid_cpu
             comptime N = BATCH * Self.IN_DIM
             var k = 0
@@ -200,13 +205,13 @@ struct Residual[Inner: Module](Module):
                 k += 1
         else:
             self._ensure_mid_gpu(BATCH * Self.IN_DIM)
-            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
             var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
             var tmp = TileTensor(mp, row_major[BATCH, Self.IN_DIM]())
             self.inner.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
-            ](grad_output, tmp)
+            ](grad_output_v, tmp)
             comptime layout = Layout.row_major(BATCH, Self.IN_DIM)
             var tmp_lt = LayoutTensor[DT, layout, MutAnyOrigin](self.mid_dev.value())
             var go_lt  = LayoutTensor[DT, layout, MutAnyOrigin](go_p_w)

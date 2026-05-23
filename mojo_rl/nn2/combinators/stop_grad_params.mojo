@@ -34,7 +34,10 @@ from ..core.target_storage import TargetStorage, assert_tag_for
 
 
 struct StopGradParams[Inner: Module](Module):
+    comptime ARITY: Int = 1
     comptime IN_DIM = Self.Inner.IN_DIM
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.Inner.OUT_DIM
 
     var inner: Self.Inner
@@ -84,16 +87,17 @@ struct StopGradParams[Inner: Module](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["StopGradParams", target](self.ts.target_tag)
-        self.inner.forward[target, BATCH, POLICY=POLICY](input, output)
+        self.inner.forward[target, BATCH, POLICY=POLICY](inputs[0], output=output)
 
     # ----- Backward — always input_only on Inner --------------------------
 
@@ -105,11 +109,12 @@ struct StopGradParams[Inner: Module](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         """Always calls `inner.vjp[mode="input_only"]` regardless of
@@ -119,7 +124,7 @@ struct StopGradParams[Inner: Module](Module):
         assert_tag_for["StopGradParams", target](self.ts.target_tag)
         self.inner.vjp[
             target, BATCH, POLICY=POLICY, mode="input_only",
-        ](grad_output, grad_input)
+        ](grad_output, grad_inputs[0])
 
     # ----- Walkers --------------------------------------------------------
 

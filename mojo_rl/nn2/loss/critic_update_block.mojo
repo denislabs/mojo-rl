@@ -137,7 +137,7 @@ struct CriticUpdateBlock[
 
         var mb_q_t = TileTensor(mb_q_p, row_major[Self.BATCH, 1]())
         opt.zero_grad[target, M=Self.CRITIC](critic)
-        critic.forward[target, Self.BATCH](sa_t, mb_q_t)
+        critic.forward[target, Self.BATCH](sa_t, output=mb_q_t)
         var loss = self.mse_loss.forward[target, Self.BATCH](mb_q_t, y_t)
 
         var mb_grad_q_t = TileTensor(mb_grad_q_p, row_major[Self.BATCH, 1]())

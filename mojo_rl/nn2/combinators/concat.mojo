@@ -28,7 +28,7 @@ from layout import TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -57,8 +57,11 @@ def _cumulative_offset[index: Int, *BRANCHES: Module]() -> Int:
 
 
 struct Concat[*BRANCHES: Module](Module):
+    comptime ARITY: Int = 1
     comptime N = Self.BRANCHES.size
     comptime IN_DIM = Self.BRANCHES[0].IN_DIM
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = _total_out_dim[*Self.BRANCHES]()
 
     var branches: Tuple[*Self.BRANCHES]
@@ -152,20 +155,21 @@ struct Concat[*BRANCHES: Module](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank == 2, "input rank-2"
-        comptime assert output.flat_rank == 2, "output rank-2"
         assert_tag_for["Concat", target](self.ts.target_tag)
+        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            _concat_forward_cpu[target, BATCH, POLICY=POLICY](self, input, output)
+            _concat_forward_cpu[target, BATCH, POLICY=POLICY](self, input, output_v)
         else:
             raise Error("Concat: GPU forward not yet implemented")
 
@@ -179,23 +183,24 @@ struct Concat[*BRANCHES: Module](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Concat", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
 
         comptime if target == "cpu":
             _concat_backward_cpu[target, BATCH, POLICY=POLICY, mode=mode](
-                self, grad_output, grad_input,
+                self, grad_output_v, grad_input_v,
             )
         else:
             raise Error("Concat: GPU backward not yet implemented")
@@ -232,15 +237,14 @@ def _concat_forward_cpu[
 ](
     mut c: Concat[*BRANCHES],
     input: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
     mut output: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
 ) raises:
-    comptime assert input.flat_rank == 2, "input rank-2"
-    comptime assert output.flat_rank == 2, "output rank-2"
     comptime N = BRANCHES.size
 
     comptime for i in range(N):
@@ -249,7 +253,7 @@ def _concat_forward_cpu[
     comptime for i in range(N):
         var slab_ptr = c.out_slabs_cpu[i]
         var slab_tt = TileTensor(slab_ptr, row_major[BATCH, BRANCHES[i].OUT_DIM]())
-        c.branches[i].forward[target, BATCH, POLICY=POLICY](input, slab_tt)
+        c.branches[i].forward[target, BATCH, POLICY=POLICY](input, output=slab_tt)
 
     comptime for i in range(N):
         comptime off = _cumulative_offset[i, *BRANCHES]()
@@ -269,15 +273,14 @@ def _concat_backward_cpu[
 ](
     mut c: Concat[*BRANCHES],
     grad_output: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
     mut grad_input: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
 ) raises:
-    comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-    comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
     comptime N = BRANCHES.size
     comptime IN_DIM = BRANCHES[0].IN_DIM
 

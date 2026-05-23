@@ -15,11 +15,13 @@ from layout import TileTensor
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.ternary_module import TernaryModule
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
-struct TernaryFusedAdd[DIM_: Int](TernaryModule):
+struct TernaryFusedAdd[DIM_: Int](Module):
+    comptime ARITY: Int = 3
+    comptime IN_DIM = Self.DIM_
     comptime IN0_DIM = Self.DIM_
     comptime IN1_DIM = Self.DIM_
     comptime IN2_DIM = Self.DIM_
@@ -52,30 +54,21 @@ struct TernaryFusedAdd[DIM_: Int](TernaryModule):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        in0: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        in1: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        in2: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert in0.flat_rank == 2, "in0 rank-2"
-        comptime assert in1.flat_rank == 2, "in1 rank-2"
-        comptime assert in2.flat_rank == 2, "in2 rank-2"
-        comptime assert output.flat_rank == 2, "output rank-2"
         comptime assert target == "cpu", "TernaryFusedAdd: CPU only"
         assert_tag_for["TernaryFusedAdd", target](self.ts.target_tag)
 
-        var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in0.ptr)
-        var i1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in1.ptr)
-        var i2_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in2.ptr)
+        var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[0].ptr)
+        var i1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[1].ptr)
+        var i2_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[2].ptr)
         var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
 
         comptime N = BATCH * Self.DIM_
@@ -100,25 +93,14 @@ struct TernaryFusedAdd[DIM_: Int](TernaryModule):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_in0: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-        mut grad_in1: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-        mut grad_in2: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_in0.flat_rank == 2, "grad_in0 rank-2"
-        comptime assert grad_in1.flat_rank == 2, "grad_in1 rank-2"
-        comptime assert grad_in2.flat_rank == 2, "grad_in2 rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
@@ -126,9 +108,9 @@ struct TernaryFusedAdd[DIM_: Int](TernaryModule):
         assert_tag_for["TernaryFusedAdd", target](self.ts.target_tag)
 
         var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-        var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in0.ptr)
-        var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in1.ptr)
-        var gi2_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in2.ptr)
+        var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[0].ptr)
+        var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[1].ptr)
+        var gi2_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[2].ptr)
 
         comptime N = BATCH * Self.DIM_
         var k = 0

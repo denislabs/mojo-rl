@@ -26,13 +26,16 @@ from ..constants import DT
 from ..core import (
     Initializer, AMPPolicy, NoAMP, ParamVisitor,
 )
-from ..core.module import Module
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
 struct Sequential[*MODULES: Module](Module):
+    comptime ARITY: Int = 1
     comptime N = Self.MODULES.size
     comptime IN_DIM = Self.MODULES[0].IN_DIM
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.MODULES[Self.N - 1].OUT_DIM
 
     var children: Tuple[*Self.MODULES]
@@ -158,25 +161,26 @@ struct Sequential[*MODULES: Module](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank  == 2, "input must be rank-2"
-        comptime assert output.flat_rank == 2, "output must be rank-2"
         assert_tag_for["Sequential", target](self.ts.target_tag)
+        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if Self.N == 1:
-            self.children[0].forward[target, BATCH, POLICY=POLICY](input, output)
+            self.children[0].forward[target, BATCH, POLICY=POLICY](input, output=output_v)
         else:
             comptime if target == "cpu":
-                _forward_cpu[target, BATCH, POLICY=POLICY](self, input, output)
+                _forward_cpu[target, BATCH, POLICY=POLICY](self, input, output_v)
             else:
-                _forward_gpu[target, BATCH, POLICY=POLICY](self, input, output)
+                _forward_gpu[target, BATCH, POLICY=POLICY](self, input, output_v)
 
     # ----- Backward --------------------------------------------------------
 
@@ -188,32 +192,33 @@ struct Sequential[*MODULES: Module](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
-        comptime assert grad_input.flat_rank  == 2, "grad_input must be rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Sequential", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
 
         comptime if Self.N == 1:
             self.children[0].vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
-            ](grad_output, grad_input)
+            ](grad_output_v, grad_input_v)
         else:
             comptime if target == "cpu":
                 _backward_cpu[target, BATCH, POLICY=POLICY, mode=mode](
-                    self, grad_output, grad_input,
+                    self, grad_output_v, grad_input_v,
                 )
             else:
                 _backward_gpu[target, BATCH, POLICY=POLICY, mode=mode](
-                    self, grad_output, grad_input,
+                    self, grad_output_v, grad_input_v,
                 )
 
     # ----- Walkers ---------------------------------------------------------
@@ -248,11 +253,12 @@ def _forward_cpu[
 ](
     mut seq: Sequential[*MODULES],
     input: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
     mut output: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
 ) raises:
     comptime N = MODULES.size
@@ -265,12 +271,12 @@ def _forward_cpu[
             var out_mid = TileTensor(
                 seq.mid_cpu[0], row_major[BATCH, MODULES[0].OUT_DIM](),
             )
-            seq.children[0].forward[target, BATCH, POLICY=POLICY](input, out_mid)
+            seq.children[0].forward[target, BATCH, POLICY=POLICY](input, output=out_mid)
         elif i == N - 1:
             var in_mid = TileTensor(
                 seq.mid_cpu[N - 2], row_major[BATCH, MODULES[N - 1].IN_DIM](),
             )
-            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output)
+            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output=output)
         else:
             var in_mid  = TileTensor(
                 seq.mid_cpu[i - 1], row_major[BATCH, MODULES[i].IN_DIM](),
@@ -278,7 +284,7 @@ def _forward_cpu[
             var out_mid = TileTensor(
                 seq.mid_cpu[i], row_major[BATCH, MODULES[i].OUT_DIM](),
             )
-            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, out_mid)
+            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output=out_mid)
 
 
 def _forward_gpu[
@@ -289,11 +295,12 @@ def _forward_gpu[
 ](
     mut seq: Sequential[*MODULES],
     input: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
     mut output: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
 ) raises:
     comptime N = MODULES.size
@@ -307,17 +314,17 @@ def _forward_gpu[
         comptime if i == 0:
             var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[0].unsafe_ptr()
             var out_mid = TileTensor(p, row_major[BATCH, MODULES[0].OUT_DIM]())
-            seq.children[0].forward[target, BATCH, POLICY=POLICY](input, out_mid)
+            seq.children[0].forward[target, BATCH, POLICY=POLICY](input, output=out_mid)
         elif i == N - 1:
             var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[N - 2].unsafe_ptr()
             var in_mid = TileTensor(p, row_major[BATCH, MODULES[N - 1].IN_DIM]())
-            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output)
+            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output=output)
         else:
             var pi: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i - 1].unsafe_ptr()
             var po: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i].unsafe_ptr()
             var in_mid  = TileTensor(pi, row_major[BATCH, MODULES[i].IN_DIM]())
             var out_mid = TileTensor(po, row_major[BATCH, MODULES[i].OUT_DIM]())
-            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, out_mid)
+            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output=out_mid)
 
 
 def _backward_cpu[
@@ -329,11 +336,12 @@ def _backward_cpu[
 ](
     mut seq: Sequential[*MODULES],
     grad_output: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
     mut grad_input: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
 ) raises:
     comptime N = MODULES.size
@@ -378,11 +386,12 @@ def _backward_gpu[
 ](
     mut seq: Sequential[*MODULES],
     grad_output: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
     mut grad_input: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
 ) raises:
     comptime N = MODULES.size

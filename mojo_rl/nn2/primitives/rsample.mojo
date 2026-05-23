@@ -20,7 +20,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
     TargetStorage, assert_tag_for, ensure_cpu_buffer, ensure_gpu_buffer,
 )
@@ -82,7 +82,10 @@ def _rsample_unpack_kernel[ACT: Int, BATCH: Int](
 
 
 struct RSample[ACT: Int](Module):
+    comptime ARITY: Int = 1
     comptime IN_DIM = 2 * Self.ACT
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.ACT + 1
 
     var action_scale: Scalar[DT]
@@ -192,18 +195,19 @@ struct RSample[ACT: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank == 2, "input must be rank-2 [BATCH, 2*ACT]"
-        comptime assert output.flat_rank == 2, "output must be rank-2 [BATCH, ACT+1]"
         comptime assert Self.ACT >= 1, "RSample[ACT]: ACT >= 1"
         assert_tag_for["RSample", target](self.ts.target_tag)
+        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
             self._ensure_cache_cpu(BATCH)
@@ -236,13 +240,13 @@ struct RSample[ACT: Int](Module):
             #   output[b, ACT] = log_prob[b]
             for b in range(BATCH):
                 for j in range(Self.ACT):
-                    output[b, j] = act_buf[b * Self.ACT + j]
-                output[b, Self.ACT] = lp_buf[b]
+                    output_v[b, j] = act_buf[b * Self.ACT + j]
+                output_v[b, Self.ACT] = lp_buf[b]
         else:
             var ctx = self.ts.ctx.value()
             self._ensure_cache_gpu(BATCH)
             var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             var in_cache_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 self.in_cache_dev.value().unsafe_ptr()
             )
@@ -296,19 +300,20 @@ struct RSample[ACT: Int](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["RSample", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
 
         comptime if target == "cpu":
             # Unpack grad_output [BATCH, ACT+1] → grad_action [BATCH, ACT]
@@ -317,8 +322,8 @@ struct RSample[ACT: Int](Module):
             var glp_buf = List[Scalar[DT]](length=BATCH, fill=0.0)
             for b in range(BATCH):
                 for j in range(Self.ACT):
-                    ga_buf[b * Self.ACT + j] = grad_output[b, j]
-                glp_buf[b] = grad_output[b, Self.ACT]
+                    ga_buf[b * Self.ACT + j] = grad_output_v[b, j]
+                glp_buf[b] = grad_output_v[b, Self.ACT]
             var ga_t  = TileTensor(ga_buf,  row_major[BATCH, Self.ACT]())
             var glp_t = TileTensor(glp_buf, row_major[BATCH]())
             var z_t   = TileTensor(self.z_cache, row_major[BATCH, Self.ACT]())
@@ -327,12 +332,12 @@ struct RSample[ACT: Int](Module):
             )
 
             squashed_gaussian_backward[Self.ACT, BATCH](
-                ic_t, z_t, ga_t, glp_t, self.action_scale, grad_input,
+                ic_t, z_t, ga_t, glp_t, self.action_scale, grad_input_v,
             )
         else:
             var ctx = self.ts.ctx.value()
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
             var in_cache_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 self.in_cache_dev.value().unsafe_ptr()
             )

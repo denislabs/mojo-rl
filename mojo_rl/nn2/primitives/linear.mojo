@@ -49,7 +49,7 @@ from ..core import (
     LinearAMPState,
     ParamVisitor,
 )
-from ..core.module import Module
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -115,7 +115,10 @@ def _grad_bias_kernel[
 
 
 struct Linear[IN: Int, OUT: Int](Module):
+    comptime ARITY: Int = 1
     comptime IN_DIM = Self.IN
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.OUT
     comptime W_SIZE = Self.IN * Self.OUT
     comptime B_SIZE = Self.OUT
@@ -192,22 +195,21 @@ struct Linear[IN: Int, OUT: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank == 2, "input must be rank-2 [BATCH, IN]"
-        comptime assert (
-            output.flat_rank == 2
-        ), "output must be rank-2 [BATCH, OUT]"
         assert_tag_for["Linear", target](self.ts.target_tag)
+        var input_v = typed_view[BATCH, Self.IN](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT](output)
 
-        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
+        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
 
         # Save pointer alias for backward — NO copy.
         self._cached_input_ptr = in_p
@@ -217,7 +219,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                 var w_tt = TileTensor(
                     self.weight.value, row_major[Self.IN, Self.OUT](),
                 )
-                max_matmul[target="cpu"](output, input, w_tt, None)
+                max_matmul[target="cpu"](output_v, input_v, w_tt, None)
             else:
                 comptime assert POLICY.compute_dtype == DType.bfloat16, (
                     "Linear CPU supports only fp32 and bf16 compute_dtype"
@@ -276,7 +278,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                     self.weight.value_dev.value(),
                     row_major[Self.IN, Self.OUT](),
                 )
-                max_matmul[target="gpu"](output, input, weight_tt, ctx)
+                max_matmul[target="gpu"](output_v, input_v, weight_tt, ctx)
             else:
                 comptime assert POLICY.compute_dtype == DType.bfloat16, (
                     "Linear supports only fp32 and bf16 compute_dtype"
@@ -347,22 +349,23 @@ struct Linear[IN: Int, OUT: Int](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input must be rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Linear", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN](grad_inputs[0])
 
-        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
 
         comptime if target == "cpu":
             # ── (1) grad_b += column-sum(grad_output) (mode=all only) ───
@@ -401,7 +404,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                     dW_tmp_buf, row_major[Self.IN, Self.OUT](),
                 )
                 max_matmul[target="cpu"](
-                    dW_tmp_tt, cT_tt, grad_output, None,
+                    dW_tmp_tt, cT_tt, grad_output_v, None,
                 )
                 var gw_ptr = self.weight.grad_unsafe_ptr_cpu()
                 var dw_i = 0
@@ -423,7 +426,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                     self.weight.value, row_major[Self.IN, Self.OUT](),
                 )
                 max_matmul[transpose_b=True, target="cpu"](
-                    grad_input, grad_output, w_tt, None,
+                    grad_input_v, grad_output_v, w_tt, None,
                 )
             else:
                 comptime assert POLICY.compute_dtype == DType.bfloat16, (
@@ -511,7 +514,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                     row_major[Self.IN, Self.OUT](),
                 )
                 max_matmul[transpose_b=True, target="gpu"](
-                    grad_input, grad_output, weight_tt, ctx,
+                    grad_input_v, grad_output_v, weight_tt, ctx,
                 )
             else:
                 comptime assert POLICY.compute_dtype == DType.bfloat16, (

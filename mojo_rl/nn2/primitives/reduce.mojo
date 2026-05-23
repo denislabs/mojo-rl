@@ -17,7 +17,7 @@ from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.reduce_op import ReduceOp
 from ..core.target_storage import TargetStorage, assert_tag_for
 from .ops.sum_op import SumOp
@@ -70,7 +70,10 @@ def _reduce_broadcast_kernel[
 
 
 struct Reduce[DIM: Int, OP: ReduceOp](Module):
+    comptime ARITY: Int = 1
     comptime IN_DIM = Self.DIM
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = 1
 
     var ts: TargetStorage
@@ -106,17 +109,18 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank == 2, "input rank-2 [BATCH, DIM]"
-        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, 1]"
         assert_tag_for["Reduce", target](self.ts.target_tag)
+        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
             var scale = Self.OP.scale_factor[Self.DIM]()
@@ -124,12 +128,12 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
                 var acc: Scalar[DT] = 0.0
                 for d in range(Self.DIM):
                     acc += input[b, d]
-                output[b, 0] = acc * scale
+                output_v[b, 0] = acc * scale
         else:
             comptime layout_in = Layout.row_major(BATCH, Self.DIM)
             comptime layout_out = Layout.row_major(BATCH, 1)
             var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             var in_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](in_p)
             var out_lt = LayoutTensor[DT, layout_out, MutAnyOrigin](out_p)
             comptime TPB = 128
@@ -147,31 +151,32 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Reduce", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
 
         comptime if target == "cpu":
             var scale = Self.OP.scale_factor[Self.DIM]()
             for b in range(BATCH):
-                var go_scaled = grad_output[b, 0] * scale
+                var go_scaled = grad_output_v[b, 0] * scale
                 for d in range(Self.DIM):
-                    grad_input[b, d] = go_scaled
+                    grad_input_v[b, d] = go_scaled
         else:
             comptime layout_go = Layout.row_major(BATCH, 1)
             comptime layout_gi = Layout.row_major(BATCH, Self.DIM)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
             var go_lt = LayoutTensor[DT, layout_go, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, layout_gi, MutAnyOrigin](gi_p)
             comptime TPB = 128

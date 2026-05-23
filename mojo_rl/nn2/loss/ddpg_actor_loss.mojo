@@ -120,13 +120,13 @@ struct DDPGActorLoss[
         # Forward: a = actor(s); sa = concat(s, a); q = critic(sa).
         var mb_s_t = TileTensor(mb_s_ptr, row_major[Self.BATCH, Self.OBS_DIM]())
         var mb_a_t = TileTensor(self._mb_a, row_major[Self.BATCH, Self.ACT_DIM]())
-        actor.forward[target, Self.BATCH](mb_s_t, mb_a_t)
+        actor.forward[target, Self.BATCH](mb_s_t, output=mb_a_t)
         concat_sa[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH](
             mb_s_ptr, self._mb_a, self._mb_sa,
         )
         var mb_sa_t = TileTensor(self._mb_sa, row_major[Self.BATCH, Self.SA_DIM]())
         var mb_q_t = TileTensor(self._mb_q, row_major[Self.BATCH, 1]())
-        critic.forward[target, Self.BATCH](mb_sa_t, mb_q_t)
+        critic.forward[target, Self.BATCH](mb_sa_t, output=mb_q_t)
 
         # Loss = -mean_b q.
         var q_sum: Scalar[DT] = 0.0

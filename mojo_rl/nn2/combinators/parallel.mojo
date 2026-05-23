@@ -26,7 +26,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
 from .residual import _elementwise_add_kernel
 
@@ -78,7 +78,10 @@ def _parallel_split_kernel[
 
 
 struct Parallel[A: Module, B: Module](Module):
+    comptime ARITY: Int = 1
     comptime IN_DIM = Self.A.IN_DIM
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.A.OUT_DIM + Self.B.OUT_DIM
     comptime OUT_A = Self.A.OUT_DIM
     comptime OUT_B = Self.B.OUT_DIM
@@ -179,38 +182,39 @@ struct Parallel[A: Module, B: Module](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank == 2, "input rank-2"
-        comptime assert output.flat_rank == 2, "output rank-2"
         assert_tag_for["Parallel", target](self.ts.target_tag)
+        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
             self._ensure_scratch_cpu(BATCH)
             var out_a = TileTensor(self.out_a_cpu, row_major[BATCH, Self.OUT_A]())
             var out_b = TileTensor(self.out_b_cpu, row_major[BATCH, Self.OUT_B]())
-            self.branch_a.forward[target, BATCH, POLICY=POLICY](input, out_a)
-            self.branch_b.forward[target, BATCH, POLICY=POLICY](input, out_b)
+            self.branch_a.forward[target, BATCH, POLICY=POLICY](input, output=out_a)
+            self.branch_b.forward[target, BATCH, POLICY=POLICY](input, output=out_b)
             for b in range(BATCH):
                 for j in range(Self.OUT_A):
-                    output[b, j] = out_a[b, j]
+                    output_v[b, j] = out_a[b, j]
                 for j in range(Self.OUT_B):
-                    output[b, Self.OUT_A + j] = out_b[b, j]
+                    output_v[b, Self.OUT_A + j] = out_b[b, j]
         else:
             self._ensure_scratch_gpu(BATCH)
-            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             var pa: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_a_dev.value().unsafe_ptr()
             var pb: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_b_dev.value().unsafe_ptr()
             var out_a_tt = TileTensor(pa, row_major[BATCH, Self.OUT_A]())
             var out_b_tt = TileTensor(pb, row_major[BATCH, Self.OUT_B]())
-            self.branch_a.forward[target, BATCH, POLICY=POLICY](input, out_a_tt)
-            self.branch_b.forward[target, BATCH, POLICY=POLICY](input, out_b_tt)
+            self.branch_a.forward[target, BATCH, POLICY=POLICY](input, output=out_a_tt)
+            self.branch_b.forward[target, BATCH, POLICY=POLICY](input, output=out_b_tt)
             comptime layout_a = Layout.row_major(BATCH, Self.OUT_A)
             comptime layout_b = Layout.row_major(BATCH, Self.OUT_B)
             comptime layout_p = Layout.row_major(BATCH, Self.OUT_DIM)
@@ -235,19 +239,20 @@ struct Parallel[A: Module, B: Module](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Parallel", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
 
         comptime if target == "cpu":
             self._ensure_scratch_cpu(BATCH)
@@ -255,9 +260,9 @@ struct Parallel[A: Module, B: Module](Module):
             var go_b = TileTensor(self.out_b_cpu, row_major[BATCH, Self.OUT_B]())
             for b in range(BATCH):
                 for j in range(Self.OUT_A):
-                    go_a[b, j] = grad_output[b, j]
+                    go_a[b, j] = grad_output_v[b, j]
                 for j in range(Self.OUT_B):
-                    go_b[b, j] = grad_output[b, Self.OUT_A + j]
+                    go_b[b, j] = grad_output_v[b, Self.OUT_A + j]
             var gi_a = TileTensor(self.gi_a_cpu, row_major[BATCH, Self.IN_DIM]())
             var gi_b = TileTensor(self.gi_b_cpu, row_major[BATCH, Self.IN_DIM]())
             self.branch_a.vjp[
@@ -268,7 +273,7 @@ struct Parallel[A: Module, B: Module](Module):
             ](go_b, gi_b)
             var ap = self.gi_a_cpu
             var bp = self.gi_b_cpu
-            var gp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var gp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
             comptime N = BATCH * Self.IN_DIM
             var k = 0
             while k + CPU_SIMD_W <= N:
@@ -282,8 +287,8 @@ struct Parallel[A: Module, B: Module](Module):
                 k += 1
         else:
             self._ensure_scratch_gpu(BATCH)
-            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
             var pa: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_a_dev.value().unsafe_ptr()
             var pb: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_b_dev.value().unsafe_ptr()
             var pia: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.gi_a_dev.value().unsafe_ptr()

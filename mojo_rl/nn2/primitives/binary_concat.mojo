@@ -17,7 +17,7 @@ from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.binary_module import BinaryModule
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -64,9 +64,12 @@ def _bconcat_backward_kernel[
             grad_in1[b, d - IN0_DIM] = v
 
 
-struct BinaryConcat[IN0_DIM_: Int, IN1_DIM_: Int](BinaryModule):
+struct BinaryConcat[IN0_DIM_: Int, IN1_DIM_: Int](Module):
+    comptime ARITY: Int = 2
+    comptime IN_DIM = Self.IN0_DIM_
     comptime IN0_DIM = Self.IN0_DIM_
     comptime IN1_DIM = Self.IN1_DIM_
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.IN0_DIM_ + Self.IN1_DIM_
 
     var ts: TargetStorage
@@ -100,32 +103,30 @@ struct BinaryConcat[IN0_DIM_: Int, IN1_DIM_: Int](BinaryModule):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        in0: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        in1: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert in0.flat_rank == 2, "in0 rank-2 [BATCH, IN0_DIM]"
-        comptime assert in1.flat_rank == 2, "in1 rank-2 [BATCH, IN1_DIM]"
-        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, OUT_DIM]"
         assert_tag_for["BinaryConcat", target](self.ts.target_tag)
+        var in0 = typed_view[BATCH, Self.IN0_DIM](inputs[0])
+        var in1 = typed_view[BATCH, Self.IN1_DIM](inputs[1])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
             for b in range(BATCH):
                 for d in range(Self.IN0_DIM):
-                    output[b, d] = in0[b, d]
+                    output_v[b, d] = in0[b, d]
                 for d in range(Self.IN1_DIM):
-                    output[b, Self.IN0_DIM + d] = in1[b, d]
+                    output_v[b, Self.IN0_DIM + d] = in1[b, d]
         else:
             var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in0.ptr)
             var i1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in1.ptr)
-            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             var i0_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.IN0_DIM), MutAnyOrigin,
             ](i0_p)
@@ -153,33 +154,30 @@ struct BinaryConcat[IN0_DIM_: Int, IN1_DIM_: Int](BinaryModule):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_in0: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-        mut grad_in1: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_in0.flat_rank == 2, "grad_in0 rank-2"
-        comptime assert grad_in1.flat_rank == 2, "grad_in1 rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["BinaryConcat", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_in0 = typed_view_mut[BATCH, Self.IN0_DIM](grad_inputs[0])
+        var grad_in1 = typed_view_mut[BATCH, Self.IN1_DIM](grad_inputs[1])
 
         comptime if target == "cpu":
             for b in range(BATCH):
                 for d in range(Self.IN0_DIM):
-                    grad_in0[b, d] = grad_output[b, d]
+                    grad_in0[b, d] = grad_output_v[b, d]
                 for d in range(Self.IN1_DIM):
-                    grad_in1[b, d] = grad_output[b, Self.IN0_DIM + d]
+                    grad_in1[b, d] = grad_output_v[b, Self.IN0_DIM + d]
         else:
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
             var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in0.ptr)
             var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in1.ptr)
             var go_lt = LayoutTensor[

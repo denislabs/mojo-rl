@@ -430,9 +430,9 @@ struct SACTrainer[
                 self._ob1[d] = obs[d]
             var ob1_t = TileTensor(self._ob1, row_major[1, Self.OBS_DIM]())
             var ao1_t = TileTensor(self._ao1, row_major[1, 2 * Self.ACT_DIM]())
-            self.actor.forward["cpu", 1](ob1_t, ao1_t)
+            self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
             var alp1_t = TileTensor(self._alp1, row_major[1, Self.ACT_DIM + 1]())
-            self.actor_loss.rsample.forward["cpu", 1](ao1_t, alp1_t)
+            self.actor_loss.rsample.forward["cpu", 1](ao1_t, output=alp1_t)
             for j in range(Self.ACT_DIM):
                 var a = self._alp1[j]
                 if a > self.action_scale:
@@ -458,9 +458,9 @@ struct SACTrainer[
             )
             var ob1_t = TileTensor(ob1_p, row_major[1, Self.OBS_DIM]())
             var ao1_t = TileTensor(ao1_p, row_major[1, 2 * Self.ACT_DIM]())
-            self.actor.forward["gpu", 1](ob1_t, ao1_t)
+            self.actor.forward["gpu", 1](ob1_t, output=ao1_t)
             var alp1_t = TileTensor(alp1_p, row_major[1, Self.ACT_DIM + 1]())
-            self.actor_loss.rsample.forward["gpu", 1](ao1_t, alp1_t)
+            self.actor_loss.rsample.forward["gpu", 1](ao1_t, output=alp1_t)
             # Download alp1 → CPU buffer, then clamp + write to action_out.
             ctx.enqueue_copy(self._alp1, self._alp1_dev.value())
             ctx.synchronize()

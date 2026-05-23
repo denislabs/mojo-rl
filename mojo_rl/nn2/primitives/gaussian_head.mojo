@@ -38,7 +38,7 @@ from ..core import (
     for_each_param_auto,
     zero_grad_auto,
 )
-from ..core.module import Module
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
 from ..core.target_tag import TARGET_GPU
 
@@ -141,7 +141,10 @@ def _gauss_head_grad_ls_kernel[BATCH: Int, ACT: Int](
 
 
 struct GaussianHead[IN: Int, ACT: Int](Module):
+    comptime ARITY: Int = 1
     comptime IN_DIM = Self.IN
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = 2 * Self.ACT
     comptime W_SIZE = Self.IN * Self.ACT
     comptime B_SIZE = Self.ACT
@@ -225,19 +228,18 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank == 2, "input must be rank-2 [BATCH, IN]"
-        comptime assert (
-            output.flat_rank == 2
-        ), "output must be rank-2 [BATCH, 2*ACT]"
         assert_tag_for["GaussianHead", target](self.ts.target_tag)
+        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
         self._cached_input_ptr = in_p
@@ -252,7 +254,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
                     var acc = b[j]
                     for i in range(Self.IN):
                         acc += input[bi, i] * w[i, j]
-                    output[bi, j] = acc
+                    output_v[bi, j] = acc
                 # log_std broadcast + clamp
                 for j in range(Self.ACT):
                     var v = ls[j]
@@ -260,10 +262,10 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
                         v = LOG_STD_MIN
                     elif v > LOG_STD_MAX:
                         v = LOG_STD_MAX
-                    output[bi, Self.ACT + j] = v
+                    output_v[bi, Self.ACT + j] = v
         else:
             var ctx = self.ts.ctx.value()
-            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
 
             comptime in_layout = Layout.row_major(BATCH, Self.IN)
             comptime out_layout = Layout.row_major(BATCH, 2 * Self.ACT)
@@ -301,19 +303,20 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["GaussianHead", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
 
         comptime if target == "cpu":
             var w = TileTensor(self.weight.value, row_major[Self.IN, Self.ACT]())
@@ -326,8 +329,8 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
                     var acc_b: Scalar[DT] = 0.0
                     var acc_l: Scalar[DT] = 0.0
                     for bi in range(BATCH):
-                        acc_b += grad_output[bi, j]
-                        acc_l += grad_output[bi, Self.ACT + j]
+                        acc_b += grad_output_v[bi, j]
+                        acc_l += grad_output_v[bi, Self.ACT + j]
                     gb[j]  = gb[j]  + acc_b
                     gls[j] = gls[j] + acc_l
 
@@ -339,7 +342,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
                     for j in range(Self.ACT):
                         var acc: Scalar[DT] = 0.0
                         for bi in range(BATCH):
-                            acc += c_ptr[bi * Self.IN + i] * grad_output[bi, j]
+                            acc += c_ptr[bi * Self.IN + i] * grad_output_v[bi, j]
                         gw[i, j] = gw[i, j] + acc
 
             # ── (3) grad_input = grad_mu @ W^T (always) ────────────────
@@ -347,12 +350,12 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
                 for i in range(Self.IN):
                     var acc: Scalar[DT] = 0.0
                     for j in range(Self.ACT):
-                        acc += grad_output[bi, j] * w[i, j]
-                    grad_input[bi, i] = acc
+                        acc += grad_output_v[bi, j] * w[i, j]
+                    grad_input_v[bi, i] = acc
         else:
             var ctx = self.ts.ctx.value()
-            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
 
             comptime go_layout = Layout.row_major(BATCH, 2 * Self.ACT)
             comptime gi_layout = Layout.row_major(BATCH, Self.IN)

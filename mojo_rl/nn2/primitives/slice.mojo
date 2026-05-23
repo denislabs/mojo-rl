@@ -16,7 +16,7 @@ from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module
+from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -56,7 +56,10 @@ def _slice_backward_kernel[
 
 
 struct Slice[IN: Int, START: Int, END: Int](Module):
+    comptime ARITY: Int = 1
     comptime IN_DIM = Self.IN
+    comptime IN1_DIM: Int = 0
+    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.END - Self.START
 
     var ts: TargetStorage
@@ -96,25 +99,26 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank == 2, "input rank-2 [BATCH, IN_DIM]"
-        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, OUT_DIM]"
         assert_tag_for["Slice", target](self.ts.target_tag)
+        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
             for b in range(BATCH):
                 for j in range(Self.OUT_DIM):
-                    output[b, j] = input[b, Self.START + j]
+                    output_v[b, j] = input[b, Self.START + j]
         else:
             var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             var in_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin,
             ](in_p)
@@ -138,19 +142,20 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Slice", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
 
         comptime if target == "cpu":
             # Zero whole grad_input first; scatter the slice in afterward.
@@ -159,13 +164,13 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
             # leaves the rest at 0 so the scatter-add sums correctly.
             for b in range(BATCH):
                 for k in range(Self.IN_DIM):
-                    grad_input[b, k] = Scalar[DT](0.0)
+                    grad_input_v[b, k] = Scalar[DT](0.0)
             for b in range(BATCH):
                 for j in range(Self.OUT_DIM):
-                    grad_input[b, Self.START + j] = grad_output[b, j]
+                    grad_input_v[b, Self.START + j] = grad_output_v[b, j]
         else:
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
             ](go_p)

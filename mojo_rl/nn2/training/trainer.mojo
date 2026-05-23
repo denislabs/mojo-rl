@@ -255,6 +255,16 @@ struct Trainer[
         comptime assert input.flat_rank == 2, "input must be rank-2"
         comptime assert targets.flat_rank == 2, "targets must be rank-2"
         comptime if Self.target == "cpu":
+            # MutAnyOrigin laundering: trait variadics on the unified
+            # Module require origin=MutAnyOrigin. `*_buf` fields are
+            # already `UnsafePointer[Scalar[DT], MutAnyOrigin]` (see
+            # struct decl); only `input` needs rebinding.
+            var input_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                input.ptr
+            )
+            var input_my = TileTensor(
+                input_p, row_major[Self.BATCH, Self.IN_DIM]()
+            )
             var output = TileTensor(
                 self.output_buf, row_major[Self.BATCH, Self.OUT_DIM]()
             )
@@ -266,7 +276,7 @@ struct Trainer[
             )
             self.optim.zero_grad[Self.target](self.net)
             self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                input, output
+                input_my, output=output
             )
             var L = self.loss_fn.forward[
                 Self.target, Self.BATCH, POLICY=Self.POLICY
@@ -290,6 +300,12 @@ struct Trainer[
             var gi_ptr: UnsafePointer[
                 Scalar[DT], MutAnyOrigin
             ] = self.grad_in_dev.value().unsafe_ptr()
+            var in_ptr_my = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                input.ptr
+            )
+            var input_my = TileTensor(
+                in_ptr_my, row_major[Self.BATCH, Self.IN_DIM]()
+            )
             var output = TileTensor(
                 out_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
             )
@@ -301,7 +317,7 @@ struct Trainer[
             )
             self.optim.zero_grad[Self.target](self.net)
             self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                input, output
+                input_my, output=output
             )
             var L = self.loss_fn.forward[
                 Self.target, Self.BATCH, POLICY=Self.POLICY
@@ -376,7 +392,7 @@ struct Trainer[
                 self.output_buf, row_major[Self.BATCH, Self.OUT_DIM]()
             )
             self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                input, output
+                input, output=output
             )
             for k in range(Self.BATCH * Self.OUT_DIM):
                 output_host_ptr[k] = self.output_buf[k]
@@ -398,7 +414,7 @@ struct Trainer[
                 out_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
             )
             self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                input, output
+                input, output=output
             )
             ctx.enqueue_copy(out_host_buf, self.output_dev.value())
             ctx.synchronize()
@@ -574,7 +590,7 @@ struct Trainer[
                 row_major[Self.BATCH, Self.OUT_DIM](),
             )
             self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                input, output
+                input, output=output
             )
             ctx.enqueue_copy(out_host, self.output_dev.value())
             ctx.synchronize()
