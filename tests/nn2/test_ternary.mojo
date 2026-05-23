@@ -30,11 +30,16 @@ def test_concat_forward_backward() raises:
     for k in range(BATCH * D2):
         i2_p[k] = Scalar[DT](300.0 + k)
 
+    # Hetero-ternary variadic workaround: every variadic element shares
+    # the same comptime Layout (row_major[BATCH, D0]). The leaf body
+    # recovers per-input shape via typed_view[BATCH, IN<i>_DIM]; the
+    # Layout carried by a variadic TileTensor is dead metadata after
+    # leaf unpack. See feedback_mojo_variadic_hetero_shape_workaround.
     var i0_t = TileTensor(i0_p, row_major[BATCH, D0]())
-    var i1_t = TileTensor(i1_p, row_major[BATCH, D1]())
-    var i2_t = TileTensor(i2_p, row_major[BATCH, D2]())
+    var i1_t = TileTensor(i1_p, row_major[BATCH, D0]())
+    var i2_t = TileTensor(i2_p, row_major[BATCH, D0]())
     var o_t  = TileTensor(o_p,  row_major[BATCH, OUT]())
-    c.forward["cpu", BATCH](i0_t, i1_t, i2_t, o_t)
+    c.forward["cpu", BATCH](i0_t, i1_t, i2_t, output=o_t)
 
     for b in range(BATCH):
         for d in range(D0):
@@ -51,10 +56,11 @@ def test_concat_forward_backward() raises:
     var gi2_p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * D2)
     for k in range(BATCH * OUT):
         go_p[k] = Scalar[DT](k + 1)
+    # Hetero-ternary variadic workaround: see forward block above.
     var go_t = TileTensor(go_p, row_major[BATCH, OUT]())
     var gi0_t = TileTensor(gi0_p, row_major[BATCH, D0]())
-    var gi1_t = TileTensor(gi1_p, row_major[BATCH, D1]())
-    var gi2_t = TileTensor(gi2_p, row_major[BATCH, D2]())
+    var gi1_t = TileTensor(gi1_p, row_major[BATCH, D0]())
+    var gi2_t = TileTensor(gi2_p, row_major[BATCH, D0]())
     c.vjp["cpu", BATCH](go_t, gi0_t, gi1_t, gi2_t)
 
     for b in range(BATCH):
@@ -92,7 +98,7 @@ def test_fused_add_forward_backward() raises:
     var i1_t = TileTensor(i1_p, row_major[BATCH, DIM]())
     var i2_t = TileTensor(i2_p, row_major[BATCH, DIM]())
     var o_t  = TileTensor(o_p,  row_major[BATCH, DIM]())
-    a.forward["cpu", BATCH](i0_t, i1_t, i2_t, o_t)
+    a.forward["cpu", BATCH](i0_t, i1_t, i2_t, output=o_t)
     for k in range(BATCH * DIM):
         var expected = i0_p[k] + i1_p[k] + i2_p[k]
         assert_true(fabs(o_p[k] - expected) < 1e-6, "fused add mismatch")

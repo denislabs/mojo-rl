@@ -133,14 +133,14 @@ def test_bundle_step_at_matches_direct_step() raises:
     for step in range(N_STEPS):
         # --- Bundle path: train net_a (items[0]) + net_b (items[1])
         bundle.zero_grad_at[target="cpu", i=0, M=type_of(net_a)](net_a)
-        net_a.forward["cpu", BATCH](input_t, out_t)
+        net_a.forward["cpu", BATCH](input_t, output=out_t)
         var _ = loss_fn.forward["cpu", BATCH](out_t, tgt_t)
         loss_fn.vjp["cpu", BATCH](tgt_t, go_t)
         net_a.vjp["cpu", BATCH](go_t, gi_t)
         bundle.step_at[target="cpu", i=0, M=type_of(net_a)](net_a)
 
         bundle.zero_grad_at[target="cpu", i=1, M=type_of(net_b)](net_b)
-        net_b.forward["cpu", BATCH](input_t, out_b_t)
+        net_b.forward["cpu", BATCH](input_t, output=out_b_t)
         var _ = loss_fn.forward["cpu", BATCH](out_b_t, tgt_t)
         loss_fn.vjp["cpu", BATCH](tgt_t, go_b_t)
         net_b.vjp["cpu", BATCH](go_b_t, gi_b_t)
@@ -148,14 +148,14 @@ def test_bundle_step_at_matches_direct_step() raises:
 
         # --- Reference path: train net_a_ref + net_b_ref with bare Adam
         opt_a_ref.zero_grad["cpu"](net_a_ref)
-        net_a_ref.forward["cpu", BATCH](input_t, out_t)
+        net_a_ref.forward["cpu", BATCH](input_t, output=out_t)
         var _ = loss_fn.forward["cpu", BATCH](out_t, tgt_t)
         loss_fn.vjp["cpu", BATCH](tgt_t, go_t)
         net_a_ref.vjp["cpu", BATCH](go_t, gi_t)
         opt_a_ref.step["cpu"](net_a_ref)
 
         opt_b_ref.zero_grad["cpu"](net_b_ref)
-        net_b_ref.forward["cpu", BATCH](input_t, out_b_t)
+        net_b_ref.forward["cpu", BATCH](input_t, output=out_b_t)
         var _ = loss_fn.forward["cpu", BATCH](out_b_t, tgt_t)
         loss_fn.vjp["cpu", BATCH](tgt_t, go_b_t)
         net_b_ref.vjp["cpu", BATCH](go_b_t, gi_b_t)

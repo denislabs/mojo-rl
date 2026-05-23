@@ -39,7 +39,7 @@ def test_forward_backward_cpu() raises:
 
     var in_t = TileTensor(in_buf, row_major[BATCH, DIM]())
     var out_t = TileTensor(out_buf, row_major[BATCH, DIM]())
-    sym.forward["cpu", BATCH](in_t, out_t)
+    sym.forward["cpu", BATCH](in_t, output=out_t)
 
     for k in range(BATCH):
         var expected = _hand_symlog(in_buf[k])
@@ -90,7 +90,7 @@ def test_gradcheck_fd_cpu() raises:
     var out_t = TileTensor(out_buf, row_major[BATCH, DIM]())
 
     # Analytical: forward + backward with grad_out=1 → grad_in = 1/(1+|x|)
-    sym.forward["cpu", BATCH](in_t, out_t)
+    sym.forward["cpu", BATCH](in_t, output=out_t)
     var go_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * DIM)
     var gi_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * DIM)
     for k in range(BATCH * DIM):
@@ -105,12 +105,12 @@ def test_gradcheck_fd_cpu() raises:
     for k in range(BATCH * DIM):
         var saved = in_buf[k]
         in_buf[k] = saved + EPS
-        sym.forward["cpu", BATCH](in_t, out_t)
+        sym.forward["cpu", BATCH](in_t, output=out_t)
         var Lp: Scalar[DT] = 0.0
         for j in range(BATCH * DIM):
             Lp += out_buf[j]
         in_buf[k] = saved - EPS
-        sym.forward["cpu", BATCH](in_t, out_t)
+        sym.forward["cpu", BATCH](in_t, output=out_t)
         var Lm: Scalar[DT] = 0.0
         for j in range(BATCH * DIM):
             Lm += out_buf[j]
@@ -161,7 +161,7 @@ def test_gpu_parity() raises:
     var out_t_cpu = TileTensor(out_cpu, row_major[BATCH, DIM]())
     var go_t_cpu  = TileTensor(go_cpu,  row_major[BATCH, DIM]())
     var gi_t_cpu  = TileTensor(gi_cpu,  row_major[BATCH, DIM]())
-    sym_cpu.forward["cpu", BATCH](in_t_cpu, out_t_cpu)
+    sym_cpu.forward["cpu", BATCH](in_t_cpu, output=out_t_cpu)
     sym_cpu.vjp["cpu", BATCH](go_t_cpu, gi_t_cpu)
 
     # GPU
@@ -171,11 +171,15 @@ def test_gpu_parity() raises:
     var gi_dev  = ctx.enqueue_create_buffer[DT](BATCH * DIM)
     ctx.enqueue_copy(in_dev, in_host)
     ctx.enqueue_copy(go_dev, go_host)
-    var in_t_gpu  = TileTensor(in_dev,  row_major[BATCH, DIM]())
-    var out_t_gpu = TileTensor(out_dev, row_major[BATCH, DIM]())
-    var go_t_gpu  = TileTensor(go_dev,  row_major[BATCH, DIM]())
-    var gi_t_gpu  = TileTensor(gi_dev,  row_major[BATCH, DIM]())
-    sym_gpu.forward["gpu", BATCH](in_t_gpu, out_t_gpu)
+    var in_p_gpu  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](in_dev.unsafe_ptr())
+    var out_p_gpu = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out_dev.unsafe_ptr())
+    var go_p_gpu  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go_dev.unsafe_ptr())
+    var gi_p_gpu  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi_dev.unsafe_ptr())
+    var in_t_gpu  = TileTensor(in_p_gpu,  row_major[BATCH, DIM]())
+    var out_t_gpu = TileTensor(out_p_gpu, row_major[BATCH, DIM]())
+    var go_t_gpu  = TileTensor(go_p_gpu,  row_major[BATCH, DIM]())
+    var gi_t_gpu  = TileTensor(gi_p_gpu,  row_major[BATCH, DIM]())
+    sym_gpu.forward["gpu", BATCH](in_t_gpu, output=out_t_gpu)
     sym_gpu.vjp["gpu", BATCH](go_t_gpu, gi_t_gpu)
 
     var out_host = ctx.enqueue_create_host_buffer[DT](BATCH * DIM)

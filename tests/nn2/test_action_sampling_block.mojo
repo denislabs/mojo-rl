@@ -79,7 +79,7 @@ def test_deterministic_matches_actor_clamped() raises:
     # Direct: actor.forward into ref_p, then clamp manually.
     var obs_t = TileTensor(obs_p, row_major[1, OBS_DIM]())
     var ref_t = TileTensor(ref_p, row_major[1, ACT_DIM]())
-    actor.forward["cpu", 1](obs_t, ref_t)
+    actor.forward["cpu", 1](obs_t, output=ref_t)
 
     var max_diff: Scalar[DT] = 0.0
     for j in range(ACT_DIM):

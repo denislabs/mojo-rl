@@ -40,17 +40,17 @@ def test_linear_roundtrip() raises:
     load_params[Linear[IN, OUT]](net2, path)
 
     # Compare forward outputs on a fixed input.
-    var x = alloc[Scalar[DT]](BATCH * IN)
-    var y1 = alloc[Scalar[DT]](BATCH * OUT)
-    var y2 = alloc[Scalar[DT]](BATCH * OUT)
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * IN)
+    var y1: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * OUT)
+    var y2: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * OUT)
     for i in range(BATCH * IN):
         x[i] = Scalar[DT](0.1 * Float64(i + 1))
 
     var x_t = TileTensor(x, row_major[BATCH, IN]())
     var y1_t = TileTensor(y1, row_major[BATCH, OUT]())
     var y2_t = TileTensor(y2, row_major[BATCH, OUT]())
-    net1.forward["cpu", BATCH](x_t, y1_t)
-    net2.forward["cpu", BATCH](x_t, y2_t)
+    net1.forward["cpu", BATCH](x_t, output=y1_t)
+    net2.forward["cpu", BATCH](x_t, output=y2_t)
 
     var max_diff: Scalar[DT] = 0.0
     for i in range(BATCH * OUT):
@@ -86,11 +86,11 @@ def test_sequential_roundtrip_after_training() raises:
     var loss = MSELoss[OUT].make[target="cpu"]()
 
     # One synthetic train step to make the network non-trivial.
-    var x = alloc[Scalar[DT]](BATCH * IN)
-    var y_t_buf = alloc[Scalar[DT]](BATCH * OUT)
-    var y_pred = alloc[Scalar[DT]](BATCH * OUT)
-    var grad_out = alloc[Scalar[DT]](BATCH * OUT)
-    var grad_in = alloc[Scalar[DT]](BATCH * IN)
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * IN)
+    var y_t_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * OUT)
+    var y_pred: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * OUT)
+    var grad_out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * OUT)
+    var grad_in: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * IN)
     for i in range(BATCH * IN):
         x[i] = Scalar[DT](0.1 * Float64(i + 1))
     for i in range(BATCH * OUT):
@@ -104,7 +104,7 @@ def test_sequential_roundtrip_after_training() raises:
 
     for _ in range(5):
         opt.zero_grad["cpu", M=MLP](net)
-        net.forward["cpu", BATCH](x_tt, yp_tt)
+        net.forward["cpu", BATCH](x_tt, output=yp_tt)
         _ = loss.forward["cpu", BATCH](yp_tt, yt_tt)
         loss.vjp["cpu", BATCH](yt_tt, go_tt)
         net.vjp["cpu", BATCH](go_tt, gi_tt)
@@ -117,17 +117,17 @@ def test_sequential_roundtrip_after_training() raises:
     load_params[MLP](fresh, path)
 
     # Compare forward on a NEW input (not the training input).
-    var x2 = alloc[Scalar[DT]](BATCH * IN)
-    var y_orig = alloc[Scalar[DT]](BATCH * OUT)
-    var y_loaded = alloc[Scalar[DT]](BATCH * OUT)
+    var x2: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * IN)
+    var y_orig: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * OUT)
+    var y_loaded: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * OUT)
     for i in range(BATCH * IN):
         x2[i] = Scalar[DT](-0.05 + 0.03 * Float64(i))
 
     var x2_tt = TileTensor(x2, row_major[BATCH, IN]())
     var yo_tt = TileTensor(y_orig, row_major[BATCH, OUT]())
     var yl_tt = TileTensor(y_loaded, row_major[BATCH, OUT]())
-    net.forward["cpu", BATCH](x2_tt, yo_tt)
-    fresh.forward["cpu", BATCH](x2_tt, yl_tt)
+    net.forward["cpu", BATCH](x2_tt, output=yo_tt)
+    fresh.forward["cpu", BATCH](x2_tt, output=yl_tt)
 
     var max_diff: Scalar[DT] = 0.0
     for i in range(BATCH * OUT):

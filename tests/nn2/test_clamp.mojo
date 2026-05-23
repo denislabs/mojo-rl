@@ -24,18 +24,20 @@ def test_forward() raises:
     clamp.set_attr["min_val"](Scalar[DT](-0.5))
     clamp.set_attr["max_val"](Scalar[DT](0.5))
 
-    var x = alloc[Scalar[DT]](N)
-    var y = alloc[Scalar[DT]](N)
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
     # Span below-min / in-range / above-max.
     x[0] = -2.0;  x[1] = -0.7;  x[2] = -0.3;  x[3] = 0.0
     x[4] =  0.3;  x[5] =  0.5;  x[6] =  0.7;  x[7] = 2.0
 
-    var x_t = TileTensor(x, row_major[BATCH, DIM]())
-    var y_t = TileTensor(y, row_major[BATCH, DIM]())
-    clamp.forward["cpu", BATCH](x_t, y_t)
+    var xp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](x)
+    var yp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](y)
+    var x_t = TileTensor(xp, row_major[BATCH, DIM]())
+    var y_t = TileTensor(yp, row_major[BATCH, DIM]())
+    clamp.forward["cpu", BATCH](x_t, output=y_t)
 
     # Expected: -0.5, -0.5, -0.3, 0.0, 0.3, 0.5, 0.5, 0.5
-    var expected = alloc[Scalar[DT]](N)
+    var expected: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
     expected[0] = -0.5;  expected[1] = -0.5
     expected[2] = -0.3;  expected[3] = 0.0
     expected[4] = 0.3;   expected[5] = 0.5
@@ -60,27 +62,31 @@ def test_backward() raises:
     clamp.set_attr["min_val"](Scalar[DT](-0.5))
     clamp.set_attr["max_val"](Scalar[DT](0.5))
 
-    var x = alloc[Scalar[DT]](N)
-    var y = alloc[Scalar[DT]](N)
-    var go = alloc[Scalar[DT]](N)
-    var gi = alloc[Scalar[DT]](N)
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
     x[0] = -2.0;  x[1] = -0.7;  x[2] = -0.3;  x[3] = 0.0
     x[4] =  0.3;  x[5] =  0.5;  x[6] =  0.7;  x[7] = 2.0
     for i in range(N):
         go[i] = Scalar[DT](1.0 + 0.1 * Float64(i))
 
-    var x_t = TileTensor(x, row_major[BATCH, DIM]())
-    var y_t = TileTensor(y, row_major[BATCH, DIM]())
-    var go_t = TileTensor(go, row_major[BATCH, DIM]())
-    var gi_t = TileTensor(gi, row_major[BATCH, DIM]())
+    var xp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](x)
+    var yp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](y)
+    var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
+    var gip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi)
+    var x_t = TileTensor(xp, row_major[BATCH, DIM]())
+    var y_t = TileTensor(yp, row_major[BATCH, DIM]())
+    var go_t = TileTensor(gop, row_major[BATCH, DIM]())
+    var gi_t = TileTensor(gip, row_major[BATCH, DIM]())
 
-    clamp.forward["cpu", BATCH](x_t, y_t)
+    clamp.forward["cpu", BATCH](x_t, output=y_t)
     clamp.vjp["cpu", BATCH](go_t, gi_t)
 
     # Saturated lanes (idx 0, 1, 5, 6, 7) → 0. In-range lanes (2, 3, 4) → go[i].
     # idx 5 has x = 0.5 = max_val (boundary) — the kernel uses strict
     # inequality so this is treated as saturated.
-    var expected = alloc[Scalar[DT]](N)
+    var expected: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
     expected[0] = 0.0;  expected[1] = 0.0
     expected[2] = go[2]; expected[3] = go[3]; expected[4] = go[4]
     expected[5] = 0.0;  expected[6] = 0.0;  expected[7] = 0.0

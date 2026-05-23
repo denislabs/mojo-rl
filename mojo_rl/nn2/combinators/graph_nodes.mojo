@@ -565,8 +565,24 @@ struct BinaryNode[
         in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
+        # Heterogeneous-binary variadic workaround (Mojo nightly): the
+        # variadic *inputs pack in the unified Module trait is
+        # homogeneous — every element must share a single Layout type
+        # for variadic unification to succeed. Mojo compares layouts
+        # symbolically (Self.IN0_DIM vs Self.IN1_DIM are distinct comptime
+        # expressions even when their values match at instantiation), so
+        # passing two row_major[BATCH, IN0_DIM] / row_major[BATCH, IN1_DIM]
+        # tiles fails to unify. A `comptime assert` does NOT help —
+        # Mojo's type system doesn't propagate value-equality into shape
+        # unification. The Layout carried by a variadic TileTensor is
+        # dead metadata once the leaf body unpacks it — leaves only read
+        # `.ptr` and rebuild typed views via
+        # `typed_view[BATCH, IN<i>_DIM]`. So we construct in1_t with the
+        # SAME Layout type as in0_t (Self.IN0_DIM for both), while
+        # pointing at the actual in1 buffer. Same-Layout → unifies.
+        # Same-pointer-semantics → leaf body remains correct.
         var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
-        var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN1_DIM]())
+        var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
         var out_p = self.out_ptr_via()
         var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
         self.op.forward[target, BATCH, POLICY=POLICY](in0_t, in1_t, output=out_t)
@@ -576,12 +592,15 @@ struct BinaryNode[
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
     ](mut self) raises:
+        # Same hetero-binary variadic workaround as forward_via: gi1_t
+        # gets in0's Layout. Leaf body recovers actual shape via
+        # `typed_view_mut[BATCH, Self.IN1_DIM](grad_inputs[1])`.
         var go_p = self.grad_out_ptr_via()
         var gi0_p = self.grad_in0_ptr_via()
         var gi1_p = self.grad_in1_ptr_via()
         var go_t = TileTensor(go_p, row_major[BATCH, Self.OUT_DIM]())
         var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
-        var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN1_DIM]())
+        var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
         self.op.vjp[target, BATCH, POLICY=POLICY](go_t, gi0_t, gi1_t)
 
     def for_each_param_via[
@@ -982,8 +1001,9 @@ struct ExternalBinaryNode[
         in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
+        # Hetero-binary variadic workaround: see BinaryNode.forward_via.
         var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
-        var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN1_DIM]())
+        var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
         var out_p = self.out_ptr_via()
         var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
         var typed_ptr = rebind[UnsafePointer[Self.M, MutAnyOrigin]](
@@ -998,12 +1018,13 @@ struct ExternalBinaryNode[
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
     ](mut self) raises:
+        # Hetero-binary variadic workaround: see BinaryNode.vjp_via.
         var go_p = self.grad_out_ptr_via()
         var gi0_p = self.grad_in0_ptr_via()
         var gi1_p = self.grad_in1_ptr_via()
         var go_t = TileTensor(go_p, row_major[BATCH, Self.OUT_DIM]())
         var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
-        var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN1_DIM]())
+        var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
         var typed_ptr = rebind[UnsafePointer[Self.M, MutAnyOrigin]](
             self._module_ptr
         )

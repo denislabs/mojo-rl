@@ -30,7 +30,7 @@ def test_forward_shape_and_logprob() raises:
         lg_p[k] = Scalar[DT](0.1 + 0.05 * Float64(k))  # tilted but non-confident
     var lg_t = TileTensor(lg_p, row_major[BATCH, N]())
     var out_t = TileTensor(out_p, row_major[BATCH, N + 1]())
-    s.forward["cpu", BATCH](lg_t, out_t)
+    s.forward["cpu", BATCH](lg_t, output=out_t)
 
     for b in range(BATCH):
         var row_sum: Scalar[DT] = 0.0
@@ -84,7 +84,7 @@ def test_sample_distribution_uniform() raises:
         lg_p[k] = 0.0
     var lg_t = TileTensor(lg_p, row_major[BATCH, N]())
     var out_t = TileTensor(out_p, row_major[BATCH, N + 1]())
-    s.forward["cpu", BATCH](lg_t, out_t)
+    s.forward["cpu", BATCH](lg_t, output=out_t)
 
     var counts = InlineArray[Int, N](fill=0)
     for b in range(BATCH):
@@ -129,7 +129,7 @@ def test_logprob_backward_only() raises:
 
     var lg_t = TileTensor(lg_p, row_major[BATCH, N]())
     var out_t = TileTensor(out_p, row_major[BATCH, N + 1]())
-    s.forward["cpu", BATCH](lg_t, out_t)
+    s.forward["cpu", BATCH](lg_t, output=out_t)
 
     # Loss = sum_b log_prob[b]. → grad_log_prob = 1, grad_sample = 0.
     for k in range(BATCH * (N + 1)):
@@ -211,7 +211,7 @@ def test_analytical_sample_branch() raises:
     var out_t = TileTensor(out_p, row_major[BATCH, N + 1]())
     var go_t = TileTensor(go_p, row_major[BATCH, N + 1]())
     var gi_t = TileTensor(gi_p, row_major[BATCH, N]())
-    s.forward["cpu", BATCH](lg_t, out_t)
+    s.forward["cpu", BATCH](lg_t, output=out_t)
     s.vjp["cpu", BATCH](go_t, gi_t)
 
     # Reference: softmax-grad formula.

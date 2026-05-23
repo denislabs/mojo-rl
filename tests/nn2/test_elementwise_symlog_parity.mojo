@@ -31,9 +31,9 @@ def test_forward_parity() raises:
     var old_sym = Symlog[DIM].make[target="cpu", INIT=Zero]()
     var new_sym = Elementwise[DIM, SymlogOp].make[target="cpu", INIT=Zero]()
 
-    var x = alloc[Scalar[DT]](N)
-    var y_old = alloc[Scalar[DT]](N)
-    var y_new = alloc[Scalar[DT]](N)
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y_old: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y_new: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
     # Span large negatives → large positives to exercise both branches
     # plus the magnitude-compression path.
     for i in range(N):
@@ -42,8 +42,8 @@ def test_forward_parity() raises:
     var x_t = TileTensor(x, row_major[BATCH, DIM]())
     var y_old_t = TileTensor(y_old, row_major[BATCH, DIM]())
     var y_new_t = TileTensor(y_new, row_major[BATCH, DIM]())
-    old_sym.forward["cpu", BATCH](x_t, y_old_t)
-    new_sym.forward["cpu", BATCH](x_t, y_new_t)
+    old_sym.forward["cpu", BATCH](x_t, output=y_old_t)
+    new_sym.forward["cpu", BATCH](x_t, output=y_new_t)
 
     var max_diff: Scalar[DT] = 0.0
     for i in range(N):
@@ -67,12 +67,12 @@ def test_backward_parity() raises:
     var old_sym = Symlog[DIM].make[target="cpu", INIT=Zero]()
     var new_sym = Elementwise[DIM, SymlogOp].make[target="cpu", INIT=Zero]()
 
-    var x = alloc[Scalar[DT]](N)
-    var y_old = alloc[Scalar[DT]](N)
-    var y_new = alloc[Scalar[DT]](N)
-    var go = alloc[Scalar[DT]](N)
-    var gi_old = alloc[Scalar[DT]](N)
-    var gi_new = alloc[Scalar[DT]](N)
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y_old: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y_new: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gi_old: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gi_new: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
     for i in range(N):
         x[i] = Scalar[DT](-50.0 + 3.3 * Float64(i))
         go[i] = Scalar[DT](0.5 + 0.05 * Float64(i))
@@ -84,8 +84,8 @@ def test_backward_parity() raises:
     var gi_old_t = TileTensor(gi_old, row_major[BATCH, DIM]())
     var gi_new_t = TileTensor(gi_new, row_major[BATCH, DIM]())
 
-    old_sym.forward["cpu", BATCH](x_t, y_old_t)
-    new_sym.forward["cpu", BATCH](x_t, y_new_t)
+    old_sym.forward["cpu", BATCH](x_t, output=y_old_t)
+    new_sym.forward["cpu", BATCH](x_t, output=y_new_t)
 
     old_sym.vjp["cpu", BATCH](go_t, gi_old_t)
     new_sym.vjp["cpu", BATCH](go_t, gi_new_t)

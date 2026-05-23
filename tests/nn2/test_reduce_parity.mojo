@@ -29,14 +29,14 @@ def test_sum_forward() raises:
     comptime BATCH = 2
     comptime DIM = 4
     var op = Sum[DIM].make[target="cpu", INIT=Zero]()
-    var x = alloc[Scalar[DT]](BATCH * DIM)
-    var y = alloc[Scalar[DT]](BATCH * 1)
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * DIM)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * 1)
     # Row 0: 1+2+3+4 = 10; Row 1: 5+6+7+8 = 26.
     for i in range(BATCH * DIM):
         x[i] = Scalar[DT](Float64(i + 1))
     var x_t = TileTensor(x, row_major[BATCH, DIM]())
     var y_t = TileTensor(y, row_major[BATCH, 1]())
-    op.forward["cpu", BATCH](x_t, y_t)
+    op.forward["cpu", BATCH](x_t, output=y_t)
     assert_true(y[0] == Scalar[DT](10.0), "Sum row 0")
     assert_true(y[1] == Scalar[DT](26.0), "Sum row 1")
     print("  ok")
@@ -47,8 +47,8 @@ def test_sum_backward() raises:
     comptime BATCH = 2
     comptime DIM = 4
     var op = Sum[DIM].make[target="cpu", INIT=Zero]()
-    var go = alloc[Scalar[DT]](BATCH * 1)
-    var gi = alloc[Scalar[DT]](BATCH * DIM)
+    var go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * 1)
+    var gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * DIM)
     go[0] = Scalar[DT](3.0)
     go[1] = Scalar[DT](-2.0)
     var go_t = TileTensor(go, row_major[BATCH, 1]())
@@ -65,13 +65,13 @@ def test_mean_forward() raises:
     comptime BATCH = 2
     comptime DIM = 4
     var op = Mean[DIM].make[target="cpu", INIT=Zero]()
-    var x = alloc[Scalar[DT]](BATCH * DIM)
-    var y = alloc[Scalar[DT]](BATCH * 1)
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * DIM)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * 1)
     for i in range(BATCH * DIM):
         x[i] = Scalar[DT](Float64(i + 1))
     var x_t = TileTensor(x, row_major[BATCH, DIM]())
     var y_t = TileTensor(y, row_major[BATCH, 1]())
-    op.forward["cpu", BATCH](x_t, y_t)
+    op.forward["cpu", BATCH](x_t, output=y_t)
     # Row 0: 10/4 = 2.5; Row 1: 26/4 = 6.5.
     assert_true(y[0] == Scalar[DT](2.5), "Mean row 0")
     assert_true(y[1] == Scalar[DT](6.5), "Mean row 1")
@@ -83,8 +83,8 @@ def test_mean_backward() raises:
     comptime BATCH = 2
     comptime DIM = 4
     var op = Mean[DIM].make[target="cpu", INIT=Zero]()
-    var go = alloc[Scalar[DT]](BATCH * 1)
-    var gi = alloc[Scalar[DT]](BATCH * DIM)
+    var go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * 1)
+    var gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * DIM)
     go[0] = Scalar[DT](4.0)
     go[1] = Scalar[DT](-8.0)
     var go_t = TileTensor(go, row_major[BATCH, 1]())
@@ -105,13 +105,13 @@ def test_sequential_with_sum() raises:
     comptime HID = 4
     comptime MLP = Sequential[Linear[IN, HID], Sum[HID]]
     var net = MLP.make[target="cpu", INIT=Zero]()
-    var x = alloc[Scalar[DT]](BATCH * IN)
-    var y = alloc[Scalar[DT]](BATCH * 1)
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * IN)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * 1)
     for i in range(BATCH * IN):
         x[i] = Scalar[DT](0.1 * Float64(i + 1))
     var x_t = TileTensor(x, row_major[BATCH, IN]())
     var y_t = TileTensor(y, row_major[BATCH, 1]())
-    net.forward["cpu", BATCH](x_t, y_t)
+    net.forward["cpu", BATCH](x_t, output=y_t)
     # Linear[IN, HID] with Zero init outputs 0 (bias=0, weight=0), so
     # Sum produces 0. We're checking the call path, not the math.
     assert_true(y[0] == Scalar[DT](0.0), "Sequential Linear->Sum yields 0 with Zero init")

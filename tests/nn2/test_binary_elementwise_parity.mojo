@@ -42,15 +42,15 @@ def test_binary_add_parity() raises:
         target="cpu", INIT=Zero
     ]()
 
-    var x = alloc[Scalar[DT]](N)
-    var y = alloc[Scalar[DT]](N)
-    var go = alloc[Scalar[DT]](N)
-    var z_old = alloc[Scalar[DT]](N)
-    var z_new = alloc[Scalar[DT]](N)
-    var gx_old = alloc[Scalar[DT]](N)
-    var gx_new = alloc[Scalar[DT]](N)
-    var gy_old = alloc[Scalar[DT]](N)
-    var gy_new = alloc[Scalar[DT]](N)
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var z_old: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var z_new: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gx_old: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gx_new: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gy_old: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gy_new: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
     for i in range(N):
         x[i] = Scalar[DT](-2.0 + 0.13 * Float64(i))
         y[i] = Scalar[DT](0.5 + 0.07 * Float64(i))
@@ -66,8 +66,8 @@ def test_binary_add_parity() raises:
     var gy_old_t = TileTensor(gy_old, row_major[BATCH, DIM]())
     var gy_new_t = TileTensor(gy_new, row_major[BATCH, DIM]())
 
-    old_op.forward["cpu", BATCH](x_t, y_t, z_old_t)
-    new_op.forward["cpu", BATCH](x_t, y_t, z_new_t)
+    old_op.forward["cpu", BATCH](x_t, y_t, output=z_old_t)
+    new_op.forward["cpu", BATCH](x_t, y_t, output=z_new_t)
     old_op.vjp["cpu", BATCH](go_t, gx_old_t, gy_old_t)
     new_op.vjp["cpu", BATCH](go_t, gx_new_t, gy_new_t)
 
@@ -92,15 +92,15 @@ def test_binary_sub_parity() raises:
         target="cpu", INIT=Zero
     ]()
 
-    var x = alloc[Scalar[DT]](N)
-    var y = alloc[Scalar[DT]](N)
-    var go = alloc[Scalar[DT]](N)
-    var z_old = alloc[Scalar[DT]](N)
-    var z_new = alloc[Scalar[DT]](N)
-    var gx_old = alloc[Scalar[DT]](N)
-    var gx_new = alloc[Scalar[DT]](N)
-    var gy_old = alloc[Scalar[DT]](N)
-    var gy_new = alloc[Scalar[DT]](N)
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var z_old: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var z_new: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gx_old: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gx_new: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gy_old: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gy_new: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
     for i in range(N):
         x[i] = Scalar[DT](-2.0 + 0.13 * Float64(i))
         y[i] = Scalar[DT](0.5 + 0.07 * Float64(i))
@@ -116,8 +116,8 @@ def test_binary_sub_parity() raises:
     var gy_old_t = TileTensor(gy_old, row_major[BATCH, DIM]())
     var gy_new_t = TileTensor(gy_new, row_major[BATCH, DIM]())
 
-    old_op.forward["cpu", BATCH](x_t, y_t, z_old_t)
-    new_op.forward["cpu", BATCH](x_t, y_t, z_new_t)
+    old_op.forward["cpu", BATCH](x_t, y_t, output=z_old_t)
+    new_op.forward["cpu", BATCH](x_t, y_t, output=z_new_t)
     old_op.vjp["cpu", BATCH](go_t, gx_old_t, gy_old_t)
     new_op.vjp["cpu", BATCH](go_t, gx_new_t, gy_new_t)
 
@@ -142,15 +142,15 @@ def test_binary_elem_min_parity() raises:
         target="cpu", INIT=Zero
     ]()
 
-    var x = alloc[Scalar[DT]](N)
-    var y = alloc[Scalar[DT]](N)
-    var go = alloc[Scalar[DT]](N)
-    var z_old = alloc[Scalar[DT]](N)
-    var z_new = alloc[Scalar[DT]](N)
-    var gx_old = alloc[Scalar[DT]](N)
-    var gx_new = alloc[Scalar[DT]](N)
-    var gy_old = alloc[Scalar[DT]](N)
-    var gy_new = alloc[Scalar[DT]](N)
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var z_old: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var z_new: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gx_old: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gx_new: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gy_old: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gy_new: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
     # Interleave so the per-lane choice alternates between branches.
     for i in range(N):
         x[i] = Scalar[DT](-2.0 + 0.13 * Float64(i))
@@ -167,8 +167,8 @@ def test_binary_elem_min_parity() raises:
     var gy_old_t = TileTensor(gy_old, row_major[BATCH, DIM]())
     var gy_new_t = TileTensor(gy_new, row_major[BATCH, DIM]())
 
-    old_op.forward["cpu", BATCH](x_t, y_t, z_old_t)
-    new_op.forward["cpu", BATCH](x_t, y_t, z_new_t)
+    old_op.forward["cpu", BATCH](x_t, y_t, output=z_old_t)
+    new_op.forward["cpu", BATCH](x_t, y_t, output=z_new_t)
     old_op.vjp["cpu", BATCH](go_t, gx_old_t, gy_old_t)
     new_op.vjp["cpu", BATCH](go_t, gx_new_t, gy_new_t)
 

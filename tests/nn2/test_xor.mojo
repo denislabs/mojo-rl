@@ -75,7 +75,7 @@ def test_xor_converges() raises:
     for step_i in range(N_STEPS):
         optim.zero_grad["cpu"](net)
 
-        net.forward["cpu", BATCH](input, output)
+        net.forward["cpu", BATCH](input, output=output)
         var L = loss_fn.forward["cpu", BATCH](output, targets)
         if step_i == 0:
             initial_loss = L
@@ -91,7 +91,7 @@ def test_xor_converges() raises:
         + " final=" + String(final_loss))
 
     # ── Inference: check accuracy ────────────────────────────────────
-    net.forward["cpu", BATCH](input, output)
+    net.forward["cpu", BATCH](input, output=output)
     var n_correct = 0
     var expected_class = List[Int]()
     expected_class.append(0)

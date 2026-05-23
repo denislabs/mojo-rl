@@ -56,7 +56,7 @@ def test_forward_against_manual() raises:
     var x_t = TileTensor(x_p, row_major[BATCH, IN_DIM]())
     var h_t = TileTensor(h_p, row_major[BATCH, H]())
     var out_t = TileTensor(out_p, row_major[BATCH, H]())
-    g.forward["cpu", BATCH](x_t, h_t, out_t)
+    g.forward["cpu", BATCH](x_t, h_t, output=out_t)
 
     var max_err: Scalar[DT] = 0.0
     for b in range(BATCH):
@@ -131,12 +131,12 @@ def test_backward_fd_gradcheck() raises:
     # Zero param grads (fresh start).
     g.zero_grad["cpu"]()
 
-    g.forward["cpu", BATCH](x_t, h_t, out_t)
+    g.forward["cpu", BATCH](x_t, h_t, output=out_t)
     g.vjp["cpu", BATCH](go_t, dx_t, dh_t)
 
     @parameter
     def loss_with_inputs() raises -> Scalar[DT]:
-        g.forward["cpu", BATCH](x_t, h_t, out_t)
+        g.forward["cpu", BATCH](x_t, h_t, output=out_t)
         var L: Scalar[DT] = 0.0
         for k in range(BATCH * H):
             L += out_p[k]
