@@ -18,6 +18,7 @@ from .map_params import polyak_update, hard_copy_params
 from .online_target_pair import OnlineTargetPair
 from .param import Param, IsParam
 from .walkers import for_each_param_auto, zero_grad_auto
+from .grad_clip import clip_grads_auto
 from .element_op import ElementOp
 from .reduce_op import ReduceOp
 from .scratch import Scratch, IsScratch

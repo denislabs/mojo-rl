@@ -18,6 +18,8 @@ struct DDPGConfig(Saveable):
     var action_scale:         SaveScalar[DT]
     var noise_scale:          SaveScalar[DT]
     var initial_episode_fill: SaveScalar[DT]
+    # Phase B.3 — see SACConfig.max_grad_norm.
+    var max_grad_norm:        SaveScalar[DT]
     var learning_starts:      SaveI
     var window_size:          SaveI
 
@@ -31,6 +33,7 @@ struct DDPGConfig(Saveable):
             action_scale=SaveScalar[DT](Scalar[DT](1.0)),
             noise_scale=SaveScalar[DT](Scalar[DT](0.1)),
             initial_episode_fill=SaveScalar[DT](Scalar[DT](-1250.0)),
+            max_grad_norm=SaveScalar[DT](Scalar[DT](0.0)),
             learning_starts=SaveI(1_000),
             window_size=SaveI(10),
         )

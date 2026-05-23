@@ -20,6 +20,8 @@ struct TD3Config(Saveable):
     var target_policy_noise:  SaveScalar[DT]
     var target_noise_clip:    SaveScalar[DT]
     var initial_episode_fill: SaveScalar[DT]
+    # Phase B.3 — see SACConfig.max_grad_norm.
+    var max_grad_norm:        SaveScalar[DT]
     var policy_delay:         SaveI
     var learning_starts:      SaveI
     var window_size:          SaveI
@@ -36,6 +38,7 @@ struct TD3Config(Saveable):
             target_policy_noise=SaveScalar[DT](Scalar[DT](0.2)),
             target_noise_clip=SaveScalar[DT](Scalar[DT](0.5)),
             initial_episode_fill=SaveScalar[DT](Scalar[DT](-1250.0)),
+            max_grad_norm=SaveScalar[DT](Scalar[DT](0.0)),
             policy_delay=SaveI(2),
             learning_starts=SaveI(1_000),
             window_size=SaveI(10),

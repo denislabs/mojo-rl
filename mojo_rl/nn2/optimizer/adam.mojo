@@ -26,6 +26,7 @@ from layout import TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import ParamVisitor
+from ..core.grad_clip import clip_grads_auto
 from ..core.module import Module
 from ..core.optimizer import Optimizer
 from ..core.saveable import Saveable
@@ -311,6 +312,15 @@ struct Adam(Optimizer, Saveable):
     var beta1_pow_t: Scalar[DT]
     var beta2_pow_t: Scalar[DT]
 
+    # Phase B.3 — global L2 grad-norm clip threshold.
+    # `0.0` (default) means disabled — `Adam.step` skips the clip walker
+    # entirely, preserving bit-identity with pre-B.3 behaviour. Set on
+    # the optimizer instance after `make`, typically wired from the
+    # trainer's Config struct (`SACConfig.max_grad_norm` etc.).
+    # CPU only: GPU `step` raises when this is > 0 (the clip walker is
+    # CPU-only in B.3). See `mojo_rl/nn2/core/grad_clip.mojo`.
+    var max_grad_norm: Scalar[DT]
+
     var ts: TargetStorage
 
     def __init__(out self):
@@ -327,6 +337,7 @@ struct Adam(Optimizer, Saveable):
         self.eps = Scalar[DT](1e-8)
         self.beta1_pow_t = Scalar[DT](1.0)
         self.beta2_pow_t = Scalar[DT](1.0)
+        self.max_grad_norm = Scalar[DT](0.0)
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -391,6 +402,11 @@ struct Adam(Optimizer, Saveable):
         self.beta2_pow_t = self.beta2_pow_t * self.beta2
         var bc1: Scalar[DT] = Scalar[DT](1.0) - self.beta1_pow_t
         var bc2: Scalar[DT] = Scalar[DT](1.0) - self.beta2_pow_t
+
+        # Phase B.3 — global grad-norm clip. No-op when `max_grad_norm == 0`
+        # (the default sentinel) → bit-identical to pre-B.3 behaviour.
+        # CPU only: GPU raises if max_grad_norm > 0.
+        _ = clip_grads_auto[M, target](model, self.max_grad_norm)
 
         comptime if target == "cpu":
             var visitor = _AdamCPUStepVisitor(

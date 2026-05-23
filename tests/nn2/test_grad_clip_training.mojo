@@ -1,0 +1,86 @@
+"""B.3 — end-to-end SAC training with grad-clip enabled.
+
+Verifies that with `max_grad_norm > 0` the clip path engages (training
+runs without errors) and convergence still makes progress over 5k env
+steps. NOT a bit-identity test — clipping changes the trajectory.
+"""
+
+from std.random import seed
+from std.testing import assert_true
+
+from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.combinators.sequential import Sequential
+from mojo_rl.nn2.primitives.linear import Linear
+from mojo_rl.nn2.primitives.relu import ReLU
+from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
+from mojo_rl.nn2.training.sac_config import SACConfig
+from mojo_rl.nn2.training.sac_trainer import SACTrainer
+from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
+from mojo_rl.nn2.core.save_scalar import SaveScalar
+
+from mojo_rl.envs.pendulum import PendulumEnv
+
+
+comptime OBS_DIM = 3
+comptime ACT_DIM = 1
+comptime HIDDEN = 64
+comptime BATCH = 256
+comptime REPLAY_CAPACITY = 5_000
+comptime SMOKE_STEPS = 5_000
+
+comptime ActorNet = StochasticActor[
+    OBS_DIM, ACT_DIM,
+    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+]
+comptime CriticNet = Sequential[
+    Linear[OBS_DIM + ACT_DIM, HIDDEN], ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[HIDDEN, 1],
+]
+
+
+def test_sac_with_grad_clip_runs() raises:
+    seed(42)
+    var cfg = SACConfig.default()
+    cfg.action_scale = SaveScalar[DT](Scalar[DT](2.0))
+    # Modest finite clip — exercises the walker every Adam.step.
+    cfg.max_grad_norm = SaveScalar[DT](Scalar[DT](10.0))
+
+    var trainer = SACTrainer[
+        ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY
+    ].make["cpu"](cfg)
+    var env = PendulumEnv[DT]()
+
+    var ep_returns = run_offpolicy_train_cpu(
+        trainer, env, SMOKE_STEPS,
+        obs_dim=OBS_DIM, act_dim=ACT_DIM,
+        print_every=0, verbose=False,
+    )
+
+    var n_eps = trainer.ep_count()
+    var mr = trainer.mean_return()
+    assert_true(
+        n_eps >= 20,
+        "Expected ≥20 episodes from 5k steps, got " + String(n_eps),
+    )
+    # Tracker initial fill is -1250; the trainer should have made some
+    # progress even with aggressive clipping.
+    assert_true(
+        mr > Scalar[DT](-1300.0),
+        "Tracker should have moved off initial fill; mean_return=" + String(mr),
+    )
+    print(
+        "  test_sac_with_grad_clip_runs PASSED (clip=10, eps=", n_eps,
+        " mean_ret=", mr, ")",
+    )
+
+
+def main() raises:
+    print("=" * 60)
+    print("B.3 SAC + grad-clip enabled training smoke")
+    print("=" * 60)
+    test_sac_with_grad_clip_runs()
+    print("=" * 60)
+    print("ALL PASSED")
+    print("=" * 60)

@@ -49,7 +49,7 @@ explosion trap (memory: `feedback_mojo_function_inline_call_explosion` —
 sub-method stays under the threshold.
 """
 
-from std.math import exp as fexp, log as flog
+from std.math import exp as fexp, log as flog, tanh as ftanh
 from std.memory import alloc
 from std.random import random_float64
 from std.time import perf_counter_ns
@@ -72,6 +72,7 @@ from ..core.metric import LogScalar
 from .episode_tracker import EpisodeTracker
 from .sac_config import SACConfig
 from .sac_metrics import SACMetrics
+from .driver_cpu import OffPolicyTrainable, OffPolicyTrainableGpu
 from .target_y_block import TargetYBlock
 from .timer import Timer
 
@@ -83,7 +84,7 @@ struct SACTrainer[
     ACT_DIM: Int,
     BATCH: Int,
     REPLAY_CAPACITY: Int,
-](Movable & ImplicitlyDestructible):
+](OffPolicyTrainable, OffPolicyTrainableGpu):
     comptime SA_DIM = Self.OBS_DIM + Self.ACT_DIM
 
     # Timer section indices. Order matches `add_section` calls in `make`.
@@ -257,6 +258,7 @@ struct SACTrainer[
             learning_starts=config.learning_starts.v,
             window_size=config.window_size.v,
             initial_episode_fill=config.initial_episode_fill.v,
+            max_grad_norm=config.max_grad_norm.v,
         )
 
     @staticmethod
@@ -277,6 +279,7 @@ struct SACTrainer[
             learning_starts=config.learning_starts.v,
             window_size=config.window_size.v,
             initial_episode_fill=config.initial_episode_fill.v,
+            max_grad_norm=config.max_grad_norm.v,
         )
 
     @staticmethod
@@ -292,10 +295,15 @@ struct SACTrainer[
         learning_starts: Int = 1_000,
         window_size: Int = 10,
         initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+        max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises -> Self:
         """CPU factory. Builds nets via Xavier init, 3 Adams + 1 ScalarAdam,
         the Phase 9A actor-loss block, MSE loss, replay buffer, and tracker.
-        Allocates all training scratch up front (no per-step allocation)."""
+        Allocates all training scratch up front (no per-step allocation).
+
+        `max_grad_norm` (Phase B.3): global L2 grad-norm clip applied to
+        the actor + both critic optimizers. Default 0.0 → disabled
+        (bit-identical to pre-B.3 behaviour)."""
         comptime assert target == "cpu", (
             "SACTrainer.make[target='gpu'] requires a DeviceContext"
         )
@@ -309,10 +317,13 @@ struct SACTrainer[
         ]()
         t.actor_opt = Adam.make[target="cpu", M=Self.ACTOR](t.actor)
         t.actor_opt.lr = actor_lr
+        t.actor_opt.max_grad_norm = max_grad_norm
         t.critic1_opt = Adam.make[target="cpu", M=Self.CRITIC](t.pair1.online)
         t.critic1_opt.lr = critic_lr
+        t.critic1_opt.max_grad_norm = max_grad_norm
         t.critic2_opt = Adam.make[target="cpu", M=Self.CRITIC](t.pair2.online)
         t.critic2_opt.lr = critic_lr
+        t.critic2_opt.max_grad_norm = max_grad_norm
         t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
         t.actor_loss = SACActorLoss[
             Self.ACTOR, Self.CRITIC, Self.BATCH
@@ -363,6 +374,7 @@ struct SACTrainer[
         learning_starts: Int = 1_000,
         window_size: Int = 10,
         initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+        max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises -> Self:
         """GPU factory. Builds GPU nets + Adams, GPU-allocated critic
         update block, GPU sub-allocated SACActorLoss + TargetYBlock.
@@ -386,14 +398,17 @@ struct SACTrainer[
         ](ctx)
         t.actor_opt = Adam.make[target="gpu", M=Self.ACTOR](t.actor, ctx)
         t.actor_opt.lr = actor_lr
+        t.actor_opt.max_grad_norm = max_grad_norm
         t.critic1_opt = Adam.make[target="gpu", M=Self.CRITIC](
             t.pair1.online, ctx
         )
         t.critic1_opt.lr = critic_lr
+        t.critic1_opt.max_grad_norm = max_grad_norm
         t.critic2_opt = Adam.make[target="gpu", M=Self.CRITIC](
             t.pair2.online, ctx
         )
         t.critic2_opt.lr = critic_lr
+        t.critic2_opt.max_grad_norm = max_grad_norm
         t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
         t.actor_loss = SACActorLoss[
             Self.ACTOR, Self.CRITIC, Self.BATCH
@@ -516,6 +531,107 @@ struct SACTrainer[
                     a = -self.action_scale
                 action_out[j] = a
 
+    def select_action(
+        mut self,
+        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        step_idx: Int,
+    ) raises:
+        """Non-parametric overload — forwards to the CPU path.
+
+        Required by the `OffPolicyTrainable` trait surface used by
+        `driver_cpu.run_offpolicy_train_cpu`. Mojo trait conformance is
+        strict: methods with comptime params do NOT match non-parametric
+        trait signatures even when a default is provided. This thin
+        wrapper closes that gap without changing struct layout."""
+        self.select_action["cpu"](obs, action_out, step_idx)
+
+    def select_greedy_action(
+        mut self,
+        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """Phase B.2 — deterministic greedy action for eval (CPU).
+
+        SAC's actor outputs [mean, log_std] (2*ACT_DIM). The training
+        path samples via rsample (tanh(mean + std·N(0,1))); the greedy
+        eval path uses the mode of the squashed Gaussian, which is
+        tanh(mean), scaled by `action_scale`. No log_std consumed, no
+        Gaussian sample, no log_prob produced — purely deterministic.
+
+        Clamps to ±action_scale as a safety net (tanh already bounds to
+        ±1 so the clamp is redundant in the well-behaved case, but
+        retained to mirror `select_action`'s contract)."""
+        for d in range(Self.OBS_DIM):
+            self._ob1[d] = obs[d]
+        var ob1_t = TileTensor(self._ob1, row_major[1, Self.OBS_DIM]())
+        var ao1_t = TileTensor(self._ao1, row_major[1, 2 * Self.ACT_DIM]())
+        self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
+        for j in range(Self.ACT_DIM):
+            var mean = self._ao1[j]
+            var a = ftanh(mean) * self.action_scale
+            if a > self.action_scale:
+                a = self.action_scale
+            elif a < -self.action_scale:
+                a = -self.action_scale
+            action_out[j] = a
+
+    # ─── Phase B.5 — non-parametric GPU wrappers (trait conformance) ──
+    # Mirror the CPU wrappers but route to ["gpu"]. Required because
+    # Mojo trait conformance doesn't accept parametric methods (even
+    # with defaults) as matching non-parametric trait signatures. The
+    # wrappers are pure pass-throughs.
+
+    def select_action_gpu(
+        mut self,
+        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        step_idx: Int,
+    ) raises:
+        self.select_action["gpu"](obs, action_out, step_idx)
+
+    def train_step_gpu(mut self, step_idx: Int) raises -> Bool:
+        return self.train_step["gpu"](step_idx)
+
+    def select_greedy_action_gpu(
+        mut self,
+        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """Phase B.5 — deterministic greedy action for eval (GPU).
+
+        Same math as `select_greedy_action` (tanh(mean) * action_scale)
+        but executes the actor forward against device buffers. Upload
+        obs → device, forward, download head, apply tanh + clamp on
+        host. Single-step path is small (BATCH=1), so the launch
+        overhead dominates over the actual compute — host-side tanh on
+        ACT_DIM values is cheap and avoids a kernel launch."""
+        var ctx = self.target_y_block.ts.ctx.value()
+        for d in range(Self.OBS_DIM):
+            self._ob1[d] = obs[d]
+        var ob1_dev = self._ob1_dev.value()
+        ctx.enqueue_copy(ob1_dev, self._ob1)
+        var ob1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            ob1_dev.unsafe_ptr()
+        )
+        var ao1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._ao1_dev.value().unsafe_ptr()
+        )
+        var ob1_t = TileTensor(ob1_p, row_major[1, Self.OBS_DIM]())
+        var ao1_t = TileTensor(ao1_p, row_major[1, 2 * Self.ACT_DIM]())
+        self.actor.forward["gpu", 1](ob1_t, output=ao1_t)
+        # Download just the mean half (first ACT_DIM elements) into _ao1.
+        ctx.enqueue_copy(self._ao1, self._ao1_dev.value())
+        ctx.synchronize()
+        for j in range(Self.ACT_DIM):
+            var mean = self._ao1[j]
+            var a = ftanh(mean) * self.action_scale
+            if a > self.action_scale:
+                a = self.action_scale
+            elif a < -self.action_scale:
+                a = -self.action_scale
+            action_out[j] = a
+
     def record(
         mut self,
         obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -536,6 +652,11 @@ struct SACTrainer[
     # Training step + sub-steps. Each sub-step stays under the Mojo
     # ~20-sequential-def-raises inline-explosion threshold.
     # ──────────────────────────────────────────────────────────────────
+
+    def train_step(mut self, step_idx: Int) raises -> Bool:
+        """Non-parametric overload — forwards to CPU path. See
+        `select_action` doc for the trait-conformance rationale."""
+        return self.train_step["cpu"](step_idx)
 
     def train_step[target: StaticString = "cpu"](
         mut self, step_idx: Int,

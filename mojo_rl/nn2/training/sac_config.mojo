@@ -33,6 +33,12 @@ struct SACConfig(Saveable):
     var init_alpha:           SaveScalar[DT]
     var target_entropy:       SaveScalar[DT]
     var initial_episode_fill: SaveScalar[DT]
+    # Phase B.3 — global L2 grad-norm clip applied uniformly to all 3
+    # Adam optimizers (actor, critic1, critic2). `0.0` (default) is the
+    # disabled sentinel — preserves bit-identity. Production runs would
+    # typically set this to a finite value (e.g. 40.0 for CleanRL-style
+    # SAC) once tuned.
+    var max_grad_norm:        SaveScalar[DT]
     var learning_starts:      SaveI
     var window_size:          SaveI
 
@@ -52,6 +58,7 @@ struct SACConfig(Saveable):
             init_alpha=SaveScalar[DT](Scalar[DT](0.2)),
             target_entropy=SaveScalar[DT](Scalar[DT](-1.0)),
             initial_episode_fill=SaveScalar[DT](Scalar[DT](-1250.0)),
+            max_grad_norm=SaveScalar[DT](Scalar[DT](0.0)),
             learning_starts=SaveI(1_000),
             window_size=SaveI(10),
         )

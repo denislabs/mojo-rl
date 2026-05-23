@@ -42,6 +42,7 @@ from mojo_rl.core.logger import Logger, NoOpLogger
 from ..core.log_bundle import log_bundle
 from ..core.metric import LogScalar
 from .action_sampling_block import ActionSamplingBlock
+from .driver_cpu import OffPolicyTrainable
 from .episode_tracker import EpisodeTracker
 from .td3_config import TD3Config
 from .td3_metrics import TD3Metrics
@@ -55,7 +56,7 @@ struct TD3Trainer[
     ACT_DIM: Int,
     BATCH: Int,
     REPLAY_CAPACITY: Int,
-](Movable & ImplicitlyDestructible):
+](OffPolicyTrainable):
     comptime SA_DIM = Self.OBS_DIM + Self.ACT_DIM
 
     # ─── Networks ─────────────────────────────────────────────────────
@@ -187,6 +188,7 @@ struct TD3Trainer[
             learning_starts=config.learning_starts.v,
             window_size=config.window_size.v,
             initial_episode_fill=config.initial_episode_fill.v,
+            max_grad_norm=config.max_grad_norm.v,
         )
 
     @staticmethod
@@ -203,6 +205,7 @@ struct TD3Trainer[
         learning_starts: Int = 1_000,
         window_size: Int = 10,
         initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+        max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises -> Self:
         comptime assert target == "cpu", "TD3Trainer: CPU only"
         var t = Self()
@@ -219,10 +222,13 @@ struct TD3Trainer[
         t.opts = OptimizerBundle[Adam].make_default["cpu"]()
         t.opts.items[0] = Adam.make[target="cpu", M=Self.ACTOR](t.actor_pair.online)
         t.opts.items[0].lr = actor_lr
+        t.opts.items[0].max_grad_norm = max_grad_norm
         t.critic1_opt = Adam.make[target="cpu", M=Self.CRITIC](t.pair1.online)
         t.critic1_opt.lr = critic_lr
+        t.critic1_opt.max_grad_norm = max_grad_norm
         t.critic2_opt = Adam.make[target="cpu", M=Self.CRITIC](t.pair2.online)
         t.critic2_opt.lr = critic_lr
+        t.critic2_opt.max_grad_norm = max_grad_norm
 
         t.actor_loss = DDPGActorLoss[
             Self.ACTOR, Self.CRITIC, Self.BATCH
@@ -272,6 +278,21 @@ struct TD3Trainer[
             self.actor_pair.online, obs, action_out,
             step_idx=step_idx, learning_starts=self.learning_starts,
             action_scale=self.action_scale, noise_scale=self.exploration_noise,
+        )
+
+    def select_greedy_action(
+        mut self,
+        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """Phase B.2 — deterministic greedy action for eval.
+
+        TD3's actor is deterministic; eval skips the Gaussian
+        exploration noise added by `select_action`."""
+        self.policy_head.select_deterministic["cpu"](
+            self.actor_pair.online, obs, action_out,
+            step_idx=1, learning_starts=0,
+            action_scale=self.action_scale,
         )
 
     def record(

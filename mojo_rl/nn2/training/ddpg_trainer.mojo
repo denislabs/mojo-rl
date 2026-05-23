@@ -48,6 +48,7 @@ from .action_sampling_block import ActionSamplingBlock
 from .ddpg_config import DDPGConfig
 from .ddpg_metrics import DDPGMetrics
 from .ddpg_target_y_block import DDPGTargetYBlock
+from .driver_cpu import OffPolicyTrainable
 from .episode_tracker import EpisodeTracker
 
 
@@ -58,7 +59,7 @@ struct DDPGTrainer[
     ACT_DIM: Int,
     BATCH: Int,
     REPLAY_CAPACITY: Int,
-](Movable & ImplicitlyDestructible):
+](OffPolicyTrainable):
     comptime SA_DIM = Self.OBS_DIM + Self.ACT_DIM
 
     # ─── Networks ─────────────────────────────────────────────────────
@@ -168,6 +169,7 @@ struct DDPGTrainer[
             learning_starts=config.learning_starts.v,
             window_size=config.window_size.v,
             initial_episode_fill=config.initial_episode_fill.v,
+            max_grad_norm=config.max_grad_norm.v,
         )
 
     @staticmethod
@@ -181,6 +183,7 @@ struct DDPGTrainer[
         learning_starts: Int = 1_000,
         window_size: Int = 10,
         initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+        max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises -> Self:
         comptime assert target == "cpu", "DDPGTrainer: CPU only"
         var t = Self()
@@ -195,10 +198,12 @@ struct DDPGTrainer[
         t.opts = OptimizerBundle[Adam, Adam].make_default["cpu"]()
         t.opts.items[0] = Adam.make[target="cpu", M=Self.ACTOR](t.actor_pair.online)
         t.opts.items[0].lr = actor_lr
+        t.opts.items[0].max_grad_norm = max_grad_norm
         t.opts.items[1] = Adam.make[target="cpu", M=Self.CRITIC](
             t.critic_pair.online
         )
         t.opts.items[1].lr = critic_lr
+        t.opts.items[1].max_grad_norm = max_grad_norm
 
         t.actor_loss = DDPGActorLoss[
             Self.ACTOR, Self.CRITIC, Self.BATCH
@@ -245,6 +250,24 @@ struct DDPGTrainer[
             self.actor_pair.online, obs, action_out,
             step_idx=step_idx, learning_starts=self.learning_starts,
             action_scale=self.action_scale, noise_scale=self.noise_scale,
+        )
+
+    def select_greedy_action(
+        mut self,
+        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """Phase B.2 — deterministic greedy action for eval.
+
+        DDPG's actor is already deterministic (one ACT_DIM output);
+        eval just forwards through the online actor without adding the
+        Gaussian exploration noise that `select_action` injects. Uses
+        `ActionSamplingBlock.select_deterministic` with `step_idx`
+        forced past the warmup window."""
+        self.policy_head.select_deterministic["cpu"](
+            self.actor_pair.online, obs, action_out,
+            step_idx=1, learning_starts=0,
+            action_scale=self.action_scale,
         )
 
     def record(
