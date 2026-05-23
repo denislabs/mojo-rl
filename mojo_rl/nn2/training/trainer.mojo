@@ -583,11 +583,15 @@ struct Trainer[
         var x_base = test_x.ptr
         var n_correct: Int = 0
         for b in range(N_BATCHES):
-            var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
-            var input = TileTensor(x_ptr, row_major[Self.BATCH, Self.IN_DIM]())
+            var x_ptr_my = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                x_base + b * Self.BATCH * Self.IN_DIM
+            )
+            var out_ptr_my = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.output_dev.value().unsafe_ptr()
+            )
+            var input = TileTensor(x_ptr_my, row_major[Self.BATCH, Self.IN_DIM]())
             var output = TileTensor(
-                self.output_dev.value().unsafe_ptr(),
-                row_major[Self.BATCH, Self.OUT_DIM](),
+                out_ptr_my, row_major[Self.BATCH, Self.OUT_DIM](),
             )
             self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 input, output=output
