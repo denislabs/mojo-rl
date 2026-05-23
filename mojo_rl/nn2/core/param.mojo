@@ -35,6 +35,7 @@ from layout import TileTensor, row_major
 
 from ..constants import DT
 from .param_visitor import ParamVisitor
+from .saveable import Saveable
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -74,7 +75,7 @@ trait IsParam(Movable & ImplicitlyDestructible):
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam):
+struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam, Saveable):
     var value: List[Scalar[DT]]
     var grad: List[Scalar[DT]]
     var value_dev: Optional[DeviceBuffer[DT]]
@@ -169,3 +170,54 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam):
                 g_ptr[k] = Scalar[DT](0.0)
         else:
             self.grad_dev.value().enqueue_fill(0.0)
+
+    # ----- Saveable interface (CPU only) ---------------------------------
+    # Format: a section header line then SIZE value lines.
+    #     <prefix>#size=<SIZE>
+    #     v0
+    #     v1
+    #     ...
+    # The header lets `load` validate that the saved Param's size matches
+    # the in-memory Param's compile-time `SIZE` (catches topology drift
+    # between save and load).
+    #
+    # GPU Params: trainer is responsible for downloading device → host
+    # storage (into `self.value`) before calling `save`, and uploading
+    # back after `load`. Mirrors v1's CPU-only scope.
+
+    def save(self, mut out: String, prefix: String) raises:
+        out += prefix + "#size=" + String(Self.SIZE) + "\n"
+        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.value.unsafe_ptr()
+        )
+        for k in range(Self.SIZE):
+            out += String(p_ptr[k]) + "\n"
+
+    def load(
+        mut self, lines: List[String], mut idx: Int, prefix: String,
+    ) raises:
+        if idx >= len(lines):
+            raise Error(
+                "Param.load: out of input. Expected section header `"
+                + prefix + "#size=" + String(Self.SIZE)
+                + "` at idx " + String(idx)
+            )
+        var header = lines[idx]
+        var expected = prefix + "#size=" + String(Self.SIZE)
+        if header != expected:
+            raise Error(
+                "Param.load: section-header mismatch at idx " + String(idx)
+                + ". Expected `" + expected + "`, got `" + header + "`"
+            )
+        idx += 1
+        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.value.unsafe_ptr()
+        )
+        for k in range(Self.SIZE):
+            if idx >= len(lines):
+                raise Error(
+                    "Param.load: short read at element " + String(k)
+                    + " of " + String(Self.SIZE) + " for `" + prefix + "`"
+                )
+            p_ptr[k] = Scalar[DT](atof(lines[idx]))
+            idx += 1

@@ -38,8 +38,13 @@ from ..optimizer.optimizer_bundle import OptimizerBundle
 from ..loss.critic_update_block import TwinCriticUpdateBlock
 from ..loss.ddpg_actor_loss import DDPGActorLoss
 from ..data.cpu_replay import CPUReplay
+from mojo_rl.core.logger import Logger, NoOpLogger
+from ..core.log_bundle import log_bundle
+from ..core.metric import LogScalar
 from .action_sampling_block import ActionSamplingBlock
 from .episode_tracker import EpisodeTracker
+from .td3_config import TD3Config
+from .td3_metrics import TD3Metrics
 from .td3_target_y_block import TD3TargetYBlock
 
 
@@ -165,6 +170,24 @@ struct TD3Trainer[
         self._critic_L_accum = Scalar[DT](0.0)
         self._actor_updates = 0
         self._critic_updates = 0
+
+    @staticmethod
+    def make[target: StaticString](config: TD3Config) raises -> Self:
+        """Phase A.4 — Config-driven factory. Forwards to the keyword path."""
+        return Self.make[target](
+            actor_lr=config.actor_lr.v,
+            critic_lr=config.critic_lr.v,
+            gamma=config.gamma.v,
+            tau=config.tau.v,
+            action_scale=config.action_scale.v,
+            exploration_noise=config.exploration_noise.v,
+            target_policy_noise=config.target_policy_noise.v,
+            target_noise_clip=config.target_noise_clip.v,
+            policy_delay=config.policy_delay.v,
+            learning_starts=config.learning_starts.v,
+            window_size=config.window_size.v,
+            initial_episode_fill=config.initial_episode_fill.v,
+        )
 
     @staticmethod
     def make[target: StaticString](
@@ -332,3 +355,31 @@ struct TD3Trainer[
         self._actor_updates = 0
         self._critic_updates = 0
         return out
+
+    def flush_metrics[L: Logger = NoOpLogger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        step: Int = 0,
+    ) raises -> TD3Metrics:
+        """Phase A.5 — Structured-logging variant. TD3 has separate
+        actor/critic update counts (policy delay) — both surface in
+        the bundle as their own LogScalar fields."""
+        var n_a = self._actor_updates if self._actor_updates > 0 else 1
+        var n_c = self._critic_updates if self._critic_updates > 0 else 1
+        var bundle = TD3Metrics(
+            actor_loss=LogScalar[DT](
+                self._actor_L_accum / Scalar[DT](n_a)
+            ),
+            critic_loss=LogScalar[DT](
+                self._critic_L_accum / Scalar[DT](n_c)
+            ),
+            n_actor_updates=LogScalar[DT](Scalar[DT](self._actor_updates)),
+            n_critic_updates=LogScalar[DT](Scalar[DT](self._critic_updates)),
+        )
+        self._actor_L_accum = Scalar[DT](0.0)
+        self._critic_L_accum = Scalar[DT](0.0)
+        self._actor_updates = 0
+        self._critic_updates = 0
+        if Bool(logger):
+            log_bundle(logger.value()[], bundle, step)
+        return bundle^

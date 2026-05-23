@@ -21,6 +21,8 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.saveable import Saveable
+from ..core.save_scalar import _expect_kv_line
 from ..core.target_storage import (
     TargetStorage, assert_tag_for, ensure_cpu_buffer, ensure_gpu_buffer,
 )
@@ -81,7 +83,7 @@ def _rsample_unpack_kernel[ACT: Int, BATCH: Int](
             grad_log_prob[b] = v
 
 
-struct RSample[ACT: Int](Module):
+struct RSample[ACT: Int](Module, Saveable):
     comptime ARITY: Int = 1
     comptime IN_DIM = 2 * Self.ACT
     comptime OUT_DIM = Self.ACT + 1
@@ -370,3 +372,37 @@ struct RSample[ACT: Int](Module):
             squashed_gaussian_backward_gpu[Self.ACT, BATCH](
                 ctx, in_cache_p, z_p, ga_p, glp_p, self.action_scale, gi_p,
             )
+
+    # ─────────────────────────── Saveable ───────────────────────────
+    # RSample owns a (seed, offset) pair used by `box_muller_normal_gpu`
+    # to draw fresh Philox samples per forward call. Saving these two
+    # values lets a resumed RSample produce bit-identical samples
+    # starting from the same offset.
+    #
+    # Not saved:
+    #   - action_scale (config-like, set by caller)
+    #   - z_cache / in_cache (forward caches; recomputed next forward)
+    #   - device buffers (re-allocated by ensure_buffers_via)
+    #   - ts (target-storage runtime state)
+    #
+    # CPU SAC uses `random_float64()` via `box_muller_normal` (the CPU
+    # path), which is process-wide `std.random` state and isn't
+    # captured by these fields. Only GPU SAC is fully bit-exact-
+    # resumable today. A future cleanup would refactor the CPU path
+    # to a per-trainer Philox state as well.
+
+    def save(self, mut out: String, prefix: String) raises:
+        out += prefix + ".rng_seed=" + String(self.rng_seed) + "\n"
+        out += prefix + ".rng_offset=" + String(self._rng_offset) + "\n"
+
+    def load(
+        mut self, lines: List[String], mut idx: Int, prefix: String,
+    ) raises:
+        self.rng_seed = UInt64(
+            atol(_expect_kv_line(lines, idx, prefix + ".rng_seed"))
+        )
+        idx += 1
+        self._rng_offset = UInt64(
+            atol(_expect_kv_line(lines, idx, prefix + ".rng_offset"))
+        )
+        idx += 1

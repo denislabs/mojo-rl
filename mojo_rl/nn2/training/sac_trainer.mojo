@@ -66,7 +66,12 @@ from ..loss.sac_actor_loss_cg import SACActorLossCG as SACActorLoss, SACActorLos
 from ..loss.critic_update_block import TwinCriticUpdateBlock
 from ..data.cpu_replay import CPUReplay
 from ..random.box_muller import box_muller_normal
+from mojo_rl.core.logger import Logger, NoOpLogger
+from ..core.log_bundle import log_bundle
+from ..core.metric import LogScalar
 from .episode_tracker import EpisodeTracker
+from .sac_config import SACConfig
+from .sac_metrics import SACMetrics
 from .target_y_block import TargetYBlock
 from .timer import Timer
 
@@ -234,6 +239,45 @@ struct SACTrainer[
         t.timer.add_section("actor")
         t.timer.add_section("alpha")
         t.timer.add_section("polyak")
+
+    @staticmethod
+    def make[target: StaticString](config: SACConfig) raises -> Self:
+        """Phase A.4 — Config-driven CPU factory. Unpacks the Config
+        and forwards to the existing keyword path so both routes share
+        the same construction code (bit-identical by construction)."""
+        return Self.make[target](
+            actor_lr=config.actor_lr.v,
+            critic_lr=config.critic_lr.v,
+            alpha_lr=config.alpha_lr.v,
+            gamma=config.gamma.v,
+            tau=config.tau.v,
+            action_scale=config.action_scale.v,
+            init_alpha=config.init_alpha.v,
+            target_entropy=config.target_entropy.v,
+            learning_starts=config.learning_starts.v,
+            window_size=config.window_size.v,
+            initial_episode_fill=config.initial_episode_fill.v,
+        )
+
+    @staticmethod
+    def make[target: StaticString](
+        ctx: DeviceContext, config: SACConfig,
+    ) raises -> Self:
+        """Phase A.4 — Config-driven GPU factory."""
+        return Self.make[target](
+            ctx,
+            actor_lr=config.actor_lr.v,
+            critic_lr=config.critic_lr.v,
+            alpha_lr=config.alpha_lr.v,
+            gamma=config.gamma.v,
+            tau=config.tau.v,
+            action_scale=config.action_scale.v,
+            init_alpha=config.init_alpha.v,
+            target_entropy=config.target_entropy.v,
+            learning_starts=config.learning_starts.v,
+            window_size=config.window_size.v,
+            initial_episode_fill=config.initial_episode_fill.v,
+        )
 
     @staticmethod
     def make[target: StaticString](
@@ -656,6 +700,41 @@ struct SACTrainer[
         self._alpha_accum = Scalar[DT](0.0)
         self._update_count = 0
         return out
+
+    # ─────────────────── Phase A.5 — Logger plumbing ───────────────────
+    # `flush_metrics` is the structured-logging analogue of
+    # `flush_train_log`. It builds a `SACMetrics` bundle from the same
+    # accumulators, emits one `log_scalar` per field (via reflection
+    # through `log_bundle`), and resets. The user passes an optional
+    # Logger pointer; when None the call is a cheap stack-build (the
+    # bundle's `Float64` fields cost nothing) and no emit happens.
+    # When the Logger is `NoOpLogger` (default), `log_bundle`'s
+    # `comptime if not L.ENABLED: return` elides the walk at compile
+    # time — zero runtime overhead even with the pointer wired.
+
+    def flush_metrics[L: Logger = NoOpLogger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        step: Int = 0,
+    ) raises -> SACMetrics:
+        """Drain accumulators into a SACMetrics bundle. If a logger
+        pointer is wired, also emit one log_scalar per metric field.
+        Resets accumulators on every call."""
+        var n = self._update_count if self._update_count > 0 else 1
+        var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        var bundle = SACMetrics(
+            actor_loss=LogScalar[DT](self._actor_L_accum * inv),
+            critic_loss=LogScalar[DT](self._critic_L_accum * inv),
+            alpha=LogScalar[DT](self._alpha_accum * inv),
+            n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
+        )
+        self._actor_L_accum = Scalar[DT](0.0)
+        self._critic_L_accum = Scalar[DT](0.0)
+        self._alpha_accum = Scalar[DT](0.0)
+        self._update_count = 0
+        if Bool(logger):
+            log_bundle(logger.value()[], bundle, step)
+        return bundle^
 
     def flush_timer_log(mut self) -> String:
         """Return a formatted per-section wall-time report (one line per

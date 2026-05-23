@@ -28,6 +28,8 @@ from ..constants import DT, CPU_SIMD_W
 from ..core import ParamVisitor
 from ..core.module import Module
 from ..core.optimizer import Optimizer
+from ..core.saveable import Saveable
+from ..core.save_scalar import _expect_kv_line
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -288,7 +290,7 @@ struct _ZeroGradGPUVisitor(ParamVisitor):
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct Adam(Optimizer):
+struct Adam(Optimizer, Saveable):
     # CPU storage
     var m_flat: List[Scalar[DT]]
     var v_flat: List[Scalar[DT]]
@@ -411,3 +413,110 @@ struct Adam(Optimizer):
                 bias_correction1=bc1, bias_correction2=bc2,
             )
             model.for_each_param[target, _AdamGPUStepVisitor](String(""), visitor)
+
+    # ─────────────────────────── Saveable (CPU only) ───────────────────────────
+    # Saved fields:
+    #   <prefix>.lr=<float>
+    #   <prefix>.beta1=<float>
+    #   <prefix>.beta2=<float>
+    #   <prefix>.eps=<float>
+    #   <prefix>.step_count=<int>
+    #   <prefix>.beta1_pow_t=<float>
+    #   <prefix>.beta2_pow_t=<float>
+    #   <prefix>.m_flat#size=<N>
+    #   v0
+    #   ...
+    #   <prefix>.v_flat#size=<N>
+    #   v0
+    #   ...
+    # Topology-derived state (offsets, total_size) is NOT saved; the
+    # caller must call `Adam.make[target, M](model)` BEFORE `load` so
+    # the in-memory Adam has been sized to the model. `load` validates
+    # the saved m_flat/v_flat size matches in-memory `total_size`.
+    # GPU mirrors (m_dev/v_dev) are not saved either; trainer must
+    # re-upload after load.
+
+    def save(self, mut out: String, prefix: String) raises:
+        out += prefix + ".lr=" + String(self.lr) + "\n"
+        out += prefix + ".beta1=" + String(self.beta1) + "\n"
+        out += prefix + ".beta2=" + String(self.beta2) + "\n"
+        out += prefix + ".eps=" + String(self.eps) + "\n"
+        out += prefix + ".step_count=" + String(self.step_count) + "\n"
+        out += prefix + ".beta1_pow_t=" + String(self.beta1_pow_t) + "\n"
+        out += prefix + ".beta2_pow_t=" + String(self.beta2_pow_t) + "\n"
+        out += prefix + ".m_flat#size=" + String(self.total_size) + "\n"
+        var m_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.m_flat.unsafe_ptr()
+        )
+        for k in range(self.total_size):
+            out += String(m_ptr[k]) + "\n"
+        out += prefix + ".v_flat#size=" + String(self.total_size) + "\n"
+        var v_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.v_flat.unsafe_ptr()
+        )
+        for k in range(self.total_size):
+            out += String(v_ptr[k]) + "\n"
+
+    def load(
+        mut self, lines: List[String], mut idx: Int, prefix: String,
+    ) raises:
+        self.lr = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".lr")))
+        idx += 1
+        self.beta1 = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".beta1")))
+        idx += 1
+        self.beta2 = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".beta2")))
+        idx += 1
+        self.eps = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".eps")))
+        idx += 1
+        self.step_count = atol(_expect_kv_line(lines, idx, prefix + ".step_count"))
+        idx += 1
+        self.beta1_pow_t = Scalar[DT](atof(
+            _expect_kv_line(lines, idx, prefix + ".beta1_pow_t")
+        ))
+        idx += 1
+        self.beta2_pow_t = Scalar[DT](atof(
+            _expect_kv_line(lines, idx, prefix + ".beta2_pow_t")
+        ))
+        idx += 1
+        Adam._load_flat_section(
+            lines, idx, prefix + ".m_flat", self.m_flat, self.total_size,
+        )
+        Adam._load_flat_section(
+            lines, idx, prefix + ".v_flat", self.v_flat, self.total_size,
+        )
+
+    @staticmethod
+    def _load_flat_section(
+        lines: List[String],
+        mut idx: Int,
+        expected_prefix: String,
+        mut target: List[Scalar[DT]],
+        expected_size: Int,
+    ) raises:
+        if idx >= len(lines):
+            raise Error(
+                "Adam.load: out of input at `" + expected_prefix
+                + "#size=...` (idx " + String(idx) + ")"
+            )
+        var header = lines[idx]
+        var expected_header = (
+            expected_prefix + "#size=" + String(expected_size)
+        )
+        if header != expected_header:
+            raise Error(
+                "Adam.load: section header mismatch. Expected `"
+                + expected_header + "`, got `" + header + "`"
+            )
+        idx += 1
+        var t_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            target.unsafe_ptr()
+        )
+        for k in range(expected_size):
+            if idx >= len(lines):
+                raise Error(
+                    "Adam.load: short read for `" + expected_prefix
+                    + "` at element " + String(k) + " of "
+                    + String(expected_size)
+                )
+            t_ptr[k] = Scalar[DT](atof(lines[idx]))
+            idx += 1

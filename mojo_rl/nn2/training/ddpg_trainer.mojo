@@ -41,7 +41,12 @@ from ..optimizer.optimizer_bundle import OptimizerBundle
 from ..loss.critic_update_block import CriticUpdateBlock
 from ..loss.ddpg_actor_loss import DDPGActorLoss
 from ..data.cpu_replay import CPUReplay
+from mojo_rl.core.logger import Logger, NoOpLogger
+from ..core.log_bundle import log_bundle
+from ..core.metric import LogScalar
 from .action_sampling_block import ActionSamplingBlock
+from .ddpg_config import DDPGConfig
+from .ddpg_metrics import DDPGMetrics
 from .ddpg_target_y_block import DDPGTargetYBlock
 from .episode_tracker import EpisodeTracker
 
@@ -149,6 +154,21 @@ struct DDPGTrainer[
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._update_count = 0
+
+    @staticmethod
+    def make[target: StaticString](config: DDPGConfig) raises -> Self:
+        """Phase A.4 — Config-driven factory. Forwards to the keyword path."""
+        return Self.make[target](
+            actor_lr=config.actor_lr.v,
+            critic_lr=config.critic_lr.v,
+            gamma=config.gamma.v,
+            tau=config.tau.v,
+            action_scale=config.action_scale.v,
+            noise_scale=config.noise_scale.v,
+            learning_starts=config.learning_starts.v,
+            window_size=config.window_size.v,
+            initial_episode_fill=config.initial_episode_fill.v,
+        )
 
     @staticmethod
     def make[target: StaticString](
@@ -313,3 +333,26 @@ struct DDPGTrainer[
         self._critic_L_accum = Scalar[DT](0.0)
         self._update_count = 0
         return out
+
+    def flush_metrics[L: Logger = NoOpLogger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        step: Int = 0,
+    ) raises -> DDPGMetrics:
+        """Phase A.5 — Structured-logging variant of `flush_train_log`.
+        Builds a DDPGMetrics bundle, optionally emits to a Logger, then
+        resets accumulators. See `SACTrainer.flush_metrics` for design
+        notes (zero-overhead short-circuit on NoOpLogger)."""
+        var n = self._update_count if self._update_count > 0 else 1
+        var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        var bundle = DDPGMetrics(
+            actor_loss=LogScalar[DT](self._actor_L_accum * inv),
+            critic_loss=LogScalar[DT](self._critic_L_accum * inv),
+            n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
+        )
+        self._actor_L_accum = Scalar[DT](0.0)
+        self._critic_L_accum = Scalar[DT](0.0)
+        self._update_count = 0
+        if Bool(logger):
+            log_bundle(logger.value()[], bundle, step)
+        return bundle^
