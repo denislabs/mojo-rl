@@ -9,21 +9,21 @@ BinaryElemMin / Scale / BinarySub) compose to express the same math.
 Graph topology (§8.6.1):
 
     InputSlot ["s",          OBS]
-    ExternalUnaryNode ["actor_out", ACTOR,                      "s"]
-    ExternalUnaryNode ["alp",       RSample[ACT],               "actor_out"]
-    UnaryNode        ["action",     Slice[ACT+1, 0, ACT],       "alp"]
-    UnaryNode        ["log_prob",   Slice[ACT+1, ACT, ACT+1],   "alp"]
-    BinaryNode       ["sa",         Concat[OBS, ACT],           "s", "action"]
-    ExternalUnaryNode ["q1",        CRITIC, "sa", MODE="input_only"]
-    ExternalUnaryNode ["q2",        CRITIC, "sa", MODE="input_only"]
-    BinaryNode       ["min_q",      BinaryElemMin[1],           "q1", "q2"]
-    UnaryNode        ["alpha_lp",   Scale[1],                   "log_prob"]
-    BinaryNode       ["loss_per_b", BinarySub[1],               "alpha_lp", "min_q"]
+    ExternalNode ["actor_out", ACTOR,                      "s"]
+    ExternalNode ["alp",       RSample[ACT],               "actor_out"]
+    Node        ["action",     Slice[ACT+1, 0, ACT],       "alp"]
+    Node        ["log_prob",   Slice[ACT+1, ACT, ACT+1],   "alp"]
+    Node       ["sa",         Concat[OBS, ACT],           "s", "action"]
+    ExternalNode ["q1",        CRITIC, "sa", MODE="input_only"]
+    ExternalNode ["q2",        CRITIC, "sa", MODE="input_only"]
+    Node       ["min_q",      BinaryElemMin[1],           "q1", "q2"]
+    Node        ["alpha_lp",   Scale[1],                   "log_prob"]
+    Node       ["loss_per_b", BinarySub[1],               "alpha_lp", "min_q"]
 
 ACTOR, RSample, and CRITIC are external — owned by the trainer (actor +
 critics) or the loss block (rsample, kept here so the trainer's
 `select_action` path can reuse it). The graph references them via
-ExternalUnaryNode + per-call `set_external`. Critic backward runs with
+ExternalNode + per-call `set_external`. Critic backward runs with
 `MODE="input_only"` so the actor-loss path never accumulates critic
 param grads (the same intent the spec captured with `StopGradParams`,
 expressed inline without the wrapper).
@@ -53,9 +53,8 @@ from ..initializer import Zero
 from ..combinators.compute_graph import ComputeGraph
 from ..combinators.graph_nodes import (
     InputSlot,
-    UnaryNode,
-    BinaryNode,
-    ExternalUnaryNode,
+    Node,
+    ExternalNode,
 )
 from ..primitives.rsample import RSample
 from ..primitives.scale import Scale
@@ -93,16 +92,16 @@ struct SACActorLossCG[
     comptime ActorGraph = ComputeGraph[
         1,
         InputSlot["s",          Self.OBS_DIM],
-        ExternalUnaryNode["actor_out", Self.ACTOR,        "s"],
-        ExternalUnaryNode["alp",       RSample[Self.ACT_DIM], "actor_out"],
-        UnaryNode ["action",    Slice[Self.ALP_DIM, 0, Self.ACT_DIM], "alp"],
-        UnaryNode ["log_prob",  Slice[Self.ALP_DIM, Self.ACT_DIM, Self.ALP_DIM], "alp"],
-        BinaryNode["sa",        Concat[Self.OBS_DIM, Self.ACT_DIM], "s", "action"],
-        ExternalUnaryNode["q1", Self.CRITIC, "sa", MODE="input_only"],
-        ExternalUnaryNode["q2", Self.CRITIC, "sa", MODE="input_only"],
-        BinaryNode["min_q",     BinaryElemMin[1],         "q1", "q2"],
-        UnaryNode ["alpha_lp",  Scale[1],                 "log_prob"],
-        BinaryNode["loss_per_b", BinarySub[1],            "alpha_lp", "min_q"],
+        ExternalNode["actor_out", Self.ACTOR,        "s"],
+        ExternalNode["alp",       RSample[Self.ACT_DIM], "actor_out"],
+        Node ["action",    Slice[Self.ALP_DIM, 0, Self.ACT_DIM], "alp"],
+        Node ["log_prob",  Slice[Self.ALP_DIM, Self.ACT_DIM, Self.ALP_DIM], "alp"],
+        Node["sa",        Concat[Self.OBS_DIM, Self.ACT_DIM], "s", "action"],
+        ExternalNode["q1", Self.CRITIC, "sa", MODE="input_only"],
+        ExternalNode["q2", Self.CRITIC, "sa", MODE="input_only"],
+        Node["min_q",     BinaryElemMin[1],         "q1", "q2"],
+        Node ["alpha_lp",  Scale[1],                 "log_prob"],
+        Node["loss_per_b", BinarySub[1],            "alpha_lp", "min_q"],
     ]
 
     var graph: Self.ActorGraph

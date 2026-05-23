@@ -1,38 +1,29 @@
-"""InputSlot / UnaryNode / BinaryNode / ExternalUnaryNode / ExternalBinaryNode — GraphNode wrappers.
+"""InputSlot / Node / ExternalNode — GraphNode wrappers (Phase 4.6e).
 
-Each wrapper owns its underlying op instance (or none, for InputSlot /
-External*Node) plus the buffers used by ComputeGraph for inter-node
-wiring.
+Three structs (down from five) — the unary/binary split is gone:
 
 `InputSlot[NAME, DIM]`
     `KIND = 0`. Represents one named external input to the graph. No
     compute; its `out_ptr_via()` returns a pointer set per-call by the
     graph's `set_input[NAME]` method. Its `grad_out_buf` is the
     accumulator for the input-gradient flowing back from consumers
-    (`get_grad_input[NAME]` / `grad_input_ptr[NAME]` on the graph).
+    (`grad_input_ptr[NAME]` on the graph).
 
-`UnaryNode[NAME, M, IN0_NAME]`
-    wraps a `M: Module` (1→1). `KIND = 1`, `IN1_NAME = ""`, `IN1_DIM = 0`.
-    `forward_via(in0, _)` ignores the second input; `vjp_via` writes
-    only `_grad_in0_buf`.
+`Node[NAME, Op, IN0_NAME, IN1_NAME=""]`
+    Wraps an owned `Op: Module`. `KIND = Op.ARITY` (1 = unary, 2 = binary,
+    forward-compat for higher arities). `forward_via` / `vjp_via`
+    comptime-branch on `Self.Op.ARITY` to dispatch with the right input
+    count. For ARITY=1, `IN1_NAME` defaults to "" and `_grad_in1_buf`
+    stays length-0.
 
-`BinaryNode[NAME, BM, IN0_NAME, IN1_NAME]`
-    wraps a `BM: BinaryModule` (2→1). `KIND = 2`. `forward_via(in0, in1)`
-    uses both pointers; `vjp_via` writes both `_grad_in0_buf` and
-    `_grad_in1_buf`.
-
-`ExternalUnaryNode[NAME, M, IN0_NAME, MODE="all"]`
-    `KIND = 1` (same scatter-add path as UnaryNode). Like UnaryNode but
-    does NOT own its op instance — instead holds `_module_ptr:
-    UnsafePointer[M, MutAnyOrigin]` set per-call by the graph's
-    `set_external[NAME](mut module)` method. The module lives elsewhere
-    (typically the trainer). `MODE` is plumbed into `M.vjp[mode]`
-    so a single declaration can express stop-grad-style references —
-    e.g. `MODE="input_only"` for the actor-loss view of a critic, which
-    skips param-grad accumulation on that path. Phase 3.
-
-`ExternalBinaryNode[NAME, M, IN0_NAME, IN1_NAME, MODE="all"]`
-    `KIND = 2`. BinaryModule sibling of ExternalUnaryNode.
+`ExternalNode[NAME, M, IN0_NAME, IN1_NAME="", MODE="all"]`
+    Like Node but does NOT own its op — holds `_module_ptr:
+    UnsafePointer[Scalar[DT], MutAnyOrigin]` (type-erased at the trait
+    surface, rebound to `UnsafePointer[Self.M]` at dispatch). Bound by
+    `graph.set_external[NAME](mut module)`. `MODE` plumbs into `M.vjp[mode]`
+    so a single declaration can express stop-grad-style references (e.g.
+    `MODE="input_only"` for the actor-loss view of a critic — skips
+    param-grad accumulation on that path).
 
 Backward contract: the wrapper reads its own `_grad_out_buf` as the
 incoming gradient (graph zeros + scatter-adds into this before the
@@ -43,9 +34,17 @@ input-gradient by the time it's reached in the reverse-topo walk.
 
 CPU vs GPU storage: each node carries `ts: TargetStorage` (matches the
 rest of nn2). CPU nodes own `List[Scalar[DT]]` for each buffer; GPU
-nodes own `Optional[DeviceBuffer[DT]]`. `*_ptr_via()` dispatches on
-`ts.target_tag` and returns whichever pointer is live; `ensure_buffers_via`
-likewise grows the appropriate storage.
+nodes own `Optional[DeviceBuffer[DT]]`. `*_ptr_via()` returns whichever
+pointer was cached by `ensure_buffers_via` at the configured target.
+
+Hetero-binary variadic workaround (Phase 4.6c): the Module trait's
+variadic forward/vjp surface unifies layouts symbolically — even when
+two binary inputs have different IN0_DIM / IN1_DIM values, the variadic
+pack requires the same Layout *type*. Node/ExternalNode forward_via
+constructs `in1_t` with `row_major[BATCH, Self.IN0_DIM]()` (matching
+`in0_t`), and the leaf's `typed_view[BATCH, IN<i>_DIM]` rebuilds the
+correctly-typed view from `.ptr`. The Layout carried by the variadic
+TileTensor is dead metadata once unpacked.
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -72,11 +71,7 @@ from ..core.target_storage import (
 #
 # No compute, no Op. Holds an externally-set out_ptr (cached via
 # set_input_via) and a grad_out_buf that accumulates the gradient
-# flowing back to this input from all consumer nodes. Looks identical
-# to a regular producer node from the graph's name-resolution loop;
-# the only behavioral difference is that forward_via / vjp_via
-# are no-ops (graph zeros grad_out_buf at backward start; predecessors'
-# scatter-add does the rest).
+# flowing back to this input from all consumer nodes.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -86,24 +81,15 @@ struct InputSlot[
 ](GraphNode):
     comptime NAME = Self.slot_name
     comptime IN0_NAME = ""
-    comptime IN1_NAME = ""
     comptime IN0_DIM = 0
-    comptime IN1_DIM = 0
     comptime OUT_DIM = Self.DIM_
     comptime KIND = 0
 
-    # CPU/GPU grad accumulator. `_grad_out_buf` for CPU,
-    # `_grad_out_buf_dev` for GPU; matches Unary/BinaryNode layout.
+    # CPU/GPU grad accumulator.
     var _grad_out_buf: List[Scalar[DT]]
     var _grad_out_buf_dev: Optional[DeviceBuffer[DT]]
     var _grad_out_buf_dev_n: Int
 
-    # Block C: cached pointers.
-    #   _out_ptr        — set externally per call via `set_input_via`.
-    #   _grad_out_ptr   — points at the slot's grad accumulator (resolved
-    #                     in ensure_buffers_via, stable thereafter).
-    #   _grad_in0/1_ptr — null; InputSlot has no inputs to receive grad
-    #                     into. Required by GraphNode trait.
     var _out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var _grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var _grad_in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
@@ -210,215 +196,30 @@ struct InputSlot[
         target: StaticString,
         V: ParamVisitor,
     ](mut self, prefix: String, mut visitor: V,) raises:
-        # No params.
         pass
 
 
 # ──────────────────────────────────────────────────────────────────────
-# UnaryNode — wraps a Module (1→1).
+# Node — wraps an owned Op: Module of any arity. ARITY=1 (was UnaryNode)
+# or ARITY=2 (was BinaryNode). Forward-compat for higher arities (would
+# need ComputeGraph KIND=3+ dispatch + an in2_name parameter — neither
+# in scope today).
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct UnaryNode[
+struct Node[
     node_name: StaticString,
     Op: Module,
     in0_name: StaticString = "input",
-](GraphNode):
-    comptime NAME = Self.node_name
-    comptime IN0_NAME = Self.in0_name
-    comptime IN1_NAME = ""
-    comptime IN0_DIM = Self.Op.IN_DIM
-    comptime IN1_DIM = 0
-    comptime OUT_DIM = Self.Op.OUT_DIM
-    comptime KIND = 1
-
-    var op: Self.Op
-
-    # CPU buffers (used when ts.target_tag == TARGET_CPU).
-    var _out_buf: List[Scalar[DT]]       # [BATCH, OUT_DIM]
-    var _grad_out_buf: List[Scalar[DT]]  # [BATCH, OUT_DIM]
-    var _grad_in0_buf: List[Scalar[DT]]  # [BATCH, IN0_DIM]
-    var _grad_in1_buf: List[Scalar[DT]]  # length-1 stub for unary nodes
-
-    # GPU buffers (used when ts.target_tag == TARGET_GPU).
-    var _out_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_out_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_in0_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_in1_buf_dev: Optional[DeviceBuffer[DT]]  # null; never sized
-    var _out_buf_dev_n: Int
-    var _grad_out_buf_dev_n: Int
-    var _grad_in0_buf_dev_n: Int
-
-    # Block C: cached pointers resolved at `ensure_buffers_via` time. Eliminates
-    # the per-call `target_tag` branch + Optional.value() + rebind inside
-    # `*_ptr_via()` (called O(N) times per forward + O(N) per backward by the
-    # ComputeGraph name-resolution loops; ~30 calls/train_step for SAC).
-    var _out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]  # null for unary
-
-    var _n_batch_buf: Int
-    var ts: TargetStorage
-
-    def __init__(out self):
-        self.op = Self.Op()
-        self._out_buf = List[Scalar[DT]]()
-        self._grad_out_buf = List[Scalar[DT]]()
-        self._grad_in0_buf = List[Scalar[DT]]()
-        self._grad_in1_buf = List[Scalar[DT]]()
-        self._out_buf_dev = None
-        self._grad_out_buf_dev = None
-        self._grad_in0_buf_dev = None
-        self._grad_in1_buf_dev = None
-        self._out_buf_dev_n = 0
-        self._grad_out_buf_dev_n = 0
-        self._grad_in0_buf_dev_n = 0
-        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self._out_ptr = null_p
-        self._grad_out_ptr = null_p
-        self._grad_in0_ptr = null_p
-        self._grad_in1_ptr = null_p
-        self._n_batch_buf = 0
-        self.ts = TargetStorage.make_uninit()
-
-    @staticmethod
-    def make_via[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "UnaryNode.make_via[target='gpu', INIT] requires a DeviceContext"
-        )
-        var n = Self()
-        n.op = Self.Op.make[target, INIT]()
-        n.ts = TargetStorage.make_cpu()
-        return n^
-
-    @staticmethod
-    def make_via[
-        target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "UnaryNode.make_via[target='cpu', INIT](ctx) — drop ctx for CPU"
-        )
-        var n = Self()
-        n.op = Self.Op.make[target, INIT](ctx)
-        n.ts = TargetStorage.make_gpu(ctx)
-        return n^
-
-    def ensure_buffers_via[BATCH: Int](mut self) raises:
-        if self.ts.target_tag == TARGET_GPU:
-            if self._n_batch_buf < BATCH:
-                var ctx = self.ts.ctx.value()
-                ensure_gpu_buffer(
-                    self._out_buf_dev, self._out_buf_dev_n,
-                    BATCH * Self.OUT_DIM, ctx,
-                )
-                ensure_gpu_buffer(
-                    self._grad_out_buf_dev, self._grad_out_buf_dev_n,
-                    BATCH * Self.OUT_DIM, ctx,
-                )
-                ensure_gpu_buffer(
-                    self._grad_in0_buf_dev, self._grad_in0_buf_dev_n,
-                    BATCH * Self.IN0_DIM, ctx,
-                )
-                self._out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._out_buf_dev.value().unsafe_ptr())
-                self._grad_out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_out_buf_dev.value().unsafe_ptr())
-                self._grad_in0_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_in0_buf_dev.value().unsafe_ptr())
-                self._n_batch_buf = BATCH
-        else:
-            if self._n_batch_buf < BATCH:
-                self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
-                self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
-                self._grad_in0_buf.resize(BATCH * Self.IN0_DIM, Scalar[DT](0.0))
-                if len(self._grad_in1_buf) < 1:
-                    self._grad_in1_buf.resize(1, Scalar[DT](0.0))
-                self._out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._out_buf.unsafe_ptr())
-                self._grad_out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_out_buf.unsafe_ptr())
-                self._grad_in0_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_in0_buf.unsafe_ptr())
-                self._n_batch_buf = BATCH
-
-    def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._out_ptr
-
-    def grad_out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_out_ptr
-
-    def grad_in0_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in0_ptr
-
-    def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        # Unary node: no in1 buffer. Null pointer; callers must
-        # not dereference (they check IN1_NAME == "" first).
-        return self._grad_in1_ptr
-
-    def forward_via[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    ) raises:
-        var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
-        var out_p = self.out_ptr_via()
-        var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
-        self.op.forward[target, BATCH, POLICY=POLICY](in0_t, output=out_t)
-
-    def vjp_via[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](mut self) raises:
-        var go_p = self.grad_out_ptr_via()
-        var gi0_p = self.grad_in0_ptr_via()
-        var go_t = TileTensor(go_p, row_major[BATCH, Self.OUT_DIM]())
-        var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
-        self.op.vjp[target, BATCH, POLICY=POLICY](go_t, gi0_t)
-
-    def for_each_param_via[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V,) raises:
-        self.op.for_each_param[target, V](prefix, visitor)
-
-    def set_op_attr_via[ATTR: StaticString](
-        mut self, value: Scalar[DT],
-    ):
-        self.op.set_attr[ATTR](value)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# BinaryNode — wraps a BinaryModule (2→1).
-# ──────────────────────────────────────────────────────────────────────
-
-
-struct BinaryNode[
-    node_name: StaticString,
-    Op: Module,
-    in0_name: StaticString = "input",
-    in1_name: StaticString = "input",
+    in1_name: StaticString = "",
 ](GraphNode):
     comptime NAME = Self.node_name
     comptime IN0_NAME = Self.in0_name
     comptime IN1_NAME = Self.in1_name
     comptime IN0_DIM = Self.Op.IN_DIM
-    comptime IN1_DIM = Self.Op.IN1_DIM
+    comptime IN1_DIM = Self.Op.IN1_DIM   # 0 when Op.ARITY == 1 (trait default)
     comptime OUT_DIM = Self.Op.OUT_DIM
-    comptime KIND = 2
+    comptime KIND = Self.Op.ARITY
 
     var op: Self.Op
 
@@ -436,11 +237,11 @@ struct BinaryNode[
     var _grad_in0_buf_dev_n: Int
     var _grad_in1_buf_dev_n: Int
 
-    # Block C: cached pointers resolved at `ensure_buffers_via` time.
+    # Cached pointers resolved by ensure_buffers_via — stable thereafter.
     var _out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var _grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var _grad_in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _grad_in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]   # null for ARITY=1
 
     var _n_batch_buf: Int
     var ts: TargetStorage
@@ -472,7 +273,7 @@ struct BinaryNode[
     @staticmethod
     def make_via[target: StaticString, INIT: Initializer]() raises -> Self:
         comptime assert target == "cpu", (
-            "BinaryNode.make_via[target='gpu', INIT] requires a DeviceContext"
+            "Node.make_via[target='gpu', INIT] requires a DeviceContext"
         )
         var n = Self()
         n.op = Self.Op.make[target, INIT]()
@@ -484,7 +285,7 @@ struct BinaryNode[
         target: StaticString, INIT: Initializer
     ](ctx: DeviceContext) raises -> Self:
         comptime assert target == "gpu", (
-            "BinaryNode.make_via[target='cpu', INIT](ctx) — drop ctx for CPU"
+            "Node.make_via[target='cpu', INIT](ctx) — drop ctx for CPU"
         )
         var n = Self()
         n.op = Self.Op.make[target, INIT](ctx)
@@ -507,10 +308,6 @@ struct BinaryNode[
                     self._grad_in0_buf_dev, self._grad_in0_buf_dev_n,
                     BATCH * Self.IN0_DIM, ctx,
                 )
-                ensure_gpu_buffer(
-                    self._grad_in1_buf_dev, self._grad_in1_buf_dev_n,
-                    BATCH * Self.IN1_DIM, ctx,
-                )
                 self._out_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._out_buf_dev.value().unsafe_ptr())
@@ -520,16 +317,20 @@ struct BinaryNode[
                 self._grad_in0_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._grad_in0_buf_dev.value().unsafe_ptr())
-                self._grad_in1_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_in1_buf_dev.value().unsafe_ptr())
+                comptime if Self.Op.ARITY >= 2:
+                    ensure_gpu_buffer(
+                        self._grad_in1_buf_dev, self._grad_in1_buf_dev_n,
+                        BATCH * Self.IN1_DIM, ctx,
+                    )
+                    self._grad_in1_ptr = rebind[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](self._grad_in1_buf_dev.value().unsafe_ptr())
                 self._n_batch_buf = BATCH
         else:
             if self._n_batch_buf < BATCH:
                 self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
                 self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
                 self._grad_in0_buf.resize(BATCH * Self.IN0_DIM, Scalar[DT](0.0))
-                self._grad_in1_buf.resize(BATCH * Self.IN1_DIM, Scalar[DT](0.0))
                 self._out_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._out_buf.unsafe_ptr())
@@ -539,9 +340,16 @@ struct BinaryNode[
                 self._grad_in0_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._grad_in0_buf.unsafe_ptr())
-                self._grad_in1_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_in1_buf.unsafe_ptr())
+                comptime if Self.Op.ARITY >= 2:
+                    self._grad_in1_buf.resize(BATCH * Self.IN1_DIM, Scalar[DT](0.0))
+                    self._grad_in1_ptr = rebind[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](self._grad_in1_buf.unsafe_ptr())
+                else:
+                    # Unary: size grad_in1 to 1 so the pointer is non-degenerate
+                    # (callers must not dereference; ComputeGraph checks IN1_NAME first).
+                    if len(self._grad_in1_buf) < 1:
+                        self._grad_in1_buf.resize(1, Scalar[DT](0.0))
                 self._n_batch_buf = BATCH
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -554,7 +362,7 @@ struct BinaryNode[
         return self._grad_in0_ptr
 
     def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in1_ptr
+        return self._grad_in1_ptr  # null for ARITY=1
 
     def forward_via[
         target: StaticString,
@@ -565,43 +373,36 @@ struct BinaryNode[
         in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
-        # Heterogeneous-binary variadic workaround (Mojo nightly): the
-        # variadic *inputs pack in the unified Module trait is
-        # homogeneous — every element must share a single Layout type
-        # for variadic unification to succeed. Mojo compares layouts
-        # symbolically (Self.IN0_DIM vs Self.IN1_DIM are distinct comptime
-        # expressions even when their values match at instantiation), so
-        # passing two row_major[BATCH, IN0_DIM] / row_major[BATCH, IN1_DIM]
-        # tiles fails to unify. A `comptime assert` does NOT help —
-        # Mojo's type system doesn't propagate value-equality into shape
-        # unification. The Layout carried by a variadic TileTensor is
-        # dead metadata once the leaf body unpacks it — leaves only read
-        # `.ptr` and rebuild typed views via
-        # `typed_view[BATCH, IN<i>_DIM]`. So we construct in1_t with the
-        # SAME Layout type as in0_t (Self.IN0_DIM for both), while
-        # pointing at the actual in1 buffer. Same-Layout → unifies.
-        # Same-pointer-semantics → leaf body remains correct.
         var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
-        var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
         var out_p = self.out_ptr_via()
         var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
-        self.op.forward[target, BATCH, POLICY=POLICY](in0_t, in1_t, output=out_t)
+        comptime if Self.Op.ARITY == 1:
+            self.op.forward[target, BATCH, POLICY=POLICY](in0_t, output=out_t)
+        else:
+            # Hetero-binary variadic workaround: in1_t shares in0's Layout
+            # type. Leaf body recovers the real shape via
+            # typed_view[BATCH, Self.IN1_DIM] from .ptr. See module.mojo.
+            var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
+            self.op.forward[target, BATCH, POLICY=POLICY](
+                in0_t, in1_t, output=out_t,
+            )
 
     def vjp_via[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
     ](mut self) raises:
-        # Same hetero-binary variadic workaround as forward_via: gi1_t
-        # gets in0's Layout. Leaf body recovers actual shape via
-        # `typed_view_mut[BATCH, Self.IN1_DIM](grad_inputs[1])`.
         var go_p = self.grad_out_ptr_via()
         var gi0_p = self.grad_in0_ptr_via()
-        var gi1_p = self.grad_in1_ptr_via()
         var go_t = TileTensor(go_p, row_major[BATCH, Self.OUT_DIM]())
         var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
-        var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
-        self.op.vjp[target, BATCH, POLICY=POLICY](go_t, gi0_t, gi1_t)
+        comptime if Self.Op.ARITY == 1:
+            self.op.vjp[target, BATCH, POLICY=POLICY](go_t, gi0_t)
+        else:
+            # Hetero-binary variadic workaround (see forward_via).
+            var gi1_p = self.grad_in1_ptr_via()
+            var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
+            self.op.vjp[target, BATCH, POLICY=POLICY](go_t, gi0_t, gi1_t)
 
     def for_each_param_via[
         target: StaticString,
@@ -616,241 +417,32 @@ struct BinaryNode[
 
 
 # ──────────────────────────────────────────────────────────────────────
-# ExternalUnaryNode — Phase 3. Like UnaryNode but does NOT own its op.
+# ExternalNode — wraps an externally-owned Module of any arity.
 #
-# The node holds `_module_ptr: UnsafePointer[M, MutAnyOrigin]` to a
-# Module instance owned by the caller (typically the trainer). The
-# pointer is set per-call via `graph.set_external[NAME](mut module)`;
-# `forward_via` / `vjp_via` dereference and invoke the standard
-# `Module.forward` / `Module.backward` methods.
-#
-# `MODE` plumbs into `M.vjp[mode]` at comptime — `MODE="input_only"`
-# expresses stop-grad references inline without needing `StopGradParams`.
-# Param accumulation stays on the external instance; the graph never
-# walks the module's params. The trainer's own optimizer step does
-# (when `MODE="all"`).
+# Same buffer layout as Node, but op is type-erased to a raw pointer
+# bound per-call via `graph.set_external[NAME](mut module)`. MODE plumbs
+# into M.vjp[mode] so stop-grad-style references can be expressed
+# inline (e.g. MODE="input_only" for actor-loss view of critics).
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct ExternalUnaryNode[
+struct ExternalNode[
     node_name: StaticString,
     M: Module,
     in0_name: StaticString = "input",
-    MODE: StaticString = "all",
-](GraphNode):
-    comptime NAME = Self.node_name
-    comptime IN0_NAME = Self.in0_name
-    comptime IN1_NAME = ""
-    comptime IN0_DIM = Self.M.IN_DIM
-    comptime IN1_DIM = 0
-    comptime OUT_DIM = Self.M.OUT_DIM
-    comptime KIND = 1  # same scatter-add path as UnaryNode
-
-    # Type-erased so the GraphNode trait can carry a uniform
-    # `set_external_via` method. Rebound to UnsafePointer[Self.M] at
-    # every dispatch site (forward_via / vjp_via).
-    var _module_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-
-    var _out_buf: List[Scalar[DT]]
-    var _grad_out_buf: List[Scalar[DT]]
-    var _grad_in0_buf: List[Scalar[DT]]
-    var _grad_in1_buf: List[Scalar[DT]]
-
-    var _out_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_out_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_in0_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_in1_buf_dev: Optional[DeviceBuffer[DT]]
-    var _out_buf_dev_n: Int
-    var _grad_out_buf_dev_n: Int
-    var _grad_in0_buf_dev_n: Int
-
-    var _out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-
-    var _n_batch_buf: Int
-    var ts: TargetStorage
-
-    def __init__(out self):
-        self._module_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self._out_buf = List[Scalar[DT]]()
-        self._grad_out_buf = List[Scalar[DT]]()
-        self._grad_in0_buf = List[Scalar[DT]]()
-        self._grad_in1_buf = List[Scalar[DT]]()
-        self._out_buf_dev = None
-        self._grad_out_buf_dev = None
-        self._grad_in0_buf_dev = None
-        self._grad_in1_buf_dev = None
-        self._out_buf_dev_n = 0
-        self._grad_out_buf_dev_n = 0
-        self._grad_in0_buf_dev_n = 0
-        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self._out_ptr = null_p
-        self._grad_out_ptr = null_p
-        self._grad_in0_ptr = null_p
-        self._grad_in1_ptr = null_p
-        self._n_batch_buf = 0
-        self.ts = TargetStorage.make_uninit()
-
-    @staticmethod
-    def make_via[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "ExternalUnaryNode.make_via[target='gpu', INIT] requires a DeviceContext"
-        )
-        var n = Self()
-        n.ts = TargetStorage.make_cpu()
-        return n^
-
-    @staticmethod
-    def make_via[
-        target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "ExternalUnaryNode.make_via[target='cpu', INIT](ctx) — drop ctx for CPU"
-        )
-        var n = Self()
-        n.ts = TargetStorage.make_gpu(ctx)
-        return n^
-
-    def set_external_via(
-        mut self,
-        ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    ) raises:
-        """Bind the external Module instance whose `forward`/`backward`
-        this node dispatches to (ExternalUnaryNode variant). Pointer is
-        type-erased at the trait surface; rebound to
-        `UnsafePointer[Self.M]` at dispatch time."""
-        self._module_ptr = ptr
-
-    def ensure_buffers_via[BATCH: Int](mut self) raises:
-        if self.ts.target_tag == TARGET_GPU:
-            if self._n_batch_buf < BATCH:
-                var ctx = self.ts.ctx.value()
-                ensure_gpu_buffer(
-                    self._out_buf_dev, self._out_buf_dev_n,
-                    BATCH * Self.OUT_DIM, ctx,
-                )
-                ensure_gpu_buffer(
-                    self._grad_out_buf_dev, self._grad_out_buf_dev_n,
-                    BATCH * Self.OUT_DIM, ctx,
-                )
-                ensure_gpu_buffer(
-                    self._grad_in0_buf_dev, self._grad_in0_buf_dev_n,
-                    BATCH * Self.IN0_DIM, ctx,
-                )
-                self._out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._out_buf_dev.value().unsafe_ptr())
-                self._grad_out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_out_buf_dev.value().unsafe_ptr())
-                self._grad_in0_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_in0_buf_dev.value().unsafe_ptr())
-                self._n_batch_buf = BATCH
-        else:
-            if self._n_batch_buf < BATCH:
-                self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
-                self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
-                self._grad_in0_buf.resize(BATCH * Self.IN0_DIM, Scalar[DT](0.0))
-                if len(self._grad_in1_buf) < 1:
-                    self._grad_in1_buf.resize(1, Scalar[DT](0.0))
-                self._out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._out_buf.unsafe_ptr())
-                self._grad_out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_out_buf.unsafe_ptr())
-                self._grad_in0_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_in0_buf.unsafe_ptr())
-                self._n_batch_buf = BATCH
-
-    def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._out_ptr
-
-    def grad_out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_out_ptr
-
-    def grad_in0_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in0_ptr
-
-    def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in1_ptr  # null — external unary has no in1
-
-    def forward_via[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    ) raises:
-        var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
-        var out_p = self.out_ptr_via()
-        var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
-        var typed_ptr = rebind[UnsafePointer[Self.M, MutAnyOrigin]](
-            self._module_ptr
-        )
-        typed_ptr[].forward[target, BATCH, POLICY=POLICY](in0_t, output=out_t)
-
-    def vjp_via[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](mut self) raises:
-        var go_p = self.grad_out_ptr_via()
-        var gi0_p = self.grad_in0_ptr_via()
-        var go_t = TileTensor(go_p, row_major[BATCH, Self.OUT_DIM]())
-        var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
-        var typed_ptr = rebind[UnsafePointer[Self.M, MutAnyOrigin]](
-            self._module_ptr
-        )
-        typed_ptr[].vjp[
-            target, BATCH, POLICY=POLICY, mode=Self.MODE,
-        ](go_t, gi0_t)
-
-    def for_each_param_via[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V,) raises:
-        pass
-
-    def set_op_attr_via[ATTR: StaticString](
-        mut self, value: Scalar[DT],
-    ):
-        pass
-
-
-# ──────────────────────────────────────────────────────────────────────
-# ExternalBinaryNode — BinaryModule sibling of ExternalUnaryNode.
-# ──────────────────────────────────────────────────────────────────────
-
-
-struct ExternalBinaryNode[
-    node_name: StaticString,
-    M: Module,
-    in0_name: StaticString = "input",
-    in1_name: StaticString = "input",
+    in1_name: StaticString = "",
     MODE: StaticString = "all",
 ](GraphNode):
     comptime NAME = Self.node_name
     comptime IN0_NAME = Self.in0_name
     comptime IN1_NAME = Self.in1_name
     comptime IN0_DIM = Self.M.IN_DIM
-    comptime IN1_DIM = Self.M.IN1_DIM
+    comptime IN1_DIM = Self.M.IN1_DIM    # 0 when M.ARITY == 1 (trait default)
     comptime OUT_DIM = Self.M.OUT_DIM
-    comptime KIND = 2
+    comptime KIND = Self.M.ARITY
 
-    # Type-erased so the GraphNode trait can carry a uniform
-    # `set_external_via` method. Rebound to UnsafePointer[Self.M] at
-    # every dispatch site (forward_via / vjp_via).
+    # Type-erased so GraphNode.set_external_via carries a uniform
+    # signature. Rebound to UnsafePointer[Self.M] at every dispatch site.
     var _module_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
 
     var _out_buf: List[Scalar[DT]]
@@ -904,7 +496,7 @@ struct ExternalBinaryNode[
     @staticmethod
     def make_via[target: StaticString, INIT: Initializer]() raises -> Self:
         comptime assert target == "cpu", (
-            "ExternalBinaryNode.make_via[target='gpu', INIT] requires a DeviceContext"
+            "ExternalNode.make_via[target='gpu', INIT] requires a DeviceContext"
         )
         var n = Self()
         n.ts = TargetStorage.make_cpu()
@@ -915,7 +507,7 @@ struct ExternalBinaryNode[
         target: StaticString, INIT: Initializer
     ](ctx: DeviceContext) raises -> Self:
         comptime assert target == "gpu", (
-            "ExternalBinaryNode.make_via[target='cpu', INIT](ctx) — drop ctx for CPU"
+            "ExternalNode.make_via[target='cpu', INIT](ctx) — drop ctx for CPU"
         )
         var n = Self()
         n.ts = TargetStorage.make_gpu(ctx)
@@ -925,6 +517,8 @@ struct ExternalBinaryNode[
         mut self,
         ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
+        """Bind the external Module instance. Pointer is type-erased at the
+        trait surface; rebound to UnsafePointer[Self.M] at dispatch time."""
         self._module_ptr = ptr
 
     def ensure_buffers_via[BATCH: Int](mut self) raises:
@@ -943,10 +537,6 @@ struct ExternalBinaryNode[
                     self._grad_in0_buf_dev, self._grad_in0_buf_dev_n,
                     BATCH * Self.IN0_DIM, ctx,
                 )
-                ensure_gpu_buffer(
-                    self._grad_in1_buf_dev, self._grad_in1_buf_dev_n,
-                    BATCH * Self.IN1_DIM, ctx,
-                )
                 self._out_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._out_buf_dev.value().unsafe_ptr())
@@ -956,16 +546,20 @@ struct ExternalBinaryNode[
                 self._grad_in0_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._grad_in0_buf_dev.value().unsafe_ptr())
-                self._grad_in1_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_in1_buf_dev.value().unsafe_ptr())
+                comptime if Self.M.ARITY >= 2:
+                    ensure_gpu_buffer(
+                        self._grad_in1_buf_dev, self._grad_in1_buf_dev_n,
+                        BATCH * Self.IN1_DIM, ctx,
+                    )
+                    self._grad_in1_ptr = rebind[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](self._grad_in1_buf_dev.value().unsafe_ptr())
                 self._n_batch_buf = BATCH
         else:
             if self._n_batch_buf < BATCH:
                 self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
                 self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
                 self._grad_in0_buf.resize(BATCH * Self.IN0_DIM, Scalar[DT](0.0))
-                self._grad_in1_buf.resize(BATCH * Self.IN1_DIM, Scalar[DT](0.0))
                 self._out_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._out_buf.unsafe_ptr())
@@ -975,9 +569,14 @@ struct ExternalBinaryNode[
                 self._grad_in0_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._grad_in0_buf.unsafe_ptr())
-                self._grad_in1_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_in1_buf.unsafe_ptr())
+                comptime if Self.M.ARITY >= 2:
+                    self._grad_in1_buf.resize(BATCH * Self.IN1_DIM, Scalar[DT](0.0))
+                    self._grad_in1_ptr = rebind[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](self._grad_in1_buf.unsafe_ptr())
+                else:
+                    if len(self._grad_in1_buf) < 1:
+                        self._grad_in1_buf.resize(1, Scalar[DT](0.0))
                 self._n_batch_buf = BATCH
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -1001,36 +600,44 @@ struct ExternalBinaryNode[
         in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
-        # Hetero-binary variadic workaround: see BinaryNode.forward_via.
         var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
-        var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
         var out_p = self.out_ptr_via()
         var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
         var typed_ptr = rebind[UnsafePointer[Self.M, MutAnyOrigin]](
             self._module_ptr
         )
-        typed_ptr[].forward[
-            target, BATCH, POLICY=POLICY,
-        ](in0_t, in1_t, output=out_t)
+        comptime if Self.M.ARITY == 1:
+            typed_ptr[].forward[target, BATCH, POLICY=POLICY](
+                in0_t, output=out_t,
+            )
+        else:
+            var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
+            typed_ptr[].forward[target, BATCH, POLICY=POLICY](
+                in0_t, in1_t, output=out_t,
+            )
 
     def vjp_via[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
     ](mut self) raises:
-        # Hetero-binary variadic workaround: see BinaryNode.vjp_via.
         var go_p = self.grad_out_ptr_via()
         var gi0_p = self.grad_in0_ptr_via()
-        var gi1_p = self.grad_in1_ptr_via()
         var go_t = TileTensor(go_p, row_major[BATCH, Self.OUT_DIM]())
         var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
-        var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
         var typed_ptr = rebind[UnsafePointer[Self.M, MutAnyOrigin]](
             self._module_ptr
         )
-        typed_ptr[].vjp[
-            target, BATCH, POLICY=POLICY, mode=Self.MODE,
-        ](go_t, gi0_t, gi1_t)
+        comptime if Self.M.ARITY == 1:
+            typed_ptr[].vjp[
+                target, BATCH, POLICY=POLICY, mode=Self.MODE,
+            ](go_t, gi0_t)
+        else:
+            var gi1_p = self.grad_in1_ptr_via()
+            var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
+            typed_ptr[].vjp[
+                target, BATCH, POLICY=POLICY, mode=Self.MODE,
+            ](go_t, gi0_t, gi1_t)
 
     def for_each_param_via[
         target: StaticString,
@@ -1038,8 +645,5 @@ struct ExternalBinaryNode[
     ](mut self, prefix: String, mut visitor: V,) raises:
         pass
 
-    def set_op_attr_via[ATTR: StaticString](
-        mut self, value: Scalar[DT],
-    ):
-        pass
-
+    # set_op_attr_via inherits trait default (no-op) — external module's
+    # attrs are managed by its owner, not the graph.

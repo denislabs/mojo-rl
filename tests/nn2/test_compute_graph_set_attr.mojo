@@ -16,7 +16,7 @@ from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn2.combinators.graph_nodes import InputSlot, UnaryNode
+from mojo_rl.nn2.combinators.graph_nodes import InputSlot, Node
 from mojo_rl.nn2.primitives.scale import Scale
 from mojo_rl.nn2.initializer import Zero
 
@@ -28,7 +28,7 @@ def test_set_node_attr_multiplier() raises:
     comptime ScaleGraph = ComputeGraph[
         DIM,
         InputSlot["in", DIM],
-        UnaryNode["alpha_scale", Scale[DIM], "in"],
+        Node["alpha_scale", Scale[DIM], "in"],
     ]
     var g = ScaleGraph.make[target="cpu", INIT=Zero]()
 

@@ -1,7 +1,7 @@
 """SACTrainer compile + instantiate smoke (Phase F2 post-retrofit).
 
 Confirms the full off-policy SAC stack (SACTrainer → SACActorLossCG →
-ComputeGraph v2 + UnaryNode/BinaryNode + TargetYBlock +
+ComputeGraph v2 + Node/Node + TargetYBlock +
 TwinCriticUpdateBlock + Adam + RSample + Slice + Scale + BinaryElemMin +
 BinarySub) compiles and instantiates against concrete actor/critic types
 on CPU. Does not run training — that needs an env which lives outside the

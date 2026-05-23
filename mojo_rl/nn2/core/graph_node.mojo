@@ -44,9 +44,9 @@ from .amp import AMPPolicy, NoAMP
 trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
     comptime NAME: StaticString
     comptime IN0_NAME: StaticString
-    comptime IN1_NAME: StaticString
+    comptime IN1_NAME: StaticString = ""   # default — InputSlot/Unary*Node inherit
     comptime IN0_DIM: Int
-    comptime IN1_DIM: Int
+    comptime IN1_DIM: Int = 0              # default — InputSlot/Unary*Node inherit
     comptime OUT_DIM: Int
     comptime KIND: Int  # 0 = input slot, 1 = unary, 2 = binary, 3 = ternary
 
@@ -59,12 +59,12 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
     ) raises:
         pass
 
-    # Phase 3 — Bind an externally-owned Module instance to an
-    # ExternalUnaryNode / ExternalBinaryNode. The pointer is type-erased
-    # to `UnsafePointer[Scalar[DT]]` at the trait surface; the external-
-    # node implementations `rebind` it back to the typed pointer at the
-    # dispatch site (Self.M is known there). InputSlot / UnaryNode /
-    # BinaryNode inherit the no-op default — they own their op.
+    # Bind an externally-owned Module instance to an ExternalNode. The
+    # pointer is type-erased to `UnsafePointer[Scalar[DT]]` at the trait
+    # surface; the external-node implementations `rebind` it back to
+    # the typed pointer at the dispatch site (Self.M is known there).
+    # InputSlot / Node inherit the no-op default — they own their op
+    # (or have none, for InputSlot).
     def set_external_via(
         mut self,
         ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -128,6 +128,6 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
         mut self, value: Scalar[DT],
     ):
         """Forward an attribute mutation to the inner op. Default
-        no-op for InputSlot (no `.op` field). UnaryNode/BinaryNode
-        override to call `self.op.set_attr[ATTR](value)`."""
+        no-op for InputSlot (no `.op` field). Node overrides to call
+        `self.op.set_attr[ATTR](value)`."""
         pass

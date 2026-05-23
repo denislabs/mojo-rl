@@ -14,8 +14,8 @@ entirely). StopGradParams lets the gradient flow through but blocks
 param updates via the backward path.
 
 NOTE (Phase 3, 2026-05-22): For stop-grad references INSIDE a
-`ComputeGraph`, prefer `ExternalUnaryNode[NAME, M, "src", MODE="input_only"]`
-over `UnaryNode[NAME, StopGradParams[M], "src"]`. The ExternalUnaryNode
+`ComputeGraph`, prefer `ExternalNode[NAME, M, "src", MODE="input_only"]`
+over `Node[NAME, StopGradParams[M], "src"]`. The ExternalNode
 form (a) avoids owning a separate Module copy inside the graph,
 (b) plumbs `mode="input_only"` directly into the referenced module's
 backward, and (c) keeps the trainer as the canonical owner of the

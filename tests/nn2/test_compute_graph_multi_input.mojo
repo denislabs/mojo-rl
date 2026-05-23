@@ -32,7 +32,7 @@ from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators import (
-    ComputeGraph, InputSlot, UnaryNode, BinaryNode,
+    ComputeGraph, InputSlot, Node, Node,
 )
 from mojo_rl.nn2.primitives.scale import Scale
 from mojo_rl.nn2.primitives.binary_sub import BinarySub
@@ -48,9 +48,9 @@ def test_multi_input_independence() raises:
         1,
         InputSlot["a", 1],
         InputSlot["b", 1],
-        UnaryNode["scaled_a", Scale[1], "a"],
-        UnaryNode["scaled_b", Scale[1], "b"],
-        BinaryNode["out",     BinarySub[1], "scaled_a", "scaled_b"],
+        Node["scaled_a", Scale[1], "a"],
+        Node["scaled_b", Scale[1], "b"],
+        Node["out",     BinarySub[1], "scaled_a", "scaled_b"],
     ]
 
     var g = AffineGraph.make[target="cpu", INIT=Kaiming]()
@@ -131,10 +131,10 @@ def test_multi_input_fanout() raises:
         1,
         InputSlot["a", 1],
         InputSlot["b", 1],
-        UnaryNode["a3", Scale[1], "a"],
-        UnaryNode["a2", Scale[1], "a"],
-        BinaryNode["ab", BinarySub[1], "a3", "a2"],   # 3·a - 2·a = a
-        BinaryNode["out", BinarySub[1], "ab", "b"],   # a - b
+        Node["a3", Scale[1], "a"],
+        Node["a2", Scale[1], "a"],
+        Node["ab", BinarySub[1], "a3", "a2"],   # 3·a - 2·a = a
+        Node["out", BinarySub[1], "ab", "b"],   # a - b
     ]
 
     var g = FanoutGraph.make[target="cpu", INIT=Kaiming]()

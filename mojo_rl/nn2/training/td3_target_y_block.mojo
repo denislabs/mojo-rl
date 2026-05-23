@@ -10,16 +10,16 @@ Graph topology:
     InputSlot         ["sp",          OBS]
     InputSlot         ["r",           1]
     InputSlot         ["noise",       ACT]                                  # sigma-scaled host-side
-    ExternalUnaryNode ["a_sp",        ACTOR,                          "sp"]
-    UnaryNode         ["noise_clip",  Clamp[ACT],                     "noise"]
-    BinaryNode        ["a_plus_n",    Add[ACT, 2],                    "a_sp", "noise_clip"]
-    UnaryNode         ["a_smoothed",  Clamp[ACT],                     "a_plus_n"]
-    BinaryNode        ["sa",          Concat[OBS, ACT],               "sp", "a_smoothed"]
-    ExternalUnaryNode ["q1",          CRITIC, "sa", MODE="input_only"]
-    ExternalUnaryNode ["q2",          CRITIC, "sa", MODE="input_only"]
-    BinaryNode        ["min_q",       BinaryElemMin[1],               "q1", "q2"]
-    UnaryNode         ["gamma_q",     Scale[1],                       "min_q"]
-    BinaryNode        ["y",           Add[1, 2],                      "r", "gamma_q"]
+    ExternalNode ["a_sp",        ACTOR,                          "sp"]
+    Node         ["noise_clip",  Clamp[ACT],                     "noise"]
+    Node        ["a_plus_n",    Add[ACT, 2],                    "a_sp", "noise_clip"]
+    Node         ["a_smoothed",  Clamp[ACT],                     "a_plus_n"]
+    Node        ["sa",          Concat[OBS, ACT],               "sp", "a_smoothed"]
+    ExternalNode ["q1",          CRITIC, "sa", MODE="input_only"]
+    ExternalNode ["q2",          CRITIC, "sa", MODE="input_only"]
+    Node        ["min_q",       BinaryElemMin[1],               "q1", "q2"]
+    Node         ["gamma_q",     Scale[1],                       "min_q"]
+    Node        ["y",           Add[1, 2],                      "r", "gamma_q"]
 
 `MODE="input_only"` on both critics: target_y is a target, not a loss, so
 no gradient flows through these critics on this path.
@@ -58,9 +58,8 @@ from ..initializer import Zero
 from ..combinators.compute_graph import ComputeGraph
 from ..combinators.graph_nodes import (
     InputSlot,
-    UnaryNode,
-    BinaryNode,
-    ExternalUnaryNode,
+    Node,
+    ExternalNode,
 )
 from ..primitives.clamp import Clamp
 from ..primitives.scale import Scale
@@ -82,19 +81,19 @@ struct TD3TargetYBlock[
 
     comptime TD3TargetYGraph = ComputeGraph[
         1,
-        InputSlot         ["sp",          Self.OBS],
-        InputSlot         ["r",           1],
-        InputSlot         ["noise",       Self.ACT],
-        ExternalUnaryNode ["a_sp",        Self.ACTOR,                          "sp"],
-        UnaryNode         ["noise_clip",  Clamp[Self.ACT],                     "noise"],
-        BinaryNode        ["a_plus_n",    Add[Self.ACT, 2],                    "a_sp", "noise_clip"],
-        UnaryNode         ["a_smoothed",  Clamp[Self.ACT],                     "a_plus_n"],
-        BinaryNode        ["sa",          Concat[Self.OBS, Self.ACT],          "sp", "a_smoothed"],
-        ExternalUnaryNode ["q1",          Self.CRITIC, "sa", MODE="input_only"],
-        ExternalUnaryNode ["q2",          Self.CRITIC, "sa", MODE="input_only"],
-        BinaryNode        ["min_q",       BinaryElemMin[1],                    "q1", "q2"],
-        UnaryNode         ["gamma_q",     Scale[1],                            "min_q"],
-        BinaryNode        ["y",           Add[1, 2],                           "r", "gamma_q"],
+        InputSlot["sp", Self.OBS],
+        InputSlot["r", 1],
+        InputSlot["noise", Self.ACT],
+        ExternalNode["a_sp", Self.ACTOR, "sp"],
+        Node["noise_clip", Clamp[Self.ACT], "noise"],
+        Node["a_plus_n", Add[Self.ACT, 2], "a_sp", "noise_clip"],
+        Node["a_smoothed", Clamp[Self.ACT], "a_plus_n"],
+        Node["sa", Concat[Self.OBS, Self.ACT], "sp", "a_smoothed"],
+        ExternalNode["q1", Self.CRITIC, "sa", MODE="input_only"],
+        ExternalNode["q2", Self.CRITIC, "sa", MODE="input_only"],
+        Node["min_q", BinaryElemMin[1], "q1", "q2"],
+        Node["gamma_q", Scale[1], "min_q"],
+        Node["y", Add[1, 2], "r", "gamma_q"],
     ]
 
     var graph: Self.TD3TargetYGraph
@@ -102,8 +101,8 @@ struct TD3TargetYBlock[
 
     var action_scale: Scalar[DT]
     var gamma: Scalar[DT]
-    var noise_std: Scalar[DT]    # σ for target-policy smoothing
-    var noise_clip: Scalar[DT]   # c — noise clamped to ±c·action_scale
+    var noise_std: Scalar[DT]  # σ for target-policy smoothing
+    var noise_clip: Scalar[DT]  # c — noise clamped to ±c·action_scale
     var ts: TargetStorage
 
     def __init__(out self):
@@ -116,25 +115,27 @@ struct TD3TargetYBlock[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString](
+    def make[
+        target: StaticString
+    ](
         action_scale: Scalar[DT] = Scalar[DT](1.0),
         gamma: Scalar[DT] = Scalar[DT](0.99),
         noise_std: Scalar[DT] = Scalar[DT](0.2),
         noise_clip: Scalar[DT] = Scalar[DT](0.5),
     ) raises -> Self:
         comptime assert target == "cpu", "TD3TargetYBlock: CPU only"
-        comptime assert Self.ACTOR.IN_DIM == Self.OBS, (
-            "TD3TargetYBlock: ACTOR.IN_DIM must equal OBS"
-        )
-        comptime assert Self.ACTOR.OUT_DIM == Self.ACT, (
-            "TD3TargetYBlock: ACTOR.OUT_DIM must equal ACT"
-        )
-        comptime assert Self.CRITIC.IN_DIM == Self.SA_DIM, (
-            "TD3TargetYBlock: CRITIC.IN_DIM must equal OBS+ACT"
-        )
-        comptime assert Self.CRITIC.OUT_DIM == 1, (
-            "TD3TargetYBlock: CRITIC.OUT_DIM must equal 1"
-        )
+        comptime assert (
+            Self.ACTOR.IN_DIM == Self.OBS
+        ), "TD3TargetYBlock: ACTOR.IN_DIM must equal OBS"
+        comptime assert (
+            Self.ACTOR.OUT_DIM == Self.ACT
+        ), "TD3TargetYBlock: ACTOR.OUT_DIM must equal ACT"
+        comptime assert (
+            Self.CRITIC.IN_DIM == Self.SA_DIM
+        ), "TD3TargetYBlock: CRITIC.IN_DIM must equal OBS+ACT"
+        comptime assert (
+            Self.CRITIC.OUT_DIM == 1
+        ), "TD3TargetYBlock: CRITIC.OUT_DIM must equal 1"
         var blk = Self()
         blk.graph = Self.TD3TargetYGraph.make[target="cpu", INIT=Zero]()
         blk.noise_buf = Scratch["noise", Self.BATCH * Self.ACT].make_cpu()

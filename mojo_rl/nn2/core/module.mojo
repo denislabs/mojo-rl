@@ -133,7 +133,7 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
 
     Unary leaves set `IN1_DIM = 0` and `IN2_DIM = 0` by convention.
     Binary leaves set `IN1_DIM = <real>`, `IN2_DIM = 0`. Ternary leaves
-    set all three. This shape lets graph-node wrappers (`BinaryNode`,
+    set all three. This shape lets graph-node wrappers (`Node`,
     `TernaryNode`, externals) read input dims through the trait surface
     without sub-traits."""
 

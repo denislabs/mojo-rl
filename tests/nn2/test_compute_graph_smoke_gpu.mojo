@@ -2,7 +2,7 @@
 
 Same identity DAG as `test_compute_graph_smoke.mojo` but executed on
 GPU. Verifies:
-  * UnaryNode / BinaryNode allocate DeviceBuffer storage when made via
+  * Node / Node allocate DeviceBuffer storage when made via
     target="gpu".
   * `_forward_gpu` / `_backward_gpu` walk the topo + reverse-topo
     correctly, with kernels for the inter-node wiring (zero/add/copy).
@@ -24,7 +24,7 @@ from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators import (
-    ComputeGraph, InputSlot, UnaryNode, BinaryNode,
+    ComputeGraph, InputSlot, Node, Node,
 )
 from mojo_rl.nn2.primitives.scale import Scale
 from mojo_rl.nn2.primitives.binary_sub import BinarySub
@@ -40,9 +40,9 @@ def test_compute_graph_identity_gpu() raises:
     comptime IdentityGraph = ComputeGraph[
         1,
         InputSlot["input", 1],
-        UnaryNode["a",   Scale[1], "input"],
-        UnaryNode["b",   Scale[1], "input"],
-        BinaryNode["sub", BinarySub[1], "b", "a"],
+        Node["a",   Scale[1], "input"],
+        Node["b",   Scale[1], "input"],
+        Node["sub", BinarySub[1], "b", "a"],
     ]
 
     var g = IdentityGraph.make[target="gpu", INIT=Kaiming](ctx)

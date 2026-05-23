@@ -1,4 +1,4 @@
-"""Spike Phase 3 — ExternalUnaryNode dispatch through UnsafePointer[M].
+"""Spike Phase 3 — ExternalNode dispatch through UnsafePointer[M].
 
 Goal: confirm that a graph-node-like struct can carry an
 `UnsafePointer[M, MutAnyOrigin]` to an externally-owned Module instance
@@ -105,7 +105,7 @@ struct IdentityM[DIM_: Int](Module):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Holder — minimal stand-in for ExternalUnaryNode. Stores a pointer to
+# Holder — minimal stand-in for ExternalNode. Stores a pointer to
 # an external module, dispatches forward/backward through it.
 # ──────────────────────────────────────────────────────────────────────
 
@@ -263,7 +263,7 @@ def test_pointer_isolation() raises:
 
 def main() raises:
     print("=" * 70)
-    print("Spike Phase 3 — ExternalUnaryNode dispatch via UnsafePointer[M]")
+    print("Spike Phase 3 — ExternalNode dispatch via UnsafePointer[M]")
     print("=" * 70)
     test_holder_forward()
     test_holder_backward()

@@ -8,18 +8,18 @@ Graph topology:
 
     InputSlot         ["sp",          OBS]
     InputSlot         ["r",           1]
-    ExternalUnaryNode ["actor_out",   ACTOR,                          "sp"]
-    ExternalUnaryNode ["alp",         RSample[ACT],                   "actor_out"]
-    UnaryNode         ["action",      Slice[ALP, 0, ACT],             "alp"]
-    UnaryNode         ["log_prob",    Slice[ALP, ACT, ALP],           "alp"]
-    BinaryNode        ["sa",          Concat[OBS, ACT],               "sp", "action"]
-    ExternalUnaryNode ["q1",          CRITIC, "sa", MODE="input_only"]
-    ExternalUnaryNode ["q2",          CRITIC, "sa", MODE="input_only"]
-    BinaryNode        ["min_q",       BinaryElemMin[1],               "q1", "q2"]
-    UnaryNode         ["alpha_lp",    Scale[1],                       "log_prob"]  # multiplier=α per call
-    BinaryNode        ["soft_v",      BinarySub[1],                   "min_q", "alpha_lp"]
-    UnaryNode         ["gamma_softv", Scale[1],                       "soft_v"]    # multiplier=γ, set at make()
-    BinaryNode        ["y",           Add[1, 2],                      "r", "gamma_softv"]
+    ExternalNode ["actor_out",   ACTOR,                          "sp"]
+    ExternalNode ["alp",         RSample[ACT],                   "actor_out"]
+    Node         ["action",      Slice[ALP, 0, ACT],             "alp"]
+    Node         ["log_prob",    Slice[ALP, ACT, ALP],           "alp"]
+    Node        ["sa",          Concat[OBS, ACT],               "sp", "action"]
+    ExternalNode ["q1",          CRITIC, "sa", MODE="input_only"]
+    ExternalNode ["q2",          CRITIC, "sa", MODE="input_only"]
+    Node        ["min_q",       BinaryElemMin[1],               "q1", "q2"]
+    Node         ["alpha_lp",    Scale[1],                       "log_prob"]  # multiplier=α per call
+    Node        ["soft_v",      BinarySub[1],                   "min_q", "alpha_lp"]
+    Node         ["gamma_softv", Scale[1],                       "soft_v"]    # multiplier=γ, set at make()
+    Node        ["y",           Add[1, 2],                      "r", "gamma_softv"]
 
 ACTOR, RSample, CRITIC are external. The trainer owns the actor and the
 two target critics; this block owns its own RSample instance (separate
@@ -53,9 +53,8 @@ from ..initializer import Zero
 from ..combinators.compute_graph import ComputeGraph
 from ..combinators.graph_nodes import (
     InputSlot,
-    UnaryNode,
-    BinaryNode,
-    ExternalUnaryNode,
+    Node,
+    ExternalNode,
 )
 from ..primitives.rsample import RSample
 from ..primitives.scale import Scale
@@ -79,24 +78,24 @@ struct TargetYBlock[
 
     comptime TargetYGraph = ComputeGraph[
         1,
-        InputSlot         ["sp",          Self.OBS],
-        InputSlot         ["r",           1],
-        ExternalUnaryNode ["actor_out",   Self.ACTOR,                       "sp"],
-        ExternalUnaryNode ["alp",         RSample[Self.ACT],                "actor_out"],
-        UnaryNode         ["action",      Slice[Self.ALP_DIM, 0, Self.ACT], "alp"],
-        UnaryNode         ["log_prob",    Slice[Self.ALP_DIM, Self.ACT, Self.ALP_DIM], "alp"],
-        BinaryNode        ["sa",          Concat[Self.OBS, Self.ACT],       "sp", "action"],
-        ExternalUnaryNode ["q1",          Self.CRITIC, "sa", MODE="input_only"],
-        ExternalUnaryNode ["q2",          Self.CRITIC, "sa", MODE="input_only"],
-        BinaryNode        ["min_q",       BinaryElemMin[1],                 "q1", "q2"],
-        UnaryNode         ["alpha_lp",    Scale[1],                         "log_prob"],
-        BinaryNode        ["soft_v",      BinarySub[1],                     "min_q", "alpha_lp"],
-        UnaryNode         ["gamma_softv", Scale[1],                         "soft_v"],
-        BinaryNode        ["y",           Add[1, 2],                        "r", "gamma_softv"],
+        InputSlot["sp", Self.OBS],
+        InputSlot["r", 1],
+        ExternalNode["actor_out", Self.ACTOR, "sp"],
+        ExternalNode["alp", RSample[Self.ACT], "actor_out"],
+        Node["action", Slice[Self.ALP_DIM, 0, Self.ACT], "alp"],
+        Node["log_prob", Slice[Self.ALP_DIM, Self.ACT, Self.ALP_DIM], "alp"],
+        Node["sa", Concat[Self.OBS, Self.ACT], "sp", "action"],
+        ExternalNode["q1", Self.CRITIC, "sa", MODE="input_only"],
+        ExternalNode["q2", Self.CRITIC, "sa", MODE="input_only"],
+        Node["min_q", BinaryElemMin[1], "q1", "q2"],
+        Node["alpha_lp", Scale[1], "log_prob"],
+        Node["soft_v", BinarySub[1], "min_q", "alpha_lp"],
+        Node["gamma_softv", Scale[1], "soft_v"],
+        Node["y", Add[1, 2], "r", "gamma_softv"],
     ]
 
     var graph: Self.TargetYGraph
-    var rsample: RSample[Self.ACT]   # owned — separate RNG from SAC actor loss
+    var rsample: RSample[Self.ACT]  # owned — separate RNG from SAC actor loss
 
     var action_scale: Scalar[DT]
     var gamma: Scalar[DT]
@@ -110,25 +109,27 @@ struct TargetYBlock[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString](
+    def make[
+        target: StaticString
+    ](
         action_scale: Scalar[DT] = Scalar[DT](1.0),
         gamma: Scalar[DT] = Scalar[DT](0.99),
     ) raises -> Self:
-        comptime assert target == "cpu", (
-            "TargetYBlock.make[target='gpu'] requires a DeviceContext"
-        )
-        comptime assert Self.ACTOR.IN_DIM == Self.OBS, (
-            "TargetYBlock: ACTOR.IN_DIM must equal OBS"
-        )
-        comptime assert Self.ACTOR.OUT_DIM == 2 * Self.ACT, (
-            "TargetYBlock: ACTOR.OUT_DIM must equal 2·ACT"
-        )
-        comptime assert Self.CRITIC.IN_DIM == Self.SA_DIM, (
-            "TargetYBlock: CRITIC.IN_DIM must equal OBS + ACT"
-        )
-        comptime assert Self.CRITIC.OUT_DIM == 1, (
-            "TargetYBlock: CRITIC.OUT_DIM must equal 1"
-        )
+        comptime assert (
+            target == "cpu"
+        ), "TargetYBlock.make[target='gpu'] requires a DeviceContext"
+        comptime assert (
+            Self.ACTOR.IN_DIM == Self.OBS
+        ), "TargetYBlock: ACTOR.IN_DIM must equal OBS"
+        comptime assert (
+            Self.ACTOR.OUT_DIM == 2 * Self.ACT
+        ), "TargetYBlock: ACTOR.OUT_DIM must equal 2·ACT"
+        comptime assert (
+            Self.CRITIC.IN_DIM == Self.SA_DIM
+        ), "TargetYBlock: CRITIC.IN_DIM must equal OBS + ACT"
+        comptime assert (
+            Self.CRITIC.OUT_DIM == 1
+        ), "TargetYBlock: CRITIC.OUT_DIM must equal 1"
         var blk = Self()
         blk.graph = Self.TargetYGraph.make[target="cpu", INIT=Zero]()
         blk.rsample = RSample[Self.ACT].make[target="cpu", INIT=Zero]()
@@ -142,27 +143,29 @@ struct TargetYBlock[
         return blk^
 
     @staticmethod
-    def make[target: StaticString](
+    def make[
+        target: StaticString
+    ](
         ctx: DeviceContext,
         action_scale: Scalar[DT] = Scalar[DT](1.0),
         gamma: Scalar[DT] = Scalar[DT](0.99),
     ) raises -> Self:
         """GPU factory."""
-        comptime assert target == "gpu", (
-            "TargetYBlock.make[target='cpu'](ctx) — drop ctx for CPU"
-        )
-        comptime assert Self.ACTOR.IN_DIM == Self.OBS, (
-            "TargetYBlock: ACTOR.IN_DIM must equal OBS"
-        )
-        comptime assert Self.ACTOR.OUT_DIM == 2 * Self.ACT, (
-            "TargetYBlock: ACTOR.OUT_DIM must equal 2·ACT"
-        )
-        comptime assert Self.CRITIC.IN_DIM == Self.SA_DIM, (
-            "TargetYBlock: CRITIC.IN_DIM must equal OBS + ACT"
-        )
-        comptime assert Self.CRITIC.OUT_DIM == 1, (
-            "TargetYBlock: CRITIC.OUT_DIM must equal 1"
-        )
+        comptime assert (
+            target == "gpu"
+        ), "TargetYBlock.make[target='cpu'](ctx) — drop ctx for CPU"
+        comptime assert (
+            Self.ACTOR.IN_DIM == Self.OBS
+        ), "TargetYBlock: ACTOR.IN_DIM must equal OBS"
+        comptime assert (
+            Self.ACTOR.OUT_DIM == 2 * Self.ACT
+        ), "TargetYBlock: ACTOR.OUT_DIM must equal 2·ACT"
+        comptime assert (
+            Self.CRITIC.IN_DIM == Self.SA_DIM
+        ), "TargetYBlock: CRITIC.IN_DIM must equal OBS + ACT"
+        comptime assert (
+            Self.CRITIC.OUT_DIM == 1
+        ), "TargetYBlock: CRITIC.OUT_DIM must equal 1"
         var blk = Self()
         blk.graph = Self.TargetYGraph.make[target="gpu", INIT=Zero](ctx)
         blk.rsample = RSample[Self.ACT].make[target="gpu", INIT=Zero](ctx)
@@ -173,7 +176,9 @@ struct TargetYBlock[
         blk.graph.set_node_attr["gamma_softv", "multiplier"](gamma)
         return blk^
 
-    def step[target: StaticString](
+    def step[
+        target: StaticString
+    ](
         mut self,
         mut actor: Self.ACTOR,
         mut critic1_target: Self.CRITIC,

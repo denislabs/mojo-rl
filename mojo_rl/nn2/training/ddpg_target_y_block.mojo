@@ -9,12 +9,12 @@ Graph topology:
 
     InputSlot         ["sp",          OBS]
     InputSlot         ["r",           1]
-    ExternalUnaryNode ["a_sp",        ACTOR,                          "sp"]
-    UnaryNode         ["a_clipped",   Clamp[ACT],                     "a_sp"]
-    BinaryNode        ["sa",          Concat[OBS, ACT],               "sp", "a_clipped"]
-    ExternalUnaryNode ["q",           CRITIC, "sa", MODE="input_only"]
-    UnaryNode         ["gamma_q",     Scale[1],                       "q"]
-    BinaryNode        ["y",           Add[1, 2],                      "r", "gamma_q"]
+    ExternalNode ["a_sp",        ACTOR,                          "sp"]
+    Node         ["a_clipped",   Clamp[ACT],                     "a_sp"]
+    Node        ["sa",          Concat[OBS, ACT],               "sp", "a_clipped"]
+    ExternalNode ["q",           CRITIC, "sa", MODE="input_only"]
+    Node         ["gamma_q",     Scale[1],                       "q"]
+    Node        ["y",           Add[1, 2],                      "r", "gamma_q"]
 
 `MODE="input_only"` on the critic: target_y is a target, not a loss, so
 no gradient flows through this critic on this path.
@@ -55,9 +55,8 @@ from ..initializer import Zero
 from ..combinators.compute_graph import ComputeGraph
 from ..combinators.graph_nodes import (
     InputSlot,
-    UnaryNode,
-    BinaryNode,
-    ExternalUnaryNode,
+    Node,
+    ExternalNode,
 )
 from ..primitives.clamp import Clamp
 from ..primitives.scale import Scale
@@ -77,14 +76,14 @@ struct DDPGTargetYBlock[
 
     comptime DDPGTargetYGraph = ComputeGraph[
         1,
-        InputSlot         ["sp",          Self.OBS],
-        InputSlot         ["r",           1],
-        ExternalUnaryNode ["a_sp",        Self.ACTOR,                          "sp"],
-        UnaryNode         ["a_clipped",   Clamp[Self.ACT],                     "a_sp"],
-        BinaryNode        ["sa",          Concat[Self.OBS, Self.ACT],          "sp", "a_clipped"],
-        ExternalUnaryNode ["q",           Self.CRITIC, "sa", MODE="input_only"],
-        UnaryNode         ["gamma_q",     Scale[1],                            "q"],
-        BinaryNode        ["y",           Add[1, 2],                           "r", "gamma_q"],
+        InputSlot["sp", Self.OBS],
+        InputSlot["r", 1],
+        ExternalNode["a_sp", Self.ACTOR, "sp"],
+        Node["a_clipped", Clamp[Self.ACT], "a_sp"],
+        Node["sa", Concat[Self.OBS, Self.ACT], "sp", "a_clipped"],
+        ExternalNode["q", Self.CRITIC, "sa", MODE="input_only"],
+        Node["gamma_q", Scale[1], "q"],
+        Node["y", Add[1, 2], "r", "gamma_q"],
     ]
 
     var graph: Self.DDPGTargetYGraph
@@ -99,25 +98,27 @@ struct DDPGTargetYBlock[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString](
+    def make[
+        target: StaticString
+    ](
         action_scale: Scalar[DT] = Scalar[DT](1.0),
         gamma: Scalar[DT] = Scalar[DT](0.99),
     ) raises -> Self:
-        comptime assert target == "cpu", (
-            "DDPGTargetYBlock.make[target='gpu'] requires a DeviceContext"
-        )
-        comptime assert Self.ACTOR.IN_DIM == Self.OBS, (
-            "DDPGTargetYBlock: ACTOR.IN_DIM must equal OBS"
-        )
-        comptime assert Self.ACTOR.OUT_DIM == Self.ACT, (
-            "DDPGTargetYBlock: ACTOR.OUT_DIM must equal ACT"
-        )
-        comptime assert Self.CRITIC.IN_DIM == Self.SA_DIM, (
-            "DDPGTargetYBlock: CRITIC.IN_DIM must equal OBS+ACT"
-        )
-        comptime assert Self.CRITIC.OUT_DIM == 1, (
-            "DDPGTargetYBlock: CRITIC.OUT_DIM must equal 1"
-        )
+        comptime assert (
+            target == "cpu"
+        ), "DDPGTargetYBlock.make[target='gpu'] requires a DeviceContext"
+        comptime assert (
+            Self.ACTOR.IN_DIM == Self.OBS
+        ), "DDPGTargetYBlock: ACTOR.IN_DIM must equal OBS"
+        comptime assert (
+            Self.ACTOR.OUT_DIM == Self.ACT
+        ), "DDPGTargetYBlock: ACTOR.OUT_DIM must equal ACT"
+        comptime assert (
+            Self.CRITIC.IN_DIM == Self.SA_DIM
+        ), "DDPGTargetYBlock: CRITIC.IN_DIM must equal OBS+ACT"
+        comptime assert (
+            Self.CRITIC.OUT_DIM == 1
+        ), "DDPGTargetYBlock: CRITIC.OUT_DIM must equal 1"
         var blk = Self()
         blk.graph = Self.DDPGTargetYGraph.make[target="cpu", INIT=Zero]()
         blk.ts = TargetStorage.make_cpu()
@@ -130,27 +131,29 @@ struct DDPGTargetYBlock[
         return blk^
 
     @staticmethod
-    def make[target: StaticString](
+    def make[
+        target: StaticString
+    ](
         ctx: DeviceContext,
         action_scale: Scalar[DT] = Scalar[DT](1.0),
         gamma: Scalar[DT] = Scalar[DT](0.99),
     ) raises -> Self:
         """GPU factory."""
-        comptime assert target == "gpu", (
-            "DDPGTargetYBlock.make[target='cpu'](ctx) — drop ctx for CPU"
-        )
-        comptime assert Self.ACTOR.IN_DIM == Self.OBS, (
-            "DDPGTargetYBlock: ACTOR.IN_DIM must equal OBS"
-        )
-        comptime assert Self.ACTOR.OUT_DIM == Self.ACT, (
-            "DDPGTargetYBlock: ACTOR.OUT_DIM must equal ACT"
-        )
-        comptime assert Self.CRITIC.IN_DIM == Self.SA_DIM, (
-            "DDPGTargetYBlock: CRITIC.IN_DIM must equal OBS+ACT"
-        )
-        comptime assert Self.CRITIC.OUT_DIM == 1, (
-            "DDPGTargetYBlock: CRITIC.OUT_DIM must equal 1"
-        )
+        comptime assert (
+            target == "gpu"
+        ), "DDPGTargetYBlock.make[target='cpu'](ctx) — drop ctx for CPU"
+        comptime assert (
+            Self.ACTOR.IN_DIM == Self.OBS
+        ), "DDPGTargetYBlock: ACTOR.IN_DIM must equal OBS"
+        comptime assert (
+            Self.ACTOR.OUT_DIM == Self.ACT
+        ), "DDPGTargetYBlock: ACTOR.OUT_DIM must equal ACT"
+        comptime assert (
+            Self.CRITIC.IN_DIM == Self.SA_DIM
+        ), "DDPGTargetYBlock: CRITIC.IN_DIM must equal OBS+ACT"
+        comptime assert (
+            Self.CRITIC.OUT_DIM == 1
+        ), "DDPGTargetYBlock: CRITIC.OUT_DIM must equal 1"
         var blk = Self()
         blk.graph = Self.DDPGTargetYGraph.make[target="gpu", INIT=Zero](ctx)
         blk.ts = TargetStorage.make_gpu(ctx)
@@ -161,7 +164,9 @@ struct DDPGTargetYBlock[
         blk.graph.set_node_attr["gamma_q", "multiplier"](gamma)
         return blk^
 
-    def step[target: StaticString](
+    def step[
+        target: StaticString
+    ](
         mut self,
         mut actor_target: Self.ACTOR,
         mut critic_target: Self.CRITIC,

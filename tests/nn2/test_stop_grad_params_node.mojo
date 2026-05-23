@@ -1,17 +1,17 @@
 """Test: StopGradParams as a ComputeGraph node — frozen inner params.
 
-Phase 1.2 verification. Confirms that `UnaryNode["...", StopGradParams[Linear], "..."]`
+Phase 1.2 verification. Confirms that `Node["...", StopGradParams[Linear], "..."]`
 in a ComputeGraph (a) forwards correctly through Linear and (b) leaves
 Linear's `weight.grad` / `bias.grad` untouched after a full forward+backward
 through the graph.
 
 Two sub-tests:
 
-  1. **control**: graph with `UnaryNode["lin", Linear[3, 1], "x"]` — after
+  1. **control**: graph with `Node["lin", Linear[3, 1], "x"]` — after
      forward+backward, Linear's `weight.grad` must be non-zero
      (sanity-check that the test's gradient seed is actually flowing).
 
-  2. **stop-grad-params**: graph with `UnaryNode["sgp",
+  2. **stop-grad-params**: graph with `Node["sgp",
      StopGradParams[Linear[3, 1]], "x"]` — after the SAME forward+backward
      shape, Linear's `weight.grad` must be ALL-ZERO (StopGradParams
      forced `mode="input_only"` on inner.backward).
@@ -28,7 +28,7 @@ from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn2.combinators.graph_nodes import InputSlot, UnaryNode
+from mojo_rl.nn2.combinators.graph_nodes import InputSlot, Node
 from mojo_rl.nn2.combinators.stop_grad_params import StopGradParams
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.initializer import Xavier
@@ -41,7 +41,7 @@ def test_control_linear_grads_flow() raises:
     comptime ControlGraph = ComputeGraph[
         1,
         InputSlot["x", 3],
-        UnaryNode["lin", Linear[3, 1], "x"],
+        Node["lin", Linear[3, 1], "x"],
     ]
     var g = ControlGraph.make[target="cpu", INIT=Xavier]()
 
@@ -83,7 +83,7 @@ def test_stop_grad_params_freezes_inner() raises:
     comptime FrozenGraph = ComputeGraph[
         1,
         InputSlot["x", 3],
-        UnaryNode["sgp", StopGradParams[Linear[3, 1]], "x"],
+        Node["sgp", StopGradParams[Linear[3, 1]], "x"],
     ]
     var g = FrozenGraph.make[target="cpu", INIT=Xavier]()
 

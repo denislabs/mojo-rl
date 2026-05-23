@@ -9,7 +9,7 @@ from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators import (
-    ComputeGraph, InputSlot, BinaryNode,
+    ComputeGraph, InputSlot, Node,
 )
 from mojo_rl.nn2.primitives.concat import Concat
 from mojo_rl.nn2.initializer import Kaiming
@@ -28,7 +28,7 @@ def test_hetero_binary_concat() raises:
         OUT_DIM,
         InputSlot["a", IN0_DIM],
         InputSlot["b", IN1_DIM],
-        BinaryNode["out", Concat[IN0_DIM, IN1_DIM], "a", "b"],
+        Node["out", Concat[IN0_DIM, IN1_DIM], "a", "b"],
     ]
 
     var g = ConcatGraph.make[target="cpu", INIT=Kaiming]()
