@@ -3,7 +3,7 @@
 Phase 3 FullGraph. The 11-node graph captures the full actor-loss
 computation; the loss block degenerates to "bind externals, set input,
 forward, seed, backward, step". No more inline GPU glue kernels — the
-existing primitive GPU paths (RSample / Slice / BinaryConcat /
+existing primitive GPU paths (RSample / Slice / Concat /
 BinaryElemMin / Scale / BinarySub) compose to express the same math.
 
 Graph topology (§8.6.1):
@@ -13,7 +13,7 @@ Graph topology (§8.6.1):
     ExternalUnaryNode ["alp",       RSample[ACT],               "actor_out"]
     UnaryNode        ["action",     Slice[ACT+1, 0, ACT],       "alp"]
     UnaryNode        ["log_prob",   Slice[ACT+1, ACT, ACT+1],   "alp"]
-    BinaryNode       ["sa",         BinaryConcat[OBS, ACT],     "s", "action"]
+    BinaryNode       ["sa",         Concat[OBS, ACT],           "s", "action"]
     ExternalUnaryNode ["q1",        CRITIC, "sa", MODE="input_only"]
     ExternalUnaryNode ["q2",        CRITIC, "sa", MODE="input_only"]
     BinaryNode       ["min_q",      BinaryElemMin[1],           "q1", "q2"]
@@ -62,7 +62,7 @@ from ..primitives.scale import Scale
 from ..primitives.slice import Slice
 from ..primitives.binary_elem_min import BinaryElemMin
 from ..primitives.binary_sub import BinarySub
-from ..primitives.binary_concat import BinaryConcat
+from ..primitives.concat import Concat
 from .loss_block import LossBlock
 from .seed_grad_inv_batch import seed_grad_inv_batch
 
@@ -97,7 +97,7 @@ struct SACActorLossCG[
         ExternalUnaryNode["alp",       RSample[Self.ACT_DIM], "actor_out"],
         UnaryNode ["action",    Slice[Self.ALP_DIM, 0, Self.ACT_DIM], "alp"],
         UnaryNode ["log_prob",  Slice[Self.ALP_DIM, Self.ACT_DIM, Self.ALP_DIM], "alp"],
-        BinaryNode["sa",        BinaryConcat[Self.OBS_DIM, Self.ACT_DIM], "s", "action"],
+        BinaryNode["sa",        Concat[Self.OBS_DIM, Self.ACT_DIM], "s", "action"],
         ExternalUnaryNode["q1", Self.CRITIC, "sa", MODE="input_only"],
         ExternalUnaryNode["q2", Self.CRITIC, "sa", MODE="input_only"],
         BinaryNode["min_q",     BinaryElemMin[1],         "q1", "q2"],

@@ -11,10 +11,10 @@ Graph topology:
     InputSlot         ["r",           1]
     ExternalUnaryNode ["a_sp",        ACTOR,                          "sp"]
     UnaryNode         ["a_clipped",   Clamp[ACT],                     "a_sp"]
-    BinaryNode        ["sa",          BinaryConcat[OBS, ACT],         "sp", "a_clipped"]
+    BinaryNode        ["sa",          Concat[OBS, ACT],               "sp", "a_clipped"]
     ExternalUnaryNode ["q",           CRITIC, "sa", MODE="input_only"]
     UnaryNode         ["gamma_q",     Scale[1],                       "q"]
-    BinaryNode        ["y",           BinaryAdd[1],                   "r", "gamma_q"]
+    BinaryNode        ["y",           Add[1, 2],                      "r", "gamma_q"]
 
 `MODE="input_only"` on the critic: target_y is a target, not a loss, so
 no gradient flows through this critic on this path.
@@ -61,8 +61,8 @@ from ..combinators.graph_nodes import (
 )
 from ..primitives.clamp import Clamp
 from ..primitives.scale import Scale
-from ..primitives.binary_concat import BinaryConcat
-from ..primitives.binary_add import BinaryAdd
+from ..primitives.concat import Concat
+from ..primitives.add import Add
 from ..loss.loss_block import LossBlock
 
 
@@ -81,10 +81,10 @@ struct DDPGTargetYBlock[
         InputSlot         ["r",           1],
         ExternalUnaryNode ["a_sp",        Self.ACTOR,                          "sp"],
         UnaryNode         ["a_clipped",   Clamp[Self.ACT],                     "a_sp"],
-        BinaryNode        ["sa",          BinaryConcat[Self.OBS, Self.ACT],    "sp", "a_clipped"],
+        BinaryNode        ["sa",          Concat[Self.OBS, Self.ACT],          "sp", "a_clipped"],
         ExternalUnaryNode ["q",           Self.CRITIC, "sa", MODE="input_only"],
         UnaryNode         ["gamma_q",     Scale[1],                            "q"],
-        BinaryNode        ["y",           BinaryAdd[1],                        "r", "gamma_q"],
+        BinaryNode        ["y",           Add[1, 2],                           "r", "gamma_q"],
     ]
 
     var graph: Self.DDPGTargetYGraph

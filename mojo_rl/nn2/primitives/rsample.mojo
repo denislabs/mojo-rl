@@ -84,8 +84,6 @@ def _rsample_unpack_kernel[ACT: Int, BATCH: Int](
 struct RSample[ACT: Int](Module):
     comptime ARITY: Int = 1
     comptime IN_DIM = 2 * Self.ACT
-    comptime IN1_DIM: Int = 0
-    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.ACT + 1
 
     var action_scale: Scalar[DT]

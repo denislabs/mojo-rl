@@ -80,8 +80,6 @@ def _parallel_split_kernel[
 struct Parallel[A: Module, B: Module](Module):
     comptime ARITY: Int = 1
     comptime IN_DIM = Self.A.IN_DIM
-    comptime IN1_DIM: Int = 0
-    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.A.OUT_DIM + Self.B.OUT_DIM
     comptime OUT_A = Self.A.OUT_DIM
     comptime OUT_B = Self.B.OUT_DIM

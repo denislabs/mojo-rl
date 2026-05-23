@@ -12,14 +12,14 @@ Graph topology:
     InputSlot         ["noise",       ACT]                                  # sigma-scaled host-side
     ExternalUnaryNode ["a_sp",        ACTOR,                          "sp"]
     UnaryNode         ["noise_clip",  Clamp[ACT],                     "noise"]
-    BinaryNode        ["a_plus_n",    BinaryAdd[ACT],                 "a_sp", "noise_clip"]
+    BinaryNode        ["a_plus_n",    Add[ACT, 2],                    "a_sp", "noise_clip"]
     UnaryNode         ["a_smoothed",  Clamp[ACT],                     "a_plus_n"]
-    BinaryNode        ["sa",          BinaryConcat[OBS, ACT],         "sp", "a_smoothed"]
+    BinaryNode        ["sa",          Concat[OBS, ACT],               "sp", "a_smoothed"]
     ExternalUnaryNode ["q1",          CRITIC, "sa", MODE="input_only"]
     ExternalUnaryNode ["q2",          CRITIC, "sa", MODE="input_only"]
     BinaryNode        ["min_q",       BinaryElemMin[1],               "q1", "q2"]
     UnaryNode         ["gamma_q",     Scale[1],                       "min_q"]
-    BinaryNode        ["y",           BinaryAdd[1],                   "r", "gamma_q"]
+    BinaryNode        ["y",           Add[1, 2],                      "r", "gamma_q"]
 
 `MODE="input_only"` on both critics: target_y is a target, not a loss, so
 no gradient flows through these critics on this path.
@@ -64,8 +64,8 @@ from ..combinators.graph_nodes import (
 )
 from ..primitives.clamp import Clamp
 from ..primitives.scale import Scale
-from ..primitives.binary_concat import BinaryConcat
-from ..primitives.binary_add import BinaryAdd
+from ..primitives.concat import Concat
+from ..primitives.add import Add
 from ..primitives.binary_elem_min import BinaryElemMin
 from ..random.box_muller import box_muller_normal
 from ..loss.loss_block import LossBlock
@@ -87,14 +87,14 @@ struct TD3TargetYBlock[
         InputSlot         ["noise",       Self.ACT],
         ExternalUnaryNode ["a_sp",        Self.ACTOR,                          "sp"],
         UnaryNode         ["noise_clip",  Clamp[Self.ACT],                     "noise"],
-        BinaryNode        ["a_plus_n",    BinaryAdd[Self.ACT],                 "a_sp", "noise_clip"],
+        BinaryNode        ["a_plus_n",    Add[Self.ACT, 2],                    "a_sp", "noise_clip"],
         UnaryNode         ["a_smoothed",  Clamp[Self.ACT],                     "a_plus_n"],
-        BinaryNode        ["sa",          BinaryConcat[Self.OBS, Self.ACT],    "sp", "a_smoothed"],
+        BinaryNode        ["sa",          Concat[Self.OBS, Self.ACT],          "sp", "a_smoothed"],
         ExternalUnaryNode ["q1",          Self.CRITIC, "sa", MODE="input_only"],
         ExternalUnaryNode ["q2",          Self.CRITIC, "sa", MODE="input_only"],
         BinaryNode        ["min_q",       BinaryElemMin[1],                    "q1", "q2"],
         UnaryNode         ["gamma_q",     Scale[1],                            "min_q"],
-        BinaryNode        ["y",           BinaryAdd[1],                        "r", "gamma_q"],
+        BinaryNode        ["y",           Add[1, 2],                           "r", "gamma_q"],
     ]
 
     var graph: Self.TD3TargetYGraph

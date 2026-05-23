@@ -41,8 +41,6 @@ def _elementwise_add_kernel[
 struct Residual[Inner: Module](Module):
     comptime ARITY: Int = 1
     comptime IN_DIM = Self.Inner.IN_DIM
-    comptime IN1_DIM: Int = 0
-    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.Inner.OUT_DIM
 
     var inner: Self.Inner

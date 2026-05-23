@@ -72,8 +72,6 @@ def _reduce_broadcast_kernel[
 struct Reduce[DIM: Int, OP: ReduceOp](Module):
     comptime ARITY: Int = 1
     comptime IN_DIM = Self.DIM
-    comptime IN1_DIM: Int = 0
-    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = 1
 
     var ts: TargetStorage

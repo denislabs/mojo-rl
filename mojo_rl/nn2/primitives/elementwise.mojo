@@ -102,8 +102,6 @@ def _elementwise_backward_kernel[
 struct Elementwise[DIM: Int, OP: ElementOp](Module):
     comptime ARITY: Int = 1
     comptime IN_DIM = Self.DIM
-    comptime IN1_DIM: Int = 0
-    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.DIM
 
     var ts: TargetStorage

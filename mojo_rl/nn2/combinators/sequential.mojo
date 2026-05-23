@@ -34,8 +34,6 @@ struct Sequential[*MODULES: Module](Module):
     comptime ARITY: Int = 1
     comptime N = Self.MODULES.size
     comptime IN_DIM = Self.MODULES[0].IN_DIM
-    comptime IN1_DIM: Int = 0
-    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.MODULES[Self.N - 1].OUT_DIM
 
     var children: Tuple[*Self.MODULES]

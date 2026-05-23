@@ -5,13 +5,13 @@ operations. The `BinaryElementwise[DIM, OP]` template provides one CPU
 SIMD body + one GPU kernel per (cached / uncached) direction; OP supplies
 the per-lane math.
 
-Three current implementations:
-  - `BinaryAddOp`     (owns_cache=False) — output = x + y
+Current implementations:
   - `BinarySubOp`     (owns_cache=False) — output = x - y
   - `BinaryElemMinOp` (owns_cache=True)  — output = min(x, y), cache=mask
 
 Future binaries (`BinaryMulOp` / `BinaryDivOp` / `BinaryWhereOp` / …) drop
-in as one OP impl + one alias each.
+in as one OP impl + one alias each. (Addition lives in `primitives/add.mojo`
+as a variadic `Add[DIM, N]` primitive — it doesn't go through this trait.)
 
   - `forward_scalar(x, y)` / `forward_simd[W](x, y)`: output = f(x, y).
   - `cache_scalar(x, y)` / `cache_simd[W](x, y)`: per-element carry value
@@ -23,15 +23,14 @@ in as one OP impl + one alias each.
   - `backward_scalar_y(c, go)` / `backward_simd_y[W](c, go)`: gi1 = ∂f/∂y · go.
     For `owns_cache = False` ops, `c` is junk — these ops compute
     gradients from `go` alone (and the constant ∂f/∂x = ∂f/∂y = ±1 for
-    Add/Sub). The trait surface stays uniform so the template doesn't
+    Sub). The trait surface stays uniform so the template doesn't
     branch on cache mode at the inner-loop level.
 
   - `comptime owns_cache: Bool`: tells `BinaryElementwise[DIM, OP]`
     whether to allocate a cache buffer (`cache: List + cache_dev:
     Optional[DeviceBuffer]`) and dispatch the cached forward/backward
     kernel pair. `False` skips both allocation and the cache reads —
-    `BinaryAdd`/`BinarySub` need only `grad_output` to compute both
-    grad-inputs.
+    `BinarySub` needs only `grad_output` to compute both grad-inputs.
 """
 
 from ..constants import DT

@@ -1,6 +1,6 @@
 """Quick smoke for the hetero-binary variadic workaround.
 
-Builds a graph with BinaryConcat (IN0_DIM=3, IN1_DIM=5, OUT_DIM=8) and
+Builds a graph with Concat[IN0_DIM=3, IN1_DIM=5] (OUT_DIM=8) and
 verifies forward + backward both compile and produce correct results.
 """
 
@@ -11,7 +11,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators import (
     ComputeGraph, InputSlot, BinaryNode,
 )
-from mojo_rl.nn2.primitives.binary_concat import BinaryConcat
+from mojo_rl.nn2.primitives.concat import Concat
 from mojo_rl.nn2.initializer import Kaiming
 
 from layout import TileTensor, row_major
@@ -28,7 +28,7 @@ def test_hetero_binary_concat() raises:
         OUT_DIM,
         InputSlot["a", IN0_DIM],
         InputSlot["b", IN1_DIM],
-        BinaryNode["out", BinaryConcat[IN0_DIM, IN1_DIM], "a", "b"],
+        BinaryNode["out", Concat[IN0_DIM, IN1_DIM], "a", "b"],
     ]
 
     var g = ConcatGraph.make[target="cpu", INIT=Kaiming]()

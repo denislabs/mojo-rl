@@ -58,8 +58,6 @@ def _slice_backward_kernel[
 struct Slice[IN: Int, START: Int, END: Int](Module):
     comptime ARITY: Int = 1
     comptime IN_DIM = Self.IN
-    comptime IN1_DIM: Int = 0
-    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.END - Self.START
 
     var ts: TargetStorage

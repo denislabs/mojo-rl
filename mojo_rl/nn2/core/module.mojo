@@ -139,8 +139,8 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
 
     comptime ARITY: Int
     comptime IN_DIM: Int
-    comptime IN1_DIM: Int
-    comptime IN2_DIM: Int
+    comptime IN1_DIM: Int = 0    # default 0 — unary leaves inherit, binary/ternary override
+    comptime IN2_DIM: Int = 0    # default 0 — unary + binary inherit, ternary overrides
     comptime OUT_DIM: Int
 
     @staticmethod

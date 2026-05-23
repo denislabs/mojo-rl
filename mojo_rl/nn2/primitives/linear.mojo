@@ -117,8 +117,6 @@ def _grad_bias_kernel[
 struct Linear[IN: Int, OUT: Int](Module):
     comptime ARITY: Int = 1
     comptime IN_DIM = Self.IN
-    comptime IN1_DIM: Int = 0
-    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.OUT
     comptime W_SIZE = Self.IN * Self.OUT
     comptime B_SIZE = Self.OUT

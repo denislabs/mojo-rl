@@ -86,7 +86,6 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
     comptime IN_DIM = Self.IN_
     comptime IN0_DIM = Self.IN_
     comptime IN1_DIM = Self.HIDDEN
-    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.HIDDEN
     comptime W_IH_SIZE = Self.IN_ * (3 * Self.HIDDEN)
     comptime W_HH_SIZE = Self.HIDDEN * (3 * Self.HIDDEN)

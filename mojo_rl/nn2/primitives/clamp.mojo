@@ -68,8 +68,6 @@ def _clamp_backward_kernel[
 struct Clamp[DIM: Int](Module):
     comptime ARITY: Int = 1
     comptime IN_DIM = Self.DIM
-    comptime IN1_DIM: Int = 0
-    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.DIM
 
     var min_val: Scalar[DT]

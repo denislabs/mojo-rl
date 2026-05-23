@@ -34,8 +34,6 @@ def _scale_kernel[
 struct Scale[DIM: Int](Module):
     comptime ARITY: Int = 1
     comptime IN_DIM = Self.DIM
-    comptime IN1_DIM: Int = 0
-    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.DIM
 
     var multiplier: Scalar[DT]

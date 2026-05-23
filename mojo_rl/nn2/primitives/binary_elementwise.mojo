@@ -4,7 +4,6 @@ elementwise binary ops (Add / Sub / ElemMin / future Mul / Div / Where …).
 Phase 4.5. Mirror of `Elementwise[DIM, OP]` but with two inputs +
 two grad inputs. Each leaf binary collapses to a one-line alias:
 
-    alias BinaryAdd[DIM: Int]     = BinaryElementwise[DIM, BinaryAddOp]
     alias BinarySub[DIM: Int]     = BinaryElementwise[DIM, BinarySubOp]
     alias BinaryElemMin[DIM: Int] = BinaryElementwise[DIM, BinaryElemMinOp]
 
@@ -15,10 +14,13 @@ Cache strategy is chosen by `Self.OP.owns_cache`:
         cache buffer (`cache: List` CPU + `cache_dev: DeviceBuffer` GPU).
         Backward reads the cache when computing grad_in0 / grad_in1.
 
-  - `Self.OP.owns_cache = False` (BinaryAdd / BinarySub):
+  - `Self.OP.owns_cache = False` (BinarySub):
         no cache allocated; backward needs only grad_output. The cache
         fields still exist on the struct (Mojo nightly can't drop fields
         conditionally) but are never touched.
+
+(Add — the elementwise N-arity counterpart — lives in `add.mojo` as a
+variadic primitive, not as a `BinaryElementOp`.)
 
 CPU paths use SIMD via `Self.OP.forward_simd[W]` / `cache_simd[W]` /
 `backward_simd_x[W]` / `backward_simd_y[W]` with `CPU_SIMD_W = 8`. GPU
@@ -129,7 +131,6 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
     comptime IN_DIM = Self.DIM
     comptime IN0_DIM = Self.DIM
     comptime IN1_DIM = Self.DIM
-    comptime IN2_DIM: Int = 0
     comptime OUT_DIM = Self.DIM
 
     var ts: TargetStorage

@@ -12,14 +12,14 @@ Graph topology:
     ExternalUnaryNode ["alp",         RSample[ACT],                   "actor_out"]
     UnaryNode         ["action",      Slice[ALP, 0, ACT],             "alp"]
     UnaryNode         ["log_prob",    Slice[ALP, ACT, ALP],           "alp"]
-    BinaryNode        ["sa",          BinaryConcat[OBS, ACT],         "sp", "action"]
+    BinaryNode        ["sa",          Concat[OBS, ACT],               "sp", "action"]
     ExternalUnaryNode ["q1",          CRITIC, "sa", MODE="input_only"]
     ExternalUnaryNode ["q2",          CRITIC, "sa", MODE="input_only"]
     BinaryNode        ["min_q",       BinaryElemMin[1],               "q1", "q2"]
     UnaryNode         ["alpha_lp",    Scale[1],                       "log_prob"]  # multiplier=α per call
     BinaryNode        ["soft_v",      BinarySub[1],                   "min_q", "alpha_lp"]
     UnaryNode         ["gamma_softv", Scale[1],                       "soft_v"]    # multiplier=γ, set at make()
-    BinaryNode        ["y",           BinaryAdd[1],                   "r", "gamma_softv"]
+    BinaryNode        ["y",           Add[1, 2],                      "r", "gamma_softv"]
 
 ACTOR, RSample, CRITIC are external. The trainer owns the actor and the
 two target critics; this block owns its own RSample instance (separate
@@ -60,10 +60,10 @@ from ..combinators.graph_nodes import (
 from ..primitives.rsample import RSample
 from ..primitives.scale import Scale
 from ..primitives.slice import Slice
-from ..primitives.binary_concat import BinaryConcat
+from ..primitives.concat import Concat
 from ..primitives.binary_elem_min import BinaryElemMin
 from ..primitives.binary_sub import BinarySub
-from ..primitives.binary_add import BinaryAdd
+from ..primitives.add import Add
 from ..loss.loss_block import LossBlock
 
 
@@ -85,14 +85,14 @@ struct TargetYBlock[
         ExternalUnaryNode ["alp",         RSample[Self.ACT],                "actor_out"],
         UnaryNode         ["action",      Slice[Self.ALP_DIM, 0, Self.ACT], "alp"],
         UnaryNode         ["log_prob",    Slice[Self.ALP_DIM, Self.ACT, Self.ALP_DIM], "alp"],
-        BinaryNode        ["sa",          BinaryConcat[Self.OBS, Self.ACT], "sp", "action"],
+        BinaryNode        ["sa",          Concat[Self.OBS, Self.ACT],       "sp", "action"],
         ExternalUnaryNode ["q1",          Self.CRITIC, "sa", MODE="input_only"],
         ExternalUnaryNode ["q2",          Self.CRITIC, "sa", MODE="input_only"],
         BinaryNode        ["min_q",       BinaryElemMin[1],                 "q1", "q2"],
         UnaryNode         ["alpha_lp",    Scale[1],                         "log_prob"],
         BinaryNode        ["soft_v",      BinarySub[1],                     "min_q", "alpha_lp"],
         UnaryNode         ["gamma_softv", Scale[1],                         "soft_v"],
-        BinaryNode        ["y",           BinaryAdd[1],                     "r", "gamma_softv"],
+        BinaryNode        ["y",           Add[1, 2],                        "r", "gamma_softv"],
     ]
 
     var graph: Self.TargetYGraph

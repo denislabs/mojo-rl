@@ -1,4 +1,4 @@
-"""TernaryModule concrete impls — TernaryConcat + TernaryFusedAdd (Block D-7)."""
+"""ARITY=3 instantiations of the merged Concat + Add primitives (Block D-7)."""
 
 from std.math import abs as fabs
 from std.memory import alloc
@@ -6,8 +6,8 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.primitives.ternary_concat import TernaryConcat
-from mojo_rl.nn2.primitives.ternary_fused_add import TernaryFusedAdd
+from mojo_rl.nn2.primitives.concat import Concat
+from mojo_rl.nn2.primitives.add import Add
 from mojo_rl.nn2.initializer import Kaiming
 
 
@@ -17,7 +17,7 @@ def test_concat_forward_backward() raises:
     comptime D1 = 3
     comptime D2 = 1
     comptime OUT = D0 + D1 + D2
-    var c = TernaryConcat[D0, D1, D2].make[target="cpu", INIT=Kaiming]()
+    var c = Concat[D0, D1, D2].make[target="cpu", INIT=Kaiming]()
 
     var i0_p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * D0)
     var i1_p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * D1)
@@ -85,7 +85,7 @@ def test_concat_forward_backward() raises:
 def test_fused_add_forward_backward() raises:
     comptime BATCH = 3
     comptime DIM = 5
-    var a = TernaryFusedAdd[DIM].make[target="cpu", INIT=Kaiming]()
+    var a = Add[DIM, 3].make[target="cpu", INIT=Kaiming]()
     var i0_p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * DIM)
     var i1_p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * DIM)
     var i2_p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * DIM)
@@ -133,7 +133,7 @@ def test_fused_add_forward_backward() raises:
 
 def main() raises:
     print("=" * 60)
-    print("nn2 Ternary tests (Block D-7)")
+    print("nn2 ARITY=3 Concat + Add tests (Block D-7)")
     print("=" * 60)
     test_concat_forward_backward()
     test_fused_add_forward_backward()
