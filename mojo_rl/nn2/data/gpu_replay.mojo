@@ -104,6 +104,53 @@ def _sample_indices_kernel[BATCH: Int](
     indices[i] = Scalar[DType.int32](idx)
 
 
+def _sample_indices_ere_kernel[BATCH: Int, CAP: Int](
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+    ],
+    size: Int32,
+    write_pos: Int32,
+    c_k: Int32,
+    seed: UInt64,
+    offset_base: UInt64,
+):
+    """ERE-biased Philox uniform: index lands uniformly within the
+    most recent `min(c_k, size)` slots of the circular buffer.
+
+    Per-thread: draw `u ~ Uniform[0, 1)`, then
+    `idx = (write_pos − c_k + floor(u·c_k) + CAP) % CAP`. When
+    `c_k == size`, the distribution is identical to uniform over
+    the whole buffer (just rotated), so this kernel is safe to use
+    when ERE is effectively off.
+
+    Mirrors `deep_agents`' `sample_indices_ere_kernel` but takes
+    `c_k`, `size`, and `write_pos` as kernel args (scalar Int32)
+    instead of via DeviceBuffers — the host computes `c_k` once per
+    call (no GPU graph capture concern in nn2 today; see
+    `feedback_gpu_scalar_args`).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var u = Float32(philox.step_uniform()[0])
+    var c = Int(c_k)
+    var sz = Int(size)
+    if c > sz:
+        c = sz
+    if c < 1:
+        c = 1
+    var offset = Int(u * Float32(c))
+    if offset >= c:
+        offset = c - 1
+    if offset < 0:
+        offset = 0
+    var idx = (Int(write_pos) - c + offset + CAP) % CAP
+    if idx < 0:
+        idx = idx + CAP
+    indices[i] = Scalar[DType.int32](idx)
+
+
 def _gather_batch_kernel[
     BATCH: Int, OBS: Int, ACT: Int, CAP: Int,
 ](
@@ -233,6 +280,19 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
     # Cached BATCH ceiling for `indices` buffer sizing.
     var batch_capacity: Int
 
+    # Phase C.4 — ERE (Emphasizing Recent Experience) state. Disabled
+    # by default; `enable_ere(...)` flips `ere_enabled` and sets eta /
+    # c_min. The cycle counter `_ere_k` wraps at `_ere_k_max` (Wang &
+    # Ross default 1000) — at each `sample` call, `_ere_eta_pow_k`
+    # multiplies by `ere_eta` and `_ere_k` increments; on wrap both
+    # reset. `c_k = clamp(floor(size · _ere_eta_pow_k), c_min, size)`.
+    var ere_enabled: Bool
+    var ere_eta: Scalar[DT]
+    var _ere_k: Int
+    var _ere_k_max: Int
+    var _ere_eta_pow_k: Scalar[DT]
+    var _ere_c_min: Int
+
     @staticmethod
     def new(ctx: DeviceContext, batch_capacity: Int = 4096) raises -> Self:
         """Allocate all device buffers + staging + index scratch.
@@ -273,7 +333,50 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
             rng_seed=UInt64(0xC0FFEE_DECADE_0042),
             _rng_offset=UInt64(0),
             batch_capacity=batch_capacity,
+            ere_enabled=False,
+            ere_eta=Scalar[DT](0.996),
+            _ere_k=0,
+            _ere_k_max=1000,
+            _ere_eta_pow_k=Scalar[DT](1.0),
+            _ere_c_min=1,
         )
+
+    def enable_ere(
+        mut self,
+        eta: Scalar[DT] = Scalar[DT](0.996),
+        c_min: Int = 1,
+        k_max: Int = 1000,
+    ):
+        """Enable ERE recency-biased sampling (Wang & Ross 2019).
+
+        With ERE on, `sample[BATCH]` draws indices uniformly from the
+        most recent `c_k = clamp(floor(size · η^k), c_min, size)`
+        transitions; `k` cycles 0 → `k_max − 1` and resets, so over a
+        full cycle the sampler smoothly anneals from "very recent
+        only" back to "full buffer."
+
+        Args:
+            eta: Decay factor (paper default 0.996). Smaller = stronger
+                bias toward recent.
+            c_min: Lower clamp on the recent window. Recommended at
+                least the trainer's BATCH so each sample has enough
+                slots to draw from.
+            k_max: Cycle length. After `k_max` calls `k` resets to 0
+                and `η^k` resets to 1.0.
+
+        No-op when `eta == 1.0` (no bias) but the kernel path still
+        runs; for true bit-identity with the non-ERE sampler, leave
+        ERE off."""
+        self.ere_enabled = True
+        self.ere_eta = eta
+        self._ere_c_min = c_min
+        self._ere_k_max = k_max
+        self._ere_k = 0
+        self._ere_eta_pow_k = Scalar[DT](1.0)
+
+    def disable_ere(mut self):
+        """Switch back to uniform sampling."""
+        self.ere_enabled = False
 
     def is_ready[BATCH: Int](self) -> Bool:
         return self.size >= BATCH
@@ -453,11 +556,41 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
         ](self.indices.unsafe_ptr())
         comptime TPB = 128
         comptime n_blocks = (BATCH + TPB - 1) // TPB
-        comptime indices_kernel = _sample_indices_kernel[BATCH]
-        ctx.enqueue_function[indices_kernel](
-            idx_lt, Int32(self.size), self.rng_seed, self._rng_offset,
-            grid_dim=n_blocks, block_dim=TPB,
-        )
+        if self.ere_enabled:
+            # Host-side compute c_k = clamp(floor(size · η^k), c_min, size).
+            var c = Int(
+                Scalar[DT](self.size) * self._ere_eta_pow_k
+            )
+            if c < self._ere_c_min:
+                c = self._ere_c_min
+            if c > self.size:
+                c = self.size
+            if c < 1:
+                c = 1
+            comptime ere_kernel = _sample_indices_ere_kernel[
+                BATCH, Self.CAP,
+            ]
+            ctx.enqueue_function[ere_kernel](
+                idx_lt,
+                Int32(self.size),
+                Int32(self.pos),
+                Int32(c),
+                self.rng_seed, self._rng_offset,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
+            # Advance k, η^k; wrap at k_max.
+            self._ere_k = self._ere_k + 1
+            self._ere_eta_pow_k = self._ere_eta_pow_k * self.ere_eta
+            if self._ere_k >= self._ere_k_max:
+                self._ere_k = 0
+                self._ere_eta_pow_k = Scalar[DT](1.0)
+        else:
+            comptime indices_kernel = _sample_indices_kernel[BATCH]
+            ctx.enqueue_function[indices_kernel](
+                idx_lt, Int32(self.size),
+                self.rng_seed, self._rng_offset,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
         # Bump RNG offset so back-to-back calls draw disjoint streams.
         self._rng_offset += UInt64(BATCH * 2)
 
