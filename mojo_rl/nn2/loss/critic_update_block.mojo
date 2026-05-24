@@ -42,6 +42,7 @@ from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from ..constants import DT
+from ..core.amp import AMPPolicy, NoAMP
 from ..core.module import Module
 from ..core.scratch import Scratch
 from ..core.scratch_walkers import init_scratch_auto
@@ -110,6 +111,7 @@ struct CriticUpdateBlock[
 
     def step[
         target: StaticString,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         mut critic: Self.CRITIC,
@@ -142,17 +144,19 @@ struct CriticUpdateBlock[
 
         var mb_q_t = TileTensor(mb_q_p, row_major[Self.BATCH, 1]())
         opt.zero_grad[target, M=Self.CRITIC](critic)
-        critic.forward[target, Self.BATCH](sa_t_rb, output=mb_q_t)
-        var loss = self.mse_loss.forward[target, Self.BATCH](mb_q_t, y_t)
+        critic.forward[target, Self.BATCH, POLICY](sa_t_rb, output=mb_q_t)
+        var loss = self.mse_loss.forward[target, Self.BATCH, POLICY](
+            mb_q_t, y_t,
+        )
 
         var mb_grad_q_t = TileTensor(mb_grad_q_p, row_major[Self.BATCH, 1]())
-        self.mse_loss.vjp[target, Self.BATCH](y_t, mb_grad_q_t)
+        self.mse_loss.vjp[target, Self.BATCH, POLICY](y_t, mb_grad_q_t)
 
         var mb_grad_sa_t = TileTensor(
             mb_grad_sa_p,
             row_major[Self.BATCH, Self.SA_DIM](),
         )
-        critic.vjp[target, Self.BATCH](mb_grad_q_t, mb_grad_sa_t)
+        critic.vjp[target, Self.BATCH, POLICY](mb_grad_q_t, mb_grad_sa_t)
         opt.step[target, M=Self.CRITIC](critic)
         return loss
 
@@ -215,6 +219,7 @@ struct TwinCriticUpdateBlock[
 
     def step[
         target: StaticString,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         mut critic1: Self.CRITIC,
@@ -242,6 +247,10 @@ struct TwinCriticUpdateBlock[
             )
         var sa_t = TileTensor(sa_p, row_major[Self.BATCH, Self.SA_DIM]())
 
-        var loss1 = self.c1.step[target](critic1, critic1_opt, sa_t, mb_y_t)
-        var loss2 = self.c2.step[target](critic2, critic2_opt, sa_t, mb_y_t)
+        var loss1 = self.c1.step[target, POLICY](
+            critic1, critic1_opt, sa_t, mb_y_t,
+        )
+        var loss2 = self.c2.step[target, POLICY](
+            critic2, critic2_opt, sa_t, mb_y_t,
+        )
         return loss1 + loss2

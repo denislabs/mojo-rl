@@ -60,6 +60,7 @@ from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
 
 from ..constants import DT
 from ..core import Module
+from ..core.amp import AMPPolicy, NoAMP
 from ..core.online_target_pair import OnlineTargetPair
 from ..initializer import Xavier
 from ..optimizer.adam import Adam
@@ -895,9 +896,10 @@ struct SACTrainer[
         `select_action` doc for the trait-conformance rationale."""
         return self.train_step["cpu"](step_idx)
 
-    def train_step[target: StaticString = "cpu"](
-        mut self, step_idx: Int,
-    ) raises -> Bool:
+    def train_step[
+        target: StaticString = "cpu",
+        POLICY: AMPPolicy = NoAMP,
+    ](mut self, step_idx: Int) raises -> Bool:
         """One full off-policy SAC update if past warmup.
 
         Returns True if a training step actually ran, False if the call
@@ -907,6 +909,13 @@ struct SACTrainer[
         device buffers by `GPUReplay.sample[BATCH]`. Pre-C.1, the GPU
         path went CPU sample → 4 host→device uploads each step; that
         upload block is now gone.
+
+        Phase C.5 — `POLICY` (default `NoAMP`) threads into every
+        forward/vjp call inside `target_y_block.step`,
+        `twin_critic_block.step`, and `actor_loss.forward_backward`.
+        Pass `POLICY=Bf16Compute` for bf16 mixed-precision compute on
+        supported hardware. CPU path with `POLICY=NoAMP` is bit-
+        identical to pre-C.5.
         """
         if step_idx < self.learning_starts:
             return False
@@ -957,17 +966,21 @@ struct SACTrainer[
         var alpha = fexp(self.alpha_opt.value)
 
         var t_ty = perf_counter_ns()
-        self._train_compute_target_y[target](alpha, mb_sp_ptr, mb_r_ptr, mb_y_ptr)
+        self._train_compute_target_y[target, POLICY](
+            alpha, mb_sp_ptr, mb_r_ptr, mb_y_ptr,
+        )
         self.timer.accumulate(Self._T_TARGET_Y, t_ty)
 
         var t_crit = perf_counter_ns()
-        var crit_loss = self._train_critic_update[target](
+        var crit_loss = self._train_critic_update[target, POLICY](
             mb_s_ptr, mb_a_ptr, mb_y_ptr,
         )
         self.timer.accumulate(Self._T_CRITIC, t_crit)
 
         var t_act = perf_counter_ns()
-        var actor_res = self._train_actor_update[target](alpha, mb_s_ptr)
+        var actor_res = self._train_actor_update[target, POLICY](
+            alpha, mb_s_ptr,
+        )
         self.timer.accumulate(Self._T_ACTOR, t_act)
 
         var t_alp = perf_counter_ns()
@@ -984,37 +997,48 @@ struct SACTrainer[
         self._update_count += 1
         return True
 
-    def _train_compute_target_y[target: StaticString](
+    def _train_compute_target_y[
+        target: StaticString,
+        POLICY: AMPPolicy = NoAMP,
+    ](
         mut self,
         alpha: Scalar[DT],
         mb_sp_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_r_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
-        self.target_y_block.step[target](
+        self.target_y_block.step[target, POLICY](
             self.actor, self.pair1.target_net, self.pair2.target_net,
             mb_sp_ptr, mb_r_ptr, alpha, mb_y_ptr,
         )
 
-    def _train_critic_update[target: StaticString](
+    def _train_critic_update[
+        target: StaticString,
+        POLICY: AMPPolicy = NoAMP,
+    ](
         mut self,
         mb_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises -> Scalar[DT]:
         var mb_y_t = TileTensor(mb_y_ptr, row_major[Self.BATCH, 1]())
-        return self.twin_critic_block.step[target](
+        return self.twin_critic_block.step[target, POLICY](
             self.pair1.online, self.critic1_opt,
             self.pair2.online, self.critic2_opt,
             mb_s_ptr, mb_a_ptr, mb_y_t,
         )
 
-    def _train_actor_update[target: StaticString](
+    def _train_actor_update[
+        target: StaticString,
+        POLICY: AMPPolicy = NoAMP,
+    ](
         mut self,
         alpha: Scalar[DT],
         mb_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises -> SACActorLossOut:
-        return self.actor_loss.forward_backward[target, OPT=Adam](
+        return self.actor_loss.forward_backward[
+            target, OPT=Adam, POLICY=POLICY,
+        ](
             self.actor, self.actor_opt, self.pair1.online, self.pair2.online,
             mb_s_ptr, alpha,
         )

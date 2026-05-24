@@ -18,7 +18,7 @@ by the Pendulum 30k regression gate).
 
 from ..constants import DT
 from ..core.saveable import Saveable
-from ..core.save_scalar import SaveScalar, SaveI
+from ..core.save_scalar import SaveScalar, SaveI, SaveBool
 from ..core.state_walker import dump_state, load_state
 
 
@@ -41,6 +41,13 @@ struct SACConfig(Saveable):
     var max_grad_norm:        SaveScalar[DT]
     var learning_starts:      SaveI
     var window_size:          SaveI
+    # Phase C.5 — mixed-precision hint. `True` asks the trainer to run
+    # forward/backward kernels in bf16 compute (params + Adam moments
+    # stay fp32). The Trainer struct picks `POLICY = Bf16Compute` vs
+    # `NoAMP` at the comptime type level; this Saveable field just
+    # records the user's choice so it survives checkpoint round-trips.
+    # Default `False` → POLICY=NoAMP → bit-identical to pre-C.5.
+    var use_bf16:             SaveBool
 
     @staticmethod
     def default() -> Self:
@@ -61,6 +68,7 @@ struct SACConfig(Saveable):
             max_grad_norm=SaveScalar[DT](Scalar[DT](0.0)),
             learning_starts=SaveI(1_000),
             window_size=SaveI(10),
+            use_bf16=SaveBool(False),
         )
 
     def save(self, mut out: String, prefix: String) raises:

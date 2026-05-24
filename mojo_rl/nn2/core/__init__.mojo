@@ -25,7 +25,7 @@ from .scratch import Scratch, IsScratch
 from .scratch_walkers import init_scratch_auto
 from .checkpoint import save_params, load_params, save_state_v2, load_state_v2
 from .saveable import Saveable
-from .save_scalar import SaveScalar, SaveI
+from .save_scalar import SaveScalar, SaveI, SaveBool
 from .state_walker import dump_state, load_state
 from .metric import Metric, LogScalar
 from .log_bundle import log_bundle

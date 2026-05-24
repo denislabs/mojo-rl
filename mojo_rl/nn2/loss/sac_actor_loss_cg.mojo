@@ -46,6 +46,7 @@ from layout import TileTensor, row_major
 
 from ..constants import DT
 from ..core import Module, Optimizer, Initializer
+from ..core.amp import AMPPolicy, NoAMP
 from ..core.scratch import Scratch
 from ..core.scratch_walkers import init_scratch_auto
 from ..core.target_storage import TargetStorage, assert_tag_for
@@ -186,6 +187,7 @@ struct SACActorLossCG[
     def forward_backward[
         target: StaticString,
         OPT: Optimizer,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         mut actor: Self.ACTOR,
@@ -217,7 +219,7 @@ struct SACActorLossCG[
         comptime if target == "cpu":
             var loss_p = self._loss_out.cpu_ptr()
             var loss_t = TileTensor(loss_p, row_major[BB, 1]())
-            self.graph.forward["cpu", BB](loss_t)
+            self.graph.forward["cpu", BB, POLICY](loss_t)
 
             # Mean loss + mean log_prob, read directly from the graph.
             var lp_p = self.graph.node_out_ptr["log_prob"]()
@@ -234,7 +236,7 @@ struct SACActorLossCG[
             var grad_p = self._grad_seed.cpu_ptr()
             seed_grad_inv_batch["cpu", BB](grad_p)
             var grad_t = TileTensor(grad_p, row_major[BB, 1]())
-            self.graph.vjp["cpu", BB](grad_t)
+            self.graph.vjp["cpu", BB, POLICY](grad_t)
 
             actor_opt.step["cpu", M=Self.ACTOR](actor)
             return SACActorLossOut(loss=loss_mean, log_prob_mean=lp_mean)
@@ -242,7 +244,7 @@ struct SACActorLossCG[
             var ctx = self.ts.ctx.value()
             var loss_p = self._loss_out.dev_ptr()
             var loss_t = TileTensor(loss_p, row_major[BB, 1]())
-            self.graph.forward["gpu", BB](loss_t)
+            self.graph.forward["gpu", BB, POLICY](loss_t)
 
             # Host-side mean reduction: copy loss_per_b + log_prob to
             # host, sum, divide. Cheaper than launching a reduction
@@ -267,7 +269,7 @@ struct SACActorLossCG[
                 grad_p, Optional[DeviceContext](ctx)
             )
             var grad_t = TileTensor(grad_p, row_major[BB, 1]())
-            self.graph.vjp["gpu", BB](grad_t)
+            self.graph.vjp["gpu", BB, POLICY](grad_t)
 
             actor_opt.step["gpu", M=Self.ACTOR](actor)
             return SACActorLossOut(loss=loss_mean, log_prob_mean=lp_mean)

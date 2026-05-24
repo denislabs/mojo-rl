@@ -47,6 +47,7 @@ from std.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
 from ..constants import DT
+from ..core.amp import AMPPolicy, NoAMP
 from ..core.module import Module
 from ..core.target_storage import TargetStorage, assert_tag_for
 from ..initializer import Zero
@@ -177,7 +178,8 @@ struct TargetYBlock[
         return blk^
 
     def step[
-        target: StaticString
+        target: StaticString,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         mut actor: Self.ACTOR,
@@ -189,7 +191,12 @@ struct TargetYBlock[
         mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Compute `mb_y[b] = r[b] + γ·(min(Q1_t, Q2_t)(sp, a') − α·log_prob(a'|sp))`
-        in-place into `mb_y_ptr`. nonterm=1.0 baked in (Pendulum-style)."""
+        in-place into `mb_y_ptr`. nonterm=1.0 baked in (Pendulum-style).
+
+        `POLICY` (Phase C.5) is threaded into the underlying
+        `graph.forward` so the target-y compute can run with
+        Bf16Compute when the trainer opts in. Default `NoAMP` is
+        bit-identical to pre-C.5."""
         assert_tag_for["TargetYBlock", target](self.ts.target_tag)
 
         # Bind externals.
@@ -209,4 +216,4 @@ struct TargetYBlock[
 
         # Forward into mb_y (graph's last node is `y`, OUT_DIM=1).
         var mb_y_t = TileTensor(mb_y_ptr, row_major[Self.BATCH, 1]())
-        self.graph.forward[target, Self.BATCH](mb_y_t)
+        self.graph.forward[target, Self.BATCH, POLICY](mb_y_t)

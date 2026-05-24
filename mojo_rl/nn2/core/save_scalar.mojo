@@ -62,6 +62,28 @@ struct SaveI(Saveable, Copyable):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Boolean wrapper. Persisted as `0`/`1` text. Used by Config flags
+# whose comptime counterpart is an AMPPolicy or similar comptime type
+# the trainer picks at instantiation.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@fieldwise_init
+struct SaveBool(Saveable, Copyable):
+    var v: Bool
+
+    def save(self, mut out: String, prefix: String) raises:
+        out += prefix + "=" + ("1" if self.v else "0") + "\n"
+
+    def load(
+        mut self, lines: List[String], mut idx: Int, prefix: String,
+    ) raises:
+        var value_str = _expect_kv_line(lines, idx, prefix)
+        idx += 1
+        self.v = atol(value_str) != 0
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Line-parser helper. Shared by the wrappers above (and by any future
 # Saveable leaf that wants to consume a `name=value` line from the
 # stream). Kept here rather than in state_walker.mojo so leaves don't
