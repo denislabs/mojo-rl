@@ -141,6 +141,41 @@ def _gather_batch_kernel[
     mb_d[i] = buf_d[idx]
 
 
+def _store_batch_kernel[
+    N_ENVS: Int, OBS: Int, ACT: Int, CAP: Int,
+](
+    src_obs: LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin],
+    src_act: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
+    src_rew: LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin],
+    src_nxt: LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin],
+    src_dne: LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin],
+    buf_s: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_a: LayoutTensor[DT, Layout.row_major(CAP, ACT), MutAnyOrigin],
+    buf_r: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
+    buf_sp: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
+    start_pos: Int32,
+):
+    """Batched store: thread `e` writes env e's transition into slot
+    `(start_pos + e) % CAP`. Mirrors `_store_one_kernel` shape but
+    with one lane per env.
+
+    Launched as grid=(ceil(N_ENVS/TPB),), block=(TPB,). OBS/ACT loops
+    sequential within each thread.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+    var slot = (Int(start_pos) + e) % CAP
+    for d in range(OBS):
+        buf_s[slot, d] = src_obs[e, d]
+        buf_sp[slot, d] = src_nxt[e, d]
+    for j in range(ACT):
+        buf_a[slot, j] = src_act[e, j]
+    buf_r[slot] = src_rew[e]
+    buf_d[slot] = src_dne[e]
+
+
 # ──────────────────────────────────────────────────────────────────────
 # GPUReplay struct.
 # ──────────────────────────────────────────────────────────────────────
@@ -319,6 +354,74 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
         self.pos = (self.pos + 1) % Self.CAP
         if self.size < Self.CAP:
             self.size += 1
+
+    def add_batch[N_ENVS: Int](
+        mut self,
+        ctx: DeviceContext,
+        src_obs: DeviceBuffer[DT],
+        src_act: DeviceBuffer[DT],
+        src_rew: DeviceBuffer[DT],
+        src_nxt: DeviceBuffer[DT],
+        src_dne: DeviceBuffer[DT],
+    ) raises:
+        """Push `N_ENVS` transitions in one kernel launch.
+
+        Source buffers come from the GPU env step (already device-
+        resident); no host→device copies are needed. One kernel writes
+        all N_ENVS slots, each at `(pos + e) % CAP`. CPU updates
+        `pos = (pos + N_ENVS) % CAP` and saturates `size` at CAP.
+
+        Used by `run_offpolicy_train_gpu_n_envs` (B.5b) — replaces the
+        N successive `add` calls that an N_ENVS=N driver would
+        otherwise make (one kernel + zero D2H vs N kernels + 5N D2H).
+        """
+        comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+        var src_obs_lt = LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
+        ](src_obs.unsafe_ptr())
+        var src_act_lt = LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.ACT), MutAnyOrigin
+        ](src_act.unsafe_ptr())
+        var src_rew_lt = LayoutTensor[
+            DT, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](src_rew.unsafe_ptr())
+        var src_nxt_lt = LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
+        ](src_nxt.unsafe_ptr())
+        var src_dne_lt = LayoutTensor[
+            DT, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](src_dne.unsafe_ptr())
+        var buf_s_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+        ](self.obs.unsafe_ptr())
+        var buf_a_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin
+        ](self.act.unsafe_ptr())
+        var buf_r_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP), MutAnyOrigin
+        ](self.rew.unsafe_ptr())
+        var buf_sp_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+        ](self.nxt.unsafe_ptr())
+        var buf_d_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP), MutAnyOrigin
+        ](self.dne.unsafe_ptr())
+
+        comptime TPB = 128
+        comptime n_blocks = (N_ENVS + TPB - 1) // TPB
+        comptime kernel = _store_batch_kernel[
+            N_ENVS, Self.OBS, Self.ACT, Self.CAP
+        ]
+        ctx.enqueue_function[kernel](
+            src_obs_lt, src_act_lt, src_rew_lt, src_nxt_lt, src_dne_lt,
+            buf_s_lt, buf_a_lt, buf_r_lt, buf_sp_lt, buf_d_lt,
+            Int32(self.pos),
+            grid_dim=n_blocks, block_dim=TPB,
+        )
+        self.pos = (self.pos + N_ENVS) % Self.CAP
+        self.size += N_ENVS
+        if self.size > Self.CAP:
+            self.size = Self.CAP
 
     def sample[BATCH: Int](
         mut self,

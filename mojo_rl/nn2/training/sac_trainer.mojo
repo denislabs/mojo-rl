@@ -52,9 +52,11 @@ sub-method stays under the threshold.
 from std.math import exp as fexp, log as flog, tanh as ftanh
 from std.memory import alloc
 from std.random import random_float64
+from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
+from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import TileTensor, TensorLayout, row_major
+from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
 
 from ..constants import DT
 from ..core import Module
@@ -73,9 +75,75 @@ from ..core.metric import LogScalar
 from .episode_tracker import EpisodeTracker
 from .sac_config import SACConfig
 from .sac_metrics import SACMetrics
-from .driver_cpu import OffPolicyTrainable, OffPolicyTrainableGpu
+from .driver_cpu import (
+    OffPolicyTrainable, OffPolicyTrainableGpu, OffPolicyTrainableGpuBatched,
+)
 from .target_y_block import TargetYBlock
 from .timer import Timer
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase B.5b — top-level kernels for the batched GPU action path.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _warmup_uniform_kernel[N_ENVS: Int, ACT: Int](
+    action_dest: LayoutTensor[
+        DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+    ],
+    action_scale: Scalar[DT],
+    seed: UInt64,
+    offset_base: UInt64,
+):
+    """Per-lane Philox uniform → `[N_ENVS, ACT]` filled with
+    `Uniform(-action_scale, +action_scale)` samples.
+
+    Each `(env, j)` lane gets its own Philox stream seeded by
+    `seed + (env * ACT + j)` at offset `offset_base`. Mirrors B.5
+    single-env warmup (host `random_float64` × 2 − 1 × action_scale)
+    but device-side so no host→device upload is needed.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = N_ENVS * ACT
+    if i >= total:
+        return
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var u = Float32(philox.step_uniform()[0])  # uniform in [0, 1)
+    var s = Scalar[DT](2.0) * Scalar[DT](u) - Scalar[DT](1.0)
+    var env = i // ACT
+    var j = i % ACT
+    action_dest[env, j] = s * action_scale
+
+
+def _action_clamp_kernel[N_ENVS: Int, ACT: Int](
+    alp: LayoutTensor[
+        DT, Layout.row_major(N_ENVS, ACT + 1), MutAnyOrigin,
+    ],
+    action_out: LayoutTensor[
+        DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+    ],
+    action_scale: Scalar[DT],
+):
+    """Extract the first `ACT` lanes from `alp[env, :ACT]` (rsample's
+    sampled action — the last lane is `log_prob` which we drop here)
+    and write the clamped result into `action_out`.
+
+    Mirrors the host-side `tanh`-then-clamp the single-env GPU path
+    runs after the D2H of `_alp1_dev`; in batched mode we keep it on
+    device so no per-step download is needed.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = N_ENVS * ACT
+    if i >= total:
+        return
+    var env = i // ACT
+    var j = i % ACT
+    var a = alp[env, j]
+    if a > action_scale:
+        a = action_scale
+    elif a < -action_scale:
+        a = -action_scale
+    action_out[env, j] = a
 
 
 struct SACTrainer[
@@ -85,7 +153,7 @@ struct SACTrainer[
     ACT_DIM: Int,
     BATCH: Int,
     REPLAY_CAPACITY: Int,
-](OffPolicyTrainable, OffPolicyTrainableGpu):
+](OffPolicyTrainable, OffPolicyTrainableGpu, OffPolicyTrainableGpuBatched):
     comptime SA_DIM = Self.OBS_DIM + Self.ACT_DIM
 
     # Timer section indices. Order matches `add_section` calls in `make`.
@@ -163,6 +231,15 @@ struct SACTrainer[
     var target_entropy: Scalar[DT]
     var learning_starts: Int
 
+    # ─── Phase B.5b — batched-GPU warmup RNG state ───────────────────
+    # `select_action_gpu_batched[N_ENVS]` uses Philox on-device for the
+    # uniform warmup actions. Offset bumps by `2*N_ENVS*ACT` per call
+    # so back-to-back warmup steps draw disjoint streams; this state
+    # is independent from RSample's RNG (which governs policy
+    # sampling). Single-env paths don't touch this field.
+    var _warmup_rng_seed: UInt64
+    var _warmup_rng_offset: UInt64
+
     # ─── Logging accumulators ─────────────────────────────────────────
     var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
@@ -236,6 +313,8 @@ struct SACTrainer[
         self.action_scale = Scalar[DT](1.0)
         self.target_entropy = Scalar[DT](-1.0)
         self.learning_starts = 1_000
+        self._warmup_rng_seed = UInt64(0xBADBEEF_FEEDFACE)
+        self._warmup_rng_offset = UInt64(0)
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._alpha_accum = Scalar[DT](0.0)
@@ -653,6 +732,121 @@ struct SACTrainer[
                 a = -self.action_scale
             action_out[j] = a
 
+    # ──────────────────────────────────────────────────────────────────
+    # Phase B.5b — batched GPU action + record API. Used by the N_ENVS
+    # GPU driver (`run_offpolicy_train_gpu_n_envs`). The driver owns
+    # the N_ENVS-sized obs/action/ao/alp scratch buffers (since
+    # SACTrainer is not N_ENVS-parametric at the struct level — it can
+    # only be N_ENVS-parametric at the method level, so allocating
+    # struct-resident N_ENVS-sized scratch isn't possible without
+    # breaking single-env trainers).
+    # ──────────────────────────────────────────────────────────────────
+
+    def select_action_gpu_batched[N_ENVS: Int](
+        mut self,
+        ctx: DeviceContext,
+        obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        ao_scratch_dev: DeviceBuffer[DT],
+        alp_scratch_dev: DeviceBuffer[DT],
+        step_idx: Int,
+    ) raises:
+        """Batched policy step for N_ENVS envs.
+
+        Warmup (`step_idx < learning_starts`): launches
+        `_warmup_uniform_kernel` to fill `action_dev` with
+        Uniform(-action_scale, +action_scale) lanes via Philox. The
+        trainer's `_warmup_rng_offset` advances each call so successive
+        warmup steps draw disjoint streams.
+
+        Else: `actor.forward["gpu", N_ENVS](obs → ao_scratch_dev)` →
+        `rsample.forward["gpu", N_ENVS](ao → alp_scratch_dev)` →
+        `_action_clamp_kernel` extracts + clamps the first ACT_DIM
+        lanes of `alp_scratch_dev` into `action_dev`.
+
+        Buffer shapes:
+          obs_dev          : [N_ENVS * OBS_DIM]
+          action_dev       : [N_ENVS * ACT_DIM]              (out)
+          ao_scratch_dev   : [N_ENVS * 2 * ACT_DIM]          (driver-owned)
+          alp_scratch_dev  : [N_ENVS * (ACT_DIM + 1)]        (driver-owned)
+        """
+        comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+        var action_lt = LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.ACT_DIM), MutAnyOrigin,
+        ](action_dev.unsafe_ptr())
+
+        if step_idx < self.learning_starts:
+            comptime TPB = 128
+            comptime total = N_ENVS * Self.ACT_DIM
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime warmup_kernel = _warmup_uniform_kernel[
+                N_ENVS, Self.ACT_DIM
+            ]
+            ctx.enqueue_function[warmup_kernel](
+                action_lt,
+                self.action_scale,
+                self._warmup_rng_seed,
+                self._warmup_rng_offset,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
+            self._warmup_rng_offset += UInt64(N_ENVS * Self.ACT_DIM * 2)
+            return
+
+        var obs_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            obs_dev.unsafe_ptr()
+        )
+        var ao_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            ao_scratch_dev.unsafe_ptr()
+        )
+        var alp_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            alp_scratch_dev.unsafe_ptr()
+        )
+        var obs_t = TileTensor(
+            obs_p, row_major[N_ENVS, Self.OBS_DIM]()
+        )
+        var ao_t = TileTensor(
+            ao_p, row_major[N_ENVS, 2 * Self.ACT_DIM]()
+        )
+        var alp_t = TileTensor(
+            alp_p, row_major[N_ENVS, Self.ACT_DIM + 1]()
+        )
+        self.actor.forward["gpu", N_ENVS](obs_t, output=ao_t)
+        self.actor_loss.rsample.forward["gpu", N_ENVS](
+            ao_t, output=alp_t,
+        )
+
+        var alp_lt = LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.ACT_DIM + 1), MutAnyOrigin,
+        ](alp_scratch_dev.unsafe_ptr())
+        comptime TPB = 128
+        comptime total = N_ENVS * Self.ACT_DIM
+        comptime n_blocks = (total + TPB - 1) // TPB
+        comptime clamp_kernel = _action_clamp_kernel[N_ENVS, Self.ACT_DIM]
+        ctx.enqueue_function[clamp_kernel](
+            alp_lt, action_lt, self.action_scale,
+            grid_dim=n_blocks, block_dim=TPB,
+        )
+
+    def record_batch_gpu[N_ENVS: Int](
+        mut self,
+        ctx: DeviceContext,
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        """Push N_ENVS transitions into the device-resident replay.
+
+        Thin wrapper over `GPUReplay.add_batch[N_ENVS]`. Does NOT
+        touch the episode tracker — the N_ENVS driver manages its
+        own host-side per-env reward accumulators (so this method
+        stays purely about the replay push, no D2H of `reward_dev`).
+        """
+        self.buf_gpu.value().add_batch[N_ENVS](
+            ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
+        )
+
     def record(
         mut self,
         obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -683,6 +877,13 @@ struct SACTrainer[
     def end_episode(mut self):
         """Roll the current episode return into the tracker window."""
         self.tracker.end_episode()
+
+    def add_complete_return(mut self, ret: Scalar[DT]):
+        """Push an externally-tracked complete-episode return into the
+        tracker window. Used by the N_ENVS GPU driver (Phase B.5b) where
+        the driver maintains its own per-env reward accumulators; the
+        trainer never sees individual rewards via `record_batch_gpu`."""
+        self.tracker.add_complete_return(ret)
 
     # ──────────────────────────────────────────────────────────────────
     # Training step + sub-steps. Each sub-step stays under the Mojo

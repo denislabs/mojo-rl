@@ -43,6 +43,19 @@ struct EpisodeTracker(Movable & ImplicitlyDestructible):
         self.ep_count += 1
         self.current_return = Scalar[DT](0.0)
 
+    def add_complete_return(mut self, ret: Scalar[DT]):
+        """Push an externally-tracked complete-episode return into the
+        window without touching `current_return`.
+
+        For N_ENVS GPU drivers (Phase B.5b): the driver maintains one
+        cumulative-reward accumulator per env on the host, then calls
+        this method for whichever env's `done` flag just fired. Single-
+        env drivers keep using `add_reward` + `end_episode`.
+        """
+        self.window[self.idx] = ret
+        self.idx = (self.idx + 1) % self.window_size
+        self.ep_count += 1
+
     def mean_return(self) -> Scalar[DT]:
         """Mean over the rolling window (over `window_size` past returns)."""
         var s: Scalar[DT] = 0.0

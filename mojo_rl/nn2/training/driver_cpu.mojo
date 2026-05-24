@@ -32,10 +32,70 @@ responsibility.
 
 from std.memory import alloc
 from std.time import perf_counter_ns
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import DT
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
+
+
+trait OffPolicyTrainableGpuBatched(Movable, ImplicitlyDestructible):
+    """Surface every nn2 off-policy trainer with an N_ENVS-batched GPU
+    path must expose for the multi-env GPU driver (Phase B.5b).
+
+    Parametric methods (`[N_ENVS: Int]`) match SAC's batched signatures
+    exactly — Mojo's trait conformance accepts a parametric impl when
+    the trait method is also parametric (the previous footgun was a
+    non-parametric trait declaration failing to accept a parametric
+    impl). Only SAC conforms today; DDPG/TD3 N_ENVS-batched paths land
+    when those algorithms get GPU support.
+
+    Buffer ownership: the driver owns the N_ENVS-sized scratch
+    (`ao_scratch_dev`, `alp_scratch_dev`, prev/next obs, actions,
+    rewards, dones, terminated). SACTrainer can't pre-allocate them
+    because the struct is not N_ENVS-parametric; making it so would
+    break single-env trainers.
+
+    Episode tracking: the driver maintains per-env reward accumulators
+    on the host (fed by a single small D2H of `reward_dev` per loop
+    iteration) and pushes complete-episode returns via
+    `add_complete_return`. The trainer's `record_batch_gpu` therefore
+    does NOT touch the tracker — it's purely the replay-buffer push.
+    """
+
+    def select_action_gpu_batched[N_ENVS: Int](
+        mut self,
+        ctx: DeviceContext,
+        obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        ao_scratch_dev: DeviceBuffer[DT],
+        alp_scratch_dev: DeviceBuffer[DT],
+        step_idx: Int,
+    ) raises:
+        ...
+
+    def record_batch_gpu[N_ENVS: Int](
+        mut self,
+        ctx: DeviceContext,
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        ...
+
+    def train_step_gpu(mut self, step_idx: Int) raises -> Bool:
+        ...
+
+    def add_complete_return(mut self, ret: Scalar[DT]):
+        ...
+
+    def mean_return(self) -> Scalar[DT]:
+        ...
+
+    def ep_count(self) -> Int:
+        ...
 
 
 trait OffPolicyTrainableGpu(Movable, ImplicitlyDestructible):

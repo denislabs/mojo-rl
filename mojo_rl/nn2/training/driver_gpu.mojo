@@ -29,10 +29,11 @@ steps (see `feedback_apple_metal_devicecontext_per_call`).
 
 from std.memory import alloc
 from std.time import perf_counter_ns
+from std.gpu.host import DeviceContext
 
 from ..constants import DT
-from mojo_rl.core.env_traits import BoxContinuousActionEnv
-from .driver_cpu import OffPolicyTrainableGpu
+from mojo_rl.core.env_traits import BoxContinuousActionEnv, GPUContinuousEnv
+from .driver_cpu import OffPolicyTrainableGpu, OffPolicyTrainableGpuBatched
 
 
 def run_offpolicy_train_gpu[
@@ -183,3 +184,185 @@ def run_offpolicy_eval_gpu[
             num_episodes, " episodes, ", elapsed, " s)",
         )
     return mean
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase B.5b — N_ENVS-vectorized GPU off-policy training driver.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def run_offpolicy_train_gpu_n_envs[
+    A: OffPolicyTrainableGpuBatched,
+    E: GPUContinuousEnv,
+    N_ENVS: Int,
+](
+    ctx: DeviceContext,
+    mut trainer: A,
+    mut env: E,
+    total_env_steps: Int,
+    *,
+    rng_seed: UInt64 = UInt64(42),
+    updates_per_step: Int = 1,
+    print_every: Int = 5_000,
+    verbose: Bool = True,
+) raises -> List[Scalar[DT]]:
+    """Multi-env GPU off-policy training driver (Phase B.5b).
+
+    Spins up `N_ENVS` env instances on GPU, runs a batched policy
+    forward per step, batched env step, batched record into the
+    device-resident replay (`GPUReplay.add_batch[N_ENVS]`), and one or
+    more SAC train_steps per iteration. The driver owns all the
+    N_ENVS-sized device buffers (states / prev_obs / obs / actions /
+    rewards / dones / terminated / ao_scratch / alp_scratch).
+
+    Loop semantics:
+      `step_idx` counts env-step transitions (not iterations): with
+      `total_env_steps = 30_000` and `N_ENVS = 8`, the loop runs 3750
+      iterations and yields ~3750 train_step calls at default
+      `updates_per_step = 1`. To match single-env UTD = 1 (one update
+      per transition), pass `updates_per_step = N_ENVS`.
+
+    DeviceContext: the driver takes `ctx` explicitly because it
+    allocates N_ENVS-sized device buffers itself. The user MUST pass
+    the same `ctx` used to construct the trainer (otherwise device
+    pointers cross contexts and Apple Metal's queue pool exhausts).
+
+    Args:
+        ctx: GPU device context (same one used to build the trainer).
+        trainer: Any nn2 off-policy trainer conforming to
+            `OffPolicyTrainableGpuBatched`. SAC only today.
+        env: GPU continuous env (only used as a type carrier — the
+            static `step_kernel_gpu` / `reset_kernel_gpu` /
+            `extract_obs_kernel_gpu` / `selective_reset_kernel_gpu`
+            methods are called on the type, not the instance).
+        total_env_steps: Number of env-step transitions to collect.
+            Loop runs `ceil(total_env_steps / N_ENVS)` iterations.
+        rng_seed: Seed for env reset + step RNG. Both are advanced per
+            iteration so successive steps draw fresh randomness.
+        updates_per_step: SAC train_steps per loop iteration. Default
+            1 (UTD = 1 / N_ENVS). Pass `N_ENVS` for full UTD = 1
+            parity with single-env.
+        print_every: Status cadence (env-step counter). 0 disables.
+        verbose: Print status lines.
+
+    Returns:
+        List of `trainer.mean_return()` snapshots, one per completed
+        episode across all envs.
+
+    Tracker semantics: the driver maintains its own per-env reward
+    accumulators (host-side, fed by a single D2H of `rewards` per
+    iteration) and pushes complete-episode returns to the trainer via
+    `add_complete_return`. The trainer's per-step `current_return`
+    field stays at 0 in N_ENVS mode — `mean_return()` reflects only
+    the completed-episode rolling window, which is the correct
+    semantics for vectorized training.
+    """
+    comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+    comptime STATE_SIZE = E.STATE_SIZE
+    comptime OBS_DIM = E.OBS_DIM
+    comptime ACT_DIM = E.ACTION_DIM
+
+    # Device buffers — one big alloc up front, reused every iteration.
+    var states = ctx.enqueue_create_buffer[DT](N_ENVS * STATE_SIZE)
+    var prev_obs = ctx.enqueue_create_buffer[DT](N_ENVS * OBS_DIM)
+    var obs_buf = ctx.enqueue_create_buffer[DT](N_ENVS * OBS_DIM)
+    var actions = ctx.enqueue_create_buffer[DT](N_ENVS * ACT_DIM)
+    var rewards = ctx.enqueue_create_buffer[DT](N_ENVS)
+    var dones = ctx.enqueue_create_buffer[DT](N_ENVS)
+    var terminated = ctx.enqueue_create_buffer[DT](N_ENVS)
+    var ao_scratch = ctx.enqueue_create_buffer[DT](N_ENVS * 2 * ACT_DIM)
+    var alp_scratch = ctx.enqueue_create_buffer[DT](N_ENVS * (ACT_DIM + 1))
+    ctx.enqueue_memset(actions, 0)
+    ctx.enqueue_memset(rewards, 0)
+    ctx.enqueue_memset(dones, 0)
+    ctx.enqueue_memset(terminated, 0)
+
+    # Host scratch — per-iteration D2H of rewards + dones for episode
+    # tracking. Tiny (N_ENVS * 2 scalars), Apple-friendly.
+    var host_rewards = alloc[Scalar[DT]](N_ENVS)
+    var host_dones = alloc[Scalar[DT]](N_ENVS)
+    var per_env_returns = List[Scalar[DT]](
+        length=N_ENVS, fill=Scalar[DT](0.0),
+    )
+
+    # Initial reset + obs extraction.
+    E.reset_kernel_gpu[N_ENVS, STATE_SIZE](ctx, states, rng_seed=rng_seed)
+    E.extract_obs_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM](
+        ctx, states, obs_buf,
+    )
+
+    var ep_returns = List[Scalar[DT]]()
+    var t_start = perf_counter_ns()
+    var step_idx: Int = 0
+    var iter_idx: Int = 0
+    var next_print: Int = print_every
+
+    while step_idx < total_env_steps:
+        # Save the pre-step obs as the transition's `prev_obs`. D2D copy
+        # — no host involvement.
+        ctx.enqueue_copy(prev_obs, obs_buf)
+
+        # Batched policy (warmup uniform if step_idx < learning_starts).
+        trainer.select_action_gpu_batched[N_ENVS](
+            ctx, obs_buf, actions, ao_scratch, alp_scratch, step_idx,
+        )
+
+        # Env step writes next-obs into `obs_buf` and rewards/dones/
+        # terminated as outputs. RNG seed advances per iteration so
+        # stochastic envs see fresh randomness.
+        E.step_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM, ACT_DIM](
+            ctx, states, actions, rewards, dones, terminated, obs_buf,
+            rng_seed=rng_seed + UInt64(iter_idx + 1),
+        )
+
+        # Push N_ENVS transitions into the device-resident replay.
+        trainer.record_batch_gpu[N_ENVS](
+            ctx, prev_obs, actions, rewards, obs_buf, dones,
+        )
+
+        # D2H of rewards + dones — small (N_ENVS * 2 scalars), needed
+        # synchronously to update host-side per-env return accumulators
+        # and to decide which envs need a selective reset.
+        ctx.enqueue_copy(host_rewards, rewards)
+        ctx.enqueue_copy(host_dones, dones)
+        ctx.synchronize()
+
+        for e in range(N_ENVS):
+            per_env_returns[e] = per_env_returns[e] + host_rewards[e]
+            if host_dones[e] > Scalar[DT](0.5):
+                trainer.add_complete_return(per_env_returns[e])
+                per_env_returns[e] = Scalar[DT](0.0)
+                ep_returns.append(trainer.mean_return())
+
+        # Selective reset: only resets state for envs with `done`
+        # currently 1.0. `extract_obs_kernel_gpu` then refreshes the
+        # obs for those envs (state for not-done envs is unchanged so
+        # their obs is identical to what step_kernel_gpu wrote).
+        E.selective_reset_kernel_gpu[N_ENVS, STATE_SIZE](
+            ctx, states, dones,
+            rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
+        )
+        E.extract_obs_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM](
+            ctx, states, obs_buf,
+        )
+
+        step_idx += N_ENVS
+        iter_idx += 1
+
+        # SAC train_steps. Default UTD = 1 / N_ENVS (1 update per
+        # iteration); user can pass `updates_per_step=N_ENVS` to match
+        # single-env UTD = 1 per transition.
+        for _ in range(updates_per_step):
+            _ = trainer.train_step_gpu(step_idx)
+
+        if verbose and print_every > 0 and step_idx >= next_print:
+            var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
+            print(
+                "[step ", step_idx, "] mean_ret(10)=",
+                trainer.mean_return(),
+                " ep=", trainer.ep_count(),
+                " elapsed=", elapsed, "s",
+            )
+            next_print += print_every
+
+    return ep_returns^
