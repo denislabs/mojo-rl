@@ -5,3 +5,4 @@ from .gpu_replay import GPUReplay
 from .n_step_replay import (
     NStepTransition, NStepBuffer, GPUNStepBuffer,
 )
+from .per_replay import GPUPrioritizedReplay
