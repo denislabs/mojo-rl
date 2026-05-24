@@ -80,7 +80,7 @@ trait OffPolicyTrainableGpu(Movable, ImplicitlyDestructible):
         reward: Scalar[DT],
         next_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
         done: Scalar[DT],
-    ):
+    ) raises:
         ...
 
     def end_episode(mut self):
@@ -134,7 +134,7 @@ trait OffPolicyTrainable(Movable, ImplicitlyDestructible):
         reward: Scalar[DT],
         next_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
         done: Scalar[DT],
-    ):
+    ) raises:
         ...
 
     def end_episode(mut self):

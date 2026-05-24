@@ -65,6 +65,7 @@ from ..optimizer.scalar_adam import ScalarAdam
 from ..loss.sac_actor_loss_cg import SACActorLossCG as SACActorLoss, SACActorLossOut
 from ..loss.critic_update_block import TwinCriticUpdateBlock
 from ..data.cpu_replay import CPUReplay
+from ..data.gpu_replay import GPUReplay
 from ..random.box_muller import box_muller_normal
 from mojo_rl.core.logger import Logger, NoOpLogger
 from ..core.log_bundle import log_bundle
@@ -117,6 +118,14 @@ struct SACTrainer[
 
     # ─── Replay + tracker ─────────────────────────────────────────────
     var buf: CPUReplay[Self.OBS_DIM, Self.ACT_DIM, Self.REPLAY_CAPACITY]
+    # Phase C.1 — GPU-resident replay. Populated only by the GPU
+    # factory; CPU trainers leave this `None`. When set, `record`
+    # routes transitions to the device buffer and `train_step["gpu"]`
+    # samples directly into the device minibatch buffers (no CPU
+    # sample + 4 host→device uploads).
+    var buf_gpu: Optional[
+        GPUReplay[Self.OBS_DIM, Self.ACT_DIM, Self.REPLAY_CAPACITY]
+    ]
     var tracker: EpisodeTracker
 
     # ─── Single-step scratch (env interaction) ────────────────────────
@@ -144,6 +153,7 @@ struct SACTrainer[
     var _mb_a_dev: Optional[DeviceBuffer[DT]]
     var _mb_r_dev: Optional[DeviceBuffer[DT]]
     var _mb_sp_dev: Optional[DeviceBuffer[DT]]
+    var _mb_d_dev: Optional[DeviceBuffer[DT]]
     var _mb_y_dev: Optional[DeviceBuffer[DT]]
 
     # ─── Hyperparameters ──────────────────────────────────────────────
@@ -196,6 +206,7 @@ struct SACTrainer[
             dne=UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
             size=0, pos=0,
         )
+        self.buf_gpu = None
         self.tracker = EpisodeTracker(
             window=List[Scalar[DT]](),
             window_size=0, idx=0,
@@ -218,6 +229,7 @@ struct SACTrainer[
         self._mb_a_dev = None
         self._mb_r_dev = None
         self._mb_sp_dev = None
+        self._mb_d_dev = None
         self._mb_y_dev = None
         self.gamma = Scalar[DT](0.99)
         self.tau = Scalar[DT](0.005)
@@ -419,11 +431,14 @@ struct SACTrainer[
         t.target_y_block = TargetYBlock[
             Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
         ].make["gpu"](ctx, action_scale=action_scale, gamma=gamma)
-        # Replay + tracker stay CPU-resident (no GPU replay primitive
-        # in nn2 yet; Block D adds a SequenceReplay variant).
-        t.buf = CPUReplay[
+        # Phase C.1 — GPU-resident replay. `buf` stays as the null-
+        # pointer-initialised CPUReplay from `__init__` (not allocated)
+        # so we don't waste ~1.8MB host memory; `buf_gpu` holds the
+        # device-side circular store. `record` + `train_step["gpu"]`
+        # route through it.
+        t.buf_gpu = GPUReplay[
             Self.OBS_DIM, Self.ACT_DIM, Self.REPLAY_CAPACITY
-        ].new()
+        ].new(ctx, batch_capacity=Self.BATCH)
         t.tracker = EpisodeTracker.new(
             window_size=window_size, initial_fill=initial_episode_fill
         )
@@ -448,6 +463,12 @@ struct SACTrainer[
         t._mb_a_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.ACT_DIM)
         t._mb_r_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
         t._mb_sp_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OBS_DIM)
+        # Phase C.1 — done flag minibatch lives on device too so the
+        # GPU `_gather_batch_kernel` can fill it. SAC's GPU target_y
+        # currently ignores done (Pendulum truncation hard-codes
+        # nonterm=1.0), but keeping the field future-proofs non-
+        # truncation envs and matches the gather kernel's surface.
+        t._mb_d_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
         t._mb_y_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
 
         t.gamma = gamma
@@ -639,9 +660,24 @@ struct SACTrainer[
         reward: Scalar[DT],
         next_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
         done: Scalar[DT],
-    ):
-        """Push (s, a, r, s', done) into replay; accumulate the episode reward."""
-        self.buf.add(obs, action, reward, next_obs, done)
+    ) raises:
+        """Push (s, a, r, s', done) into replay; accumulate the episode
+        reward.
+
+        Phase C.1 — branches on `buf_gpu`. When the trainer was built
+        with `make["gpu"]`, `buf_gpu` is `Some` and the transition is
+        uploaded into the device-resident replay (5 small D2H + 1 tiny
+        kernel per call). CPU trainers route to `self.buf.add` as
+        before. The CPU path's behaviour is unchanged — bit-identity
+        preserved by construction.
+        """
+        if self.buf_gpu:
+            var ctx = self.target_y_block.ts.ctx.value()
+            self.buf_gpu.value().add(
+                ctx, obs, action, reward, next_obs, done,
+            )
+        else:
+            self.buf.add(obs, action, reward, next_obs, done)
         self.tracker.add_reward(reward)
 
     def end_episode(mut self):
@@ -666,18 +702,15 @@ struct SACTrainer[
         Returns True if a training step actually ran, False if the call
         was skipped (warmup or under-filled buffer).
 
-        On GPU (`target="gpu"`), the replay sample is uploaded to device
-        buffers once per step; all subsequent compute happens on device.
+        Phase C.1 — on GPU the minibatch is sampled *directly* into the
+        device buffers by `GPUReplay.sample[BATCH]`. Pre-C.1, the GPU
+        path went CPU sample → 4 host→device uploads each step; that
+        upload block is now gone.
         """
         if step_idx < self.learning_starts:
             return False
-        if self.buf.size < Self.BATCH:
-            return False
 
         var t_sample = perf_counter_ns()
-        self.buf.sample(
-            Self.BATCH, self._mb_s, self._mb_a, self._mb_r, self._mb_sp, self._mb_d
-        )
 
         # Resolve which pointers to thread through the step methods.
         var mb_s_ptr = self._mb_s
@@ -686,12 +719,23 @@ struct SACTrainer[
         var mb_sp_ptr = self._mb_sp
         var mb_y_ptr = self._mb_y
 
-        comptime if target == "gpu":
+        comptime if target == "cpu":
+            if self.buf.size < Self.BATCH:
+                return False
+            self.buf.sample(
+                Self.BATCH,
+                self._mb_s, self._mb_a, self._mb_r, self._mb_sp, self._mb_d,
+            )
+        else:
+            if self.buf_gpu.value().size < Self.BATCH:
+                return False
             var ctx = self.target_y_block.ts.ctx.value()
-            ctx.enqueue_copy(self._mb_s_dev.value(), self._mb_s)
-            ctx.enqueue_copy(self._mb_a_dev.value(), self._mb_a)
-            ctx.enqueue_copy(self._mb_r_dev.value(), self._mb_r)
-            ctx.enqueue_copy(self._mb_sp_dev.value(), self._mb_sp)
+            self.buf_gpu.value().sample[Self.BATCH](
+                ctx,
+                self._mb_s_dev.value(), self._mb_a_dev.value(),
+                self._mb_r_dev.value(), self._mb_sp_dev.value(),
+                self._mb_d_dev.value(),
+            )
             mb_s_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 self._mb_s_dev.value().unsafe_ptr()
             )

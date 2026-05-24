@@ -277,7 +277,7 @@ struct DDPGTrainer[
         reward: Scalar[DT],
         next_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
         done: Scalar[DT],
-    ):
+    ) raises:
         self.buf.add(obs, action, reward, next_obs, done)
         self.tracker.add_reward(reward)
 
