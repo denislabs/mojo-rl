@@ -50,7 +50,6 @@ sub-method stays under the threshold.
 """
 
 from std.math import exp as fexp, log as flog, pow as fpow, tanh as ftanh
-from std.memory import alloc
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
@@ -62,6 +61,8 @@ from ..constants import DT
 from ..core import Module
 from ..core.amp import AMPPolicy, NoAMP, Bf16Compute
 from ..core.online_target_pair import OnlineTargetPair
+from ..core.scratch import Scratch
+from ..core.scratch_walkers import init_scratch_auto
 from ..initializer import Xavier
 from ..optimizer.adam import Adam
 from ..optimizer.scalar_adam import ScalarAdam
@@ -153,7 +154,7 @@ def _action_clamp_kernel[N_ENVS: Int, ACT: Int](
     and write the clamped result into `action_out`.
 
     Mirrors the host-side `tanh`-then-clamp the single-env GPU path
-    runs after the D2H of `_alp1_dev`; in batched mode we keep it on
+    runs after the D2H of `_alp1.dev`; in batched mode we keep it on
     device so no per-step download is needed.
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -255,13 +256,13 @@ struct SACTrainer[
     var tracker: EpisodeTracker
 
     # ─── Single-step scratch (env interaction) ────────────────────────
-    var _ob1: UnsafePointer[Scalar[DT], MutAnyOrigin]            # [OBS_DIM]
-    var _ao1: UnsafePointer[Scalar[DT], MutAnyOrigin]            # [2*ACT_DIM]
-    var _alp1: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [ACT_DIM+1]
-    # GPU single-step env-interaction scratch (block D).
-    var _ob1_dev: Optional[DeviceBuffer[DT]]
-    var _ao1_dev: Optional[DeviceBuffer[DT]]
-    var _alp1_dev: Optional[DeviceBuffer[DT]]
+    # Phase G.1 — every single-step scratch is a `Scratch[NAME, SIZE,
+    # STAGING=True]`. STAGING keeps a CPU mirror alongside the device
+    # buffer on GPU init so host-side obs upload + sampler-out download
+    # use the same buffer. CPU-only trainers allocate only the CPU half.
+    var _ob1: Scratch["ob1", Self.OBS_DIM, True]
+    var _ao1: Scratch["ao1", 2 * Self.ACT_DIM, True]
+    var _alp1: Scratch["alp1", Self.ACT_DIM + 1, True]
 
     # Phase C.2b — host scratch for n-step emitted transitions. When
     # `_use_nstep`, `record` copies the n-step buffer's emitted
@@ -269,28 +270,27 @@ struct SACTrainer[
     # calls the underlying replay `add` against pointers we own (rather
     # than into InlineArray-internal locals whose origins don't match
     # the `MutAnyOrigin`-typed replay surface).
-    var _nstep_obs: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [OBS_DIM]
-    var _nstep_act: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [ACT_DIM]
-    var _nstep_nxt: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [OBS_DIM]
+    #
+    # STAGING=True even though these are purely host-side: it guarantees
+    # the CPU list is materialised on BOTH CPU and GPU `make` targets.
+    # Without it, GPU init only fills the device half and the `record`
+    # path would call `.cpu_ptr()` against an empty List. The GPU half
+    # allocated here (7 floats total) is harmless overhead.
+    var _nstep_obs: Scratch["nstep_obs", Self.OBS_DIM, True]
+    var _nstep_act: Scratch["nstep_act", Self.ACT_DIM, True]
+    var _nstep_nxt: Scratch["nstep_nxt", Self.OBS_DIM, True]
 
     # ─── Minibatch scratch (training) — only raw replay samples ──────
     # Target-y compute scratch is owned by `target_y_block` (Phase 10F).
     # Critic update scratch is owned by `twin_critic_block` (Phase 10F).
-    var _mb_s: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [BATCH, OBS]
-    var _mb_a: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [BATCH, ACT]
-    var _mb_r: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [BATCH]
-    var _mb_sp: UnsafePointer[Scalar[DT], MutAnyOrigin]          # [BATCH, OBS]
-    var _mb_d: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [BATCH]
-    var _mb_y: UnsafePointer[Scalar[DT], MutAnyOrigin]           # [BATCH, 1]
-    # GPU minibatch scratch (block D). Trainer uploads CPU replay to
-    # these after each `buf.sample` and threads device pointers to the
-    # GPU step methods.
-    var _mb_s_dev: Optional[DeviceBuffer[DT]]
-    var _mb_a_dev: Optional[DeviceBuffer[DT]]
-    var _mb_r_dev: Optional[DeviceBuffer[DT]]
-    var _mb_sp_dev: Optional[DeviceBuffer[DT]]
-    var _mb_d_dev: Optional[DeviceBuffer[DT]]
-    var _mb_y_dev: Optional[DeviceBuffer[DT]]
+    # STAGING=True keeps the CPU sample buffer + the GPU minibatch in
+    # one field; the GPU path samples directly into the device half.
+    var _mb_s: Scratch["mb_s", Self.BATCH * Self.OBS_DIM, True]
+    var _mb_a: Scratch["mb_a", Self.BATCH * Self.ACT_DIM, True]
+    var _mb_r: Scratch["mb_r", Self.BATCH, True]
+    var _mb_sp: Scratch["mb_sp", Self.BATCH * Self.OBS_DIM, True]
+    var _mb_d: Scratch["mb_d", Self.BATCH, True]
+    var _mb_y: Scratch["mb_y", Self.BATCH, True]
 
     # ─── Hyperparameters ──────────────────────────────────────────────
     var gamma: Scalar[DT]
@@ -368,28 +368,22 @@ struct SACTrainer[
             window_size=0, idx=0,
             current_return=Scalar[DT](0.0), ep_count=0,
         )
-        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
-        self._ob1 = null_p
-        self._ao1 = null_p
-        self._alp1 = null_p
-        self._mb_s = null_p
-        self._mb_a = null_p
-        self._mb_r = null_p
-        self._mb_sp = null_p
-        self._mb_d = null_p
-        self._mb_y = null_p
-        self._ob1_dev = None
-        self._ao1_dev = None
-        self._alp1_dev = None
-        self._nstep_obs = null_p
-        self._nstep_act = null_p
-        self._nstep_nxt = null_p
-        self._mb_s_dev = None
-        self._mb_a_dev = None
-        self._mb_r_dev = None
-        self._mb_sp_dev = None
-        self._mb_d_dev = None
-        self._mb_y_dev = None
+        # Phase G.1 — Scratch defaults give empty cpu list + None dev.
+        # `init_scratch_auto[Self, target]` in `make[target]` populates
+        # the matching storage (STAGING=True scratches also keep the CPU
+        # mirror on GPU init for upload/download bookkeeping).
+        self._ob1 = Scratch["ob1", Self.OBS_DIM, True]()
+        self._ao1 = Scratch["ao1", 2 * Self.ACT_DIM, True]()
+        self._alp1 = Scratch["alp1", Self.ACT_DIM + 1, True]()
+        self._nstep_obs = Scratch["nstep_obs", Self.OBS_DIM, True]()
+        self._nstep_act = Scratch["nstep_act", Self.ACT_DIM, True]()
+        self._nstep_nxt = Scratch["nstep_nxt", Self.OBS_DIM, True]()
+        self._mb_s = Scratch["mb_s", Self.BATCH * Self.OBS_DIM, True]()
+        self._mb_a = Scratch["mb_a", Self.BATCH * Self.ACT_DIM, True]()
+        self._mb_r = Scratch["mb_r", Self.BATCH, True]()
+        self._mb_sp = Scratch["mb_sp", Self.BATCH * Self.OBS_DIM, True]()
+        self._mb_d = Scratch["mb_d", Self.BATCH, True]()
+        self._mb_y = Scratch["mb_y", Self.BATCH, True]()
         self.gamma = Scalar[DT](0.99)
         self.tau = Scalar[DT](0.005)
         self.action_scale = Scalar[DT](1.0)
@@ -414,22 +408,21 @@ struct SACTrainer[
         Effects when enabled:
             - Allocate `nstep_cpu = NStepBuffer[N_STEP, OBS, ACT]`
               with `gamma = config.gamma.v` (per-step γ, not γ^N).
-            - Allocate three `[OBS]/[ACT]/[OBS]` host scratch pointers
-              for ferrying emitted transitions into the replay's
-              `MutAnyOrigin` add signature.
             - Re-bake `γ^N_STEP` into target_y_block's `gamma_softv`
               Scale node so the critic bootstrap matches the n-step
               return (rather than the per-step γ baked at the keyword
               factory).
+
+        Phase G.1: the `nstep_obs/act/nxt` host scratches are now
+        unconditionally allocated by `init_scratch_auto` in `make[target]`
+        (zero-filled CPU lists), so the `record` path can read/write
+        through `cpu_ptr()` regardless of whether `_use_nstep` flips.
         """
         if config.use_n_step.v and Self.N_STEP > 1:
             t.nstep_cpu = NStepBuffer[
                 Self.N_STEP, Self.OBS_DIM, Self.ACT_DIM
             ].new(gamma=config.gamma.v)
             t._use_nstep = True
-            t._nstep_obs = alloc[Scalar[DT]](Self.OBS_DIM)
-            t._nstep_act = alloc[Scalar[DT]](Self.ACT_DIM)
-            t._nstep_nxt = alloc[Scalar[DT]](Self.OBS_DIM)
             var gamma_n = Scalar[DT](
                 fpow(Float64(config.gamma.v), Float64(Self.N_STEP))
             )
@@ -596,16 +589,11 @@ struct SACTrainer[
             window_size=window_size, initial_fill=initial_episode_fill
         )
 
-        # Allocate all training scratch.
-        t._ob1 = alloc[Scalar[DT]](Self.OBS_DIM)
-        t._ao1 = alloc[Scalar[DT]](2 * Self.ACT_DIM)
-        t._alp1 = alloc[Scalar[DT]](Self.ACT_DIM + 1)
-        t._mb_s = alloc[Scalar[DT]](Self.BATCH * Self.OBS_DIM)
-        t._mb_a = alloc[Scalar[DT]](Self.BATCH * Self.ACT_DIM)
-        t._mb_r = alloc[Scalar[DT]](Self.BATCH)
-        t._mb_sp = alloc[Scalar[DT]](Self.BATCH * Self.OBS_DIM)
-        t._mb_d = alloc[Scalar[DT]](Self.BATCH)
-        t._mb_y = alloc[Scalar[DT]](Self.BATCH)
+        # Phase G.1 — one walker call replaces 9 raw `alloc` lines.
+        # Every `Scratch[NAME, SIZE, STAGING]` field on the struct gets
+        # its CPU list materialized (zero-filled). STAGING-flagged
+        # scratches don't allocate the GPU half here (we're CPU-only).
+        init_scratch_auto[Self, target="cpu"](t)
 
         t.gamma = gamma
         t.tau = tau
@@ -686,33 +674,18 @@ struct SACTrainer[
             window_size=window_size, initial_fill=initial_episode_fill
         )
 
-        # CPU scratch is allocated alongside GPU scratch — CPU buffers
-        # are where replay samples land before upload, and where env
-        # observations land before single-step actor forward.
-        t._ob1 = alloc[Scalar[DT]](Self.OBS_DIM)
-        t._ao1 = alloc[Scalar[DT]](2 * Self.ACT_DIM)
-        t._alp1 = alloc[Scalar[DT]](Self.ACT_DIM + 1)
-        t._mb_s = alloc[Scalar[DT]](Self.BATCH * Self.OBS_DIM)
-        t._mb_a = alloc[Scalar[DT]](Self.BATCH * Self.ACT_DIM)
-        t._mb_r = alloc[Scalar[DT]](Self.BATCH)
-        t._mb_sp = alloc[Scalar[DT]](Self.BATCH * Self.OBS_DIM)
-        t._mb_d = alloc[Scalar[DT]](Self.BATCH)
-        t._mb_y = alloc[Scalar[DT]](Self.BATCH)
-        # GPU device buffers.
-        t._ob1_dev = ctx.enqueue_create_buffer[DT](Self.OBS_DIM)
-        t._ao1_dev = ctx.enqueue_create_buffer[DT](2 * Self.ACT_DIM)
-        t._alp1_dev = ctx.enqueue_create_buffer[DT](Self.ACT_DIM + 1)
-        t._mb_s_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OBS_DIM)
-        t._mb_a_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.ACT_DIM)
-        t._mb_r_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
-        t._mb_sp_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OBS_DIM)
-        # Phase C.1 — done flag minibatch lives on device too so the
-        # GPU `_gather_batch_kernel` can fill it. SAC's GPU target_y
+        # Phase G.1 — one walker call replaces 9 raw `alloc` lines + 7
+        # `enqueue_create_buffer` lines. Every staging-flagged Scratch
+        # field allocates BOTH the CPU mirror (for upload/download
+        # bookkeeping) AND the device buffer in one pass; CPU-only
+        # scratches (nstep_*) get just the host list.
+        #
+        # Phase C.1 — `_mb_d` device half exists so the GPU
+        # `_gather_batch_kernel` can fill it. SAC's GPU target_y
         # currently ignores done (Pendulum truncation hard-codes
         # nonterm=1.0), but keeping the field future-proofs non-
         # truncation envs and matches the gather kernel's surface.
-        t._mb_d_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
-        t._mb_y_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
+        init_scratch_auto[Self, target="gpu"](t, Optional[DeviceContext](ctx))
 
         t.gamma = gamma
         t.tau = tau
@@ -748,16 +721,20 @@ struct SACTrainer[
                 action_out[j] = u * self.action_scale
             return
 
+        var ob1_cpu_p = self._ob1.cpu_ptr()
+        var ao1_cpu_p = self._ao1.cpu_ptr()
+        var alp1_cpu_p = self._alp1.cpu_ptr()
+
         comptime if target == "cpu":
             for d in range(Self.OBS_DIM):
-                self._ob1[d] = obs[d]
-            var ob1_t = TileTensor(self._ob1, row_major[1, Self.OBS_DIM]())
-            var ao1_t = TileTensor(self._ao1, row_major[1, 2 * Self.ACT_DIM]())
+                ob1_cpu_p[d] = obs[d]
+            var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
+            var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM]())
             self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
-            var alp1_t = TileTensor(self._alp1, row_major[1, Self.ACT_DIM + 1]())
+            var alp1_t = TileTensor(alp1_cpu_p, row_major[1, Self.ACT_DIM + 1]())
             self.actor_loss.rsample.forward["cpu", 1](ao1_t, output=alp1_t)
             for j in range(Self.ACT_DIM):
-                var a = self._alp1[j]
+                var a = alp1_cpu_p[j]
                 if a > self.action_scale:
                     a = self.action_scale
                 elif a < -self.action_scale:
@@ -765,30 +742,23 @@ struct SACTrainer[
                 action_out[j] = a
         else:
             var ctx = self.target_y_block.ts.ctx.value()
-            # Upload obs into _ob1 (CPU) then to _ob1_dev.
+            # Upload obs via the CPU staging mirror, then run actor +
+            # rsample on device, then download the alp result.
             for d in range(Self.OBS_DIM):
-                self._ob1[d] = obs[d]
-            var ob1_dev = self._ob1_dev.value()
-            ctx.enqueue_copy(ob1_dev, self._ob1)
-            var ob1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                ob1_dev.unsafe_ptr()
-            )
-            var ao1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._ao1_dev.value().unsafe_ptr()
-            )
-            var alp1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._alp1_dev.value().unsafe_ptr()
-            )
+                ob1_cpu_p[d] = obs[d]
+            ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
+            var ob1_p = self._ob1.dev_ptr()
+            var ao1_p = self._ao1.dev_ptr()
+            var alp1_p = self._alp1.dev_ptr()
             var ob1_t = TileTensor(ob1_p, row_major[1, Self.OBS_DIM]())
             var ao1_t = TileTensor(ao1_p, row_major[1, 2 * Self.ACT_DIM]())
             self.actor.forward["gpu", 1](ob1_t, output=ao1_t)
             var alp1_t = TileTensor(alp1_p, row_major[1, Self.ACT_DIM + 1]())
             self.actor_loss.rsample.forward["gpu", 1](ao1_t, output=alp1_t)
-            # Download alp1 → CPU buffer, then clamp + write to action_out.
-            ctx.enqueue_copy(self._alp1, self._alp1_dev.value())
+            ctx.enqueue_copy(alp1_cpu_p, self._alp1.dev.value())
             ctx.synchronize()
             for j in range(Self.ACT_DIM):
-                var a = self._alp1[j]
+                var a = alp1_cpu_p[j]
                 if a > self.action_scale:
                     a = self.action_scale
                 elif a < -self.action_scale:
@@ -826,13 +796,15 @@ struct SACTrainer[
         Clamps to ±action_scale as a safety net (tanh already bounds to
         ±1 so the clamp is redundant in the well-behaved case, but
         retained to mirror `select_action`'s contract)."""
+        var ob1_cpu_p = self._ob1.cpu_ptr()
+        var ao1_cpu_p = self._ao1.cpu_ptr()
         for d in range(Self.OBS_DIM):
-            self._ob1[d] = obs[d]
-        var ob1_t = TileTensor(self._ob1, row_major[1, Self.OBS_DIM]())
-        var ao1_t = TileTensor(self._ao1, row_major[1, 2 * Self.ACT_DIM]())
+            ob1_cpu_p[d] = obs[d]
+        var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
+        var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM]())
         self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
         for j in range(Self.ACT_DIM):
-            var mean = self._ao1[j]
+            var mean = ao1_cpu_p[j]
             var a = ftanh(mean) * self.action_scale
             if a > self.action_scale:
                 a = self.action_scale
@@ -878,24 +850,22 @@ struct SACTrainer[
         overhead dominates over the actual compute — host-side tanh on
         ACT_DIM values is cheap and avoids a kernel launch."""
         var ctx = self.target_y_block.ts.ctx.value()
+        var ob1_cpu_p = self._ob1.cpu_ptr()
+        var ao1_cpu_p = self._ao1.cpu_ptr()
         for d in range(Self.OBS_DIM):
-            self._ob1[d] = obs[d]
-        var ob1_dev = self._ob1_dev.value()
-        ctx.enqueue_copy(ob1_dev, self._ob1)
-        var ob1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            ob1_dev.unsafe_ptr()
-        )
-        var ao1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._ao1_dev.value().unsafe_ptr()
-        )
+            ob1_cpu_p[d] = obs[d]
+        ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
+        var ob1_p = self._ob1.dev_ptr()
+        var ao1_p = self._ao1.dev_ptr()
         var ob1_t = TileTensor(ob1_p, row_major[1, Self.OBS_DIM]())
         var ao1_t = TileTensor(ao1_p, row_major[1, 2 * Self.ACT_DIM]())
         self.actor.forward["gpu", 1](ob1_t, output=ao1_t)
-        # Download just the mean half (first ACT_DIM elements) into _ao1.
-        ctx.enqueue_copy(self._ao1, self._ao1_dev.value())
+        # Download the actor output (we only consume the mean half host-
+        # side, but the whole vector lives in the staging buffer).
+        ctx.enqueue_copy(ao1_cpu_p, self._ao1.dev.value())
         ctx.synchronize()
         for j in range(Self.ACT_DIM):
-            var mean = self._ao1[j]
+            var mean = ao1_cpu_p[j]
             var a = ftanh(mean) * self.action_scale
             if a > self.action_scale:
                 a = self.action_scale
@@ -1107,30 +1077,33 @@ struct SACTrainer[
             )
             if not tx.valid:
                 return
+            var nstep_obs_p = self._nstep_obs.cpu_ptr()
+            var nstep_act_p = self._nstep_act.cpu_ptr()
+            var nstep_nxt_p = self._nstep_nxt.cpu_ptr()
             for d in range(Self.OBS_DIM):
-                self._nstep_obs[d] = tx.obs[d]
-                self._nstep_nxt[d] = tx.next_obs[d]
+                nstep_obs_p[d] = tx.obs[d]
+                nstep_nxt_p[d] = tx.next_obs[d]
             for j in range(Self.ACT_DIM):
-                self._nstep_act[j] = tx.action[j]
+                nstep_act_p[j] = tx.action[j]
             var done_emit = Scalar[DT](1.0) if tx.done else Scalar[DT](0.0)
             if self.buf_per:
                 var ctx = self.target_y_block.ts.ctx.value()
                 self.buf_per.value().add(
                     ctx,
-                    self._nstep_obs, self._nstep_act,
-                    tx.reward, self._nstep_nxt, done_emit,
+                    nstep_obs_p, nstep_act_p,
+                    tx.reward, nstep_nxt_p, done_emit,
                 )
             elif self.buf_gpu:
                 var ctx = self.target_y_block.ts.ctx.value()
                 self.buf_gpu.value().add(
                     ctx,
-                    self._nstep_obs, self._nstep_act,
-                    tx.reward, self._nstep_nxt, done_emit,
+                    nstep_obs_p, nstep_act_p,
+                    tx.reward, nstep_nxt_p, done_emit,
                 )
             else:
                 self.buf.add(
-                    self._nstep_obs, self._nstep_act,
-                    tx.reward, self._nstep_nxt, done_emit,
+                    nstep_obs_p, nstep_act_p,
+                    tx.reward, nstep_nxt_p, done_emit,
                 )
             return
 
@@ -1194,19 +1167,24 @@ struct SACTrainer[
 
         var t_sample = perf_counter_ns()
 
-        # Resolve which pointers to thread through the step methods.
-        var mb_s_ptr = self._mb_s
-        var mb_a_ptr = self._mb_a
-        var mb_r_ptr = self._mb_r
-        var mb_sp_ptr = self._mb_sp
-        var mb_y_ptr = self._mb_y
+        # Phase G.1 — pointer resolution. CPU branch threads CPU
+        # mirrors; GPU branch threads device pointers from the same
+        # Scratch fields' `.dev` half. mb_y has no CPU read site, but
+        # the staging mirror is allocated unconditionally so we can
+        # take cpu_ptr() once and reassign in the GPU branch.
+        var mb_s_ptr = self._mb_s.cpu_ptr()
+        var mb_a_ptr = self._mb_a.cpu_ptr()
+        var mb_r_ptr = self._mb_r.cpu_ptr()
+        var mb_sp_ptr = self._mb_sp.cpu_ptr()
+        var mb_y_ptr = self._mb_y.cpu_ptr()
 
         comptime if target == "cpu":
             if self.buf.size < Self.BATCH:
                 return False
             self.buf.sample(
                 Self.BATCH,
-                self._mb_s, self._mb_a, self._mb_r, self._mb_sp, self._mb_d,
+                mb_s_ptr, mb_a_ptr, mb_r_ptr, mb_sp_ptr,
+                self._mb_d.cpu_ptr(),
             )
         else:
             var ctx = self.target_y_block.ts.ctx.value()
@@ -1219,34 +1197,24 @@ struct SACTrainer[
                     return False
                 self.buf_per.value().sample[Self.BATCH](
                     ctx,
-                    self._mb_s_dev.value(), self._mb_a_dev.value(),
-                    self._mb_r_dev.value(), self._mb_sp_dev.value(),
-                    self._mb_d_dev.value(),
+                    self._mb_s.dev.value(), self._mb_a.dev.value(),
+                    self._mb_r.dev.value(), self._mb_sp.dev.value(),
+                    self._mb_d.dev.value(),
                 )
             else:
                 if self.buf_gpu.value().size < Self.BATCH:
                     return False
                 self.buf_gpu.value().sample[Self.BATCH](
                     ctx,
-                    self._mb_s_dev.value(), self._mb_a_dev.value(),
-                    self._mb_r_dev.value(), self._mb_sp_dev.value(),
-                    self._mb_d_dev.value(),
+                    self._mb_s.dev.value(), self._mb_a.dev.value(),
+                    self._mb_r.dev.value(), self._mb_sp.dev.value(),
+                    self._mb_d.dev.value(),
                 )
-            mb_s_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._mb_s_dev.value().unsafe_ptr()
-            )
-            mb_a_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._mb_a_dev.value().unsafe_ptr()
-            )
-            mb_r_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._mb_r_dev.value().unsafe_ptr()
-            )
-            mb_sp_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._mb_sp_dev.value().unsafe_ptr()
-            )
-            mb_y_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._mb_y_dev.value().unsafe_ptr()
-            )
+            mb_s_ptr = self._mb_s.dev_ptr()
+            mb_a_ptr = self._mb_a.dev_ptr()
+            mb_r_ptr = self._mb_r.dev_ptr()
+            mb_sp_ptr = self._mb_sp.dev_ptr()
+            mb_y_ptr = self._mb_y.dev_ptr()
         self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
         var alpha = fexp(self.alpha_opt.value)
@@ -1357,16 +1325,14 @@ struct SACTrainer[
 
     def _train_per_priority_refresh(mut self) raises:
         """Phase C.3b — GPU-only. Launches `_td_abs_kernel` against
-        `twin_critic_block.c1._mb_q` (pre-update Q1) and `_mb_y_dev`,
+        `twin_critic_block.c1._mb_q` (pre-update Q1) and `_mb_y.dev`,
         writing per-lane `|Q1 − y|` into `_td_err_dev`, then forwards
         that to `buf_per.update_priorities[BATCH]` which D2H-copies it,
         recomputes the sum-tree leaves, and bumps `max_priority`.
         """
         var ctx = self.target_y_block.ts.ctx.value()
         var q1_p = self.twin_critic_block.c1._mb_q.dev_ptr()
-        var y_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._mb_y_dev.value().unsafe_ptr()
-        )
+        var y_p = self._mb_y.dev_ptr()
         var td_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             self._td_err_dev.value().unsafe_ptr()
         )
