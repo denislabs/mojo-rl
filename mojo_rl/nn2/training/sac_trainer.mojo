@@ -181,6 +181,15 @@ struct SACTrainer[
 ](OffPolicyTrainable, OffPolicyTrainableGpu, OffPolicyTrainableGpuBatched):
     comptime SA_DIM = Self.OBS_DIM + Self.ACT_DIM
 
+    # Trait-conformance aliases (added 2026-05-25). The struct's
+    # parametric params `OBS_DIM` / `ACT_DIM` are the source of truth;
+    # these aliases publish them under names that don't clash with the
+    # struct param namespace so the driver can access them via the
+    # `OffPolicyTrainableGpuBatched` trait surface (`A.AGENT_OBS_DIM`,
+    # `A.AGENT_ACT_DIM`).
+    comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
+    comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
+
     # Timer section indices. Order matches `add_section` calls in `make`.
     comptime _T_SAMPLE    = 0
     comptime _T_TARGET_Y  = 1

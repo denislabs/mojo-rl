@@ -32,6 +32,7 @@ from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
 from ..constants import DT
+from ..data.n_step_replay import GPUNStepBuffer
 from mojo_rl.core.env_traits import BoxContinuousActionEnv, GPUContinuousEnv
 from .driver_cpu import OffPolicyTrainableGpu, OffPolicyTrainableGpuBatched
 
@@ -195,6 +196,7 @@ def run_offpolicy_train_gpu_n_envs[
     A: OffPolicyTrainableGpuBatched,
     E: GPUContinuousEnv,
     N_ENVS: Int,
+    NS: Int = 1,
 ](
     ctx: DeviceContext,
     mut trainer: A,
@@ -205,6 +207,7 @@ def run_offpolicy_train_gpu_n_envs[
     updates_per_step: Int = 1,
     print_every: Int = 5_000,
     verbose: Bool = True,
+    nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
 ) raises -> List[Scalar[DT]]:
     """Multi-env GPU off-policy training driver (Phase B.5b).
 
@@ -256,8 +259,25 @@ def run_offpolicy_train_gpu_n_envs[
     field stays at 0 in N_ENVS mode — `mean_return()` reflects only
     the completed-episode rolling window, which is the correct
     semantics for vectorized training.
+
+    N-step (`NS` > 1): allocates a `GPUNStepBuffer[NS, A.OBS_DIM,
+    A.ACT_DIM, N_ENVS]` and routes the batched record through
+    `trainer.record_batch_gpu_nstep[N_ENVS, NS](...)` so transitions
+    accumulate into n-step compressed returns before landing in the
+    replay. The trainer's `target_y_block` must already be configured
+    for `γ^NS` bootstrap (i.e. the trainer's `N_STEP` comptime + the
+    SACConfig `use_n_step=True` flag — see C.2b). `NS` must equal the
+    trainer's `N_STEP`; mismatch is caught by the trainer-side
+    comptime assert. `NS=1` (default) bypasses the n-step buffer
+    entirely — `comptime if NS > 1` gates the allocation and dispatch
+    so the default path stays bit-identical to the pre-NS driver.
+
+    `nstep_gamma` controls the per-step γ accumulated by the
+    GPUNStepBuffer. It only matters when NS > 1; default 0.99 matches
+    SAC's default `gamma`.
     """
     comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+    comptime assert NS > 0, "NS must be > 0"
     comptime STATE_SIZE = E.STATE_SIZE
     comptime OBS_DIM = E.OBS_DIM
     comptime ACT_DIM = E.ACTION_DIM
@@ -284,6 +304,20 @@ def run_offpolicy_train_gpu_n_envs[
     var per_env_returns = List[Scalar[DT]](
         length=N_ENVS, fill=Scalar[DT](0.0),
     )
+
+    # N-step buffer (NS > 1 only). `comptime if` elides the
+    # allocation entirely when NS == 1 — the default path is bit-
+    # identical to the pre-NS driver.
+    # N-step buffer — allocated unconditionally so the value is in
+    # scope at the dispatch site (comptime-if doesn't bleed bindings
+    # into the enclosing scope in Mojo nightly). When NS=1 the
+    # GPUNStepBuffer holds a few hundred bytes of device memory and
+    # is never touched by `.process()`, so the cost is negligible and
+    # the numerics are unaffected (no `.process` calls means no
+    # kernels run against this buffer).
+    var nstep_buf = GPUNStepBuffer[
+        NS, A.AGENT_OBS_DIM, A.AGENT_ACT_DIM, N_ENVS,
+    ].new(ctx, gamma=nstep_gamma)
 
     # Initial reset + obs extraction.
     E.reset_kernel_gpu[N_ENVS, STATE_SIZE](ctx, states, rng_seed=rng_seed)
@@ -316,9 +350,17 @@ def run_offpolicy_train_gpu_n_envs[
         )
 
         # Push N_ENVS transitions into the device-resident replay.
-        trainer.record_batch_gpu[N_ENVS](
-            ctx, prev_obs, actions, rewards, obs_buf, dones,
-        )
+        # NS=1 → direct uniform/PER routing. NS>1 → wrap through the
+        # n-step buffer so transitions accumulate into γ^NS-compressed
+        # returns before landing in the replay.
+        comptime if NS > 1:
+            trainer.record_batch_gpu_nstep[N_ENVS, NS](
+                ctx, nstep_buf, prev_obs, actions, rewards, obs_buf, dones,
+            )
+        else:
+            trainer.record_batch_gpu[N_ENVS](
+                ctx, prev_obs, actions, rewards, obs_buf, dones,
+            )
 
         # D2H of rewards + dones — small (N_ENVS * 2 scalars), needed
         # synchronously to update host-side per-env return accumulators

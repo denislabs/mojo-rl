@@ -35,6 +35,7 @@ from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import DT
+from ..data.n_step_replay import GPUNStepBuffer
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 
@@ -61,7 +62,20 @@ trait OffPolicyTrainableGpuBatched(Movable, ImplicitlyDestructible):
     iteration) and pushes complete-episode returns via
     `add_complete_return`. The trainer's `record_batch_gpu` therefore
     does NOT touch the tracker — it's purely the replay-buffer push.
+
+    Comptime members (added 2026-05-25): `AGENT_OBS_DIM` and
+    `AGENT_ACT_DIM` expose the trainer's observation/action dimensions
+    to the driver so it can type-instantiate a `GPUNStepBuffer[NS,
+    A.AGENT_OBS_DIM, A.AGENT_ACT_DIM, N_ENVS]` when `NS > 1`. The
+    `AGENT_` prefix avoids name-clashing with SACTrainer's existing
+    struct parametric params `OBS_DIM` / `ACT_DIM`. Precedent:
+    `GPUContinuousEnv` publishes `OBS_DIM` / `ACTION_DIM` /
+    `STATE_SIZE` the same way (no clash there since the env struct's
+    params are distinct from those names).
     """
+
+    comptime AGENT_OBS_DIM: Int
+    comptime AGENT_ACT_DIM: Int
 
     def select_action_gpu_batched[N_ENVS: Int](
         mut self,
@@ -77,6 +91,20 @@ trait OffPolicyTrainableGpuBatched(Movable, ImplicitlyDestructible):
     def record_batch_gpu[N_ENVS: Int](
         mut self,
         ctx: DeviceContext,
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        ...
+
+    def record_batch_gpu_nstep[N_ENVS: Int, NS: Int](
+        mut self,
+        ctx: DeviceContext,
+        mut nstep_buf: GPUNStepBuffer[
+            NS, Self.AGENT_OBS_DIM, Self.AGENT_ACT_DIM, N_ENVS,
+        ],
         prev_obs_dev: DeviceBuffer[DT],
         action_dev: DeviceBuffer[DT],
         reward_dev: DeviceBuffer[DT],
