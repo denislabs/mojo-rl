@@ -49,7 +49,7 @@ explosion trap (memory: `feedback_mojo_function_inline_call_explosion` —
 sub-method stays under the threshold.
 """
 
-from std.math import exp as fexp, log as flog, tanh as ftanh
+from std.math import exp as fexp, log as flog, pow as fpow, tanh as ftanh
 from std.memory import alloc
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
@@ -69,6 +69,7 @@ from ..loss.sac_actor_loss_cg import SACActorLossCG as SACActorLoss, SACActorLos
 from ..loss.critic_update_block import TwinCriticUpdateBlock
 from ..data.cpu_replay import CPUReplay
 from ..data.gpu_replay import GPUReplay
+from ..data.n_step_replay import NStepBuffer, NStepTransition
 from ..random.box_muller import box_muller_normal
 from mojo_rl.core.logger import Logger, NoOpLogger
 from ..core.log_bundle import log_bundle
@@ -154,6 +155,7 @@ struct SACTrainer[
     ACT_DIM: Int,
     BATCH: Int,
     REPLAY_CAPACITY: Int,
+    N_STEP: Int = 1,
 ](OffPolicyTrainable, OffPolicyTrainableGpu, OffPolicyTrainableGpuBatched):
     comptime SA_DIM = Self.OBS_DIM + Self.ACT_DIM
 
@@ -195,6 +197,18 @@ struct SACTrainer[
     var buf_gpu: Optional[
         GPUReplay[Self.OBS_DIM, Self.ACT_DIM, Self.REPLAY_CAPACITY]
     ]
+    # Phase C.2b — host-side n-step buffer. When the trainer was built
+    # from a SACConfig with `use_n_step=True` AND the struct's `N_STEP`
+    # comptime param > 1, `record` routes the (s, a, r, s', done) stream
+    # through this buffer first and pushes only the compressed n-step
+    # transitions into `buf` / `buf_gpu`. Single-env path only — the
+    # GPU N_ENVS-batched n-step buffer (`GPUNStepBuffer`) lives in the
+    # driver, not the trainer, since `N_ENVS` is method-comptime not
+    # struct-comptime.
+    var nstep_cpu: Optional[
+        NStepBuffer[Self.N_STEP, Self.OBS_DIM, Self.ACT_DIM]
+    ]
+    var _use_nstep: Bool
     var tracker: EpisodeTracker
 
     # ─── Single-step scratch (env interaction) ────────────────────────
@@ -205,6 +219,16 @@ struct SACTrainer[
     var _ob1_dev: Optional[DeviceBuffer[DT]]
     var _ao1_dev: Optional[DeviceBuffer[DT]]
     var _alp1_dev: Optional[DeviceBuffer[DT]]
+
+    # Phase C.2b — host scratch for n-step emitted transitions. When
+    # `_use_nstep`, `record` copies the n-step buffer's emitted
+    # InlineArray fields into these pre-allocated host pointers, then
+    # calls the underlying replay `add` against pointers we own (rather
+    # than into InlineArray-internal locals whose origins don't match
+    # the `MutAnyOrigin`-typed replay surface).
+    var _nstep_obs: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [OBS_DIM]
+    var _nstep_act: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [ACT_DIM]
+    var _nstep_nxt: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [OBS_DIM]
 
     # ─── Minibatch scratch (training) — only raw replay samples ──────
     # Target-y compute scratch is owned by `target_y_block` (Phase 10F).
@@ -292,6 +316,8 @@ struct SACTrainer[
             size=0, pos=0,
         )
         self.buf_gpu = None
+        self.nstep_cpu = None
+        self._use_nstep = False
         self.tracker = EpisodeTracker(
             window=List[Scalar[DT]](),
             window_size=0, idx=0,
@@ -310,6 +336,9 @@ struct SACTrainer[
         self._ob1_dev = None
         self._ao1_dev = None
         self._alp1_dev = None
+        self._nstep_obs = null_p
+        self._nstep_act = null_p
+        self._nstep_nxt = null_p
         self._mb_s_dev = None
         self._mb_a_dev = None
         self._mb_r_dev = None
@@ -331,6 +360,39 @@ struct SACTrainer[
         self.timer = Timer.new()
 
     @staticmethod
+    def _maybe_enable_nstep(mut t: Self, config: SACConfig) raises:
+        """Phase C.2b — common n-step opt-in path shared by CPU + GPU
+        config factories. Comptime-gated on `N_STEP > 1` (the runtime
+        if collapses since `N_STEP` is a struct comptime param), so
+        the N_STEP=1 default path remains zero-cost and bit-identical.
+
+        Effects when enabled:
+            - Allocate `nstep_cpu = NStepBuffer[N_STEP, OBS, ACT]`
+              with `gamma = config.gamma.v` (per-step γ, not γ^N).
+            - Allocate three `[OBS]/[ACT]/[OBS]` host scratch pointers
+              for ferrying emitted transitions into the replay's
+              `MutAnyOrigin` add signature.
+            - Re-bake `γ^N_STEP` into target_y_block's `gamma_softv`
+              Scale node so the critic bootstrap matches the n-step
+              return (rather than the per-step γ baked at the keyword
+              factory).
+        """
+        if config.use_n_step.v and Self.N_STEP > 1:
+            t.nstep_cpu = NStepBuffer[
+                Self.N_STEP, Self.OBS_DIM, Self.ACT_DIM
+            ].new(gamma=config.gamma.v)
+            t._use_nstep = True
+            t._nstep_obs = alloc[Scalar[DT]](Self.OBS_DIM)
+            t._nstep_act = alloc[Scalar[DT]](Self.ACT_DIM)
+            t._nstep_nxt = alloc[Scalar[DT]](Self.OBS_DIM)
+            var gamma_n = Scalar[DT](
+                fpow(Float64(config.gamma.v), Float64(Self.N_STEP))
+            )
+            t.target_y_block.graph.set_node_attr[
+                "gamma_softv", "multiplier"
+            ](gamma_n)
+
+    @staticmethod
     def _init_timer(mut t: Self) raises:
         """Register the 6 standard train_step sections in declaration order.
         Index order MUST match the `_T_*` comptime constants on the struct."""
@@ -349,7 +411,13 @@ struct SACTrainer[
 
         Phase C.5b: `config.use_bf16` is forwarded but the CPU factory
         ignores it — bf16 mixed-precision is a GPU-only knob in nn2
-        today (CPU forward/vjp kernels have no bf16 path)."""
+        today (CPU forward/vjp kernels have no bf16 path).
+
+        Phase C.2b: when `config.use_n_step=True` AND the struct's
+        `N_STEP` comptime param > 1, allocates an n-step ring buffer
+        and re-bakes `γ^N_STEP` into target-y's bootstrap multiplier.
+        With either flag off (default), the trainer is bit-identical
+        to pre-C.2b."""
         var t = Self.make[target](
             actor_lr=config.actor_lr.v,
             critic_lr=config.critic_lr.v,
@@ -365,6 +433,7 @@ struct SACTrainer[
             max_grad_norm=config.max_grad_norm.v,
         )
         t._use_bf16 = False  # CPU path never routes to bf16
+        Self._maybe_enable_nstep(t, config)
         return t^
 
     @staticmethod
@@ -405,6 +474,7 @@ struct SACTrainer[
                 c_min=config.ere_c_min.v,
                 k_max=config.ere_k_max.v,
             )
+        Self._maybe_enable_nstep(t, config)
         return t^
 
     @staticmethod
@@ -902,10 +972,43 @@ struct SACTrainer[
         Phase C.1 — branches on `buf_gpu`. When the trainer was built
         with `make["gpu"]`, `buf_gpu` is `Some` and the transition is
         uploaded into the device-resident replay (5 small D2H + 1 tiny
-        kernel per call). CPU trainers route to `self.buf.add` as
-        before. The CPU path's behaviour is unchanged — bit-identity
-        preserved by construction.
+        kernel per call). CPU trainers route to `self.buf.add`. The
+        tracker's per-step reward accumulation is unaffected.
+
+        Phase C.2b — when `_use_nstep`, the (s, a, r, s', done) stream
+        is fed through `nstep_cpu` first; only when that buffer emits
+        a compressed n-step transition do we push into the replay.
+        The tracker still accumulates the *single-step* reward so
+        episode-return tracking is independent of n-step compression.
         """
+        self.tracker.add_reward(reward)
+
+        if self._use_nstep:
+            var tx = self.nstep_cpu.value().add(
+                obs, action, reward, next_obs, done > Scalar[DT](0.5),
+            )
+            if not tx.valid:
+                return
+            for d in range(Self.OBS_DIM):
+                self._nstep_obs[d] = tx.obs[d]
+                self._nstep_nxt[d] = tx.next_obs[d]
+            for j in range(Self.ACT_DIM):
+                self._nstep_act[j] = tx.action[j]
+            var done_emit = Scalar[DT](1.0) if tx.done else Scalar[DT](0.0)
+            if self.buf_gpu:
+                var ctx = self.target_y_block.ts.ctx.value()
+                self.buf_gpu.value().add(
+                    ctx,
+                    self._nstep_obs, self._nstep_act,
+                    tx.reward, self._nstep_nxt, done_emit,
+                )
+            else:
+                self.buf.add(
+                    self._nstep_obs, self._nstep_act,
+                    tx.reward, self._nstep_nxt, done_emit,
+                )
+            return
+
         if self.buf_gpu:
             var ctx = self.target_y_block.ts.ctx.value()
             self.buf_gpu.value().add(
@@ -913,7 +1016,6 @@ struct SACTrainer[
             )
         else:
             self.buf.add(obs, action, reward, next_obs, done)
-        self.tracker.add_reward(reward)
 
     def end_episode(mut self):
         """Roll the current episode return into the tracker window."""

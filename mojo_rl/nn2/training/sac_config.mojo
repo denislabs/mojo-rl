@@ -60,6 +60,14 @@ struct SACConfig(Saveable):
     var ere_eta:              SaveScalar[DT]
     var ere_c_min:            SaveI
     var ere_k_max:            SaveI
+    # Phase C.2b — n-step return auto-routing. `use_n_step=True` makes
+    # the trainer wrap incoming transitions through an `NStepBuffer[
+    # SACTrainer.N_STEP, OBS, ACT]` instance and bake `γ^N_STEP` into
+    # the target-y bootstrap. The depth `N_STEP` is the trainer struct's
+    # comptime param (default 1 = disabled); this Saveable field is the
+    # runtime opt-in. Default `False` → no nstep buffer → bit-identical
+    # to pre-C.2b.
+    var use_n_step:           SaveBool
 
     @staticmethod
     def default() -> Self:
@@ -85,6 +93,7 @@ struct SACConfig(Saveable):
             ere_eta=SaveScalar[DT](Scalar[DT](0.996)),
             ere_c_min=SaveI(256),
             ere_k_max=SaveI(1_000),
+            use_n_step=SaveBool(False),
         )
 
     def save(self, mut out: String, prefix: String) raises:
