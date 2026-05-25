@@ -48,6 +48,18 @@ struct SACConfig(Saveable):
     # records the user's choice so it survives checkpoint round-trips.
     # Default `False` → POLICY=NoAMP → bit-identical to pre-C.5.
     var use_bf16:             SaveBool
+    # Phase C.4b — ERE (Emphasizing Recent Experience, Wang & Ross
+    # 2019) auto-routing. `use_ere=True` makes the GPU factory call
+    # `buf_gpu.enable_ere(eta, c_min, k_max)`. `eta` is the decay
+    # factor (smaller = more recency bias; 1.0 = uniform), `c_min`
+    # the lower clamp on the recent window (should be ≥ BATCH), and
+    # `k_max` the cycle length after which `η^k` resets. Defaults
+    # match the GPUReplay defaults. `use_ere=False` (default) → no
+    # call → uniform sampling → bit-identical to pre-C.4.
+    var use_ere:              SaveBool
+    var ere_eta:              SaveScalar[DT]
+    var ere_c_min:            SaveI
+    var ere_k_max:            SaveI
 
     @staticmethod
     def default() -> Self:
@@ -69,6 +81,10 @@ struct SACConfig(Saveable):
             learning_starts=SaveI(1_000),
             window_size=SaveI(10),
             use_bf16=SaveBool(False),
+            use_ere=SaveBool(False),
+            ere_eta=SaveScalar[DT](Scalar[DT](0.996)),
+            ere_c_min=SaveI(256),
+            ere_k_max=SaveI(1_000),
         )
 
     def save(self, mut out: String, prefix: String) raises:

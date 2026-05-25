@@ -376,7 +376,13 @@ struct SACTrainer[
         Phase C.5b: when `config.use_bf16 == True`, the trainer's
         non-parametric `train_step_gpu` wrapper routes through
         `POLICY=Bf16Compute`. Default False → `NoAMP` → bit-identical
-        to pre-C.5."""
+        to pre-C.5.
+
+        Phase C.4b: when `config.use_ere == True`, flips the device-
+        resident GPUReplay into ERE recency-biased sampling mode by
+        calling `buf_gpu.enable_ere(eta, c_min, k_max)` with the
+        SACConfig hyperparameters. Default `use_ere=False` is a no-op
+        (uniform sampler) → bit-identical to pre-C.4b."""
         var t = Self.make[target](
             ctx,
             actor_lr=config.actor_lr.v,
@@ -393,6 +399,12 @@ struct SACTrainer[
             max_grad_norm=config.max_grad_norm.v,
         )
         t._use_bf16 = config.use_bf16.v
+        if config.use_ere.v:
+            t.buf_gpu.value().enable_ere(
+                eta=config.ere_eta.v,
+                c_min=config.ere_c_min.v,
+                k_max=config.ere_k_max.v,
+            )
         return t^
 
     @staticmethod
