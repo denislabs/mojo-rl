@@ -45,6 +45,7 @@ from layout import Layout, LayoutTensor
 
 from ..constants import DT
 from .gpu_replay import GPUReplay
+from .per_replay import GPUPrioritizedReplay
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -494,6 +495,25 @@ struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
         `add_batch[N_ENVS]`. Invalid slots (`out_valid[e] == 0`)
         contain zero-padded data and get overwritten as the buffer
         wraps. Matches deep_agents semantics."""
+        buf.add_batch[Self.N_ENVS](
+            ctx,
+            self.out_obs, self.out_act, self.out_rew,
+            self.out_nobs, self.out_done,
+        )
+
+    def store_into[CAP: Int](
+        self,
+        ctx: DeviceContext,
+        mut buf: GPUPrioritizedReplay[Self.OBS, Self.ACT, CAP],
+    ) raises:
+        """PER overload — same blind-store semantics but routes through
+        `GPUPrioritizedReplay.add_batch[N_ENVS]`. Each of the N_ENVS
+        slots gets initialised with `max_priority^alpha` so new
+        n-step transitions are immediately eligible for prioritised
+        sampling. Zero-padded invalid slots receive that same priority
+        until they're overwritten + repriced via `update_priorities`
+        on their next sample.
+        """
         buf.add_batch[Self.N_ENVS](
             ctx,
             self.out_obs, self.out_act, self.out_rew,

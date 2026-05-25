@@ -69,7 +69,7 @@ from ..loss.sac_actor_loss_cg import SACActorLossCG as SACActorLoss, SACActorLos
 from ..loss.critic_update_block import TwinCriticUpdateBlock
 from ..data.cpu_replay import CPUReplay
 from ..data.gpu_replay import GPUReplay
-from ..data.n_step_replay import NStepBuffer, NStepTransition
+from ..data.n_step_replay import NStepBuffer, NStepTransition, GPUNStepBuffer
 from ..data.per_replay import GPUPrioritizedReplay
 from ..random.box_muller import box_muller_normal
 from mojo_rl.core.logger import Logger, NoOpLogger
@@ -1000,14 +1000,72 @@ struct SACTrainer[
     ) raises:
         """Push N_ENVS transitions into the device-resident replay.
 
-        Thin wrapper over `GPUReplay.add_batch[N_ENVS]`. Does NOT
-        touch the episode tracker — the N_ENVS driver manages its
-        own host-side per-env reward accumulators (so this method
+        Routes the device-side batched add either to
+        `GPUPrioritizedReplay.add_batch[N_ENVS]` (when the trainer was
+        built from a SACConfig with `use_per=True`, so `buf_per` is
+        Some) or to the uniform `GPUReplay.add_batch[N_ENVS]`.
+
+        Does NOT touch the episode tracker — the N_ENVS driver manages
+        its own host-side per-env reward accumulators (so this method
         stays purely about the replay push, no D2H of `reward_dev`).
         """
-        self.buf_gpu.value().add_batch[N_ENVS](
+        if self.buf_per:
+            self.buf_per.value().add_batch[N_ENVS](
+                ctx,
+                prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
+            )
+        else:
+            self.buf_gpu.value().add_batch[N_ENVS](
+                ctx,
+                prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
+            )
+
+    def record_batch_gpu_nstep[N_ENVS: Int, NS: Int](
+        mut self,
+        ctx: DeviceContext,
+        mut nstep_buf: GPUNStepBuffer[
+            NS, Self.OBS_DIM, Self.ACT_DIM, N_ENVS
+        ],
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        """N_ENVS + n-step batched record. The caller owns the
+        `GPUNStepBuffer[NS, OBS, ACT, N_ENVS]` (since `N_ENVS` is
+        method-comptime, not struct-comptime — the trainer can't
+        pre-allocate it without losing single-env trainer flexibility).
+        Behaviour:
+            1. `nstep_buf.process(...)` — one kernel ring-updates all
+               N_ENVS lanes and emits compressed transitions into
+               `out_*` device buffers. Invalid slots zero-padded.
+            2. `nstep_buf.store_into[CAP](ctx, buf_per | buf_gpu)` —
+               blind-stores all N_ENVS slots into the underlying
+               replay. PER overload picks up `max_priority^alpha` for
+               each leaf so freshly-stored compressed transitions are
+               immediately eligible for prioritised sampling.
+
+        The depth `NS` must match the trainer's `Self.N_STEP` comptime
+        so the γ^N bake in `target_y_block` agrees with the n-step
+        return. The comptime assert below catches mismatches at
+        instantiation time.
+        """
+        comptime assert NS == Self.N_STEP, (
+            "GPUNStepBuffer depth NS must match SACTrainer.N_STEP "
+            + "so γ^N_STEP bake in target_y matches the n-step return"
+        )
+        nstep_buf.process(
             ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
         )
+        if self.buf_per:
+            nstep_buf.store_into[Self.REPLAY_CAPACITY](
+                ctx, self.buf_per.value(),
+            )
+        else:
+            nstep_buf.store_into[Self.REPLAY_CAPACITY](
+                ctx, self.buf_gpu.value(),
+            )
 
     def record(
         mut self,
