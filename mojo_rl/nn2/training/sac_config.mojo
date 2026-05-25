@@ -68,6 +68,26 @@ struct SACConfig(Saveable):
     # runtime opt-in. Default `False` → no nstep buffer → bit-identical
     # to pre-C.2b.
     var use_n_step:           SaveBool
+    # Phase C.3b — Prioritized Experience Replay (Schaul et al. 2016)
+    # auto-routing. `use_per=True` swaps the GPU factory's `buf_gpu`
+    # for a `GPUPrioritizedReplay[OBS, ACT, CAP]` and runs a TD-error
+    # compute kernel after each critic update to refresh priorities.
+    # Mutually exclusive with `use_ere` (PER's recency-weighting
+    # supersedes ERE's). `per_alpha` controls the priority exponent
+    # (0=uniform, 1=full prioritization), `per_beta` the IS exponent
+    # (annealed callers typically ramp 0.4 → 1.0), `per_epsilon` the
+    # additive floor on `|TD|` so zero-error slots keep nonzero
+    # priority. Default `use_per=False` → uniform replay → bit-
+    # identical to pre-C.3b.
+    #
+    # v1 limitation: this commit ships sample-side prioritization +
+    # priority maintenance but does NOT thread IS weights into the
+    # critic loss (the critic uses unweighted MSE). Full Schaul-
+    # compatible IS-corrected loss is a follow-up C.3c.
+    var use_per:              SaveBool
+    var per_alpha:            SaveScalar[DT]
+    var per_beta:             SaveScalar[DT]
+    var per_epsilon:          SaveScalar[DT]
 
     @staticmethod
     def default() -> Self:
@@ -94,6 +114,10 @@ struct SACConfig(Saveable):
             ere_c_min=SaveI(256),
             ere_k_max=SaveI(1_000),
             use_n_step=SaveBool(False),
+            use_per=SaveBool(False),
+            per_alpha=SaveScalar[DT](Scalar[DT](0.6)),
+            per_beta=SaveScalar[DT](Scalar[DT](0.4)),
+            per_epsilon=SaveScalar[DT](Scalar[DT](1e-6)),
         )
 
     def save(self, mut out: String, prefix: String) raises:

@@ -70,6 +70,7 @@ from ..loss.critic_update_block import TwinCriticUpdateBlock
 from ..data.cpu_replay import CPUReplay
 from ..data.gpu_replay import GPUReplay
 from ..data.n_step_replay import NStepBuffer, NStepTransition
+from ..data.per_replay import GPUPrioritizedReplay
 from ..random.box_muller import box_muller_normal
 from mojo_rl.core.logger import Logger, NoOpLogger
 from ..core.log_bundle import log_bundle
@@ -115,6 +116,27 @@ def _warmup_uniform_kernel[N_ENVS: Int, ACT: Int](
     var env = i // ACT
     var j = i % ACT
     action_dest[env, j] = s * action_scale
+
+
+def _td_abs_kernel[BATCH: Int](
+    q: LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin],
+    y: LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin],
+    td_out: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+):
+    """Per-lane TD-error magnitude: `td_out[i] = |q[i,0] - y[i,0]|`.
+
+    Phase C.3b. Used after the critic update to refresh PER priorities.
+    `q` is the pre-update Q1 prediction (still resident in c1._mb_q
+    from the just-finished forward pass) and `y` is the target value
+    computed by `target_y_block`. Both are device buffers.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+    var diff = q[i, 0] - y[i, 0]
+    if diff < Scalar[DT](0.0):
+        diff = -diff
+    td_out[i] = diff
 
 
 def _action_clamp_kernel[N_ENVS: Int, ACT: Int](
@@ -197,6 +219,18 @@ struct SACTrainer[
     var buf_gpu: Optional[
         GPUReplay[Self.OBS_DIM, Self.ACT_DIM, Self.REPLAY_CAPACITY]
     ]
+    # Phase C.3b — GPU prioritized replay. Mutually exclusive with
+    # `buf_gpu`: when `config.use_per=True` the GPU factory swaps
+    # `buf_gpu` for this field. `record` and `train_step["gpu"]`
+    # branch on which Optional is `Some`.
+    var buf_per: Optional[
+        GPUPrioritizedReplay[
+            Self.OBS_DIM, Self.ACT_DIM, Self.REPLAY_CAPACITY
+        ]
+    ]
+    # Phase C.3b — device-side TD-error scratch (BATCH lanes). Reused
+    # across train_steps so we don't reallocate per-step.
+    var _td_err_dev: Optional[DeviceBuffer[DT]]
     # Phase C.2b — host-side n-step buffer. When the trainer was built
     # from a SACConfig with `use_n_step=True` AND the struct's `N_STEP`
     # comptime param > 1, `record` routes the (s, a, r, s', done) stream
@@ -316,6 +350,8 @@ struct SACTrainer[
             size=0, pos=0,
         )
         self.buf_gpu = None
+        self.buf_per = None
+        self._td_err_dev = None
         self.nstep_cpu = None
         self._use_nstep = False
         self.tracker = EpisodeTracker(
@@ -468,7 +504,22 @@ struct SACTrainer[
             max_grad_norm=config.max_grad_norm.v,
         )
         t._use_bf16 = config.use_bf16.v
-        if config.use_ere.v:
+        # Phase C.3b — PER overrides ERE: PER's priority-weighted
+        # sampling supersedes ERE's recency bias. If both flags are
+        # set, we honor PER and silently skip ERE.
+        if config.use_per.v:
+            t.buf_per = GPUPrioritizedReplay[
+                Self.OBS_DIM, Self.ACT_DIM, Self.REPLAY_CAPACITY
+            ].new(
+                ctx,
+                alpha=config.per_alpha.v,
+                beta=config.per_beta.v,
+                epsilon=config.per_epsilon.v,
+                batch_capacity=Self.BATCH,
+            )
+            t.buf_gpu = None
+            t._td_err_dev = ctx.enqueue_create_buffer[DT](Self.BATCH)
+        elif config.use_ere.v:
             t.buf_gpu.value().enable_ere(
                 eta=config.ere_eta.v,
                 c_min=config.ere_c_min.v,
@@ -995,7 +1046,14 @@ struct SACTrainer[
             for j in range(Self.ACT_DIM):
                 self._nstep_act[j] = tx.action[j]
             var done_emit = Scalar[DT](1.0) if tx.done else Scalar[DT](0.0)
-            if self.buf_gpu:
+            if self.buf_per:
+                var ctx = self.target_y_block.ts.ctx.value()
+                self.buf_per.value().add(
+                    ctx,
+                    self._nstep_obs, self._nstep_act,
+                    tx.reward, self._nstep_nxt, done_emit,
+                )
+            elif self.buf_gpu:
                 var ctx = self.target_y_block.ts.ctx.value()
                 self.buf_gpu.value().add(
                     ctx,
@@ -1009,7 +1067,12 @@ struct SACTrainer[
                 )
             return
 
-        if self.buf_gpu:
+        if self.buf_per:
+            var ctx = self.target_y_block.ts.ctx.value()
+            self.buf_per.value().add(
+                ctx, obs, action, reward, next_obs, done,
+            )
+        elif self.buf_gpu:
             var ctx = self.target_y_block.ts.ctx.value()
             self.buf_gpu.value().add(
                 ctx, obs, action, reward, next_obs, done,
@@ -1079,15 +1142,29 @@ struct SACTrainer[
                 self._mb_s, self._mb_a, self._mb_r, self._mb_sp, self._mb_d,
             )
         else:
-            if self.buf_gpu.value().size < Self.BATCH:
-                return False
             var ctx = self.target_y_block.ts.ctx.value()
-            self.buf_gpu.value().sample[Self.BATCH](
-                ctx,
-                self._mb_s_dev.value(), self._mb_a_dev.value(),
-                self._mb_r_dev.value(), self._mb_sp_dev.value(),
-                self._mb_d_dev.value(),
-            )
+            if self.buf_per:
+                # Phase C.3b — prioritized sample. Replaces the
+                # uniform sample with stratified PER draws and
+                # populates `buf_per.weights` / `buf_per.base.indices`
+                # for the post-critic priority refresh.
+                if self.buf_per.value().base.size < Self.BATCH:
+                    return False
+                self.buf_per.value().sample[Self.BATCH](
+                    ctx,
+                    self._mb_s_dev.value(), self._mb_a_dev.value(),
+                    self._mb_r_dev.value(), self._mb_sp_dev.value(),
+                    self._mb_d_dev.value(),
+                )
+            else:
+                if self.buf_gpu.value().size < Self.BATCH:
+                    return False
+                self.buf_gpu.value().sample[Self.BATCH](
+                    ctx,
+                    self._mb_s_dev.value(), self._mb_a_dev.value(),
+                    self._mb_r_dev.value(), self._mb_sp_dev.value(),
+                    self._mb_d_dev.value(),
+                )
             mb_s_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 self._mb_s_dev.value().unsafe_ptr()
             )
@@ -1118,6 +1195,16 @@ struct SACTrainer[
             mb_s_ptr, mb_a_ptr, mb_y_ptr,
         )
         self.timer.accumulate(Self._T_CRITIC, t_crit)
+
+        # Phase C.3b — PER priority refresh, GPU-only. Reads Q1 pred
+        # still resident in twin_critic_block.c1._mb_q (pre-update
+        # forward output) and `mb_y_ptr`, launches the absolute-TD
+        # kernel into `_td_err_dev`, then hands those device-side
+        # |TD| values to the host sum-tree update path. No-op when
+        # PER is disabled.
+        comptime if target == "gpu":
+            if self.buf_per:
+                self._train_per_priority_refresh()
 
         var t_act = perf_counter_ns()
         var actor_res = self._train_actor_update[target, POLICY](
@@ -1183,6 +1270,41 @@ struct SACTrainer[
         ](
             self.actor, self.actor_opt, self.pair1.online, self.pair2.online,
             mb_s_ptr, alpha,
+        )
+
+    def _train_per_priority_refresh(mut self) raises:
+        """Phase C.3b — GPU-only. Launches `_td_abs_kernel` against
+        `twin_critic_block.c1._mb_q` (pre-update Q1) and `_mb_y_dev`,
+        writing per-lane `|Q1 − y|` into `_td_err_dev`, then forwards
+        that to `buf_per.update_priorities[BATCH]` which D2H-copies it,
+        recomputes the sum-tree leaves, and bumps `max_priority`.
+        """
+        var ctx = self.target_y_block.ts.ctx.value()
+        var q1_p = self.twin_critic_block.c1._mb_q.dev_ptr()
+        var y_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._mb_y_dev.value().unsafe_ptr()
+        )
+        var td_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._td_err_dev.value().unsafe_ptr()
+        )
+        var q_lt = LayoutTensor[
+            DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](q1_p)
+        var y_lt = LayoutTensor[
+            DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](y_p)
+        var td_lt = LayoutTensor[
+            DT, Layout.row_major(Self.BATCH), MutAnyOrigin
+        ](td_p)
+        comptime TPB = 128
+        comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
+        comptime td_kernel = _td_abs_kernel[Self.BATCH]
+        ctx.enqueue_function[td_kernel](
+            q_lt, y_lt, td_lt,
+            grid_dim=n_blocks, block_dim=TPB,
+        )
+        self.buf_per.value().update_priorities[Self.BATCH](
+            ctx, self._td_err_dev.value(),
         )
 
     def _train_alpha_update(mut self, log_prob_mean: Scalar[DT]):
