@@ -60,7 +60,7 @@ from layout import Layout, LayoutTensor, TileTensor, TensorLayout, row_major
 
 from ..constants import DT
 from ..core import Module
-from ..core.amp import AMPPolicy, NoAMP
+from ..core.amp import AMPPolicy, NoAMP, Bf16Compute
 from ..core.online_target_pair import OnlineTargetPair
 from ..initializer import Xavier
 from ..optimizer.adam import Adam
@@ -232,6 +232,13 @@ struct SACTrainer[
     var target_entropy: Scalar[DT]
     var learning_starts: Int
 
+    # Phase C.5b — runtime mirror of `SACConfig.use_bf16`. When True,
+    # the non-parametric `train_step_gpu` trait wrapper dispatches to
+    # `train_step["gpu", Bf16Compute]` instead of `NoAMP`. CPU path
+    # always uses NoAMP regardless of this flag (bf16 is a GPU-only
+    # optimization in nn2 today).
+    var _use_bf16: Bool
+
     # ─── Phase B.5b — batched-GPU warmup RNG state ───────────────────
     # `select_action_gpu_batched[N_ENVS]` uses Philox on-device for the
     # uniform warmup actions. Offset bumps by `2*N_ENVS*ACT` per call
@@ -314,6 +321,7 @@ struct SACTrainer[
         self.action_scale = Scalar[DT](1.0)
         self.target_entropy = Scalar[DT](-1.0)
         self.learning_starts = 1_000
+        self._use_bf16 = False
         self._warmup_rng_seed = UInt64(0xBADBEEF_FEEDFACE)
         self._warmup_rng_offset = UInt64(0)
         self._actor_L_accum = Scalar[DT](0.0)
@@ -337,8 +345,12 @@ struct SACTrainer[
     def make[target: StaticString](config: SACConfig) raises -> Self:
         """Phase A.4 — Config-driven CPU factory. Unpacks the Config
         and forwards to the existing keyword path so both routes share
-        the same construction code (bit-identical by construction)."""
-        return Self.make[target](
+        the same construction code (bit-identical by construction).
+
+        Phase C.5b: `config.use_bf16` is forwarded but the CPU factory
+        ignores it — bf16 mixed-precision is a GPU-only knob in nn2
+        today (CPU forward/vjp kernels have no bf16 path)."""
+        var t = Self.make[target](
             actor_lr=config.actor_lr.v,
             critic_lr=config.critic_lr.v,
             alpha_lr=config.alpha_lr.v,
@@ -352,13 +364,20 @@ struct SACTrainer[
             initial_episode_fill=config.initial_episode_fill.v,
             max_grad_norm=config.max_grad_norm.v,
         )
+        t._use_bf16 = False  # CPU path never routes to bf16
+        return t^
 
     @staticmethod
     def make[target: StaticString](
         ctx: DeviceContext, config: SACConfig,
     ) raises -> Self:
-        """Phase A.4 — Config-driven GPU factory."""
-        return Self.make[target](
+        """Phase A.4 — Config-driven GPU factory.
+
+        Phase C.5b: when `config.use_bf16 == True`, the trainer's
+        non-parametric `train_step_gpu` wrapper routes through
+        `POLICY=Bf16Compute`. Default False → `NoAMP` → bit-identical
+        to pre-C.5."""
+        var t = Self.make[target](
             ctx,
             actor_lr=config.actor_lr.v,
             critic_lr=config.critic_lr.v,
@@ -373,6 +392,8 @@ struct SACTrainer[
             initial_episode_fill=config.initial_episode_fill.v,
             max_grad_norm=config.max_grad_norm.v,
         )
+        t._use_bf16 = config.use_bf16.v
+        return t^
 
     @staticmethod
     def make[target: StaticString](
@@ -692,7 +713,14 @@ struct SACTrainer[
         self.select_action["gpu"](obs, action_out, step_idx)
 
     def train_step_gpu(mut self, step_idx: Int) raises -> Bool:
-        return self.train_step["gpu"](step_idx)
+        """Phase C.5b — auto-routes through `Bf16Compute` when the
+        trainer was built from a `SACConfig` with `use_bf16=True`,
+        else falls back to `NoAMP`. The runtime branch compiles both
+        `train_step["gpu", NoAMP]` and `train_step["gpu", Bf16Compute]`
+        specializations; only one is exercised per call."""
+        if self._use_bf16:
+            return self.train_step["gpu", Bf16Compute](step_idx)
+        return self.train_step["gpu", NoAMP](step_idx)
 
     def select_greedy_action_gpu(
         mut self,
