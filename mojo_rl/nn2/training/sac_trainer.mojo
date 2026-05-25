@@ -1250,11 +1250,27 @@ struct SACTrainer[
         mb_a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises -> Scalar[DT]:
+        """Phase C.3c — when `buf_per` is active (PER), pass the
+        per-sample IS-weights vector through `twin_critic_block.step`
+        so both critics receive a w_i-scaled gradient. Pre-C.3c PER
+        used unweighted MSE (sample-side prioritization only); now
+        the IS correction flows into the gradient via the new kernel
+        in `critic_update_block.mojo`. Null pointer when buf_per is
+        None → unweighted MSE → bit-identical to pre-C.3c."""
         var mb_y_t = TileTensor(mb_y_ptr, row_major[Self.BATCH, 1]())
+        var weights_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=0
+        )
+        comptime if target == "gpu":
+            if self.buf_per:
+                weights_p = rebind[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](self.buf_per.value().weights.unsafe_ptr())
         return self.twin_critic_block.step[target, POLICY](
             self.pair1.online, self.critic1_opt,
             self.pair2.online, self.critic2_opt,
             mb_s_ptr, mb_a_ptr, mb_y_t,
+            weights_p=weights_p,
         )
 
     def _train_actor_update[

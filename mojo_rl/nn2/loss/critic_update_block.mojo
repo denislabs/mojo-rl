@@ -37,9 +37,10 @@ Surface:
             concat_sa → c1.step + c2.step; returns sum of losses.
 """
 
+from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core.amp import AMPPolicy, NoAMP
@@ -51,6 +52,34 @@ from ..optimizer.adam import Adam
 from .loss_block import LossBlock
 from .mse import MSELoss
 from ..training.off_policy_critic import concat_sa, concat_sa_gpu
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase C.3c — IS-weighted MSE gradient scaling kernel.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _scale_grad_by_weights_kernel[BATCH: Int](
+    mb_grad_q: LayoutTensor[
+        DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
+    ],
+    weights: LayoutTensor[
+        DT, Layout.row_major(BATCH), MutAnyOrigin,
+    ],
+):
+    """Per-lane in-place scaling: `mb_grad_q[i, 0] *= weights[i]`.
+
+    Phase C.3c. Inserted between MSE.vjp and Critic.vjp inside
+    `CriticUpdateBlock.step` when PER passes a non-null IS-weights
+    pointer. The weighted gradient flows through Critic.vjp unchanged
+    afterwards, giving the per-sample PER correction
+    `grad_θ ∝ Σ_b w_b · (Q_b − y_b) · ∂Q/∂θ` that Schaul et al. §3.4
+    prescribes.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+    mb_grad_q[i, 0] = mb_grad_q[i, 0] * weights[i]
 
 
 struct CriticUpdateBlock[
@@ -122,7 +151,17 @@ struct CriticUpdateBlock[
         y_t: TileTensor[
             dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
+        weights_p: UnsafePointer[
+            Scalar[DT], MutAnyOrigin,
+        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
     ) raises -> Scalar[DT]:
+        """Phase C.3c — `weights_p` (optional, default null sentinel)
+        is a `[BATCH]` per-sample IS weight vector. When non-null, the
+        gradient `mb_grad_q` produced by `mse.vjp` is scaled in-place
+        by `weights_p[i]` before flowing into `critic.vjp`. CPU path
+        does a sequential loop; GPU path launches
+        `_scale_grad_by_weights_kernel`. Null pointer → unweighted
+        MSE → bit-identical to pre-C.3c."""
         assert_tag_for["CriticUpdateBlock", target](self.ts.target_tag)
 
         var mb_q_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
@@ -151,6 +190,29 @@ struct CriticUpdateBlock[
 
         var mb_grad_q_t = TileTensor(mb_grad_q_p, row_major[Self.BATCH, 1]())
         self.mse_loss.vjp[target, Self.BATCH, POLICY](y_t, mb_grad_q_t)
+
+        # Phase C.3c — IS-weight scaling, gated on non-null sentinel.
+        if Int(weights_p) != 0:
+            comptime if target == "cpu":
+                for i in range(Self.BATCH):
+                    mb_grad_q_p[i] = mb_grad_q_p[i] * weights_p[i]
+            else:
+                var grad_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin,
+                ](mb_grad_q_p)
+                var w_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+                ](weights_p)
+                comptime TPB = 128
+                comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
+                comptime scale_kernel = _scale_grad_by_weights_kernel[
+                    Self.BATCH
+                ]
+                var ctx = self.ts.ctx.value()
+                ctx.enqueue_function[scale_kernel](
+                    grad_lt, w_lt,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
 
         var mb_grad_sa_t = TileTensor(
             mb_grad_sa_p,
@@ -231,7 +293,13 @@ struct TwinCriticUpdateBlock[
         mb_y_t: TileTensor[
             dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
+        weights_p: UnsafePointer[
+            Scalar[DT], MutAnyOrigin,
+        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
     ) raises -> Scalar[DT]:
+        """Phase C.3c — `weights_p` (optional, default null) flows
+        through both sub-block updates so both critics receive the
+        same per-sample PER weighting. Bit-identical when null."""
         assert_tag_for["TwinCriticUpdateBlock", target](self.ts.target_tag)
 
         var sa_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
@@ -249,8 +317,10 @@ struct TwinCriticUpdateBlock[
 
         var loss1 = self.c1.step[target, POLICY](
             critic1, critic1_opt, sa_t, mb_y_t,
+            weights_p=weights_p,
         )
         var loss2 = self.c2.step[target, POLICY](
             critic2, critic2_opt, sa_t, mb_y_t,
+            weights_p=weights_p,
         )
         return loss1 + loss2
