@@ -527,22 +527,18 @@ def _forward_cpu[
         # InputSlot (KIND=0) has no compute and its out_ptr was set
         # externally via `set_input`.
         comptime if kind > 0:
-            # I.2.6.e — uniform comptime-for over KIND. Collect resolved
-            # input pointers into a fixed-size InlineArray padded with
-            # nulls, then call forward_via with 4 fixed-position args.
-            # The forward_via internal arity dispatch (comptime if
-            # ARITY == K) selects which to pass to the underlying op.
+            # I.2.6.k — InlineArray sized at per-node KIND (no padding).
+            # Single arg to forward_via; wrapper indexes in_ptrs[k] for
+            # k in [0, ARITY). KIND cap dropped on the dispatch layer.
             var ptrs = InlineArray[
-                UnsafePointer[Scalar[DT], MutAnyOrigin], 4
+                UnsafePointer[Scalar[DT], MutAnyOrigin], kind,
             ](fill=null_ptr)
             comptime for k in range(kind):
                 comptime src_k = NODES[i].IN_NAMES[k]
                 comptime for j in range(N):
                     comptime if NODES[j].NAME == src_k:
                         ptrs[k] = g.nodes[j].out_ptr_via()
-            g.nodes[i].forward_via[target, BATCH, POLICY=POLICY](
-                ptrs[0], ptrs[1], ptrs[2], ptrs[3],
-            )
+            g.nodes[i].forward_via[target, BATCH, POLICY=POLICY](ptrs)
 
     # Copy last node's out_buf into the external output.
     comptime LAST_OUT_DIM = NODES[N - 1].OUT_DIM
@@ -641,18 +637,16 @@ def _forward_gpu[
     comptime for i in range(N):
         comptime kind = NODES[i].KIND
         comptime if kind > 0:
-            # I.2.6.e — uniform comptime-for over KIND (mirrors _forward_cpu).
+            # I.2.6.k — InlineArray sized at per-node KIND (mirrors _forward_cpu).
             var ptrs = InlineArray[
-                UnsafePointer[Scalar[DT], MutAnyOrigin], 4
+                UnsafePointer[Scalar[DT], MutAnyOrigin], kind,
             ](fill=null_ptr)
             comptime for k in range(kind):
                 comptime src_k = NODES[i].IN_NAMES[k]
                 comptime for j in range(N):
                     comptime if NODES[j].NAME == src_k:
                         ptrs[k] = g.nodes[j].out_ptr_via()
-            g.nodes[i].forward_via[target, BATCH, POLICY=POLICY](
-                ptrs[0], ptrs[1], ptrs[2], ptrs[3],
-            )
+            g.nodes[i].forward_via[target, BATCH, POLICY=POLICY](ptrs)
 
     # Copy last node's out_buf into the external output.
     comptime LAST_OUT_DIM = NODES[N - 1].OUT_DIM

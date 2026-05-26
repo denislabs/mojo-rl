@@ -178,10 +178,12 @@ struct InputSlot[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *in_ptrs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        in_ptrs: InlineArray[
+            UnsafePointer[Scalar[DT], MutAnyOrigin], Self.KIND,
+        ],
     ) raises:
-        # No compute: the slot's out_ptr is whatever the caller set via
-        # graph.set_input[NAME](tile). All in_ptrs are unused.
+        # No compute: KIND=0 → empty in_ptrs; the slot's out_ptr is
+        # whatever the caller set via graph.set_input[NAME](tile).
         pass
 
     def vjp_via[
@@ -390,7 +392,9 @@ struct Node[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *in_ptrs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        in_ptrs: InlineArray[
+            UnsafePointer[Scalar[DT], MutAnyOrigin], Self.KIND,
+        ],
     ) raises:
         # Hetero-variadic workaround: all input tiles share IN0_DIM
         # Layout for pack unification; leaves recover real per-input
@@ -663,7 +667,9 @@ struct ExternalNode[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *in_ptrs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        in_ptrs: InlineArray[
+            UnsafePointer[Scalar[DT], MutAnyOrigin], Self.KIND,
+        ],
     ) raises:
         var in0_t = TileTensor(in_ptrs[0], row_major[BATCH, Self.IN0_DIM]())
         var out_p = self.out_ptr_via()

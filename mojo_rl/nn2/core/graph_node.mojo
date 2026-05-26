@@ -152,22 +152,25 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *in_ptrs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        in_ptrs: InlineArray[
+            UnsafePointer[Scalar[DT], MutAnyOrigin], Self.KIND,
+        ],
     ) raises:
-        """I.2.6.j — variadic predecessor-pointer surface.
+        """I.2.6.k — single InlineArray arg, per-node sized at `Self.KIND`.
 
-        Callers pass one pointer per input slot (up to KIND elements).
-        Wrappers internally use `comptime if Self.<Op|M>.ARITY == K:`
-        branches to dispatch with the right number of args to the
-        underlying op. The trait signature itself imposes no cap; the
-        practical cap is determined by how many ARITY branches the
-        wrapper implements (today: 4).
+        Caller (ComputeGraph) builds an `InlineArray[UnsafePointer, KIND]`
+        with one entry per input slot resolved by name lookup. The
+        wrapper indexes `in_ptrs[k]` for k in [0, ARITY). InputSlot
+        (KIND=0) receives an empty array; compute nodes receive exactly
+        their KIND elements — no wasted padding.
 
-        Mojo nightly note: there's no spread operator for variadic
-        value args, so ComputeGraph still passes N positional
-        pointers at the call site (collected into an InlineArray
-        first then indexed). Going truly cap-free at the dispatch
-        site requires Mojo spread or an InlineArray-arg refactor."""
+        Wrappers still use `comptime if Self.<Op|M>.ARITY == K:`
+        branches inside to dispatch with the right number of args to
+        the underlying op (`op.forward(in0_t, ..., in_K_t, output=...)`).
+        That's the practical cap on ARITY (today: 4 branches).
+        Extending past KIND=4 only requires adding more arity branches
+        inside the wrapper — the trait surface + ComputeGraph dispatch
+        are both uncapped."""
         ...
 
     def vjp_via[
