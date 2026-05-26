@@ -57,7 +57,7 @@ def _slice_backward_kernel[
 
 struct Slice[IN: Int, START: Int, END: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIM = Self.IN
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN)
     comptime OUT_DIM = Self.END - Self.START
 
     var ts: TargetStorage
@@ -107,7 +107,7 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
         ],
     ) raises:
         assert_tag_for["Slice", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
@@ -153,7 +153,7 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Slice", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
             # Zero whole grad_input first; scatter the slice in afterward.
@@ -161,7 +161,7 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
             # slicers share a predecessor, each writes its slice range and
             # leaves the rest at 0 so the scatter-add sums correctly.
             for b in range(BATCH):
-                for k in range(Self.IN_DIM):
+                for k in range(Self.IN_DIMS[0]):
                     grad_input_v[b, k] = Scalar[DT](0.0)
             for b in range(BATCH):
                 for j in range(Self.OUT_DIM):

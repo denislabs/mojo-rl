@@ -61,7 +61,7 @@ struct PPOActorLossCG[
     ACTOR: Module,
     BATCH: Int,
 ](LossBlock):
-    comptime OBS_DIM = Self.ACTOR.IN_DIM
+    comptime OBS_DIM = Self.ACTOR.IN_DIMS[0]
     comptime ACT_DIM = Self.ACTOR.OUT_DIM // 2
 
     # The 6-node FullGraph — four InputSlots, one ExternalNode, one Node.

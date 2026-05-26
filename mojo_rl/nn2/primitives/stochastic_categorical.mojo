@@ -56,7 +56,7 @@ from ..core.target_storage import TargetStorage, assert_tag_for, ensure_cpu_buff
 
 struct StochasticCategorical[N: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIM = Self.N
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.N)
     comptime OUT_DIM = Self.N + 1
 
     var ts: TargetStorage

@@ -61,21 +61,6 @@ from .amp import AMPPolicy, NoAMP
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _node_in_dims_from_ladder[
-    KIND: Int, D0: Int, D1: Int, D2: Int, D3: Int,
-]() -> InlineArray[Int, KIND]:
-    var d = InlineArray[Int, KIND](fill=0)
-    comptime if KIND >= 1:
-        d[0] = D0
-    comptime if KIND >= 2:
-        d[1] = D1
-    comptime if KIND >= 3:
-        d[2] = D2
-    comptime if KIND >= 4:
-        d[3] = D3
-    return d
-
-
 def _node_in_names_from_ladder[
     KIND: Int,
     N0: StaticString, N1: StaticString,
@@ -102,20 +87,13 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
     comptime IN1_NAME: StaticString = ""   # default — InputSlot / unary inherit
     comptime IN2_NAME: StaticString = ""   # default — < ternary inherit
     comptime IN3_NAME: StaticString = ""   # default — < quaternary inherit
-    comptime IN0_DIM: Int
-    comptime IN1_DIM: Int = 0              # default — InputSlot / unary inherit
-    comptime IN2_DIM: Int = 0              # default — < ternary inherit
-    comptime IN3_DIM: Int = 0              # default — < quaternary inherit
     comptime OUT_DIM: Int
     comptime KIND: Int  # 0 = input slot, 1 = unary, 2 = binary, 3 = ternary, 4 = quaternary
-    # I.2.6 variadic per-input dim accessor. Default derives from the
-    # ladder so InputSlot / Node / ExternalNode get IN_DIMS for free.
-    # Sized at KIND (InputSlots get empty array; ARITY-N nodes get N).
-    comptime IN_DIMS: InlineArray[Int, Self.KIND] = (
-        _node_in_dims_from_ladder[
-            Self.KIND, Self.IN0_DIM, Self.IN1_DIM, Self.IN2_DIM, Self.IN3_DIM,
-        ]()
-    )
+    # I.2.6.h — IN_DIMS is the sole required per-input dim member
+    # (IN0/IN1/IN2/IN3_DIM ladder dropped). Node/ExternalNode declare
+    # `IN_DIMS = Self.Op.IN_DIMS` directly (sized at KIND = Op.ARITY).
+    # InputSlot declares IN_DIMS = InlineArray[Int, 0]() (KIND=0).
+    comptime IN_DIMS: InlineArray[Int, Self.KIND]
     # I.2.6.e variadic predecessor-name accessor. Default derives from
     # the IN0/IN1/IN2/IN3_NAME ladder. Lets ComputeGraph dispatch
     # uniformly via `comptime for k in range(NODES[i].KIND)` over

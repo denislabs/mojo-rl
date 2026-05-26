@@ -101,7 +101,7 @@ def _elementwise_backward_kernel[
 
 struct Elementwise[DIM: Int, OP: ElementOp](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIM = Self.DIM
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
     comptime OUT_DIM = Self.DIM
 
     var ts: TargetStorage
@@ -176,7 +176,7 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
     ) raises:
         # POLICY accepted for trait conformance; Elementwise stays in DT.
         assert_tag_for["Elementwise", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
@@ -281,7 +281,7 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Elementwise", target](self.ts.target_tag)
         var go_view = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gi_view = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
+        var gi_view = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
             var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go_view.ptr)

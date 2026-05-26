@@ -178,7 +178,7 @@ struct MBPOTrainer[
     var ts: TargetStorage
 
     def __init__(out self):
-        comptime assert Self.DynNet.IN_DIM == Self.DYN_IN, (
+        comptime assert Self.DynNet.IN_DIMS[0] == Self.DYN_IN, (
             "MBPOTrainer: DynNet.IN_DIM must equal OBS_DIM + ACT_DIM"
         )
         comptime assert Self.DynNet.OUT_DIM == Self.DYN_OUT, (

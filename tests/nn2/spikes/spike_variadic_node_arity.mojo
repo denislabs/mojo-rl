@@ -100,9 +100,7 @@ def test_v1_struct_variadic_static_string() raises:
 struct TernaryAddOp[DIM_: Int](Module):
     """y = x0 + x1 + x2. All three inputs share DIM. ARITY=3."""
     comptime ARITY: Int = 3
-    comptime IN_DIM: Int = Self.DIM_
-    comptime IN1_DIM: Int = Self.DIM_
-    comptime IN2_DIM: Int = Self.DIM_
+    comptime IN_DIMS = InlineArray[Int, 3](fill=Self.DIM_)
     comptime OUT_DIM: Int = Self.DIM_
 
     var ts: TargetStorage
@@ -141,9 +139,9 @@ struct TernaryAddOp[DIM_: Int](Module):
         ],
     ) raises:
         assert_tag_for["TernaryAddOp", target](self.ts.target_tag)
-        var i0 = typed_view[BATCH, Self.IN_DIM](inputs[0])
-        var i1 = typed_view[BATCH, Self.IN1_DIM](inputs[1])
-        var i2 = typed_view[BATCH, Self.IN2_DIM](inputs[2])
+        var i0 = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var i1 = typed_view[BATCH, Self.IN_DIMS[1]](inputs[1])
+        var i2 = typed_view[BATCH, Self.IN_DIMS[2]](inputs[2])
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
         for b in range(BATCH):
             for d in range(Self.DIM_):
@@ -168,9 +166,9 @@ struct TernaryAddOp[DIM_: Int](Module):
     ) raises:
         assert_tag_for["TernaryAddOp", target](self.ts.target_tag)
         var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gi0 = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
-        var gi1 = typed_view_mut[BATCH, Self.IN1_DIM](grad_inputs[1])
-        var gi2 = typed_view_mut[BATCH, Self.IN2_DIM](grad_inputs[2])
+        var gi0 = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+        var gi1 = typed_view_mut[BATCH, Self.IN_DIMS[1]](grad_inputs[1])
+        var gi2 = typed_view_mut[BATCH, Self.IN_DIMS[2]](grad_inputs[2])
         for b in range(BATCH):
             for d in range(Self.DIM_):
                 gi0[b, d] = go[b, d]
@@ -199,11 +197,11 @@ struct NodeV[
     @staticmethod
     def _in_dim[I: Int]() -> Int:
         comptime if I == 0:
-            return Self.Op.IN_DIM
+            return Self.Op.IN_DIMS[0]
         elif I == 1:
-            return Self.Op.IN1_DIM
+            return Self.Op.IN_DIMS[1]
         elif I == 2:
-            return Self.Op.IN2_DIM
+            return Self.Op.IN_DIMS[2]
         else:
             return 0  # un-supported; comptime assert at use site
 
@@ -214,20 +212,20 @@ struct NodeV[
         comptime if I == 0:
             return 0
         elif I == 1:
-            return BATCH * Self.Op.IN_DIM
+            return BATCH * Self.Op.IN_DIMS[0]
         elif I == 2:
-            return BATCH * (Self.Op.IN_DIM + Self.Op.IN1_DIM)
+            return BATCH * (Self.Op.IN_DIMS[0] + Self.Op.IN_DIMS[1])
         else:
             return -1
 
     @staticmethod
     def _total_in_dim() -> Int:
         comptime if Self.ARITY == 1:
-            return Self.Op.IN_DIM
+            return Self.Op.IN_DIMS[0]
         elif Self.ARITY == 2:
-            return Self.Op.IN_DIM + Self.Op.IN1_DIM
+            return Self.Op.IN_DIMS[0] + Self.Op.IN_DIMS[1]
         elif Self.ARITY == 3:
-            return Self.Op.IN_DIM + Self.Op.IN1_DIM + Self.Op.IN2_DIM
+            return Self.Op.IN_DIMS[0] + Self.Op.IN_DIMS[1] + Self.Op.IN_DIMS[2]
         else:
             return 0
 
@@ -282,9 +280,9 @@ struct NodeV[
         )
         # Variadic-pack unification: use the IN_DIM layout for ALL inputs
         # (typed_view recovers the real per-input shape inside the Op).
-        var i0_t = TileTensor(in0_ptr, row_major[BATCH, Self.Op.IN_DIM]())
-        var i1_t = TileTensor(in1_ptr, row_major[BATCH, Self.Op.IN_DIM]())
-        var i2_t = TileTensor(in2_ptr, row_major[BATCH, Self.Op.IN_DIM]())
+        var i0_t = TileTensor(in0_ptr, row_major[BATCH, Self.Op.IN_DIMS[0]]())
+        var i1_t = TileTensor(in1_ptr, row_major[BATCH, Self.Op.IN_DIMS[0]]())
+        var i2_t = TileTensor(in2_ptr, row_major[BATCH, Self.Op.IN_DIMS[0]]())
         var out_t = TileTensor(out_p, row_major[BATCH, Self.Op.OUT_DIM]())
         self.op.forward[target, BATCH, POLICY=POLICY](
             i0_t, i1_t, i2_t, output=out_t,
@@ -307,9 +305,9 @@ struct NodeV[
         comptime off0 = Self._offset_for[BATCH, 0]()
         comptime off1 = Self._offset_for[BATCH, 1]()
         comptime off2 = Self._offset_for[BATCH, 2]()
-        var gi0_t = TileTensor(slab_p + off0, row_major[BATCH, Self.Op.IN_DIM]())
-        var gi1_t = TileTensor(slab_p + off1, row_major[BATCH, Self.Op.IN_DIM]())
-        var gi2_t = TileTensor(slab_p + off2, row_major[BATCH, Self.Op.IN_DIM]())
+        var gi0_t = TileTensor(slab_p + off0, row_major[BATCH, Self.Op.IN_DIMS[0]]())
+        var gi1_t = TileTensor(slab_p + off1, row_major[BATCH, Self.Op.IN_DIMS[0]]())
+        var gi2_t = TileTensor(slab_p + off2, row_major[BATCH, Self.Op.IN_DIMS[0]]())
         self.op.vjp[target, BATCH, POLICY=POLICY, mode=mode](
             go_t, gi0_t, gi1_t, gi2_t,
         )

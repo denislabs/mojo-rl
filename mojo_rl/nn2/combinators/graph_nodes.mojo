@@ -81,7 +81,8 @@ struct InputSlot[
 ](GraphNode):
     comptime NAME = Self.slot_name
     comptime IN0_NAME = ""
-    comptime IN0_DIM = 0
+    # I.2.6.h — InputSlot has no inputs (KIND=0 → empty IN_DIMS).
+    comptime IN_DIMS = InlineArray[Int, 0]()
     comptime OUT_DIM = Self.DIM_
     comptime KIND = 0
 
@@ -235,19 +236,12 @@ struct Node[
     comptime IN3_NAME = (
         Self.in_names[3] if Self.in_names.size > 3 else StaticString("")
     )
-    # I.2.6 — IN0..3_DIM derived from Op.IN_DIMS (trait-provided InlineArray).
-    # Safe-default to 0 when ARITY < K+1 (matches the GraphNode trait surface).
+    # I.2.6.h — IN_DIMS comes straight from Op (KIND == Op.ARITY).
+    # IN0_DIM kept as legacy accessor used by Node's own forward_via /
+    # vjp_via for the IN0_DIM-shaped variadic-unification trick.
+    comptime IN_DIMS = Self.Op.IN_DIMS
     comptime IN0_DIM = (
         Self.Op.IN_DIMS[0] if Self.Op.ARITY > 0 else 0
-    )
-    comptime IN1_DIM = (
-        Self.Op.IN_DIMS[1] if Self.Op.ARITY > 1 else 0
-    )
-    comptime IN2_DIM = (
-        Self.Op.IN_DIMS[2] if Self.Op.ARITY > 2 else 0
-    )
-    comptime IN3_DIM = (
-        Self.Op.IN_DIMS[3] if Self.Op.ARITY > 3 else 0
     )
     comptime OUT_DIM = Self.Op.OUT_DIM
     comptime KIND = Self.Op.ARITY
@@ -532,18 +526,10 @@ struct ExternalNode[
     comptime IN3_NAME = (
         Self.in_names[3] if Self.in_names.size > 3 else StaticString("")
     )
-    # I.2.6 — IN0..3_DIM derived from M.IN_DIMS (trait-provided InlineArray).
+    # I.2.6.h — IN_DIMS comes straight from M (KIND == M.ARITY).
+    comptime IN_DIMS = Self.M.IN_DIMS
     comptime IN0_DIM = (
         Self.M.IN_DIMS[0] if Self.M.ARITY > 0 else 0
-    )
-    comptime IN1_DIM = (
-        Self.M.IN_DIMS[1] if Self.M.ARITY > 1 else 0
-    )
-    comptime IN2_DIM = (
-        Self.M.IN_DIMS[2] if Self.M.ARITY > 2 else 0
-    )
-    comptime IN3_DIM = (
-        Self.M.IN_DIMS[3] if Self.M.ARITY > 3 else 0
     )
     comptime OUT_DIM = Self.M.OUT_DIM
     comptime KIND = Self.M.ARITY

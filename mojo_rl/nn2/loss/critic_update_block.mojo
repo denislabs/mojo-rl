@@ -109,7 +109,7 @@ struct CriticUpdateBlock[
         comptime assert target == "cpu", (
             "CriticUpdateBlock.make[target='gpu'] requires a DeviceContext"
         )
-        comptime assert Self.CRITIC.IN_DIM == Self.SA_DIM, (
+        comptime assert Self.CRITIC.IN_DIMS[0] == Self.SA_DIM, (
             "CriticUpdateBlock: CRITIC.IN_DIM must equal SA_DIM"
         )
         comptime assert Self.CRITIC.OUT_DIM == 1, (
@@ -126,7 +126,7 @@ struct CriticUpdateBlock[
         comptime assert target == "gpu", (
             "CriticUpdateBlock.make[target='cpu'](ctx) — drop ctx for CPU"
         )
-        comptime assert Self.CRITIC.IN_DIM == Self.SA_DIM, (
+        comptime assert Self.CRITIC.IN_DIMS[0] == Self.SA_DIM, (
             "CriticUpdateBlock: CRITIC.IN_DIM must equal SA_DIM"
         )
         comptime assert Self.CRITIC.OUT_DIM == 1, (

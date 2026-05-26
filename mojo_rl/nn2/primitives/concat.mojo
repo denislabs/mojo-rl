@@ -104,11 +104,16 @@ def _concat_copy_out_kernel[
 
 struct Concat[*DIMS: Int](Module):
     comptime ARITY: Int = Self.DIMS.size
-    comptime IN_DIM: Int = Self.DIMS[0]
+    comptime IN_DIMS = Self._build_in_dims()
     comptime IN0_DIM: Int = _dim_at[0, *Self.DIMS]()
-    comptime IN1_DIM: Int = _dim_at[1, *Self.DIMS]()
-    comptime IN2_DIM: Int = _dim_at[2, *Self.DIMS]()
     comptime OUT_DIM: Int = _total_dim[*Self.DIMS]()
+
+    @staticmethod
+    def _build_in_dims() -> InlineArray[Int, Self.DIMS.size]:
+        var d = InlineArray[Int, Self.DIMS.size](fill=0)
+        comptime for k in range(Self.DIMS.size):
+            d[k] = Self.DIMS[k]
+        return d
 
     var ts: TargetStorage
 

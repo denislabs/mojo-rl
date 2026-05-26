@@ -125,13 +125,13 @@ struct TD3TargetYBlock[
     ) raises -> Self:
         comptime assert target == "cpu", "TD3TargetYBlock: CPU only"
         comptime assert (
-            Self.ACTOR.IN_DIM == Self.OBS
+            Self.ACTOR.IN_DIMS[0] == Self.OBS
         ), "TD3TargetYBlock: ACTOR.IN_DIM must equal OBS"
         comptime assert (
             Self.ACTOR.OUT_DIM == Self.ACT
         ), "TD3TargetYBlock: ACTOR.OUT_DIM must equal ACT"
         comptime assert (
-            Self.CRITIC.IN_DIM == Self.SA_DIM
+            Self.CRITIC.IN_DIMS[0] == Self.SA_DIM
         ), "TD3TargetYBlock: CRITIC.IN_DIM must equal OBS+ACT"
         comptime assert (
             Self.CRITIC.OUT_DIM == 1

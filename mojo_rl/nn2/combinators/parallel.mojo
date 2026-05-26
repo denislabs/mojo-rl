@@ -79,7 +79,7 @@ def _parallel_split_kernel[
 
 struct Parallel[A: Module, B: Module](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIM = Self.A.IN_DIMS[0]
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.A.IN_DIMS[0])
     comptime OUT_DIM = Self.A.OUT_DIM + Self.B.OUT_DIM
     comptime OUT_A = Self.A.OUT_DIM
     comptime OUT_B = Self.B.OUT_DIM
@@ -159,8 +159,8 @@ struct Parallel[A: Module, B: Module](Module):
             self.gi_b_cpu.free()
             self.out_a_cpu = alloc[Scalar[DT]](batch * Self.OUT_A)
             self.out_b_cpu = alloc[Scalar[DT]](batch * Self.OUT_B)
-            self.gi_a_cpu  = alloc[Scalar[DT]](batch * Self.IN_DIM)
-            self.gi_b_cpu  = alloc[Scalar[DT]](batch * Self.IN_DIM)
+            self.gi_a_cpu  = alloc[Scalar[DT]](batch * Self.IN_DIMS[0])
+            self.gi_b_cpu  = alloc[Scalar[DT]](batch * Self.IN_DIMS[0])
             self.scratch_n_batch = batch
 
     def _ensure_scratch_gpu(mut self, batch: Int) raises:
@@ -168,8 +168,8 @@ struct Parallel[A: Module, B: Module](Module):
             var c = self.ts.ctx.value()
             self.out_a_dev = c.enqueue_create_buffer[DT](batch * Self.OUT_A)
             self.out_b_dev = c.enqueue_create_buffer[DT](batch * Self.OUT_B)
-            self.gi_a_dev  = c.enqueue_create_buffer[DT](batch * Self.IN_DIM)
-            self.gi_b_dev  = c.enqueue_create_buffer[DT](batch * Self.IN_DIM)
+            self.gi_a_dev  = c.enqueue_create_buffer[DT](batch * Self.IN_DIMS[0])
+            self.gi_b_dev  = c.enqueue_create_buffer[DT](batch * Self.IN_DIMS[0])
             self.scratch_n_batch = batch
 
     # ----- Forward ---------------------------------------------------------
@@ -190,7 +190,7 @@ struct Parallel[A: Module, B: Module](Module):
         ],
     ) raises:
         assert_tag_for["Parallel", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
@@ -250,7 +250,7 @@ struct Parallel[A: Module, B: Module](Module):
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Parallel", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
             self._ensure_scratch_cpu(BATCH)
@@ -261,8 +261,8 @@ struct Parallel[A: Module, B: Module](Module):
                     go_a[b, j] = grad_output_v[b, j]
                 for j in range(Self.OUT_B):
                     go_b[b, j] = grad_output_v[b, Self.OUT_A + j]
-            var gi_a = TileTensor(self.gi_a_cpu, row_major[BATCH, Self.IN_DIM]())
-            var gi_b = TileTensor(self.gi_b_cpu, row_major[BATCH, Self.IN_DIM]())
+            var gi_a = TileTensor(self.gi_a_cpu, row_major[BATCH, Self.IN_DIMS[0]]())
+            var gi_b = TileTensor(self.gi_b_cpu, row_major[BATCH, Self.IN_DIMS[0]]())
             self.branch_a.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](go_a, gi_a)
@@ -272,7 +272,7 @@ struct Parallel[A: Module, B: Module](Module):
             var ap = self.gi_a_cpu
             var bp = self.gi_b_cpu
             var gp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
-            comptime N = BATCH * Self.IN_DIM
+            comptime N = BATCH * Self.IN_DIMS[0]
             var k = 0
             while k + CPU_SIMD_W <= N:
                 gp.store(
@@ -310,8 +310,8 @@ struct Parallel[A: Module, B: Module](Module):
 
             var go_a_tt = TileTensor(pa, row_major[BATCH, Self.OUT_A]())
             var go_b_tt = TileTensor(pb, row_major[BATCH, Self.OUT_B]())
-            var gi_a_tt = TileTensor(pia, row_major[BATCH, Self.IN_DIM]())
-            var gi_b_tt = TileTensor(pib, row_major[BATCH, Self.IN_DIM]())
+            var gi_a_tt = TileTensor(pia, row_major[BATCH, Self.IN_DIMS[0]]())
+            var gi_b_tt = TileTensor(pib, row_major[BATCH, Self.IN_DIMS[0]]())
             self.branch_a.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](go_a_tt, gi_a_tt)
@@ -319,12 +319,12 @@ struct Parallel[A: Module, B: Module](Module):
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](go_b_tt, gi_b_tt)
 
-            comptime layout_in = Layout.row_major(BATCH, Self.IN_DIM)
+            comptime layout_in = Layout.row_major(BATCH, Self.IN_DIMS[0])
             var gi_a_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](self.gi_a_dev.value())
             var gi_b_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](self.gi_b_dev.value())
             var gi_out_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](gi_p_w)
-            comptime n_blocks_sum = (BATCH * Self.IN_DIM + TPB - 1) // TPB
-            comptime sum_kernel = _elementwise_add_kernel[BATCH, Self.IN_DIM]
+            comptime n_blocks_sum = (BATCH * Self.IN_DIMS[0] + TPB - 1) // TPB
+            comptime sum_kernel = _elementwise_add_kernel[BATCH, Self.IN_DIMS[0]]
             self.ts.ctx.value().enqueue_function[sum_kernel](
                 gi_a_lt, gi_b_lt, gi_out_lt,
                 grid_dim=n_blocks_sum, block_dim=TPB,

@@ -34,7 +34,7 @@ struct StochasticActor[
     *TRUNK: Module,
 ](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIM = Self.OBS_DIM
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.OBS_DIM)
     comptime OUT_DIM = 2 * Self.ACT_DIM
     comptime N_TRUNK = Self.TRUNK.size
     comptime HIDDEN = Self.TRUNK[Self.N_TRUNK - 1].OUT_DIM
@@ -56,7 +56,7 @@ struct StochasticActor[
             "StochasticActor requires at least one TRUNK module"
         )
         comptime assert (
-            Self.TRUNK[0].IN_DIM == Self.OBS_DIM
+            Self.TRUNK[0].IN_DIMS[0] == Self.OBS_DIM
         ), "StochasticActor: TRUNK[0].IN_DIM must equal OBS_DIM"
         self.trunk = Sequential[*Self.TRUNK]()
         self.heads = Parallel[
@@ -131,7 +131,7 @@ struct StochasticActor[
         ],
     ) raises:
         assert_tag_for["StochasticActor", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
 
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.HIDDEN)
@@ -167,7 +167,7 @@ struct StochasticActor[
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["StochasticActor", target](self.ts.target_tag)
-        var grad_input = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
+        var grad_input = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.HIDDEN)

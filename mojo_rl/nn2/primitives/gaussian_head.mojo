@@ -142,7 +142,7 @@ def _gauss_head_grad_ls_kernel[BATCH: Int, ACT: Int](
 
 struct GaussianHead[IN: Int, ACT: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIM = Self.IN
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN)
     comptime OUT_DIM = 2 * Self.ACT
     comptime W_SIZE = Self.IN * Self.ACT
     comptime B_SIZE = Self.ACT
@@ -236,7 +236,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
         ],
     ) raises:
         assert_tag_for["GaussianHead", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
@@ -314,7 +314,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["GaussianHead", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
             var w = TileTensor(self.weight.value, row_major[Self.IN, Self.ACT]())

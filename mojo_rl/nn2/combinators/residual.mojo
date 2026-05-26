@@ -40,7 +40,7 @@ def _elementwise_add_kernel[
 
 struct Residual[Inner: Module](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIM = Self.Inner.IN_DIMS[0]
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.Inner.IN_DIMS[0])
     comptime OUT_DIM = Self.Inner.OUT_DIM
 
     var inner: Self.Inner
@@ -116,17 +116,17 @@ struct Residual[Inner: Module](Module):
         ],
     ) raises:
         assert_tag_for["Residual", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            self._ensure_mid_cpu(BATCH * Self.IN_DIM)
-            var mid = TileTensor(self.mid_cpu, row_major[BATCH, Self.IN_DIM]())
+            self._ensure_mid_cpu(BATCH * Self.IN_DIMS[0])
+            var mid = TileTensor(self.mid_cpu, row_major[BATCH, Self.IN_DIMS[0]]())
             self.inner.forward[target, BATCH, POLICY=POLICY](input, output=mid)
             var ip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
             var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             var mp = self.mid_cpu
-            comptime N = BATCH * Self.IN_DIM
+            comptime N = BATCH * Self.IN_DIMS[0]
             var k = 0
             while k + CPU_SIMD_W <= N:
                 op.store(
@@ -138,19 +138,19 @@ struct Residual[Inner: Module](Module):
                 op[k] = mp[k] + ip[k]
                 k += 1
         else:
-            self._ensure_mid_gpu(BATCH * Self.IN_DIM)
+            self._ensure_mid_gpu(BATCH * Self.IN_DIMS[0])
             var in_p_w  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
             var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
-            var mid = TileTensor(mp, row_major[BATCH, Self.IN_DIM]())
+            var mid = TileTensor(mp, row_major[BATCH, Self.IN_DIMS[0]]())
             self.inner.forward[target, BATCH, POLICY=POLICY](input, output=mid)
-            comptime layout = Layout.row_major(BATCH, Self.IN_DIM)
+            comptime layout = Layout.row_major(BATCH, Self.IN_DIMS[0])
             var mid_lt = LayoutTensor[DT, layout, MutAnyOrigin](self.mid_dev.value())
             var in_lt  = LayoutTensor[DT, layout, MutAnyOrigin](in_p_w)
             var out_lt = LayoutTensor[DT, layout, MutAnyOrigin](out_p_w)
             comptime TPB = 128
-            comptime n_blocks = (BATCH * Self.IN_DIM + TPB - 1) // TPB
-            comptime kernel = _elementwise_add_kernel[BATCH, Self.IN_DIM]
+            comptime n_blocks = (BATCH * Self.IN_DIMS[0] + TPB - 1) // TPB
+            comptime kernel = _elementwise_add_kernel[BATCH, Self.IN_DIMS[0]]
             self.ts.ctx.value().enqueue_function[kernel](
                 mid_lt, in_lt, out_lt,
                 grid_dim=n_blocks, block_dim=TPB,
@@ -179,18 +179,18 @@ struct Residual[Inner: Module](Module):
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Residual", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
-            self._ensure_mid_cpu(BATCH * Self.IN_DIM)
-            var tmp = TileTensor(self.mid_cpu, row_major[BATCH, Self.IN_DIM]())
+            self._ensure_mid_cpu(BATCH * Self.IN_DIMS[0])
+            var tmp = TileTensor(self.mid_cpu, row_major[BATCH, Self.IN_DIMS[0]]())
             self.inner.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](grad_output_v, tmp)
             var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
             var gip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
             var tp = self.mid_cpu
-            comptime N = BATCH * Self.IN_DIM
+            comptime N = BATCH * Self.IN_DIMS[0]
             var k = 0
             while k + CPU_SIMD_W <= N:
                 gip.store(
@@ -202,21 +202,21 @@ struct Residual[Inner: Module](Module):
                 gip[k] = tp[k] + gop[k]
                 k += 1
         else:
-            self._ensure_mid_gpu(BATCH * Self.IN_DIM)
+            self._ensure_mid_gpu(BATCH * Self.IN_DIMS[0])
             var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
             var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
             var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
-            var tmp = TileTensor(mp, row_major[BATCH, Self.IN_DIM]())
+            var tmp = TileTensor(mp, row_major[BATCH, Self.IN_DIMS[0]]())
             self.inner.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](grad_output_v, tmp)
-            comptime layout = Layout.row_major(BATCH, Self.IN_DIM)
+            comptime layout = Layout.row_major(BATCH, Self.IN_DIMS[0])
             var tmp_lt = LayoutTensor[DT, layout, MutAnyOrigin](self.mid_dev.value())
             var go_lt  = LayoutTensor[DT, layout, MutAnyOrigin](go_p_w)
             var gi_lt  = LayoutTensor[DT, layout, MutAnyOrigin](gi_p_w)
             comptime TPB = 128
-            comptime n_blocks = (BATCH * Self.IN_DIM + TPB - 1) // TPB
-            comptime kernel = _elementwise_add_kernel[BATCH, Self.IN_DIM]
+            comptime n_blocks = (BATCH * Self.IN_DIMS[0] + TPB - 1) // TPB
+            comptime kernel = _elementwise_add_kernel[BATCH, Self.IN_DIMS[0]]
             self.ts.ctx.value().enqueue_function[kernel](
                 tmp_lt, go_lt, gi_lt,
                 grid_dim=n_blocks, block_dim=TPB,

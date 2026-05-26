@@ -55,7 +55,7 @@ def _cumulative_offset[index: Int, *BRANCHES: Module]() -> Int:
 struct BranchConcat[*BRANCHES: Module](Module):
     comptime ARITY: Int = 1
     comptime N = Self.BRANCHES.size
-    comptime IN_DIM = Self.BRANCHES[0].IN_DIMS[0]
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.BRANCHES[0].IN_DIMS[0])
     comptime OUT_DIM = _total_out_dim[*Self.BRANCHES]()
 
     var branches: Tuple[*Self.BRANCHES]
@@ -159,7 +159,7 @@ struct BranchConcat[*BRANCHES: Module](Module):
         ],
     ) raises:
         assert_tag_for["BranchConcat", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
@@ -190,7 +190,7 @@ struct BranchConcat[*BRANCHES: Module](Module):
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["BranchConcat", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
             _branch_concat_backward_cpu[target, BATCH, POLICY=POLICY, mode=mode](

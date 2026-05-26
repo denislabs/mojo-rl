@@ -171,13 +171,13 @@ struct PPOTrainer[
 
     def __init__(out self):
         comptime assert (
-            Self.ACTOR.IN_DIM == Self.OBS_DIM
+            Self.ACTOR.IN_DIMS[0] == Self.OBS_DIM
         ), "PPOTrainer: ACTOR.IN_DIM must equal OBS_DIM"
         comptime assert (
             Self.ACTOR.OUT_DIM == 2 * Self.ACT_DIM
         ), "PPOTrainer: ACTOR.OUT_DIM must equal 2·ACT_DIM"
         comptime assert (
-            Self.CRITIC.IN_DIM == Self.OBS_DIM
+            Self.CRITIC.IN_DIMS[0] == Self.OBS_DIM
         ), "PPOTrainer: CRITIC.IN_DIM must equal OBS_DIM"
         comptime assert (
             Self.CRITIC.OUT_DIM == 1

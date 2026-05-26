@@ -71,7 +71,7 @@ def _reduce_broadcast_kernel[
 
 struct Reduce[DIM: Int, OP: ReduceOp](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIM = Self.DIM
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
     comptime OUT_DIM = 1
 
     var ts: TargetStorage
@@ -117,7 +117,7 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
         ],
     ) raises:
         assert_tag_for["Reduce", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
@@ -162,7 +162,7 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Reduce", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
             var scale = Self.OP.scale_factor[Self.DIM]()

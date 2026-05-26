@@ -37,7 +37,7 @@ struct DDPGActorLoss[
     CRITIC: Module,
     BATCH: Int,
 ](LossBlock):
-    comptime OBS_DIM = Self.ACTOR.IN_DIM
+    comptime OBS_DIM = Self.ACTOR.IN_DIMS[0]
     comptime ACT_DIM = Self.ACTOR.OUT_DIM
     comptime SA_DIM = Self.OBS_DIM + Self.ACT_DIM
 
@@ -51,7 +51,7 @@ struct DDPGActorLoss[
     var ts: TargetStorage
 
     def __init__(out self):
-        comptime assert Self.CRITIC.IN_DIM == Self.SA_DIM, (
+        comptime assert Self.CRITIC.IN_DIMS[0] == Self.SA_DIM, (
             "DDPGActorLoss: CRITIC.IN_DIM must equal OBS+ACT"
         )
         comptime assert Self.CRITIC.OUT_DIM == 1, (

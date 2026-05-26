@@ -120,13 +120,13 @@ struct TargetYBlock[
             target == "cpu"
         ), "TargetYBlock.make[target='gpu'] requires a DeviceContext"
         comptime assert (
-            Self.ACTOR.IN_DIM == Self.OBS
+            Self.ACTOR.IN_DIMS[0] == Self.OBS
         ), "TargetYBlock: ACTOR.IN_DIM must equal OBS"
         comptime assert (
             Self.ACTOR.OUT_DIM == 2 * Self.ACT
         ), "TargetYBlock: ACTOR.OUT_DIM must equal 2·ACT"
         comptime assert (
-            Self.CRITIC.IN_DIM == Self.SA_DIM
+            Self.CRITIC.IN_DIMS[0] == Self.SA_DIM
         ), "TargetYBlock: CRITIC.IN_DIM must equal OBS + ACT"
         comptime assert (
             Self.CRITIC.OUT_DIM == 1
@@ -156,13 +156,13 @@ struct TargetYBlock[
             target == "gpu"
         ), "TargetYBlock.make[target='cpu'](ctx) — drop ctx for CPU"
         comptime assert (
-            Self.ACTOR.IN_DIM == Self.OBS
+            Self.ACTOR.IN_DIMS[0] == Self.OBS
         ), "TargetYBlock: ACTOR.IN_DIM must equal OBS"
         comptime assert (
             Self.ACTOR.OUT_DIM == 2 * Self.ACT
         ), "TargetYBlock: ACTOR.OUT_DIM must equal 2·ACT"
         comptime assert (
-            Self.CRITIC.IN_DIM == Self.SA_DIM
+            Self.CRITIC.IN_DIMS[0] == Self.SA_DIM
         ), "TargetYBlock: CRITIC.IN_DIM must equal OBS + ACT"
         comptime assert (
             Self.CRITIC.OUT_DIM == 1

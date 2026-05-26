@@ -85,7 +85,7 @@ def _rsample_unpack_kernel[ACT: Int, BATCH: Int](
 
 struct RSample[ACT: Int](Module, Saveable):
     comptime ARITY: Int = 1
-    comptime IN_DIM = 2 * Self.ACT
+    comptime IN_DIMS = InlineArray[Int, 1](fill=2 * Self.ACT)
     comptime OUT_DIM = Self.ACT + 1
 
     var action_scale: Scalar[DT]
@@ -206,7 +206,7 @@ struct RSample[ACT: Int](Module, Saveable):
     ) raises:
         comptime assert Self.ACT >= 1, "RSample[ACT]: ACT >= 1"
         assert_tag_for["RSample", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
@@ -313,7 +313,7 @@ struct RSample[ACT: Int](Module, Saveable):
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["RSample", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
             # Unpack grad_output [BATCH, ACT+1] → grad_action [BATCH, ACT]

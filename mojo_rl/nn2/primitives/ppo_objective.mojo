@@ -74,11 +74,17 @@ struct PPOObjective[ACT_: Int](Module):
     """PPO clipped-surrogate + entropy bonus as a quaternary Module."""
 
     comptime ARITY: Int = 4
-    comptime IN_DIM: Int = 2 * Self.ACT_       # actor_output: [mu | log_std]
-    comptime IN1_DIM: Int = Self.ACT_          # action (unbounded sample)
-    comptime IN2_DIM: Int = 1                  # old_log_prob (scalar per row)
-    comptime IN3_DIM: Int = 1                  # advantage    (scalar per row)
+    # [actor_output (2*ACT) | action (ACT) | old_log_prob (1) | advantage (1)].
+    comptime IN_DIMS = Self._build_in_dims()
     comptime OUT_DIM: Int = 1                  # per-sample loss
+
+    @staticmethod
+    def _build_in_dims() -> InlineArray[Int, 4]:
+        var d = InlineArray[Int, 4](fill=1)
+        d[0] = 2 * Self.ACT_
+        d[1] = Self.ACT_
+        # d[2] = 1, d[3] = 1 already from fill=1
+        return d
 
     var clip_eps: Scalar[DT]
     var entropy_coef: Scalar[DT]
@@ -150,10 +156,10 @@ struct PPOObjective[ACT_: Int](Module):
         assert_tag_for["PPOObjective", target](self.ts.target_tag)
         comptime ACT = Self.ACT_
 
-        var ao = typed_view[BATCH, Self.IN_DIM](inputs[0])
-        var act = typed_view[BATCH, Self.IN1_DIM](inputs[1])
-        var olp = typed_view[BATCH, Self.IN2_DIM](inputs[2])
-        var adv = typed_view[BATCH, Self.IN3_DIM](inputs[3])
+        var ao = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var act = typed_view[BATCH, Self.IN_DIMS[1]](inputs[1])
+        var olp = typed_view[BATCH, Self.IN_DIMS[2]](inputs[2])
+        var adv = typed_view[BATCH, Self.IN_DIMS[3]](inputs[3])
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         # Cache input pointers for vjp.
@@ -237,10 +243,10 @@ struct PPOObjective[ACT_: Int](Module):
         comptime ACT = Self.ACT_
 
         var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gi0 = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])    # grad_actor_output
-        var gi1 = typed_view_mut[BATCH, Self.IN1_DIM](grad_inputs[1])   # grad_action
-        var gi2 = typed_view_mut[BATCH, Self.IN2_DIM](grad_inputs[2])   # grad_old_log_prob
-        var gi3 = typed_view_mut[BATCH, Self.IN3_DIM](grad_inputs[3])   # grad_advantage
+        var gi0 = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])    # grad_actor_output
+        var gi1 = typed_view_mut[BATCH, Self.IN_DIMS[1]](grad_inputs[1])   # grad_action
+        var gi2 = typed_view_mut[BATCH, Self.IN_DIMS[2]](grad_inputs[2])   # grad_old_log_prob
+        var gi3 = typed_view_mut[BATCH, Self.IN_DIMS[3]](grad_inputs[3])   # grad_advantage
 
         # All three rollout-time inputs are non-differentiable — zero
         # their grad slots so ComputeGraph's scatter-add is a no-op.
@@ -258,14 +264,14 @@ struct PPOObjective[ACT_: Int](Module):
             for b in range(BATCH):
                 var new_log_prob: Scalar[DT] = 0.0
                 for j in range(ACT):
-                    var mu = ao_p[b * Self.IN_DIM + j]
-                    var ls = ao_p[b * Self.IN_DIM + ACT + j]
+                    var mu = ao_p[b * Self.IN_DIMS[0] + j]
+                    var ls = ao_p[b * Self.IN_DIMS[0] + ACT + j]
                     if ls < LOG_STD_MIN:
                         ls = LOG_STD_MIN
                     elif ls > LOG_STD_MAX:
                         ls = LOG_STD_MAX
                     var std = exp(ls)
-                    var a = act_p[b * Self.IN1_DIM + j]
+                    var a = act_p[b * Self.IN_DIMS[1] + j]
                     var z = (a - mu) / (std + EPS_STD)
                     new_log_prob += Scalar[DT](-0.5) * (
                         LOG_2PI + Scalar[DT](2.0) * ls + z * z
@@ -296,14 +302,14 @@ struct PPOObjective[ACT_: Int](Module):
                             -self.entropy_coef * Scalar[DT](1.0) * go_b
                         )
                     else:
-                        var mu = ao_p[b * Self.IN_DIM + j]
-                        var ls = ao_p[b * Self.IN_DIM + ACT + j]
+                        var mu = ao_p[b * Self.IN_DIMS[0] + j]
+                        var ls = ao_p[b * Self.IN_DIMS[0] + ACT + j]
                         if ls < LOG_STD_MIN:
                             ls = LOG_STD_MIN
                         elif ls > LOG_STD_MAX:
                             ls = LOG_STD_MAX
                         var std = exp(ls)
-                        var a = act_p[b * Self.IN1_DIM + j]
+                        var a = act_p[b * Self.IN_DIMS[1] + j]
                         var z = (a - mu) / (std + EPS_STD)
                         var d_lp_d_mu = z / (std + EPS_STD)
                         var d_lp_d_ls = z * z - Scalar[DT](1.0)

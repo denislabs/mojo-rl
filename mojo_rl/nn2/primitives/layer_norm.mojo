@@ -195,7 +195,7 @@ def _layer_norm_backward_dparams_kernel[
 
 struct LayerNorm[DIM: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIM = Self.DIM
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
     comptime OUT_DIM = Self.DIM
 
     # Params (decay=False for both; PyTorch + canonical AdamW recipe).
@@ -283,7 +283,7 @@ struct LayerNorm[DIM: Int](Module):
         ],
     ) raises:
         assert_tag_for["LayerNorm", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIM](inputs[0])
+        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
@@ -365,7 +365,7 @@ struct LayerNorm[DIM: Int](Module):
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["LayerNorm", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
             var gamma_v       = TileTensor(self.gamma.value, row_major[Self.DIM]())

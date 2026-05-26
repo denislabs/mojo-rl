@@ -58,10 +58,8 @@ def _add_accum_kernel[N: Int](
 
 struct Add[DIM_: Int, N_: Int](Module):
     comptime ARITY: Int = Self.N_
-    comptime IN_DIM: Int = Self.DIM_
+    comptime IN_DIMS = InlineArray[Int, Self.N_](fill=Self.DIM_)
     comptime IN0_DIM: Int = Self.DIM_
-    comptime IN1_DIM: Int = Self.DIM_
-    comptime IN2_DIM: Int = Self.DIM_ if Self.N_ >= 3 else 0
     comptime OUT_DIM: Int = Self.DIM_
 
     var ts: TargetStorage

@@ -84,7 +84,7 @@ struct SACActorLossCG[
     CRITIC: Module,
     BATCH: Int,
 ](LossBlock):
-    comptime OBS_DIM = Self.ACTOR.IN_DIM
+    comptime OBS_DIM = Self.ACTOR.IN_DIMS[0]
     comptime ACT_DIM = Self.ACTOR.OUT_DIM // 2
     comptime ALP_DIM = Self.ACT_DIM + 1
     comptime SA_DIM = Self.OBS_DIM + Self.ACT_DIM
@@ -140,7 +140,7 @@ struct SACActorLossCG[
         comptime assert Self.ACTOR.OUT_DIM == 2 * Self.ACT_DIM, (
             "SACActorLossCG: ACTOR.OUT_DIM must equal 2·ACT_DIM"
         )
-        comptime assert Self.CRITIC.IN_DIM == Self.SA_DIM, (
+        comptime assert Self.CRITIC.IN_DIMS[0] == Self.SA_DIM, (
             "SACActorLossCG: CRITIC.IN_DIM must equal OBS_DIM + ACT_DIM"
         )
         comptime assert Self.CRITIC.OUT_DIM == 1, (
@@ -167,7 +167,7 @@ struct SACActorLossCG[
         comptime assert Self.ACTOR.OUT_DIM == 2 * Self.ACT_DIM, (
             "SACActorLossCG: ACTOR.OUT_DIM must equal 2·ACT_DIM"
         )
-        comptime assert Self.CRITIC.IN_DIM == Self.SA_DIM, (
+        comptime assert Self.CRITIC.IN_DIMS[0] == Self.SA_DIM, (
             "SACActorLossCG: CRITIC.IN_DIM must equal OBS_DIM + ACT_DIM"
         )
         comptime assert Self.CRITIC.OUT_DIM == 1, (

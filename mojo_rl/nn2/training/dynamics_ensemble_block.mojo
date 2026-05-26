@@ -117,7 +117,7 @@ struct DynamicsEnsembleBlock[
         comptime assert target == "cpu", (
             "DynamicsEnsembleBlock.make[target='gpu', INIT] requires DeviceContext"
         )
-        comptime assert Self.DynNet.IN_DIM == Self.IN_DIM, (
+        comptime assert Self.DynNet.IN_DIMS[0] == Self.IN_DIM, (
             "DynNet.IN_DIM must equal IN_DIM"
         )
         comptime assert Self.DynNet.OUT_DIM == Self.OUT_DIM, (

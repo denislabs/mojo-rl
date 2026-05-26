@@ -83,10 +83,16 @@ def _sigmoid(x: Scalar[DT]) -> Scalar[DT]:
 
 struct GRUCell[IN_: Int, HIDDEN: Int](Module):
     comptime ARITY: Int = 2
-    comptime IN_DIM = Self.IN_
+    comptime IN_DIMS = Self._build_in_dims()
     comptime IN0_DIM = Self.IN_
-    comptime IN1_DIM = Self.HIDDEN
     comptime OUT_DIM = Self.HIDDEN
+
+    @staticmethod
+    def _build_in_dims() -> InlineArray[Int, 2]:
+        var d = InlineArray[Int, 2](fill=0)
+        d[0] = Self.IN_
+        d[1] = Self.HIDDEN
+        return d
     comptime W_IH_SIZE = Self.IN_ * (3 * Self.HIDDEN)
     comptime W_HH_SIZE = Self.HIDDEN * (3 * Self.HIDDEN)
     comptime B_IH_SIZE = 3 * Self.HIDDEN

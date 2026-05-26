@@ -128,9 +128,8 @@ def _be_backward_kernel_cached[
 
 struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
     comptime ARITY: Int = 2
-    comptime IN_DIM = Self.DIM
+    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.DIM)
     comptime IN0_DIM = Self.DIM
-    comptime IN1_DIM = Self.DIM
     comptime OUT_DIM = Self.DIM
 
     var ts: TargetStorage
