@@ -125,9 +125,12 @@ struct CriticUpdateBlock[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString]() raises -> Self:
-        comptime assert target == "cpu", (
-            "CriticUpdateBlock.make[target='gpu'] requires a DeviceContext"
+    def make[target: StaticString](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "CriticUpdateBlock: target must be 'cpu' or 'gpu'"
         )
         comptime assert Self.CRITIC.IN_DIMS[0] == Self.SA_DIM, (
             "CriticUpdateBlock: CRITIC.IN_DIM must equal SA_DIM"
@@ -136,26 +139,17 @@ struct CriticUpdateBlock[
             "CriticUpdateBlock: CRITIC.OUT_DIM must equal 1"
         )
         var blk = Self()
-        blk.mse_loss = MSELoss[1].make[target="cpu"]()
-        blk.ts = TargetStorage.make_cpu()
-        init_scratch_auto[Self, target="cpu"](blk)
-        return blk^
-
-    @staticmethod
-    def make[target: StaticString](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "CriticUpdateBlock.make[target='cpu'](ctx) — drop ctx for CPU"
-        )
-        comptime assert Self.CRITIC.IN_DIMS[0] == Self.SA_DIM, (
-            "CriticUpdateBlock: CRITIC.IN_DIM must equal SA_DIM"
-        )
-        comptime assert Self.CRITIC.OUT_DIM == 1, (
-            "CriticUpdateBlock: CRITIC.OUT_DIM must equal 1"
-        )
-        var blk = Self()
-        blk.mse_loss = MSELoss[1].make[target="gpu"](ctx)
-        blk.ts = TargetStorage.make_gpu(ctx)
-        init_scratch_auto[Self, target="gpu"](blk, Optional[DeviceContext](ctx))
+        comptime if target == "cpu":
+            blk.mse_loss = MSELoss[1].make[target="cpu"]()
+            blk.ts = TargetStorage.make_cpu()
+            init_scratch_auto[Self, target="cpu"](blk)
+        else:
+            if not ctx:
+                raise Error("CriticUpdateBlock.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            blk.mse_loss = MSELoss[1].make[target="gpu"](ctx)
+            blk.ts = TargetStorage.make_gpu(ctx_v)
+            init_scratch_auto[Self, target="gpu"](blk, ctx)
         return blk^
 
     def step[
@@ -305,35 +299,35 @@ struct TwinCriticUpdateBlock[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString]() raises -> Self:
-        comptime assert target == "cpu", (
-            "TwinCriticUpdateBlock.make[target='gpu'] requires a DeviceContext"
+    def make[target: StaticString](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "TwinCriticUpdateBlock: target must be 'cpu' or 'gpu'"
         )
         var blk = Self()
-        blk.c1 = CriticUpdateBlock[
-            Self.CRITIC, Self.BATCH, Self.SA_DIM
-        ].make[target="cpu"]()
-        blk.c2 = CriticUpdateBlock[
-            Self.CRITIC, Self.BATCH, Self.SA_DIM
-        ].make[target="cpu"]()
-        blk.ts = TargetStorage.make_cpu()
-        init_scratch_auto[Self, target="cpu"](blk)
-        return blk^
-
-    @staticmethod
-    def make[target: StaticString](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "TwinCriticUpdateBlock.make[target='cpu'](ctx) — drop ctx for CPU"
-        )
-        var blk = Self()
-        blk.c1 = CriticUpdateBlock[
-            Self.CRITIC, Self.BATCH, Self.SA_DIM
-        ].make[target="gpu"](ctx)
-        blk.c2 = CriticUpdateBlock[
-            Self.CRITIC, Self.BATCH, Self.SA_DIM
-        ].make[target="gpu"](ctx)
-        blk.ts = TargetStorage.make_gpu(ctx)
-        init_scratch_auto[Self, target="gpu"](blk, Optional[DeviceContext](ctx))
+        comptime if target == "cpu":
+            blk.c1 = CriticUpdateBlock[
+                Self.CRITIC, Self.BATCH, Self.SA_DIM
+            ].make[target="cpu"]()
+            blk.c2 = CriticUpdateBlock[
+                Self.CRITIC, Self.BATCH, Self.SA_DIM
+            ].make[target="cpu"]()
+            blk.ts = TargetStorage.make_cpu()
+            init_scratch_auto[Self, target="cpu"](blk)
+        else:
+            if not ctx:
+                raise Error("TwinCriticUpdateBlock.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            blk.c1 = CriticUpdateBlock[
+                Self.CRITIC, Self.BATCH, Self.SA_DIM
+            ].make[target="gpu"](ctx)
+            blk.c2 = CriticUpdateBlock[
+                Self.CRITIC, Self.BATCH, Self.SA_DIM
+            ].make[target="gpu"](ctx)
+            blk.ts = TargetStorage.make_gpu(ctx_v)
+            init_scratch_auto[Self, target="gpu"](blk, ctx)
         return blk^
 
     def step[

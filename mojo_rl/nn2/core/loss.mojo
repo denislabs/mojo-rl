@@ -21,11 +21,11 @@ trait Loss(Defaultable & Movable & ImplicitlyDestructible):
     comptime OUT_DIM: Int
 
     @staticmethod
-    def make[target: StaticString]() raises -> Self:
-        ...
-
-    @staticmethod
-    def make[target: StaticString](ctx: DeviceContext) raises -> Self:
+    def make[target: StaticString](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU
+        (impls raise at runtime if missing)."""
         ...
 
     def forward[

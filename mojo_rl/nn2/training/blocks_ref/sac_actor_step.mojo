@@ -36,24 +36,10 @@ struct SACActorStep[
         action_scale: Scalar[DT],
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        """Unified make — POC for matmul-style `Optional[DeviceContext]` API.
-
-        Single declaration for CPU + GPU. `ctx` is None on CPU; required on
-        GPU (checked at runtime, mirrors `max.kernels.matmul`). The inner
-        block (`SACActorLossCG`) still uses the two-overload pattern, so
-        we translate `Optional → positional` at the boundary.
-        """
+        """Unified make — single declaration for CPU + GPU. `ctx` is None
+        on CPU; required on GPU (inner block raises if missing)."""
         var b = Self()
-        comptime if target == "cpu":
-            b.inner = Self.Inner.make[target](action_scale=action_scale)
-        else:
-            if not ctx:
-                raise Error(
-                    "SACActorStep.make[target='gpu']: ctx required"
-                )
-            b.inner = Self.Inner.make[target](
-                ctx.value(), action_scale=action_scale,
-            )
+        b.inner = Self.Inner.make[target](ctx=ctx, action_scale=action_scale)
         return b^
 
     def step[

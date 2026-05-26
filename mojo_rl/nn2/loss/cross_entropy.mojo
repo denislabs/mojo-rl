@@ -92,26 +92,24 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString]() raises -> Self:
-        """CPU factory."""
-        comptime assert target == "cpu", (
-            "CrossEntropyLoss.make[target='gpu'] requires a DeviceContext"
+    def make[target: StaticString](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "CrossEntropyLoss: target must be 'cpu' or 'gpu'"
         )
         var loss = Self()
-        loss.ts = TargetStorage.make_cpu()
-        return loss^
-
-    @staticmethod
-    def make[target: StaticString](ctx: DeviceContext) raises -> Self:
-        """GPU factory."""
-        comptime assert target == "gpu", (
-            "CrossEntropyLoss.make[target='cpu'](ctx) — drop ctx for CPU"
-        )
-        var loss = Self()
-        loss.softmax_dev = ctx.enqueue_create_buffer[DT](1)
-        loss.partial_loss_dev = ctx.enqueue_create_buffer[DT](1)
-        loss.partial_loss_host = ctx.enqueue_create_host_buffer[DT](1)
-        loss.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            loss.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("CrossEntropyLoss.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            loss.softmax_dev = ctx_v.enqueue_create_buffer[DT](1)
+            loss.partial_loss_dev = ctx_v.enqueue_create_buffer[DT](1)
+            loss.partial_loss_host = ctx_v.enqueue_create_host_buffer[DT](1)
+            loss.ts = TargetStorage.make_gpu(ctx_v)
         return loss^
 
     def _ensure_cache_cpu(mut self, batch: Int):

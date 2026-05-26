@@ -76,23 +76,21 @@ struct GaussianNLLLoss[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString]() raises -> Self:
-        comptime assert target == "cpu", (
-            "GaussianNLLLoss.make[target='gpu'] requires a DeviceContext"
+    def make[target: StaticString](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified factory. CPU-only for now (GPU path deferred — see
+        module docstring); `ctx` accepted for API parity but raises on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "GaussianNLLLoss: target must be 'cpu' or 'gpu'"
         )
+        comptime if target == "gpu":
+            raise Error(
+                "GaussianNLLLoss GPU not yet implemented (I.1.a is CPU-only)"
+            )
         var loss = Self()
         loss.ts = TargetStorage.make_cpu()
         return loss^
-
-    @staticmethod
-    def make[target: StaticString](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "GaussianNLLLoss.make[target='cpu'](ctx) — drop ctx for CPU"
-        )
-        # GPU path deferred — see module docstring.
-        raise Error(
-            "GaussianNLLLoss GPU not yet implemented (I.1.a is CPU-only)"
-        )
 
     def _ensure_cpu(mut self, batch: Int):
         var need = batch * Self.DIM

@@ -214,33 +214,26 @@ struct PPOActorLoss[ACT: Int](Defaultable, Movable, ImplicitlyDestructible):
 
     @staticmethod
     def make[target: StaticString](
+        ctx: Optional[DeviceContext] = None,
         clip_eps: Scalar[DT] = 0.2,
         entropy_coef: Scalar[DT] = 0.0,
     ) raises -> Self:
-        comptime assert target == "cpu", (
-            "PPOActorLoss.make[target='gpu'] requires a DeviceContext"
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "PPOActorLoss: target must be 'cpu' or 'gpu'"
         )
         var lo = Self()
         lo.clip_eps = clip_eps
         lo.entropy_coef = entropy_coef
-        lo.ts = TargetStorage.make_cpu()
-        return lo^
-
-    @staticmethod
-    def make[target: StaticString](
-        ctx: DeviceContext,
-        clip_eps: Scalar[DT] = 0.2,
-        entropy_coef: Scalar[DT] = 0.0,
-    ) raises -> Self:
-        comptime assert target == "gpu", (
-            "PPOActorLoss.make[target='cpu'](ctx, ...) — drop ctx for CPU"
-        )
-        var lo = Self()
-        lo.clip_eps = clip_eps
-        lo.entropy_coef = entropy_coef
-        lo.partial_loss_dev = ctx.enqueue_create_buffer[DT](1)
-        lo.partial_loss_host = ctx.enqueue_create_host_buffer[DT](1)
-        lo.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            lo.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("PPOActorLoss.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            lo.partial_loss_dev = ctx_v.enqueue_create_buffer[DT](1)
+            lo.partial_loss_host = ctx_v.enqueue_create_host_buffer[DT](1)
+            lo.ts = TargetStorage.make_gpu(ctx_v)
         return lo^
 
     def _ensure_partial_gpu(mut self, batch: Int) raises:

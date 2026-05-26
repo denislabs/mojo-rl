@@ -132,10 +132,12 @@ struct SACActorLossCG[
 
     @staticmethod
     def make[target: StaticString](
+        ctx: Optional[DeviceContext] = None,
         action_scale: Scalar[DT] = Scalar[DT](1.0),
     ) raises -> Self:
-        comptime assert target == "cpu", (
-            "SACActorLossCG.make[target='gpu'] requires a DeviceContext"
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "SACActorLossCG: target must be 'cpu' or 'gpu'"
         )
         comptime assert Self.ACTOR.OUT_DIM == 2 * Self.ACT_DIM, (
             "SACActorLossCG: ACTOR.OUT_DIM must equal 2·ACT_DIM"
@@ -148,40 +150,25 @@ struct SACActorLossCG[
         )
 
         var blk = Self()
-        blk.graph = Self.ActorGraph.make[target="cpu", INIT=Zero]()
-        blk.rsample = RSample[Self.ACT_DIM].make[target="cpu", INIT=Zero]()
-        blk.rsample.action_scale = action_scale
-        blk.ts = TargetStorage.make_cpu()
-        init_scratch_auto[Self, target="cpu"](blk)
-        return blk^
-
-    @staticmethod
-    def make[target: StaticString](
-        ctx: DeviceContext,
-        action_scale: Scalar[DT] = Scalar[DT](1.0),
-    ) raises -> Self:
-        """GPU factory."""
-        comptime assert target == "gpu", (
-            "SACActorLossCG.make[target='cpu'](ctx) — drop ctx for CPU"
-        )
-        comptime assert Self.ACTOR.OUT_DIM == 2 * Self.ACT_DIM, (
-            "SACActorLossCG: ACTOR.OUT_DIM must equal 2·ACT_DIM"
-        )
-        comptime assert Self.CRITIC.IN_DIMS[0] == Self.SA_DIM, (
-            "SACActorLossCG: CRITIC.IN_DIM must equal OBS_DIM + ACT_DIM"
-        )
-        comptime assert Self.CRITIC.OUT_DIM == 1, (
-            "SACActorLossCG: CRITIC.OUT_DIM must equal 1"
-        )
-
-        var blk = Self()
-        blk.graph = Self.ActorGraph.make[target="gpu", INIT=Zero](ctx)
-        blk.rsample = RSample[Self.ACT_DIM].make[target="gpu", INIT=Zero](ctx)
-        blk.rsample.action_scale = action_scale
-        blk.ts = TargetStorage.make_gpu(ctx)
-        init_scratch_auto[Self, target="gpu"](blk, Optional[DeviceContext](ctx))
-        blk._loss_host = ctx.enqueue_create_host_buffer[DT](Self.BATCH)
-        blk._lp_host = ctx.enqueue_create_host_buffer[DT](Self.BATCH)
+        comptime if target == "cpu":
+            blk.graph = Self.ActorGraph.make[target="cpu", INIT=Zero]()
+            blk.rsample = RSample[Self.ACT_DIM].make[target="cpu", INIT=Zero]()
+            blk.rsample.action_scale = action_scale
+            blk.ts = TargetStorage.make_cpu()
+            init_scratch_auto[Self, target="cpu"](blk)
+        else:
+            if not ctx:
+                raise Error(
+                    "SACActorLossCG.make[target='gpu']: ctx required"
+                )
+            var ctx_v = ctx.value()
+            blk.graph = Self.ActorGraph.make[target="gpu", INIT=Zero](ctx_v)
+            blk.rsample = RSample[Self.ACT_DIM].make[target="gpu", INIT=Zero](ctx_v)
+            blk.rsample.action_scale = action_scale
+            blk.ts = TargetStorage.make_gpu(ctx_v)
+            init_scratch_auto[Self, target="gpu"](blk, ctx)
+            blk._loss_host = ctx_v.enqueue_create_host_buffer[DT](Self.BATCH)
+            blk._lp_host = ctx_v.enqueue_create_host_buffer[DT](Self.BATCH)
         return blk^
 
     def forward_backward[

@@ -33,16 +33,10 @@ struct TwinCriticStep[
     def make[target: StaticString = "cpu"](
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        """Unified make — matmul-style `Optional[DeviceContext]`."""
+        """Unified make — matmul-style `Optional[DeviceContext]`. Inner
+        block now accepts the optional directly (no boundary shim)."""
         var b = Self()
-        comptime if target == "cpu":
-            b.inner = Self.Inner.make[target]()
-        else:
-            if not ctx:
-                raise Error(
-                    "TwinCriticStep.make[target='gpu']: ctx required"
-                )
-            b.inner = Self.Inner.make[target](ctx.value())
+        b.inner = Self.Inner.make[target](ctx=ctx)
         return b^
 
     def step[target: StaticString](
