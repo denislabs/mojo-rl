@@ -9,7 +9,6 @@ Run:
     pixi run mojo run -I . examples/pendulum/pendulum_sac_nn2_trainer.mojo
 """
 
-from std.memory import alloc
 from std.random import seed
 from std.time import perf_counter_ns
 
@@ -59,9 +58,9 @@ def main() raises:
         window_size=10, initial_episode_fill=Scalar[DT](-1250.0),
     )
 
-    var obs = alloc[Scalar[DT]](OBS_DIM)
-    var next_obs = alloc[Scalar[DT]](OBS_DIM)
-    var action = alloc[Scalar[DT]](ACT_DIM)
+    var obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
+    var next_obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
+    var action = List[Scalar[DT]](length=ACT_DIM, fill=Scalar[DT](0.0))
     var env = PendulumEnv[DT]()
     _ = env.reset()
     var obs_self = env.get_obs_list()
