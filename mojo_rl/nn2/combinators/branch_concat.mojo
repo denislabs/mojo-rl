@@ -98,30 +98,27 @@ struct BranchConcat[*BRANCHES: Module](Module):
         self.ts = TargetStorage.make_cpu()
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "BranchConcat.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var c = Self()
-        comptime for i in range(Self.N):
-            c.branches[i] = Self.BRANCHES[i].make[target, INIT]()
-        for _ in range(Self.N):
-            c.out_slabs_cpu.append(alloc[Scalar[DT]](1))
-            c.out_slab_caps.append(0)
-        c.ts = TargetStorage.make_cpu()
-        return c^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "BranchConcat.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "BranchConcat: target must be 'cpu' or 'gpu'"
         )
         var c = Self()
         comptime for i in range(Self.N):
-            c.branches[i] = Self.BRANCHES[i].make[target, INIT](ctx)
-        c.ts = TargetStorage.make_gpu(ctx)
+            c.branches[i] = Self.BRANCHES[i].make[target, INIT](ctx=ctx)
+        comptime if target == "cpu":
+            for _ in range(Self.N):
+                c.out_slabs_cpu.append(alloc[Scalar[DT]](1))
+                c.out_slab_caps.append(0)
+            c.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("BranchConcat.make[target='gpu']: ctx required")
+            c.ts = TargetStorage.make_gpu(ctx.value())
         return c^
 
     def __del__(deinit self):

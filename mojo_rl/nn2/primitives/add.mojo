@@ -69,23 +69,22 @@ struct Add[DIM_: Int, N_: Int](Module):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "Add.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var a = Self()
-        a.ts = TargetStorage.make_cpu()
-        return a^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "Add.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Add: target must be 'cpu' or 'gpu'"
         )
         var a = Self()
-        a.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            a.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Add.make[target='gpu']: ctx required")
+            a.ts = TargetStorage.make_gpu(ctx.value())
         return a^
 
     def forward[

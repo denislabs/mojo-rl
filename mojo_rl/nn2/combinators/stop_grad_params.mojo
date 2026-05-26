@@ -56,25 +56,23 @@ struct StopGradParams[Inner: Module](Module):
         self.ts = TargetStorage.make_gpu(ctx)
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "StopGradParams.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var s = Self()
-        s.inner = Self.Inner.make[target, INIT]()
-        s.ts = TargetStorage.make_cpu()
-        return s^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "StopGradParams.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "StopGradParams: target must be 'cpu' or 'gpu'"
         )
         var s = Self()
-        s.inner = Self.Inner.make[target, INIT](ctx)
-        s.ts = TargetStorage.make_gpu(ctx)
+        s.inner = Self.Inner.make[target, INIT](ctx=ctx)
+        comptime if target == "cpu":
+            s.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("StopGradParams.make[target='gpu']: ctx required")
+            s.ts = TargetStorage.make_gpu(ctx.value())
         return s^
 
     # ----- Forward (passthrough) ------------------------------------------

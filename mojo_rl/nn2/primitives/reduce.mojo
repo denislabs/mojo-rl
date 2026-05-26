@@ -80,25 +80,23 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        """CPU factory. INIT is ignored (no parameters) but accepted for
-        Sequential.make[target, INIT] uniformity."""
-        comptime assert target == "cpu", (
-            "Reduce.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var r = Self()
-        r.ts = TargetStorage.make_cpu()
-        return r^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "Reduce.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. INIT ignored (no parameters) but
+        accepted for Sequential.make[target, INIT] uniformity."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Reduce: target must be 'cpu' or 'gpu'"
         )
         var r = Self()
-        r.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            r.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Reduce.make[target='gpu']: ctx required")
+            r.ts = TargetStorage.make_gpu(ctx.value())
         return r^
 
     def forward[

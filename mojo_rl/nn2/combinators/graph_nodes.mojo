@@ -115,23 +115,22 @@ struct InputSlot[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make_via[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "InputSlot.make_via[target='gpu', INIT] requires a DeviceContext"
-        )
-        var n = Self()
-        n.ts = TargetStorage.make_cpu()
-        return n^
-
-    @staticmethod
     def make_via[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "InputSlot.make_via[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "InputSlot: target must be 'cpu' or 'gpu'"
         )
         var n = Self()
-        n.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            n.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("InputSlot.make_via[target='gpu']: ctx required")
+            n.ts = TargetStorage.make_gpu(ctx.value())
         return n^
 
     def ensure_buffers_via[BATCH: Int](mut self) raises:
@@ -288,25 +287,23 @@ struct Node[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make_via[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "Node.make_via[target='gpu', INIT] requires a DeviceContext"
-        )
-        var n = Self()
-        n.op = Self.Op.make[target, INIT]()
-        n.ts = TargetStorage.make_cpu()
-        return n^
-
-    @staticmethod
     def make_via[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "Node.make_via[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Node: target must be 'cpu' or 'gpu'"
         )
         var n = Self()
-        n.op = Self.Op.make[target, INIT](ctx)
-        n.ts = TargetStorage.make_gpu(ctx)
+        n.op = Self.Op.make[target, INIT](ctx=ctx)
+        comptime if target == "cpu":
+            n.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Node.make_via[target='gpu']: ctx required")
+            n.ts = TargetStorage.make_gpu(ctx.value())
         return n^
 
     def ensure_buffers_via[BATCH: Int](mut self) raises:
@@ -560,23 +557,22 @@ struct ExternalNode[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make_via[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "ExternalNode.make_via[target='gpu', INIT] requires a DeviceContext"
-        )
-        var n = Self()
-        n.ts = TargetStorage.make_cpu()
-        return n^
-
-    @staticmethod
     def make_via[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "ExternalNode.make_via[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "ExternalNode: target must be 'cpu' or 'gpu'"
         )
         var n = Self()
-        n.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            n.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("ExternalNode.make_via[target='gpu']: ctx required")
+            n.ts = TargetStorage.make_gpu(ctx.value())
         return n^
 
     def set_external_via(

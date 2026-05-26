@@ -44,23 +44,22 @@ struct Scale[DIM: Int](Module):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "Scale.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var s = Self()
-        s.ts = TargetStorage.make_cpu()
-        return s^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "Scale.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Scale: target must be 'cpu' or 'gpu'"
         )
         var s = Self()
-        s.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            s.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Scale.make[target='gpu']: ctx required")
+            s.ts = TargetStorage.make_gpu(ctx.value())
         return s^
 
     def forward[

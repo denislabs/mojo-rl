@@ -237,29 +237,24 @@ struct ComputeGraph[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        """CPU factory — recursive over nodes."""
-        comptime assert target == "cpu", (
-            "ComputeGraph.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var g = Self()
-        comptime for i in range(Self.N):
-            g.nodes[i] = Self.NODES[i].make_via[target, INIT]()
-        g.ts = TargetStorage.make_cpu()
-        return g^
-
-    @staticmethod
     def make[target: StaticString, INIT: Initializer](
-        ctx: DeviceContext
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        """GPU factory — recursive over nodes."""
-        comptime assert target == "gpu", (
-            "ComputeGraph.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+        """Unified CPU/GPU factory — recurses via
+        `NODES[i].make_via[target, INIT](ctx=ctx)`. `ctx=None` on CPU;
+        required on GPU (node ctors raise if missing)."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "ComputeGraph: target must be 'cpu' or 'gpu'"
         )
         var g = Self()
         comptime for i in range(Self.N):
-            g.nodes[i] = Self.NODES[i].make_via[target, INIT](ctx)
-        g.ts = TargetStorage.make_gpu(ctx)
+            g.nodes[i] = Self.NODES[i].make_via[target, INIT](ctx=ctx)
+        comptime if target == "cpu":
+            g.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("ComputeGraph.make[target='gpu']: ctx required")
+            g.ts = TargetStorage.make_gpu(ctx.value())
         return g^
 
     def _ensure_all_buffers[BATCH: Int](mut self) raises:

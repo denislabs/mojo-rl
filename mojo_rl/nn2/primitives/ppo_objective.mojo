@@ -110,26 +110,22 @@ struct PPOObjective[ACT_: Int](Module):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "PPOObjective.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var op = Self()
-        op.ts = TargetStorage.make_cpu()
-        return op^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "PPOObjective.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified factory. CPU-only for now (Phase I.2 CPU only);
+        ctx accepted for API parity but raises on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "PPOObjective: target must be 'cpu' or 'gpu'"
         )
-        comptime assert False, (
-            "PPOObjective GPU path not implemented yet (Phase I.2 CPU only)."
-        )
+        comptime if target == "gpu":
+            raise Error(
+                "PPOObjective GPU path not implemented yet (Phase I.2 CPU only)."
+            )
         var op = Self()
-        op.ts = TargetStorage.make_gpu(ctx)
+        op.ts = TargetStorage.make_cpu()
         return op^
 
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):

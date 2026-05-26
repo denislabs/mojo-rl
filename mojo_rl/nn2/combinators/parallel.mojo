@@ -118,31 +118,29 @@ struct Parallel[A: Module, B: Module](Module):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "Parallel.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var p = Self()
-        p.branch_a = Self.A.make[target, INIT]()
-        p.branch_b = Self.B.make[target, INIT]()
-        p.ts = TargetStorage.make_cpu()
-        return p^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "Parallel.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Parallel: target must be 'cpu' or 'gpu'"
         )
         var p = Self()
-        p.branch_a = Self.A.make[target, INIT](ctx)
-        p.branch_b = Self.B.make[target, INIT](ctx)
-        p.out_a_dev = ctx.enqueue_create_buffer[DT](1)
-        p.out_b_dev = ctx.enqueue_create_buffer[DT](1)
-        p.gi_a_dev  = ctx.enqueue_create_buffer[DT](1)
-        p.gi_b_dev  = ctx.enqueue_create_buffer[DT](1)
-        p.ts = TargetStorage.make_gpu(ctx)
+        p.branch_a = Self.A.make[target, INIT](ctx=ctx)
+        p.branch_b = Self.B.make[target, INIT](ctx=ctx)
+        comptime if target == "cpu":
+            p.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Parallel.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            p.out_a_dev = ctx_v.enqueue_create_buffer[DT](1)
+            p.out_b_dev = ctx_v.enqueue_create_buffer[DT](1)
+            p.gi_a_dev  = ctx_v.enqueue_create_buffer[DT](1)
+            p.gi_b_dev  = ctx_v.enqueue_create_buffer[DT](1)
+            p.ts = TargetStorage.make_gpu(ctx_v)
         return p^
 
     def __del__(deinit self):

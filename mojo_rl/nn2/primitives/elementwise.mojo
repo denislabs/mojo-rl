@@ -124,34 +124,32 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
         ](unsafe_from_address=0)
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        """CPU factory. INIT ignored (Elementwise is parameterless) but
-        accepted for uniformity so Sequential.make[target, INIT] can
-        recurse."""
-        comptime assert (
-            target == "cpu"
-        ), "Elementwise.make[target='gpu', INIT] requires a DeviceContext"
-        var e = Self()
-        e.ts = TargetStorage.make_cpu()
-        return e^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        """GPU factory."""
-        comptime assert (
-            target == "gpu"
-        ), "Elementwise.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. INIT ignored (Elementwise is
+        parameterless) but accepted for uniformity so
+        Sequential.make[target, INIT] can recurse."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Elementwise: target must be 'cpu' or 'gpu'"
+        )
         var e = Self()
-        e.ts = TargetStorage.make_gpu(ctx)
-        # If owns_cache, pre-allocate a placeholder dev buffer (grown
-        # lazily on first forward). For input-alias ops, the field is
-        # never used but we still allocate a 1-element buffer to avoid
-        # `None` checks on the GPU path.
-        comptime if Self.OP.owns_cache:
-            e.cache_dev = ctx.enqueue_create_buffer[DT](1)
-            e.cache_dev_n = 0
+        comptime if target == "cpu":
+            e.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Elementwise.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            e.ts = TargetStorage.make_gpu(ctx_v)
+            # If owns_cache, pre-allocate a placeholder dev buffer (grown
+            # lazily on first forward). For input-alias ops, the field is
+            # never used but we still allocate a 1-element buffer to avoid
+            # `None` checks on the GPU path.
+            comptime if Self.OP.owns_cache:
+                e.cache_dev = ctx_v.enqueue_create_buffer[DT](1)
+                e.cache_dev_n = 0
         return e^
 
     # ------------------------------------------------------------------

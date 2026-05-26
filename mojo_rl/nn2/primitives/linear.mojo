@@ -154,41 +154,41 @@ struct Linear[IN: Int, OUT: Int](Module):
     # ----- Factories -------------------------------------------------------
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "Linear.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var lin = Self()
-        lin.weight = Param["weight", True,  Self.W_SIZE].make_cpu()
-        lin.bias   = Param["bias",   False, Self.B_SIZE].make_cpu()
-        INIT.init_weight(
-            lin.weight.value_unsafe_ptr_cpu(),
-            Self.W_SIZE, Self.IN, Self.OUT,
-        )
-        INIT.init_bias(lin.bias.value_unsafe_ptr_cpu(), Self.B_SIZE)
-        lin.ts = TargetStorage.make_cpu()
-        return lin^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "Linear.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Linear: target must be 'cpu' or 'gpu'"
         )
         var lin = Self()
-        lin.weight = Param["weight", True,  Self.W_SIZE].make_gpu(ctx)
-        lin.bias   = Param["bias",   False, Self.B_SIZE].make_gpu(ctx)
-        # Init weights/biases on host via INIT, then upload.
-        var w_host = ctx.enqueue_create_host_buffer[DT](Self.W_SIZE)
-        var b_host = ctx.enqueue_create_host_buffer[DT](Self.B_SIZE)
-        ctx.synchronize()
-        INIT.init_weight(w_host.unsafe_ptr(), Self.W_SIZE, Self.IN, Self.OUT)
-        INIT.init_bias(b_host.unsafe_ptr(), Self.B_SIZE)
-        ctx.enqueue_copy(lin.weight.value_dev.value(), w_host)
-        ctx.enqueue_copy(lin.bias.value_dev.value(),   b_host)
-        ctx.synchronize()
-        lin.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            lin.weight = Param["weight", True,  Self.W_SIZE].make_cpu()
+            lin.bias   = Param["bias",   False, Self.B_SIZE].make_cpu()
+            INIT.init_weight(
+                lin.weight.value_unsafe_ptr_cpu(),
+                Self.W_SIZE, Self.IN, Self.OUT,
+            )
+            INIT.init_bias(lin.bias.value_unsafe_ptr_cpu(), Self.B_SIZE)
+            lin.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Linear.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            lin.weight = Param["weight", True,  Self.W_SIZE].make_gpu(ctx_v)
+            lin.bias   = Param["bias",   False, Self.B_SIZE].make_gpu(ctx_v)
+            # Init weights/biases on host via INIT, then upload.
+            var w_host = ctx_v.enqueue_create_host_buffer[DT](Self.W_SIZE)
+            var b_host = ctx_v.enqueue_create_host_buffer[DT](Self.B_SIZE)
+            ctx_v.synchronize()
+            INIT.init_weight(w_host.unsafe_ptr(), Self.W_SIZE, Self.IN, Self.OUT)
+            INIT.init_bias(b_host.unsafe_ptr(), Self.B_SIZE)
+            ctx_v.enqueue_copy(lin.weight.value_dev.value(), w_host)
+            ctx_v.enqueue_copy(lin.bias.value_dev.value(),   b_host)
+            ctx_v.synchronize()
+            lin.ts = TargetStorage.make_gpu(ctx_v)
         return lin^
 
     # ----- Forward ---------------------------------------------------------

@@ -141,23 +141,22 @@ struct RSample[ACT: Int](Module, Saveable):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "RSample.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var r = Self()
-        r.ts = TargetStorage.make_cpu()
-        return r^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "RSample.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "RSample: target must be 'cpu' or 'gpu'"
         )
         var r = Self()
-        r.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            r.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("RSample.make[target='gpu']: ctx required")
+            r.ts = TargetStorage.make_gpu(ctx.value())
         return r^
 
     def _ensure_cache_cpu(mut self, batch: Int):

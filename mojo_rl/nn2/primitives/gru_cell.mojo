@@ -133,10 +133,17 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         self._cache_batch = 0
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert (
-            target == "cpu"
-        ), "GRUCell only supports CPU in this revision"
+    def make[
+        target: StaticString, INIT: Initializer
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified factory. CPU-only for now; GPU path not implemented."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "GRUCell: target must be 'cpu' or 'gpu'"
+        )
+        comptime if target == "gpu":
+            raise Error("GRUCell.make[target='gpu'] not implemented yet")
         var g = Self()
         g.ts = TargetStorage.make_cpu()
         g.W_ih = Param["W_ih", True,  Self.W_IH_SIZE].make_cpu()
@@ -153,17 +160,6 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         )
         INIT.init_bias(g.b_ih.value_unsafe_ptr_cpu(), Self.B_IH_SIZE)
         INIT.init_bias(g.b_hh.value_unsafe_ptr_cpu(), Self.B_IH_SIZE)
-        return g^
-
-    @staticmethod
-    def make[
-        target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert (
-            target == "cpu"
-        ), "GRUCell.make[target='gpu'] not implemented yet"
-        var g = Self()
-        g.ts = TargetStorage.make_cpu()
         return g^
 
     # ------------------------------------------------------------------

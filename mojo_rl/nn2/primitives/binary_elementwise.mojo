@@ -146,30 +146,28 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
         self.cache_dev_n = 0
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        """CPU factory. INIT ignored (BinaryElementwise is parameterless)
-        but accepted for uniformity so combinators that call
-        `child.make[target, INIT]` recurse cleanly."""
-        comptime assert (
-            target == "cpu"
-        ), "BinaryElementwise.make[target='gpu', INIT] requires a DeviceContext"
-        var e = Self()
-        e.ts = TargetStorage.make_cpu()
-        return e^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        """GPU factory."""
-        comptime assert (
-            target == "gpu"
-        ), "BinaryElementwise.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. INIT ignored (BinaryElementwise is
+        parameterless) but accepted for uniformity so combinators that
+        call `child.make[target, INIT]` recurse cleanly."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "BinaryElementwise: target must be 'cpu' or 'gpu'"
+        )
         var e = Self()
-        e.ts = TargetStorage.make_gpu(ctx)
-        comptime if Self.OP.owns_cache:
-            e.cache_dev = ctx.enqueue_create_buffer[DT](1)
-            e.cache_dev_n = 0
+        comptime if target == "cpu":
+            e.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("BinaryElementwise.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            e.ts = TargetStorage.make_gpu(ctx_v)
+            comptime if Self.OP.owns_cache:
+                e.cache_dev = ctx_v.enqueue_create_buffer[DT](1)
+                e.cache_dev_n = 0
         return e^
 
     # ------------------------------------------------------------------

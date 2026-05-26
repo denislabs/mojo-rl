@@ -62,26 +62,25 @@ struct Residual[Inner: Module](Module):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "Residual.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var r = Self()
-        r.inner = Self.Inner.make[target, INIT]()
-        r.ts = TargetStorage.make_cpu()
-        return r^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "Residual.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Residual: target must be 'cpu' or 'gpu'"
         )
         var r = Self()
-        r.inner = Self.Inner.make[target, INIT](ctx)
-        r.mid_dev = ctx.enqueue_create_buffer[DT](1)
-        r.ts = TargetStorage.make_gpu(ctx)
+        r.inner = Self.Inner.make[target, INIT](ctx=ctx)
+        comptime if target == "cpu":
+            r.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Residual.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            r.mid_dev = ctx_v.enqueue_create_buffer[DT](1)
+            r.ts = TargetStorage.make_gpu(ctx_v)
         return r^
 
     def __del__(deinit self):

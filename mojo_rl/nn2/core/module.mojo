@@ -164,14 +164,14 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
     comptime OUT_DIM: Int
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        ...
-
-    @staticmethod
     def make[
         target: StaticString,
         INIT: Initializer,
-    ](ctx: DeviceContext) raises -> Self:
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU
+        (impls raise at runtime if missing)."""
         ...
 
     def forward[

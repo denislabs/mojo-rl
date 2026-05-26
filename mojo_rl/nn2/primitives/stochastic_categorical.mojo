@@ -82,21 +82,18 @@ struct StochasticCategorical[N: Int](Module):
         self._cache_n_batch = 0
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert (
-            target == "cpu"
-        ), "StochasticCategorical.make[target='gpu', INIT] not implemented yet"
-        var s = Self()
-        s.ts = TargetStorage.make_cpu()
-        return s^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert (
-            target == "cpu"
-        ), "StochasticCategorical GPU path not implemented yet"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified factory. CPU-only for now — GPU path not implemented;
+        ctx accepted for API parity but raises on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "StochasticCategorical: target must be 'cpu' or 'gpu'"
+        )
+        comptime if target == "gpu":
+            raise Error("StochasticCategorical GPU path not implemented yet")
         var s = Self()
         s.ts = TargetStorage.make_cpu()
         return s^

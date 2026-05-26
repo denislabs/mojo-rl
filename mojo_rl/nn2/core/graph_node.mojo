@@ -112,13 +112,13 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
         pass
 
     @staticmethod
-    def make_via[target: StaticString, INIT: Initializer]() raises -> Self:
-        ...
-
-    @staticmethod
     def make_via[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU
+        (impls raise at runtime if missing)."""
         ...
 
     def ensure_buffers_via[BATCH: Int](mut self) raises:

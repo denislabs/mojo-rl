@@ -66,29 +66,25 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "Slice.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        comptime assert Self.START >= 0, "Slice.START must be >= 0"
-        comptime assert Self.END > Self.START, "Slice.END must be > START"
-        comptime assert Self.END <= Self.IN, "Slice.END must be <= IN_DIM"
-        var s = Self()
-        s.ts = TargetStorage.make_cpu()
-        return s^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "Slice.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Slice: target must be 'cpu' or 'gpu'"
         )
         comptime assert Self.START >= 0, "Slice.START must be >= 0"
         comptime assert Self.END > Self.START, "Slice.END must be > START"
         comptime assert Self.END <= Self.IN, "Slice.END must be <= IN_DIM"
         var s = Self()
-        s.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            s.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Slice.make[target='gpu']: ctx required")
+            s.ts = TargetStorage.make_gpu(ctx.value())
         return s^
 
     def forward[

@@ -100,38 +100,35 @@ struct Sequential[*MODULES: Module](Module):
     # ----- Factories -------------------------------------------------------
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        """CPU factory — recurses via `MODULES[i].make[target='cpu', INIT]()`."""
-        comptime assert target == "cpu", (
-            "Sequential.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var s = Self()
-        comptime for i in range(Self.N):
-            s.children[i] = Self.MODULES[i].make[target, INIT]()
-        comptime if Self.N >= 2:
-            for _ in range(Self.N - 1):
-                var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](1)
-                s.mid_cpu.append(p)
-                s.mid_caps.append(0)
-        s.ts = TargetStorage.make_cpu()
-        return s^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        """GPU factory — recurses via `MODULES[i].make[target='gpu', INIT](ctx)`."""
-        comptime assert target == "gpu", (
-            "Sequential.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory — recurses via
+        `MODULES[i].make[target, INIT](ctx=ctx)`."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Sequential: target must be 'cpu' or 'gpu'"
         )
         var s = Self()
         comptime for i in range(Self.N):
-            s.children[i] = Self.MODULES[i].make[target, INIT](ctx)
-        comptime if Self.N >= 2:
-            for _ in range(Self.N - 1):
-                s.mid_dev.append(ctx.enqueue_create_buffer[DT](1))
-                s.mid_caps.append(0)
-        s.ts = TargetStorage.make_gpu(ctx)
+            s.children[i] = Self.MODULES[i].make[target, INIT](ctx=ctx)
+        comptime if target == "cpu":
+            comptime if Self.N >= 2:
+                for _ in range(Self.N - 1):
+                    var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](1)
+                    s.mid_cpu.append(p)
+                    s.mid_caps.append(0)
+            s.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Sequential.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            comptime if Self.N >= 2:
+                for _ in range(Self.N - 1):
+                    s.mid_dev.append(ctx_v.enqueue_create_buffer[DT](1))
+                    s.mid_caps.append(0)
+            s.ts = TargetStorage.make_gpu(ctx_v)
         return s^
 
     def __del__(deinit self):

@@ -167,46 +167,46 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "GaussianHead.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var h = Self()
-        h.weight  = Param["weight",  True,  Self.W_SIZE].make_cpu()
-        h.bias    = Param["bias",    False, Self.B_SIZE].make_cpu()
-        h.log_std = Param["log_std", False, Self.LS_SIZE].make_cpu()
-        INIT.init_weight(
-            h.weight.value_unsafe_ptr_cpu(), Self.W_SIZE, Self.IN, Self.ACT,
-        )
-        INIT.init_bias(h.bias.value_unsafe_ptr_cpu(), Self.B_SIZE)
-        var ls_ptr = h.log_std.value_unsafe_ptr_cpu()
-        for k in range(Self.LS_SIZE):
-            ls_ptr[k] = Self.DEFAULT_LOG_STD_INIT
-        h.ts = TargetStorage.make_cpu()
-        return h^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "GaussianHead.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "GaussianHead: target must be 'cpu' or 'gpu'"
         )
         var h = Self()
-        h.weight  = Param["weight",  True,  Self.W_SIZE].make_gpu(ctx)
-        h.bias    = Param["bias",    False, Self.B_SIZE].make_gpu(ctx)
-        h.log_std = Param["log_std", False, Self.LS_SIZE].make_gpu(ctx)
-        h.log_std.value_dev.value().enqueue_fill(Self.DEFAULT_LOG_STD_INIT)
-        # Init weights/bias on host then upload.
-        var w_host = ctx.enqueue_create_host_buffer[DT](Self.W_SIZE)
-        var b_host = ctx.enqueue_create_host_buffer[DT](Self.B_SIZE)
-        ctx.synchronize()
-        INIT.init_weight(w_host.unsafe_ptr(), Self.W_SIZE, Self.IN, Self.ACT)
-        INIT.init_bias(b_host.unsafe_ptr(), Self.B_SIZE)
-        ctx.enqueue_copy(h.weight.value_dev.value(), w_host)
-        ctx.enqueue_copy(h.bias.value_dev.value(),   b_host)
-        ctx.synchronize()
-        h.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            h.weight  = Param["weight",  True,  Self.W_SIZE].make_cpu()
+            h.bias    = Param["bias",    False, Self.B_SIZE].make_cpu()
+            h.log_std = Param["log_std", False, Self.LS_SIZE].make_cpu()
+            INIT.init_weight(
+                h.weight.value_unsafe_ptr_cpu(), Self.W_SIZE, Self.IN, Self.ACT,
+            )
+            INIT.init_bias(h.bias.value_unsafe_ptr_cpu(), Self.B_SIZE)
+            var ls_ptr = h.log_std.value_unsafe_ptr_cpu()
+            for k in range(Self.LS_SIZE):
+                ls_ptr[k] = Self.DEFAULT_LOG_STD_INIT
+            h.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("GaussianHead.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            h.weight  = Param["weight",  True,  Self.W_SIZE].make_gpu(ctx_v)
+            h.bias    = Param["bias",    False, Self.B_SIZE].make_gpu(ctx_v)
+            h.log_std = Param["log_std", False, Self.LS_SIZE].make_gpu(ctx_v)
+            h.log_std.value_dev.value().enqueue_fill(Self.DEFAULT_LOG_STD_INIT)
+            # Init weights/bias on host then upload.
+            var w_host = ctx_v.enqueue_create_host_buffer[DT](Self.W_SIZE)
+            var b_host = ctx_v.enqueue_create_host_buffer[DT](Self.B_SIZE)
+            ctx_v.synchronize()
+            INIT.init_weight(w_host.unsafe_ptr(), Self.W_SIZE, Self.IN, Self.ACT)
+            INIT.init_bias(b_host.unsafe_ptr(), Self.B_SIZE)
+            ctx_v.enqueue_copy(h.weight.value_dev.value(), w_host)
+            ctx_v.enqueue_copy(h.bias.value_dev.value(),   b_host)
+            ctx_v.synchronize()
+            h.ts = TargetStorage.make_gpu(ctx_v)
         return h^
 
     def set_log_std_init(mut self, value: Scalar[DT]) raises:

@@ -222,38 +222,38 @@ struct LayerNorm[DIM: Int](Module):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "LayerNorm.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var ln = Self()
-        ln.gamma = Param["gamma", False, Self.DIM].make_cpu()
-        ln.beta  = Param["beta",  False, Self.DIM].make_cpu()
-        # Universal LayerNorm init: γ=1, β=0. Param.make_cpu zero-filled;
-        # post-fill gamma to 1.
-        var g_ptr = ln.gamma.value_unsafe_ptr_cpu()
-        for k in range(Self.DIM):
-            g_ptr[k] = Scalar[DT](1.0)
-        ln.ts = TargetStorage.make_cpu()
-        return ln^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "LayerNorm.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "LayerNorm: target must be 'cpu' or 'gpu'"
         )
         var ln = Self()
-        ln.gamma = Param["gamma", False, Self.DIM].make_gpu(ctx)
-        ln.beta  = Param["beta",  False, Self.DIM].make_gpu(ctx)
-        ln.gamma.value_dev.value().enqueue_fill(1.0)
-        ln.beta.value_dev.value().enqueue_fill(0.0)
-        # Tiny placeholder cache buffers — actual sizes set on first forward.
-        ln.cache_xhat_dev    = ctx.enqueue_create_buffer[DT](1)
-        ln.cache_inv_std_dev = ctx.enqueue_create_buffer[DT](1)
-        ln.cache_n_batch = 0
-        ln.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            ln.gamma = Param["gamma", False, Self.DIM].make_cpu()
+            ln.beta  = Param["beta",  False, Self.DIM].make_cpu()
+            # Universal LayerNorm init: γ=1, β=0. Param.make_cpu zero-filled;
+            # post-fill gamma to 1.
+            var g_ptr = ln.gamma.value_unsafe_ptr_cpu()
+            for k in range(Self.DIM):
+                g_ptr[k] = Scalar[DT](1.0)
+            ln.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("LayerNorm.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            ln.gamma = Param["gamma", False, Self.DIM].make_gpu(ctx_v)
+            ln.beta  = Param["beta",  False, Self.DIM].make_gpu(ctx_v)
+            ln.gamma.value_dev.value().enqueue_fill(1.0)
+            ln.beta.value_dev.value().enqueue_fill(0.0)
+            # Tiny placeholder cache buffers — actual sizes set on first forward.
+            ln.cache_xhat_dev    = ctx_v.enqueue_create_buffer[DT](1)
+            ln.cache_inv_std_dev = ctx_v.enqueue_create_buffer[DT](1)
+            ln.cache_n_batch = 0
+            ln.ts = TargetStorage.make_gpu(ctx_v)
         return ln^
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:

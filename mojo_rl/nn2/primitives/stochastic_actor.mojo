@@ -69,34 +69,29 @@ struct StochasticActor[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "StochasticActor.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var a = Self()
-        a.trunk = Sequential[*Self.TRUNK].make[target, INIT]()
-        a.heads = Parallel[
-            Linear[Self.HIDDEN, Self.ACT_DIM],
-            Linear[Self.HIDDEN, Self.ACT_DIM],
-        ].make[target, INIT]()
-        a.ts = TargetStorage.make_cpu()
-        return a^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "StochasticActor.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "StochasticActor: target must be 'cpu' or 'gpu'"
         )
         var a = Self()
-        a.trunk = Sequential[*Self.TRUNK].make[target, INIT](ctx)
+        a.trunk = Sequential[*Self.TRUNK].make[target, INIT](ctx=ctx)
         a.heads = Parallel[
             Linear[Self.HIDDEN, Self.ACT_DIM],
             Linear[Self.HIDDEN, Self.ACT_DIM],
-        ].make[target, INIT](ctx)
-        a.mid_dev = ctx.enqueue_create_buffer[DT](1)
-        a.ts = TargetStorage.make_gpu(ctx)
+        ].make[target, INIT](ctx=ctx)
+        comptime if target == "cpu":
+            a.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("StochasticActor.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            a.mid_dev = ctx_v.enqueue_create_buffer[DT](1)
+            a.ts = TargetStorage.make_gpu(ctx_v)
         return a^
 
     def __del__(deinit self):

@@ -87,23 +87,22 @@ struct Clamp[DIM: Int](Module):
         ](unsafe_from_address=0)
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "Clamp.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var c = Self()
-        c.ts = TargetStorage.make_cpu()
-        return c^
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "Clamp.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Clamp: target must be 'cpu' or 'gpu'"
         )
         var c = Self()
-        c.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            c.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Clamp.make[target='gpu']: ctx required")
+            c.ts = TargetStorage.make_gpu(ctx.value())
         return c^
 
     def forward[
