@@ -51,6 +51,31 @@ from .initializer import Initializer
 from .amp import AMPPolicy, NoAMP
 
 
+# ──────────────────────────────────────────────────────────────────────
+# I.2.6 — `_node_in_dims_from_ladder` builds the IN_DIMS InlineArray
+# for a GraphNode from the per-input dim ladder. Sized at KIND (the
+# node's effective arity — KIND=0 for InputSlot gives an empty array;
+# compute nodes get sized at Op.ARITY). Used as the default for
+# `GraphNode.IN_DIMS` so existing wrappers (Node, ExternalNode,
+# InputSlot) get IN_DIMS for free without changing their declarations.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _node_in_dims_from_ladder[
+    KIND: Int, D0: Int, D1: Int, D2: Int, D3: Int,
+]() -> InlineArray[Int, KIND]:
+    var d = InlineArray[Int, KIND](fill=0)
+    comptime if KIND >= 1:
+        d[0] = D0
+    comptime if KIND >= 2:
+        d[1] = D1
+    comptime if KIND >= 3:
+        d[2] = D2
+    comptime if KIND >= 4:
+        d[3] = D3
+    return d
+
+
 trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
     comptime NAME: StaticString
     comptime IN0_NAME: StaticString
@@ -63,6 +88,14 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
     comptime IN3_DIM: Int = 0              # default — < quaternary inherit
     comptime OUT_DIM: Int
     comptime KIND: Int  # 0 = input slot, 1 = unary, 2 = binary, 3 = ternary, 4 = quaternary
+    # I.2.6 variadic per-input dim accessor. Default derives from the
+    # ladder so InputSlot / Node / ExternalNode get IN_DIMS for free.
+    # Sized at KIND (InputSlots get empty array; ARITY-N nodes get N).
+    comptime IN_DIMS: InlineArray[Int, Self.KIND] = (
+        _node_in_dims_from_ladder[
+            Self.KIND, Self.IN0_DIM, Self.IN1_DIM, Self.IN2_DIM, Self.IN3_DIM,
+        ]()
+    )
 
     # Set the externally-supplied input pointer for InputSlot (KIND=0).
     # Unary/binary nodes implement this as a no-op — they don't consume

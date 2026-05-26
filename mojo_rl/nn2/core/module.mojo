@@ -113,6 +113,34 @@ def typed_view_mut[
 
 
 # ──────────────────────────────────────────────────────────────────────
+# I.2.6 — `_in_dims_from_ladder` builds the IN_DIMS InlineArray from
+# the legacy ladder values. Used as the default for `Module.IN_DIMS`
+# so existing leaves (which declare IN_DIM/IN1_DIM/IN2_DIM/IN3_DIM)
+# get IN_DIMS for free. Caps at ARITY=4 — leaves with ARITY > 4 must
+# declare IN_DIMS directly + skip the ladder declarations.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _in_dims_from_ladder[
+    ARITY: Int, D0: Int, D1: Int, D2: Int, D3: Int,
+]() -> InlineArray[Int, ARITY]:
+    var d = InlineArray[Int, ARITY](fill=0)
+    comptime if ARITY >= 1:
+        d[0] = D0
+    comptime if ARITY >= 2:
+        d[1] = D1
+    comptime if ARITY >= 3:
+        d[2] = D2
+    comptime if ARITY >= 4:
+        d[3] = D3
+    comptime assert ARITY <= 4, (
+        "_in_dims_from_ladder caps at ARITY=4. Leaves with ARITY > 4 "
+        "must declare IN_DIMS directly without going through the ladder."
+    )
+    return d
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Module — the unified N-ary trait. Conformers declare their `comptime
 # ARITY` (1, 2, 3, ...) and `comptime OUT_DIM`. Per-input dims are
 # struct-level fields (`IN_DIM` for unary, `IN0_DIM` / `IN1_DIM` / ...
@@ -148,13 +176,28 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
     Phase I.2.5 added `IN3_DIM` so quaternary loss leaves (e.g.
     `PPOObjective4(actor_out, action, old_log_prob, advantage)`) can
     declare their fourth input dim natively, retiring the aux-packing
-    workaround that PPOActorLossCG used at I.2 landing time."""
+    workaround that PPOActorLossCG used at I.2 landing time.
+
+    Phase I.2.6 added `IN_DIMS: InlineArray[Int, Self.ARITY]` — a
+    proper variadic per-input dim accessor. Leaves continue to declare
+    `IN_DIM` / `IN1_DIM` / `IN2_DIM` / `IN3_DIM` as before; `IN_DIMS`
+    has a default that derives from the ladder via `_in_dims_from_ladder`.
+    The GraphNode wrappers + ComputeGraph dispatch use `IN_DIMS[k]`
+    uniformly under a `comptime for k in range(ARITY)` loop — ARITY
+    cap on the dispatch side drops entirely (no more ≤4 ceiling).
+    New leaves at ARITY > 4 can declare `IN_DIMS` directly (and skip
+    the ladder fields — the trait defaults handle their absence)."""
 
     comptime ARITY: Int
     comptime IN_DIM: Int
     comptime IN1_DIM: Int = 0  # default 0 — unary leaves inherit, binary+ override
     comptime IN2_DIM: Int = 0  # default 0 — unary + binary inherit, ternary+ override
     comptime IN3_DIM: Int = 0  # default 0 — unary + binary + ternary inherit, quaternary overrides
+    # I.2.6 variadic surface. Default derives from the ladder so legacy
+    # leaves don't need to change.
+    comptime IN_DIMS: InlineArray[Int, Self.ARITY] = _in_dims_from_ladder[
+        Self.ARITY, Self.IN_DIM, Self.IN1_DIM, Self.IN2_DIM, Self.IN3_DIM,
+    ]()
     comptime OUT_DIM: Int
 
     @staticmethod

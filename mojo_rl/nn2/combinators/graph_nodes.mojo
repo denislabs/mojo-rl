@@ -246,31 +246,23 @@ struct Node[
 
     var _out_buf: List[Scalar[DT]]
     var _grad_out_buf: List[Scalar[DT]]
-    var _grad_in0_buf: List[Scalar[DT]]
-    var _grad_in1_buf: List[Scalar[DT]]
-    var _grad_in2_buf: List[Scalar[DT]]
-    var _grad_in3_buf: List[Scalar[DT]]
+    # I.2.6: per-input grad bufs collapsed from 4 named fields into one
+    # List-of-List indexed by k ∈ [0, ARITY). Sizing driven by IN_DIMS[k]
+    # via comptime-for in ensure_buffers_via. Initialised with ARITY
+    # empty inner Lists; lazy-grown on first ensure_buffers_via call.
+    var _grad_ins_buf: List[List[Scalar[DT]]]
 
     var _out_buf_dev: Optional[DeviceBuffer[DT]]
     var _grad_out_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_in0_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_in1_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_in2_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_in3_buf_dev: Optional[DeviceBuffer[DT]]
+    var _grad_ins_buf_dev: List[Optional[DeviceBuffer[DT]]]
     var _out_buf_dev_n: Int
     var _grad_out_buf_dev_n: Int
-    var _grad_in0_buf_dev_n: Int
-    var _grad_in1_buf_dev_n: Int
-    var _grad_in2_buf_dev_n: Int
-    var _grad_in3_buf_dev_n: Int
+    var _grad_ins_buf_dev_n: List[Int]
 
     # Cached pointers resolved by ensure_buffers_via — stable thereafter.
     var _out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var _grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]   # null for ARITY<2
-    var _grad_in2_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]   # null for ARITY<3
-    var _grad_in3_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]   # null for ARITY<4
+    var _grad_ins_ptr: List[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     var _n_batch_buf: Int
     var ts: TargetStorage
@@ -279,38 +271,31 @@ struct Node[
         comptime assert Self.in_names.size == Self.Op.ARITY, (
             "Node: number of in_names must match Op.ARITY"
         )
-        comptime assert Self.Op.ARITY <= 4, (
-            "Node: ARITY > 4 not supported in I.2.5 (extend graph_nodes.mojo "
-            "+ compute_graph.mojo + GraphNode trait to bump the cap)"
-        )
         self.op = Self.Op()
         self._out_buf = List[Scalar[DT]]()
         self._grad_out_buf = List[Scalar[DT]]()
-        self._grad_in0_buf = List[Scalar[DT]]()
-        self._grad_in1_buf = List[Scalar[DT]]()
-        self._grad_in2_buf = List[Scalar[DT]]()
-        self._grad_in3_buf = List[Scalar[DT]]()
+        self._grad_ins_buf = List[List[Scalar[DT]]]()
         self._out_buf_dev = None
         self._grad_out_buf_dev = None
-        self._grad_in0_buf_dev = None
-        self._grad_in1_buf_dev = None
-        self._grad_in2_buf_dev = None
-        self._grad_in3_buf_dev = None
+        self._grad_ins_buf_dev = List[Optional[DeviceBuffer[DT]]]()
         self._out_buf_dev_n = 0
         self._grad_out_buf_dev_n = 0
-        self._grad_in0_buf_dev_n = 0
-        self._grad_in1_buf_dev_n = 0
-        self._grad_in2_buf_dev_n = 0
-        self._grad_in3_buf_dev_n = 0
+        self._grad_ins_buf_dev_n = List[Int]()
         var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
             unsafe_from_address=0
         )
         self._out_ptr = null_p
         self._grad_out_ptr = null_p
-        self._grad_in0_ptr = null_p
-        self._grad_in1_ptr = null_p
-        self._grad_in2_ptr = null_p
-        self._grad_in3_ptr = null_p
+        self._grad_ins_ptr = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
+        # Pre-populate the List-of-List slots with ARITY entries (one
+        # per input slot). Unary leaves still get 1 entry; ARITY≥5
+        # nodes get the right count, no cap. ARITY=0 (impossible for
+        # Node — it's a compute node) would give empty lists, harmless.
+        comptime for _ in range(Self.Op.ARITY):
+            self._grad_ins_buf.append(List[Scalar[DT]]())
+            self._grad_ins_buf_dev.append(None)
+            self._grad_ins_buf_dev_n.append(0)
+            self._grad_ins_ptr.append(null_p)
         self._n_batch_buf = 0
         self.ts = TargetStorage.make_uninit()
 
@@ -348,84 +333,40 @@ struct Node[
                     self._grad_out_buf_dev, self._grad_out_buf_dev_n,
                     BATCH * Self.OUT_DIM, ctx,
                 )
-                ensure_gpu_buffer(
-                    self._grad_in0_buf_dev, self._grad_in0_buf_dev_n,
-                    BATCH * Self.IN0_DIM, ctx,
-                )
                 self._out_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._out_buf_dev.value().unsafe_ptr())
                 self._grad_out_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._grad_out_buf_dev.value().unsafe_ptr())
-                self._grad_in0_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_in0_buf_dev.value().unsafe_ptr())
-                comptime if Self.Op.ARITY >= 2:
+                # I.2.6: uniform comptime-for over ARITY input slots.
+                comptime for k in range(Self.Op.ARITY):
+                    comptime in_dim_k = Self.Op.IN_DIMS[k]
                     ensure_gpu_buffer(
-                        self._grad_in1_buf_dev, self._grad_in1_buf_dev_n,
-                        BATCH * Self.IN1_DIM, ctx,
+                        self._grad_ins_buf_dev[k],
+                        self._grad_ins_buf_dev_n[k],
+                        BATCH * in_dim_k, ctx,
                     )
-                    self._grad_in1_ptr = rebind[
+                    self._grad_ins_ptr[k] = rebind[
                         UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_in1_buf_dev.value().unsafe_ptr())
-                comptime if Self.Op.ARITY >= 3:
-                    ensure_gpu_buffer(
-                        self._grad_in2_buf_dev, self._grad_in2_buf_dev_n,
-                        BATCH * Self.IN2_DIM, ctx,
-                    )
-                    self._grad_in2_ptr = rebind[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_in2_buf_dev.value().unsafe_ptr())
-                comptime if Self.Op.ARITY >= 4:
-                    ensure_gpu_buffer(
-                        self._grad_in3_buf_dev, self._grad_in3_buf_dev_n,
-                        BATCH * Self.IN3_DIM, ctx,
-                    )
-                    self._grad_in3_ptr = rebind[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_in3_buf_dev.value().unsafe_ptr())
+                    ](self._grad_ins_buf_dev[k].value().unsafe_ptr())
                 self._n_batch_buf = BATCH
         else:
             if self._n_batch_buf < BATCH:
                 self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
                 self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
-                self._grad_in0_buf.resize(BATCH * Self.IN0_DIM, Scalar[DT](0.0))
                 self._out_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._out_buf.unsafe_ptr())
                 self._grad_out_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._grad_out_buf.unsafe_ptr())
-                self._grad_in0_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_in0_buf.unsafe_ptr())
-                comptime if Self.Op.ARITY >= 2:
-                    self._grad_in1_buf.resize(BATCH * Self.IN1_DIM, Scalar[DT](0.0))
-                    self._grad_in1_ptr = rebind[
+                comptime for k in range(Self.Op.ARITY):
+                    comptime in_dim_k = Self.Op.IN_DIMS[k]
+                    self._grad_ins_buf[k].resize(BATCH * in_dim_k, Scalar[DT](0.0))
+                    self._grad_ins_ptr[k] = rebind[
                         UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_in1_buf.unsafe_ptr())
-                else:
-                    # Unary: size grad_in1 to 1 so the pointer is non-degenerate
-                    # (callers must not dereference; ComputeGraph checks IN1_NAME first).
-                    if len(self._grad_in1_buf) < 1:
-                        self._grad_in1_buf.resize(1, Scalar[DT](0.0))
-                comptime if Self.Op.ARITY >= 3:
-                    self._grad_in2_buf.resize(BATCH * Self.IN2_DIM, Scalar[DT](0.0))
-                    self._grad_in2_ptr = rebind[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_in2_buf.unsafe_ptr())
-                else:
-                    if len(self._grad_in2_buf) < 1:
-                        self._grad_in2_buf.resize(1, Scalar[DT](0.0))
-                comptime if Self.Op.ARITY >= 4:
-                    self._grad_in3_buf.resize(BATCH * Self.IN3_DIM, Scalar[DT](0.0))
-                    self._grad_in3_ptr = rebind[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_in3_buf.unsafe_ptr())
-                else:
-                    if len(self._grad_in3_buf) < 1:
-                        self._grad_in3_buf.resize(1, Scalar[DT](0.0))
+                    ](self._grad_ins_buf[k].unsafe_ptr())
                 self._n_batch_buf = BATCH
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -434,17 +375,28 @@ struct Node[
     def grad_out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         return self._grad_out_ptr
 
+    # The grad_inK_ptr_via accessors read from the consolidated List
+    # at slot K. They return a null pointer when ARITY ≤ K (which
+    # callers must not dereference; ComputeGraph guards via kind >= K).
     def grad_in0_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in0_ptr
+        return self._grad_ins_ptr[0] if Self.Op.ARITY >= 1 else UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0)
 
     def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in1_ptr  # null for ARITY < 2
+        return self._grad_ins_ptr[1] if Self.Op.ARITY >= 2 else UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0)
 
     def grad_in2_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in2_ptr  # null for ARITY < 3
+        return self._grad_ins_ptr[2] if Self.Op.ARITY >= 3 else UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0)
 
     def grad_in3_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in3_ptr  # null for ARITY < 4
+        return self._grad_ins_ptr[3] if Self.Op.ARITY >= 4 else UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0)
 
     def forward_via[
         target: StaticString,
@@ -583,30 +535,21 @@ struct ExternalNode[
 
     var _out_buf: List[Scalar[DT]]
     var _grad_out_buf: List[Scalar[DT]]
-    var _grad_in0_buf: List[Scalar[DT]]
-    var _grad_in1_buf: List[Scalar[DT]]
-    var _grad_in2_buf: List[Scalar[DT]]
-    var _grad_in3_buf: List[Scalar[DT]]
+    # I.2.6: per-input grad bufs collapsed from 4 named fields into one
+    # List-of-List indexed by k ∈ [0, ARITY). See Node above for the
+    # same rationale.
+    var _grad_ins_buf: List[List[Scalar[DT]]]
 
     var _out_buf_dev: Optional[DeviceBuffer[DT]]
     var _grad_out_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_in0_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_in1_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_in2_buf_dev: Optional[DeviceBuffer[DT]]
-    var _grad_in3_buf_dev: Optional[DeviceBuffer[DT]]
+    var _grad_ins_buf_dev: List[Optional[DeviceBuffer[DT]]]
     var _out_buf_dev_n: Int
     var _grad_out_buf_dev_n: Int
-    var _grad_in0_buf_dev_n: Int
-    var _grad_in1_buf_dev_n: Int
-    var _grad_in2_buf_dev_n: Int
-    var _grad_in3_buf_dev_n: Int
+    var _grad_ins_buf_dev_n: List[Int]
 
     var _out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var _grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_in2_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_in3_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _grad_ins_ptr: List[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     var _n_batch_buf: Int
     var ts: TargetStorage
@@ -615,39 +558,29 @@ struct ExternalNode[
         comptime assert Self.in_names.size == Self.M.ARITY, (
             "ExternalNode: number of in_names must match M.ARITY"
         )
-        comptime assert Self.M.ARITY <= 4, (
-            "ExternalNode: ARITY > 4 not supported in I.2.5"
-        )
         self._module_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
             unsafe_from_address=0
         )
         self._out_buf = List[Scalar[DT]]()
         self._grad_out_buf = List[Scalar[DT]]()
-        self._grad_in0_buf = List[Scalar[DT]]()
-        self._grad_in1_buf = List[Scalar[DT]]()
-        self._grad_in2_buf = List[Scalar[DT]]()
-        self._grad_in3_buf = List[Scalar[DT]]()
+        self._grad_ins_buf = List[List[Scalar[DT]]]()
         self._out_buf_dev = None
         self._grad_out_buf_dev = None
-        self._grad_in0_buf_dev = None
-        self._grad_in1_buf_dev = None
-        self._grad_in2_buf_dev = None
-        self._grad_in3_buf_dev = None
+        self._grad_ins_buf_dev = List[Optional[DeviceBuffer[DT]]]()
         self._out_buf_dev_n = 0
         self._grad_out_buf_dev_n = 0
-        self._grad_in0_buf_dev_n = 0
-        self._grad_in1_buf_dev_n = 0
-        self._grad_in2_buf_dev_n = 0
-        self._grad_in3_buf_dev_n = 0
+        self._grad_ins_buf_dev_n = List[Int]()
         var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
             unsafe_from_address=0
         )
         self._out_ptr = null_p
         self._grad_out_ptr = null_p
-        self._grad_in0_ptr = null_p
-        self._grad_in1_ptr = null_p
-        self._grad_in2_ptr = null_p
-        self._grad_in3_ptr = null_p
+        self._grad_ins_ptr = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
+        comptime for _ in range(Self.M.ARITY):
+            self._grad_ins_buf.append(List[Scalar[DT]]())
+            self._grad_ins_buf_dev.append(None)
+            self._grad_ins_buf_dev_n.append(0)
+            self._grad_ins_ptr.append(null_p)
         self._n_batch_buf = 0
         self.ts = TargetStorage.make_uninit()
 
@@ -691,82 +624,40 @@ struct ExternalNode[
                     self._grad_out_buf_dev, self._grad_out_buf_dev_n,
                     BATCH * Self.OUT_DIM, ctx,
                 )
-                ensure_gpu_buffer(
-                    self._grad_in0_buf_dev, self._grad_in0_buf_dev_n,
-                    BATCH * Self.IN0_DIM, ctx,
-                )
                 self._out_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._out_buf_dev.value().unsafe_ptr())
                 self._grad_out_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._grad_out_buf_dev.value().unsafe_ptr())
-                self._grad_in0_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_in0_buf_dev.value().unsafe_ptr())
-                comptime if Self.M.ARITY >= 2:
+                # I.2.6: uniform comptime-for over ARITY input slots.
+                comptime for k in range(Self.M.ARITY):
+                    comptime in_dim_k = Self.M.IN_DIMS[k]
                     ensure_gpu_buffer(
-                        self._grad_in1_buf_dev, self._grad_in1_buf_dev_n,
-                        BATCH * Self.IN1_DIM, ctx,
+                        self._grad_ins_buf_dev[k],
+                        self._grad_ins_buf_dev_n[k],
+                        BATCH * in_dim_k, ctx,
                     )
-                    self._grad_in1_ptr = rebind[
+                    self._grad_ins_ptr[k] = rebind[
                         UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_in1_buf_dev.value().unsafe_ptr())
-                comptime if Self.M.ARITY >= 3:
-                    ensure_gpu_buffer(
-                        self._grad_in2_buf_dev, self._grad_in2_buf_dev_n,
-                        BATCH * Self.IN2_DIM, ctx,
-                    )
-                    self._grad_in2_ptr = rebind[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_in2_buf_dev.value().unsafe_ptr())
-                comptime if Self.M.ARITY >= 4:
-                    ensure_gpu_buffer(
-                        self._grad_in3_buf_dev, self._grad_in3_buf_dev_n,
-                        BATCH * Self.IN3_DIM, ctx,
-                    )
-                    self._grad_in3_ptr = rebind[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_in3_buf_dev.value().unsafe_ptr())
+                    ](self._grad_ins_buf_dev[k].value().unsafe_ptr())
                 self._n_batch_buf = BATCH
         else:
             if self._n_batch_buf < BATCH:
                 self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
                 self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
-                self._grad_in0_buf.resize(BATCH * Self.IN0_DIM, Scalar[DT](0.0))
                 self._out_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._out_buf.unsafe_ptr())
                 self._grad_out_ptr = rebind[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](self._grad_out_buf.unsafe_ptr())
-                self._grad_in0_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_in0_buf.unsafe_ptr())
-                comptime if Self.M.ARITY >= 2:
-                    self._grad_in1_buf.resize(BATCH * Self.IN1_DIM, Scalar[DT](0.0))
-                    self._grad_in1_ptr = rebind[
+                comptime for k in range(Self.M.ARITY):
+                    comptime in_dim_k = Self.M.IN_DIMS[k]
+                    self._grad_ins_buf[k].resize(BATCH * in_dim_k, Scalar[DT](0.0))
+                    self._grad_ins_ptr[k] = rebind[
                         UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_in1_buf.unsafe_ptr())
-                else:
-                    if len(self._grad_in1_buf) < 1:
-                        self._grad_in1_buf.resize(1, Scalar[DT](0.0))
-                comptime if Self.M.ARITY >= 3:
-                    self._grad_in2_buf.resize(BATCH * Self.IN2_DIM, Scalar[DT](0.0))
-                    self._grad_in2_ptr = rebind[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_in2_buf.unsafe_ptr())
-                else:
-                    if len(self._grad_in2_buf) < 1:
-                        self._grad_in2_buf.resize(1, Scalar[DT](0.0))
-                comptime if Self.M.ARITY >= 4:
-                    self._grad_in3_buf.resize(BATCH * Self.IN3_DIM, Scalar[DT](0.0))
-                    self._grad_in3_ptr = rebind[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_in3_buf.unsafe_ptr())
-                else:
-                    if len(self._grad_in3_buf) < 1:
-                        self._grad_in3_buf.resize(1, Scalar[DT](0.0))
+                    ](self._grad_ins_buf[k].unsafe_ptr())
                 self._n_batch_buf = BATCH
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -776,16 +667,24 @@ struct ExternalNode[
         return self._grad_out_ptr
 
     def grad_in0_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in0_ptr
+        return self._grad_ins_ptr[0] if Self.M.ARITY >= 1 else UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0)
 
     def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in1_ptr
+        return self._grad_ins_ptr[1] if Self.M.ARITY >= 2 else UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0)
 
     def grad_in2_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in2_ptr
+        return self._grad_ins_ptr[2] if Self.M.ARITY >= 3 else UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0)
 
     def grad_in3_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in3_ptr
+        return self._grad_ins_ptr[3] if Self.M.ARITY >= 4 else UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0)
 
     def forward_via[
         target: StaticString,
