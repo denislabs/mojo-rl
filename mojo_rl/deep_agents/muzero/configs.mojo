@@ -750,6 +750,7 @@ struct MuZeroTicTacToeConfig[
     NODES: Int = 128,
     C_PUCT: Float64 = 1.0,
     POLICY: MuZeroPolicyMode = MuZeroPUCTPolicy,
+    AUG: BoardAugmenter = D4SquareAugmenter[3, 3],
 ](MuZeroConfig):
     """MuZero for TicTacToe via learned dynamics + self-play.
 
@@ -860,7 +861,10 @@ struct MuZeroTicTacToeConfig[
     # episode is replicated 8× under rotations + reflections, fixing
     # the P0/P1 self-play distribution skew that surfaced in the
     # 2026-05-21 reanalyze-amplifies-bias diagnostic.
-    comptime Aug = D4SquareAugmenter[3, 3]
+    # Parameterized via ``AUG`` so the example can swap in
+    # ``IdentityAugmenter`` for differential diagnostics (e.g. the
+    # 2026-05-25 GPU pred-weight runaway investigation).
+    comptime Aug = Self.AUG
     comptime PolicyMode = Self.POLICY
 
     comptime USE_REANALYZE: Bool = False
