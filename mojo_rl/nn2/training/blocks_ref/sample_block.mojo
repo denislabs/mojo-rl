@@ -1,0 +1,88 @@
+"""SampleBlock — uniform trait surface for replay-buffer-owning sample
+blocks consumed by the unified SAC trainer (and future off-policy
+trainers).
+
+Each conforming block owns its replay buffer (uniform CPU, uniform GPU,
+or PER+GPU today; PER+CPU + sequence/NStep future) and exposes:
+
+  - `setup(learning_starts, ctx?)`            — allocate buffers
+  - `add(obs, action, r, nxt, d, ctx?)`       — push transition
+  - `step(state)`                             — sample into state.mb_*
+                                                  (PER also writes mb_w
+                                                  + flips state.has_per)
+  - `update_priorities(state)`  default pass  — refresh sum-tree (PER)
+  - `set_beta(beta)`           default no-op  — IS β anneal (PER)
+
+The trait's `step` / `update_priorities` are deliberately NOT comptime-
+parameterised on `target`: every conforming block has a fixed kernel
+target (CPU-only or GPU-only). The trainer's own `target` selects which
+block type to instantiate at the type level; the block's `step` then
+does the right thing internally. This keeps the trait minimal and lets
+unified trainers stay agnostic to the sample block's compute target.
+
+`Optional[DeviceContext]` on `setup`/`add` mirrors the matmul-stdlib
+idiom: CPU blocks ignore `ctx`, GPU blocks require it (raise if None).
+Callers can pass `ctx=trainer.ctx` (an `Optional[DeviceContext]` field
+on GPU trainers) unconditionally — Mojo's implicit promotion handles
+the wrapping when needed.
+
+`Defaultable` IS a parent trait — the unified SAC trainer calls
+`Self.SAMPLE()` to default-construct the sample block in its `__init__`,
+which requires the trait to advertise a no-arg constructor.
+"""
+
+from std.gpu.host import DeviceContext
+
+from ...constants import DT
+from ..trainer_block import TrainerState
+
+
+trait SampleBlock(Defaultable, Movable, ImplicitlyDestructible):
+    comptime OBS: Int
+    comptime ACT: Int
+    comptime BATCH: Int
+
+    def setup(
+        mut self,
+        learning_starts: Int,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ...
+
+    def add(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        ref action: List[Scalar[DT]],
+        reward: Scalar[DT],
+        ref next_obs: List[Scalar[DT]],
+        done: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ...
+
+    def step(
+        mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
+    ) raises:
+        ...
+
+    def update_priorities(
+        mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
+    ) raises:
+        pass
+
+    def set_beta(mut self, beta: Scalar[DT]):
+        pass
+
+    def configure_per(
+        mut self,
+        alpha: Scalar[DT] = Scalar[DT](0.6),
+        beta: Scalar[DT] = Scalar[DT](0.4),
+        epsilon: Scalar[DT] = Scalar[DT](1e-6),
+    ):
+        """Override PER hyperparameters before `setup()`. No-op for
+        uniform blocks. Allows the unified trainer's `make()` to apply
+        PER args unconditionally without comptime-branching on the
+        block type."""
+        pass

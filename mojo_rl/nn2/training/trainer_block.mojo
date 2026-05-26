@@ -31,6 +31,15 @@ struct TrainerState[
     var mb_d:  Scratch["mb_d",  Self.BATCH, True]
     var mb_y:  Scratch["mb_y",  Self.BATCH, True]
 
+    # PER hooks. `mb_w` carries per-sample IS weights into the critic update;
+    # `td_residuals` carries per-sample `Q1(s,a) − y` back out of the critic
+    # update so the sampler block can refresh sum-tree priorities. Both are
+    # always allocated (BATCH * 4 B each) so opt-in PER trainers can read/write
+    # them without conditional allocation; uniform trainers simply ignore them.
+    var mb_w:         Scratch["mb_w",         Self.BATCH, True]
+    var td_residuals: Scratch["td_residuals", Self.BATCH, True]
+    var has_per: Bool
+
     var alpha:         Scalar[DT]
     var log_prob_mean: Scalar[DT]
     var critic_loss:   Scalar[DT]
@@ -47,6 +56,9 @@ struct TrainerState[
         self.mb_sp = Scratch["mb_sp", Self.BATCH * Self.OBS, True]()
         self.mb_d  = Scratch["mb_d",  Self.BATCH, True]()
         self.mb_y  = Scratch["mb_y",  Self.BATCH, True]()
+        self.mb_w         = Scratch["mb_w",         Self.BATCH, True]()
+        self.td_residuals = Scratch["td_residuals", Self.BATCH, True]()
+        self.has_per = False
         self.alpha = Scalar[DT](0.0)
         self.log_prob_mean = Scalar[DT](0.0)
         self.critic_loss = Scalar[DT](0.0)
@@ -64,6 +76,8 @@ struct TrainerState[
         s.mb_sp = Scratch["mb_sp", Self.BATCH * Self.OBS, True].make_cpu()
         s.mb_d  = Scratch["mb_d",  Self.BATCH, True].make_cpu()
         s.mb_y  = Scratch["mb_y",  Self.BATCH, True].make_cpu()
+        s.mb_w         = Scratch["mb_w",         Self.BATCH, True].make_cpu()
+        s.td_residuals = Scratch["td_residuals", Self.BATCH, True].make_cpu()
         return s^
 
     @staticmethod
@@ -75,5 +89,7 @@ struct TrainerState[
         s.mb_sp = Scratch["mb_sp", Self.BATCH * Self.OBS, True].make_gpu(ctx)
         s.mb_d  = Scratch["mb_d",  Self.BATCH, True].make_gpu(ctx)
         s.mb_y  = Scratch["mb_y",  Self.BATCH, True].make_gpu(ctx)
+        s.mb_w         = Scratch["mb_w",         Self.BATCH, True].make_gpu(ctx)
+        s.td_residuals = Scratch["td_residuals", Self.BATCH, True].make_gpu(ctx)
         s.ctx = ctx
         return s^

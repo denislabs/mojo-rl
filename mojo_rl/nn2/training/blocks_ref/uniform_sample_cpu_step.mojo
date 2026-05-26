@@ -1,18 +1,20 @@
 """UniformSampleCpuStep — owns a CPUReplay, samples a uniform minibatch.
 
-Trainer's `record(...)` delegates to `self.sample_blk.add(...)`. Sets
-`state.did_step = False` when buffer is under-filled or before
-learning_starts.
+Conforms to SampleBlock (Step 1 of SAC unification). `ctx` args on
+`setup`/`add` are ignored — this block is CPU-only.
 """
+
+from std.gpu.host import DeviceContext
 
 from ...constants import DT
 from ...data.cpu_replay import CPUReplay
 from ..trainer_block import TrainerState
+from .sample_block import SampleBlock
 
 
 struct UniformSampleCpuStep[
     OBS_: Int, ACT_: Int, BATCH_: Int, CAP: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
+](SampleBlock, Defaultable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
@@ -30,7 +32,12 @@ struct UniformSampleCpuStep[
         )
         self.learning_starts = 0
 
-    def setup(mut self, learning_starts: Int) raises:
+    def setup(
+        mut self,
+        learning_starts: Int,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        # CPU-only block; ctx ignored.
         self.buf = CPUReplay[Self.OBS, Self.ACT, Self.CAP].new()
         self.learning_starts = learning_starts
 
@@ -41,7 +48,9 @@ struct UniformSampleCpuStep[
         reward: Scalar[DT],
         ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
-    ):
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        # CPU-only block; ctx ignored.
         self.buf.add(obs, action, reward, next_obs, done)
 
     def step(

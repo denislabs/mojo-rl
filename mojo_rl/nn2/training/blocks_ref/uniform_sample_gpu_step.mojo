@@ -1,8 +1,9 @@
 """UniformSampleGpuStep — GPU variant of UniformSampleCpuStep.
 
-Owns Optional[GPUReplay]. `setup(ctx, learning_starts)` allocates; `add`
-pushes via the trainer-supplied ctx. `step` reads device-side state.mb_*
-buffers and samples in-place.
+Conforms to SampleBlock (Step 1 of SAC unification). `ctx` is required
+on `setup`/`add` — raises if None. Internal H2D conversion (List →
+UnsafePointer for GPUReplay.add) moved here from the trainer's record
+path so the SampleBlock surface stays uniform across CPU/GPU.
 """
 
 from std.gpu.host import DeviceContext
@@ -10,11 +11,12 @@ from std.gpu.host import DeviceContext
 from ...constants import DT
 from ...data.gpu_replay import GPUReplay
 from ..trainer_block import TrainerState
+from .sample_block import SampleBlock
 
 
 struct UniformSampleGpuStep[
     OBS_: Int, ACT_: Int, BATCH_: Int, CAP: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
+](SampleBlock, Defaultable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
@@ -26,22 +28,39 @@ struct UniformSampleGpuStep[
         self.buf = None
         self.learning_starts = 0
 
-    def setup(mut self, ctx: DeviceContext, learning_starts: Int) raises:
+    def setup(
+        mut self,
+        learning_starts: Int,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        if not ctx:
+            raise Error("UniformSampleGpuStep.setup: ctx required for GPU")
         self.buf = GPUReplay[Self.OBS, Self.ACT, Self.CAP].new(
-            ctx, batch_capacity=Self.BATCH
+            ctx.value(), batch_capacity=Self.BATCH
         )
         self.learning_starts = learning_starts
 
     def add(
         mut self,
-        ctx: DeviceContext,
-        s: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        a: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        r: Scalar[DT],
-        sp: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        d: Scalar[DT],
+        ref obs: List[Scalar[DT]],
+        ref action: List[Scalar[DT]],
+        reward: Scalar[DT],
+        ref next_obs: List[Scalar[DT]],
+        done: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        self.buf.value().add(ctx, s, a, r, sp, d)
+        if not ctx:
+            raise Error("UniformSampleGpuStep.add: ctx required for GPU")
+        var obs_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            obs.unsafe_ptr()
+        )
+        var act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            action.unsafe_ptr()
+        )
+        var nxt_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            next_obs.unsafe_ptr()
+        )
+        self.buf.value().add(ctx.value(), obs_p, act_p, reward, nxt_p, done)
 
     def step(
         mut self,

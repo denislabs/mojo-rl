@@ -9,8 +9,10 @@ Bit-identical to blocks/* (TrainerGraph-based), validated SAC seed=42
 30k Pendulum → -169.04118.
 """
 
+from .sample_block          import SampleBlock
 from .uniform_sample_cpu_step import UniformSampleCpuStep
 from .uniform_sample_gpu_step import UniformSampleGpuStep
+from .per_sample_gpu_step     import PerSampleGpuStep
 from .target_y_step          import TargetYStep
 from .twin_critic_step       import TwinCriticStep
 from .sac_actor_step         import SACActorStep
