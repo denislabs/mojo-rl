@@ -65,11 +65,21 @@ struct SACActorStepBlock[
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
     ) raises:
-        var res = self.inner_ptr[].forward_backward[target, OPT=Adam](
-            self.actor_ptr[], self.actor_opt_ptr[],
-            self.critic1_ptr[], self.critic2_ptr[],
-            state.mb_s.cpu_ptr(),
-            state.alpha,
-        )
-        state.actor_loss = res.loss
-        state.log_prob_mean = res.log_prob_mean
+        comptime if target == "cpu":
+            var res = self.inner_ptr[].forward_backward[target, OPT=Adam](
+                self.actor_ptr[], self.actor_opt_ptr[],
+                self.critic1_ptr[], self.critic2_ptr[],
+                state.mb_s.cpu_ptr(),
+                state.alpha,
+            )
+            state.actor_loss = res.loss
+            state.log_prob_mean = res.log_prob_mean
+        else:
+            var res = self.inner_ptr[].forward_backward[target, OPT=Adam](
+                self.actor_ptr[], self.actor_opt_ptr[],
+                self.critic1_ptr[], self.critic2_ptr[],
+                state.mb_s.dev_ptr(),
+                state.alpha,
+            )
+            state.actor_loss = res.loss
+            state.log_prob_mean = res.log_prob_mean

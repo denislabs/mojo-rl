@@ -67,12 +67,23 @@ struct TwinCriticStepBlock[
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
     ) raises:
-        var mb_y_t = TileTensor(
-            state.mb_y.cpu_ptr(), row_major[Self.BATCH, 1]()
-        )
-        var loss = self.inner_ptr[].step[target](
-            self.critic1_ptr[], self.critic1_opt_ptr[],
-            self.critic2_ptr[], self.critic2_opt_ptr[],
-            state.mb_s.cpu_ptr(), state.mb_a.cpu_ptr(), mb_y_t,
-        )
-        state.critic_loss = loss
+        comptime if target == "cpu":
+            var mb_y_t = TileTensor(
+                state.mb_y.cpu_ptr(), row_major[Self.BATCH, 1]()
+            )
+            var loss = self.inner_ptr[].step[target](
+                self.critic1_ptr[], self.critic1_opt_ptr[],
+                self.critic2_ptr[], self.critic2_opt_ptr[],
+                state.mb_s.cpu_ptr(), state.mb_a.cpu_ptr(), mb_y_t,
+            )
+            state.critic_loss = loss
+        else:
+            var mb_y_t = TileTensor(
+                state.mb_y.dev_ptr(), row_major[Self.BATCH, 1]()
+            )
+            var loss = self.inner_ptr[].step[target](
+                self.critic1_ptr[], self.critic1_opt_ptr[],
+                self.critic2_ptr[], self.critic2_opt_ptr[],
+                state.mb_s.dev_ptr(), state.mb_a.dev_ptr(), mb_y_t,
+            )
+            state.critic_loss = loss

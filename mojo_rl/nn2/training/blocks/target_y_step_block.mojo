@@ -59,12 +59,23 @@ struct TargetYStepBlock[
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
     ) raises:
-        self.inner_ptr[].step[target](
-            self.actor_ptr[],
-            self.critic1t_ptr[],
-            self.critic2t_ptr[],
-            state.mb_sp.cpu_ptr(),
-            state.mb_r.cpu_ptr(),
-            state.alpha,
-            state.mb_y.cpu_ptr(),
-        )
+        comptime if target == "cpu":
+            self.inner_ptr[].step[target](
+                self.actor_ptr[],
+                self.critic1t_ptr[],
+                self.critic2t_ptr[],
+                state.mb_sp.cpu_ptr(),
+                state.mb_r.cpu_ptr(),
+                state.alpha,
+                state.mb_y.cpu_ptr(),
+            )
+        else:
+            self.inner_ptr[].step[target](
+                self.actor_ptr[],
+                self.critic1t_ptr[],
+                self.critic2t_ptr[],
+                state.mb_sp.dev_ptr(),
+                state.mb_r.dev_ptr(),
+                state.alpha,
+                state.mb_y.dev_ptr(),
+            )
