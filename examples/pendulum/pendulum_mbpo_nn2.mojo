@@ -1,9 +1,8 @@
 """MBPO training on Pendulum V1 via the nn2 CPU off-policy driver.
 
-Phase I.1.d — first run of the nn2 MBPO trainer.  Uses the SAME generic
-driver as `pendulum_sac_nn2_driver.mojo` (the trainer conforms to
-`OffPolicyTrainable`); only the trainer type swaps from `SACTrainer` to
-`MBPOTrainer`.
+Uses the unified `MBPOTrainerV2RV2R` (ref-based blocks). Same generic
+driver as `pendulum_sac_nn2_driver_v2r.mojo` (the trainer conforms to
+`OffPolicyTrainable`).
 
 Hyperparameters mirror the deep_agents reference where applicable:
 
@@ -28,7 +27,7 @@ from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.elementwise import Elementwise
 from mojo_rl.nn2.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.mbpo_trainer import MBPOTrainer
+from mojo_rl.nn2.training.mbpo_trainer_v2r import MBPOTrainerV2R
 from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
 
 from mojo_rl.envs.pendulum import PendulumEnv
@@ -75,7 +74,7 @@ def main() raises:
     print("nn2 MBPO (Phase I.1.d) — Pendulum V1 (CPU)")
     print("=" * 70)
 
-    var trainer = MBPOTrainer[
+    var trainer = MBPOTrainerV2R[
         ActorNet, CriticNet, DynNet,
         OBS_DIM, ACT_DIM, BATCH, REPLAY_CAP, SYNTH_CAP,
         N_ENSEMBLE, NUM_ELITES, REAL_RATIO_PCT,
@@ -100,7 +99,7 @@ def main() raises:
     )
     var env = PendulumEnv[DT]()
 
-    alias _Trainer = MBPOTrainer[
+    alias _Trainer = MBPOTrainerV2R[
         ActorNet, CriticNet, DynNet,
         OBS_DIM, ACT_DIM, BATCH, REPLAY_CAP, SYNTH_CAP,
         N_ENSEMBLE, NUM_ELITES, REAL_RATIO_PCT,
@@ -121,8 +120,8 @@ def main() raises:
     var final_mean = trainer.mean_return()
     print("Final mean ep return (last 10): ", final_mean)
     print("Episodes completed:             ", trainer.ep_count())
-    print("Real buffer size:               ", trainer.sac.buf.size)
-    print("Synthetic buffer size:          ", trainer.synth_buf.size)
+    print("Real buffer size:               ", trainer.sample_blk.real_buf.size)
+    print("Synthetic buffer size:          ", trainer.sample_blk.synth_buf.size)
     print("=" * 70)
     if final_mean > -200.0:
         print("EXCELLENT — solved swing-up (>-200).")

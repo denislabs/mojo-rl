@@ -23,6 +23,7 @@ Shared by TD3 (uses critic1 only, identical math).
 """
 
 from std.memory import alloc
+from std.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
 from ..constants import DT
@@ -51,13 +52,15 @@ struct DDPGActorLoss[
     var ts: TargetStorage
 
     def __init__(out self):
-        comptime assert Self.CRITIC.IN_DIMS[0] == Self.SA_DIM, (
-            "DDPGActorLoss: CRITIC.IN_DIM must equal OBS+ACT"
+        comptime assert (
+            Self.CRITIC.IN_DIMS[0] == Self.SA_DIM
+        ), "DDPGActorLoss: CRITIC.IN_DIM must equal OBS+ACT"
+        comptime assert (
+            Self.CRITIC.OUT_DIM == 1
+        ), "DDPGActorLoss: CRITIC.OUT_DIM must equal 1"
+        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=0
         )
-        comptime assert Self.CRITIC.OUT_DIM == 1, (
-            "DDPGActorLoss: CRITIC.OUT_DIM must equal 1"
-        )
-        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
         self._mb_a = null_p
         self._mb_sa = null_p
         self._mb_q = null_p
@@ -67,10 +70,12 @@ struct DDPGActorLoss[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString]() raises -> Self:
-        comptime assert target == "cpu", (
-            "DDPGActorLoss CPU only — GPU path deferred"
-        )
+    def make[
+        target: StaticString
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        comptime assert (
+            target == "cpu"
+        ), "DDPGActorLoss CPU only — GPU path deferred"
         var b = Self()
         b._mb_a = alloc[Scalar[DT]](Self.BATCH * Self.ACT_DIM)
         b._mb_sa = alloc[Scalar[DT]](Self.BATCH * Self.SA_DIM)
@@ -119,12 +124,18 @@ struct DDPGActorLoss[
 
         # Forward: a = actor(s); sa = concat(s, a); q = critic(sa).
         var mb_s_t = TileTensor(mb_s_ptr, row_major[Self.BATCH, Self.OBS_DIM]())
-        var mb_a_t = TileTensor(self._mb_a, row_major[Self.BATCH, Self.ACT_DIM]())
+        var mb_a_t = TileTensor(
+            self._mb_a, row_major[Self.BATCH, Self.ACT_DIM]()
+        )
         actor.forward[target, Self.BATCH](mb_s_t, output=mb_a_t)
         concat_sa[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH](
-            mb_s_ptr, self._mb_a, self._mb_sa,
+            mb_s_ptr,
+            self._mb_a,
+            self._mb_sa,
         )
-        var mb_sa_t = TileTensor(self._mb_sa, row_major[Self.BATCH, Self.SA_DIM]())
+        var mb_sa_t = TileTensor(
+            self._mb_sa, row_major[Self.BATCH, Self.SA_DIM]()
+        )
         var mb_q_t = TileTensor(self._mb_q, row_major[Self.BATCH, 1]())
         critic.forward[target, Self.BATCH](mb_sa_t, output=mb_q_t)
 
@@ -140,10 +151,15 @@ struct DDPGActorLoss[
             self._mb_grad_q[b] = -inv_B
 
         # critic.vjp[mode="input_only"]: write ∂q/∂sa, skip critic params.
-        var mb_grad_q_t = TileTensor(self._mb_grad_q, row_major[Self.BATCH, 1]())
-        var mb_grad_sa_t = TileTensor(self._mb_grad_sa, row_major[Self.BATCH, Self.SA_DIM]())
+        var mb_grad_q_t = TileTensor(
+            self._mb_grad_q, row_major[Self.BATCH, 1]()
+        )
+        var mb_grad_sa_t = TileTensor(
+            self._mb_grad_sa, row_major[Self.BATCH, Self.SA_DIM]()
+        )
         critic.vjp[target, Self.BATCH, mode="input_only"](
-            mb_grad_q_t, mb_grad_sa_t,
+            mb_grad_q_t,
+            mb_grad_sa_t,
         )
 
         # actor.backward: route ∂q/∂a (= grad_sa[:, OBS:]) into actor's grad-out.
@@ -158,12 +174,15 @@ struct DDPGActorLoss[
         # already consumed it).
         for b in range(Self.BATCH):
             for j in range(Self.ACT_DIM):
-                self._mb_a[b * Self.ACT_DIM + j] = (
-                    self._mb_grad_sa[b * Self.SA_DIM + Self.OBS_DIM + j]
-                )
-        var mb_grad_a_t = TileTensor(self._mb_a, row_major[Self.BATCH, Self.ACT_DIM]())
+                self._mb_a[b * Self.ACT_DIM + j] = self._mb_grad_sa[
+                    b * Self.SA_DIM + Self.OBS_DIM + j
+                ]
+        var mb_grad_a_t = TileTensor(
+            self._mb_a, row_major[Self.BATCH, Self.ACT_DIM]()
+        )
         var mb_grad_s_unused_t = TileTensor(
-            self._mb_grad_s_unused, row_major[Self.BATCH, Self.OBS_DIM](),
+            self._mb_grad_s_unused,
+            row_major[Self.BATCH, Self.OBS_DIM](),
         )
         actor.vjp[target, Self.BATCH](mb_grad_a_t, mb_grad_s_unused_t)
 
