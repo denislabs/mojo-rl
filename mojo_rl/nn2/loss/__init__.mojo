@@ -5,6 +5,7 @@ from .squashed_gaussian import (
     squashed_gaussian_backward,
 )
 from .cross_entropy import CrossEntropyLoss
+from .gaussian_nll_loss import GaussianNLLLoss
 from .mse import MSELoss
 from .sac_actor_loss import (
     squashed_gaussian_sample,
