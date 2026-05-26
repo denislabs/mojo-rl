@@ -235,10 +235,20 @@ struct Node[
     comptime IN3_NAME = (
         Self.in_names[3] if Self.in_names.size > 3 else StaticString("")
     )
-    comptime IN0_DIM = Self.Op.IN_DIM
-    comptime IN1_DIM = Self.Op.IN1_DIM   # 0 when Op.ARITY < 2 (trait default)
-    comptime IN2_DIM = Self.Op.IN2_DIM   # 0 when Op.ARITY < 3 (trait default)
-    comptime IN3_DIM = Self.Op.IN3_DIM   # 0 when Op.ARITY < 4 (trait default)
+    # I.2.6 — IN0..3_DIM derived from Op.IN_DIMS (trait-provided InlineArray).
+    # Safe-default to 0 when ARITY < K+1 (matches the GraphNode trait surface).
+    comptime IN0_DIM = (
+        Self.Op.IN_DIMS[0] if Self.Op.ARITY > 0 else 0
+    )
+    comptime IN1_DIM = (
+        Self.Op.IN_DIMS[1] if Self.Op.ARITY > 1 else 0
+    )
+    comptime IN2_DIM = (
+        Self.Op.IN_DIMS[2] if Self.Op.ARITY > 2 else 0
+    )
+    comptime IN3_DIM = (
+        Self.Op.IN_DIMS[3] if Self.Op.ARITY > 3 else 0
+    )
     comptime OUT_DIM = Self.Op.OUT_DIM
     comptime KIND = Self.Op.ARITY
 
@@ -522,10 +532,19 @@ struct ExternalNode[
     comptime IN3_NAME = (
         Self.in_names[3] if Self.in_names.size > 3 else StaticString("")
     )
-    comptime IN0_DIM = Self.M.IN_DIM
-    comptime IN1_DIM = Self.M.IN1_DIM    # 0 when M.ARITY < 2 (trait default)
-    comptime IN2_DIM = Self.M.IN2_DIM    # 0 when M.ARITY < 3 (trait default)
-    comptime IN3_DIM = Self.M.IN3_DIM    # 0 when M.ARITY < 4 (trait default)
+    # I.2.6 — IN0..3_DIM derived from M.IN_DIMS (trait-provided InlineArray).
+    comptime IN0_DIM = (
+        Self.M.IN_DIMS[0] if Self.M.ARITY > 0 else 0
+    )
+    comptime IN1_DIM = (
+        Self.M.IN_DIMS[1] if Self.M.ARITY > 1 else 0
+    )
+    comptime IN2_DIM = (
+        Self.M.IN_DIMS[2] if Self.M.ARITY > 2 else 0
+    )
+    comptime IN3_DIM = (
+        Self.M.IN_DIMS[3] if Self.M.ARITY > 3 else 0
+    )
     comptime OUT_DIM = Self.M.OUT_DIM
     comptime KIND = Self.M.ARITY
 

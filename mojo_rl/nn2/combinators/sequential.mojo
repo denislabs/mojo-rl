@@ -33,7 +33,7 @@ from ..core.target_storage import TargetStorage, assert_tag_for
 struct Sequential[*MODULES: Module](Module):
     comptime ARITY: Int = 1
     comptime N = Self.MODULES.size
-    comptime IN_DIM = Self.MODULES[0].IN_DIM
+    comptime IN_DIM = Self.MODULES[0].IN_DIMS[0]
     comptime OUT_DIM = Self.MODULES[Self.N - 1].OUT_DIM
 
     var children: Tuple[*Self.MODULES]
@@ -52,7 +52,7 @@ struct Sequential[*MODULES: Module](Module):
         comptime if Self.N >= 2:
             comptime for i in range(Self.N - 1):
                 comptime assert (
-                    Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIM
+                    Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIMS[0]
                 ), "Sequential: adjacent child dims must match"
         self.children = Tuple[*Self.MODULES]()
         self.mid_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
@@ -66,7 +66,7 @@ struct Sequential[*MODULES: Module](Module):
         comptime if Self.N >= 2:
             comptime for i in range(Self.N - 1):
                 comptime assert (
-                    Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIM
+                    Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIMS[0]
                 ), "Sequential: adjacent child dims must match"
         self.children = Tuple(*children^)
         self.mid_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
@@ -85,7 +85,7 @@ struct Sequential[*MODULES: Module](Module):
         comptime if Self.N >= 2:
             comptime for i in range(Self.N - 1):
                 comptime assert (
-                    Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIM
+                    Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIMS[0]
                 ), "Sequential: adjacent child dims must match"
         self.children = Tuple(*children^)
         self.mid_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()

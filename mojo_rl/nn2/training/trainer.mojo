@@ -68,7 +68,7 @@ struct Trainer[
     target: StaticString = "cpu",
     POLICY: AMPPolicy = NoAMP,
 ](Movable & ImplicitlyDestructible):
-    comptime IN_DIM = Self.NET.IN_DIM
+    comptime IN_DIM = Self.NET.IN_DIMS[0]
     comptime OUT_DIM = Self.NET.OUT_DIM
 
     var net: Self.NET

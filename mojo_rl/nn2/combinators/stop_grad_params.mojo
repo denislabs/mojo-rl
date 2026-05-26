@@ -35,7 +35,7 @@ from ..core.target_storage import TargetStorage, assert_tag_for
 
 struct StopGradParams[Inner: Module](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIM = Self.Inner.IN_DIM
+    comptime IN_DIM = Self.Inner.IN_DIMS[0]
     comptime OUT_DIM = Self.Inner.OUT_DIM
 
     var inner: Self.Inner

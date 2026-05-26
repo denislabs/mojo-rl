@@ -79,7 +79,7 @@ def _parallel_split_kernel[
 
 struct Parallel[A: Module, B: Module](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIM = Self.A.IN_DIM
+    comptime IN_DIM = Self.A.IN_DIMS[0]
     comptime OUT_DIM = Self.A.OUT_DIM + Self.B.OUT_DIM
     comptime OUT_A = Self.A.OUT_DIM
     comptime OUT_B = Self.B.OUT_DIM
@@ -102,8 +102,8 @@ struct Parallel[A: Module, B: Module](Module):
 
     def __init__(out self):
         comptime assert (
-            Self.A.IN_DIM == Self.B.IN_DIM
-        ), "Parallel requires A.IN_DIM == B.IN_DIM"
+            Self.A.IN_DIMS[0] == Self.B.IN_DIMS[0]
+        ), "Parallel requires A.IN_DIMS[0] == B.IN_DIMS[0]"
         self.branch_a = Self.A()
         self.branch_b = Self.B()
         self.out_a_cpu = alloc[Scalar[DT]](1)

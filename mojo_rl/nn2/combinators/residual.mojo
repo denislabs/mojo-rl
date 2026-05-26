@@ -40,7 +40,7 @@ def _elementwise_add_kernel[
 
 struct Residual[Inner: Module](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIM = Self.Inner.IN_DIM
+    comptime IN_DIM = Self.Inner.IN_DIMS[0]
     comptime OUT_DIM = Self.Inner.OUT_DIM
 
     var inner: Self.Inner
@@ -53,8 +53,8 @@ struct Residual[Inner: Module](Module):
 
     def __init__(out self):
         comptime assert (
-            Self.Inner.IN_DIM == Self.Inner.OUT_DIM
-        ), "Residual requires Inner.IN_DIM == Inner.OUT_DIM"
+            Self.Inner.IN_DIMS[0] == Self.Inner.OUT_DIM
+        ), "Residual requires Inner.IN_DIMS[0] == Inner.OUT_DIM"
         self.inner = Self.Inner()
         self.mid_cpu = alloc[Scalar[DT]](1)
         self.mid_dev = None

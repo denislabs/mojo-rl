@@ -55,7 +55,7 @@ def _cumulative_offset[index: Int, *BRANCHES: Module]() -> Int:
 struct BranchConcat[*BRANCHES: Module](Module):
     comptime ARITY: Int = 1
     comptime N = Self.BRANCHES.size
-    comptime IN_DIM = Self.BRANCHES[0].IN_DIM
+    comptime IN_DIM = Self.BRANCHES[0].IN_DIMS[0]
     comptime OUT_DIM = _total_out_dim[*Self.BRANCHES]()
 
     var branches: Tuple[*Self.BRANCHES]
@@ -71,7 +71,7 @@ struct BranchConcat[*BRANCHES: Module](Module):
         comptime assert Self.N >= 1, "BranchConcat requires at least one branch"
         comptime for i in range(Self.N):
             comptime assert (
-                Self.BRANCHES[i].IN_DIM == Self.BRANCHES[0].IN_DIM
+                Self.BRANCHES[i].IN_DIMS[0] == Self.BRANCHES[0].IN_DIMS[0]
             ), "BranchConcat: all BRANCHES must share IN_DIM"
         self.branches = Tuple[*Self.BRANCHES]()
         self.out_slabs_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
@@ -85,7 +85,7 @@ struct BranchConcat[*BRANCHES: Module](Module):
         comptime assert Self.N >= 1, "BranchConcat requires at least one branch"
         comptime for i in range(Self.N):
             comptime assert (
-                Self.BRANCHES[i].IN_DIM == Self.BRANCHES[0].IN_DIM
+                Self.BRANCHES[i].IN_DIMS[0] == Self.BRANCHES[0].IN_DIMS[0]
             ), "BranchConcat: all BRANCHES must share IN_DIM"
         self.branches = Tuple(*branches^)
         self.out_slabs_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
@@ -276,7 +276,7 @@ def _branch_concat_backward_cpu[
     ],
 ) raises:
     comptime N = BRANCHES.size
-    comptime IN_DIM = BRANCHES[0].IN_DIM
+    comptime IN_DIM = BRANCHES[0].IN_DIMS[0]
 
     comptime for i in range(N):
         c._ensure_slab_cpu[i](BATCH * BRANCHES[i].OUT_DIM)

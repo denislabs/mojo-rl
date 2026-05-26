@@ -76,6 +76,26 @@ def _node_in_dims_from_ladder[
     return d
 
 
+def _node_in_names_from_ladder[
+    KIND: Int,
+    N0: StaticString, N1: StaticString,
+    N2: StaticString, N3: StaticString,
+]() -> InlineArray[StaticString, KIND]:
+    """Build IN_NAMES InlineArray from the IN0/IN1/IN2/IN3_NAME ladder.
+    Sized at KIND so InputSlot (KIND=0) gets empty array. Capped at
+    KIND=4 — extend the helper if/when a real ARITY=5+ consumer lands."""
+    var d = InlineArray[StaticString, KIND](fill=StaticString(""))
+    comptime if KIND >= 1:
+        d[0] = N0
+    comptime if KIND >= 2:
+        d[1] = N1
+    comptime if KIND >= 3:
+        d[2] = N2
+    comptime if KIND >= 4:
+        d[3] = N3
+    return d
+
+
 trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
     comptime NAME: StaticString
     comptime IN0_NAME: StaticString
@@ -94,6 +114,16 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
     comptime IN_DIMS: InlineArray[Int, Self.KIND] = (
         _node_in_dims_from_ladder[
             Self.KIND, Self.IN0_DIM, Self.IN1_DIM, Self.IN2_DIM, Self.IN3_DIM,
+        ]()
+    )
+    # I.2.6.e variadic predecessor-name accessor. Default derives from
+    # the IN0/IN1/IN2/IN3_NAME ladder. Lets ComputeGraph dispatch
+    # uniformly via `comptime for k in range(NODES[i].KIND)` over
+    # `NODES[i].IN_NAMES[k]` instead of arity-laddered branches.
+    comptime IN_NAMES: InlineArray[StaticString, Self.KIND] = (
+        _node_in_names_from_ladder[
+            Self.KIND,
+            Self.IN0_NAME, Self.IN1_NAME, Self.IN2_NAME, Self.IN3_NAME,
         ]()
     )
 
