@@ -27,7 +27,6 @@ inside the driver — the trainer's queue pool would exhaust within ~1k
 steps (see `feedback_apple_metal_devicecontext_per_call`).
 """
 
-from std.memory import alloc
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
@@ -67,9 +66,9 @@ def run_offpolicy_train_gpu[
     (whatever it is on the user's GPU; CPU-baseline -167.572 is for
     the CPU SAC path).
     """
-    var obs = alloc[Scalar[DT]](obs_dim)
-    var next_obs = alloc[Scalar[DT]](obs_dim)
-    var action = alloc[Scalar[DT]](act_dim)
+    var obs = List[Scalar[DT]](length=obs_dim, fill=Scalar[DT](0.0))
+    var next_obs = List[Scalar[DT]](length=obs_dim, fill=Scalar[DT](0.0))
+    var action = List[Scalar[DT]](length=act_dim, fill=Scalar[DT](0.0))
 
     var obs_list = env.reset_obs_list()
     var action_list = List[Scalar[E.dtype]](capacity=act_dim)
@@ -94,7 +93,10 @@ def run_offpolicy_train_gpu[
         for d in range(obs_dim):
             next_obs[d] = Scalar[DT](nxt[d])
         trainer.record(
-            obs, action, Scalar[DT](reward), next_obs,
+            obs,
+            action,
+            Scalar[DT](reward),
+            next_obs,
             Scalar[DT](1.0) if done else Scalar[DT](0.0),
         )
         if done:
@@ -112,9 +114,15 @@ def run_offpolicy_train_gpu[
         if verbose and print_every > 0 and step % print_every == 0:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
-                "[step ", step, "] mean_ret(10)=", trainer.mean_return(),
-                " ep=", trainer.ep_count(),
-                " elapsed=", elapsed, "s",
+                "[step ",
+                step,
+                "] mean_ret(10)=",
+                trainer.mean_return(),
+                " ep=",
+                trainer.ep_count(),
+                " elapsed=",
+                elapsed,
+                "s",
             )
 
     return ep_returns^
@@ -139,8 +147,8 @@ def run_offpolicy_eval_gpu[
     GPU-specific behaviour is one extra D2H sync per env step (the
     actor's device output is downloaded so the tanh+clamp can run on
     host for the single-step path)."""
-    var obs = alloc[Scalar[DT]](obs_dim)
-    var action = alloc[Scalar[DT]](act_dim)
+    var obs = List[Scalar[DT]](length=obs_dim, fill=Scalar[DT](0.0))
+    var action = List[Scalar[DT]](length=act_dim, fill=Scalar[DT](0.0))
 
     var action_list = List[Scalar[E.dtype]](capacity=act_dim)
     for _ in range(act_dim):
@@ -173,16 +181,27 @@ def run_offpolicy_eval_gpu[
         total_return += ep_return
         if verbose:
             print(
-                "  [eval ep ", ep + 1, "/", num_episodes,
-                "] return=", ep_return, " steps=", ep_steps,
+                "  [eval ep ",
+                ep + 1,
+                "/",
+                num_episodes,
+                "] return=",
+                ep_return,
+                " steps=",
+                ep_steps,
             )
 
     var mean = total_return / Scalar[DT](num_episodes)
     if verbose:
         var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
         print(
-            "eval: mean_return=", mean, " (",
-            num_episodes, " episodes, ", elapsed, " s)",
+            "eval: mean_return=",
+            mean,
+            " (",
+            num_episodes,
+            " episodes, ",
+            elapsed,
+            " s)",
         )
     return mean
 
@@ -247,6 +266,7 @@ def run_offpolicy_train_gpu_n_envs[
             parity with single-env.
         print_every: Status cadence (env-step counter). 0 disables.
         verbose: Print status lines.
+        nstep_gamma: γ for the n-step buffer. Only matters when NS > 1.
 
     Returns:
         List of `trainer.mean_return()` snapshots, one per completed
@@ -302,7 +322,8 @@ def run_offpolicy_train_gpu_n_envs[
     var host_rewards = alloc[Scalar[DT]](N_ENVS)
     var host_dones = alloc[Scalar[DT]](N_ENVS)
     var per_env_returns = List[Scalar[DT]](
-        length=N_ENVS, fill=Scalar[DT](0.0),
+        length=N_ENVS,
+        fill=Scalar[DT](0.0),
     )
 
     # N-step buffer (NS > 1 only). `comptime if` elides the
@@ -316,13 +337,18 @@ def run_offpolicy_train_gpu_n_envs[
     # the numerics are unaffected (no `.process` calls means no
     # kernels run against this buffer).
     var nstep_buf = GPUNStepBuffer[
-        NS, A.AGENT_OBS_DIM, A.AGENT_ACT_DIM, N_ENVS,
+        NS,
+        A.AGENT_OBS_DIM,
+        A.AGENT_ACT_DIM,
+        N_ENVS,
     ].new(ctx, gamma=nstep_gamma)
 
     # Initial reset + obs extraction.
     E.reset_kernel_gpu[N_ENVS, STATE_SIZE](ctx, states, rng_seed=rng_seed)
     E.extract_obs_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM](
-        ctx, states, obs_buf,
+        ctx,
+        states,
+        obs_buf,
     )
 
     var ep_returns = List[Scalar[DT]]()
@@ -338,14 +364,25 @@ def run_offpolicy_train_gpu_n_envs[
 
         # Batched policy (warmup uniform if step_idx < learning_starts).
         trainer.select_action_gpu_batched[N_ENVS](
-            ctx, obs_buf, actions, ao_scratch, alp_scratch, step_idx,
+            ctx,
+            obs_buf,
+            actions,
+            ao_scratch,
+            alp_scratch,
+            step_idx,
         )
 
         # Env step writes next-obs into `obs_buf` and rewards/dones/
         # terminated as outputs. RNG seed advances per iteration so
         # stochastic envs see fresh randomness.
         E.step_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM, ACT_DIM](
-            ctx, states, actions, rewards, dones, terminated, obs_buf,
+            ctx,
+            states,
+            actions,
+            rewards,
+            dones,
+            terminated,
+            obs_buf,
             rng_seed=rng_seed + UInt64(iter_idx + 1),
         )
 
@@ -355,11 +392,22 @@ def run_offpolicy_train_gpu_n_envs[
         # returns before landing in the replay.
         comptime if NS > 1:
             trainer.record_batch_gpu_nstep[N_ENVS, NS](
-                ctx, nstep_buf, prev_obs, actions, rewards, obs_buf, dones,
+                ctx,
+                nstep_buf,
+                prev_obs,
+                actions,
+                rewards,
+                obs_buf,
+                dones,
             )
         else:
             trainer.record_batch_gpu[N_ENVS](
-                ctx, prev_obs, actions, rewards, obs_buf, dones,
+                ctx,
+                prev_obs,
+                actions,
+                rewards,
+                obs_buf,
+                dones,
             )
 
         # D2H of rewards + dones — small (N_ENVS * 2 scalars), needed
@@ -381,11 +429,15 @@ def run_offpolicy_train_gpu_n_envs[
         # obs for those envs (state for not-done envs is unchanged so
         # their obs is identical to what step_kernel_gpu wrote).
         E.selective_reset_kernel_gpu[N_ENVS, STATE_SIZE](
-            ctx, states, dones,
+            ctx,
+            states,
+            dones,
             rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
         )
         E.extract_obs_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM](
-            ctx, states, obs_buf,
+            ctx,
+            states,
+            obs_buf,
         )
 
         step_idx += N_ENVS
@@ -400,10 +452,15 @@ def run_offpolicy_train_gpu_n_envs[
         if verbose and print_every > 0 and step_idx >= next_print:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
-                "[step ", step_idx, "] mean_ret(10)=",
+                "[step ",
+                step_idx,
+                "] mean_ret(10)=",
                 trainer.mean_return(),
-                " ep=", trainer.ep_count(),
-                " elapsed=", elapsed, "s",
+                " ep=",
+                trainer.ep_count(),
+                " elapsed=",
+                elapsed,
+                "s",
             )
             next_print += print_every
 

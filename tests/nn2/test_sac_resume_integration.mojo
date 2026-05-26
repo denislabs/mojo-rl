@@ -26,7 +26,6 @@ n-step buffer, tracker, RNG seed), upgrade this test to assert "C resumes
 mid-training → matches B's final mean_ret within ±5".
 """
 
-from std.memory import alloc
 from std.random import seed
 from std.testing import assert_true
 
@@ -118,8 +117,8 @@ def _eval_greedy(mut t: Trainer, episodes: Int) raises -> Scalar[DT]:
     pushes — purely a forward-only policy evaluation.
     """
     var env = PendulumEnv[DT]()
-    var obs = alloc[Scalar[DT]](OBS_DIM)
-    var action = alloc[Scalar[DT]](ACT_DIM)
+    var obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
+    var action = List[Scalar[DT]](length=ACT_DIM, fill=Scalar[DT](0.0))
     _ = env.reset()
 
     var total = Scalar[DT](0.0)

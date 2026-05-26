@@ -17,7 +17,6 @@ Checks:
 
 from std.gpu.host import DeviceContext
 from std.math import isnan
-from std.memory import alloc
 from std.random import seed
 from std.testing import assert_true
 
@@ -114,9 +113,9 @@ def test_nstep_compresses_three_to_one() raises:
         "Empty replay at start",
     )
 
-    var obs = alloc[Scalar[DT]](OBS_DIM)
-    var act = alloc[Scalar[DT]](ACT_DIM)
-    var nxt = alloc[Scalar[DT]](OBS_DIM)
+    var obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
+    var act = List[Scalar[DT]](length=ACT_DIM, fill=Scalar[DT](0.0))
+    var nxt = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
     for i in range(3):
         for d in range(OBS_DIM):
             obs[d] = Scalar[DT](Float64(i) + 0.1 * Float64(d))
@@ -149,9 +148,9 @@ def test_nstep_smoke_2k() raises:
         N_STEP,
     ].make["gpu"](ctx, cfg)
     var env = PendulumEnv[DT]()
-    var obs = alloc[Scalar[DT]](OBS_DIM)
-    var next_obs = alloc[Scalar[DT]](OBS_DIM)
-    var action = alloc[Scalar[DT]](ACT_DIM)
+    var obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
+    var next_obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
+    var action = List[Scalar[DT]](length=ACT_DIM, fill=Scalar[DT](0.0))
     _ = env.reset()
     var obs_self = env.get_obs_list()
     var step: Int = 0

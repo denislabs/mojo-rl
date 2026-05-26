@@ -46,11 +46,10 @@ trait ElementOp(Movable & ImplicitlyDestructible):
 
     @staticmethod
     def backward_scalar(c: Scalar[DT], go: Scalar[DT]) -> Scalar[DT]:
-        """gi = f'(c) ⊙ go. c = y when owns_cache, c = x when not."""
+        """Backward gradient: gi = f'(c) ⊙ go. c = y when owns_cache, c = x when not.
+        """
         ...
 
     @staticmethod
-    def backward_simd[W: Int](
-        c: SIMD[DT, W], go: SIMD[DT, W]
-    ) -> SIMD[DT, W]:
+    def backward_simd[W: Int](c: SIMD[DT, W], go: SIMD[DT, W]) -> SIMD[DT, W]:
         ...

@@ -12,7 +12,6 @@ out of scope for this test (the real env wiring lives in `examples/`).
 """
 
 from std.gpu.host import DeviceContext
-from std.memory import alloc
 from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
@@ -50,10 +49,9 @@ def test_sac_pendulum_gpu_smoke() raises:
         initial_episode_fill=Scalar[DT](-1250.0),
     )
 
-    # Synthetic transition scratch.
-    var obs = alloc[Scalar[DT]](OBS)
-    var action = alloc[Scalar[DT]](ACT)
-    var next_obs = alloc[Scalar[DT]](OBS)
+    var obs = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+    var action = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+    var next_obs = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
 
     var n_trained = 0
     for step in range(N_STEPS):

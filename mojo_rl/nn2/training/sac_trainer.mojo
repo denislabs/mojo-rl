@@ -701,8 +701,8 @@ struct SACTrainer[
 
     def select_action[target: StaticString = "cpu"](
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
         step_idx: Int,
     ) raises:
         """Sample action into `action_out` ([ACT_DIM]).
@@ -767,8 +767,8 @@ struct SACTrainer[
 
     def select_action(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
         step_idx: Int,
     ) raises:
         """Non-parametric overload — forwards to the CPU path.
@@ -782,8 +782,8 @@ struct SACTrainer[
 
     def select_greedy_action(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
     ) raises:
         """Phase B.2 — deterministic greedy action for eval (CPU).
 
@@ -820,8 +820,8 @@ struct SACTrainer[
 
     def select_action_gpu(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
         step_idx: Int,
     ) raises:
         self.select_action["gpu"](obs, action_out, step_idx)
@@ -838,8 +838,8 @@ struct SACTrainer[
 
     def select_greedy_action_gpu(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
     ) raises:
         """Phase B.5 — deterministic greedy action for eval (GPU).
 
@@ -1048,10 +1048,10 @@ struct SACTrainer[
 
     def record(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        ref action: List[Scalar[DT]],
         reward: Scalar[DT],
-        next_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
     ) raises:
         """Push (s, a, r, s', done) into replay; accumulate the episode
@@ -1071,9 +1071,20 @@ struct SACTrainer[
         """
         self.tracker.add_reward(reward)
 
+        # Bridge: replay/n-step buffers take UnsafePointer internally.
+        var obs_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            obs.unsafe_ptr()
+        )
+        var act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            action.unsafe_ptr()
+        )
+        var nxt_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            next_obs.unsafe_ptr()
+        )
+
         if self._use_nstep:
             var tx = self.nstep_cpu.value().add(
-                obs, action, reward, next_obs, done > Scalar[DT](0.5),
+                obs_p, act_p, reward, nxt_p, done > Scalar[DT](0.5),
             )
             if not tx.valid:
                 return
@@ -1110,15 +1121,15 @@ struct SACTrainer[
         if self.buf_per:
             var ctx = self.target_y_block.ts.ctx.value()
             self.buf_per.value().add(
-                ctx, obs, action, reward, next_obs, done,
+                ctx, obs_p, act_p, reward, nxt_p, done,
             )
         elif self.buf_gpu:
             var ctx = self.target_y_block.ts.ctx.value()
             self.buf_gpu.value().add(
-                ctx, obs, action, reward, next_obs, done,
+                ctx, obs_p, act_p, reward, nxt_p, done,
             )
         else:
-            self.buf.add(obs, action, reward, next_obs, done)
+            self.buf.add(obs_p, act_p, reward, nxt_p, done)
 
     def end_episode(mut self):
         """Roll the current episode return into the tracker window."""

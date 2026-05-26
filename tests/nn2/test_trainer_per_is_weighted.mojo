@@ -22,7 +22,7 @@ Three layers of coverage:
 
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.math import isnan
-from std.memory import alloc
+from std.memory import alloc  # still needed for kernel unit test D2H buffers
 from std.random import seed
 from std.testing import assert_true
 from layout import Layout, LayoutTensor
@@ -111,9 +111,9 @@ def test_null_sentinel_unaffected() raises:
         ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY,
     ].make["gpu"](ctx, cfg)
     var env = PendulumEnv[DT]()
-    var obs = alloc[Scalar[DT]](OBS_DIM)
-    var next_obs = alloc[Scalar[DT]](OBS_DIM)
-    var action = alloc[Scalar[DT]](ACT_DIM)
+    var obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
+    var next_obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
+    var action = List[Scalar[DT]](length=ACT_DIM, fill=Scalar[DT](0.0))
     _ = env.reset()
     var obs_self = env.get_obs_list()
     var step: Int = 0
@@ -165,9 +165,9 @@ def test_per_weights_are_nontrivial() raises:
         ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY,
     ].make["gpu"](ctx, cfg)
     var env = PendulumEnv[DT]()
-    var obs = alloc[Scalar[DT]](OBS_DIM)
-    var next_obs = alloc[Scalar[DT]](OBS_DIM)
-    var action = alloc[Scalar[DT]](ACT_DIM)
+    var obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
+    var next_obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
+    var action = List[Scalar[DT]](length=ACT_DIM, fill=Scalar[DT](0.0))
     _ = env.reset()
     var obs_self = env.get_obs_list()
     var step: Int = 0

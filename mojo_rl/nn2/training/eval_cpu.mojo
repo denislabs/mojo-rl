@@ -18,7 +18,6 @@ update, no replay insertion.
 Env contract: same `BoxContinuousActionEnv` as the train driver.
 """
 
-from std.memory import alloc
 from std.time import perf_counter_ns
 
 from ..constants import DT
@@ -69,8 +68,8 @@ def run_offpolicy_eval_cpu[
           rsample sampling, no Gaussian noise). Env RNG (e.g. Pendulum's
           reset randomization) still advances std.random's global state.
     """
-    var obs = alloc[Scalar[DT]](obs_dim)
-    var action = alloc[Scalar[DT]](act_dim)
+    var obs = List[Scalar[DT]](length=obs_dim, fill=Scalar[DT](0.0))
+    var action = List[Scalar[DT]](length=act_dim, fill=Scalar[DT](0.0))
 
     var action_list = List[Scalar[E.dtype]](capacity=act_dim)
     for _ in range(act_dim):

@@ -71,8 +71,11 @@ def typed_view[
     DIM: Int,
 ](
     t: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, origin=MutAnyOrigin, ...,
+        dtype=DT,
+        address_space=AddressSpace.GENERIC,
+        element_size=1,
+        origin=MutAnyOrigin,
+        ...,
     ],
 ) -> TileTensor[
     DT,
@@ -91,8 +94,12 @@ def typed_view_mut[
     DIM: Int,
 ](
     mut t: TileTensor[
-        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, origin=MutAnyOrigin, ...,
+        mut=True,
+        dtype=DT,
+        address_space=AddressSpace.GENERIC,
+        element_size=1,
+        origin=MutAnyOrigin,
+        ...,
     ],
 ) -> TileTensor[
     DT,
@@ -139,8 +146,8 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
 
     comptime ARITY: Int
     comptime IN_DIM: Int
-    comptime IN1_DIM: Int = 0    # default 0 — unary leaves inherit, binary/ternary override
-    comptime IN2_DIM: Int = 0    # default 0 — unary + binary inherit, ternary overrides
+    comptime IN1_DIM: Int = 0  # default 0 — unary leaves inherit, binary/ternary override
+    comptime IN2_DIM: Int = 0  # default 0 — unary + binary inherit, ternary overrides
     comptime OUT_DIM: Int
 
     @staticmethod
@@ -149,7 +156,8 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
 
     @staticmethod
     def make[
-        target: StaticString, INIT: Initializer,
+        target: StaticString,
+        INIT: Initializer,
     ](ctx: DeviceContext) raises -> Self:
         ...
 
@@ -160,12 +168,19 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
     ](
         mut self,
         var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            mut=True,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
     ) raises:
         """N-ary forward. Leaf body must:
@@ -187,12 +202,19 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            mut=True,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
     ) raises:
         """N-ary vector-Jacobian product.

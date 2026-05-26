@@ -30,7 +30,6 @@ branch). For DDPG/TD3 the per-cadence metric flush is the caller's
 responsibility.
 """
 
-from std.memory import alloc
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
 
@@ -148,25 +147,25 @@ trait OffPolicyTrainableGpu(Movable, ImplicitlyDestructible):
 
     def select_action_gpu(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
         step_idx: Int,
     ) raises:
         ...
 
     def select_greedy_action_gpu(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
     ) raises:
         ...
 
     def record(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        ref action: List[Scalar[DT]],
         reward: Scalar[DT],
-        next_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
     ) raises:
         ...
@@ -202,25 +201,25 @@ trait OffPolicyTrainable(Movable, ImplicitlyDestructible):
 
     def select_action(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
         step_idx: Int,
     ) raises:
         ...
 
     def select_greedy_action(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
     ) raises:
         ...
 
     def record(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        ref action: List[Scalar[DT]],
         reward: Scalar[DT],
-        next_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
     ) raises:
         ...
@@ -287,13 +286,10 @@ def run_offpolicy_train_cpu[
           downgrading to runtime-typed logging. Callers wire the logger
           directly into `trainer.flush_metrics` at their own cadence.
     """
-    var obs = alloc[Scalar[DT]](obs_dim)
-    var next_obs = alloc[Scalar[DT]](obs_dim)
-    var action = alloc[Scalar[DT]](act_dim)
+    var obs = List[Scalar[DT]](length=obs_dim, fill=Scalar[DT](0.0))
+    var next_obs = List[Scalar[DT]](length=obs_dim, fill=Scalar[DT](0.0))
+    var action = List[Scalar[DT]](length=act_dim, fill=Scalar[DT](0.0))
 
-    # All env-side data uses `E.dtype`; trainer scratch uses `DT`. We cast
-    # element-by-element at the boundary (typically a no-op since DT==f32
-    # and Pendulum-style envs default to f32, but keeps the driver generic).
     var obs_list = env.reset_obs_list()
     var action_list = List[Scalar[E.dtype]](capacity=act_dim)
     for _ in range(act_dim):

@@ -270,8 +270,8 @@ struct TD3Trainer[
 
     def select_action(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
         step_idx: Int,
     ) raises:
         self.policy_head.select_deterministic_with_noise["cpu"](
@@ -282,8 +282,8 @@ struct TD3Trainer[
 
     def select_greedy_action(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
     ) raises:
         """Phase B.2 — deterministic greedy action for eval.
 
@@ -297,13 +297,22 @@ struct TD3Trainer[
 
     def record(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        ref action: List[Scalar[DT]],
         reward: Scalar[DT],
-        next_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
     ) raises:
-        self.buf.add(obs, action, reward, next_obs, done)
+        var obs_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            obs.unsafe_ptr()
+        )
+        var act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            action.unsafe_ptr()
+        )
+        var nxt_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            next_obs.unsafe_ptr()
+        )
+        self.buf.add(obs_p, act_p, reward, nxt_p, done)
         self.tracker.add_reward(reward)
 
     def end_episode(mut self):

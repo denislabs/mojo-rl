@@ -119,7 +119,7 @@ struct ActionSamplingBlock[
 
     def _write_warmup(
         mut self,
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut action_out: List[Scalar[DT]],
         action_scale: Scalar[DT],
     ):
         for j in range(Self.ACT_DIM):
@@ -131,7 +131,7 @@ struct ActionSamplingBlock[
     def _clamp_into(
         self,
         src: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut action_out: List[Scalar[DT]],
         action_scale: Scalar[DT],
     ):
         for j in range(Self.ACT_DIM):
@@ -151,8 +151,8 @@ struct ActionSamplingBlock[
         mut self,
         mut actor: Self.ACTOR,
         mut sampler: SAMPLER,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
         step_idx: Int,
         learning_starts: Int,
         action_scale: Scalar[DT],
@@ -204,8 +204,8 @@ struct ActionSamplingBlock[
     ](
         mut self,
         mut actor: Self.ACTOR,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
         step_idx: Int,
         learning_starts: Int,
         action_scale: Scalar[DT],
@@ -248,8 +248,8 @@ struct ActionSamplingBlock[
     ](
         mut self,
         mut actor: Self.ACTOR,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
         step_idx: Int,
         learning_starts: Int,
         action_scale: Scalar[DT],

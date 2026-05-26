@@ -9,7 +9,6 @@ end-to-end Pendulum run is `examples/pendulum/pendulum_ddpg_nn2.mojo`.
 """
 
 from std.math import abs as fabs, isfinite
-from std.memory import alloc
 from std.random import random_float64, seed
 from std.testing import assert_true
 
@@ -42,19 +41,17 @@ def test_ddpg_trainer_smoke() raises:
         learning_starts=200,
     )
 
-    # Pre-fill replay with random transitions so train_step has data.
-    var obs_p:  UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OBS)
-    var act_p:  UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ACT)
-    var nobs_p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OBS)
+    var obs_l = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+    var act_l = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+    var nobs_l = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
     for step in range(500):
         for d in range(OBS):
-            obs_p[d] = Scalar[DT](random_float64() * 2.0 - 1.0)
-            nobs_p[d] = Scalar[DT](random_float64() * 2.0 - 1.0)
-        trainer.select_action(obs_p, act_p, step_idx=step)
+            obs_l[d] = Scalar[DT](random_float64() * 2.0 - 1.0)
+            nobs_l[d] = Scalar[DT](random_float64() * 2.0 - 1.0)
+        trainer.select_action(obs_l, act_l, step_idx=step)
         var rew = Scalar[DT](random_float64() * 2.0 - 1.0)
-        trainer.record(obs_p, act_p, rew, nobs_p, Scalar[DT](0.0))
+        trainer.record(obs_l, act_l, rew, nobs_l, Scalar[DT](0.0))
 
-    # Run train_steps.
     var n_actual = 0
     for step in range(500, 520):
         var ran = trainer.train_step(step)
@@ -69,9 +66,6 @@ def test_ddpg_trainer_smoke() raises:
     assert_true(isfinite(critic_L), "critic loss not finite: " + String(critic_L))
     assert_true(critic_L > Scalar[DT](0.0), "critic loss should be positive: " + String(critic_L))
 
-    obs_p.free()
-    act_p.free()
-    nobs_p.free()
     print("  test_ddpg_trainer_smoke PASSED")
 
 

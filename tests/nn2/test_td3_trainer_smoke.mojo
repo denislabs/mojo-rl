@@ -7,7 +7,6 @@ actor cadence working.
 """
 
 from std.math import abs as fabs, isfinite
-from std.memory import alloc
 from std.random import random_float64, seed
 from std.testing import assert_true
 
@@ -42,9 +41,9 @@ def test_td3_trainer_smoke() raises:
         policy_delay=2, learning_starts=200,
     )
 
-    var obs_p:  UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OBS)
-    var act_p:  UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ACT)
-    var nobs_p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OBS)
+    var obs_p = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+    var act_p = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+    var nobs_p = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
     for step in range(500):
         for d in range(OBS):
             obs_p[d] = Scalar[DT](random_float64() * 2.0 - 1.0)
@@ -69,9 +68,6 @@ def test_td3_trainer_smoke() raises:
     assert_true(n_actor >= 14 and n_actor <= 16,
                 "expected ~15 actor updates for 30 critic + delay=2, got " + String(n_actor))
     assert_true(n_critic == 30, "expected 30 critic updates; got " + String(n_critic))
-    obs_p.free()
-    act_p.free()
-    nobs_p.free()
     print("  test_td3_trainer_smoke PASSED")
 
 

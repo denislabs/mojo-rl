@@ -165,9 +165,8 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam, Saveable
     def zero_grad_with[target: StaticString](mut self) raises:
         """Zero the gradient buffer on the active target."""
         comptime if target == "cpu":
-            var g_ptr = self.grad.unsafe_ptr()
             for k in range(Self.SIZE):
-                g_ptr[k] = Scalar[DT](0.0)
+                self.grad[k] = Scalar[DT](0.0)
         else:
             self.grad_dev.value().enqueue_fill(0.0)
 
@@ -187,11 +186,8 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam, Saveable
 
     def save(self, mut out: String, prefix: String) raises:
         out += prefix + "#size=" + String(Self.SIZE) + "\n"
-        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.value.unsafe_ptr()
-        )
         for k in range(Self.SIZE):
-            out += String(p_ptr[k]) + "\n"
+            out += String(self.value[k]) + "\n"
 
     def load(
         mut self, lines: List[String], mut idx: Int, prefix: String,
@@ -210,14 +206,11 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam, Saveable
                 + ". Expected `" + expected + "`, got `" + header + "`"
             )
         idx += 1
-        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.value.unsafe_ptr()
-        )
         for k in range(Self.SIZE):
             if idx >= len(lines):
                 raise Error(
                     "Param.load: short read at element " + String(k)
                     + " of " + String(Self.SIZE) + " for `" + prefix + "`"
                 )
-            p_ptr[k] = Scalar[DT](atof(lines[idx]))
+            self.value[k] = Scalar[DT](atof(lines[idx]))
             idx += 1
