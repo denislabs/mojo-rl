@@ -1,15 +1,4 @@
-"""SACTrainerV2Gpu smoke test (J.1.d).
-
-Mirrors `test_sac_pendulum_gpu.mojo` but routes through SACTrainerV2Gpu
-(TrainerGraph composition). Verifies the GPU sample block + target-
-threaded step blocks all wire correctly:
-  * select_action_gpu returns finite, clamped actions.
-  * record routes pointers through UniformSampleGpuBlock.add (GPU enqueue).
-  * train_step_gpu produces finite losses and finite α.
-
-End-to-end Pendulum convergence parity comes when the SAC GPU
-bit-identity gate is added (J.1.d follow-up).
-"""
+"""SACTrainerV2RGpu smoke test (J.1.g-redesign-v2 Step 2)."""
 
 from std.gpu.host import DeviceContext
 from std.testing import assert_true
@@ -18,10 +7,10 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.combinators import Sequential
-from mojo_rl.nn2.training.sac_trainer_v2_gpu import SACTrainerV2Gpu
+from mojo_rl.nn2.training.sac_trainer_v2r_gpu import SACTrainerV2RGpu
 
 
-def test_sac_trainer_v2_gpu_smoke() raises:
+def test_sac_trainer_v2r_gpu_smoke() raises:
     comptime OBS = 3
     comptime ACT = 1
     comptime BATCH = 32
@@ -37,7 +26,7 @@ def test_sac_trainer_v2_gpu_smoke() raises:
     ]
 
     var ctx = DeviceContext()
-    var trainer = SACTrainerV2Gpu[
+    var trainer = SACTrainerV2RGpu[
         ActorNet, CriticNet, OBS, ACT, BATCH, CAP,
     ].make["gpu"](
         ctx,
@@ -54,9 +43,6 @@ def test_sac_trainer_v2_gpu_smoke() raises:
     var next_obs = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
 
     var n_trained = 0
-    var sum_actor = Scalar[DT](0.0)
-    var sum_critic = Scalar[DT](0.0)
-    var sum_alpha = Scalar[DT](0.0)
     for step in range(N_STEPS):
         for d in range(OBS):
             obs[d] = Scalar[DT](
@@ -81,9 +67,6 @@ def test_sac_trainer_v2_gpu_smoke() raises:
         var ran = trainer.train_step_gpu(step)
         if ran:
             n_trained += 1
-            sum_actor += trainer._actor_L_accum
-            sum_critic += trainer._critic_L_accum
-            sum_alpha += trainer._alpha_accum
 
     print("  n_train_steps =", n_trained)
     print("  last actor_loss_accum =", Float64(trainer._actor_L_accum))
@@ -98,14 +81,14 @@ def test_sac_trainer_v2_gpu_smoke() raises:
         "critic_loss must be finite",
     )
     assert_true(n_trained >= 30, "expected at least 30 train steps")
-    print("  test_sac_trainer_v2_gpu_smoke PASSED")
+    print("  test_sac_trainer_v2r_gpu_smoke PASSED")
 
 
 def main() raises:
     print("=" * 60)
-    print("J.1.d SACTrainerV2Gpu smoke")
+    print("Step 2 — SACTrainerV2RGpu smoke")
     print("=" * 60)
-    test_sac_trainer_v2_gpu_smoke()
+    test_sac_trainer_v2r_gpu_smoke()
     print("=" * 60)
     print("ALL PASSED")
     print("=" * 60)

@@ -1,24 +1,15 @@
-"""MBPOTrainerV2 — J.1.f — MBPO via TrainerGraph[*BLOCKS].
+"""MBPOTrainerV2R — J.1.g-redesign-v2 Step 4 — MBPO via ref-based blocks.
 
-Composition:
-  TrainerGraph[
-      DualSampleCpuBlock,      # samples REAL_BS from real + SYNTH_BS from synth
-      TargetYStepBlock,        # reused from SAC
-      TwinCriticStepBlock,     # reused from SAC
-      SACActorStepBlock,       # reused from SAC
-      AlphaUpdateBlock,        # reused from SAC
-      PolyakBlock,             # reused from SAC
-  ]
+Pipeline (6 blocks):
+  DualSample → TargetY → TwinCritic → SACActor → AlphaUpdate → Polyak
+(5 of 6 blocks reused unchanged from SAC.)
 
-The graph is SAC's per-step update on a MIXED real+synth batch.
-Dynamics ensemble training + synthetic rollouts are NOT in the graph —
+Dynamics ensemble training + synthetic rollouts are NOT in the pipeline —
 they're trainer methods invoked from train_step on a `model_train_freq`
-cadence. Block decomposition isn't the right fit for them: dynamics
-training iterates over EPOCHS * (size/BATCH) per round, and rollouts
-require BATCH-wide policy queries + ensemble forward + per-sample
-Gaussian sampling.
+cadence (block decomposition isn't the right fit for multi-epoch /
+multi-step orchestration).
 
-CPU only. Mirrors existing MBPOTrainer surface (OffPolicyTrainable).
+CPU only. Mirrors MBPOTrainerV2 surface (OffPolicyTrainable).
 """
 
 from std.math import exp as fexp, sqrt as fsqrt, log as flog
@@ -33,23 +24,21 @@ from ..core.scratch_walkers import init_scratch_auto
 from ..initializer import Xavier, Kaiming
 from ..optimizer.adam import Adam
 from ..optimizer.scalar_adam import ScalarAdam
-from ..loss.sac_actor_loss_cg import SACActorLossCG
-from ..loss.critic_update_block import TwinCriticUpdateBlock
-from ..combinators.trainer_graph import TrainerGraph
-from .target_y_block import TargetYBlock
 from .dynamics_ensemble_block import DynamicsEnsembleBlock
 from .episode_tracker import EpisodeTracker
 from .trainer_block import TrainerState
 from .driver_cpu import OffPolicyTrainable
-from .blocks.dual_sample_cpu_block import DualSampleCpuBlock
-from .blocks.target_y_step_block import TargetYStepBlock
-from .blocks.twin_critic_step_block import TwinCriticStepBlock
-from .blocks.sac_actor_step_block import SACActorStepBlock
-from .blocks.alpha_update_block import AlphaUpdateBlock
-from .blocks.polyak_block import PolyakBlock
+from .blocks_ref import (
+    DualSampleCpuStep,
+    TargetYStep,
+    TwinCriticStep,
+    SACActorStep,
+    AlphaUpdateStep,
+    PolyakStep,
+)
 
 
-struct MBPOTrainerV2[
+struct MBPOTrainerV2R[
     ACTOR: Module,
     CRITIC: Module,
     DynNet: Module,
@@ -77,34 +66,6 @@ struct MBPOTrainerV2[
         Self.LOGVAR_MIN, Self.LOGVAR_MAX,
     ]
 
-    comptime SampleB = DualSampleCpuBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-        Self.REPLAY_CAPACITY, Self.SYNTH_CAPACITY,
-        Self.REAL_BS, Self.SYNTH_BS,
-    ]
-    comptime TargetYB = TargetYStepBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
-    ]
-    comptime TwinB = TwinCriticStepBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
-    ]
-    comptime ActorB = SACActorStepBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
-    ]
-    comptime AlphaB = AlphaUpdateBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-    ]
-    comptime PolyakB = PolyakBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
-    ]
-
-    comptime Graph = TrainerGraph[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-        Self.SampleB, Self.TargetYB, Self.TwinB,
-        Self.ActorB, Self.AlphaB, Self.PolyakB,
-    ]
-
-    # Trait-conformance aliases for the driver.
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
 
@@ -116,19 +77,30 @@ struct MBPOTrainerV2[
     var critic2_opt: Adam
     var alpha_opt:   ScalarAdam
 
-    var actor_loss: SACActorLossCG[Self.ACTOR, Self.CRITIC, Self.BATCH]
-    var twin_critic_block: TwinCriticUpdateBlock[
-        Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+    var sample_blk: DualSampleCpuStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        Self.REPLAY_CAPACITY, Self.SYNTH_CAPACITY,
+        Self.REAL_BS, Self.SYNTH_BS,
     ]
-    var target_y_block: TargetYBlock[
-        Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+    var target_y_blk: TargetYStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+    ]
+    var twin_critic_blk: TwinCriticStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+    ]
+    var actor_blk: SACActorStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+    ]
+    var alpha_blk: AlphaUpdateStep[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
+    var polyak_blk: PolyakStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
     ]
 
     var ensemble: Self.ENSEMBLE
-    var graph:    Self.Graph
+    var state:    TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
     var tracker:  EpisodeTracker
 
-    # select_action scratches (mirror SACTrainerV2).
+    # select_action scratches (mirror SACTrainerV2R).
     var _ob1:  Scratch["ob1",  Self.OBS_DIM, True]
     var _ao1:  Scratch["ao1",  2 * Self.ACT_DIM, True]
     var _alp1: Scratch["alp1", Self.ACT_DIM + 1, True]
@@ -142,13 +114,9 @@ struct MBPOTrainerV2[
     var _ro_mu:   Scratch["ro_mu",   Self.BATCH * Self.DYN_PRED]
     var _ro_lv:   Scratch["ro_lv",   Self.BATCH * Self.DYN_PRED]
 
-    var gamma:           Scalar[DT]
-    var tau:             Scalar[DT]
     var action_scale:    Scalar[DT]
-    var target_entropy:  Scalar[DT]
     var learning_starts: Int
 
-    # MBPO-specific hyperparams.
     var model_train_freq:      Int
     var dyn_epochs_per_round:  Int
     var rollout_length:        Int
@@ -163,10 +131,10 @@ struct MBPOTrainerV2[
 
     def __init__(out self):
         comptime assert Self.DynNet.IN_DIMS[0] == Self.DYN_IN, (
-            "MBPOTrainerV2: DynNet.IN_DIM must equal OBS_DIM + ACT_DIM"
+            "MBPOTrainerV2R: DynNet.IN_DIM must equal OBS_DIM + ACT_DIM"
         )
         comptime assert Self.DynNet.OUT_DIM == Self.DYN_OUT, (
-            "MBPOTrainerV2: DynNet.OUT_DIM must equal 2 * (1 + OBS_DIM)"
+            "MBPOTrainerV2R: DynNet.OUT_DIM must equal 2 * (1 + OBS_DIM)"
         )
         comptime assert (
             Self.REAL_RATIO_PCT >= 0 and Self.REAL_RATIO_PCT <= 100
@@ -184,17 +152,30 @@ struct MBPOTrainerV2[
             value=0.0, m=0.0, v=0.0, t=0,
             lr=0.0003, beta1=0.9, beta2=0.999, eps=1e-8,
         )
-        self.actor_loss = SACActorLossCG[
-            Self.ACTOR, Self.CRITIC, Self.BATCH
+        self.sample_blk = DualSampleCpuStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.REPLAY_CAPACITY, Self.SYNTH_CAPACITY,
+            Self.REAL_BS, Self.SYNTH_BS,
         ]()
-        self.twin_critic_block = TwinCriticUpdateBlock[
-            Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+        self.target_y_blk = TargetYStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
         ]()
-        self.target_y_block = TargetYBlock[
-            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+        self.twin_critic_blk = TwinCriticStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        ]()
+        self.actor_blk = SACActorStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        ]()
+        self.alpha_blk = AlphaUpdateStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        ]()
+        self.polyak_blk = PolyakStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
         ]()
         self.ensemble = Self.ENSEMBLE()
-        self.graph = Self.Graph()
+        self.state = TrainerState[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        ]()
         self.tracker = EpisodeTracker(
             window=List[Scalar[DT]](), window_size=0, idx=0,
             current_return=Scalar[DT](0.0), ep_count=0,
@@ -209,10 +190,7 @@ struct MBPOTrainerV2[
         self._ro_nxt  = Scratch["ro_nxt",  Self.BATCH * Self.OBS_DIM]()
         self._ro_mu   = Scratch["ro_mu",   Self.BATCH * Self.DYN_PRED]()
         self._ro_lv   = Scratch["ro_lv",   Self.BATCH * Self.DYN_PRED]()
-        self.gamma = Scalar[DT](0.99)
-        self.tau = Scalar[DT](0.005)
         self.action_scale = Scalar[DT](1.0)
-        self.target_entropy = Scalar[DT](-1.0)
         self.learning_starts = 1_000
         self.model_train_freq = 250
         self.dyn_epochs_per_round = 4
@@ -246,7 +224,7 @@ struct MBPOTrainerV2[
         sac_updates_per_step: Int = 20,
         dyn_batch_size: Int = 256,
     ) raises -> Self:
-        comptime assert target == "cpu", "MBPOTrainerV2: CPU only"
+        comptime assert target == "cpu", "MBPOTrainerV2R: CPU only"
         var t = Self()
         t.actor = Self.ACTOR.make[target="cpu", INIT=Xavier]()
         t.pair1 = OnlineTargetPair[Self.CRITIC].make[
@@ -262,32 +240,35 @@ struct MBPOTrainerV2[
         t.critic2_opt = Adam.make[target="cpu", M=Self.CRITIC](t.pair2.online)
         t.critic2_opt.lr = critic_lr
         t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
-        t.actor_loss = SACActorLossCG[
-            Self.ACTOR, Self.CRITIC, Self.BATCH
-        ].make["cpu"](action_scale=action_scale)
-        t.twin_critic_block = TwinCriticUpdateBlock[
-            Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
-        ].make["cpu"]()
-        t.target_y_block = TargetYBlock[
-            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+
+        t.target_y_blk = TargetYStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
         ].make["cpu"](action_scale=action_scale, gamma=gamma)
+        t.twin_critic_blk = TwinCriticStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        ].make["cpu"]()
+        t.actor_blk = SACActorStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        ].make["cpu"](action_scale=action_scale)
+        t.alpha_blk = AlphaUpdateStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        ].make(target_entropy=target_entropy)
+        t.polyak_blk = PolyakStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        ].make(tau=tau)
+
         t.ensemble = Self.ENSEMBLE.make[target, INIT=Kaiming]()
         t.ensemble.set_lr(model_lr)
         t.tracker = EpisodeTracker.new(
             window_size=window_size, initial_fill=initial_episode_fill
         )
-
-        t.graph = Self.Graph()
-        t.graph.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH
+        t.state = TrainerState[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
         ].make_cpu()
 
         init_scratch_auto[Self, target="cpu"](t)
 
-        t.gamma = gamma
-        t.tau = tau
         t.action_scale = action_scale
-        t.target_entropy = target_entropy
         t.learning_starts = learning_starts
         t.model_train_freq = model_train_freq
         t.dyn_epochs_per_round = dyn_epochs_per_round
@@ -296,38 +277,8 @@ struct MBPOTrainerV2[
         t.sac_updates_per_step = sac_updates_per_step
         t.dyn_batch_size = dyn_batch_size
 
-        t.graph.blocks[0].setup(learning_starts)
+        t.sample_blk.setup(learning_starts)
         return t^
-
-    def _wire_blocks(mut self):
-        self.graph.blocks[1].bind(
-            UnsafePointer(to=self.actor),
-            UnsafePointer(to=self.pair1.target_net),
-            UnsafePointer(to=self.pair2.target_net),
-            UnsafePointer(to=self.target_y_block),
-        )
-        self.graph.blocks[2].bind(
-            UnsafePointer(to=self.pair1.online),
-            UnsafePointer(to=self.critic1_opt),
-            UnsafePointer(to=self.pair2.online),
-            UnsafePointer(to=self.critic2_opt),
-            UnsafePointer(to=self.twin_critic_block),
-        )
-        self.graph.blocks[3].bind(
-            UnsafePointer(to=self.actor),
-            UnsafePointer(to=self.actor_opt),
-            UnsafePointer(to=self.pair1.online),
-            UnsafePointer(to=self.pair2.online),
-            UnsafePointer(to=self.actor_loss),
-        )
-        self.graph.blocks[4].bind(
-            UnsafePointer(to=self.alpha_opt), self.target_entropy,
-        )
-        self.graph.blocks[5].bind(
-            UnsafePointer(to=self.pair1),
-            UnsafePointer(to=self.pair2),
-            self.tau,
-        )
 
     # ─── OffPolicyTrainable surface ───────────────────────────────────
 
@@ -353,7 +304,7 @@ struct MBPOTrainerV2[
         var alp1_t = TileTensor(
             alp1_cpu_p, row_major[1, Self.ACT_DIM + 1]()
         )
-        self.actor_loss.rsample.forward["cpu", 1](ao1_t, output=alp1_t)
+        self.actor_blk.inner.rsample.forward["cpu", 1](ao1_t, output=alp1_t)
         for j in range(Self.ACT_DIM):
             var a = alp1_cpu_p[j]
             if a > self.action_scale:
@@ -367,7 +318,6 @@ struct MBPOTrainerV2[
         ref obs: List[Scalar[DT]],
         mut action_out: List[Scalar[DT]],
     ) raises:
-        # Same head as SACTrainerV2: tanh(mean) * action_scale.
         from std.math import tanh as ftanh
         var ob1_cpu_p = self._ob1.cpu_ptr()
         var ao1_cpu_p = self._ao1.cpu_ptr()
@@ -394,7 +344,7 @@ struct MBPOTrainerV2[
         done: Scalar[DT],
     ) raises:
         self.tracker.add_reward(reward)
-        self.graph.blocks[0].real_add(obs, action, reward, next_obs, done)
+        self.sample_blk.real_add(obs, action, reward, next_obs, done)
 
     def end_episode(mut self):
         self.tracker.end_episode()
@@ -403,7 +353,7 @@ struct MBPOTrainerV2[
         if step_idx < self.learning_starts:
             return False
 
-        # Periodic dynamics + rollout phase (orchestration outside graph).
+        # Periodic dynamics + rollout phase (orchestration outside pipeline).
         var should_train_dyn = (
             self.last_dyn_step < 0
             or step_idx - self.last_dyn_step >= self.model_train_freq
@@ -414,21 +364,43 @@ struct MBPOTrainerV2[
             self.last_dyn_step = step_idx
 
         # Need both buffers populated enough for the dual sample.
-        if self.graph.blocks[0].real_buf.size < Self.REAL_BS:
+        if self.sample_blk.real_buf.size < Self.REAL_BS:
             return False
-        if self.graph.blocks[0].synth_buf.size < Self.SYNTH_BS:
+        if self.sample_blk.synth_buf.size < Self.SYNTH_BS:
             return False
 
         var any = False
         for _ in range(self.sac_updates_per_step):
-            self._wire_blocks()
-            self.graph.state.alpha = fexp(self.alpha_opt.value)
-            var ran = self.graph.step["cpu"](step_idx)
-            if ran:
-                self._actor_L_accum  += self.graph.state.actor_loss
-                self._critic_L_accum += self.graph.state.critic_loss
-                self._update_count   += 1
-                any = True
+            self.state.step_idx = step_idx
+            self.state.did_step = True
+            self.state.alpha = fexp(self.alpha_opt.value)
+
+            self.sample_blk.step(self.state)
+            if not self.state.did_step:
+                continue
+
+            self.target_y_blk.step["cpu"](
+                self.state, self.actor,
+                self.pair1.target_net, self.pair2.target_net,
+            )
+            self.twin_critic_blk.step["cpu"](
+                self.state,
+                self.pair1.online, self.critic1_opt,
+                self.pair2.online, self.critic2_opt,
+            )
+            self.actor_blk.step["cpu"](
+                self.state, self.actor, self.actor_opt,
+                self.pair1.online, self.pair2.online,
+            )
+            self.alpha_blk.step(self.state, self.alpha_opt)
+            self.polyak_blk.step["cpu"](
+                self.state, self.pair1, self.pair2,
+            )
+
+            self._actor_L_accum  += self.state.actor_loss
+            self._critic_L_accum += self.state.critic_loss
+            self._update_count   += 1
+            any = True
         return any
 
     def mean_return(self) -> Scalar[DT]:
@@ -440,7 +412,7 @@ struct MBPOTrainerV2[
     # ─── Dynamics training + synthetic rollouts (orchestration) ──────
 
     def _train_dynamics_ensemble(mut self) raises:
-        var n_data = self.graph.blocks[0].real_buf.size
+        var n_data = self.sample_blk.real_buf.size
         if n_data < self.dyn_batch_size:
             return
         var bs = self.dyn_batch_size
@@ -453,12 +425,11 @@ struct MBPOTrainerV2[
         var dyn_tgt_p = self._dyn_tgt.cpu_ptr()
 
         # Snapshot raw buffer pointers (stable; CPUReplay's circular
-        # storage is fixed-size). Avoids ref-of-non-ImplicitlyCopyable
-        # struct in the inner loop.
-        var rb_obs = self.graph.blocks[0].real_buf.obs
-        var rb_act = self.graph.blocks[0].real_buf.act
-        var rb_rew = self.graph.blocks[0].real_buf.rew
-        var rb_nxt = self.graph.blocks[0].real_buf.nxt
+        # storage is fixed-size).
+        var rb_obs = self.sample_blk.real_buf.obs
+        var rb_act = self.sample_blk.real_buf.act
+        var rb_rew = self.sample_blk.real_buf.rew
+        var rb_nxt = self.sample_blk.real_buf.nxt
 
         for m in range(Self.N_ENSEMBLE):
             for _ in range(total_steps):
@@ -491,7 +462,7 @@ struct MBPOTrainerV2[
                 )
 
     def _generate_synthetic_rollouts(mut self) raises:
-        var real_buf_size = self.graph.blocks[0].real_buf.size
+        var real_buf_size = self.sample_blk.real_buf.size
         if real_buf_size < 1:
             return
 
@@ -509,8 +480,7 @@ struct MBPOTrainerV2[
             var ro_lv_p = self._ro_lv.cpu_ptr()
             var dyn_in_p = self._dyn_in.cpu_ptr()
 
-            # Sample starting obs from real buffer.
-            var rb_obs = self.graph.blocks[0].real_buf.obs
+            var rb_obs = self.sample_blk.real_buf.obs
             for k in range(this_batch):
                 var idx = Int(random_float64() * Float64(real_buf_size))
                 if idx >= real_buf_size:
@@ -521,7 +491,6 @@ struct MBPOTrainerV2[
                     )
 
             for _ in range(self.rollout_length):
-                # Per-rollout policy actions (one-at-a-time via select_action).
                 for k in range(this_batch):
                     var obs_list = List[Scalar[DT]](capacity=Self.OBS_DIM)
                     for d in range(Self.OBS_DIM):
@@ -535,7 +504,6 @@ struct MBPOTrainerV2[
                     for j in range(Self.ACT_DIM):
                         roll_act_p[k * Self.ACT_DIM + j] = act_list[j]
 
-                # Build ensemble input [obs | action] and predict via random elite.
                 for k in range(this_batch):
                     for d in range(Self.OBS_DIM):
                         dyn_in_p[k * Self.DYN_IN + d] = (
@@ -563,7 +531,6 @@ struct MBPOTrainerV2[
                     member_idx, dyn_in_t, ro_mu_t, ro_lv_t,
                 )
 
-                # Sample (reward, Δobs) Gaussians; push (s, a, r, s', 0) into synth_buf.
                 var s_list = List[Scalar[DT]](capacity=Self.OBS_DIM)
                 var a_list = List[Scalar[DT]](capacity=Self.ACT_DIM)
                 var sp_list = List[Scalar[DT]](capacity=Self.OBS_DIM)
@@ -590,11 +557,10 @@ struct MBPOTrainerV2[
                         roll_nxt_p[k * Self.OBS_DIM + d] = nxt
                     for j in range(Self.ACT_DIM):
                         a_list[j] = roll_act_p[k * Self.ACT_DIM + j]
-                    self.graph.blocks[0].synth_add(
+                    self.sample_blk.synth_add(
                         s_list, a_list, rew, sp_list, Scalar[DT](0.0),
                     )
 
-                # Slide window: next step starts from sampled next_obs.
                 for k in range(this_batch * Self.OBS_DIM):
                     roll_obs_p[k] = roll_nxt_p[k]
 

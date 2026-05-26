@@ -1,21 +1,18 @@
-"""UniformSampleCpuBlock — owns CPUReplay, samples a uniform minibatch.
+"""UniformSampleCpuStep — owns a CPUReplay, samples a uniform minibatch.
 
-Per J.1.a Q1(b), the sample block OWNS the replay buffer. Trainer's
-`record(...)` delegates to `self.blocks[0].add(...)`. The block sets
-`state.did_step = False` when the buffer is under-filled or before
-learning_starts."""
+Trainer's `record(...)` delegates to `self.sample_blk.add(...)`. Sets
+`state.did_step = False` when buffer is under-filled or before
+learning_starts.
+"""
 
-from ...data.cpu_replay import CPUReplay
 from ...constants import DT
-from ..trainer_block import TrainerBlock, TrainerState
+from ...data.cpu_replay import CPUReplay
+from ..trainer_block import TrainerState
 
 
-struct UniformSampleCpuBlock[
-    OBS_: Int,
-    ACT_: Int,
-    BATCH_: Int,
-    CAP: Int,
-](TrainerBlock):
+struct UniformSampleCpuStep[
+    OBS_: Int, ACT_: Int, BATCH_: Int, CAP: Int,
+](Defaultable & Movable & ImplicitlyDestructible):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
@@ -24,12 +21,11 @@ struct UniformSampleCpuBlock[
     var learning_starts: Int
 
     def __init__(out self):
+        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=0
+        )
         self.buf = CPUReplay[Self.OBS, Self.ACT, Self.CAP](
-            obs=UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
-            act=UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
-            rew=UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
-            nxt=UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
-            dne=UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
+            obs=null_p, act=null_p, rew=null_p, nxt=null_p, dne=null_p,
             size=0, pos=0,
         )
         self.learning_starts = 0
@@ -48,7 +44,7 @@ struct UniformSampleCpuBlock[
     ):
         self.buf.add(obs, action, reward, next_obs, done)
 
-    def step_via[target: StaticString = "cpu"](
+    def step(
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
     ) raises:

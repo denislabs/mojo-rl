@@ -55,9 +55,9 @@ trait IsScratch(Movable & ImplicitlyDestructible):
     def scratch_size(self) -> Int:
         ...
 
-    def init_with[target: StaticString](
-        mut self, ctx: Optional[DeviceContext]
-    ) raises:
+    def init_with[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
         ...
 
 
@@ -91,13 +91,14 @@ struct Scratch[NAME: StaticString, SIZE: Int, STAGING: Bool = False](IsScratch):
             # Staging scratch: keep a CPU mirror alongside the device
             # buffer for host-side upload/download bookkeeping.
             s.cpu = List[Scalar[DT]](
-                length=Self.SIZE, fill=Scalar[DT](0.0),
+                length=Self.SIZE,
+                fill=Scalar[DT](0.0),
             )
         return s^
 
-    def init_with[target: StaticString](
-        mut self, ctx: Optional[DeviceContext]
-    ) raises:
+    def init_with[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
         """Walker entry point. Called once per scratch field by
         `init_scratch_auto[T, target]`. Populates the matching storage
         and leaves the other in its default state.
@@ -106,13 +107,15 @@ struct Scratch[NAME: StaticString, SIZE: Int, STAGING: Bool = False](IsScratch):
         list — see the struct docstring."""
         comptime if target == "cpu":
             self.cpu = List[Scalar[DT]](
-                length=Self.SIZE, fill=Scalar[DT](0.0),
+                length=Self.SIZE,
+                fill=Scalar[DT](0.0),
             )
         else:
             self.dev = ctx.value().enqueue_create_buffer[DT](Self.SIZE)
             comptime if Self.STAGING:
                 self.cpu = List[Scalar[DT]](
-                    length=Self.SIZE, fill=Scalar[DT](0.0),
+                    length=Self.SIZE,
+                    fill=Scalar[DT](0.0),
                 )
 
     def scratch_name(self) -> StaticString:
@@ -136,3 +139,15 @@ struct Scratch[NAME: StaticString, SIZE: Int, STAGING: Bool = False](IsScratch):
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             self.dev.value().unsafe_ptr()
         )
+
+    def target_ptr[
+        target: StaticString
+    ](self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Returns the raw pointer for the target. Caller must know the target is CPU or GPU
+        and that `init_with[target]` has been called."""
+        comptime if target == "cpu":
+            return self.cpu_ptr()
+        elif target == "gpu":
+            return self.dev_ptr()
+        else:
+            comptime assert False, "target must be 'cpu' or 'gpu'"

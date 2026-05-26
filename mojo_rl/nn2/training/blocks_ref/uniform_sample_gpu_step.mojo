@@ -1,23 +1,20 @@
-"""UniformSampleGpuBlock — owns GPUReplay, samples directly into device buffers.
+"""UniformSampleGpuStep — GPU variant of UniformSampleCpuStep.
 
-GPU variant of UniformSampleCpuBlock. Same trait surface, different
-internals: setup + add take a DeviceContext, step_via passes the
-state's `mb_*.dev.value()` DeviceBuffers to GPUReplay.sample[BATCH].
+Owns Optional[GPUReplay]. `setup(ctx, learning_starts)` allocates; `add`
+pushes via the trainer-supplied ctx. `step` reads device-side state.mb_*
+buffers and samples in-place.
 """
 
 from std.gpu.host import DeviceContext
 
-from ...data.gpu_replay import GPUReplay
 from ...constants import DT
-from ..trainer_block import TrainerBlock, TrainerState
+from ...data.gpu_replay import GPUReplay
+from ..trainer_block import TrainerState
 
 
-struct UniformSampleGpuBlock[
-    OBS_: Int,
-    ACT_: Int,
-    BATCH_: Int,
-    CAP: Int,
-](TrainerBlock):
+struct UniformSampleGpuStep[
+    OBS_: Int, ACT_: Int, BATCH_: Int, CAP: Int,
+](Defaultable & Movable & ImplicitlyDestructible):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
@@ -46,7 +43,7 @@ struct UniformSampleGpuBlock[
     ) raises:
         self.buf.value().add(ctx, s, a, r, sp, d)
 
-    def step_via[target: StaticString = "gpu"](
+    def step(
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
     ) raises:

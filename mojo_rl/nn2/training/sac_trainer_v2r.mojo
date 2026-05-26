@@ -1,14 +1,14 @@
-"""SACTrainerV2 — J.1 — SAC trainer composed via TrainerGraph[*BLOCKS].
+"""SACTrainerV2R — J.1.g-redesign-v2 — SAC via ref-based block calls.
 
-Same algorithm + RNG-consumption order as SACTrainer. The 6 train_step
-helpers (`_train_compute_target_y`, `_train_critic_update`,
-`_train_actor_update`, `_train_alpha_update`, `_train_polyak`, plus the
-inline sample branch) are lifted into 6 TrainerBlock-conforming structs;
-`train_step` is now `state.alpha = fexp(alpha_opt.value); graph.step()`.
+NO TrainerGraph. NO bind. NO _wire_blocks. NO PortPack. NO UnsafePointer
+fields on blocks.
 
-CPU only for J.1.c. GPU + PER come in J.1.d.
+Each block (in `blocks_ref/`) is a small struct that owns its inner
+LossBlock if any, and exposes `step[target](mut state, ref/mut ...)`.
+The trainer's `train_step` body IS the pipeline.
 
-Bit-identity gate (J.1.c): seed=42 Pendulum 30k → mean_ret(10) = −167.572.
+Bit-identity gate: seed=42 Pendulum 30k → mean_ret(10) = -169.04118
+(matches SACTrainer / SACTrainerV2 exactly).
 """
 
 from std.math import exp as fexp, log as flog, tanh as ftanh
@@ -23,22 +23,20 @@ from ..core.scratch_walkers import init_scratch_auto
 from ..initializer import Xavier
 from ..optimizer.adam import Adam
 from ..optimizer.scalar_adam import ScalarAdam
-from ..loss.sac_actor_loss_cg import SACActorLossCG
-from ..loss.critic_update_block import TwinCriticUpdateBlock
-from ..combinators.trainer_graph import TrainerGraph
-from .target_y_block import TargetYBlock
 from .episode_tracker import EpisodeTracker
 from .trainer_block import TrainerState
 from .driver_cpu import OffPolicyTrainable
-from .blocks.uniform_sample_cpu_block import UniformSampleCpuBlock
-from .blocks.target_y_step_block import TargetYStepBlock
-from .blocks.twin_critic_step_block import TwinCriticStepBlock
-from .blocks.sac_actor_step_block import SACActorStepBlock
-from .blocks.alpha_update_block import AlphaUpdateBlock
-from .blocks.polyak_block import PolyakBlock
+from .blocks_ref import (
+    UniformSampleCpuStep,
+    TargetYStep,
+    TwinCriticStep,
+    SACActorStep,
+    AlphaUpdateStep,
+    PolyakStep,
+)
 
 
-struct SACTrainerV2[
+struct SACTrainerV2R[
     ACTOR: Module,
     CRITIC: Module,
     OBS_DIM: Int,
@@ -47,30 +45,8 @@ struct SACTrainerV2[
     REPLAY_CAPACITY: Int,
 ](OffPolicyTrainable):
 
-    alias SampleB = UniformSampleCpuBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
-    ]
-    alias TargetYB = TargetYStepBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
-    ]
-    alias TwinB = TwinCriticStepBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
-    ]
-    alias ActorB = SACActorStepBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
-    ]
-    alias AlphaB = AlphaUpdateBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-    ]
-    alias PolyakB = PolyakBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
-    ]
-
-    alias Graph = TrainerGraph[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-        Self.SampleB, Self.TargetYB, Self.TwinB,
-        Self.ActorB, Self.AlphaB, Self.PolyakB,
-    ]
+    comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
+    comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
 
     var actor:       Self.ACTOR
     var pair1:       OnlineTargetPair[Self.CRITIC]
@@ -80,25 +56,31 @@ struct SACTrainerV2[
     var critic2_opt: Adam
     var alpha_opt:   ScalarAdam
 
-    var actor_loss: SACActorLossCG[Self.ACTOR, Self.CRITIC, Self.BATCH]
-    var twin_critic_block: TwinCriticUpdateBlock[
-        Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+    var sample_blk: UniformSampleCpuStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
     ]
-    var target_y_block: TargetYBlock[
-        Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+    var target_y_blk: TargetYStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+    ]
+    var twin_critic_blk: TwinCriticStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+    ]
+    var actor_blk: SACActorStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+    ]
+    var alpha_blk: AlphaUpdateStep[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
+    var polyak_blk: PolyakStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
     ]
 
-    var graph:   Self.Graph
+    var state:   TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
     var tracker: EpisodeTracker
 
     var _ob1:  Scratch["ob1",  Self.OBS_DIM, True]
     var _ao1:  Scratch["ao1",  2 * Self.ACT_DIM, True]
     var _alp1: Scratch["alp1", Self.ACT_DIM + 1, True]
 
-    var gamma:           Scalar[DT]
-    var tau:             Scalar[DT]
     var action_scale:    Scalar[DT]
-    var target_entropy:  Scalar[DT]
     var learning_starts: Int
 
     var _actor_L_accum:  Scalar[DT]
@@ -117,16 +99,27 @@ struct SACTrainerV2[
             value=0.0, m=0.0, v=0.0, t=0,
             lr=0.0003, beta1=0.9, beta2=0.999, eps=1e-8,
         )
-        self.actor_loss = SACActorLossCG[
-            Self.ACTOR, Self.CRITIC, Self.BATCH
+        self.sample_blk = UniformSampleCpuStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
         ]()
-        self.twin_critic_block = TwinCriticUpdateBlock[
-            Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+        self.target_y_blk = TargetYStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
         ]()
-        self.target_y_block = TargetYBlock[
-            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+        self.twin_critic_blk = TwinCriticStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
         ]()
-        self.graph = Self.Graph()
+        self.actor_blk = SACActorStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        ]()
+        self.alpha_blk = AlphaUpdateStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        ]()
+        self.polyak_blk = PolyakStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        ]()
+        self.state = TrainerState[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        ]()
         self.tracker = EpisodeTracker(
             window=List[Scalar[DT]](), window_size=0, idx=0,
             current_return=Scalar[DT](0.0), ep_count=0,
@@ -134,10 +127,7 @@ struct SACTrainerV2[
         self._ob1  = Scratch["ob1",  Self.OBS_DIM, True]()
         self._ao1  = Scratch["ao1",  2 * Self.ACT_DIM, True]()
         self._alp1 = Scratch["alp1", Self.ACT_DIM + 1, True]()
-        self.gamma = Scalar[DT](0.99)
-        self.tau   = Scalar[DT](0.005)
-        self.action_scale   = Scalar[DT](1.0)
-        self.target_entropy = Scalar[DT](-1.0)
+        self.action_scale = Scalar[DT](1.0)
         self.learning_starts = 1_000
         self._actor_L_accum  = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
@@ -160,7 +150,7 @@ struct SACTrainerV2[
         max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises -> Self:
         comptime assert target == "cpu", (
-            "SACTrainerV2.make[target='gpu'] — GPU comes in J.1.d"
+            "SACTrainerV2R.make[target='gpu'] — use SACTrainerV2RGpu"
         )
         var t = Self()
         t.actor = Self.ACTOR.make[target="cpu", INIT=Xavier]()
@@ -180,73 +170,38 @@ struct SACTrainerV2[
         t.critic2_opt.lr = critic_lr
         t.critic2_opt.max_grad_norm = max_grad_norm
         t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
-        t.actor_loss = SACActorLossCG[
-            Self.ACTOR, Self.CRITIC, Self.BATCH
-        ].make["cpu"](action_scale=action_scale)
-        t.twin_critic_block = TwinCriticUpdateBlock[
-            Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
-        ].make["cpu"]()
-        t.target_y_block = TargetYBlock[
-            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+
+        t.target_y_blk = TargetYStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
         ].make["cpu"](action_scale=action_scale, gamma=gamma)
+        t.twin_critic_blk = TwinCriticStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        ].make["cpu"]()
+        t.actor_blk = SACActorStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        ].make["cpu"](action_scale=action_scale)
+        t.alpha_blk = AlphaUpdateStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        ].make(target_entropy=target_entropy)
+        t.polyak_blk = PolyakStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        ].make(tau=tau)
+
         t.tracker = EpisodeTracker.new(
             window_size=window_size, initial_fill=initial_episode_fill
         )
 
-        t.graph = Self.Graph()
-        t.graph.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH
+        t.state = TrainerState[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
         ].make_cpu()
 
         init_scratch_auto[Self, target="cpu"](t)
 
-        t.gamma = gamma
-        t.tau = tau
         t.action_scale = action_scale
-        t.target_entropy = target_entropy
         t.learning_starts = learning_starts
 
-        # SampleBlock owns its replay buffer (no model pointers).
-        # Other blocks are rewired per-step (`_wire_blocks` from
-        # `train_step`) because `return t^` here moves the trainer,
-        # invalidating any `UnsafePointer(to=t.<field>)` taken here.
-        # Matches ComputeGraph's `set_external` discipline.
-        t.graph.blocks[0].setup(learning_starts)
+        t.sample_blk.setup(learning_starts)
         return t^
-
-    def _wire_blocks(mut self):
-        """Bind block→trainer-field pointers. Called from train_step
-        every call (cost: ~6 pointer stores; mirror's ComputeGraph's
-        `set_external` per-forward pattern). Catches any post-construction
-        moves (e.g. if a trainer field is reseated)."""
-        self.graph.blocks[1].bind(
-            UnsafePointer(to=self.actor),
-            UnsafePointer(to=self.pair1.target_net),
-            UnsafePointer(to=self.pair2.target_net),
-            UnsafePointer(to=self.target_y_block),
-        )
-        self.graph.blocks[2].bind(
-            UnsafePointer(to=self.pair1.online),
-            UnsafePointer(to=self.critic1_opt),
-            UnsafePointer(to=self.pair2.online),
-            UnsafePointer(to=self.critic2_opt),
-            UnsafePointer(to=self.twin_critic_block),
-        )
-        self.graph.blocks[3].bind(
-            UnsafePointer(to=self.actor),
-            UnsafePointer(to=self.actor_opt),
-            UnsafePointer(to=self.pair1.online),
-            UnsafePointer(to=self.pair2.online),
-            UnsafePointer(to=self.actor_loss),
-        )
-        self.graph.blocks[4].bind(
-            UnsafePointer(to=self.alpha_opt), self.target_entropy,
-        )
-        self.graph.blocks[5].bind(
-            UnsafePointer(to=self.pair1),
-            UnsafePointer(to=self.pair2),
-            self.tau,
-        )
 
     # ─── OffPolicyTrainable surface ───────────────────────────────────
 
@@ -272,7 +227,8 @@ struct SACTrainerV2[
         var alp1_t = TileTensor(
             alp1_cpu_p, row_major[1, Self.ACT_DIM + 1]()
         )
-        self.actor_loss.rsample.forward["cpu", 1](ao1_t, output=alp1_t)
+        # rsample lives on actor_blk.inner (was on trainer.actor_loss before).
+        self.actor_blk.inner.rsample.forward["cpu", 1](ao1_t, output=alp1_t)
         for j in range(Self.ACT_DIM):
             var a = alp1_cpu_p[j]
             if a > self.action_scale:
@@ -311,19 +267,42 @@ struct SACTrainerV2[
         done: Scalar[DT],
     ) raises:
         self.tracker.add_reward(reward)
-        self.graph.blocks[0].add(obs, action, reward, next_obs, done)
+        self.sample_blk.add(obs, action, reward, next_obs, done)
 
     def end_episode(mut self):
         self.tracker.end_episode()
 
     def train_step(mut self, step_idx: Int) raises -> Bool:
-        self._wire_blocks()
-        self.graph.state.alpha = fexp(self.alpha_opt.value)
-        var ran = self.graph.step["cpu"](step_idx)
-        if not ran:
+        """The pipeline. ZERO bind, ZERO wire, ZERO PortPack — each block
+        is invoked with the refs it needs at the call site."""
+        self.state.step_idx = step_idx
+        self.state.did_step = True
+        self.state.alpha = fexp(self.alpha_opt.value)
+
+        self.sample_blk.step(self.state)
+        if not self.state.did_step:
             return False
-        self._actor_L_accum  += self.graph.state.actor_loss
-        self._critic_L_accum += self.graph.state.critic_loss
+
+        self.target_y_blk.step["cpu"](
+            self.state, self.actor,
+            self.pair1.target_net, self.pair2.target_net,
+        )
+        self.twin_critic_blk.step["cpu"](
+            self.state,
+            self.pair1.online, self.critic1_opt,
+            self.pair2.online, self.critic2_opt,
+        )
+        self.actor_blk.step["cpu"](
+            self.state, self.actor, self.actor_opt,
+            self.pair1.online, self.pair2.online,
+        )
+        self.alpha_blk.step(self.state, self.alpha_opt)
+        self.polyak_blk.step["cpu"](
+            self.state, self.pair1, self.pair2,
+        )
+
+        self._actor_L_accum  += self.state.actor_loss
+        self._critic_L_accum += self.state.critic_loss
         self._alpha_accum    += fexp(self.alpha_opt.value)
         self._update_count   += 1
         return True

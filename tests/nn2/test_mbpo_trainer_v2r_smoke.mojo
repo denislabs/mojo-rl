@@ -1,4 +1,4 @@
-"""MBPOTrainerV2 smoke test (J.1.f)."""
+"""MBPOTrainerV2R smoke test (Step 4)."""
 
 from std.random import seed
 from std.testing import assert_true
@@ -10,7 +10,7 @@ from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.elementwise import Elementwise
 from mojo_rl.nn2.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.mbpo_trainer_v2 import MBPOTrainerV2
+from mojo_rl.nn2.training.mbpo_trainer_v2r import MBPOTrainerV2R
 from mojo_rl.envs.pendulum import PendulumEnv
 
 
@@ -39,7 +39,7 @@ comptime DynNet = Sequential[
     Linear[DYN_HIDDEN, DYN_HIDDEN], Elementwise[DYN_HIDDEN, SwishOp],
     Linear[DYN_HIDDEN, 2 * (1 + OBS)],
 ]
-comptime Trainer = MBPOTrainerV2[
+comptime Trainer = MBPOTrainerV2R[
     ActorNet, CriticNet, DynNet,
     OBS, ACT, BATCH, REPLAY_CAP, SYNTH_CAP, N_ENS, N_ELITES, 5,
 ]
@@ -86,11 +86,11 @@ def test_end_to_end_few_steps() raises:
             stepped_count += 1
 
     print("  total train steps executed:", stepped_count)
-    print("  synth buf size:", t.graph.blocks[0].synth_buf.size)
-    print("  real buf size:", t.graph.blocks[0].real_buf.size)
+    print("  synth buf size:", t.sample_blk.synth_buf.size)
+    print("  real buf size:", t.sample_blk.real_buf.size)
     print("  mean_return:", t.mean_return())
     assert_true(
-        t.graph.blocks[0].synth_buf.size > 0,
+        t.sample_blk.synth_buf.size > 0,
         "synth buffer should be populated",
     )
     assert_true(
@@ -102,7 +102,7 @@ def test_end_to_end_few_steps() raises:
 
 def main() raises:
     print("=" * 70)
-    print("J.1.f MBPOTrainerV2 smoke")
+    print("Step 4 — MBPOTrainerV2R smoke")
     print("=" * 70)
     test_end_to_end_few_steps()
     print("=" * 70)

@@ -1,42 +1,31 @@
-"""TD3TrainerV2 — J.1.e — TD3 trainer composed via TrainerGraph[*BLOCKS].
+"""TD3TrainerV2R — J.1.g-redesign-v2 Step 3 — TD3 via ref-based blocks.
 
-CPU only. Differences from DDPGTrainerV2:
-  - Twin critics (reuses SAC's TwinCriticStepBlock).
-  - TD3TargetYBlock (target smoothing on a').
-  - TD3DelayedActorPolyakBlock — bundled actor update + 3 polyaks gated
-    by an internal `policy_delay` counter.
+CPU only. Pipeline (4 blocks):
+  Sample → TD3TargetY → TwinCritic [reused from SAC] → TD3DelayedActorPolyak
 
-Block decomposition:
-  TrainerGraph[
-      UniformSampleCpuBlock,
-      TD3TargetYStepBlock,
-      TwinCriticStepBlock,           # reused from SAC
-      TD3DelayedActorPolyakBlock,    # actor + 3 polyaks, gated
-  ]
+TD3DelayedActorPolyakStep bundles actor update + 3 polyaks, gated by an
+internal counter (no state pollution).
 """
-
-from layout import TileTensor, row_major
 
 from ..constants import DT
 from ..core import Module
 from ..core.online_target_pair import OnlineTargetPair
+from ..core.scratch_walkers import init_scratch_auto
 from ..initializer import Xavier
 from ..optimizer.adam import Adam
-from ..loss.ddpg_actor_loss import DDPGActorLoss
-from ..loss.critic_update_block import TwinCriticUpdateBlock
-from ..combinators.trainer_graph import TrainerGraph
-from .td3_target_y_block import TD3TargetYBlock
 from .action_sampling_block import ActionSamplingBlock
 from .episode_tracker import EpisodeTracker
 from .trainer_block import TrainerState
 from .driver_cpu import OffPolicyTrainable
-from .blocks.uniform_sample_cpu_block import UniformSampleCpuBlock
-from .blocks.td3_target_y_step_block import TD3TargetYStepBlock
-from .blocks.twin_critic_step_block import TwinCriticStepBlock
-from .blocks.td3_delayed_actor_polyak_block import TD3DelayedActorPolyakBlock
+from .blocks_ref import (
+    UniformSampleCpuStep,
+    TD3TargetYStep,
+    TwinCriticStep,
+    TD3DelayedActorPolyakStep,
+)
 
 
-struct TD3TrainerV2[
+struct TD3TrainerV2R[
     ACTOR: Module,
     CRITIC: Module,
     OBS_DIM: Int,
@@ -45,23 +34,8 @@ struct TD3TrainerV2[
     REPLAY_CAPACITY: Int,
 ](OffPolicyTrainable):
 
-    comptime SampleB = UniformSampleCpuBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
-    ]
-    comptime TargetYB = TD3TargetYStepBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
-    ]
-    comptime TwinB = TwinCriticStepBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
-    ]
-    comptime ActorPolyakB = TD3DelayedActorPolyakBlock[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
-    ]
-
-    comptime Graph = TrainerGraph[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-        Self.SampleB, Self.TargetYB, Self.TwinB, Self.ActorPolyakB,
-    ]
+    comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
+    comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
 
     var actor_pair:  OnlineTargetPair[Self.ACTOR]
     var pair1:       OnlineTargetPair[Self.CRITIC]
@@ -70,25 +44,28 @@ struct TD3TrainerV2[
     var critic1_opt: Adam
     var critic2_opt: Adam
 
-    var actor_loss: DDPGActorLoss[Self.ACTOR, Self.CRITIC, Self.BATCH]
-    var twin_critic_block: TwinCriticUpdateBlock[
-        Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+    var sample_blk: UniformSampleCpuStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
     ]
-    var target_y_block: TD3TargetYBlock[
-        Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+    var target_y_blk: TD3TargetYStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
     ]
+    var twin_critic_blk: TwinCriticStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+    ]
+    var actor_polyak_blk: TD3DelayedActorPolyakStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+    ]
+
     var policy_head: ActionSamplingBlock[
         Self.ACTOR, Self.OBS_DIM, Self.ACT_DIM, Self.ACT_DIM
     ]
 
-    var graph:   Self.Graph
+    var state:   TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
     var tracker: EpisodeTracker
 
-    var gamma:             Scalar[DT]
-    var tau:               Scalar[DT]
     var action_scale:      Scalar[DT]
     var exploration_noise: Scalar[DT]
-    var policy_delay:      Int
     var learning_starts:   Int
 
     var _actor_L_accum:  Scalar[DT]
@@ -103,28 +80,32 @@ struct TD3TrainerV2[
         self.actor_opt = Adam()
         self.critic1_opt = Adam()
         self.critic2_opt = Adam()
-        self.actor_loss = DDPGActorLoss[
-            Self.ACTOR, Self.CRITIC, Self.BATCH
+
+        self.sample_blk = UniformSampleCpuStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
         ]()
-        self.twin_critic_block = TwinCriticUpdateBlock[
-            Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+        self.target_y_blk = TD3TargetYStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
         ]()
-        self.target_y_block = TD3TargetYBlock[
-            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+        self.twin_critic_blk = TwinCriticStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        ]()
+        self.actor_polyak_blk = TD3DelayedActorPolyakStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
         ]()
         self.policy_head = ActionSamplingBlock[
-            Self.ACTOR, Self.OBS_DIM, Self.ACT_DIM, Self.ACT_DIM
+            Self.ACTOR, Self.OBS_DIM, Self.ACT_DIM, Self.ACT_DIM,
         ]()
-        self.graph = Self.Graph()
+
+        self.state = TrainerState[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        ]()
         self.tracker = EpisodeTracker(
             window=List[Scalar[DT]](), window_size=0, idx=0,
             current_return=Scalar[DT](0.0), ep_count=0,
         )
-        self.gamma = Scalar[DT](0.99)
-        self.tau = Scalar[DT](0.005)
         self.action_scale = Scalar[DT](1.0)
         self.exploration_noise = Scalar[DT](0.1)
-        self.policy_delay = 2
         self.learning_starts = 1_000
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
@@ -147,7 +128,7 @@ struct TD3TrainerV2[
         initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
         max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises -> Self:
-        comptime assert target == "cpu", "TD3TrainerV2: CPU only"
+        comptime assert target == "cpu", "TD3TrainerV2R: CPU only"
         var t = Self()
         t.actor_pair = OnlineTargetPair[Self.ACTOR].make[
             target="cpu", INIT=Xavier
@@ -170,64 +151,37 @@ struct TD3TrainerV2[
         t.critic2_opt.lr = critic_lr
         t.critic2_opt.max_grad_norm = max_grad_norm
 
-        t.actor_loss = DDPGActorLoss[
-            Self.ACTOR, Self.CRITIC, Self.BATCH
-        ].make["cpu"]()
-        t.twin_critic_block = TwinCriticUpdateBlock[
-            Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
-        ].make["cpu"]()
-        t.target_y_block = TD3TargetYBlock[
-            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM
+        t.target_y_blk = TD3TargetYStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
         ].make["cpu"](
             action_scale=action_scale, gamma=gamma,
             noise_std=target_policy_noise, noise_clip=target_noise_clip,
         )
-        t.policy_head = ActionSamplingBlock[
-            Self.ACTOR, Self.OBS_DIM, Self.ACT_DIM, Self.ACT_DIM
+        t.twin_critic_blk = TwinCriticStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
         ].make["cpu"]()
+        t.actor_polyak_blk = TD3DelayedActorPolyakStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        ].make["cpu"](policy_delay=policy_delay, tau=tau)
+        t.policy_head = ActionSamplingBlock[
+            Self.ACTOR, Self.OBS_DIM, Self.ACT_DIM, Self.ACT_DIM,
+        ].make["cpu"]()
+
         t.tracker = EpisodeTracker.new(
             window_size=window_size, initial_fill=initial_episode_fill
         )
-
-        t.graph = Self.Graph()
-        t.graph.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH
+        t.state = TrainerState[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
         ].make_cpu()
 
-        t.gamma = gamma
-        t.tau = tau
+        init_scratch_auto[Self, target="cpu"](t)
+
         t.action_scale = action_scale
         t.exploration_noise = exploration_noise
-        t.policy_delay = policy_delay
         t.learning_starts = learning_starts
 
-        t.graph.blocks[0].setup(learning_starts)
-        t.graph.blocks[3].setup(policy_delay, tau)
+        t.sample_blk.setup(learning_starts)
         return t^
-
-    def _wire_blocks(mut self):
-        self.graph.blocks[1].bind(
-            UnsafePointer(to=self.actor_pair.target_net),
-            UnsafePointer(to=self.pair1.target_net),
-            UnsafePointer(to=self.pair2.target_net),
-            UnsafePointer(to=self.target_y_block),
-        )
-        self.graph.blocks[2].bind(
-            UnsafePointer(to=self.pair1.online),
-            UnsafePointer(to=self.critic1_opt),
-            UnsafePointer(to=self.pair2.online),
-            UnsafePointer(to=self.critic2_opt),
-            UnsafePointer(to=self.twin_critic_block),
-        )
-        self.graph.blocks[3].bind(
-            UnsafePointer(to=self.actor_pair.online),
-            UnsafePointer(to=self.actor_opt),
-            UnsafePointer(to=self.pair1.online),
-            UnsafePointer(to=self.actor_pair),
-            UnsafePointer(to=self.pair1),
-            UnsafePointer(to=self.pair2),
-            UnsafePointer(to=self.actor_loss),
-        )
 
     # ─── OffPolicyTrainable surface ───────────────────────────────────
 
@@ -266,27 +220,43 @@ struct TD3TrainerV2[
         done: Scalar[DT],
     ) raises:
         self.tracker.add_reward(reward)
-        self.graph.blocks[0].add(obs, action, reward, next_obs, done)
+        self.sample_blk.add(obs, action, reward, next_obs, done)
 
     def end_episode(mut self):
         self.tracker.end_episode()
 
     def train_step(mut self, step_idx: Int) raises -> Bool:
-        self._wire_blocks()
-        var ran = self.graph.step["cpu"](step_idx)
-        if not ran:
+        self.state.step_idx = step_idx
+        self.state.did_step = True
+
+        self.sample_blk.step(self.state)
+        if not self.state.did_step:
             return False
-        self._critic_L_accum += self.graph.state.critic_loss
+
+        self.target_y_blk.step["cpu"](
+            self.state, self.actor_pair.target_net,
+            self.pair1.target_net, self.pair2.target_net,
+        )
+        self.twin_critic_blk.step["cpu"](
+            self.state,
+            self.pair1.online, self.critic1_opt,
+            self.pair2.online, self.critic2_opt,
+        )
+        self._critic_L_accum += self.state.critic_loss
         self._critic_updates += 1
-        # actor update fires only every policy_delay steps; the
-        # TD3DelayedActorPolyakBlock overwrites state.actor_loss only
-        # when it actually ran. We detect that by checking if the
-        # actor block's internal counter just reset (==0 after step).
-        # Simpler: TD3DelayedActorPolyakBlock sets state.actor_loss
-        # only on update; rely on the value being valid and bump
-        # _actor_updates accordingly. Counter exposed via graph.
-        if self.graph.blocks[3]._counter == 0:
-            self._actor_L_accum += self.graph.state.actor_loss
+
+        # TD3 actor + 3-pair polyak (gated by internal counter). Block
+        # accesses actor via actor_pair.online + critic1 via pair1.online
+        # internally — avoids Mojo aliasing rejection of passing pair +
+        # pair.online simultaneously.
+        self.actor_polyak_blk.step["cpu"](
+            self.state, self.actor_opt,
+            self.actor_pair, self.pair1, self.pair2,
+        )
+        # Block resets _counter to 0 when it fires; reads state.actor_loss
+        # only when the block actually ran.
+        if self.actor_polyak_blk._counter == 0:
+            self._actor_L_accum += self.state.actor_loss
             self._actor_updates += 1
         return True
 

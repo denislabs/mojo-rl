@@ -1,21 +1,20 @@
-"""DualSampleBlock — MBPO mixed-batch sampler.
+"""DualSampleCpuStep — MBPO mixed-batch sampler.
 
 Owns BOTH the real replay buffer AND the synthetic replay buffer. Each
-train_step samples REAL_BS transitions from real_buf into the first
-REAL_BS rows of state.mb_*, and SYNTH_BS transitions from synth_buf
-into the remaining rows. Net effect: SAC's downstream blocks see one
-combined BATCH-wide minibatch.
+step samples REAL_BS transitions from real_buf into the first REAL_BS
+rows of state.mb_*, and SYNTH_BS transitions from synth_buf into the
+remaining rows.
 
-Per J.1.a Q1(b), trainer's `record(...)` delegates to `real_add(...)`.
-MBPO's synthetic rollout generator separately calls `synth_add(...)`.
+Trainer's `record(...)` delegates to `real_add(...)`; MBPO's synthetic
+rollout generator separately calls `synth_add(...)`.
 """
 
-from ...data.cpu_replay import CPUReplay
 from ...constants import DT
-from ..trainer_block import TrainerBlock, TrainerState
+from ...data.cpu_replay import CPUReplay
+from ..trainer_block import TrainerState
 
 
-struct DualSampleCpuBlock[
+struct DualSampleCpuStep[
     OBS_: Int,
     ACT_: Int,
     BATCH_: Int,
@@ -23,7 +22,7 @@ struct DualSampleCpuBlock[
     SYNTH_CAP: Int,
     REAL_BS: Int,
     SYNTH_BS: Int,
-](TrainerBlock):
+](Defaultable & Movable & ImplicitlyDestructible):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
@@ -73,13 +72,13 @@ struct DualSampleCpuBlock[
     ):
         self.synth_buf.add(obs, action, reward, next_obs, done)
 
-    def step_via[target: StaticString = "cpu"](
+    def step(
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
     ) raises:
         comptime assert (
             Self.REAL_BS + Self.SYNTH_BS == Self.BATCH
-        ), "DualSampleBlock: REAL_BS + SYNTH_BS must equal BATCH"
+        ), "DualSampleCpuStep: REAL_BS + SYNTH_BS must equal BATCH"
         if state.step_idx < self.learning_starts:
             state.did_step = False
             return
