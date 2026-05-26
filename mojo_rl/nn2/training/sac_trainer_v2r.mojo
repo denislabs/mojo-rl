@@ -28,11 +28,15 @@ the bit-identity gate −169.04118 @ 30k Pendulum seed=42).
 
 from std.math import exp as fexp, log as flog, tanh as ftanh
 from std.random import random_float64
+from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from ..constants import DT
 from ..core import Module
+from ..core.log_bundle import log_bundle
+from ..core.metric import LogScalar
 from ..core.online_target_pair import OnlineTargetPair
 from ..core.scratch import Scratch
 from ..core.scratch_walkers import init_scratch_auto
@@ -40,6 +44,8 @@ from ..initializer import Xavier
 from ..optimizer.adam import Adam
 from ..optimizer.scalar_adam import ScalarAdam
 from .episode_tracker import EpisodeTracker
+from .sac_metrics import SACMetrics
+from .timer import Timer
 from .trainer_block import TrainerState
 from .driver_cpu import OffPolicyTrainable, OffPolicyTrainableGpu
 from .blocks_ref import (
@@ -72,6 +78,14 @@ struct SACTrainerV2R[
 
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
+
+    # Timer section indices. Order matches `add_section` calls in `make`.
+    comptime _T_SAMPLE   = 0
+    comptime _T_TARGET_Y = 1
+    comptime _T_CRITIC   = 2
+    comptime _T_ACTOR    = 3
+    comptime _T_ALPHA    = 4
+    comptime _T_POLYAK   = 5
 
     var actor:       Self.ACTOR
     var pair1:       OnlineTargetPair[Self.CRITIC]
@@ -111,6 +125,8 @@ struct SACTrainerV2R[
     var _critic_L_accum: Scalar[DT]
     var _alpha_accum:    Scalar[DT]
     var _update_count:   Int
+
+    var timer: Timer
 
     def __init__(out self):
         self.actor = Self.ACTOR()
@@ -156,6 +172,7 @@ struct SACTrainerV2R[
         self._critic_L_accum = Scalar[DT](0.0)
         self._alpha_accum    = Scalar[DT](0.0)
         self._update_count   = 0
+        self.timer = Timer.new()
 
     @staticmethod
     def make(
@@ -285,6 +302,15 @@ struct SACTrainerV2R[
             alpha=per_alpha, beta=per_beta, epsilon=per_epsilon,
         )
         t.sample_blk.setup(learning_starts, ctx=ctx)
+
+        # Timer sections — index order MUST match the `_T_*` comptime
+        # constants above. Six standard SAC train_step phases.
+        t.timer.add_section("sample")
+        t.timer.add_section("target_y")
+        t.timer.add_section("critic")
+        t.timer.add_section("actor")
+        t.timer.add_section("alpha")
+        t.timer.add_section("polyak")
         return t^
 
     def set_beta(mut self, beta: Scalar[DT]):
@@ -398,27 +424,43 @@ struct SACTrainerV2R[
         comptime if Self.target == "gpu":
             self.state.ctx = self.ctx
 
+        var t_sample = perf_counter_ns()
         self.sample_blk.step(self.state)
         if not self.state.did_step:
             return False
+        self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
+        var t_ty = perf_counter_ns()
         self.target_y_blk.step[Self.target](
             self.state, self.actor,
             self.pair1.target_net, self.pair2.target_net,
         )
+        self.timer.accumulate(Self._T_TARGET_Y, t_ty)
+
+        var t_crit = perf_counter_ns()
         self.twin_critic_blk.step[Self.target](
             self.state,
             self.pair1.online, self.critic1_opt,
             self.pair2.online, self.critic2_opt,
         )
+        self.timer.accumulate(Self._T_CRITIC, t_crit)
+
+        var t_act = perf_counter_ns()
         self.actor_blk.step[Self.target](
             self.state, self.actor, self.actor_opt,
             self.pair1.online, self.pair2.online,
         )
+        self.timer.accumulate(Self._T_ACTOR, t_act)
+
+        var t_alp = perf_counter_ns()
         self.alpha_blk.step(self.state, self.alpha_opt)
+        self.timer.accumulate(Self._T_ALPHA, t_alp)
+
+        var t_pol = perf_counter_ns()
         self.polyak_blk.step[Self.target](
             self.state, self.pair1, self.pair2,
         )
+        self.timer.accumulate(Self._T_POLYAK, t_pol)
 
         # PER tail (no-op for uniform blocks).
         self.sample_blk.update_priorities(self.state)
@@ -522,3 +564,56 @@ struct SACTrainerV2R[
 
     def ep_count(self) -> Int:
         return self.tracker.ep_count
+
+    # ─── Logging surface (parity with legacy SACTrainer) ──────────────
+
+    def flush_train_log(mut self) -> Tuple[
+        Scalar[DT], Scalar[DT], Scalar[DT], Int
+    ]:
+        """Return (mean_actor_loss, mean_critic_loss, mean_alpha, n_updates)
+        accumulated since the last flush. Resets accumulators."""
+        var n = self._update_count if self._update_count > 0 else 1
+        var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        var out = (
+            self._actor_L_accum * inv,
+            self._critic_L_accum * inv,
+            self._alpha_accum * inv,
+            self._update_count,
+        )
+        self._actor_L_accum  = Scalar[DT](0.0)
+        self._critic_L_accum = Scalar[DT](0.0)
+        self._alpha_accum    = Scalar[DT](0.0)
+        self._update_count   = 0
+        return out
+
+    def flush_metrics[L: Logger = NoOpLogger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        step: Int = 0,
+    ) raises -> SACMetrics:
+        """Drain accumulators into a SACMetrics bundle. If a logger
+        pointer is wired, also emit one log_scalar per metric field.
+        Resets accumulators on every call."""
+        var n = self._update_count if self._update_count > 0 else 1
+        var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        var bundle = SACMetrics(
+            actor_loss=LogScalar[DT](self._actor_L_accum * inv),
+            critic_loss=LogScalar[DT](self._critic_L_accum * inv),
+            alpha=LogScalar[DT](self._alpha_accum * inv),
+            n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
+        )
+        self._actor_L_accum  = Scalar[DT](0.0)
+        self._critic_L_accum = Scalar[DT](0.0)
+        self._alpha_accum    = Scalar[DT](0.0)
+        self._update_count   = 0
+        if Bool(logger):
+            log_bundle(logger.value()[], bundle, step)
+        return bundle^
+
+    def flush_timer_log(mut self) -> String:
+        """Return a per-section wall-time report (one line per sub-step:
+        sample / target_y / critic / actor / alpha / polyak) and reset
+        the accumulators."""
+        var report = self.timer.format_report()
+        self.timer.reset()
+        return report
