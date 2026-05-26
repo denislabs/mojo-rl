@@ -369,55 +369,58 @@ struct AdamW(Optimizer):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, M: Module](mut model: M) raises -> Self:
-        comptime assert target == "cpu", (
-            "AdamW.make[target='gpu', M] requires a DeviceContext"
-        )
-        var opt = Self()
-        var visitor = _AdamWCPUInitVisitor(
-            m_flat_ptr=UnsafePointer(to=opt.m_flat),
-            v_flat_ptr=UnsafePointer(to=opt.v_flat),
-            offsets_ptr=UnsafePointer(to=opt.offsets),
-            apply_decay_ptr=UnsafePointer(to=opt.apply_decay),
-        )
-        model.for_each_param[target, _AdamWCPUInitVisitor](String(""), visitor)
-        opt.total_size = len(opt.m_flat)
-        opt.ts = TargetStorage.make_cpu()
-        return opt^
-
-    @staticmethod
     def make[target: StaticString, M: Module](
-        mut model: M, ctx: DeviceContext,
+        mut model: M,
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert target == "gpu", (
-            "AdamW.make[target='cpu', M](model, ctx) — drop ctx for CPU"
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "AdamW: target must be 'cpu' or 'gpu'"
         )
         var opt = Self()
-        var visitor = _AdamWGPUInitVisitor(
-            offsets_ptr=UnsafePointer(to=opt.offsets),
-            apply_decay_ptr=UnsafePointer(to=opt.apply_decay),
-            total_ptr=UnsafePointer(to=opt.total_size),
-        )
-        model.for_each_param[target, _AdamWGPUInitVisitor](String(""), visitor)
-        var m_real = ctx.enqueue_create_buffer[DT](opt.total_size)
-        var v_real = ctx.enqueue_create_buffer[DT](opt.total_size)
-        m_real.enqueue_fill(0.0)
-        v_real.enqueue_fill(0.0)
-        opt.m_dev = m_real^
-        opt.v_dev = v_real^
-        var step_real = ctx.enqueue_create_buffer[DType.uint32](1)
-        step_real.enqueue_fill(0)
-        var bc_real = ctx.enqueue_create_buffer[DT](4)
-        var bc_init_host = ctx.enqueue_create_host_buffer[DT](4)
-        ctx.synchronize()
-        bc_init_host.unsafe_ptr()[0] = Scalar[DT](1.0)
-        bc_init_host.unsafe_ptr()[1] = Scalar[DT](1.0)
-        bc_init_host.unsafe_ptr()[2] = Scalar[DT](0.0)
-        bc_init_host.unsafe_ptr()[3] = Scalar[DT](0.0)
-        ctx.enqueue_copy(bc_real, bc_init_host)
-        opt.step_dev = step_real^
-        opt.bc_dev = bc_real^
-        opt.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            var visitor = _AdamWCPUInitVisitor(
+                m_flat_ptr=UnsafePointer(to=opt.m_flat),
+                v_flat_ptr=UnsafePointer(to=opt.v_flat),
+                offsets_ptr=UnsafePointer(to=opt.offsets),
+                apply_decay_ptr=UnsafePointer(to=opt.apply_decay),
+            )
+            model.for_each_param[target, _AdamWCPUInitVisitor](
+                String(""), visitor,
+            )
+            opt.total_size = len(opt.m_flat)
+            opt.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("AdamW.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            var visitor = _AdamWGPUInitVisitor(
+                offsets_ptr=UnsafePointer(to=opt.offsets),
+                apply_decay_ptr=UnsafePointer(to=opt.apply_decay),
+                total_ptr=UnsafePointer(to=opt.total_size),
+            )
+            model.for_each_param[target, _AdamWGPUInitVisitor](
+                String(""), visitor,
+            )
+            var m_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
+            var v_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
+            m_real.enqueue_fill(0.0)
+            v_real.enqueue_fill(0.0)
+            opt.m_dev = m_real^
+            opt.v_dev = v_real^
+            var step_real = ctx_v.enqueue_create_buffer[DType.uint32](1)
+            step_real.enqueue_fill(0)
+            var bc_real = ctx_v.enqueue_create_buffer[DT](4)
+            var bc_init_host = ctx_v.enqueue_create_host_buffer[DT](4)
+            ctx_v.synchronize()
+            bc_init_host.unsafe_ptr()[0] = Scalar[DT](1.0)
+            bc_init_host.unsafe_ptr()[1] = Scalar[DT](1.0)
+            bc_init_host.unsafe_ptr()[2] = Scalar[DT](0.0)
+            bc_init_host.unsafe_ptr()[3] = Scalar[DT](0.0)
+            ctx_v.enqueue_copy(bc_real, bc_init_host)
+            opt.step_dev = step_real^
+            opt.bc_dev = bc_real^
+            opt.ts = TargetStorage.make_gpu(ctx_v)
         return opt^
 
     def zero_grad[

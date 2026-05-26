@@ -12,8 +12,7 @@ Concrete usage:
     # ... train loop ...
     opt.step["cpu", M=MyModel](model)
 
-Two factory overloads (CPU + GPU) mirror the existing convention.
-
+Unified factory: `make[target, M](model, ctx: Optional[DeviceContext] = None)`.
 The slim trait keeps `target: StaticString` and `M: Module` for full
 parity with the existing surface — only the hyperparam args are dropped.
 The `lr` mut-field pattern also means SAC alpha annealing / cosine
@@ -29,13 +28,12 @@ from .module import Module
 
 trait Optimizer(Defaultable & Movable & ImplicitlyDestructible):
     @staticmethod
-    def make[target: StaticString, M: Module](mut model: M) raises -> Self:
-        ...
-
-    @staticmethod
     def make[target: StaticString, M: Module](
-        mut model: M, ctx: DeviceContext,
+        mut model: M,
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU
+        (impls raise at runtime if missing)."""
         ...
 
     def zero_grad[

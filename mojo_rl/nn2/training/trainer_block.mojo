@@ -68,28 +68,34 @@ struct TrainerState[
         self.did_step = True
 
     @staticmethod
-    def make_cpu() raises -> Self:
+    def make[target: StaticString](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "TrainerState: target must be 'cpu' or 'gpu'"
+        )
         var s = Self()
-        s.mb_s  = Scratch["mb_s",  Self.BATCH * Self.OBS, True].make_cpu()
-        s.mb_a  = Scratch["mb_a",  Self.BATCH * Self.ACT, True].make_cpu()
-        s.mb_r  = Scratch["mb_r",  Self.BATCH, True].make_cpu()
-        s.mb_sp = Scratch["mb_sp", Self.BATCH * Self.OBS, True].make_cpu()
-        s.mb_d  = Scratch["mb_d",  Self.BATCH, True].make_cpu()
-        s.mb_y  = Scratch["mb_y",  Self.BATCH, True].make_cpu()
-        s.mb_w         = Scratch["mb_w",         Self.BATCH, True].make_cpu()
-        s.td_residuals = Scratch["td_residuals", Self.BATCH, True].make_cpu()
-        return s^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var s = Self()
-        s.mb_s  = Scratch["mb_s",  Self.BATCH * Self.OBS, True].make_gpu(ctx)
-        s.mb_a  = Scratch["mb_a",  Self.BATCH * Self.ACT, True].make_gpu(ctx)
-        s.mb_r  = Scratch["mb_r",  Self.BATCH, True].make_gpu(ctx)
-        s.mb_sp = Scratch["mb_sp", Self.BATCH * Self.OBS, True].make_gpu(ctx)
-        s.mb_d  = Scratch["mb_d",  Self.BATCH, True].make_gpu(ctx)
-        s.mb_y  = Scratch["mb_y",  Self.BATCH, True].make_gpu(ctx)
-        s.mb_w         = Scratch["mb_w",         Self.BATCH, True].make_gpu(ctx)
-        s.td_residuals = Scratch["td_residuals", Self.BATCH, True].make_gpu(ctx)
-        s.ctx = ctx
+        comptime if target == "cpu":
+            s.mb_s  = Scratch["mb_s",  Self.BATCH * Self.OBS, True].make_cpu()
+            s.mb_a  = Scratch["mb_a",  Self.BATCH * Self.ACT, True].make_cpu()
+            s.mb_r  = Scratch["mb_r",  Self.BATCH, True].make_cpu()
+            s.mb_sp = Scratch["mb_sp", Self.BATCH * Self.OBS, True].make_cpu()
+            s.mb_d  = Scratch["mb_d",  Self.BATCH, True].make_cpu()
+            s.mb_y  = Scratch["mb_y",  Self.BATCH, True].make_cpu()
+            s.mb_w         = Scratch["mb_w",         Self.BATCH, True].make_cpu()
+            s.td_residuals = Scratch["td_residuals", Self.BATCH, True].make_cpu()
+        else:
+            if not ctx:
+                raise Error("TrainerState.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            s.mb_s  = Scratch["mb_s",  Self.BATCH * Self.OBS, True].make_gpu(ctx_v)
+            s.mb_a  = Scratch["mb_a",  Self.BATCH * Self.ACT, True].make_gpu(ctx_v)
+            s.mb_r  = Scratch["mb_r",  Self.BATCH, True].make_gpu(ctx_v)
+            s.mb_sp = Scratch["mb_sp", Self.BATCH * Self.OBS, True].make_gpu(ctx_v)
+            s.mb_d  = Scratch["mb_d",  Self.BATCH, True].make_gpu(ctx_v)
+            s.mb_y  = Scratch["mb_y",  Self.BATCH, True].make_gpu(ctx_v)
+            s.mb_w         = Scratch["mb_w",         Self.BATCH, True].make_gpu(ctx_v)
+            s.td_residuals = Scratch["td_residuals", Self.BATCH, True].make_gpu(ctx_v)
+            s.ctx = ctx_v
         return s^

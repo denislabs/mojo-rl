@@ -341,43 +341,45 @@ struct Adam(Optimizer, Saveable):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, M: Module](mut model: M) raises -> Self:
-        """CPU factory — no hyperparams. User sets `opt.lr` etc. after."""
-        comptime assert target == "cpu", (
-            "Adam.make[target='gpu', M] requires a DeviceContext"
-        )
-        var opt = Self()
-        var visitor = _AdamCPUInitVisitor(
-            m_flat_ptr=UnsafePointer(to=opt.m_flat),
-            v_flat_ptr=UnsafePointer(to=opt.v_flat),
-            offsets_ptr=UnsafePointer(to=opt.offsets),
-        )
-        model.for_each_param[target, _AdamCPUInitVisitor](String(""), visitor)
-        opt.total_size = len(opt.m_flat)
-        opt.ts = TargetStorage.make_cpu()
-        return opt^
-
-    @staticmethod
     def make[target: StaticString, M: Module](
-        mut model: M, ctx: DeviceContext,
+        mut model: M,
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        """GPU factory."""
-        comptime assert target == "gpu", (
-            "Adam.make[target='cpu', M](model, ctx) — drop ctx for CPU"
+        """Unified CPU/GPU factory — no hyperparams. User sets `opt.lr`
+        etc. after. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Adam: target must be 'cpu' or 'gpu'"
         )
         var opt = Self()
-        var visitor = _AdamGPUInitVisitor(
-            offsets_ptr=UnsafePointer(to=opt.offsets),
-            total_ptr=UnsafePointer(to=opt.total_size),
-        )
-        model.for_each_param[target, _AdamGPUInitVisitor](String(""), visitor)
-        var m_real = ctx.enqueue_create_buffer[DT](opt.total_size)
-        var v_real = ctx.enqueue_create_buffer[DT](opt.total_size)
-        m_real.enqueue_fill(0.0)
-        v_real.enqueue_fill(0.0)
-        opt.m_dev = m_real^
-        opt.v_dev = v_real^
-        opt.ts = TargetStorage.make_gpu(ctx)
+        comptime if target == "cpu":
+            var visitor = _AdamCPUInitVisitor(
+                m_flat_ptr=UnsafePointer(to=opt.m_flat),
+                v_flat_ptr=UnsafePointer(to=opt.v_flat),
+                offsets_ptr=UnsafePointer(to=opt.offsets),
+            )
+            model.for_each_param[target, _AdamCPUInitVisitor](
+                String(""), visitor,
+            )
+            opt.total_size = len(opt.m_flat)
+            opt.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Adam.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            var visitor = _AdamGPUInitVisitor(
+                offsets_ptr=UnsafePointer(to=opt.offsets),
+                total_ptr=UnsafePointer(to=opt.total_size),
+            )
+            model.for_each_param[target, _AdamGPUInitVisitor](
+                String(""), visitor,
+            )
+            var m_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
+            var v_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
+            m_real.enqueue_fill(0.0)
+            v_real.enqueue_fill(0.0)
+            opt.m_dev = m_real^
+            opt.v_dev = v_real^
+            opt.ts = TargetStorage.make_gpu(ctx_v)
         return opt^
 
     def zero_grad[

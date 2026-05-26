@@ -196,77 +196,48 @@ struct SACTrainerV2R[
         """Unified factory. PER args are applied unconditionally via the
         SampleBlock trait's `configure_per` (no-op default for uniform
         blocks). `ctx` is required for `target="gpu"`."""
-        var t = Self()
-
-        comptime if Self.target == "cpu":
-            t.actor = Self.ACTOR.make[target="cpu", INIT=Xavier]()
-            t.pair1 = OnlineTargetPair[Self.CRITIC].make[
-                target="cpu", INIT=Xavier
-            ]()
-            t.pair2 = OnlineTargetPair[Self.CRITIC].make[
-                target="cpu", INIT=Xavier
-            ]()
-            t.actor_opt = Adam.make[target="cpu", M=Self.ACTOR](t.actor)
-            t.critic1_opt = Adam.make[target="cpu", M=Self.CRITIC](
-                t.pair1.online
-            )
-            t.critic2_opt = Adam.make[target="cpu", M=Self.CRITIC](
-                t.pair2.online
-            )
-            t.target_y_blk = TargetYStep[
-                Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-                Self.ACTOR, Self.CRITIC,
-            ].make["cpu"](action_scale=action_scale, gamma=gamma)
-            t.twin_critic_blk = TwinCriticStep[
-                Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
-            ].make["cpu"]()
-            t.actor_blk = SACActorStep[
-                Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-                Self.ACTOR, Self.CRITIC,
-            ].make["cpu"](action_scale=action_scale)
-            t.state = TrainerState[
-                Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-            ].make_cpu()
-        else:
-            comptime assert Self.target == "gpu", (
-                "SACTrainerV2R: target must be 'cpu' or 'gpu'"
-            )
+        comptime assert Self.target == "cpu" or Self.target == "gpu", (
+            "SACTrainerV2R: target must be 'cpu' or 'gpu'"
+        )
+        comptime if Self.target == "gpu":
             if not ctx:
                 raise Error("SACTrainerV2R.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
-            t.actor = Self.ACTOR.make[target="gpu", INIT=Xavier](ctx_v)
-            t.pair1 = OnlineTargetPair[Self.CRITIC].make[
-                target="gpu", INIT=Xavier
-            ](ctx_v)
-            t.pair2 = OnlineTargetPair[Self.CRITIC].make[
-                target="gpu", INIT=Xavier
-            ](ctx_v)
-            t.actor_opt = Adam.make[target="gpu", M=Self.ACTOR](
-                t.actor, ctx_v
-            )
-            t.critic1_opt = Adam.make[target="gpu", M=Self.CRITIC](
-                t.pair1.online, ctx_v
-            )
-            t.critic2_opt = Adam.make[target="gpu", M=Self.CRITIC](
-                t.pair2.online, ctx_v
-            )
-            t.target_y_blk = TargetYStep[
-                Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-                Self.ACTOR, Self.CRITIC,
-            ].make["gpu"](
-                ctx=ctx_v, action_scale=action_scale, gamma=gamma,
-            )
-            t.twin_critic_blk = TwinCriticStep[
-                Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
-            ].make["gpu"](ctx_v)
-            t.actor_blk = SACActorStep[
-                Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-                Self.ACTOR, Self.CRITIC,
-            ].make["gpu"](ctx=ctx_v, action_scale=action_scale)
-            t.state = TrainerState[
-                Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-            ].make_gpu(ctx_v)
-            t.ctx = ctx
+
+        var t = Self()
+        t.ctx = ctx
+
+        t.actor = Self.ACTOR.make[target=Self.target, INIT=Xavier](ctx=ctx)
+        t.pair1 = OnlineTargetPair[Self.CRITIC].make[
+            target=Self.target, INIT=Xavier
+        ](ctx=ctx)
+        t.pair2 = OnlineTargetPair[Self.CRITIC].make[
+            target=Self.target, INIT=Xavier
+        ](ctx=ctx)
+        t.actor_opt = Adam.make[target=Self.target, M=Self.ACTOR](
+            t.actor, ctx=ctx,
+        )
+        t.critic1_opt = Adam.make[target=Self.target, M=Self.CRITIC](
+            t.pair1.online, ctx=ctx,
+        )
+        t.critic2_opt = Adam.make[target=Self.target, M=Self.CRITIC](
+            t.pair2.online, ctx=ctx,
+        )
+        t.target_y_blk = TargetYStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.ACTOR, Self.CRITIC,
+        ].make[Self.target](
+            action_scale=action_scale, gamma=gamma, ctx=ctx,
+        )
+        t.twin_critic_blk = TwinCriticStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        ].make[Self.target](ctx=ctx)
+        t.actor_blk = SACActorStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.ACTOR, Self.CRITIC,
+        ].make[Self.target](action_scale=action_scale, ctx=ctx)
+        t.state = TrainerState[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        ].make[Self.target](ctx=ctx)
 
         t.actor_opt.lr = actor_lr
         t.actor_opt.max_grad_norm = max_grad_norm
@@ -287,12 +258,7 @@ struct SACTrainerV2R[
             window_size=window_size, initial_fill=initial_episode_fill
         )
 
-        comptime if Self.target == "cpu":
-            init_scratch_auto[Self, target=Self.target](t)
-        else:
-            init_scratch_auto[Self, target=Self.target](
-                t, Optional[DeviceContext](ctx.value()),
-            )
+        init_scratch_auto[Self, target=Self.target](t, ctx)
 
         t.action_scale = action_scale
         t.learning_starts = learning_starts

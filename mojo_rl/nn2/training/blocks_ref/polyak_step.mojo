@@ -11,7 +11,10 @@ from ..trainer_block import TrainerState
 
 
 struct PolyakStep[
-    OBS_: Int, ACT_: Int, BATCH_: Int, CRITIC: Module,
+    OBS_: Int,
+    ACT_: Int,
+    BATCH_: Int,
+    CRITIC: Module,
 ](Defaultable & Movable & ImplicitlyDestructible):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
@@ -29,15 +32,13 @@ struct PolyakStep[
         b.tau = tau
         return b^
 
-    def step[target: StaticString](
+    def step[
+        target: StaticString
+    ](
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut pair1: Self.Pair,
         mut pair2: Self.Pair,
     ) raises:
-        comptime if target == "cpu":
-            pair1.polyak_step["cpu"](self.tau)
-            pair2.polyak_step["cpu"](self.tau)
-        else:
-            pair1.polyak_step["gpu"](self.tau, state.ctx)
-            pair2.polyak_step["gpu"](self.tau, state.ctx)
+        pair1.polyak_step[target](self.tau, state.ctx)
+        pair2.polyak_step[target](self.tau, state.ctx)

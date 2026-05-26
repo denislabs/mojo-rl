@@ -172,7 +172,7 @@ struct TD3TrainerV2R[
         )
         t.state = TrainerState[
             Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-        ].make_cpu()
+        ].make["cpu"]()
 
         init_scratch_auto[Self, target="cpu"](t)
 

@@ -10,7 +10,11 @@ from ..trainer_block import TrainerState
 
 
 struct DDPGPolyakStep[
-    OBS_: Int, ACT_: Int, BATCH_: Int, ACTOR: Module, CRITIC: Module,
+    OBS_: Int,
+    ACT_: Int,
+    BATCH_: Int,
+    ACTOR: Module,
+    CRITIC: Module,
 ](Defaultable & Movable & ImplicitlyDestructible):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
@@ -29,15 +33,13 @@ struct DDPGPolyakStep[
         b.tau = tau
         return b^
 
-    def step[target: StaticString](
+    def step[
+        target: StaticString
+    ](
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut actor_pair: Self.APair,
         mut critic_pair: Self.CPair,
     ) raises:
-        comptime if target == "cpu":
-            actor_pair.polyak_step["cpu"](self.tau)
-            critic_pair.polyak_step["cpu"](self.tau)
-        else:
-            actor_pair.polyak_step["gpu"](self.tau, state.ctx)
-            critic_pair.polyak_step["gpu"](self.tau, state.ctx)
+        actor_pair.polyak_step[target](self.tau, state.ctx)
+        critic_pair.polyak_step[target](self.tau, state.ctx)

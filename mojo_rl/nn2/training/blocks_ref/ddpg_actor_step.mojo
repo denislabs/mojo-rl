@@ -3,6 +3,8 @@
 Writes state.actor_loss.
 """
 
+from std.gpu.host import DeviceContext
+
 from ...constants import DT
 from ...core.module import Module
 from ...optimizer.adam import Adam
@@ -11,7 +13,11 @@ from ..trainer_block import TrainerState
 
 
 struct DDPGActorStep[
-    OBS_: Int, ACT_: Int, BATCH_: Int, ACTOR: Module, CRITIC: Module,
+    OBS_: Int,
+    ACT_: Int,
+    BATCH_: Int,
+    ACTOR: Module,
+    CRITIC: Module,
 ](Defaultable & Movable & ImplicitlyDestructible):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
@@ -24,15 +30,16 @@ struct DDPGActorStep[
         self.inner = Self.Inner()
 
     @staticmethod
-    def make[target: StaticString]() raises -> Self:
-        comptime assert target == "cpu", (
-            "DDPGActorStep.make[target='gpu'] not yet supported"
-        )
+    def make[
+        target: StaticString
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var b = Self()
-        b.inner = Self.Inner.make[target]()
+        b.inner = Self.Inner.make[target](ctx)
         return b^
 
-    def step[target: StaticString](
+    def step[
+        target: StaticString
+    ](
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut actor: Self.ACTOR,
@@ -40,6 +47,9 @@ struct DDPGActorStep[
         mut critic: Self.CRITIC,
     ) raises:
         var loss = self.inner.forward_backward[target, OPT=Adam](
-            actor, actor_opt, critic, state.mb_s.cpu_ptr(),
+            actor,
+            actor_opt,
+            critic,
+            state.mb_s.target_ptr[target](),
         )
         state.actor_loss = loss
