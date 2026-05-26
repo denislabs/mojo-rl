@@ -6,6 +6,9 @@ Promoted from amortized PC test files
 
 from layout import Layout, LayoutTensor
 from std.math import sqrt
+from std.sys import simd_width_of
+
+comptime _SW = simd_width_of[DType.float32]()
 
 
 def clip_grad_norm[
@@ -22,15 +25,39 @@ def clip_grad_norm[
 
     No-op when the norm is already within budget.
     """
+    var gp = grads.ptr
     var sum_sq: Float64 = 0
-    for i in range(SIZE):
-        var g = Float64(grads.ptr[i])
-        sum_sq += g * g
+    comptime if dtype == DType.float32:
+        var acc = SIMD[dtype, _SW](0)
+        var i = 0
+        while i + _SW <= SIZE:
+            var v = gp.load[width=_SW](i)
+            acc = acc + v * v
+            i += _SW
+        sum_sq = Float64(acc.reduce_add())
+        while i < SIZE:
+            var g = Float64(gp[i])
+            sum_sq += g * g
+            i += 1
+    else:
+        for i in range(SIZE):
+            var g = Float64(gp[i])
+            sum_sq += g * g
     var norm = sqrt(sum_sq)
     if norm > max_norm:
         var scale = Scalar[dtype](max_norm / norm)
-        for i in range(SIZE):
-            grads.ptr[i] = grads.ptr[i] * scale
+        comptime if dtype == DType.float32:
+            var sv = SIMD[dtype, _SW](scale)
+            var i = 0
+            while i + _SW <= SIZE:
+                gp.store(i, gp.load[width=_SW](i) * sv)
+                i += _SW
+            while i < SIZE:
+                gp[i] = gp[i] * scale
+                i += 1
+        else:
+            for i in range(SIZE):
+                gp[i] = gp[i] * scale
 
 
 def spectral_norm_clamp[
@@ -112,8 +139,18 @@ def spectral_norm_clamp[
 
     if sigma > target_sigma:
         var scale = Scalar[dtype](target_sigma / sigma)
-        for i in range(IN):
-            for j in range(OUT):
-                W.ptr[i * OUT + j] = W.ptr[i * OUT + j] * scale
+        comptime N = IN * OUT
+        comptime if dtype == DType.float32:
+            var sv = SIMD[dtype, _SW](scale)
+            var k = 0
+            while k + _SW <= N:
+                W.ptr.store(k, W.ptr.load[width=_SW](k) * sv)
+                k += _SW
+            while k < N:
+                W.ptr[k] = W.ptr[k] * scale
+                k += 1
+        else:
+            for k in range(N):
+                W.ptr[k] = W.ptr[k] * scale
 
     return sigma
