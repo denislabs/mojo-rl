@@ -30,11 +30,17 @@ backward walks children in the matching reverse-order.
 
 from std.math import ceildiv
 from std.memory import alloc
+from std.sys import CompilationTarget
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
+from linalg.matmul.cpu.apple_accelerate import (
+    get_cblas_f32_function,
+    _CBLASOrder,
+    _CBLASTranspose,
+)
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import (
@@ -385,37 +391,63 @@ struct Linear[IN: Int, OUT: Int](Module):
             # Reads cache via _cached_input_ptr — MUST come before
             # grad_input write since grad_input may alias the cache slab.
             comptime if mode == "all":
-                comptime cache_n = BATCH * Self.IN
-                comptime gw_n = Self.IN * Self.OUT
-                var cT_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
-                    Scalar[DT]
-                ](cache_n)
-                var dW_tmp_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
-                    Scalar[DT]
-                ](gw_n)
-                var cache_ptr = self._cached_input_ptr
-                for bi in range(BATCH):
-                    for i in range(Self.IN):
-                        cT_buf[i * BATCH + bi] = cache_ptr[bi * Self.IN + i]
-                var cT_tt = TileTensor(cT_buf, row_major[Self.IN, BATCH]())
-                var dW_tmp_tt = TileTensor(
-                    dW_tmp_buf, row_major[Self.IN, Self.OUT](),
-                )
-                max_matmul[target="cpu"](
-                    dW_tmp_tt, cT_tt, grad_output_v, None,
-                )
                 var gw_ptr = self.weight.grad_unsafe_ptr_cpu()
-                var dw_i = 0
-                while dw_i + CPU_SIMD_W <= gw_n:
-                    var gw_v = gw_ptr.load[width=CPU_SIMD_W](dw_i)
-                    var dt_v = dW_tmp_buf.load[width=CPU_SIMD_W](dw_i)
-                    gw_ptr.store(dw_i, gw_v + dt_v)
-                    dw_i += CPU_SIMD_W
-                while dw_i < gw_n:
-                    gw_ptr[dw_i] = gw_ptr[dw_i] + dW_tmp_buf[dw_i]
-                    dw_i += 1
-                dW_tmp_buf.free()
-                cT_buf.free()
+                var cache_ptr = self._cached_input_ptr
+                comptime if CompilationTarget.is_macos() and DT == DType.float32:
+                    # Apple Accelerate: dW += cache.T @ grad_output in one
+                    # cblas_sgemm call (transpose_a, beta=1). No temp alloc.
+                    var cblas_gemm = get_cblas_f32_function()
+                    cblas_gemm(
+                        _CBLASOrder.ROW_MAJOR,
+                        _CBLASTranspose.TRANSPOSE,
+                        _CBLASTranspose.NO_TRANSPOSE,
+                        Int32(Self.IN),
+                        Int32(Self.OUT),
+                        Int32(BATCH),
+                        Float32(1.0),
+                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                            cache_ptr
+                        ),
+                        Int32(Self.IN),
+                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](go_p),
+                        Int32(Self.OUT),
+                        Float32(1.0),
+                        rebind[UnsafePointer[Float32, MutAnyOrigin]](gw_ptr),
+                        Int32(Self.OUT),
+                    )
+                else:
+                    comptime gw_n = Self.IN * Self.OUT
+                    var cT_buf: UnsafePointer[
+                        Scalar[DT], MutAnyOrigin
+                    ] = alloc[Scalar[DT]](BATCH * Self.IN)
+                    var dW_tmp_buf: UnsafePointer[
+                        Scalar[DT], MutAnyOrigin
+                    ] = alloc[Scalar[DT]](gw_n)
+                    for bi in range(BATCH):
+                        for i in range(Self.IN):
+                            cT_buf[i * BATCH + bi] = cache_ptr[
+                                bi * Self.IN + i
+                            ]
+                    var cT_tt = TileTensor(
+                        cT_buf, row_major[Self.IN, BATCH](),
+                    )
+                    var dW_tmp_tt = TileTensor(
+                        dW_tmp_buf, row_major[Self.IN, Self.OUT](),
+                    )
+                    max_matmul[target="cpu"](
+                        dW_tmp_tt, cT_tt, grad_output_v, None,
+                    )
+                    var dw_i = 0
+                    while dw_i + CPU_SIMD_W <= gw_n:
+                        var gw_v = gw_ptr.load[width=CPU_SIMD_W](dw_i)
+                        var dt_v = dW_tmp_buf.load[width=CPU_SIMD_W](dw_i)
+                        gw_ptr.store(dw_i, gw_v + dt_v)
+                        dw_i += CPU_SIMD_W
+                    while dw_i < gw_n:
+                        gw_ptr[dw_i] = gw_ptr[dw_i] + dW_tmp_buf[dw_i]
+                        dw_i += 1
+                    dW_tmp_buf.free()
+                    cT_buf.free()
 
             # ── (3) grad_input = grad_output @ W^T (always) ────────────
             # May alias the cache slab — safe now (1) and (2) are done.
