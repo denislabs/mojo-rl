@@ -2,6 +2,7 @@
 
 from .uniform_sample_cpu_block import UniformSampleCpuBlock
 from .uniform_sample_gpu_block import UniformSampleGpuBlock
+from .dual_sample_cpu_block import DualSampleCpuBlock
 from .target_y_step_block import TargetYStepBlock
 from .twin_critic_step_block import TwinCriticStepBlock
 from .sac_actor_step_block import SACActorStepBlock
