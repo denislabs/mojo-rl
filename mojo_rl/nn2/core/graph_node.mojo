@@ -61,32 +61,21 @@ from .amp import AMPPolicy, NoAMP
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _node_in_names_from_ladder[
-    KIND: Int,
-    N0: StaticString, N1: StaticString,
-    N2: StaticString, N3: StaticString,
-]() -> InlineArray[StaticString, KIND]:
-    """Build IN_NAMES InlineArray from the IN0/IN1/IN2/IN3_NAME ladder.
-    Sized at KIND so InputSlot (KIND=0) gets empty array. Capped at
-    KIND=4 — extend the helper if/when a real ARITY=5+ consumer lands."""
-    var d = InlineArray[StaticString, KIND](fill=StaticString(""))
-    comptime if KIND >= 1:
-        d[0] = N0
-    comptime if KIND >= 2:
-        d[1] = N1
-    comptime if KIND >= 3:
-        d[2] = N2
-    comptime if KIND >= 4:
-        d[3] = N3
+def names_to_inline_array[
+    N: Int, *ITEMS: StaticString,
+]() -> InlineArray[StaticString, N]:
+    """Build an InlineArray[StaticString, N] from a comptime variadic
+    of StaticString. Used by Node / ExternalNode to derive IN_NAMES
+    from their `*in_names: StaticString` struct variadic. Uncapped —
+    any ARITY ≥ 0 works."""
+    var d = InlineArray[StaticString, N](fill=StaticString(""))
+    comptime for k in range(N):
+        d[k] = ITEMS[k]
     return d
 
 
 trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
     comptime NAME: StaticString
-    comptime IN0_NAME: StaticString
-    comptime IN1_NAME: StaticString = ""   # default — InputSlot / unary inherit
-    comptime IN2_NAME: StaticString = ""   # default — < ternary inherit
-    comptime IN3_NAME: StaticString = ""   # default — < quaternary inherit
     comptime OUT_DIM: Int
     comptime KIND: Int  # 0 = input slot, 1 = unary, 2 = binary, 3 = ternary, 4 = quaternary
     # I.2.6.h — IN_DIMS is the sole required per-input dim member
@@ -94,16 +83,12 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
     # `IN_DIMS = Self.Op.IN_DIMS` directly (sized at KIND = Op.ARITY).
     # InputSlot declares IN_DIMS = InlineArray[Int, 0]() (KIND=0).
     comptime IN_DIMS: InlineArray[Int, Self.KIND]
-    # I.2.6.e variadic predecessor-name accessor. Default derives from
-    # the IN0/IN1/IN2/IN3_NAME ladder. Lets ComputeGraph dispatch
-    # uniformly via `comptime for k in range(NODES[i].KIND)` over
-    # `NODES[i].IN_NAMES[k]` instead of arity-laddered branches.
-    comptime IN_NAMES: InlineArray[StaticString, Self.KIND] = (
-        _node_in_names_from_ladder[
-            Self.KIND,
-            Self.IN0_NAME, Self.IN1_NAME, Self.IN2_NAME, Self.IN3_NAME,
-        ]()
-    )
+    # I.2.6.i — IN_NAMES is the sole required predecessor-name member.
+    # IN0/IN1/IN2/IN3_NAME ladder dropped. Node/ExternalNode build
+    # IN_NAMES from their `*in_names: StaticString` struct variadic via
+    # `names_to_inline_array[KIND, *in_names]()`. InputSlot uses an
+    # empty array (KIND=0).
+    comptime IN_NAMES: InlineArray[StaticString, Self.KIND]
 
     # Set the externally-supplied input pointer for InputSlot (KIND=0).
     # Unary/binary nodes implement this as a no-op — they don't consume
@@ -167,15 +152,22 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        in2_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0),
-        in3_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0),
+        var *in_ptrs: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
+        """I.2.6.j — variadic predecessor-pointer surface.
+
+        Callers pass one pointer per input slot (up to KIND elements).
+        Wrappers internally use `comptime if Self.<Op|M>.ARITY == K:`
+        branches to dispatch with the right number of args to the
+        underlying op. The trait signature itself imposes no cap; the
+        practical cap is determined by how many ARITY branches the
+        wrapper implements (today: 4).
+
+        Mojo nightly note: there's no spread operator for variadic
+        value args, so ComputeGraph still passes N positional
+        pointers at the call site (collected into an InlineArray
+        first then indexed). Going truly cap-free at the dispatch
+        site requires Mojo spread or an InlineArray-arg refactor."""
         ...
 
     def vjp_via[

@@ -59,6 +59,7 @@ from ..core import (
     AMPPolicy,
     NoAMP,
 )
+from ..core.graph_node import names_to_inline_array
 from ..core.target_tag import TARGET_GPU
 from ..core.target_storage import (
     TargetStorage,
@@ -80,9 +81,9 @@ struct InputSlot[
     DIM_: Int,
 ](GraphNode):
     comptime NAME = Self.slot_name
-    comptime IN0_NAME = ""
-    # I.2.6.h — InputSlot has no inputs (KIND=0 → empty IN_DIMS).
+    # I.2.6.h/i — InputSlot has no inputs (KIND=0 → empty IN_DIMS + IN_NAMES).
     comptime IN_DIMS = InlineArray[Int, 0]()
+    comptime IN_NAMES = InlineArray[StaticString, 0]()
     comptime OUT_DIM = Self.DIM_
     comptime KIND = 0
 
@@ -177,14 +178,7 @@ struct InputSlot[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        in2_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0),
-        in3_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0),
+        var *in_ptrs: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         # No compute: the slot's out_ptr is whatever the caller set via
         # graph.set_input[NAME](tile). All in_ptrs are unused.
@@ -221,25 +215,13 @@ struct Node[
     *in_names: StaticString,
 ](GraphNode):
     comptime NAME = Self.node_name
-    # Derive per-input names from the variadic with safe defaults past
-    # ARITY-1. Mojo struct comptime conditional expressions; out-of-range
-    # indexing is guarded so we never read past the variadic.
-    comptime IN0_NAME = (
-        Self.in_names[0] if Self.in_names.size > 0 else StaticString("input")
-    )
-    comptime IN1_NAME = (
-        Self.in_names[1] if Self.in_names.size > 1 else StaticString("")
-    )
-    comptime IN2_NAME = (
-        Self.in_names[2] if Self.in_names.size > 2 else StaticString("")
-    )
-    comptime IN3_NAME = (
-        Self.in_names[3] if Self.in_names.size > 3 else StaticString("")
-    )
-    # I.2.6.h — IN_DIMS comes straight from Op (KIND == Op.ARITY).
-    # IN0_DIM kept as legacy accessor used by Node's own forward_via /
-    # vjp_via for the IN0_DIM-shaped variadic-unification trick.
+    # I.2.6.h/i — IN_DIMS / IN_NAMES come straight from Op + the variadic
+    # struct param. IN0_DIM kept as a legacy accessor used by Node's own
+    # forward_via / vjp_via for the IN0_DIM-shaped variadic-unification trick.
     comptime IN_DIMS = Self.Op.IN_DIMS
+    comptime IN_NAMES = names_to_inline_array[
+        Self.KIND, *Self.in_names,
+    ]()
     comptime IN0_DIM = (
         Self.Op.IN_DIMS[0] if Self.Op.ARITY > 0 else 0
     )
@@ -408,38 +390,31 @@ struct Node[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        in2_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0),
-        in3_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0),
+        var *in_ptrs: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
-        var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
+        # Hetero-variadic workaround: all input tiles share IN0_DIM
+        # Layout for pack unification; leaves recover real per-input
+        # shape via typed_view[BATCH, Self.IN_DIMS[k]]. See module.mojo.
+        var in0_t = TileTensor(in_ptrs[0], row_major[BATCH, Self.IN0_DIM]())
         var out_p = self.out_ptr_via()
         var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
         comptime if Self.Op.ARITY == 1:
             self.op.forward[target, BATCH, POLICY=POLICY](in0_t, output=out_t)
         elif Self.Op.ARITY == 2:
-            # Hetero-binary variadic workaround: in1_t shares in0's Layout
-            # type. Leaf body recovers the real shape via
-            # typed_view[BATCH, Self.IN1_DIM] from .ptr. See module.mojo.
-            var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
+            var in1_t = TileTensor(in_ptrs[1], row_major[BATCH, Self.IN0_DIM]())
             self.op.forward[target, BATCH, POLICY=POLICY](
                 in0_t, in1_t, output=out_t,
             )
         elif Self.Op.ARITY == 3:
-            var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
-            var in2_t = TileTensor(in2_ptr, row_major[BATCH, Self.IN0_DIM]())
+            var in1_t = TileTensor(in_ptrs[1], row_major[BATCH, Self.IN0_DIM]())
+            var in2_t = TileTensor(in_ptrs[2], row_major[BATCH, Self.IN0_DIM]())
             self.op.forward[target, BATCH, POLICY=POLICY](
                 in0_t, in1_t, in2_t, output=out_t,
             )
-        else:  # ARITY == 4 (struct __init__ asserts ARITY <= 4)
-            var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
-            var in2_t = TileTensor(in2_ptr, row_major[BATCH, Self.IN0_DIM]())
-            var in3_t = TileTensor(in3_ptr, row_major[BATCH, Self.IN0_DIM]())
+        else:  # ARITY == 4 (further arities mechanical: add another branch)
+            var in1_t = TileTensor(in_ptrs[1], row_major[BATCH, Self.IN0_DIM]())
+            var in2_t = TileTensor(in_ptrs[2], row_major[BATCH, Self.IN0_DIM]())
+            var in3_t = TileTensor(in_ptrs[3], row_major[BATCH, Self.IN0_DIM]())
             self.op.forward[target, BATCH, POLICY=POLICY](
                 in0_t, in1_t, in2_t, in3_t, output=out_t,
             )
@@ -513,21 +488,12 @@ struct ExternalNode[
     with the variadic and were never used in the codebase."""
 
     comptime NAME = Self.node_name
-    # Derive per-input names from the variadic with safe defaults.
-    comptime IN0_NAME = (
-        Self.in_names[0] if Self.in_names.size > 0 else StaticString("input")
-    )
-    comptime IN1_NAME = (
-        Self.in_names[1] if Self.in_names.size > 1 else StaticString("")
-    )
-    comptime IN2_NAME = (
-        Self.in_names[2] if Self.in_names.size > 2 else StaticString("")
-    )
-    comptime IN3_NAME = (
-        Self.in_names[3] if Self.in_names.size > 3 else StaticString("")
-    )
-    # I.2.6.h — IN_DIMS comes straight from M (KIND == M.ARITY).
+    # I.2.6.h/i — IN_DIMS / IN_NAMES come straight from M + the variadic
+    # struct param.
     comptime IN_DIMS = Self.M.IN_DIMS
+    comptime IN_NAMES = names_to_inline_array[
+        Self.KIND, *Self.in_names,
+    ]()
     comptime IN0_DIM = (
         Self.M.IN_DIMS[0] if Self.M.ARITY > 0 else 0
     )
@@ -697,16 +663,9 @@ struct ExternalNode[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        in2_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0),
-        in3_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0),
+        var *in_ptrs: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
-        var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
+        var in0_t = TileTensor(in_ptrs[0], row_major[BATCH, Self.IN0_DIM]())
         var out_p = self.out_ptr_via()
         var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
         var typed_ptr = rebind[UnsafePointer[Self.M, MutAnyOrigin]](
@@ -717,20 +676,20 @@ struct ExternalNode[
                 in0_t, output=out_t,
             )
         elif Self.M.ARITY == 2:
-            var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
+            var in1_t = TileTensor(in_ptrs[1], row_major[BATCH, Self.IN0_DIM]())
             typed_ptr[].forward[target, BATCH, POLICY=POLICY](
                 in0_t, in1_t, output=out_t,
             )
         elif Self.M.ARITY == 3:
-            var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
-            var in2_t = TileTensor(in2_ptr, row_major[BATCH, Self.IN0_DIM]())
+            var in1_t = TileTensor(in_ptrs[1], row_major[BATCH, Self.IN0_DIM]())
+            var in2_t = TileTensor(in_ptrs[2], row_major[BATCH, Self.IN0_DIM]())
             typed_ptr[].forward[target, BATCH, POLICY=POLICY](
                 in0_t, in1_t, in2_t, output=out_t,
             )
         else:  # ARITY == 4
-            var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
-            var in2_t = TileTensor(in2_ptr, row_major[BATCH, Self.IN0_DIM]())
-            var in3_t = TileTensor(in3_ptr, row_major[BATCH, Self.IN0_DIM]())
+            var in1_t = TileTensor(in_ptrs[1], row_major[BATCH, Self.IN0_DIM]())
+            var in2_t = TileTensor(in_ptrs[2], row_major[BATCH, Self.IN0_DIM]())
+            var in3_t = TileTensor(in_ptrs[3], row_major[BATCH, Self.IN0_DIM]())
             typed_ptr[].forward[target, BATCH, POLICY=POLICY](
                 in0_t, in1_t, in2_t, in3_t, output=out_t,
             )
