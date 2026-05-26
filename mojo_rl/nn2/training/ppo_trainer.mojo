@@ -104,7 +104,6 @@ struct PPOTrainer[
     """CleanRL-style PPO continuous trainer composed from nn2 blocks."""
 
     comptime N_MINIBATCHES = Self.ROLLOUT_LEN // Self.MINIBATCH
-    comptime AUX_DIM = Self.ACT_DIM + 2
 
     # Networks + optimisers + loss blocks.
     var actor: Self.ACTOR
@@ -149,10 +148,13 @@ struct PPOTrainer[
     var cached_log_prob: Scalar[DT]
     var cached_value: Scalar[DT]
 
-    # Minibatch scratch (BATCH=MINIBATCH update).
+    # Minibatch scratch (BATCH=MINIBATCH update). I.2.5: separate
+    # mb_act/mb_olp/mb_adv replace the previous packed mb_aux now that
+    # PPOActorLossCG declares each input as its own InputSlot.
     var mb_obs: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var mb_aux: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [action | olp | adv]
-    var mb_adv: UnsafePointer[Scalar[DT], MutAnyOrigin]   # for per-mb normalize
+    var mb_act: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var mb_olp: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var mb_adv: UnsafePointer[Scalar[DT], MutAnyOrigin]   # normalised in-place per mb
     var mb_ret: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var mb_v: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var mb_gv: UnsafePointer[Scalar[DT], MutAnyOrigin]
@@ -222,7 +224,8 @@ struct PPOTrainer[
         self.cached_log_prob = Scalar[DT](0.0)
         self.cached_value = Scalar[DT](0.0)
         self.mb_obs = null_p
-        self.mb_aux = null_p
+        self.mb_act = null_p
+        self.mb_olp = null_p
         self.mb_adv = null_p
         self.mb_ret = null_p
         self.mb_v = null_p
@@ -301,7 +304,8 @@ struct PPOTrainer[
         t.cached_action = alloc[Scalar[DT]](Self.ACT_DIM)
 
         t.mb_obs = alloc[Scalar[DT]](Self.MINIBATCH * Self.OBS_DIM)
-        t.mb_aux = alloc[Scalar[DT]](Self.MINIBATCH * Self.AUX_DIM)
+        t.mb_act = alloc[Scalar[DT]](Self.MINIBATCH * Self.ACT_DIM)
+        t.mb_olp = alloc[Scalar[DT]](Self.MINIBATCH)
         t.mb_adv = alloc[Scalar[DT]](Self.MINIBATCH)
         t.mb_ret = alloc[Scalar[DT]](Self.MINIBATCH * 1)
         t.mb_v = alloc[Scalar[DT]](Self.MINIBATCH * 1)
@@ -487,7 +491,7 @@ struct PPOTrainer[
         for _epoch in range(Self.N_EPOCHS):
             _shuffle_indices(self.indices, Self.ROLLOUT_LEN)
             for mb in range(Self.N_MINIBATCHES):
-                # Gather minibatch into mb_obs / mb_aux / mb_ret / mb_adv.
+                # Gather minibatch into mb_obs / mb_act / mb_olp / mb_adv / mb_ret.
                 for k in range(Self.MINIBATCH):
                     var src = Int(self.indices[mb * Self.MINIBATCH + k])
                     for d in range(Self.OBS_DIM):
@@ -495,26 +499,22 @@ struct PPOTrainer[
                             self.obs_buf[src * Self.OBS_DIM + d]
                         )
                     for j in range(Self.ACT_DIM):
-                        self.mb_aux[k * Self.AUX_DIM + j] = (
+                        self.mb_act[k * Self.ACT_DIM + j] = (
                             self.act_buf[src * Self.ACT_DIM + j]
                         )
-                    self.mb_aux[k * Self.AUX_DIM + Self.ACT_DIM] = (
-                        self.olp_buf[src]
-                    )
+                    self.mb_olp[k] = self.olp_buf[src]
                     self.mb_adv[k] = self.adv_buf[src]
                     self.mb_ret[k] = self.ret_buf[src]
                 # Per-minibatch advantage normalisation (CleanRL style).
                 normalize_in_place(Self.MINIBATCH, self.mb_adv)
-                # Splat normalized advantage into the aux slot.
-                for k in range(Self.MINIBATCH):
-                    self.mb_aux[k * Self.AUX_DIM + Self.ACT_DIM + 1] = (
-                        self.mb_adv[k]
-                    )
 
-                # ── Actor update (FullGraph).
+                # ── Actor update (FullGraph, post-I.2.5 4-InputSlot form).
                 _ = self.ppo_loss.forward_backward[
                     target="cpu", OPT=Adam,
-                ](self.actor, self.actor_opt, self.mb_obs, self.mb_aux)
+                ](
+                    self.actor, self.actor_opt,
+                    self.mb_obs, self.mb_act, self.mb_olp, self.mb_adv,
+                )
 
                 # ── Critic update (vanilla MSE).
                 var mb_obs_t = TileTensor(

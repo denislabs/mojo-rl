@@ -1,34 +1,40 @@
 """PPOActorLossCG — PPO actor loss as a single ComputeGraph.
 
-Phase I.2.c FullGraph. The 4-node graph captures the actor-side loss
-end-to-end; the loss block degenerates to "bind external actor, set
-inputs, forward, seed, backward, step".
+Phase I.2 (graph shape) + Phase I.2.5 (quaternary cleanup). The 6-node
+graph captures the actor-side loss end-to-end via four separate
+InputSlots — one per data input — now that I.2.5's GraphNode N-ary
+refactor lifted the Node ARITY cap from 2 to 4.
 
 Graph topology:
 
     InputSlot ["s",          OBS_DIM]
-    InputSlot ["aux",        ACT_DIM + 2]                      # action | old_log_prob | advantage
-    ExternalNode ["actor_out", ACTOR,                  "s"]
-    Node       ["loss_per_b", PPOObjective[ACT_DIM],   "actor_out", "aux"]
+    InputSlot ["a",          ACT_DIM]
+    InputSlot ["olp",        1]
+    InputSlot ["adv",        1]
+    ExternalNode ["actor_out", ACTOR,                                  "s"]
+    Node       ["loss_per_b", PPOObjective[ACT_DIM],   "actor_out","a","olp","adv"]
 
-ACTOR is external (owned by the trainer). PPOObjective handles the
-clipped-surrogate + entropy-bonus math (see `nn2/primitives/ppo_objective.mojo`).
+ACTOR is external (owned by the trainer). PPOObjective is the
+quaternary leaf that does the clipped-surrogate + entropy math (see
+`nn2/primitives/ppo_objective.mojo`).
 
 The graph forward returns `loss_per_b` of shape [BATCH, 1]; the loss
 block sums it host-side for logging, then seeds `1/BATCH` and walks
-backward. PPOObjective's vjp writes `grad_aux = 0` (action / old_log_prob
-/ advantage are non-differentiable), so the only meaningful gradient
-flowing into the trainer is `grad_actor_output` accumulated through the
-actor.
+backward. PPOObjective's vjp writes zeros into the three rollout-time
+grad slots (action / olp / adv are non-differentiable), so the only
+meaningful gradient flowing into the trainer is `grad_actor_output`
+accumulated through the actor.
 
 Public surface mirrors `SACActorLossCG`:
   - `make[target="cpu"]()` factory.
-  - `forward_backward[target, OPT](actor, actor_opt, s_ptr, aux_ptr) -> Scalar[DT]`
+  - `forward_backward[target, OPT](actor, actor_opt, s_ptr, a_ptr, olp_ptr, adv_ptr) -> Scalar[DT]`
     runs the whole step + returns the mean per-batch loss for logging.
   - `set_clip_eps(value)` / `set_entropy_coef(value)` runtime knobs.
 
-Bespoke `PPOActorLoss[ACT]` produces per-element grad identical to this
-form up to 3.7e-9 (see `tests/nn2/test_ppo_objective.mojo`).
+I.2.5 cleanup: the previous version of this block packed
+(action | old_log_prob | advantage) into a single InputSlot["aux"]
+because Node/ExternalNode were capped at ARITY ≤ 2. That workaround is
+gone — each data input now flows through its own named slot.
 """
 
 from layout import TileTensor, row_major
@@ -57,21 +63,23 @@ struct PPOActorLossCG[
 ](LossBlock):
     comptime OBS_DIM = Self.ACTOR.IN_DIM
     comptime ACT_DIM = Self.ACTOR.OUT_DIM // 2
-    comptime AUX_DIM = Self.ACT_DIM + 2
 
-    # The 4-node FullGraph.
+    # The 6-node FullGraph — four InputSlots, one ExternalNode, one Node.
     comptime ActorGraph = ComputeGraph[
         1,
         InputSlot["s",   Self.OBS_DIM],
-        InputSlot["aux", Self.AUX_DIM],
+        InputSlot["a",   Self.ACT_DIM],
+        InputSlot["olp", 1],
+        InputSlot["adv", 1],
         ExternalNode["actor_out", Self.ACTOR, "s"],
-        Node["loss_per_b", PPOObjective[Self.ACT_DIM], "actor_out", "aux"],
+        Node[
+            "loss_per_b", PPOObjective[Self.ACT_DIM],
+            "actor_out", "a", "olp", "adv",
+        ],
     ]
 
     var graph: Self.ActorGraph
 
-    # Scratch for the graph output (loss_per_b [BATCH, 1]) and the seed
-    # gradient (1/BATCH [BATCH, 1]).
     var _loss_out: Scratch["loss_out", Self.BATCH]
     var _grad_seed: Scratch["grad_seed", Self.BATCH]
 
@@ -119,20 +127,23 @@ struct PPOActorLossCG[
         mut actor: Self.ACTOR,
         mut actor_opt: OPT,
         s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        aux_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        olp_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        adv_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises -> Scalar[DT]:
         """Run one minibatch PPO actor update.
 
-        `s_ptr` points to [BATCH, OBS_DIM] observations.
-        `aux_ptr` points to [BATCH, ACT_DIM+2] packed
-        `[action | old_log_prob | advantage]`.
+        `s_ptr`    points to [BATCH, OBS_DIM] observations.
+        `a_ptr`    points to [BATCH, ACT_DIM] actions (unbounded rollout samples).
+        `olp_ptr`  points to [BATCH] (or [BATCH, 1]) old log-probs.
+        `adv_ptr`  points to [BATCH] (or [BATCH, 1]) normalised advantages.
 
         Returns the mean per-batch loss for logging.
         """
         assert_tag_for["PPOActorLossCG", target](self.ts.target_tag)
         comptime BB = Self.BATCH
         comptime OBS = Self.OBS_DIM
-        comptime AUX = Self.AUX_DIM
+        comptime ACT = Self.ACT_DIM
 
         actor_opt.zero_grad[target, M=Self.ACTOR](actor)
 
@@ -140,13 +151,19 @@ struct PPOActorLossCG[
         # the field across optimizer-bundle indexing).
         self.graph.set_external["actor_out", Self.ACTOR](actor)
 
-        # Set graph inputs. Hetero-variadic workaround: pass aux with
-        # OBS_DIM-shaped Layout for the variadic pack to unify; the slot
-        # uses its declared OUT_DIM internally.
+        # Set graph inputs. Hetero-variadic workaround: pass each tile
+        # with the IN0_DIM-shaped Layout so the variadic pack unifies;
+        # PPOObjective recovers the real per-input shape via typed_view.
+        # The set_input plumbing uses each TileTensor's .ptr directly so
+        # the Layout type here only matters for compile-time unification.
         var s_t = TileTensor(s_ptr, row_major[BB, OBS]())
-        var aux_t = TileTensor(aux_ptr, row_major[BB, AUX]())
+        var a_t = TileTensor(a_ptr, row_major[BB, ACT]())
+        var olp_t = TileTensor(olp_ptr, row_major[BB, 1]())
+        var adv_t = TileTensor(adv_ptr, row_major[BB, 1]())
         self.graph.set_input["s", BB](s_t)
-        self.graph.set_input["aux", BB](aux_t)
+        self.graph.set_input["a", BB](a_t)
+        self.graph.set_input["olp", BB](olp_t)
+        self.graph.set_input["adv", BB](adv_t)
 
         comptime if target == "cpu":
             var loss_p = self._loss_out.cpu_ptr()

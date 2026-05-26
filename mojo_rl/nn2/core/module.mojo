@@ -134,20 +134,27 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
 
     Per-input dim semantics:
       - `IN_DIM` — first input dim. For unary leaves this is the sole
-        input dim. For binary/ternary, `IN_DIM == IN0_DIM`.
+        input dim. For binary/ternary/quaternary, `IN_DIM == IN0_DIM`.
       - `IN1_DIM` — second input dim. `0` for unary leaves.
       - `IN2_DIM` — third input dim. `0` for unary and binary leaves.
+      - `IN3_DIM` — fourth input dim. `0` for unary/binary/ternary leaves.
 
-    Unary leaves set `IN1_DIM = 0` and `IN2_DIM = 0` by convention.
-    Binary leaves set `IN1_DIM = <real>`, `IN2_DIM = 0`. Ternary leaves
-    set all three. This shape lets graph-node wrappers (`Node`,
-    `TernaryNode`, externals) read input dims through the trait surface
-    without sub-traits."""
+    Unary leaves set `IN1_DIM = 0` / `IN2_DIM = 0` / `IN3_DIM = 0` by
+    convention. Binary leaves override `IN1_DIM` only; ternary override
+    `IN1_DIM + IN2_DIM`; quaternary override all four. This shape lets
+    graph-node wrappers (`Node`, externals) read input dims through the
+    trait surface without sub-traits.
+
+    Phase I.2.5 added `IN3_DIM` so quaternary loss leaves (e.g.
+    `PPOObjective4(actor_out, action, old_log_prob, advantage)`) can
+    declare their fourth input dim natively, retiring the aux-packing
+    workaround that PPOActorLossCG used at I.2 landing time."""
 
     comptime ARITY: Int
     comptime IN_DIM: Int
-    comptime IN1_DIM: Int = 0  # default 0 — unary leaves inherit, binary/ternary override
-    comptime IN2_DIM: Int = 0  # default 0 — unary + binary inherit, ternary overrides
+    comptime IN1_DIM: Int = 0  # default 0 — unary leaves inherit, binary+ override
+    comptime IN2_DIM: Int = 0  # default 0 — unary + binary inherit, ternary+ override
+    comptime IN3_DIM: Int = 0  # default 0 — unary + binary + ternary inherit, quaternary overrides
     comptime OUT_DIM: Int
 
     @staticmethod

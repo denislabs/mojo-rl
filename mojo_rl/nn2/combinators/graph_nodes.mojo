@@ -178,9 +178,15 @@ struct InputSlot[
         mut self,
         in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        in2_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0),
+        in3_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0),
     ) raises:
         # No compute: the slot's out_ptr is whatever the caller set via
-        # graph.set_input[NAME](tile). in0_ptr / in1_ptr are unused.
+        # graph.set_input[NAME](tile). All in_ptrs are unused.
         pass
 
     def vjp_via[
@@ -200,24 +206,39 @@ struct InputSlot[
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Node — wraps an owned Op: Module of any arity. ARITY=1 (was UnaryNode)
-# or ARITY=2 (was BinaryNode). Forward-compat for higher arities (would
-# need ComputeGraph KIND=3+ dispatch + an in2_name parameter — neither
-# in scope today).
+# Node — wraps an owned Op: Module of any arity (1..4). I.2.5 raised
+# the cap from 2 → 4 + switched the user-facing declaration to a
+# variadic `*in_names: StaticString` (the spike-de-risked pattern).
+# IN0_NAME / IN1_NAME / IN2_NAME / IN3_NAME are derived from `in_names`
+# at comptime with safe "" defaults past ARITY-1.
 # ──────────────────────────────────────────────────────────────────────
 
 
 struct Node[
     node_name: StaticString,
     Op: Module,
-    in0_name: StaticString = "input",
-    in1_name: StaticString = "",
+    *in_names: StaticString,
 ](GraphNode):
     comptime NAME = Self.node_name
-    comptime IN0_NAME = Self.in0_name
-    comptime IN1_NAME = Self.in1_name
+    # Derive per-input names from the variadic with safe defaults past
+    # ARITY-1. Mojo struct comptime conditional expressions; out-of-range
+    # indexing is guarded so we never read past the variadic.
+    comptime IN0_NAME = (
+        Self.in_names[0] if Self.in_names.size > 0 else StaticString("input")
+    )
+    comptime IN1_NAME = (
+        Self.in_names[1] if Self.in_names.size > 1 else StaticString("")
+    )
+    comptime IN2_NAME = (
+        Self.in_names[2] if Self.in_names.size > 2 else StaticString("")
+    )
+    comptime IN3_NAME = (
+        Self.in_names[3] if Self.in_names.size > 3 else StaticString("")
+    )
     comptime IN0_DIM = Self.Op.IN_DIM
-    comptime IN1_DIM = Self.Op.IN1_DIM   # 0 when Op.ARITY == 1 (trait default)
+    comptime IN1_DIM = Self.Op.IN1_DIM   # 0 when Op.ARITY < 2 (trait default)
+    comptime IN2_DIM = Self.Op.IN2_DIM   # 0 when Op.ARITY < 3 (trait default)
+    comptime IN3_DIM = Self.Op.IN3_DIM   # 0 when Op.ARITY < 4 (trait default)
     comptime OUT_DIM = Self.Op.OUT_DIM
     comptime KIND = Self.Op.ARITY
 
@@ -227,39 +248,60 @@ struct Node[
     var _grad_out_buf: List[Scalar[DT]]
     var _grad_in0_buf: List[Scalar[DT]]
     var _grad_in1_buf: List[Scalar[DT]]
+    var _grad_in2_buf: List[Scalar[DT]]
+    var _grad_in3_buf: List[Scalar[DT]]
 
     var _out_buf_dev: Optional[DeviceBuffer[DT]]
     var _grad_out_buf_dev: Optional[DeviceBuffer[DT]]
     var _grad_in0_buf_dev: Optional[DeviceBuffer[DT]]
     var _grad_in1_buf_dev: Optional[DeviceBuffer[DT]]
+    var _grad_in2_buf_dev: Optional[DeviceBuffer[DT]]
+    var _grad_in3_buf_dev: Optional[DeviceBuffer[DT]]
     var _out_buf_dev_n: Int
     var _grad_out_buf_dev_n: Int
     var _grad_in0_buf_dev_n: Int
     var _grad_in1_buf_dev_n: Int
+    var _grad_in2_buf_dev_n: Int
+    var _grad_in3_buf_dev_n: Int
 
     # Cached pointers resolved by ensure_buffers_via — stable thereafter.
     var _out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var _grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var _grad_in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]   # null for ARITY=1
+    var _grad_in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]   # null for ARITY<2
+    var _grad_in2_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]   # null for ARITY<3
+    var _grad_in3_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]   # null for ARITY<4
 
     var _n_batch_buf: Int
     var ts: TargetStorage
 
     def __init__(out self):
+        comptime assert Self.in_names.size == Self.Op.ARITY, (
+            "Node: number of in_names must match Op.ARITY"
+        )
+        comptime assert Self.Op.ARITY <= 4, (
+            "Node: ARITY > 4 not supported in I.2.5 (extend graph_nodes.mojo "
+            "+ compute_graph.mojo + GraphNode trait to bump the cap)"
+        )
         self.op = Self.Op()
         self._out_buf = List[Scalar[DT]]()
         self._grad_out_buf = List[Scalar[DT]]()
         self._grad_in0_buf = List[Scalar[DT]]()
         self._grad_in1_buf = List[Scalar[DT]]()
+        self._grad_in2_buf = List[Scalar[DT]]()
+        self._grad_in3_buf = List[Scalar[DT]]()
         self._out_buf_dev = None
         self._grad_out_buf_dev = None
         self._grad_in0_buf_dev = None
         self._grad_in1_buf_dev = None
+        self._grad_in2_buf_dev = None
+        self._grad_in3_buf_dev = None
         self._out_buf_dev_n = 0
         self._grad_out_buf_dev_n = 0
         self._grad_in0_buf_dev_n = 0
         self._grad_in1_buf_dev_n = 0
+        self._grad_in2_buf_dev_n = 0
+        self._grad_in3_buf_dev_n = 0
         var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
             unsafe_from_address=0
         )
@@ -267,6 +309,8 @@ struct Node[
         self._grad_out_ptr = null_p
         self._grad_in0_ptr = null_p
         self._grad_in1_ptr = null_p
+        self._grad_in2_ptr = null_p
+        self._grad_in3_ptr = null_p
         self._n_batch_buf = 0
         self.ts = TargetStorage.make_uninit()
 
@@ -325,6 +369,22 @@ struct Node[
                     self._grad_in1_ptr = rebind[
                         UnsafePointer[Scalar[DT], MutAnyOrigin]
                     ](self._grad_in1_buf_dev.value().unsafe_ptr())
+                comptime if Self.Op.ARITY >= 3:
+                    ensure_gpu_buffer(
+                        self._grad_in2_buf_dev, self._grad_in2_buf_dev_n,
+                        BATCH * Self.IN2_DIM, ctx,
+                    )
+                    self._grad_in2_ptr = rebind[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](self._grad_in2_buf_dev.value().unsafe_ptr())
+                comptime if Self.Op.ARITY >= 4:
+                    ensure_gpu_buffer(
+                        self._grad_in3_buf_dev, self._grad_in3_buf_dev_n,
+                        BATCH * Self.IN3_DIM, ctx,
+                    )
+                    self._grad_in3_ptr = rebind[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](self._grad_in3_buf_dev.value().unsafe_ptr())
                 self._n_batch_buf = BATCH
         else:
             if self._n_batch_buf < BATCH:
@@ -350,6 +410,22 @@ struct Node[
                     # (callers must not dereference; ComputeGraph checks IN1_NAME first).
                     if len(self._grad_in1_buf) < 1:
                         self._grad_in1_buf.resize(1, Scalar[DT](0.0))
+                comptime if Self.Op.ARITY >= 3:
+                    self._grad_in2_buf.resize(BATCH * Self.IN2_DIM, Scalar[DT](0.0))
+                    self._grad_in2_ptr = rebind[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](self._grad_in2_buf.unsafe_ptr())
+                else:
+                    if len(self._grad_in2_buf) < 1:
+                        self._grad_in2_buf.resize(1, Scalar[DT](0.0))
+                comptime if Self.Op.ARITY >= 4:
+                    self._grad_in3_buf.resize(BATCH * Self.IN3_DIM, Scalar[DT](0.0))
+                    self._grad_in3_ptr = rebind[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](self._grad_in3_buf.unsafe_ptr())
+                else:
+                    if len(self._grad_in3_buf) < 1:
+                        self._grad_in3_buf.resize(1, Scalar[DT](0.0))
                 self._n_batch_buf = BATCH
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -362,7 +438,13 @@ struct Node[
         return self._grad_in0_ptr
 
     def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in1_ptr  # null for ARITY=1
+        return self._grad_in1_ptr  # null for ARITY < 2
+
+    def grad_in2_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return self._grad_in2_ptr  # null for ARITY < 3
+
+    def grad_in3_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return self._grad_in3_ptr  # null for ARITY < 4
 
     def forward_via[
         target: StaticString,
@@ -372,19 +454,38 @@ struct Node[
         mut self,
         in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        in2_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0),
+        in3_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0),
     ) raises:
         var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
         var out_p = self.out_ptr_via()
         var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
         comptime if Self.Op.ARITY == 1:
             self.op.forward[target, BATCH, POLICY=POLICY](in0_t, output=out_t)
-        else:
+        elif Self.Op.ARITY == 2:
             # Hetero-binary variadic workaround: in1_t shares in0's Layout
             # type. Leaf body recovers the real shape via
             # typed_view[BATCH, Self.IN1_DIM] from .ptr. See module.mojo.
             var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
             self.op.forward[target, BATCH, POLICY=POLICY](
                 in0_t, in1_t, output=out_t,
+            )
+        elif Self.Op.ARITY == 3:
+            var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
+            var in2_t = TileTensor(in2_ptr, row_major[BATCH, Self.IN0_DIM]())
+            self.op.forward[target, BATCH, POLICY=POLICY](
+                in0_t, in1_t, in2_t, output=out_t,
+            )
+        else:  # ARITY == 4 (struct __init__ asserts ARITY <= 4)
+            var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
+            var in2_t = TileTensor(in2_ptr, row_major[BATCH, Self.IN0_DIM]())
+            var in3_t = TileTensor(in3_ptr, row_major[BATCH, Self.IN0_DIM]())
+            self.op.forward[target, BATCH, POLICY=POLICY](
+                in0_t, in1_t, in2_t, in3_t, output=out_t,
             )
 
     def vjp_via[
@@ -398,11 +499,29 @@ struct Node[
         var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
         comptime if Self.Op.ARITY == 1:
             self.op.vjp[target, BATCH, POLICY=POLICY](go_t, gi0_t)
-        else:
+        elif Self.Op.ARITY == 2:
             # Hetero-binary variadic workaround (see forward_via).
             var gi1_p = self.grad_in1_ptr_via()
             var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
             self.op.vjp[target, BATCH, POLICY=POLICY](go_t, gi0_t, gi1_t)
+        elif Self.Op.ARITY == 3:
+            var gi1_p = self.grad_in1_ptr_via()
+            var gi2_p = self.grad_in2_ptr_via()
+            var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
+            var gi2_t = TileTensor(gi2_p, row_major[BATCH, Self.IN0_DIM]())
+            self.op.vjp[target, BATCH, POLICY=POLICY](
+                go_t, gi0_t, gi1_t, gi2_t,
+            )
+        else:  # ARITY == 4
+            var gi1_p = self.grad_in1_ptr_via()
+            var gi2_p = self.grad_in2_ptr_via()
+            var gi3_p = self.grad_in3_ptr_via()
+            var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
+            var gi2_t = TileTensor(gi2_p, row_major[BATCH, Self.IN0_DIM]())
+            var gi3_t = TileTensor(gi3_p, row_major[BATCH, Self.IN0_DIM]())
+            self.op.vjp[target, BATCH, POLICY=POLICY](
+                go_t, gi0_t, gi1_t, gi2_t, gi3_t,
+            )
 
     def for_each_param_via[
         target: StaticString,
@@ -429,15 +548,32 @@ struct Node[
 struct ExternalNode[
     node_name: StaticString,
     M: Module,
-    in0_name: StaticString = "input",
-    in1_name: StaticString = "",
+    *in_names: StaticString,
     MODE: StaticString = "all",
 ](GraphNode):
+    """I.2.5 — `MODE` is now keyword-only (lives after `*in_names` in
+    the struct param list). Existing call sites that pass `MODE="input_only"`
+    continue to compile; positional-style `MODE` calls would conflict
+    with the variadic and were never used in the codebase."""
+
     comptime NAME = Self.node_name
-    comptime IN0_NAME = Self.in0_name
-    comptime IN1_NAME = Self.in1_name
+    # Derive per-input names from the variadic with safe defaults.
+    comptime IN0_NAME = (
+        Self.in_names[0] if Self.in_names.size > 0 else StaticString("input")
+    )
+    comptime IN1_NAME = (
+        Self.in_names[1] if Self.in_names.size > 1 else StaticString("")
+    )
+    comptime IN2_NAME = (
+        Self.in_names[2] if Self.in_names.size > 2 else StaticString("")
+    )
+    comptime IN3_NAME = (
+        Self.in_names[3] if Self.in_names.size > 3 else StaticString("")
+    )
     comptime IN0_DIM = Self.M.IN_DIM
-    comptime IN1_DIM = Self.M.IN1_DIM    # 0 when M.ARITY == 1 (trait default)
+    comptime IN1_DIM = Self.M.IN1_DIM    # 0 when M.ARITY < 2 (trait default)
+    comptime IN2_DIM = Self.M.IN2_DIM    # 0 when M.ARITY < 3 (trait default)
+    comptime IN3_DIM = Self.M.IN3_DIM    # 0 when M.ARITY < 4 (trait default)
     comptime OUT_DIM = Self.M.OUT_DIM
     comptime KIND = Self.M.ARITY
 
@@ -449,25 +585,39 @@ struct ExternalNode[
     var _grad_out_buf: List[Scalar[DT]]
     var _grad_in0_buf: List[Scalar[DT]]
     var _grad_in1_buf: List[Scalar[DT]]
+    var _grad_in2_buf: List[Scalar[DT]]
+    var _grad_in3_buf: List[Scalar[DT]]
 
     var _out_buf_dev: Optional[DeviceBuffer[DT]]
     var _grad_out_buf_dev: Optional[DeviceBuffer[DT]]
     var _grad_in0_buf_dev: Optional[DeviceBuffer[DT]]
     var _grad_in1_buf_dev: Optional[DeviceBuffer[DT]]
+    var _grad_in2_buf_dev: Optional[DeviceBuffer[DT]]
+    var _grad_in3_buf_dev: Optional[DeviceBuffer[DT]]
     var _out_buf_dev_n: Int
     var _grad_out_buf_dev_n: Int
     var _grad_in0_buf_dev_n: Int
     var _grad_in1_buf_dev_n: Int
+    var _grad_in2_buf_dev_n: Int
+    var _grad_in3_buf_dev_n: Int
 
     var _out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var _grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var _grad_in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var _grad_in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _grad_in2_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _grad_in3_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
 
     var _n_batch_buf: Int
     var ts: TargetStorage
 
     def __init__(out self):
+        comptime assert Self.in_names.size == Self.M.ARITY, (
+            "ExternalNode: number of in_names must match M.ARITY"
+        )
+        comptime assert Self.M.ARITY <= 4, (
+            "ExternalNode: ARITY > 4 not supported in I.2.5"
+        )
         self._module_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
             unsafe_from_address=0
         )
@@ -475,14 +625,20 @@ struct ExternalNode[
         self._grad_out_buf = List[Scalar[DT]]()
         self._grad_in0_buf = List[Scalar[DT]]()
         self._grad_in1_buf = List[Scalar[DT]]()
+        self._grad_in2_buf = List[Scalar[DT]]()
+        self._grad_in3_buf = List[Scalar[DT]]()
         self._out_buf_dev = None
         self._grad_out_buf_dev = None
         self._grad_in0_buf_dev = None
         self._grad_in1_buf_dev = None
+        self._grad_in2_buf_dev = None
+        self._grad_in3_buf_dev = None
         self._out_buf_dev_n = 0
         self._grad_out_buf_dev_n = 0
         self._grad_in0_buf_dev_n = 0
         self._grad_in1_buf_dev_n = 0
+        self._grad_in2_buf_dev_n = 0
+        self._grad_in3_buf_dev_n = 0
         var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
             unsafe_from_address=0
         )
@@ -490,6 +646,8 @@ struct ExternalNode[
         self._grad_out_ptr = null_p
         self._grad_in0_ptr = null_p
         self._grad_in1_ptr = null_p
+        self._grad_in2_ptr = null_p
+        self._grad_in3_ptr = null_p
         self._n_batch_buf = 0
         self.ts = TargetStorage.make_uninit()
 
@@ -554,6 +712,22 @@ struct ExternalNode[
                     self._grad_in1_ptr = rebind[
                         UnsafePointer[Scalar[DT], MutAnyOrigin]
                     ](self._grad_in1_buf_dev.value().unsafe_ptr())
+                comptime if Self.M.ARITY >= 3:
+                    ensure_gpu_buffer(
+                        self._grad_in2_buf_dev, self._grad_in2_buf_dev_n,
+                        BATCH * Self.IN2_DIM, ctx,
+                    )
+                    self._grad_in2_ptr = rebind[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](self._grad_in2_buf_dev.value().unsafe_ptr())
+                comptime if Self.M.ARITY >= 4:
+                    ensure_gpu_buffer(
+                        self._grad_in3_buf_dev, self._grad_in3_buf_dev_n,
+                        BATCH * Self.IN3_DIM, ctx,
+                    )
+                    self._grad_in3_ptr = rebind[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](self._grad_in3_buf_dev.value().unsafe_ptr())
                 self._n_batch_buf = BATCH
         else:
             if self._n_batch_buf < BATCH:
@@ -577,6 +751,22 @@ struct ExternalNode[
                 else:
                     if len(self._grad_in1_buf) < 1:
                         self._grad_in1_buf.resize(1, Scalar[DT](0.0))
+                comptime if Self.M.ARITY >= 3:
+                    self._grad_in2_buf.resize(BATCH * Self.IN2_DIM, Scalar[DT](0.0))
+                    self._grad_in2_ptr = rebind[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](self._grad_in2_buf.unsafe_ptr())
+                else:
+                    if len(self._grad_in2_buf) < 1:
+                        self._grad_in2_buf.resize(1, Scalar[DT](0.0))
+                comptime if Self.M.ARITY >= 4:
+                    self._grad_in3_buf.resize(BATCH * Self.IN3_DIM, Scalar[DT](0.0))
+                    self._grad_in3_ptr = rebind[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](self._grad_in3_buf.unsafe_ptr())
+                else:
+                    if len(self._grad_in3_buf) < 1:
+                        self._grad_in3_buf.resize(1, Scalar[DT](0.0))
                 self._n_batch_buf = BATCH
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -591,6 +781,12 @@ struct ExternalNode[
     def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         return self._grad_in1_ptr
 
+    def grad_in2_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return self._grad_in2_ptr
+
+    def grad_in3_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return self._grad_in3_ptr
+
     def forward_via[
         target: StaticString,
         BATCH: Int,
@@ -599,6 +795,12 @@ struct ExternalNode[
         mut self,
         in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        in2_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0),
+        in3_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0),
     ) raises:
         var in0_t = TileTensor(in0_ptr, row_major[BATCH, Self.IN0_DIM]())
         var out_p = self.out_ptr_via()
@@ -610,10 +812,23 @@ struct ExternalNode[
             typed_ptr[].forward[target, BATCH, POLICY=POLICY](
                 in0_t, output=out_t,
             )
-        else:
+        elif Self.M.ARITY == 2:
             var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
             typed_ptr[].forward[target, BATCH, POLICY=POLICY](
                 in0_t, in1_t, output=out_t,
+            )
+        elif Self.M.ARITY == 3:
+            var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
+            var in2_t = TileTensor(in2_ptr, row_major[BATCH, Self.IN0_DIM]())
+            typed_ptr[].forward[target, BATCH, POLICY=POLICY](
+                in0_t, in1_t, in2_t, output=out_t,
+            )
+        else:  # ARITY == 4
+            var in1_t = TileTensor(in1_ptr, row_major[BATCH, Self.IN0_DIM]())
+            var in2_t = TileTensor(in2_ptr, row_major[BATCH, Self.IN0_DIM]())
+            var in3_t = TileTensor(in3_ptr, row_major[BATCH, Self.IN0_DIM]())
+            typed_ptr[].forward[target, BATCH, POLICY=POLICY](
+                in0_t, in1_t, in2_t, in3_t, output=out_t,
             )
 
     def vjp_via[
@@ -632,12 +847,30 @@ struct ExternalNode[
             typed_ptr[].vjp[
                 target, BATCH, POLICY=POLICY, mode=Self.MODE,
             ](go_t, gi0_t)
-        else:
+        elif Self.M.ARITY == 2:
             var gi1_p = self.grad_in1_ptr_via()
             var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
             typed_ptr[].vjp[
                 target, BATCH, POLICY=POLICY, mode=Self.MODE,
             ](go_t, gi0_t, gi1_t)
+        elif Self.M.ARITY == 3:
+            var gi1_p = self.grad_in1_ptr_via()
+            var gi2_p = self.grad_in2_ptr_via()
+            var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
+            var gi2_t = TileTensor(gi2_p, row_major[BATCH, Self.IN0_DIM]())
+            typed_ptr[].vjp[
+                target, BATCH, POLICY=POLICY, mode=Self.MODE,
+            ](go_t, gi0_t, gi1_t, gi2_t)
+        else:  # ARITY == 4
+            var gi1_p = self.grad_in1_ptr_via()
+            var gi2_p = self.grad_in2_ptr_via()
+            var gi3_p = self.grad_in3_ptr_via()
+            var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
+            var gi2_t = TileTensor(gi2_p, row_major[BATCH, Self.IN0_DIM]())
+            var gi3_t = TileTensor(gi3_p, row_major[BATCH, Self.IN0_DIM]())
+            typed_ptr[].vjp[
+                target, BATCH, POLICY=POLICY, mode=Self.MODE,
+            ](go_t, gi0_t, gi1_t, gi2_t, gi3_t)
 
     def for_each_param_via[
         target: StaticString,

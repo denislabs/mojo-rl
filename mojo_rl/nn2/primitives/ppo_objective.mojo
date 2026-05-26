@@ -1,18 +1,25 @@
-"""PPOObjective[ACT_] — binary Module for the PPO clipped-surrogate loss.
+"""PPOObjective[ACT_] — quaternary Module for the PPO clipped-surrogate loss.
 
-Phase I.2.b. Binary leaf consumed by `PPOActorLossCG` (the FullGraph
-form of the PPO actor loss). Inputs:
+Phase I.2.5. Upgraded from binary (actor_out, packed_aux) to quaternary
+(actor_out, action, old_log_prob, advantage) — the natural shape of
+the PPO loss. The earlier aux-packing workaround was a leak in the
+FullGraph thesis at I.2 landing time; I.2.5's GraphNode N-ary refactor
+makes it possible to declare each of the four inputs as a distinct
+InputSlot in `PPOActorLossCG` without packing.
 
-  - actor_output  [BATCH, 2*ACT]   from GaussianHead: [mu | log_std].
-  - aux           [BATCH, ACT+2]   packed [action | old_log_prob | advantage].
+Inputs (ARITY=4):
+
+  - actor_output     [BATCH, 2*ACT]   from GaussianHead: [mu | log_std].
+  - action           [BATCH, ACT]     unbounded sample stored at rollout time.
+  - old_log_prob     [BATCH, 1]       log p_θ_old(action | s) at rollout.
+  - advantage        [BATCH, 1]       GAE advantage, normalised per minibatch.
 
 Output:
 
-  - loss_per_b    [BATCH, 1]       per-sample (un-averaged) PPO loss.
+  - loss_per_b       [BATCH, 1]       per-sample (un-averaged) PPO loss.
 
 The 1/BATCH mean factor lives in the seed gradient
-(`seed_grad_inv_batch`), not inside this kernel — matches the
-SACActorLossCG convention so the graph hosts the reduction.
+(`seed_grad_inv_batch`), not inside this kernel.
 
 Math (per sample b):
     new_log_prob = Σ_j  -0.5 * (LOG_2PI + 2·ls_j + ((a_j-mu_j)/std_j)²)
@@ -34,16 +41,14 @@ Backward (per sample b, with go = grad_loss_per_b[b]):
         grad_mu_j   = -adv * ratio * d_lp_d_mu_j * go            (clip ±10)
         grad_ls_j   = (-adv * ratio * d_lp_d_ls_j - entropy_coef) * go  (clip ±10)
 
-Per-element grad clip ±10 matches the bespoke `ppo_actor_loss.mojo`
-kernel exactly. grad_aux is written as zeros (action / old_log_prob /
-advantage are non-differentiable inputs).
+Per-element grad clip ±10. grad_action / grad_old_log_prob / grad_advantage
+are all identically zero (non-differentiable rollout-time inputs).
 
-Forward caches the input pointers (no copy — the graph keeps the
-buffers live across forward + vjp), `vjp` reads them. Mirrors
-`MSELoss.cache_logits` — required because the Module trait `vjp`
-signature receives only grad_output + grad_inputs, not the originals.
+Forward caches the four input pointers (no copy — graph keeps the buffers
+live across forward + vjp), `vjp` reads them. Mirrors MSELoss's
+`cache_logits` pattern.
 
-CPU only for I.2. GPU follow-up tracked under I.2.f / I.3.
+CPU only for I.2.5. GPU follow-up tracked under I.2.f / I.3.
 """
 
 from std.math import exp
@@ -66,19 +71,23 @@ comptime LOG_2PI: Scalar[DT] = 1.8378770664093453
 
 
 struct PPOObjective[ACT_: Int](Module):
-    """PPO clipped-surrogate + entropy bonus as a binary Module."""
+    """PPO clipped-surrogate + entropy bonus as a quaternary Module."""
 
-    comptime ARITY: Int = 2
-    comptime IN_DIM: Int = 2 * Self.ACT_      # actor_output: [mu | log_std]
-    comptime IN1_DIM: Int = Self.ACT_ + 2     # aux: [action | old_log_prob | advantage]
-    comptime OUT_DIM: Int = 1                 # per-sample loss
+    comptime ARITY: Int = 4
+    comptime IN_DIM: Int = 2 * Self.ACT_       # actor_output: [mu | log_std]
+    comptime IN1_DIM: Int = Self.ACT_          # action (unbounded sample)
+    comptime IN2_DIM: Int = 1                  # old_log_prob (scalar per row)
+    comptime IN3_DIM: Int = 1                  # advantage    (scalar per row)
+    comptime OUT_DIM: Int = 1                  # per-sample loss
 
     var clip_eps: Scalar[DT]
     var entropy_coef: Scalar[DT]
 
     # Input-pointer cache populated by forward, consumed by vjp.
     var _cache_ao_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _cache_ax_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cache_act_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cache_olp_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cache_adv_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
 
     var ts: TargetStorage
 
@@ -89,7 +98,9 @@ struct PPOObjective[ACT_: Int](Module):
             unsafe_from_address=0
         )
         self._cache_ao_ptr = null_p
-        self._cache_ax_ptr = null_p
+        self._cache_act_ptr = null_p
+        self._cache_olp_ptr = null_p
+        self._cache_adv_ptr = null_p
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -108,8 +119,6 @@ struct PPOObjective[ACT_: Int](Module):
         comptime assert target == "gpu", (
             "PPOObjective.make[target='cpu', INIT](ctx) — drop ctx for CPU"
         )
-        # GPU path deferred — I.2 scope is CPU FullGraph. PPO GPU lands
-        # alongside the GPU on-policy driver (I.2 follow-up or I.3).
         comptime assert False, (
             "PPOObjective GPU path not implemented yet (Phase I.2 CPU only)."
         )
@@ -142,16 +151,24 @@ struct PPOObjective[ACT_: Int](Module):
         comptime ACT = Self.ACT_
 
         var ao = typed_view[BATCH, Self.IN_DIM](inputs[0])
-        var ax = typed_view[BATCH, Self.IN1_DIM](inputs[1])
+        var act = typed_view[BATCH, Self.IN1_DIM](inputs[1])
+        var olp = typed_view[BATCH, Self.IN2_DIM](inputs[2])
+        var adv = typed_view[BATCH, Self.IN3_DIM](inputs[3])
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         # Cache input pointers for vjp.
         self._cache_ao_ptr = rebind[
             UnsafePointer[Scalar[DT], MutAnyOrigin]
         ](ao.ptr)
-        self._cache_ax_ptr = rebind[
+        self._cache_act_ptr = rebind[
             UnsafePointer[Scalar[DT], MutAnyOrigin]
-        ](ax.ptr)
+        ](act.ptr)
+        self._cache_olp_ptr = rebind[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ](olp.ptr)
+        self._cache_adv_ptr = rebind[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ](adv.ptr)
 
         comptime if target == "cpu":
             for b in range(BATCH):
@@ -165,7 +182,7 @@ struct PPOObjective[ACT_: Int](Module):
                     elif ls > LOG_STD_MAX:
                         ls = LOG_STD_MAX
                     var std = exp(ls)
-                    var a = ax[b, j]
+                    var a = act[b, j]
                     var z = (a - mu) / (std + EPS_STD)
                     new_log_prob += Scalar[DT](-0.5) * (
                         LOG_2PI + Scalar[DT](2.0) * ls + z * z
@@ -173,9 +190,9 @@ struct PPOObjective[ACT_: Int](Module):
                     entropy += Scalar[DT](0.5) * (
                         LOG_2PI + Scalar[DT](1.0) + Scalar[DT](2.0) * ls
                     )
-                var olp = ax[b, ACT]
-                var adv = ax[b, ACT + 1]
-                var diff = new_log_prob - olp
+                var olp_b = olp[b, 0]
+                var adv_b = adv[b, 0]
+                var diff = new_log_prob - olp_b
                 if diff > LOG_PROB_DIFF_MAX:
                     diff = LOG_PROB_DIFF_MAX
                 elif diff < -LOG_PROB_DIFF_MAX:
@@ -186,8 +203,8 @@ struct PPOObjective[ACT_: Int](Module):
                     clipped_ratio = Scalar[DT](1.0) - self.clip_eps
                 elif clipped_ratio > Scalar[DT](1.0) + self.clip_eps:
                     clipped_ratio = Scalar[DT](1.0) + self.clip_eps
-                var unclipped_obj = ratio * adv
-                var clipped_obj = clipped_ratio * adv
+                var unclipped_obj = ratio * adv_b
+                var clipped_obj = clipped_ratio * adv_b
                 var min_obj: Scalar[DT] = unclipped_obj
                 if clipped_obj < unclipped_obj:
                     min_obj = clipped_obj
@@ -220,19 +237,24 @@ struct PPOObjective[ACT_: Int](Module):
         comptime ACT = Self.ACT_
 
         var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gi0 = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])
-        var gi1 = typed_view_mut[BATCH, Self.IN1_DIM](grad_inputs[1])
+        var gi0 = typed_view_mut[BATCH, Self.IN_DIM](grad_inputs[0])    # grad_actor_output
+        var gi1 = typed_view_mut[BATCH, Self.IN1_DIM](grad_inputs[1])   # grad_action
+        var gi2 = typed_view_mut[BATCH, Self.IN2_DIM](grad_inputs[2])   # grad_old_log_prob
+        var gi3 = typed_view_mut[BATCH, Self.IN3_DIM](grad_inputs[3])   # grad_advantage
 
-        # grad_aux is identically zero — action/old_log_prob/advantage are
-        # not differentiable. The graph still scatter-adds this buffer into
-        # the "aux" InputSlot's grad accumulator, so we write zeros.
+        # All three rollout-time inputs are non-differentiable — zero
+        # their grad slots so ComputeGraph's scatter-add is a no-op.
         for b in range(BATCH):
-            for d in range(Self.IN1_DIM):
-                gi1[b, d] = Scalar[DT](0.0)
+            for j in range(ACT):
+                gi1[b, j] = Scalar[DT](0.0)
+            gi2[b, 0] = Scalar[DT](0.0)
+            gi3[b, 0] = Scalar[DT](0.0)
 
         comptime if target == "cpu":
             var ao_p = self._cache_ao_ptr
-            var ax_p = self._cache_ax_ptr
+            var act_p = self._cache_act_ptr
+            var olp_p = self._cache_olp_ptr
+            var adv_p = self._cache_adv_ptr
             for b in range(BATCH):
                 var new_log_prob: Scalar[DT] = 0.0
                 for j in range(ACT):
@@ -243,14 +265,14 @@ struct PPOObjective[ACT_: Int](Module):
                     elif ls > LOG_STD_MAX:
                         ls = LOG_STD_MAX
                     var std = exp(ls)
-                    var a = ax_p[b * Self.IN1_DIM + j]
+                    var a = act_p[b * Self.IN1_DIM + j]
                     var z = (a - mu) / (std + EPS_STD)
                     new_log_prob += Scalar[DT](-0.5) * (
                         LOG_2PI + Scalar[DT](2.0) * ls + z * z
                     )
-                var olp = ax_p[b * Self.IN1_DIM + ACT]
-                var adv = ax_p[b * Self.IN1_DIM + ACT + 1]
-                var diff = new_log_prob - olp
+                var olp_b = olp_p[b]
+                var adv_b = adv_p[b]
+                var diff = new_log_prob - olp_b
                 if diff > LOG_PROB_DIFF_MAX:
                     diff = LOG_PROB_DIFF_MAX
                 elif diff < -LOG_PROB_DIFF_MAX:
@@ -261,8 +283,8 @@ struct PPOObjective[ACT_: Int](Module):
                     clipped_ratio = Scalar[DT](1.0) - self.clip_eps
                 elif clipped_ratio > Scalar[DT](1.0) + self.clip_eps:
                     clipped_ratio = Scalar[DT](1.0) + self.clip_eps
-                var unclipped_obj = ratio * adv
-                var clipped_obj = clipped_ratio * adv
+                var unclipped_obj = ratio * adv_b
+                var clipped_obj = clipped_ratio * adv_b
                 var is_clipped = clipped_obj < unclipped_obj
 
                 var go_b = go[b, 0]
@@ -270,8 +292,6 @@ struct PPOObjective[ACT_: Int](Module):
                 for j in range(ACT):
                     if is_clipped:
                         gi0[b, j] = Scalar[DT](0.0)
-                        # Entropy still flows even when clipped — matches
-                        # bespoke ppo_actor_loss.mojo line 150.
                         gi0[b, ACT + j] = (
                             -self.entropy_coef * Scalar[DT](1.0) * go_b
                         )
@@ -283,13 +303,13 @@ struct PPOObjective[ACT_: Int](Module):
                         elif ls > LOG_STD_MAX:
                             ls = LOG_STD_MAX
                         var std = exp(ls)
-                        var a = ax_p[b * Self.IN1_DIM + j]
+                        var a = act_p[b * Self.IN1_DIM + j]
                         var z = (a - mu) / (std + EPS_STD)
                         var d_lp_d_mu = z / (std + EPS_STD)
                         var d_lp_d_ls = z * z - Scalar[DT](1.0)
-                        var gmu = -adv * ratio * d_lp_d_mu * go_b
+                        var gmu = -adv_b * ratio * d_lp_d_mu * go_b
                         var gls = (
-                            -adv * ratio * d_lp_d_ls
+                            -adv_b * ratio * d_lp_d_ls
                             - self.entropy_coef
                         ) * go_b
                         if gmu > GRAD_CLIP:

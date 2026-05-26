@@ -79,7 +79,6 @@ def test_one_step_parity() raises:
     var act: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * ACT)
     var olp: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
     var adv: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
-    var aux: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * AUX)
     var ao: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * 2 * ACT)
     var go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * 2 * ACT)
     var gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * OBS)
@@ -91,10 +90,6 @@ def test_one_step_parity() raises:
             act[b * ACT + j] = Scalar[DT](-1.0 + 2.0 * random_float64())
         olp[b] = Scalar[DT](-1.0 + 2.0 * random_float64())
         adv[b] = Scalar[DT](-2.0 + 4.0 * random_float64())
-        for j in range(ACT):
-            aux[b * AUX + j] = act[b * ACT + j]
-        aux[b * AUX + ACT] = olp[b]
-        aux[b * AUX + ACT + 1] = adv[b]
 
     var s_t = TileTensor(s, row_major[BATCH, OBS]())
     var act_t = TileTensor(act, row_major[BATCH, ACT]())
@@ -114,9 +109,9 @@ def test_one_step_parity() raises:
     actor_a.vjp["cpu", BATCH](go_t, gi_t)
     opt_a.step["cpu", M=ActorNet](actor_a)
 
-    # ── FullGraph pipeline ───────────────────────────────────────────
+    # ── FullGraph pipeline (quaternary, post-I.2.5) ──────────────────
     var loss_cg = cg.forward_backward[target="cpu", OPT=Adam](
-        actor_b, opt_b, s, aux
+        actor_b, opt_b, s, act, olp, adv,
     )
 
     print("  bespoke loss =", loss_bespoke, "  cg loss =", loss_cg)
@@ -146,7 +141,7 @@ def test_one_step_parity() raises:
                 "PPOActorLossCG step must produce identical actor params "
                 "to bespoke pipeline")
 
-    s.free(); act.free(); olp.free(); adv.free(); aux.free()
+    s.free(); act.free(); olp.free(); adv.free()
     ao.free(); go.free(); gi.free(); ao2_a.free(); ao2_b.free()
     print("  ok")
 

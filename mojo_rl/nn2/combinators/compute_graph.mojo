@@ -529,6 +529,8 @@ def _forward_cpu[
         comptime if kind > 0:
             comptime src0 = NODES[i].IN0_NAME
             comptime src1 = NODES[i].IN1_NAME
+            comptime src2 = NODES[i].IN2_NAME
+            comptime src3 = NODES[i].IN3_NAME
 
             # Resolve in0_ptr by name lookup over all nodes (InputSlots
             # included — their out_ptr is the externally-set pointer).
@@ -537,15 +539,25 @@ def _forward_cpu[
                 comptime if NODES[j].NAME == src0:
                     in0_ptr = g.nodes[j].out_ptr_via()
 
-            # Resolve in1_ptr (only for binary nodes).
+            # Resolve higher-arity in_ptrs (kind ≥ 2/3/4).
             var in1_ptr = null_ptr
-            comptime if kind == 2:
+            comptime if kind >= 2:
                 comptime for j in range(N):
                     comptime if NODES[j].NAME == src1:
                         in1_ptr = g.nodes[j].out_ptr_via()
+            var in2_ptr = null_ptr
+            comptime if kind >= 3:
+                comptime for j in range(N):
+                    comptime if NODES[j].NAME == src2:
+                        in2_ptr = g.nodes[j].out_ptr_via()
+            var in3_ptr = null_ptr
+            comptime if kind >= 4:
+                comptime for j in range(N):
+                    comptime if NODES[j].NAME == src3:
+                        in3_ptr = g.nodes[j].out_ptr_via()
 
             g.nodes[i].forward_via[target, BATCH, POLICY=POLICY](
-                in0_ptr, in1_ptr
+                in0_ptr, in1_ptr, in2_ptr, in3_ptr,
             )
 
     # Copy last node's out_buf into the external output.
@@ -593,10 +605,14 @@ def _backward_cpu[
         comptime if kind > 0:
             comptime src0 = NODES[i].IN0_NAME
             comptime src1 = NODES[i].IN1_NAME
+            comptime src2 = NODES[i].IN2_NAME
+            comptime src3 = NODES[i].IN3_NAME
             comptime IN0_DIM_i = NODES[i].IN0_DIM
             comptime IN1_DIM_i = NODES[i].IN1_DIM
+            comptime IN2_DIM_i = NODES[i].IN2_DIM
+            comptime IN3_DIM_i = NODES[i].IN3_DIM
 
-            # Run backward: reads grad_out_buf, writes grad_in0/1_buf.
+            # Run backward: reads grad_out_buf, writes grad_in*_buf.
             g.nodes[i].vjp_via[target, BATCH, POLICY=POLICY]()
 
             # Scatter-add grad_in0_buf into the predecessor named by
@@ -608,14 +624,30 @@ def _backward_cpu[
                     var pred_go_p = g.nodes[j].grad_out_ptr_via()
                     _scatter_add_cpu(pred_go_p, gi0_p, total0)
 
-            # Scatter-add grad_in1_buf (binary nodes only).
-            comptime if kind == 2:
+            # Scatter-add grad_in1_buf (binary+ nodes).
+            comptime if kind >= 2:
                 var gi1_p = g.nodes[i].grad_in1_ptr_via()
                 var total1 = BATCH * IN1_DIM_i
                 comptime for j in range(N):
                     comptime if NODES[j].NAME == src1:
                         var pred_go_p = g.nodes[j].grad_out_ptr_via()
                         _scatter_add_cpu(pred_go_p, gi1_p, total1)
+            # Scatter-add grad_in2_buf (ternary+ nodes).
+            comptime if kind >= 3:
+                var gi2_p = g.nodes[i].grad_in2_ptr_via()
+                var total2 = BATCH * IN2_DIM_i
+                comptime for j in range(N):
+                    comptime if NODES[j].NAME == src2:
+                        var pred_go_p = g.nodes[j].grad_out_ptr_via()
+                        _scatter_add_cpu(pred_go_p, gi2_p, total2)
+            # Scatter-add grad_in3_buf (quaternary nodes).
+            comptime if kind >= 4:
+                var gi3_p = g.nodes[i].grad_in3_ptr_via()
+                var total3 = BATCH * IN3_DIM_i
+                comptime for j in range(N):
+                    comptime if NODES[j].NAME == src3:
+                        var pred_go_p = g.nodes[j].grad_out_ptr_via()
+                        _scatter_add_cpu(pred_go_p, gi3_p, total3)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -647,6 +679,8 @@ def _forward_gpu[
         comptime if kind > 0:
             comptime src0 = NODES[i].IN0_NAME
             comptime src1 = NODES[i].IN1_NAME
+            comptime src2 = NODES[i].IN2_NAME
+            comptime src3 = NODES[i].IN3_NAME
 
             var in0_ptr = null_ptr
             comptime for j in range(N):
@@ -654,13 +688,23 @@ def _forward_gpu[
                     in0_ptr = g.nodes[j].out_ptr_via()
 
             var in1_ptr = null_ptr
-            comptime if kind == 2:
+            comptime if kind >= 2:
                 comptime for j in range(N):
                     comptime if NODES[j].NAME == src1:
                         in1_ptr = g.nodes[j].out_ptr_via()
+            var in2_ptr = null_ptr
+            comptime if kind >= 3:
+                comptime for j in range(N):
+                    comptime if NODES[j].NAME == src2:
+                        in2_ptr = g.nodes[j].out_ptr_via()
+            var in3_ptr = null_ptr
+            comptime if kind >= 4:
+                comptime for j in range(N):
+                    comptime if NODES[j].NAME == src3:
+                        in3_ptr = g.nodes[j].out_ptr_via()
 
             g.nodes[i].forward_via[target, BATCH, POLICY=POLICY](
-                in0_ptr, in1_ptr
+                in0_ptr, in1_ptr, in2_ptr, in3_ptr,
             )
 
     # Copy last node's out_buf into the external output.
@@ -707,8 +751,12 @@ def _backward_gpu[
         comptime if kind > 0:
             comptime src0 = NODES[i].IN0_NAME
             comptime src1 = NODES[i].IN1_NAME
+            comptime src2 = NODES[i].IN2_NAME
+            comptime src3 = NODES[i].IN3_NAME
             comptime IN0_DIM_i = NODES[i].IN0_DIM
             comptime IN1_DIM_i = NODES[i].IN1_DIM
+            comptime IN2_DIM_i = NODES[i].IN2_DIM
+            comptime IN3_DIM_i = NODES[i].IN3_DIM
 
             g.nodes[i].vjp_via[target, BATCH, POLICY=POLICY]()
 
@@ -719,10 +767,24 @@ def _backward_gpu[
                     var pred_go_p = g.nodes[j].grad_out_ptr_via()
                     _enqueue_add[total0](ctx, pred_go_p, gi0_p)
 
-            comptime if kind == 2:
+            comptime if kind >= 2:
                 var gi1_p = g.nodes[i].grad_in1_ptr_via()
                 comptime total1 = BATCH * IN1_DIM_i
                 comptime for j in range(N):
                     comptime if NODES[j].NAME == src1:
                         var pred_go_p = g.nodes[j].grad_out_ptr_via()
                         _enqueue_add[total1](ctx, pred_go_p, gi1_p)
+            comptime if kind >= 3:
+                var gi2_p = g.nodes[i].grad_in2_ptr_via()
+                comptime total2 = BATCH * IN2_DIM_i
+                comptime for j in range(N):
+                    comptime if NODES[j].NAME == src2:
+                        var pred_go_p = g.nodes[j].grad_out_ptr_via()
+                        _enqueue_add[total2](ctx, pred_go_p, gi2_p)
+            comptime if kind >= 4:
+                var gi3_p = g.nodes[i].grad_in3_ptr_via()
+                comptime total3 = BATCH * IN3_DIM_i
+                comptime for j in range(N):
+                    comptime if NODES[j].NAME == src3:
+                        var pred_go_p = g.nodes[j].grad_out_ptr_via()
+                        _enqueue_add[total3](ctx, pred_go_p, gi3_p)
