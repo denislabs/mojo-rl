@@ -278,16 +278,7 @@ struct DDPGTrainer[
         ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
     ) raises:
-        var obs_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            obs.unsafe_ptr()
-        )
-        var act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            action.unsafe_ptr()
-        )
-        var nxt_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            next_obs.unsafe_ptr()
-        )
-        self.buf.add(obs_p, act_p, reward, nxt_p, done)
+        self.buf.add(obs, action, reward, next_obs, done)
         self.tracker.add_reward(reward)
 
     def end_episode(mut self):

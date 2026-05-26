@@ -48,10 +48,10 @@ struct CPUReplay[OBS: Int, ACT: Int, CAP: Int](
 
     def add(
         mut self,
-        s: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        a: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref s: List[Scalar[DT]],
+        ref a: List[Scalar[DT]],
         r: Scalar[DT],
-        sp: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref sp: List[Scalar[DT]],
         d: Scalar[DT],
     ):
         var p = self.pos

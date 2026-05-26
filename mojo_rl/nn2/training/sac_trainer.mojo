@@ -1071,65 +1071,78 @@ struct SACTrainer[
         """
         self.tracker.add_reward(reward)
 
-        # Bridge: replay/n-step buffers take UnsafePointer internally.
-        var obs_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            obs.unsafe_ptr()
-        )
-        var act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            action.unsafe_ptr()
-        )
-        var nxt_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            next_obs.unsafe_ptr()
-        )
-
         if self._use_nstep:
             var tx = self.nstep_cpu.value().add(
-                obs_p, act_p, reward, nxt_p, done > Scalar[DT](0.5),
+                obs, action, reward, next_obs, done > Scalar[DT](0.5),
             )
             if not tx.valid:
                 return
-            var nstep_obs_p = self._nstep_obs.cpu_ptr()
-            var nstep_act_p = self._nstep_act.cpu_ptr()
-            var nstep_nxt_p = self._nstep_nxt.cpu_ptr()
             for d in range(Self.OBS_DIM):
-                nstep_obs_p[d] = tx.obs[d]
-                nstep_nxt_p[d] = tx.next_obs[d]
+                self._nstep_obs.cpu[d] = tx.obs[d]
+                self._nstep_nxt.cpu[d] = tx.next_obs[d]
             for j in range(Self.ACT_DIM):
-                nstep_act_p[j] = tx.action[j]
+                self._nstep_act.cpu[j] = tx.action[j]
             var done_emit = Scalar[DT](1.0) if tx.done else Scalar[DT](0.0)
             if self.buf_per:
                 var ctx = self.target_y_block.ts.ctx.value()
                 self.buf_per.value().add(
                     ctx,
-                    nstep_obs_p, nstep_act_p,
-                    tx.reward, nstep_nxt_p, done_emit,
+                    self._nstep_obs.cpu_ptr(),
+                    self._nstep_act.cpu_ptr(),
+                    tx.reward,
+                    self._nstep_nxt.cpu_ptr(),
+                    done_emit,
                 )
             elif self.buf_gpu:
                 var ctx = self.target_y_block.ts.ctx.value()
                 self.buf_gpu.value().add(
                     ctx,
-                    nstep_obs_p, nstep_act_p,
-                    tx.reward, nstep_nxt_p, done_emit,
+                    self._nstep_obs.cpu_ptr(),
+                    self._nstep_act.cpu_ptr(),
+                    tx.reward,
+                    self._nstep_nxt.cpu_ptr(),
+                    done_emit,
                 )
             else:
                 self.buf.add(
-                    nstep_obs_p, nstep_act_p,
-                    tx.reward, nstep_nxt_p, done_emit,
+                    self._nstep_obs.cpu,
+                    self._nstep_act.cpu,
+                    tx.reward,
+                    self._nstep_nxt.cpu,
+                    done_emit,
                 )
             return
 
         if self.buf_per:
             var ctx = self.target_y_block.ts.ctx.value()
+            var obs_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                obs.unsafe_ptr()
+            )
+            var act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                action.unsafe_ptr()
+            )
+            var nxt_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                next_obs.unsafe_ptr()
+            )
             self.buf_per.value().add(
                 ctx, obs_p, act_p, reward, nxt_p, done,
             )
         elif self.buf_gpu:
             var ctx = self.target_y_block.ts.ctx.value()
+            var obs_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                obs.unsafe_ptr()
+            )
+            var act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                action.unsafe_ptr()
+            )
+            var nxt_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                next_obs.unsafe_ptr()
+            )
             self.buf_gpu.value().add(
                 ctx, obs_p, act_p, reward, nxt_p, done,
             )
         else:
-            self.buf.add(obs_p, act_p, reward, nxt_p, done)
+            self.buf.add(obs, action, reward, next_obs, done)
 
     def end_episode(mut self):
         """Roll the current episode return into the tracker window."""

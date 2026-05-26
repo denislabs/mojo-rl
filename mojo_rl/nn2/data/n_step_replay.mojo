@@ -144,20 +144,20 @@ struct NStepBuffer[N: Int, OBS: Int, ACT: Int](
 
     def add(
         mut self,
-        obs_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs_p: List[Scalar[DT]],
+        ref action_p: List[Scalar[DT]],
         reward: Scalar[DT],
-        next_obs_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref next_obs_p: List[Scalar[DT]],
         done: Bool,
     ) -> NStepTransition[Self.OBS, Self.ACT]:
         """Push one env-step transition. Returns an emitted n-step
         transition (`valid=True`) once ready, otherwise `valid=False`.
 
         Args:
-            obs_p: pointer to current obs of length OBS.
-            action_p: pointer to action of length ACT.
+            obs_p: current obs list of length OBS.
+            action_p: action list of length ACT.
             reward: per-step reward.
-            next_obs_p: pointer to next obs of length OBS.
+            next_obs_p: next obs list of length OBS.
             done: episode-done flag.
         """
         var c = self.count
