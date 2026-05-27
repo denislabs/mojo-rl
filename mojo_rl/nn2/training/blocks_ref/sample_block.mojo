@@ -34,6 +34,7 @@ which requires the trait to advertise a no-arg constructor.
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ...constants import DT
+from ...data.n_step_replay import GPUNStepBuffer
 from ..trainer_block import TrainerState
 
 
@@ -114,3 +115,18 @@ trait SampleBlock(Defaultable, Movable, ImplicitlyDestructible):
         driver. Default raises — CPU blocks + n-step wrappers don't
         support this yet."""
         raise Error("add_batch_gpu not supported by this SampleBlock")
+
+    def store_via_block_gpu[N_ENVS: Int, NS: Int](
+        mut self,
+        ctx: DeviceContext,
+        mut nstep_buf: GPUNStepBuffer[NS, Self.OBS, Self.ACT, N_ENVS],
+    ) raises:
+        """Route GPUNStepBuffer.store_into through this block's owned
+        GPU replay buffer. Used by the unified trainer's
+        record_batch_gpu_nstep[N_ENVS, NS] path so the multi-env +
+        n-step combination doesn't need direct access to the replay.
+
+        Default raises — only GPU sample blocks implement this. The
+        block selects the right GPUReplay vs GPUPrioritizedReplay
+        overload of store_into internally."""
+        raise Error("store_via_block_gpu not supported by this SampleBlock")

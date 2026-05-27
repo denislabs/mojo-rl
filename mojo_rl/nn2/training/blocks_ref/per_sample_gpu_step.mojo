@@ -20,6 +20,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ...constants import DT
 from ...data.per_replay import GPUPrioritizedReplay
+from ...data.n_step_replay import GPUNStepBuffer
 from ..trainer_block import TrainerState
 from .sample_block import SampleBlock
 
@@ -143,6 +144,13 @@ struct PerSampleGpuStep[
             ctx,
             prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
         )
+
+    def store_via_block_gpu[N_ENVS: Int, NS: Int](
+        mut self,
+        ctx: DeviceContext,
+        mut nstep_buf: GPUNStepBuffer[NS, Self.OBS, Self.ACT, N_ENVS],
+    ) raises:
+        nstep_buf.store_into[Self.CAP](ctx, self.buf.value())
 
     def update_priorities(
         mut self,

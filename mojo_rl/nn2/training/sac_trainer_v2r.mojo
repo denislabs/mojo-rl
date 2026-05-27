@@ -698,17 +698,24 @@ struct SACTrainerV2R[
         obs_dev: DeviceBuffer[DT],
         done_dev: DeviceBuffer[DT],
     ) raises:
-        """N_ENVS + n-step batched record. Not yet supported in V2R —
-        the multi-env + n-step + add_batch combination requires routing
-        nstep_buf.store_into[CAP] through the sample block (which
-        currently owns the replay opaquely). Use single-env n-step
-        wrappers (NStepSampleGpuStep) until the GPUNStepBuffer store
-        path lands on SampleBlock."""
-        raise Error(
-            "SACTrainerV2R.record_batch_gpu_nstep: not yet supported. "
-            "Use NStepSampleGpuStep for single-env n-step, or stay on "
-            "legacy SACTrainer for N_ENVS + n-step combination."
+        """N_ENVS + n-step batched record. The caller owns the
+        GPUNStepBuffer[NS, OBS, ACT, N_ENVS] (N_ENVS is method-comptime,
+        not struct-comptime — pre-allocating it would break single-env
+        trainers). Behaviour:
+          1. nstep_buf.process(...) — kernel ring-updates all N_ENVS
+             lanes and emits compressed transitions into out_* device
+             buffers. Invalid slots zero-padded.
+          2. sample_blk.store_via_block_gpu[N_ENVS, NS] — block routes
+             nstep_buf.store_into[CAP] through its owned replay
+             (uniform or PER overload selected by block type).
+
+        The caller is responsible for ensuring NS matches the trainer's
+        target_y γ^N bake, AND that the sample block supports
+        store_via_block_gpu (only GPU uniform / PER blocks do today)."""
+        nstep_buf.process(
+            ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
         )
+        self.sample_blk.store_via_block_gpu[N_ENVS, NS](ctx, nstep_buf)
 
     def add_complete_return(mut self, ret: Scalar[DT]):
         """Driver hook — push a complete-episode return into the
