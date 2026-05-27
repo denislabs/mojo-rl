@@ -18,6 +18,12 @@ from .driver_offpolicy import (
     run_offpolicy_train_batched,
     run_offpolicy_eval,
 )
+from .driver_offpolicy_discrete import (
+    OffPolicyDiscreteAgent,
+    run_offpolicy_discrete_train,
+    run_offpolicy_discrete_eval,
+)
+from .dqn_trainer import DQNTrainer
 from .driver_onpolicy import (
     OnPolicyAgent,
     OnPolicyAgentBatched,
