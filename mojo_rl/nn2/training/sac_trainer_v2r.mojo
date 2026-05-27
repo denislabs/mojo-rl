@@ -35,6 +35,7 @@ from layout import TileTensor, row_major
 from mojo_rl.core.logger import Logger, NoOpLogger
 from ..constants import DT
 from ..core import Module
+from ..core.amp import AMPPolicy, NoAMP, Bf16Compute
 from ..core.log_bundle import log_bundle
 from ..core.metric import LogScalar
 from ..core.online_target_pair import OnlineTargetPair
@@ -120,6 +121,7 @@ struct SACTrainerV2R[
 
     var action_scale:    Scalar[DT]
     var learning_starts: Int
+    var _use_bf16:       Bool
 
     var _actor_L_accum:  Scalar[DT]
     var _critic_L_accum: Scalar[DT]
@@ -168,6 +170,7 @@ struct SACTrainerV2R[
         self._alp1 = Scratch["alp1", Self.ACT_DIM + 1, True]()
         self.action_scale = Scalar[DT](1.0)
         self.learning_starts = 1_000
+        self._use_bf16 = False
         self._actor_L_accum  = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._alpha_accum    = Scalar[DT](0.0)
@@ -192,6 +195,7 @@ struct SACTrainerV2R[
         per_alpha: Scalar[DT] = Scalar[DT](0.6),
         per_beta: Scalar[DT] = Scalar[DT](0.4),
         per_epsilon: Scalar[DT] = Scalar[DT](1e-6),
+        use_bf16: Bool = False,
     ) raises -> Self:
         """Unified factory. PER args are applied unconditionally via the
         SampleBlock trait's `configure_per` (no-op default for uniform
@@ -262,6 +266,7 @@ struct SACTrainerV2R[
 
         t.action_scale = action_scale
         t.learning_starts = learning_starts
+        t._use_bf16 = use_bf16
 
         # PER hyperparameter wiring: no-op default for uniform blocks.
         t.sample_blk.configure_per(
@@ -379,11 +384,13 @@ struct SACTrainerV2R[
                 a = -self.action_scale
             action_out[j] = a
 
-    def _train_step_impl(mut self, step_idx: Int) raises -> Bool:
+    def _train_step_impl[
+        POLICY: AMPPolicy = NoAMP,
+    ](mut self, step_idx: Int) raises -> Bool:
         """Single pipeline body shared across CPU/GPU and uniform/PER.
         Replay-specific behavior lives in `self.sample_blk` (which
         block-internally branches via state.has_per + handles its own
-        target). All other blocks parametric on `[Self.target]`."""
+        target). All other blocks parametric on `[Self.target, POLICY]`."""
         self.state.step_idx = step_idx
         self.state.did_step = True
         self.state.alpha = fexp(self.alpha_opt.value)
@@ -397,14 +404,14 @@ struct SACTrainerV2R[
         self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
         var t_ty = perf_counter_ns()
-        self.target_y_blk.step[Self.target](
+        self.target_y_blk.step[Self.target, POLICY](
             self.state, self.actor,
             self.pair1.target_net, self.pair2.target_net,
         )
         self.timer.accumulate(Self._T_TARGET_Y, t_ty)
 
         var t_crit = perf_counter_ns()
-        self.twin_critic_blk.step[Self.target](
+        self.twin_critic_blk.step[Self.target, POLICY](
             self.state,
             self.pair1.online, self.critic1_opt,
             self.pair2.online, self.critic2_opt,
@@ -412,7 +419,7 @@ struct SACTrainerV2R[
         self.timer.accumulate(Self._T_CRITIC, t_crit)
 
         var t_act = perf_counter_ns()
-        self.actor_blk.step[Self.target](
+        self.actor_blk.step[Self.target, POLICY](
             self.state, self.actor, self.actor_opt,
             self.pair1.online, self.pair2.online,
         )
@@ -478,7 +485,7 @@ struct SACTrainerV2R[
     def train_step(mut self, step_idx: Int) raises -> Bool:
         comptime if Self.target != "cpu":
             raise Error("SACTrainerV2R[target='gpu']: use train_step_gpu")
-        return self._train_step_impl(step_idx)
+        return self._train_step_impl[NoAMP](step_idx)
 
     # ─── OffPolicyTrainableGpu (GPU) surface ──────────────────────────
 
@@ -506,9 +513,14 @@ struct SACTrainerV2R[
         self._select_greedy_action_impl(obs, action_out)
 
     def train_step_gpu(mut self, step_idx: Int) raises -> Bool:
+        """Auto-routes through `Bf16Compute` when the trainer was built
+        with `use_bf16=True`, else `NoAMP`. Both specializations compile;
+        only one is exercised per call. Mirrors legacy SACTrainer."""
         comptime if Self.target != "gpu":
             raise Error("SACTrainerV2R[target='cpu']: use train_step")
-        return self._train_step_impl(step_idx)
+        if self._use_bf16:
+            return self._train_step_impl[Bf16Compute](step_idx)
+        return self._train_step_impl[NoAMP](step_idx)
 
     # ─── Shared surface (both traits) ─────────────────────────────────
 

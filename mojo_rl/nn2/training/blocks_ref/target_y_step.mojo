@@ -7,6 +7,7 @@ a' ~ tanh(actor(s')). Writes into state.mb_y.
 from std.gpu.host import DeviceContext
 
 from ...constants import DT
+from ...core.amp import AMPPolicy, NoAMP
 from ...core.module import Module
 from ..target_y_block import TargetYBlock
 from ..trainer_block import TrainerState
@@ -48,14 +49,17 @@ struct TargetYStep[
             )
         return b^
 
-    def step[target: StaticString](
+    def step[
+        target: StaticString,
+        POLICY: AMPPolicy = NoAMP,
+    ](
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut actor: Self.ACTOR,
         mut tgt1: Self.CRITIC,
         mut tgt2: Self.CRITIC,
     ) raises:
-        self.inner.step[target](
+        self.inner.step[target, POLICY](
             actor, tgt1, tgt2,
             state.mb_sp.target_ptr[target](),
             state.mb_r.target_ptr[target](),

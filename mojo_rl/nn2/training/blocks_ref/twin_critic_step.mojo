@@ -8,6 +8,7 @@ from std.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
 from ...constants import DT
+from ...core.amp import AMPPolicy, NoAMP
 from ...core.module import Module
 from ...optimizer.adam import Adam
 from ...loss.critic_update_block import TwinCriticUpdateBlock
@@ -39,7 +40,10 @@ struct TwinCriticStep[
         b.inner = Self.Inner.make[target](ctx=ctx)
         return b^
 
-    def step[target: StaticString](
+    def step[
+        target: StaticString,
+        POLICY: AMPPolicy = NoAMP,
+    ](
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut critic1: Self.CRITIC,
@@ -63,7 +67,7 @@ struct TwinCriticStep[
         if state.has_per:
             weights_p = state.mb_w.target_ptr[target]()
             td_res_p  = state.td_residuals.target_ptr[target]()
-        var loss = self.inner.step[target](
+        var loss = self.inner.step[target, POLICY](
             critic1, critic1_opt, critic2, critic2_opt,
             state.mb_s.target_ptr[target](),
             state.mb_a.target_ptr[target](),

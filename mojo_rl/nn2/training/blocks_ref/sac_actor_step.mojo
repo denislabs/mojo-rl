@@ -8,6 +8,7 @@ by the trainer's `select_action`.
 from std.gpu.host import DeviceContext
 
 from ...constants import DT
+from ...core.amp import AMPPolicy, NoAMP
 from ...core.module import Module
 from ...optimizer.adam import Adam
 from ...loss.sac_actor_loss_cg import SACActorLossCG
@@ -43,7 +44,8 @@ struct SACActorStep[
         return b^
 
     def step[
-        target: StaticString
+        target: StaticString,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
@@ -52,7 +54,9 @@ struct SACActorStep[
         mut critic1: Self.CRITIC,
         mut critic2: Self.CRITIC,
     ) raises:
-        var res = self.inner.forward_backward[target, OPT=Adam](
+        var res = self.inner.forward_backward[
+            target, OPT=Adam, POLICY=POLICY,
+        ](
             actor,
             actor_opt,
             critic1,
