@@ -26,7 +26,7 @@ meaningful gradient flowing into the trainer is `grad_actor_output`
 accumulated through the actor.
 
 Public surface mirrors `SACActorLoss`:
-  - `make[target="cpu"]()` factory.
+  - `make[target](ctx=...)` unified CPU/GPU factory (ctx required for GPU).
   - `forward_backward[target, OPT](actor, actor_opt, s_ptr, a_ptr, olp_ptr, adv_ptr) -> Scalar[DT]`
     runs the whole step + returns the mean per-batch loss for logging.
   - `set_clip_eps(value)` / `set_entropy_coef(value)` runtime knobs.
@@ -35,8 +35,14 @@ I.2.5 cleanup: the previous version of this block packed
 (action | old_log_prob | advantage) into a single InputSlot["aux"]
 because Node/ExternalNode were capped at ARITY ≤ 2. That workaround is
 gone — each data input now flows through its own named slot.
+
+GPU path: depends on PPOObjective GPU forward + vjp kernels. The
+forward_backward GPU branch mirrors SACActorLoss — device buffer for
+loss_per_b, host buffer for the mean reduction (one device→host copy
++ sync per step).
 """
 
+from std.gpu.host import DeviceContext, HostBuffer
 from layout import TileTensor, row_major
 
 from ..constants import DT
@@ -83,6 +89,9 @@ struct PPOActorLoss[
     var _loss_out: Scratch["loss_out", Self.BATCH]
     var _grad_seed: Scratch["grad_seed", Self.BATCH]
 
+    # GPU-only host staging buffer for the host-side mean reduction.
+    var _loss_host: Optional[HostBuffer[DT]]
+
     var ts: TargetStorage
 
     def __init__(out self):
@@ -92,21 +101,26 @@ struct PPOActorLoss[
         self.graph = Self.ActorGraph()
         self._loss_out = Scratch["loss_out", Self.BATCH]()
         self._grad_seed = Scratch["grad_seed", Self.BATCH]()
+        self._loss_host = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[target: StaticString](
+        ctx: Optional[DeviceContext] = None,
         clip_eps: Scalar[DT] = Scalar[DT](0.2),
         entropy_coef: Scalar[DT] = Scalar[DT](0.0),
     ) raises -> Self:
-        comptime assert target == "cpu", (
-            "PPOActorLoss.make[target='gpu'] not implemented yet "
-            "(Phase I.2 CPU only)"
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "PPOActorLoss: target must be 'cpu' or 'gpu'"
         )
         var blk = Self()
-        blk.graph = Self.ActorGraph.make[target="cpu", INIT=Zero]()
-        blk.ts = TargetStorage.make_cpu()
-        init_scratch_auto[Self, target="cpu"](blk)
+        blk.graph = Self.ActorGraph.make[target, INIT=Zero](ctx=ctx)
+        blk.ts = TargetStorage.make[target](ctx=ctx)
+        init_scratch_auto[Self, target](blk, ctx)
+        comptime if target == "gpu":
+            var ctx_v = ctx.value()
+            blk._loss_host = ctx_v.enqueue_create_host_buffer[DT](Self.BATCH)
         # Push runtime hyperparameters into the PPOObjective node.
         blk.graph.set_node_attr["loss_per_b", "clip_eps"](clip_eps)
         blk.graph.set_node_attr["loss_per_b", "entropy_coef"](entropy_coef)
@@ -165,28 +179,30 @@ struct PPOActorLoss[
         self.graph.set_input["olp", BB](olp_t)
         self.graph.set_input["adv", BB](adv_t)
 
-        comptime if target == "cpu":
-            var loss_p = self._loss_out.cpu_ptr()
-            var loss_t = TileTensor(loss_p, row_major[BB, 1]())
-            self.graph.forward["cpu", BB, POLICY](loss_t)
+        # ── Forward.
+        var loss_p = self._loss_out.target_ptr[target]()
+        var loss_t = TileTensor(loss_p, row_major[BB, 1]())
+        self.graph.forward[target, BB, POLICY](loss_t)
 
-            var loss_sum: Scalar[DT] = 0.0
-            for b in range(BB):
-                loss_sum += loss_p[b]
-            var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](BB)
-            var loss_mean = loss_sum * inv_b
+        # ── Host-side mean reduction. CPU reads loss_per_b directly;
+        # GPU stages it through a host buffer first.
+        var loss_read_p = loss_p
+        comptime if target == "gpu":
+            var ctx = self.ts.ctx.value()
+            ctx.enqueue_copy(self._loss_host.value(), loss_p)
+            ctx.synchronize()
+            loss_read_p = self._loss_host.value().unsafe_ptr()
+        var loss_sum: Scalar[DT] = 0.0
+        for b in range(BB):
+            loss_sum += loss_read_p[b]
+        var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](BB)
+        var loss_mean = loss_sum * inv_b
 
-            # Seed backward with 1/BATCH per row, then walk vjp.
-            var grad_p = self._grad_seed.cpu_ptr()
-            seed_grad_inv_batch["cpu", BB](grad_p)
-            var grad_t = TileTensor(grad_p, row_major[BB, 1]())
-            self.graph.vjp["cpu", BB, POLICY](grad_t)
+        # ── Seed backward with 1/BATCH per row, then walk vjp.
+        var grad_p = self._grad_seed.target_ptr[target]()
+        seed_grad_inv_batch[target, BB](grad_p, ctx=self.ts.ctx)
+        var grad_t = TileTensor(grad_p, row_major[BB, 1]())
+        self.graph.vjp[target, BB, POLICY](grad_t)
 
-            actor_opt.step["cpu", M=Self.ACTOR](actor)
-            return loss_mean
-        else:
-            comptime assert False, (
-                "PPOActorLoss.forward_backward GPU not implemented "
-                "(Phase I.2 CPU only)"
-            )
-            return Scalar[DT](0.0)
+        actor_opt.step[target, M=Self.ACTOR](actor)
+        return loss_mean
