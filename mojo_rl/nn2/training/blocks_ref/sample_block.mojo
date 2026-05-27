@@ -31,7 +31,7 @@ the wrapping when needed.
 which requires the trait to advertise a no-arg constructor.
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ...constants import DT
 from ..trainer_block import TrainerState
@@ -99,3 +99,18 @@ trait SampleBlock(Defaultable, Movable, ImplicitlyDestructible):
         the unified trainer's `make()` after `setup()` when the trainer
         was built with `use_ere=True`."""
         pass
+
+    def add_batch_gpu[N_ENVS: Int](
+        mut self,
+        ctx: DeviceContext,
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        """Push N_ENVS transitions into the device-resident replay in
+        one kernel launch. Required for the N_ENVS multi-env GPU
+        driver. Default raises — CPU blocks + n-step wrappers don't
+        support this yet."""
+        raise Error("add_batch_gpu not supported by this SampleBlock")

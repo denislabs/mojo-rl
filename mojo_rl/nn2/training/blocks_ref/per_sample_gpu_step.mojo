@@ -16,7 +16,7 @@ step has captured signed TD residuals into `state.td_residuals`.
 `set_beta(beta)` is the annealed-IS schedule hook callers ramp 0.4 → 1.0.
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ...constants import DT
 from ...data.per_replay import GPUPrioritizedReplay
@@ -129,6 +129,20 @@ struct PerSampleGpuStep[
             self.buf.value()._host_weights.unsafe_ptr(),
         )
         state.has_per = True
+
+    def add_batch_gpu[N_ENVS: Int](
+        mut self,
+        ctx: DeviceContext,
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        self.buf.value().add_batch[N_ENVS](
+            ctx,
+            prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
+        )
 
     def update_priorities(
         mut self,
