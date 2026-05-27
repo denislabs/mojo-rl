@@ -196,6 +196,10 @@ struct SACTrainerV2R[
         per_beta: Scalar[DT] = Scalar[DT](0.4),
         per_epsilon: Scalar[DT] = Scalar[DT](1e-6),
         use_bf16: Bool = False,
+        use_ere: Bool = False,
+        ere_eta: Scalar[DT] = Scalar[DT](0.996),
+        ere_c_min: Int = 1,
+        ere_k_max: Int = 1000,
     ) raises -> Self:
         """Unified factory. PER args are applied unconditionally via the
         SampleBlock trait's `configure_per` (no-op default for uniform
@@ -273,6 +277,11 @@ struct SACTrainerV2R[
             alpha=per_alpha, beta=per_beta, epsilon=per_epsilon,
         )
         t.sample_blk.setup(learning_starts, ctx=ctx)
+        # ERE wiring: no-op default for blocks that don't own GPUReplay.
+        # Must come AFTER setup() (GPUReplay is constructed there).
+        t.sample_blk.configure_ere(
+            enable=use_ere, eta=ere_eta, c_min=ere_c_min, k_max=ere_k_max,
+        )
 
         # Timer sections — index order MUST match the `_T_*` comptime
         # constants above. Six standard SAC train_step phases.

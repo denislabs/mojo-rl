@@ -86,3 +86,16 @@ trait SampleBlock(Defaultable, Movable, ImplicitlyDestructible):
         PER args unconditionally without comptime-branching on the
         block type."""
         pass
+
+    def configure_ere(
+        mut self,
+        enable: Bool = False,
+        eta: Scalar[DT] = Scalar[DT](0.996),
+        c_min: Int = 1,
+        k_max: Int = 1000,
+    ) raises:
+        """Enable ERE recency-biased sampling (Wang & Ross 2019). No-op
+        for blocks that don't own a GPUReplay (CPU / PER). Called from
+        the unified trainer's `make()` after `setup()` when the trainer
+        was built with `use_ere=True`."""
+        pass

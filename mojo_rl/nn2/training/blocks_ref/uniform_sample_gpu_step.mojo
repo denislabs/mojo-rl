@@ -80,3 +80,21 @@ struct UniformSampleGpuStep[
             state.mb_sp.dev.value(),
             state.mb_d.dev.value(),
         )
+
+    def configure_ere(
+        mut self,
+        enable: Bool = False,
+        eta: Scalar[DT] = Scalar[DT](0.996),
+        c_min: Int = 1,
+        k_max: Int = 1000,
+    ) raises:
+        """Delegate to GPUReplay.enable_ere. Must be called AFTER setup()
+        (which creates self.buf). When `enable=False`, no-op (default
+        uniform sampling stays in effect)."""
+        if not enable:
+            return
+        if not self.buf:
+            raise Error(
+                "UniformSampleGpuStep.configure_ere: call setup() first"
+            )
+        self.buf.value().enable_ere(eta=eta, c_min=c_min, k_max=k_max)
