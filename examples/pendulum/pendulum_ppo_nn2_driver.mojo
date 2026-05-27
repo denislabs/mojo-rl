@@ -1,7 +1,7 @@
 """PPO training on Pendulum V1 via the nn2 on-policy driver.
 
-Phase I.2.f. Uses `PPOTrainer` + `run_onpolicy_train_cpu` — the
-trainer conforms to `OnPolicyTrainable`, so the driver loop is the
+Phase I.2.f. Uses `PPOTrainer` + `run_onpolicy_train` — the
+trainer conforms to `OnPolicyAgent`, so the driver loop is the
 same shape as `pendulum_sac_nn2_driver.mojo` / `pendulum_mbpo_nn2.mojo`
 (swap trainer type, drop in driver).
 
@@ -29,7 +29,7 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.tanh import Tanh
 from mojo_rl.nn2.primitives.gaussian_head import GaussianHead
 from mojo_rl.nn2.training.ppo_trainer import PPOTrainer
-from mojo_rl.nn2.training.driver_cpu import run_onpolicy_train_cpu
+from mojo_rl.nn2.training.driver_onpolicy import run_onpolicy_train
 
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -99,7 +99,7 @@ def main() raises:
         ls_ptr[k] = LOG_STD_INIT
 
     var env = PendulumEnv[DT]()
-    var ep_returns = run_onpolicy_train_cpu(
+    var ep_returns = run_onpolicy_train(
         trainer, env, TOTAL_TIMESTEPS,
         obs_dim=OBS_DIM, act_dim=ACT_DIM,
         print_every=10_000, verbose=True,

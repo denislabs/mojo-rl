@@ -11,7 +11,7 @@ Phase I.2.e. CleanRL-style continuous-action PPO:
     done/terminated), filled by `record_transition`, drained by
     `train_step` once `ROLLOUT_LEN` env-steps have accumulated.
 
-Conforms to `OnPolicyTrainable`. The driver loop in `driver_cpu.mojo`
+Conforms to `OnPolicyAgent`. The driver loop in `driver_onpolicy.mojo`
 treats PPOTrainer identically to off-policy trainers: one `train_step`
 per env-step; the trainer returns False for the (ROLLOUT_LEN − 1) idle
 steps and True on the boundary step where the K-epoch update fires.
@@ -42,7 +42,7 @@ from ..optimizer.adam import Adam
 from ..initializer import Xavier
 from ..primitives.gaussian_head import GaussianHead
 from ..random.box_muller import box_muller_normal
-from .driver_cpu import OnPolicyTrainable
+from .driver_onpolicy import OnPolicyAgent
 from .episode_tracker import EpisodeTracker
 from .gae import compute_gae, normalize_in_place
 
@@ -100,7 +100,7 @@ struct PPOTrainer[
     ROLLOUT_LEN: Int,
     MINIBATCH: Int,
     N_EPOCHS: Int,
-](OnPolicyTrainable):
+](OnPolicyAgent):
     """CleanRL-style PPO continuous trainer composed from nn2 blocks."""
 
     comptime N_MINIBATCHES = Self.ROLLOUT_LEN // Self.MINIBATCH

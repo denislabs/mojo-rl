@@ -1,16 +1,13 @@
-"""On-policy CPU training driver — surviving from Phase B.1.
+"""On-policy training driver — namespace twin of `driver_offpolicy.mojo`.
 
-Off-policy CPU/GPU/batched training + eval live in
-`driver_offpolicy.mojo` (`OffPolicyAgent` / `OffPolicyAgentGpu` +
-`run_offpolicy_*`). The legacy `OffPolicyTrainable[Gpu/GpuBatched]`
-traits and the matching CPU/GPU/eval drivers were deleted once
-SAC/MBPO/DDPG/TD3 all migrated.
+Mirrors the symbol shape of the off-policy driver so on-policy
+trainers (PPO today, possibly A2C later) plug into a consistent surface:
 
-What remains in this file:
-  - `OnPolicyTrainable` — used by PPO via `run_onpolicy_train_cpu`.
-  - `run_onpolicy_train_cpu` — on-policy step-based CPU driver.
+  - `OnPolicyAgent` — trait every on-policy nn2 trainer conforms to.
+  - `run_onpolicy_train` — single-env on-policy training driver.
 
-PPO's on-policy port is tracked separately (task #96).
+The Tier-3 BatchedEnv + GPU variants land in PPO V2R (P.2/P.3); for now
+PPO is CPU + N=1 only.
 """
 
 from std.time import perf_counter_ns
@@ -19,9 +16,9 @@ from ..constants import DT
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 
 
-trait OnPolicyTrainable(Movable, ImplicitlyDestructible):
+trait OnPolicyAgent(Movable, ImplicitlyDestructible):
     """Surface every nn2 on-policy trainer (PPO / future A2C) exposes
-    for the on-policy CPU training driver (Phase I.2.d).
+    for the on-policy training driver.
 
     Per-step contract mirrors the off-policy driver so the loop stays
     almost identical (collect transition → record → call `train_step`
@@ -79,8 +76,8 @@ trait OnPolicyTrainable(Movable, ImplicitlyDestructible):
         ...
 
 
-def run_onpolicy_train_cpu[
-    A: OnPolicyTrainable,
+def run_onpolicy_train[
+    A: OnPolicyAgent,
     E: BoxContinuousActionEnv,
 ](
     mut trainer: A,
@@ -92,7 +89,7 @@ def run_onpolicy_train_cpu[
     print_every: Int = 1_000,
     verbose: Bool = True,
 ) raises -> List[Scalar[DT]]:
-    """Step-based on-policy CPU training driver (Phase I.2.d).
+    """Step-based on-policy single-env training driver.
 
     One env step + one `train_step` call per iteration. PPO's rollout
     accumulation and K-epoch update fire inside `trainer.train_step`
