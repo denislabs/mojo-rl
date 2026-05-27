@@ -21,7 +21,8 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer import SACTrainer
+from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.blocks_ref import UniformSampleCpuStep
 from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
 from mojo_rl.nn2.training.eval_cpu import run_offpolicy_eval_cpu
 
@@ -50,9 +51,11 @@ comptime CriticNet = Sequential[
 def test_eval_untrained_sac_runs() raises:
     """Pure smoke — untrained SAC produces a number without crashing."""
     seed(42)
-    var trainer = SACTrainer[
-        ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY
-    ].make["cpu"](action_scale=Scalar[DT](2.0))
+    var trainer = SACTrainerV2R[
+        "cpu",
+        UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+        ActorNet, CriticNet,
+    ].make(action_scale=Scalar[DT](2.0))
     var env = PendulumEnv[DT]()
     var mean = run_offpolicy_eval_cpu(
         trainer, env, num_episodes=3,
@@ -77,9 +80,11 @@ def test_eval_untrained_sac_runs() raises:
 def test_eval_after_30k_train_converges() raises:
     """SAC trained 30k Pendulum → greedy eval mean should beat -300."""
     seed(42)
-    var trainer = SACTrainer[
-        ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY
-    ].make["cpu"](
+    var trainer = SACTrainerV2R[
+        "cpu",
+        UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+        ActorNet, CriticNet,
+    ].make(
         actor_lr=Scalar[DT](3e-4), critic_lr=Scalar[DT](1e-3),
         alpha_lr=Scalar[DT](3e-4), gamma=Scalar[DT](0.99),
         tau=Scalar[DT](0.005), action_scale=Scalar[DT](2.0),

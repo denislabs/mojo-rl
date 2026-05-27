@@ -13,10 +13,9 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_config import SACConfig
-from mojo_rl.nn2.training.sac_trainer import SACTrainer
+from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.blocks_ref import UniformSampleCpuStep
 from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
-from mojo_rl.nn2.core.save_scalar import SaveScalar
 
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -42,14 +41,15 @@ comptime CriticNet = Sequential[
 
 def test_sac_with_grad_clip_runs() raises:
     seed(42)
-    var cfg = SACConfig.default()
-    cfg.action_scale = SaveScalar[DT](Scalar[DT](2.0))
-    # Modest finite clip — exercises the walker every Adam.step.
-    cfg.max_grad_norm = SaveScalar[DT](Scalar[DT](10.0))
-
-    var trainer = SACTrainer[
-        ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY
-    ].make["cpu"](cfg)
+    var trainer = SACTrainerV2R[
+        "cpu",
+        UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+        ActorNet, CriticNet,
+    ].make(
+        action_scale=Scalar[DT](2.0),
+        # Modest finite clip — exercises the walker every Adam.step.
+        max_grad_norm=Scalar[DT](10.0),
+    )
     var env = PendulumEnv[DT]()
 
     var ep_returns = run_offpolicy_train_cpu(

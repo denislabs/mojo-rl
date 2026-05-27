@@ -25,8 +25,8 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.sac_config import SACConfig
+from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.blocks_ref import UniformSampleCpuStep
 from mojo_rl.nn2.training.sac_metrics import SACMetrics
 
 
@@ -145,15 +145,17 @@ comptime CriticNet = Sequential[
     Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
-comptime SACT = SACTrainer[
-    ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY
+comptime SACT = SACTrainerV2R[
+    "cpu",
+    UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY],
+    ActorNet, CriticNet,
 ]
 
 
 def test_trainer_flush_metrics_emits() raises:
     print("test_trainer_flush_metrics_emits ...")
     seed(42)
-    var trainer = SACT.make["cpu"](SACConfig.default())
+    var trainer = SACT.make()
 
     # Hand-inject 3 fake "updates" worth of accumulated losses.
     trainer._actor_L_accum = Scalar[DT](6.0)   # mean over 3 → 2.0
@@ -212,7 +214,7 @@ def test_trainer_flush_metrics_emits() raises:
 def test_multiple_flushes_accumulate() raises:
     print("test_multiple_flushes_accumulate ...")
     seed(42)
-    var trainer = SACT.make["cpu"](SACConfig.default())
+    var trainer = SACT.make()
     var logger = ListLogger()
     var logger_ptr = Optional[UnsafePointer[ListLogger, MutAnyOrigin]](
         UnsafePointer(to=logger)
