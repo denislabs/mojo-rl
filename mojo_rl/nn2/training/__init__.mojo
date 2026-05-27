@@ -18,5 +18,10 @@ from .driver_offpolicy import (
     run_offpolicy_train_batched,
     run_offpolicy_eval,
 )
-from .driver_onpolicy import OnPolicyAgent, run_onpolicy_train
+from .driver_onpolicy import (
+    OnPolicyAgent,
+    OnPolicyAgentBatched,
+    run_onpolicy_train,
+    run_onpolicy_train_batched,
+)
 from .batched_env import BatchedEnv, BatchedCpuEnv, BatchedGpuEnv

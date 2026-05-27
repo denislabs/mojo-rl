@@ -32,7 +32,7 @@ from ..initializer import Xavier
 from ..optimizer.adam import Adam
 from .episode_tracker import EpisodeTracker
 from .onpolicy_state import OnPolicyState
-from .driver_onpolicy import OnPolicyAgent
+from .driver_onpolicy import OnPolicyAgent, OnPolicyAgentBatched
 from .blocks import (
     PPOActStep,
     PPORecordStep,
@@ -53,12 +53,18 @@ struct PPOTrainerV2R[
     MINIBATCH: Int,
     N_EPOCHS: Int,
     N_ENVS: Int = 1,
-](OnPolicyAgent):
+](OnPolicyAgent & OnPolicyAgentBatched):
     """V2R CleanRL-style PPO continuous trainer. N_ENVS defaults to 1
     so existing single-env consumers (host-list select_action / record_
     transition surface) stay bit-identical without code changes.
     N_ENVS > 1 is reached via the batched trainer methods consumed by
-    `run_onpolicy_train_batched` (P.3 driver)."""
+    `run_onpolicy_train_batched` (P.3b driver)."""
+
+    # OnPolicyAgentBatched trait-visible comptime aliases.
+    comptime AGENT_TRAIN_TARGET = Self.train_target
+    comptime AGENT_OBS_DIM      = Self.OBS_DIM
+    comptime AGENT_ACT_DIM      = Self.ACT_DIM
+    comptime AGENT_N_ENVS       = Self.N_ENVS
 
     comptime N_MINIBATCHES = (Self.ROLLOUT_LEN * Self.N_ENVS) // Self.MINIBATCH
 
