@@ -639,6 +639,49 @@ struct SACTrainer[
             ctx=self.ctx,
         )
 
+    # ─── Tier-2 — batched CPU record (no tracker update) ─────────────
+    #
+    # The batched-CPU driver maintains per-env return accumulators on
+    # the host and pushes complete returns via `add_complete_return`.
+    # `record_batch_cpu` is the pure-replay-push counterpart of
+    # `_record_impl` minus the tracker.add_reward call — without this,
+    # batched mode would conflate rewards across all N envs into the
+    # single-env tracker's `current_return`.
+    def record_batch_cpu[
+        N_ENVS: Int,
+    ](
+        mut self,
+        prev_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        comptime assert (
+            Self.train_target == "cpu"
+        ), "record_batch_cpu: trainer's train_target must be 'cpu'"
+        comptime OBS = Self.OBS_DIM
+        comptime ACT = Self.ACT_DIM
+        # Per-lane Lists for sample_blk.add (which takes List args).
+        # Re-using the same Lists across lanes avoids re-allocation.
+        var obs_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+        var act_lane = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+        var nxt_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+        for env_idx in range(N_ENVS):
+            for d in range(OBS):
+                obs_lane[d] = prev_obs_ptr[env_idx * OBS + d]
+                nxt_lane[d] = next_obs_ptr[env_idx * OBS + d]
+            for j in range(ACT):
+                act_lane[j] = action_ptr[env_idx * ACT + j]
+            self.sample_blk.add(
+                obs_lane,
+                act_lane,
+                reward_ptr[env_idx],
+                nxt_lane,
+                done_ptr[env_idx],
+                ctx=self.ctx,
+            )
+
     # ─── OffPolicyTrainable (CPU) surface ─────────────────────────────
 
     def select_action(
@@ -788,14 +831,11 @@ struct SACTrainer[
         step_idx: Int,
     ) raises:
         comptime assert N_ENVS > 0, "N_ENVS must be > 0"
-        comptime if N_ENVS > 1:
-            comptime assert (
-                Self.train_target == "gpu"
-            ), (
-                "select_action_unified[N_ENVS>1]: requires the trainer's"
-                " target to be 'gpu'. Tier-2 (batched CPU envs) will lift"
-                " this restriction."
-            )
+        # CPU N_ENVS>1 was gated off in Phase 1 (no caller existed);
+        # Tier-2's `run_offpolicy_train_batched_cpu_env` is now that
+        # caller, so the assert is removed. The CPU body (warmup loop,
+        # actor.forward[cpu, N_ENVS], clamp loop) is already
+        # N_ENVS-parametric and was never CPU-N=1-specific.
 
         comptime ACT = Self.ACT_DIM
         comptime OBS = Self.OBS_DIM
