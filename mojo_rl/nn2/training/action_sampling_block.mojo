@@ -96,23 +96,21 @@ struct ActionSamplingBlock[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString]() raises -> Self:
-        comptime assert target == "cpu", (
-            "ActionSamplingBlock.make[target='gpu'] requires a DeviceContext"
+    def make[target: StaticString](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "ActionSamplingBlock: target must be 'cpu' or 'gpu'"
         )
+        comptime if target == "gpu":
+            if not ctx:
+                raise Error(
+                    "ActionSamplingBlock.make[target='gpu']: ctx required"
+                )
         var b = Self()
-        b.ts = TargetStorage.make_cpu()
-        init_scratch_auto[Self, target="cpu"](b)
-        return b^
-
-    @staticmethod
-    def make[target: StaticString](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "ActionSamplingBlock.make[target='cpu'](ctx) — drop ctx for CPU"
-        )
-        var b = Self()
-        b.ts = TargetStorage.make_gpu(ctx)
-        init_scratch_auto[Self, target="gpu"](b, Optional[DeviceContext](ctx))
+        b.ts = TargetStorage.make[target](ctx=ctx)
+        init_scratch_auto[Self, target](b, ctx)
         return b^
 
     # ─── Warmup uniform sampling ──────────────────────────────────────

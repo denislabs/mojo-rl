@@ -139,17 +139,9 @@ struct CriticUpdateBlock[
             "CriticUpdateBlock: CRITIC.OUT_DIM must equal 1"
         )
         var blk = Self()
-        comptime if target == "cpu":
-            blk.mse_loss = MSELoss[1].make[target="cpu"]()
-            blk.ts = TargetStorage.make_cpu()
-            init_scratch_auto[Self, target="cpu"](blk)
-        else:
-            if not ctx:
-                raise Error("CriticUpdateBlock.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
-            blk.mse_loss = MSELoss[1].make[target="gpu"](ctx)
-            blk.ts = TargetStorage.make_gpu(ctx_v)
-            init_scratch_auto[Self, target="gpu"](blk, ctx)
+        blk.mse_loss = MSELoss[1].make[target](ctx=ctx)
+        blk.ts = TargetStorage.make[target](ctx=ctx)
+        init_scratch_auto[Self, target](blk, ctx)
         return blk^
 
     def step[
@@ -189,17 +181,9 @@ struct CriticUpdateBlock[
         """
         assert_tag_for["CriticUpdateBlock", target](self.ts.target_tag)
 
-        var mb_q_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-        var mb_grad_q_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-        var mb_grad_sa_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-        comptime if target == "cpu":
-            mb_q_p = self._mb_q.cpu_ptr()
-            mb_grad_q_p = self._mb_grad_q.cpu_ptr()
-            mb_grad_sa_p = self._mb_grad_sa.cpu_ptr()
-        else:
-            mb_q_p = self._mb_q.dev_ptr()
-            mb_grad_q_p = self._mb_grad_q.dev_ptr()
-            mb_grad_sa_p = self._mb_grad_sa.dev_ptr()
+        var mb_q_p = self._mb_q.target_ptr[target]()
+        var mb_grad_q_p = self._mb_grad_q.target_ptr[target]()
+        var mb_grad_sa_p = self._mb_grad_sa.target_ptr[target]()
 
         # Launder caller-supplied tiles to MutAnyOrigin — Module's variadic
         # forward/vjp surface requires it.
@@ -307,27 +291,14 @@ struct TwinCriticUpdateBlock[
             "TwinCriticUpdateBlock: target must be 'cpu' or 'gpu'"
         )
         var blk = Self()
-        comptime if target == "cpu":
-            blk.c1 = CriticUpdateBlock[
-                Self.CRITIC, Self.BATCH, Self.SA_DIM
-            ].make[target="cpu"]()
-            blk.c2 = CriticUpdateBlock[
-                Self.CRITIC, Self.BATCH, Self.SA_DIM
-            ].make[target="cpu"]()
-            blk.ts = TargetStorage.make_cpu()
-            init_scratch_auto[Self, target="cpu"](blk)
-        else:
-            if not ctx:
-                raise Error("TwinCriticUpdateBlock.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
-            blk.c1 = CriticUpdateBlock[
-                Self.CRITIC, Self.BATCH, Self.SA_DIM
-            ].make[target="gpu"](ctx)
-            blk.c2 = CriticUpdateBlock[
-                Self.CRITIC, Self.BATCH, Self.SA_DIM
-            ].make[target="gpu"](ctx)
-            blk.ts = TargetStorage.make_gpu(ctx_v)
-            init_scratch_auto[Self, target="gpu"](blk, ctx)
+        blk.c1 = CriticUpdateBlock[
+            Self.CRITIC, Self.BATCH, Self.SA_DIM
+        ].make[target](ctx=ctx)
+        blk.c2 = CriticUpdateBlock[
+            Self.CRITIC, Self.BATCH, Self.SA_DIM
+        ].make[target](ctx=ctx)
+        blk.ts = TargetStorage.make[target](ctx=ctx)
+        init_scratch_auto[Self, target](blk, ctx)
         return blk^
 
     def step[
@@ -362,14 +333,12 @@ struct TwinCriticUpdateBlock[
         """
         assert_tag_for["TwinCriticUpdateBlock", target](self.ts.target_tag)
 
-        var sa_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+        var sa_p = self._mb_sa.target_ptr[target]()
         comptime if target == "cpu":
-            sa_p = self._mb_sa.cpu_ptr()
             concat_sa[Self.OBS, Self.ACT, Self.BATCH](
                 mb_s_ptr, mb_a_ptr, sa_p
             )
         else:
-            sa_p = self._mb_sa.dev_ptr()
             concat_sa_gpu[Self.OBS, Self.ACT, Self.BATCH](
                 self.ts.ctx.value(), mb_s_ptr, mb_a_ptr, sa_p
             )

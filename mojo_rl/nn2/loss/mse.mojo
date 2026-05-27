@@ -98,16 +98,14 @@ struct MSELoss[DIM: Int](Loss):
             "MSELoss: target must be 'cpu' or 'gpu'"
         )
         var loss = Self()
-        comptime if target == "cpu":
-            loss.ts = TargetStorage.make_cpu()
-        else:
+        loss.ts = TargetStorage.make[target](ctx=ctx)
+        comptime if target == "gpu":
             if not ctx:
                 raise Error("MSELoss.make[target='gpu']: ctx required")
             var ctx_v = ctx.value()
             loss.cache_logits_dev = ctx_v.enqueue_create_buffer[DT](1)
             loss.partial_loss_dev = ctx_v.enqueue_create_buffer[DT](1)
             loss.partial_loss_host = ctx_v.enqueue_create_host_buffer[DT](1)
-            loss.ts = TargetStorage.make_gpu(ctx_v)
         return loss^
 
     def _ensure_cache_cpu(mut self, batch: Int):
