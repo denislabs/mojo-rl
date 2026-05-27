@@ -17,9 +17,9 @@ Analog to `trainer_block.mojo`'s `TrainerState` (off-policy). Carries:
   - Int32 indices for the Fisher-Yates shuffle, sized
     ROLLOUT_LEN * N_ENVS (flat index into the rollout pool)
 
-N_ENVS defaults to 1 so existing single-env callers stay bit-identical
-without code changes. P.3 enables N_ENVS > 1; the BatchedEnv driver
-analog of off-policy's Tier-3 lives in `driver_onpolicy.mojo`.
+N_ENVS defaults to 1 for single-env callers (host-list driver path);
+N_ENVS > 1 is reached via the BatchedEnv driver
+(`run_onpolicy_train_batched` in `driver_onpolicy.mojo`).
 """
 
 from std.memory import alloc
@@ -120,8 +120,8 @@ struct OnPolicyState[
         """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU.
 
         All Scratches are STAGING=True, so on GPU both the host mirror
-        and device buffer are allocated. P.2 hybrid: rollout / per-step
-        / minibatch scratches read and write on the host mirror; the
+        and device buffer are allocated. The hybrid pattern is: rollout
+        / per-step scratches read and write on the host mirror; the
         minibatch is H2D-uploaded before actor/critic train steps."""
         comptime assert target == "cpu" or target == "gpu", (
             "OnPolicyState: target must be 'cpu' or 'gpu'"

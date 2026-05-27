@@ -1,7 +1,7 @@
 """PPOActorTrainStep — PPO actor gradient step.
 
 Thin wrapper around `PPOActorLoss.forward_backward[target, OPT]`,
-which is already dual-target V2R. Reads (mb_obs, mb_act, mb_olp,
+which is dual-target. Reads (mb_obs, mb_act, mb_olp,
 mb_adv) from `OnPolicyState`. Returns the mean per-batch loss for
 logging.
 """

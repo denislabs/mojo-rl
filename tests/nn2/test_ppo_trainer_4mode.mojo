@@ -1,4 +1,4 @@
-"""PPOTrainerV2R 4-mode driver smoke (P.3b).
+"""PPOTrainer 4-mode driver smoke.
 
 Validates `run_onpolicy_train_batched` across all four
 same-target (env_target == train_target) × {N=1, N=4} combinations:
@@ -24,7 +24,7 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.tanh import Tanh
 from mojo_rl.nn2.primitives.gaussian_head import GaussianHead
-from mojo_rl.nn2.training.ppo_trainer_v2r import PPOTrainerV2R
+from mojo_rl.nn2.training.ppo_trainer import PPOTrainer
 from mojo_rl.nn2.training.driver_onpolicy import run_onpolicy_train_batched
 from mojo_rl.nn2.training.batched_env import BatchedCpuEnv, BatchedGpuEnv
 from mojo_rl.envs.pendulum import PendulumEnv
@@ -59,7 +59,7 @@ def _assert_finite(mr: Scalar[DT], tag: StaticString) raises:
 def test_mode1_cpu_cpu_n1() raises:
     print("--- mode 1: cpu env × cpu train × N=1 ---")
     seed(42)
-    comptime Trainer = PPOTrainerV2R[
+    comptime Trainer = PPOTrainer[
         "cpu", ActorNet, CriticNet, OBS, ACT, ROLLOUT, MB, EPOCHS, 1,
     ]
     var trainer = Trainer.make(action_scale=Scalar[DT](2.0))
@@ -78,7 +78,7 @@ def test_mode1_cpu_cpu_n1() raises:
 def test_mode2_cpu_cpu_n4() raises:
     print("--- mode 2: cpu env × cpu train × N=4 ---")
     seed(42)
-    comptime Trainer = PPOTrainerV2R[
+    comptime Trainer = PPOTrainer[
         "cpu", ActorNet, CriticNet, OBS, ACT, ROLLOUT, MB, EPOCHS, 4,
     ]
     var trainer = Trainer.make(action_scale=Scalar[DT](2.0))
@@ -98,7 +98,7 @@ def test_mode3_gpu_gpu_n1() raises:
     print("--- mode 3: gpu env × gpu train × N=1 ---")
     seed(42)
     var ctx = DeviceContext()
-    comptime Trainer = PPOTrainerV2R[
+    comptime Trainer = PPOTrainer[
         "gpu", ActorNet, CriticNet, OBS, ACT, ROLLOUT, MB, EPOCHS, 1,
     ]
     var trainer = Trainer.make(action_scale=Scalar[DT](2.0), ctx=ctx)
@@ -117,7 +117,7 @@ def test_mode4_gpu_gpu_n4() raises:
     print("--- mode 4: gpu env × gpu train × N=4 ---")
     seed(42)
     var ctx = DeviceContext()
-    comptime Trainer = PPOTrainerV2R[
+    comptime Trainer = PPOTrainer[
         "gpu", ActorNet, CriticNet, OBS, ACT, ROLLOUT, MB, EPOCHS, 4,
     ]
     var trainer = Trainer.make(action_scale=Scalar[DT](2.0), ctx=ctx)
@@ -134,7 +134,7 @@ def test_mode4_gpu_gpu_n4() raises:
 
 def main() raises:
     print("=" * 70)
-    print("PPOTrainerV2R run_onpolicy_train_batched — 4-mode smoke (P.3b)")
+    print("PPOTrainer run_onpolicy_train_batched — 4-mode smoke")
     print("=" * 70)
     test_mode1_cpu_cpu_n1()
     test_mode2_cpu_cpu_n4()

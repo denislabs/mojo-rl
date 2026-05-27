@@ -1,10 +1,7 @@
 """PPOTrainer smoke — construction + a single rollout-update cycle.
 
-Phase I.2.e. Validates the trainer compiles, constructs, and that:
-  1. ROLLOUT_LEN env steps + one extra `train_step` triggers an update
-     (returns True);
-  2. The rollout cursor resets to 0 after the update;
-  3. mean_return / ep_count surface returns are finite.
+Verifies the trainer compiles, constructs, runs ROLLOUT_LEN env
+steps, and the K-epoch update fires exactly once at the boundary.
 
 Tiny BATCH + ROLLOUT_LEN to keep test wall-time short.
 """
@@ -39,29 +36,30 @@ comptime CriticNet = Sequential[
     Linear[HIDDEN, 1],
 ]
 comptime Trainer = PPOTrainer[
-    ActorNet, CriticNet, OBS, ACT, ROLLOUT, MB, EPOCHS,
+    "cpu", ActorNet, CriticNet, OBS, ACT, ROLLOUT, MB, EPOCHS,
 ]
 
 
 def test_construction() raises:
     print("test_construction ...")
     seed(42)
-    var t = Trainer.make["cpu"](action_scale=Scalar[DT](2.0))
+    var t = Trainer.make(action_scale=Scalar[DT](2.0))
     print(
         "  ROLLOUT_LEN =", Trainer.ROLLOUT_LEN,
         " MINIBATCH =", Trainer.MINIBATCH,
         " N_MINIBATCHES =", Trainer.N_MINIBATCHES,
         " N_EPOCHS =", Trainer.N_EPOCHS,
     )
+    _ = t
     print("  ok")
 
 
 def test_one_rollout_cycle() raises:
-    """Drive ROLLOUT+1 env-steps through Pendulum. Verify exactly one
+    """Drive ROLLOUT+5 env-steps through Pendulum. Verify at least one
     train_step (the boundary one) returns True."""
     print("test_one_rollout_cycle ...")
     seed(42)
-    var t = Trainer.make["cpu"](action_scale=Scalar[DT](2.0))
+    var t = Trainer.make(action_scale=Scalar[DT](2.0))
     var env = PendulumEnv[DT]()
     _ = env.reset()
     var obs = env.get_obs_list()
@@ -107,7 +105,7 @@ def test_one_rollout_cycle() raises:
 
 def main() raises:
     print("=" * 70)
-    print("PPOTrainer smoke (Phase I.2.e)")
+    print("PPOTrainer smoke (CPU N_ENVS=1)")
     print("=" * 70)
     test_construction()
     test_one_rollout_cycle()

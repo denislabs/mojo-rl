@@ -56,7 +56,7 @@ comptime CriticNet = Sequential[
     Linear[HIDDEN, 1],
 ]
 comptime Trainer = PPOTrainer[
-    ActorNet, CriticNet,
+    "cpu", ActorNet, CriticNet,
     OBS_DIM, ACT_DIM, ROLLOUT_LEN, MINIBATCH, N_EPOCHS,
 ]
 
@@ -77,7 +77,7 @@ def main() raises:
     print("  TOTAL_TIMESTEPS=", TOTAL_TIMESTEPS)
     print()
 
-    var trainer = Trainer.make["cpu"](
+    var trainer = Trainer.make(
         actor_lr=Scalar[DT](3e-4),
         critic_lr=Scalar[DT](1e-3),
         gamma=Scalar[DT](0.99),
@@ -91,9 +91,9 @@ def main() raises:
     )
 
     # CleanRL-style log_std init — reach into the GaussianHead's log_std
-    # vector. PPOTrainer leaves this to the caller (Mojo nightly trait-
-    # typed comptime params can't reflect into Sequential's variadic
-    # children generically).
+    # vector. PPOTrainer leaves this to the caller (Mojo nightly
+    # trait-typed comptime params can't reflect into Sequential's
+    # variadic children generically).
     var ls_ptr = trainer.actor.children[4].log_std.value_unsafe_ptr_cpu()
     for k in range(ACT_DIM):
         ls_ptr[k] = LOG_STD_INIT

@@ -1,16 +1,15 @@
-"""PPOTrainerV2R N_ENVS=4 direct-call smoke (P.3 core).
+"""PPOTrainer N_ENVS=4 direct-call smoke.
 
 Validates that the N_ENVS-parametric trainer:
   - Constructs at N_ENVS=4
   - Runs ROLLOUT_LEN+5 batched steps through 4 independent Pendulum
-    envs via the new `select_action_batched` + `record_batch_cpu`
-    surface (no BatchedEnv driver yet — that lands in P.3b)
+    envs via the `select_action_batched` + `record_batch_cpu` surface
   - Fires exactly one K-epoch update at the rollout boundary
-  - Produces finite mean_return + ep_count > 0
+  - Produces finite mean_return
 
-The BatchedEnv driver layer + OnPolicyAgentBatched trait are not
-required for this test — it bypasses the driver and pokes the
-trainer methods directly to validate the N_ENVS comptime path.
+Direct-call test bypassing the BatchedEnv driver — pokes the trainer
+methods directly to validate the N_ENVS comptime path in isolation.
+The driver-driven equivalent lives in `test_ppo_trainer_4mode.mojo`.
 """
 
 from std.math import isnan, isinf
@@ -23,7 +22,7 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.tanh import Tanh
 from mojo_rl.nn2.primitives.gaussian_head import GaussianHead
-from mojo_rl.nn2.training.ppo_trainer_v2r import PPOTrainerV2R
+from mojo_rl.nn2.training.ppo_trainer import PPOTrainer
 from mojo_rl.envs.pendulum import PendulumEnv
 
 
@@ -45,14 +44,14 @@ comptime CriticNet = Sequential[
     Linear[HIDDEN, HIDDEN], Tanh[HIDDEN],
     Linear[HIDDEN, 1],
 ]
-comptime Trainer = PPOTrainerV2R[
+comptime Trainer = PPOTrainer[
     "cpu", ActorNet, CriticNet, OBS, ACT, ROLLOUT, MB, EPOCHS, N_ENVS,
 ]
 
 
 def main() raises:
     print("=" * 70)
-    print("PPOTrainerV2R N_ENVS=", N_ENVS, " direct-call smoke (P.3 core)")
+    print("PPOTrainer N_ENVS=", N_ENVS, " direct-call smoke")
     print("=" * 70)
     seed(42)
     var t = Trainer.make(action_scale=Scalar[DT](2.0))

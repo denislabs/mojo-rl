@@ -2,8 +2,8 @@
 
 Three methods:
   - `reset_indices[target]` — write [0..ROLLOUT_LEN) into state.indices
-    (called once per rollout, BEFORE the K-epoch loop — matches legacy
-    PPOTrainer ordering for bit-identity).
+    (called once per rollout, BEFORE the K-epoch loop — epoch shuffles
+    operate on whatever state the previous epoch left behind).
   - `shuffle_epoch[target]` — in-place Fisher-Yates over state.indices
     (called once per K-epoch, AFTER reset_indices on the first epoch).
   - `gather[target]` — gather the `mb_idx`-th minibatch into mb_obs /

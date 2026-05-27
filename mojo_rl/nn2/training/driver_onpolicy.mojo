@@ -5,7 +5,7 @@ trainers (PPO today, possibly A2C later) plug into a consistent surface:
 
   - `OnPolicyAgent` — N=1 host-list trait for single-env trainers.
   - `OnPolicyAgentBatched` — N_ENVS-wide pointer trait for batched
-    trainers (PPOTrainerV2R conforms).
+    trainers (PPOTrainer conforms).
   - `run_onpolicy_train` — single-env on-policy training driver.
   - `run_onpolicy_train_batched` — BatchedEnv driver covering same-
     target (env_target == train_target) combinations × any N_ENVS,
@@ -183,7 +183,7 @@ trait OnPolicyAgentBatched(Movable, ImplicitlyDestructible):
     All pointer args are HOST-side. For GPU envs the driver D2Hs
     env-side obs/reward/done into host scratches before calling. The
     trainer is responsible for any internal H2D of obs into device-
-    side scratches (PPOTrainerV2R does this inside PPOActStep).
+    side scratches (PPOTrainer does this inside PPOActStep).
 
     Conforming trainers also expose comptime aliases so the driver
     can comptime-assert dimensional consistency with the env adapter
@@ -265,7 +265,7 @@ def run_onpolicy_train_batched[
       - (gpu env, cpu train) → degenerate (D2H every obs)
 
     Unlike the off-policy driver, the on-policy trainer always wants
-    host-side pointers (PPO V2R's rollout buffer lives host-only on
+    host-side pointers (PPO's rollout buffer lives host-only on
     both targets; the trainer itself does H2D of obs internally
     inside PPOActStep). The driver therefore stages env outputs
     through host scratches — a no-op pointer alias for CPU envs and
