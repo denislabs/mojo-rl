@@ -36,8 +36,8 @@ struct PPORecordStep[
     def make[target: StaticString](
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert target == "cpu", (
-            "PPORecordStep: P.1 is CPU-only (GPU lands in P.2)"
+        comptime assert target == "cpu" or target == "gpu", (
+            "PPORecordStep: target must be 'cpu' or 'gpu'"
         )
         return Self()
 
@@ -57,14 +57,17 @@ struct PPORecordStep[
         var t = state.rollout_idx
         if t >= Self.ROLLOUT_LEN:
             return
-        var obs_p   = state.obs_buf.target_ptr[target]()
-        var act_p   = state.act_buf.target_ptr[target]()
-        var ca_p    = state.cached_action.target_ptr[target]()
-        var olp_p   = state.olp_buf.target_ptr[target]()
-        var val_p   = state.val_buf.target_ptr[target]()
-        var rew_p   = state.rew_buf.target_ptr[target]()
-        var done_p  = state.done_buf.target_ptr[target]()
-        var boot_p  = state.bootstrap_obs.target_ptr[target]()
+        # Rollout buffers always live host-side (GPU train_target only
+        # uploads the gathered minibatch). Use cpu_ptr() unconditionally
+        # — STAGING=True ensures the host mirror exists on both targets.
+        var obs_p   = state.obs_buf.cpu_ptr()
+        var act_p   = state.act_buf.cpu_ptr()
+        var ca_p    = state.cached_action.cpu_ptr()
+        var olp_p   = state.olp_buf.cpu_ptr()
+        var val_p   = state.val_buf.cpu_ptr()
+        var rew_p   = state.rew_buf.cpu_ptr()
+        var done_p  = state.done_buf.cpu_ptr()
+        var boot_p  = state.bootstrap_obs.cpu_ptr()
         for d in range(Self.OBS):
             obs_p[t * Self.OBS + d] = obs[d]
         for j in range(Self.ACT):
@@ -90,7 +93,7 @@ struct PPORecordStep[
         """Mark the last-recorded transition as a real terminal (V=0
         bootstrap). No-op if the cursor is at 0."""
         if state.rollout_idx > 0:
-            var term_p = state.term_buf.target_ptr[target]()
+            var term_p = state.term_buf.cpu_ptr()
             term_p[state.rollout_idx - 1] = Scalar[DT](1.0)
 
     def reset_rollout[
@@ -105,6 +108,6 @@ struct PPORecordStep[
         """Called by the trainer once the K-epoch update has fired —
         zeros the term buffer and resets the cursor."""
         state.rollout_idx = 0
-        var term_p = state.term_buf.target_ptr[target]()
+        var term_p = state.term_buf.cpu_ptr()
         for k in range(Self.ROLLOUT_LEN):
             term_p[k] = Scalar[DT](0.0)

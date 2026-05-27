@@ -54,9 +54,12 @@ struct PPOActStep[
     def make[target: StaticString](
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert target == "cpu", (
-            "PPOActStep: P.1 is CPU-only (GPU lands in P.2)"
+        comptime assert target == "cpu" or target == "gpu", (
+            "PPOActStep: target must be 'cpu' or 'gpu'"
         )
+        comptime if target == "gpu":
+            if not ctx:
+                raise Error("PPOActStep.make[target='gpu']: ctx required")
         return Self()
 
     def step[
@@ -76,26 +79,56 @@ struct PPOActStep[
     ) raises:
         """Sample one PPO action. Writes env-ready (clamped, scaled)
         action into `action_out`; caches the unbounded sample,
-        log_prob, and V(s) into state for the next PPORecordStep."""
-        var ob1_p = state.ob1.target_ptr[target]()
-        var ao1_p = state.ao1.target_ptr[target]()
-        var v1_p  = state.v1.target_ptr[target]()
-        var z_p   = state.z.target_ptr[target]()
-        var ca_p  = state.cached_action.target_ptr[target]()
+        log_prob, and V(s) into state for the next PPORecordStep.
 
+        GPU path (hybrid N=1): H2D obs → device ob1, actor.forward and
+        critic.forward on device, D2H ao1 + v1 → host mirrors, host-
+        side sample/log_prob/clamp. cached_action stays on the host
+        mirror (rollout buffer is host-only on GPU train_target — see
+        OnPolicyState docstring)."""
+        # Host mirror pointers (always valid; STAGING=True ensures the
+        # CPU mirror exists on GPU too).
+        var ob1_cpu_p = state.ob1.cpu_ptr()
+        var ao1_cpu_p = state.ao1.cpu_ptr()
+        var v1_cpu_p  = state.v1.cpu_ptr()
+        var z_cpu_p   = state.z.cpu_ptr()
+        var ca_cpu_p  = state.cached_action.cpu_ptr()
+
+        # Stage obs into host mirror.
         for d in range(Self.OBS):
-            ob1_p[d] = obs[d]
-        var ob1_t = TileTensor(ob1_p, row_major[1, Self.OBS]())
-        var ao1_t = TileTensor(ao1_p, row_major[1, 2 * Self.ACT]())
-        actor.forward[target, 1](ob1_t, output=ao1_t)
+            ob1_cpu_p[d] = obs[d]
 
-        box_muller_normal(z_p, Self.ACT)
+        comptime if target == "cpu":
+            var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS]())
+            var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT]())
+            actor.forward[target, 1](ob1_t, output=ao1_t)
+            var v1_t = TileTensor(v1_cpu_p, row_major[1, 1]())
+            critic.forward[target, 1](ob1_t, output=v1_t)
+        else:
+            var ctx = state.ctx.value()
+            ctx.enqueue_copy(state.ob1.dev.value(), ob1_cpu_p)
+            var ob1_dev_t = TileTensor(
+                state.ob1.dev_ptr(), row_major[1, Self.OBS](),
+            )
+            var ao1_dev_t = TileTensor(
+                state.ao1.dev_ptr(), row_major[1, 2 * Self.ACT](),
+            )
+            var v1_dev_t = TileTensor(
+                state.v1.dev_ptr(), row_major[1, 1](),
+            )
+            actor.forward[target, 1](ob1_dev_t, output=ao1_dev_t)
+            critic.forward[target, 1](ob1_dev_t, output=v1_dev_t)
+            ctx.enqueue_copy(ao1_cpu_p, state.ao1.dev.value())
+            ctx.enqueue_copy(v1_cpu_p,  state.v1.dev.value())
+            ctx.synchronize()
+
+        box_muller_normal(z_cpu_p, Self.ACT)
         var lp_total: Scalar[DT] = 0.0
         for j in range(Self.ACT):
-            var mu = ao1_p[j]
-            var ls = _clamp_log_std(ao1_p[Self.ACT + j])
-            var sample = mu + fexp(ls) * z_p[j]
-            ca_p[j] = sample
+            var mu = ao1_cpu_p[j]
+            var ls = _clamp_log_std(ao1_cpu_p[Self.ACT + j])
+            var sample = mu + fexp(ls) * z_cpu_p[j]
+            ca_cpu_p[j] = sample
             var env_a = sample
             if env_a > action_scale:
                 env_a = action_scale
@@ -107,10 +140,7 @@ struct PPOActStep[
                 LOG_2PI + Scalar[DT](2.0) * ls + zz * zz
             )
         state.cached_log_prob = lp_total
-
-        var v1_t = TileTensor(v1_p, row_major[1, 1]())
-        critic.forward[target, 1](ob1_t, output=v1_t)
-        state.cached_value = v1_p[0]
+        state.cached_value = v1_cpu_p[0]
 
     def step_greedy[
         target: StaticString,
@@ -128,15 +158,28 @@ struct PPOActStep[
     ) raises:
         """Deterministic action for eval — uses mu directly. Does not
         touch the cache (eval bypasses the rollout buffer)."""
-        var ob1_p = state.ob1.target_ptr[target]()
-        var ao1_p = state.ao1.target_ptr[target]()
+        var ob1_cpu_p = state.ob1.cpu_ptr()
+        var ao1_cpu_p = state.ao1.cpu_ptr()
         for d in range(Self.OBS):
-            ob1_p[d] = obs[d]
-        var ob1_t = TileTensor(ob1_p, row_major[1, Self.OBS]())
-        var ao1_t = TileTensor(ao1_p, row_major[1, 2 * Self.ACT]())
-        actor.forward[target, 1](ob1_t, output=ao1_t)
+            ob1_cpu_p[d] = obs[d]
+        comptime if target == "cpu":
+            var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS]())
+            var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT]())
+            actor.forward[target, 1](ob1_t, output=ao1_t)
+        else:
+            var ctx = state.ctx.value()
+            ctx.enqueue_copy(state.ob1.dev.value(), ob1_cpu_p)
+            var ob1_dev_t = TileTensor(
+                state.ob1.dev_ptr(), row_major[1, Self.OBS](),
+            )
+            var ao1_dev_t = TileTensor(
+                state.ao1.dev_ptr(), row_major[1, 2 * Self.ACT](),
+            )
+            actor.forward[target, 1](ob1_dev_t, output=ao1_dev_t)
+            ctx.enqueue_copy(ao1_cpu_p, state.ao1.dev.value())
+            ctx.synchronize()
         for j in range(Self.ACT):
-            var env_a = ao1_p[j]
+            var env_a = ao1_cpu_p[j]
             if env_a > action_scale:
                 env_a = action_scale
             elif env_a < -action_scale:

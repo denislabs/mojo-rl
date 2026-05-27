@@ -111,15 +111,18 @@ struct OnPolicyState[
     def make[target: StaticString](
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU
-        (asserted P.2 — P.1 is CPU-only, so this just raises if target
-        is not 'cpu')."""
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU.
+
+        All Scratches are STAGING=True, so on GPU both the host mirror
+        and device buffer are allocated. P.2 hybrid: rollout / per-step
+        / minibatch scratches read and write on the host mirror; the
+        minibatch is H2D-uploaded before actor/critic train steps."""
         comptime assert target == "cpu" or target == "gpu", (
             "OnPolicyState: target must be 'cpu' or 'gpu'"
         )
-        comptime assert target == "cpu", (
-            "OnPolicyState: P.1 is CPU-only (GPU lands in P.2)"
-        )
+        comptime if target == "gpu":
+            if not ctx:
+                raise Error("OnPolicyState.make[target='gpu']: ctx required")
         var s = Self()
         s.obs_buf.init_with[target](ctx)
         s.act_buf.init_with[target](ctx)

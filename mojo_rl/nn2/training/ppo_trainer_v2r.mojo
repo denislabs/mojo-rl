@@ -1,7 +1,9 @@
 """PPOTrainerV2R — V2R ref-based block PPO trainer.
 
-CPU-only N_ENVS=1 in P.1. P.2 lifts each block to GPU; P.3 extends to
-N_ENVS multi-env via BatchedEnv.
+N_ENVS=1 in P.1/P.2; CPU bit-identical to legacy in P.1, GPU lifted in
+P.2 (hybrid: per-step actor/critic forwards on device, rollout buffers
+on host, K-epoch minibatch H2D-uploaded to device before train).
+P.3 extends to N_ENVS multi-env via BatchedEnv.
 
 Composes 6 step blocks via ref-based calls, holds `OnPolicyState` for
 the shared per-step + per-rollout buffers:
@@ -90,9 +92,9 @@ struct PPOTrainerV2R[
     var tracker: EpisodeTracker
 
     def __init__(out self):
-        comptime assert Self.train_target == "cpu", (
-            "PPOTrainerV2R: P.1 is CPU-only (GPU lands in P.2)"
-        )
+        comptime assert (
+            Self.train_target == "cpu" or Self.train_target == "gpu"
+        ), "PPOTrainerV2R: train_target must be 'cpu' or 'gpu'"
         comptime assert Self.ACTOR.IN_DIMS[0] == Self.OBS_DIM, (
             "PPOTrainerV2R: ACTOR.IN_DIM must equal OBS_DIM"
         )
@@ -156,15 +158,28 @@ struct PPOTrainerV2R[
         initial_episode_fill: Scalar[DT] = Scalar[DT](-1600.0),
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert Self.train_target == "cpu", (
-            "PPOTrainerV2R.make: P.1 is CPU-only (GPU lands in P.2)"
-        )
+        comptime assert (
+            Self.train_target == "cpu" or Self.train_target == "gpu"
+        ), "PPOTrainerV2R.make: train_target must be 'cpu' or 'gpu'"
+        comptime if Self.train_target == "gpu":
+            if not ctx:
+                raise Error(
+                    "PPOTrainerV2R.make[train_target='gpu']: ctx required"
+                )
         var t = Self()
-        t.actor = Self.ACTOR.make[target=Self.train_target, INIT=Xavier]()
-        t.critic = Self.CRITIC.make[target=Self.train_target, INIT=Xavier]()
-        t.actor_opt = Adam.make[target=Self.train_target, M=Self.ACTOR](t.actor)
+        t.actor = Self.ACTOR.make[target=Self.train_target, INIT=Xavier](
+            ctx=ctx
+        )
+        t.critic = Self.CRITIC.make[target=Self.train_target, INIT=Xavier](
+            ctx=ctx
+        )
+        t.actor_opt = Adam.make[target=Self.train_target, M=Self.ACTOR](
+            t.actor, ctx=ctx,
+        )
         t.actor_opt.lr = actor_lr
-        t.critic_opt = Adam.make[target=Self.train_target, M=Self.CRITIC](t.critic)
+        t.critic_opt = Adam.make[target=Self.train_target, M=Self.CRITIC](
+            t.critic, ctx=ctx,
+        )
         t.critic_opt.lr = critic_lr
         t.act_step = PPOActStep[
             Self.OBS_DIM, Self.ACT_DIM, Self.ACTOR, Self.CRITIC,

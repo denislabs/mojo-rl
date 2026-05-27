@@ -40,8 +40,8 @@ struct PPOMinibatchGatherStep[
     def make[target: StaticString](
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert target == "cpu", (
-            "PPOMinibatchGatherStep: P.1 is CPU-only (GPU lands in P.2)"
+        comptime assert target == "cpu" or target == "gpu", (
+            "PPOMinibatchGatherStep: target must be 'cpu' or 'gpu'"
         )
         return Self()
 
@@ -84,17 +84,21 @@ struct PPOMinibatchGatherStep[
         mb_idx: Int,
     ) raises:
         """Gather the `mb_idx`-th minibatch into mb_obs/mb_act/mb_olp/
-        mb_adv/mb_ret, then mean/std normalise mb_adv in place."""
-        var obs_p = state.obs_buf.target_ptr[target]()
-        var act_p = state.act_buf.target_ptr[target]()
-        var olp_p = state.olp_buf.target_ptr[target]()
-        var adv_p = state.adv_buf.target_ptr[target]()
-        var ret_p = state.ret_buf.target_ptr[target]()
-        var mb_obs_p = state.mb_obs.target_ptr[target]()
-        var mb_act_p = state.mb_act.target_ptr[target]()
-        var mb_olp_p = state.mb_olp.target_ptr[target]()
-        var mb_adv_p = state.mb_adv.target_ptr[target]()
-        var mb_ret_p = state.mb_ret.target_ptr[target]()
+        mb_adv/mb_ret, mean/std normalise mb_adv in place, then (on
+        GPU) H2D upload the populated mb_* host mirrors so the
+        actor/critic train steps can consume them on device."""
+        # Rollout buffers live host-only on both targets. Gather +
+        # normalise on host into mb_* host mirrors.
+        var obs_p = state.obs_buf.cpu_ptr()
+        var act_p = state.act_buf.cpu_ptr()
+        var olp_p = state.olp_buf.cpu_ptr()
+        var adv_p = state.adv_buf.cpu_ptr()
+        var ret_p = state.ret_buf.cpu_ptr()
+        var mb_obs_p = state.mb_obs.cpu_ptr()
+        var mb_act_p = state.mb_act.cpu_ptr()
+        var mb_olp_p = state.mb_olp.cpu_ptr()
+        var mb_adv_p = state.mb_adv.cpu_ptr()
+        var mb_ret_p = state.mb_ret.cpu_ptr()
         for k in range(Self.MINIBATCH):
             var src = Int(state.indices[mb_idx * Self.MINIBATCH + k])
             for d in range(Self.OBS):
@@ -105,3 +109,13 @@ struct PPOMinibatchGatherStep[
             mb_adv_p[k] = adv_p[src]
             mb_ret_p[k] = ret_p[src]
         normalize_in_place(Self.MINIBATCH, mb_adv_p)
+
+        comptime if target == "gpu":
+            # H2D the populated minibatch so the train steps read
+            # device-side pointers via state.mb_*.target_ptr["gpu"]().
+            var ctx = state.ctx.value()
+            ctx.enqueue_copy(state.mb_obs.dev.value(), mb_obs_p)
+            ctx.enqueue_copy(state.mb_act.dev.value(), mb_act_p)
+            ctx.enqueue_copy(state.mb_olp.dev.value(), mb_olp_p)
+            ctx.enqueue_copy(state.mb_adv.dev.value(), mb_adv_p)
+            ctx.enqueue_copy(state.mb_ret.dev.value(), mb_ret_p)
