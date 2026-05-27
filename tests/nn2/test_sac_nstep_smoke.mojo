@@ -117,7 +117,7 @@ def test_gpu_nstep() raises:
     for step in range(N_STEPS):
         for d in range(OBS):
             obs[d] = Scalar[DT](0.5 + 0.3 * Float64(d) + 0.01 * Float64(step))
-        trainer.select_action_gpu(obs, action, step)
+        trainer.select_action(obs, action, step)
         var reward = Scalar[DT](-1.0 + 0.01 * Float64(step))
         for d in range(OBS):
             next_obs[d] = Scalar[DT](
@@ -125,7 +125,7 @@ def test_gpu_nstep() raises:
             )
         var done = Scalar[DT](0.0) if step % 50 != 49 else Scalar[DT](1.0)
         trainer.record(obs, action, reward, next_obs, done)
-        if trainer.train_step_gpu(step):
+        if trainer.train_step(step):
             n_trained += 1
 
     print("  n_trained =", n_trained)

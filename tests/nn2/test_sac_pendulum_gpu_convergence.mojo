@@ -90,7 +90,7 @@ def test_sac_pendulum_gpu_convergence() raises:
     while step < TOTAL_TIMESTEPS:
         for d in range(OBS_DIM):
             obs[d] = obs_self[d]
-        trainer.select_action_gpu(obs, action, step)
+        trainer.select_action(obs, action, step)
         var step_res = env.step_continuous(action[0])
         var nxt = step_res[0].copy()
         var reward = step_res[1]
@@ -111,7 +111,7 @@ def test_sac_pendulum_gpu_convergence() raises:
         else:
             obs_self = nxt.copy()
         step += 1
-        _ = trainer.train_step_gpu(step)
+        _ = trainer.train_step(step)
 
         if step % 5_000 == 0:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9

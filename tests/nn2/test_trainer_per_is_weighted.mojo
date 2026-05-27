@@ -138,7 +138,7 @@ def test_null_sentinel_unaffected() raises:
     while step < SMOKE_STEPS:
         for d in range(OBS_DIM):
             obs[d] = obs_self[d]
-        trainer.select_action_gpu(obs, action, step)
+        trainer.select_action(obs, action, step)
         var step_res = env.step_continuous(action[0])
         var nxt = step_res[0].copy()
         var reward = step_res[1]
@@ -159,7 +159,7 @@ def test_null_sentinel_unaffected() raises:
         else:
             obs_self = nxt.copy()
         step += 1
-        _ = trainer.train_step_gpu(step)
+        _ = trainer.train_step(step)
     var mr = trainer.mean_return()
     assert_true(
         not isnan(Float64(mr)),
@@ -198,7 +198,7 @@ def test_per_weights_are_nontrivial() raises:
     while step < SMOKE_STEPS:
         for d in range(OBS_DIM):
             obs[d] = obs_self[d]
-        trainer.select_action_gpu(obs, action, step)
+        trainer.select_action(obs, action, step)
         var step_res = env.step_continuous(action[0])
         var nxt = step_res[0].copy()
         for d in range(OBS_DIM):
@@ -217,7 +217,7 @@ def test_per_weights_are_nontrivial() raises:
         else:
             obs_self = nxt.copy()
         step += 1
-        _ = trainer.train_step_gpu(step)
+        _ = trainer.train_step(step)
 
     # D2H buf_per.weights after the last train_step's sample(). The
     # PER buffer now lives inside the sample block.

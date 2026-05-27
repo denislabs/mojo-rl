@@ -15,18 +15,22 @@ Single pipeline body in `_train_step_impl[train_target]`. Single
 time → zero runtime branches on target or replay kind beyond the
 comptime-if already inside each block.
 
-Driver-trait conformance: `OffPolicyAgentUnifiedGpu` (parent
-`OffPolicyAgentUnified` lifted into it) via `train_step_unified` /
-`select_action_unified` / `select_greedy_action_unified` /
-`record_batch_cpu` / `record_batch_gpu[_nstep]`. The legacy direct-
-callable host-list methods (`select_action[_gpu]`, `train_step[_gpu]`,
-`select_greedy_action[_gpu]`) are kept on the struct as user-facing
-entry points for smoke tests that bypass the driver; calling the wrong
-surface (e.g. `train_step` on a `train_target="gpu"` instance) raises.
+Driver-trait conformance: `OffPolicyAgentUnifiedGpu` via
+`train_step_unified` / `select_action_unified` /
+`select_greedy_action_unified` / `record_batch_cpu` /
+`record_batch_gpu[_nstep]`. Three host-list aliases (`select_action`,
+`select_greedy_action`, `train_step`) are kept as user-facing entry
+points for smoke tests that bypass the driver — they delegate into the
+unified paths. There is no per-target raise guard: `train_target` is a
+struct comptime param, so the wrong wrapper can't be invoked.
 
 Bit-equivalent to the previous SACTrainer when
 `SAMPLE = UniformSampleCpuStep` + `train_target = "cpu"` (validated by
-the bit-identity gate −169.04118 @ 30k Pendulum seed=42).
+the bit-identity gate −169.04118 @ 30k Pendulum seed=42). On GPU,
+warmup RNG migrated from CPU `random_float64` (legacy `_gpu` path) to
+Philox (unified path), so GPU loss values shift slightly between
+pre-Option-B and post-Option-B baselines — still convergent, still
+finite.
 """
 
 from std.math import exp as fexp, log as flog, tanh as ftanh
@@ -447,101 +451,6 @@ struct SACTrainer[
 
     # ─── Internal parametric core ─────────────────────────────────────
 
-    def _select_action_impl(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-        step_idx: Int,
-    ) raises:
-        if step_idx < self.learning_starts:
-            for j in range(Self.ACT_DIM):
-                var u = Scalar[DT](2.0 * random_float64() - 1.0)
-                action_out[j] = u * self.action_scale
-            return
-        var ob1_cpu_p = self._ob1.cpu_ptr()
-        var ao1_cpu_p = self._ao1.cpu_ptr()
-        var alp1_cpu_p = self._alp1.cpu_ptr()
-        for d in range(Self.OBS_DIM):
-            ob1_cpu_p[d] = obs[d]
-
-        comptime if Self.train_target == "cpu":
-            var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
-            var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM]())
-            self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
-            var alp1_t = TileTensor(
-                alp1_cpu_p,
-                row_major[1, Self.ACT_DIM + 1](),
-            )
-            self.actor_blk.inner.rsample.forward["cpu", 1](
-                ao1_t,
-                output=alp1_t,
-            )
-        else:
-            var ctx = self.ctx.value()
-            ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
-            var ob1_p = self._ob1.dev_ptr()
-            var ao1_p = self._ao1.dev_ptr()
-            var alp1_p = self._alp1.dev_ptr()
-            var ob1_t = TileTensor(ob1_p, row_major[1, Self.OBS_DIM]())
-            var ao1_t = TileTensor(ao1_p, row_major[1, 2 * Self.ACT_DIM]())
-            self.actor.forward["gpu", 1](ob1_t, output=ao1_t)
-            var alp1_t = TileTensor(
-                alp1_p,
-                row_major[1, Self.ACT_DIM + 1](),
-            )
-            self.actor_blk.inner.rsample.forward["gpu", 1](
-                ao1_t,
-                output=alp1_t,
-            )
-            ctx.enqueue_copy(alp1_cpu_p, self._alp1.dev.value())
-            ctx.synchronize()
-
-        for j in range(Self.ACT_DIM):
-            var a = alp1_cpu_p[j]
-            if a > self.action_scale:
-                a = self.action_scale
-            elif a < -self.action_scale:
-                a = -self.action_scale
-            action_out[j] = a
-
-    def _select_greedy_action_impl(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-    ) raises:
-        var ob1_cpu_p = self._ob1.cpu_ptr()
-        var ao1_cpu_p = self._ao1.cpu_ptr()
-        for d in range(Self.OBS_DIM):
-            ob1_cpu_p[d] = obs[d]
-
-        comptime if Self.train_target == "cpu":
-            var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
-            var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM]())
-            self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
-        else:
-            var ctx = self.ctx.value()
-            ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
-            var ob1_t = TileTensor(
-                self._ob1.dev_ptr(),
-                row_major[1, Self.OBS_DIM](),
-            )
-            var ao1_t = TileTensor(
-                self._ao1.dev_ptr(),
-                row_major[1, 2 * Self.ACT_DIM](),
-            )
-            self.actor.forward["gpu", 1](ob1_t, output=ao1_t)
-            ctx.enqueue_copy(ao1_cpu_p, self._ao1.dev.value())
-            ctx.synchronize()
-
-        for j in range(Self.ACT_DIM):
-            var mean = ao1_cpu_p[j]
-            var a = ftanh(mean) * self.action_scale
-            if a > self.action_scale:
-                a = self.action_scale
-            elif a < -self.action_scale:
-                a = -self.action_scale
-            action_out[j] = a
-
     def _train_step_impl[
         POLICY: AMPPolicy = NoAMP,
     ](mut self, step_idx: Int) raises -> Bool:
@@ -672,10 +581,19 @@ struct SACTrainer[
                 ctx=self.ctx,
             )
 
-    # ─── Direct-callable (host-list) surface — CPU ───────────────────
+    # ─── Direct-callable (host-list) surface ─────────────────────────
     #
-    # Kept as user-facing entry points for smoke tests that bypass the
-    # driver. Drivers use `*_unified` below.
+    # User-facing entry points for smoke tests that bypass the driver.
+    # All three delegate into the unified paths via host-list staging
+    # through the trainer's `_ob1` / `_ao1` / `_alp1` scratches:
+    #
+    #   select_action       → select_action_unified[1]
+    #   select_greedy_action → select_greedy_action_unified (host-list)
+    #   train_step           → train_step_unified
+    #
+    # The trainer is the single source of truth on its `train_target`
+    # comptime param; there's no per-target raise guard to enforce
+    # because the wrong target literally can't be constructed.
 
     def select_action(
         mut self,
@@ -683,33 +601,47 @@ struct SACTrainer[
         mut action_out: List[Scalar[DT]],
         step_idx: Int,
     ) raises:
-        comptime if Self.train_target != "cpu":
-            raise Error("SACTrainer[target='gpu']: use select_action_gpu")
-        self._select_action_impl(obs, action_out, step_idx)
+        """Host-list wrapper. Stages obs into `_ob1` (H2D if GPU),
+        delegates to `select_action_unified[1]` which writes the
+        clamped action into the first ACT_DIM scalars of `_alp1`
+        (action_ptr aliased with alp_scratch_ptr — safe at N=1, both
+        warmup and policy paths write before reading per-element).
+        On GPU, D2H the action back through `_alp1.cpu_ptr()`."""
+        var ob1_cpu_p = self._ob1.cpu_ptr()
+        for d in range(Self.OBS_DIM):
+            ob1_cpu_p[d] = obs[d]
+        comptime if Self.train_target == "gpu":
+            self.ctx.value().enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
+        self.select_action_unified[1](
+            self._ob1.target_ptr[Self.train_target](),
+            self._alp1.target_ptr[Self.train_target](),
+            self._ao1.target_ptr[Self.train_target](),
+            self._alp1.target_ptr[Self.train_target](),
+            step_idx,
+        )
+        comptime if Self.train_target == "gpu":
+            var ctx = self.ctx.value()
+            ctx.enqueue_copy(self._alp1.cpu_ptr(), self._alp1.dev.value())
+            ctx.synchronize()
+        var alp1_cpu_p = self._alp1.cpu_ptr()
+        for j in range(Self.ACT_DIM):
+            action_out[j] = alp1_cpu_p[j]
 
     def select_greedy_action(
         mut self,
         ref obs: List[Scalar[DT]],
         mut action_out: List[Scalar[DT]],
     ) raises:
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "SACTrainer[target='gpu']: use select_greedy_action_gpu"
-            )
-        self._select_greedy_action_impl(obs, action_out)
+        self.select_greedy_action_unified(obs, action_out)
 
     def train_step(mut self, step_idx: Int) raises -> Bool:
-        comptime if Self.train_target != "cpu":
-            raise Error("SACTrainer[target='gpu']: use train_step_gpu")
-        return self._train_step_impl[NoAMP](step_idx)
+        return self.train_step_unified(step_idx)
 
     # ─── Tier-1 unified train_step — target-agnostic ─────────────────
     #
-    # `train_step_unified` collapses `train_step` / `train_step_gpu`.
-    # Picks the right AMP policy (NoAMP / Bf16Compute) and dispatches to
-    # `_train_step_impl[POLICY]`. Used by the unified single-env driver
-    # (`run_offpolicy_train_unified`); `OffPolicyAgentUnified`-trait
-    # surface.
+    # Picks the right AMP policy (NoAMP / Bf16Compute) and dispatches
+    # to `_train_step_impl[POLICY]`. Used by the unified single-env
+    # driver and by the host-list `train_step` wrapper above.
     def train_step_unified(mut self, step_idx: Int) raises -> Bool:
         comptime if Self.train_target == "cpu":
             return self._train_step_impl[NoAMP](step_idx)
@@ -720,46 +652,48 @@ struct SACTrainer[
 
     # ─── Tier-1 unified greedy eval — target-agnostic ────────────────
     #
-    # `_select_greedy_action_impl` already comptime-branches on
-    # `Self.train_target`; this method is just the trait-facing wrapper
-    # without the per-target raise guards in `select_greedy_action[_gpu]`.
+    # Single host-list greedy path; comptime-branches on
+    # `Self.train_target`. CPU runs native; GPU uploads obs, forwards
+    # the actor on device, downloads the mean, applies tanh+clamp on
+    # host. Used by `run_offpolicy_eval_unified` (trait surface) and
+    # by the host-list `select_greedy_action` wrapper above.
     def select_greedy_action_unified(
         mut self,
         ref obs: List[Scalar[DT]],
         mut action_out: List[Scalar[DT]],
     ) raises:
-        self._select_greedy_action_impl(obs, action_out)
+        var ob1_cpu_p = self._ob1.cpu_ptr()
+        var ao1_cpu_p = self._ao1.cpu_ptr()
+        for d in range(Self.OBS_DIM):
+            ob1_cpu_p[d] = obs[d]
 
-    # ─── Direct-callable (host-list) surface — GPU ───────────────────
+        comptime if Self.train_target == "cpu":
+            var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
+            var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM]())
+            self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
+        else:
+            var ctx = self.ctx.value()
+            ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
+            var ob1_t = TileTensor(
+                self._ob1.dev_ptr(),
+                row_major[1, Self.OBS_DIM](),
+            )
+            var ao1_t = TileTensor(
+                self._ao1.dev_ptr(),
+                row_major[1, 2 * Self.ACT_DIM](),
+            )
+            self.actor.forward["gpu", 1](ob1_t, output=ao1_t)
+            ctx.enqueue_copy(ao1_cpu_p, self._ao1.dev.value())
+            ctx.synchronize()
 
-    def select_action_gpu(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-        step_idx: Int,
-    ) raises:
-        comptime if Self.train_target != "gpu":
-            raise Error("SACTrainer[target='cpu']: use select_action")
-        self._select_action_impl(obs, action_out, step_idx)
-
-    def select_greedy_action_gpu(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-    ) raises:
-        comptime if Self.train_target != "gpu":
-            raise Error("SACTrainer[target='cpu']: use select_greedy_action")
-        self._select_greedy_action_impl(obs, action_out)
-
-    def train_step_gpu(mut self, step_idx: Int) raises -> Bool:
-        """Auto-routes through `Bf16Compute` when the trainer was built
-        with `use_bf16=True`, else `NoAMP`. Both specializations compile;
-        only one is exercised per call. Mirrors legacy SACTrainer."""
-        comptime if Self.train_target != "gpu":
-            raise Error("SACTrainer[target='cpu']: use train_step")
-        if self._use_bf16:
-            return self._train_step_impl[Bf16Compute](step_idx)
-        return self._train_step_impl[NoAMP](step_idx)
+        for j in range(Self.ACT_DIM):
+            var mean = ao1_cpu_p[j]
+            var a = ftanh(mean) * self.action_scale
+            if a > self.action_scale:
+                a = self.action_scale
+            elif a < -self.action_scale:
+                a = -self.action_scale
+            action_out[j] = a
 
     # ─── Tier-1 unified select_action ────────────────────────────────
     #
@@ -808,8 +742,9 @@ struct SACTrainer[
             comptime if Self.train_target == "cpu":
                 # CPU warmup: random_float64 lane-by-lane. At N_ENVS=1
                 # this consumes exactly ACT random_float64 draws in the
-                # same order as the existing _select_action_impl — so
-                # SAC CPU bit-identity is preserved if a caller swaps in.
+                # same order the legacy single-env CPU path consumed,
+                # preserving SAC CPU bit-identity for the host-list
+                # `select_action` wrapper that now delegates here.
                 for i in range(N_ENVS * ACT):
                     var u = Scalar[DT](2.0 * random_float64() - 1.0)
                     action_ptr[i] = u * self.action_scale

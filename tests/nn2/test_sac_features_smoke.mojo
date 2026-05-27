@@ -66,7 +66,7 @@ def _train_2k(mut trainer: Trainer) raises -> Scalar[DT]:
     for step in range(SMOKE_STEPS):
         for d in range(OBS_DIM):
             obs[d] = obs_self[d]
-        trainer.select_action_gpu(obs, action, step)
+        trainer.select_action(obs, action, step)
         var step_res = env.step_continuous(action[0])
         var nxt = step_res[0].copy()
         var reward = step_res[1]
@@ -86,7 +86,7 @@ def _train_2k(mut trainer: Trainer) raises -> Scalar[DT]:
             obs_self = env.get_obs_list()
         else:
             obs_self = nxt.copy()
-        _ = trainer.train_step_gpu(step)
+        _ = trainer.train_step(step)
     return trainer.mean_return()
 
 
