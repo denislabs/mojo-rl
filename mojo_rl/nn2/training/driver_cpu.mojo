@@ -1,172 +1,34 @@
-"""Off-policy CPU training driver — Phase B.1.
+"""On-policy CPU training driver — surviving from Phase B.1.
 
-One generic loop that runs SACTrainer / DDPGTrainer / TD3Trainer end-to-end
-against any `BoxContinuousActionEnv`. Mirrors the production
-`mojo_rl/deep_agents/core/training/offpolicy_train.mojo` surface (warmup
-handled inside the trainer's `select_action`, log/print cadences, optional
-Logger pointer) but keeps the existing nn2 step-based shape so the
-bit-identity baseline (CPU SAC Pendulum 30k seed=42 → mean_ret(10) = −167.572)
-is preserved by construction.
+Off-policy CPU/GPU/batched training is fully unified in
+`driver_unified.mojo` (`OffPolicyAgentUnifiedGpu` + `run_offpolicy_*`).
+Off-policy eval is unified there too (`run_offpolicy_eval_unified`).
+The legacy `OffPolicyTrainable[Gpu/GpuBatched]` traits and the matching
+CPU/GPU/eval drivers were deleted once SAC/MBPO/DDPG/TD3 all migrated.
 
-Trainer contract — duck-typed via the local `OffPolicyTrainable` trait:
+What remains in this file:
+  - `OnPolicyTrainable` — used by PPO via `run_onpolicy_train_cpu`.
+  - `run_onpolicy_train_cpu` — on-policy step-based CPU driver.
 
-  trait OffPolicyTrainable:
-      def select_action(obs_ptr, act_ptr, step_idx) raises
-      def record(obs_ptr, act_ptr, reward, next_obs_ptr, done)
-      def end_episode()
-      def train_step(step_idx) raises -> Bool
-      def mean_return() -> Scalar[DT]
-      def ep_count() -> Int
-
-SAC's `select_action[target="cpu"]` / `train_step[target="cpu"]` satisfy
-the non-parametric trait signatures via comptime-param default resolution
-(verified at compile time when the driver instantiates).
-
-`flush_metrics` is *not* part of the trait — its return type is per-trainer
-(SACMetrics / DDPGMetrics / TD3Metrics). The driver calls it through the
-struct's own surface; users who want logging plumb a non-NoOp Logger.
-For B.1 the driver invokes `flush_metrics` only on SAC (via a comptime
-branch). For DDPG/TD3 the per-cadence metric flush is the caller's
-responsibility.
+PPO's on-policy unification is tracked separately (task #96).
 """
 
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import DT
-from ..data.n_step_replay import GPUNStepBuffer
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
-from mojo_rl.core.logger import Logger, NoOpLogger
-
-
-# `OffPolicyTrainableGpuBatched` was deleted after the M5 + MBPO migrations.
-# The last consumer (`run_offpolicy_train_gpu_n_envs`) was removed in M5;
-# the trait surface is fully subsumed by `OffPolicyAgentUnifiedGpu` in
-# `driver_unified.mojo`. SAC's conformance was dropped at the same time.
-
-
-trait OffPolicyTrainableGpu(Movable, ImplicitlyDestructible):
-    """Surface every nn2 off-policy trainer that supports a GPU train
-    path must expose for the GPU train + eval drivers (Phase B.5).
-
-    Mirrors `OffPolicyTrainable` (the CPU surface) but with explicitly
-    `_gpu` non-parametric methods that forward to the trainer's
-    parametric `["gpu"]` path. Same conformance rationale as the CPU
-    trait: Mojo nightly's trait conformance is strict about comptime-
-    param signatures, so we ship a non-parametric wrapper per method.
-
-    DDPG/TD3 are CPU-only in nn2 today and do NOT conform — only SAC
-    does. When DDPG/TD3 GPU paths land, they'll add their own
-    conformance.
-
-    `select_greedy_action_gpu` exists for symmetry with the CPU eval
-    driver; the GPU eval driver uses it. SAC's GPU greedy is the same
-    tanh(mean)*action_scale math as CPU but executed against device
-    buffers.
-    """
-
-    def select_action_gpu(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-        step_idx: Int,
-    ) raises:
-        ...
-
-    def select_greedy_action_gpu(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-    ) raises:
-        ...
-
-    def record(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        ref action: List[Scalar[DT]],
-        reward: Scalar[DT],
-        ref next_obs: List[Scalar[DT]],
-        done: Scalar[DT],
-    ) raises:
-        ...
-
-    def end_episode(mut self):
-        ...
-
-    def train_step_gpu(mut self, step_idx: Int) raises -> Bool:
-        ...
-
-    def mean_return(self) -> Scalar[DT]:
-        ...
-
-    def ep_count(self) -> Int:
-        ...
-
-
-trait OffPolicyTrainable(Movable, ImplicitlyDestructible):
-    """Surface every nn2 off-policy trainer (SAC / DDPG / TD3) exposes
-    for the CPU training + eval drivers.
-
-    Non-parametric. SAC's `select_action[target: StaticString = "cpu"]`
-    and `train_step[target: StaticString = "cpu"]` satisfy this trait
-    via thin non-parametric wrappers on SACTrainer that forward to the
-    parametric `["cpu"]` path. DDPG/TD3 already have non-parametric
-    signatures so they conform directly.
-
-    `select_greedy_action` (Phase B.2): deterministic, exploration-free
-    action selection used by `run_offpolicy_eval_cpu`. SAC uses
-    tanh(mean) * action_scale (skip rsample's stochastic head); DDPG/TD3
-    forward the actor and clamp without adding Gaussian noise.
-    """
-
-    def select_action(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-        step_idx: Int,
-    ) raises:
-        ...
-
-    def select_greedy_action(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-    ) raises:
-        ...
-
-    def record(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        ref action: List[Scalar[DT]],
-        reward: Scalar[DT],
-        ref next_obs: List[Scalar[DT]],
-        done: Scalar[DT],
-    ) raises:
-        ...
-
-    def end_episode(mut self):
-        ...
-
-    def train_step(mut self, step_idx: Int) raises -> Bool:
-        ...
-
-    def mean_return(self) -> Scalar[DT]:
-        ...
-
-    def ep_count(self) -> Int:
-        ...
 
 
 trait OnPolicyTrainable(Movable, ImplicitlyDestructible):
     """Surface every nn2 on-policy trainer (PPO / future A2C) exposes
     for the on-policy CPU training driver (Phase I.2.d).
 
-    Per-step contract mirrors `OffPolicyTrainable` so the driver loop
-    stays almost identical (collect transition → record → call
-    `train_step` once per env step). The only behavioural difference
-    is that on-policy `train_step` returns False on the vast majority
-    of steps and True only when a rollout-length boundary is hit and
-    the K-epoch minibatch updates fire.
+    Per-step contract mirrors the off-policy driver so the loop stays
+    almost identical (collect transition → record → call `train_step`
+    once per env step). The only behavioural difference is that
+    on-policy `train_step` returns False on the vast majority of steps
+    and True only when a rollout-length boundary is hit and the
+    K-epoch minibatch updates fire.
 
     Internal state ownership: the trainer caches `(unbounded action,
     log_prob, value)` between `select_action` and `record_transition`.
@@ -232,10 +94,10 @@ def run_onpolicy_train_cpu[
 ) raises -> List[Scalar[DT]]:
     """Step-based on-policy CPU training driver (Phase I.2.d).
 
-    Mirrors `run_offpolicy_train_cpu` exactly: one env step + one
-    `train_step` call per iteration. PPO's rollout accumulation and
-    K-epoch update fire inside `trainer.train_step` whenever a
-    rollout-length boundary is crossed (most steps return False).
+    One env step + one `train_step` call per iteration. PPO's rollout
+    accumulation and K-epoch update fire inside `trainer.train_step`
+    whenever a rollout-length boundary is crossed (most steps return
+    False).
 
     Args:
         trainer: Any nn2 on-policy trainer (PPO today).
@@ -300,10 +162,3 @@ def run_onpolicy_train_cpu[
             )
 
     return ep_returns^
-
-
-# `run_offpolicy_train_cpu` was deleted after the MBPO migration to
-# `run_offpolicy_train_batched` (Tier-3). All callers now go through the
-# unified driver in `driver_unified.mojo`. The `OffPolicyTrainable` trait
-# above is kept because the CPU eval driver (`run_offpolicy_eval_cpu`)
-# still uses it, as does `run_offpolicy_eval_gpu` via `OffPolicyTrainableGpu`.

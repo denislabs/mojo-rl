@@ -20,8 +20,10 @@ from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks import UniformSampleGpuStep
-from mojo_rl.nn2.training.driver_unified import run_offpolicy_train_unified
-from mojo_rl.nn2.training.driver_gpu import run_offpolicy_eval_gpu
+from mojo_rl.nn2.training.driver_unified import (
+    run_offpolicy_train_unified,
+    run_offpolicy_eval_unified,
+)
 
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -95,12 +97,10 @@ def main() raises:
 
     # Greedy eval after training.
     var eval_env = PendulumEnv[DT]()
-    var eval_mean = run_offpolicy_eval_gpu(
+    var eval_mean = run_offpolicy_eval_unified(
         trainer,
         eval_env,
         num_episodes=10,
-        obs_dim=OBS_DIM,
-        act_dim=ACT_DIM,
         max_steps_per_episode=200,
         verbose=False,
     )

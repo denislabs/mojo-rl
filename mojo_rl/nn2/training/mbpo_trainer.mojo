@@ -9,7 +9,8 @@ they're trainer methods invoked from train_step on a `model_train_freq`
 cadence (block decomposition isn't the right fit for multi-epoch /
 multi-step orchestration).
 
-CPU only. Mirrors MBPOTrainerV2 surface (OffPolicyTrainable).
+CPU only. Conforms to `OffPolicyAgentUnifiedGpu` (Tier-3 driver
+surface); GPU record stubs raise — unreachable on the CPU env branch.
 """
 
 from std.math import exp as fexp, sqrt as fsqrt, log as flog
@@ -29,7 +30,6 @@ from ..optimizer.scalar_adam import ScalarAdam
 from .dynamics_ensemble_block import DynamicsEnsembleBlock
 from .episode_tracker import EpisodeTracker
 from .trainer_block import TrainerState
-from .driver_cpu import OffPolicyTrainable
 from .driver_unified import OffPolicyAgentUnifiedGpu
 from .blocks import (
     DualSampleCpuStep,
@@ -55,7 +55,7 @@ struct MBPOTrainer[
     REAL_RATIO_PCT: Int = 5,
     LOGVAR_MIN: Float64 = -10.0,
     LOGVAR_MAX: Float64 = -2.0,
-](OffPolicyTrainable & OffPolicyAgentUnifiedGpu):
+](OffPolicyAgentUnifiedGpu):
     comptime DYN_IN: Int = Self.OBS_DIM + Self.ACT_DIM
     comptime DYN_PRED: Int = 1 + Self.OBS_DIM
     comptime DYN_OUT: Int = 2 * Self.DYN_PRED
@@ -358,7 +358,9 @@ struct MBPOTrainer[
         t.sample_blk.setup(learning_starts)
         return t^
 
-    # ─── OffPolicyTrainable surface ───────────────────────────────────
+    # ─── Direct-callable (host-list) surface ─────────────────────────
+    # Used by smoke tests that call the trainer directly without a
+    # driver. The Tier-3 driver uses the `*_unified` methods below.
 
     def select_action(
         mut self,
@@ -545,6 +547,13 @@ struct MBPOTrainer[
 
     def train_step_unified(mut self, step_idx: Int) raises -> Bool:
         return self.train_step(step_idx)
+
+    def select_greedy_action_unified(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
+    ) raises:
+        self.select_greedy_action(obs, action_out)
 
     def add_complete_return(mut self, ret: Scalar[DT]):
         self.tracker.add_complete_return(ret)

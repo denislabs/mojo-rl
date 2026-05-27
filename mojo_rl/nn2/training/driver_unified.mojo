@@ -1,13 +1,18 @@
-"""Off-policy unified training drivers — Tier-1 + Tier-3.
+"""Off-policy unified training + eval drivers — Tier-1 + Tier-3.
 
-Two driver functions covering all useful (env_target, train_target,
-N_ENVS) combinations:
+Two training driver functions covering all useful (env_target,
+train_target, N_ENVS) combinations:
 
   env_target | train_target | N_ENVS | driver
   -----------|--------------|--------|----------------------------------
   cpu        | cpu          | >=1    | run_offpolicy_train_batched
   gpu        | gpu          | >=1    | run_offpolicy_train_batched
   cpu        | gpu          | 1      | run_offpolicy_train_unified
+
+Plus one eval driver `run_offpolicy_eval_unified` that replaces the
+legacy `run_offpolicy_eval_cpu` / `run_offpolicy_eval_gpu` split — the
+trainer dispatches CPU vs GPU internally inside
+`select_greedy_action_unified`.
 
 The (env=gpu, train=cpu) combination is omitted as degenerate
 (D2H every obs back to CPU for training — never useful in practice).
@@ -46,19 +51,15 @@ from .driver_scratch import DriverScratch
 
 trait OffPolicyAgentUnified(Movable, ImplicitlyDestructible):
     """Single-trait surface for the unified off-policy drivers.
-    Compared to the legacy `OffPolicyTrainable[Gpu/GpuBatched]` triple,
-    this trait exposes `AGENT_TRAIN_TARGET` (so the driver can comptime-
-    gate H2D/D2H around the env step) and replaces the three
-    `select_action[/_gpu/_gpu_batched]` variants with one
-    `select_action_unified[N_ENVS]`.
+    Exposes `AGENT_TRAIN_TARGET` (so the driver can comptime-gate
+    H2D/D2H around the env step) and routes all action selection
+    through one `select_action_unified[N_ENVS]` entry instead of the
+    historic three `select_action[/_gpu/_gpu_batched]` variants.
 
-    `record` keeps the legacy host-`List` signature for single-env use
-    (env step returns Lists). For batched-GPU use, the GPU-env driver
-    pushes transitions via the trainer's existing `record_batch_gpu` /
-    `record_batch_gpu_nstep` — not part of this trait yet because the
-    signatures are heavy and only a few trainers will conform.
-
-    SACTrainer conforms today; DDPG/TD3/MBPO will follow."""
+    `record` keeps a host-`List` signature for single-env use (env step
+    returns Lists). Batched record paths live on the `OffPolicyAgentUnifiedGpu`
+    sub-trait (or, for the CPU env batched path, in `record_batch_cpu`
+    here). SAC / MBPO / DDPG / TD3 all conform."""
 
     # Trait-visible alias of the trainer's struct-comptime `train_target`.
     # SACTrainer exposes this via `AGENT_TRAIN_TARGET = Self.train_target`.
@@ -80,6 +81,18 @@ trait OffPolicyAgentUnified(Movable, ImplicitlyDestructible):
         alp_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         step_idx: Int,
     ) raises:
+        ...
+
+    def select_greedy_action_unified(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
+    ) raises:
+        """Deterministic, exploration-free action selection for eval.
+        Host-list signature; trainers dispatch internally on
+        `AGENT_TRAIN_TARGET` (CPU trainers run native, GPU trainers
+        H2D the obs and D2H the action under the hood). Used by
+        `run_offpolicy_eval_unified`."""
         ...
 
     def record(
@@ -616,3 +629,93 @@ def run_offpolicy_train_batched[
             next_print += print_every
 
     return ep_returns^
+
+
+# ──────────────────────────────────────────────────────────────────────
+# run_offpolicy_eval_unified — single-env greedy eval, target-agnostic.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def run_offpolicy_eval_unified[
+    A: OffPolicyAgentUnified,
+    E: BoxContinuousActionEnv,
+](
+    mut trainer: A,
+    mut env: E,
+    num_episodes: Int,
+    *,
+    max_steps_per_episode: Int = 1_000,
+    verbose: Bool = False,
+) raises -> Scalar[DT]:
+    """Non-mutating greedy eval driver — replaces both
+    `run_offpolicy_eval_cpu` and `run_offpolicy_eval_gpu`.
+
+    Trainer contract: `OffPolicyAgentUnified.select_greedy_action_unified`
+    handles target dispatch internally (CPU trainers run native; GPU
+    trainers H2D the obs and D2H the action under the hood). Only that
+    method is invoked here — `record` / `train_step_unified` /
+    `end_episode` / `add_complete_return` are intentionally skipped so
+    eval doesn't touch the trainer's replay buffer, optimizers, or
+    episode tracker. `obs_dim` / `act_dim` are read from
+    `A.AGENT_OBS_DIM` / `A.AGENT_ACT_DIM`.
+    """
+    comptime OBS = A.AGENT_OBS_DIM
+    comptime ACT = A.AGENT_ACT_DIM
+
+    var obs = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+    var action = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+
+    var action_list = List[Scalar[E.dtype]](capacity=ACT)
+    for _ in range(ACT):
+        action_list.append(Scalar[E.dtype](0.0))
+
+    var total_return = Scalar[DT](0.0)
+    var t_start = perf_counter_ns()
+
+    for ep in range(num_episodes):
+        var obs_list = env.reset_obs_list()
+        var ep_return = Scalar[DT](0.0)
+        var ep_steps: Int = 0
+
+        for _ in range(max_steps_per_episode):
+            for d in range(OBS):
+                obs[d] = Scalar[DT](obs_list[d])
+            trainer.select_greedy_action_unified(obs, action)
+            for j in range(ACT):
+                action_list[j] = Scalar[E.dtype](action[j])
+            var step_res = env.step_continuous_vec[E.dtype](action_list)
+            var nxt = step_res[0].copy()
+            var reward = step_res[1]
+            var done = step_res[2]
+            ep_return += Scalar[DT](reward)
+            ep_steps += 1
+            if done:
+                break
+            obs_list = nxt^
+
+        total_return += ep_return
+        if verbose:
+            print(
+                "  [eval ep ",
+                ep + 1,
+                "/",
+                num_episodes,
+                "] return=",
+                ep_return,
+                " steps=",
+                ep_steps,
+            )
+
+    var mean = total_return / Scalar[DT](num_episodes)
+    if verbose:
+        var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
+        print(
+            "eval: mean_return=",
+            mean,
+            " (",
+            num_episodes,
+            " episodes, ",
+            elapsed,
+            " s)",
+        )
+    return mean

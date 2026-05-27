@@ -5,18 +5,28 @@ CPU only. Pipeline (4 blocks):
 
 TD3DelayedActorPolyakStep bundles actor update + 3 polyaks, gated by an
 internal counter (no state pollution).
+
+Conforms to `OffPolicyAgentUnifiedGpu` so it's drivable through the
+Tier-3 `run_offpolicy_train_batched` (CPU env path only). GPU record
+stubs raise — unreachable on the CPU env branch.
 """
+
+from std.random import random_float64
+from std.gpu.host import DeviceContext, DeviceBuffer
+from layout import TileTensor, row_major
 
 from ..constants import DT
 from ..core import Module
 from ..core.online_target_pair import OnlineTargetPair
 from ..core.scratch_walkers import init_scratch_auto
+from ..data.n_step_replay import GPUNStepBuffer
 from ..initializer import Xavier
 from ..optimizer.adam import Adam
+from ..random.box_muller import box_muller_normal
 from .action_sampling_block import ActionSamplingBlock
+from .driver_unified import OffPolicyAgentUnifiedGpu
 from .episode_tracker import EpisodeTracker
 from .trainer_block import TrainerState
-from .driver_cpu import OffPolicyTrainable
 from .blocks import (
     UniformSampleCpuStep,
     TD3TargetYStep,
@@ -32,9 +42,11 @@ struct TD3Trainer[
     ACT_DIM: Int,
     BATCH: Int,
     REPLAY_CAPACITY: Int,
-](OffPolicyTrainable):
+](OffPolicyAgentUnifiedGpu):
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
+    # TD3 is CPU-only; the OffPolicyAgentUnifiedGpu GPU stubs raise.
+    comptime AGENT_TRAIN_TARGET: StaticString = "cpu"
 
     var actor_pair: OnlineTargetPair[Self.ACTOR]
     var pair1: OnlineTargetPair[Self.CRITIC]
@@ -236,7 +248,9 @@ struct TD3Trainer[
         t.sample_blk.setup(learning_starts)
         return t^
 
-    # ─── OffPolicyTrainable surface ───────────────────────────────────
+    # ─── Direct-callable (host-list) surface ─────────────────────────
+    # Used by smoke tests that call the trainer directly without a
+    # driver. The Tier-3 driver uses the `*_unified` methods below.
 
     def select_action(
         mut self,
@@ -330,3 +344,123 @@ struct TD3Trainer[
 
     def ep_count(self) -> Int:
         return self.tracker.ep_count
+
+    # ─── OffPolicyAgentUnifiedGpu surface (Tier-3 driver) ────────────
+    #
+    # TD3 is CPU-only — the GPU record stubs raise. The Tier-3 driver
+    # comptime-elides those branches when env_target == "cpu", so the
+    # stubs are never invoked from a correctly-built driver. Pattern
+    # mirrors MBPOTrainer / DDPGTrainer.
+
+    def select_action_unified[
+        N_ENVS: Int
+    ](
+        mut self,
+        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ao_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        alp_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        step_idx: Int,
+    ) raises:
+        comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+        comptime OBS = Self.OBS_DIM
+        comptime ACT = Self.ACT_DIM
+
+        if step_idx < self.learning_starts:
+            for i in range(N_ENVS * ACT):
+                var u = Scalar[DT](2.0 * random_float64() - 1.0)
+                action_ptr[i] = u * self.action_scale
+            return
+
+        # Actor output: N_ENVS × ACT.
+        var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
+        var ao_t = TileTensor(ao_scratch_ptr, row_major[N_ENVS, ACT]())
+        self.actor_pair.online.forward["cpu", N_ENVS](obs_t, output=ao_t)
+
+        # Gaussian noise into alp_scratch_ptr (≥ N_ENVS*ACT capacity).
+        box_muller_normal(alp_scratch_ptr, N_ENVS * ACT)
+        var sigma = self.exploration_noise * self.action_scale
+        for i in range(N_ENVS * ACT):
+            var a = ao_scratch_ptr[i] + alp_scratch_ptr[i] * sigma
+            if a > self.action_scale:
+                a = self.action_scale
+            elif a < -self.action_scale:
+                a = -self.action_scale
+            action_ptr[i] = a
+
+    def train_step_unified(mut self, step_idx: Int) raises -> Bool:
+        return self.train_step(step_idx)
+
+    def select_greedy_action_unified(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
+    ) raises:
+        self.select_greedy_action(obs, action_out)
+
+    def add_complete_return(mut self, ret: Scalar[DT]):
+        self.tracker.add_complete_return(ret)
+
+    def record_batch_cpu[
+        N_ENVS: Int
+    ](
+        mut self,
+        prev_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        comptime OBS = Self.OBS_DIM
+        comptime ACT = Self.ACT_DIM
+        var obs_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+        var act_lane = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+        var nxt_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+        for env_idx in range(N_ENVS):
+            for d in range(OBS):
+                obs_lane[d] = prev_obs_ptr[env_idx * OBS + d]
+                nxt_lane[d] = next_obs_ptr[env_idx * OBS + d]
+            for j in range(ACT):
+                act_lane[j] = action_ptr[env_idx * ACT + j]
+            self.sample_blk.add(
+                obs_lane,
+                act_lane,
+                reward_ptr[env_idx],
+                nxt_lane,
+                done_ptr[env_idx],
+            )
+
+    def record_batch_gpu[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        raise Error(
+            "TD3Trainer is CPU-only; record_batch_gpu unreachable"
+            " via the Tier-3 cpu env path"
+        )
+
+    def record_batch_gpu_nstep[
+        N_ENVS: Int, NS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut nstep_buf: GPUNStepBuffer[
+            NS, Self.AGENT_OBS_DIM, Self.AGENT_ACT_DIM, N_ENVS,
+        ],
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        raise Error(
+            "TD3Trainer is CPU-only; record_batch_gpu_nstep unreachable"
+            " via the Tier-3 cpu env path"
+        )

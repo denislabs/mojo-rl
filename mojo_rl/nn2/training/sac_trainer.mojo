@@ -15,13 +15,14 @@ Single pipeline body in `_train_step_impl[train_target]`. Single
 time → zero runtime branches on target or replay kind beyond the
 comptime-if already inside each block.
 
-Dual driver-trait conformance: exposes both `train_step` /
-`select_action` (satisfies `OffPolicyTrainable`) and `train_step_gpu` /
-`select_action_gpu` (satisfies `OffPolicyTrainableGpu`), plus the
-newer `train_step_unified` / `select_action_unified` (satisfies
-`OffPolicyAgentUnified`). Each non-parametric method dispatches into
-the parametric `_impl[train_target]`. Calling the wrong surface (e.g.
-`train_step` on a `train_target="gpu"` instance) raises at runtime.
+Driver-trait conformance: `OffPolicyAgentUnifiedGpu` (parent
+`OffPolicyAgentUnified` lifted into it) via `train_step_unified` /
+`select_action_unified` / `select_greedy_action_unified` /
+`record_batch_cpu` / `record_batch_gpu[_nstep]`. The legacy direct-
+callable host-list methods (`select_action[_gpu]`, `train_step[_gpu]`,
+`select_greedy_action[_gpu]`) are kept on the struct as user-facing
+entry points for smoke tests that bypass the driver; calling the wrong
+surface (e.g. `train_step` on a `train_target="gpu"` instance) raises.
 
 Bit-equivalent to the previous SACTrainer when
 `SAMPLE = UniformSampleCpuStep` + `train_target = "cpu"` (validated by
@@ -54,11 +55,7 @@ from .episode_tracker import EpisodeTracker
 from .sac_metrics import SACMetrics
 from .timer import Timer
 from .trainer_block import TrainerState
-from .driver_cpu import (
-    OffPolicyTrainable,
-    OffPolicyTrainableGpu,
-)
-from .driver_unified import OffPolicyAgentUnified, OffPolicyAgentUnifiedGpu
+from .driver_unified import OffPolicyAgentUnifiedGpu
 from .blocks import (
     SampleBlock,
     TargetYStep,
@@ -135,12 +132,7 @@ struct SACTrainer[
     SAMPLE: SampleBlock,
     ACTOR: Module,
     CRITIC: Module,
-](
-    OffPolicyTrainable,
-    OffPolicyTrainableGpu,
-    OffPolicyAgentUnified,
-    OffPolicyAgentUnifiedGpu,
-):
+](OffPolicyAgentUnifiedGpu):
     """Dimensions (OBS / ACT / BATCH) are derived from SAMPLE so the
     user specifies them ONCE (on the sample block type), not on both
     the trainer and the block. Symbolic-equality follows: the
@@ -680,7 +672,10 @@ struct SACTrainer[
                 ctx=self.ctx,
             )
 
-    # ─── OffPolicyTrainable (CPU) surface ─────────────────────────────
+    # ─── Direct-callable (host-list) surface — CPU ───────────────────
+    #
+    # Kept as user-facing entry points for smoke tests that bypass the
+    # driver. Drivers use `*_unified` below.
 
     def select_action(
         mut self,
@@ -723,7 +718,19 @@ struct SACTrainer[
                 return self._train_step_impl[Bf16Compute](step_idx)
             return self._train_step_impl[NoAMP](step_idx)
 
-    # ─── OffPolicyTrainableGpu (GPU) surface ──────────────────────────
+    # ─── Tier-1 unified greedy eval — target-agnostic ────────────────
+    #
+    # `_select_greedy_action_impl` already comptime-branches on
+    # `Self.train_target`; this method is just the trait-facing wrapper
+    # without the per-target raise guards in `select_greedy_action[_gpu]`.
+    def select_greedy_action_unified(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
+    ) raises:
+        self._select_greedy_action_impl(obs, action_out)
+
+    # ─── Direct-callable (host-list) surface — GPU ───────────────────
 
     def select_action_gpu(
         mut self,
