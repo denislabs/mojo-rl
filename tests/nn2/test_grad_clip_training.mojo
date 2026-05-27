@@ -14,7 +14,7 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks_ref import UniformSampleCpuStep
+from mojo_rl.nn2.training.blocks import UniformSampleCpuStep
 from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
 
 from mojo_rl.envs.pendulum import PendulumEnv
@@ -28,13 +28,18 @@ comptime REPLAY_CAPACITY = 5_000
 comptime SMOKE_STEPS = 5_000
 
 comptime ActorNet = StochasticActor[
-    OBS_DIM, ACT_DIM,
-    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    OBS_DIM,
+    ACT_DIM,
+    Linear[OBS_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
@@ -44,7 +49,8 @@ def test_sac_with_grad_clip_runs() raises:
     var trainer = SACTrainer[
         "cpu",
         UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-        ActorNet, CriticNet,
+        ActorNet,
+        CriticNet,
     ].make(
         action_scale=Scalar[DT](2.0),
         # Modest finite clip — exercises the walker every Adam.step.
@@ -53,9 +59,13 @@ def test_sac_with_grad_clip_runs() raises:
     var env = PendulumEnv[DT]()
 
     var ep_returns = run_offpolicy_train_cpu(
-        trainer, env, SMOKE_STEPS,
-        obs_dim=OBS_DIM, act_dim=ACT_DIM,
-        print_every=0, verbose=False,
+        trainer,
+        env,
+        SMOKE_STEPS,
+        obs_dim=OBS_DIM,
+        act_dim=ACT_DIM,
+        print_every=0,
+        verbose=False,
     )
 
     var n_eps = trainer.ep_count()
@@ -71,8 +81,11 @@ def test_sac_with_grad_clip_runs() raises:
         "Tracker should have moved off initial fill; mean_return=" + String(mr),
     )
     print(
-        "  test_sac_with_grad_clip_runs PASSED (clip=10, eps=", n_eps,
-        " mean_ret=", mr, ")",
+        "  test_sac_with_grad_clip_runs PASSED (clip=10, eps=",
+        n_eps,
+        " mean_ret=",
+        mr,
+        ")",
     )
 
 

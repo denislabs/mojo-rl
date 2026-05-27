@@ -22,7 +22,7 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.combinators import Sequential
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks_ref import (
+from mojo_rl.nn2.training.blocks import (
     NStepSampleCpuStep,
     NStepSampleGpuStep,
 )
@@ -36,10 +36,14 @@ comptime N_STEP = 3
 comptime N_STEPS = 200
 
 comptime ActorNet = Sequential[
-    Linear[OBS, 16], ReLU[16], Linear[16, 2 * ACT],
+    Linear[OBS, 16],
+    ReLU[16],
+    Linear[16, 2 * ACT],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS + ACT, 16], ReLU[16], Linear[16, 1],
+    Linear[OBS + ACT, 16],
+    ReLU[16],
+    Linear[16, 1],
 ]
 
 
@@ -48,7 +52,8 @@ def test_cpu_nstep() raises:
     var trainer = SACTrainer[
         "cpu",
         NStepSampleCpuStep[N_STEP, OBS, ACT, BATCH, CAP],
-        ActorNet, CriticNet,
+        ActorNet,
+        CriticNet,
     ].make(
         actor_lr=Scalar[DT](3e-4),
         critic_lr=Scalar[DT](1e-3),
@@ -65,9 +70,7 @@ def test_cpu_nstep() raises:
     var n_trained = 0
     for step in range(N_STEPS):
         for d in range(OBS):
-            obs[d] = Scalar[DT](
-                0.5 + 0.3 * Float64(d) + 0.01 * Float64(step)
-            )
+            obs[d] = Scalar[DT](0.5 + 0.3 * Float64(d) + 0.01 * Float64(step))
         trainer.select_action(obs, action, step)
         var reward = Scalar[DT](-1.0 + 0.01 * Float64(step))
         for d in range(OBS):
@@ -94,7 +97,8 @@ def test_gpu_nstep() raises:
     var trainer = SACTrainer[
         "gpu",
         NStepSampleGpuStep[N_STEP, OBS, ACT, BATCH, CAP],
-        ActorNet, CriticNet,
+        ActorNet,
+        CriticNet,
     ].make(
         ctx=ctx,
         actor_lr=Scalar[DT](3e-4),
@@ -112,9 +116,7 @@ def test_gpu_nstep() raises:
     var n_trained = 0
     for step in range(N_STEPS):
         for d in range(OBS):
-            obs[d] = Scalar[DT](
-                0.5 + 0.3 * Float64(d) + 0.01 * Float64(step)
-            )
+            obs[d] = Scalar[DT](0.5 + 0.3 * Float64(d) + 0.01 * Float64(step))
         trainer.select_action_gpu(obs, action, step)
         var reward = Scalar[DT](-1.0 + 0.01 * Float64(step))
         for d in range(OBS):

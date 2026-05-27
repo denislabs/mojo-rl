@@ -17,7 +17,7 @@ from .action_sampling_block import ActionSamplingBlock
 from .episode_tracker import EpisodeTracker
 from .trainer_block import TrainerState
 from .driver_cpu import OffPolicyTrainable
-from .blocks_ref import (
+from .blocks import (
     UniformSampleCpuStep,
     DDPGTargetYStep,
     SingleCriticStep,
@@ -34,75 +34,118 @@ struct DDPGTrainer[
     BATCH: Int,
     REPLAY_CAPACITY: Int,
 ](OffPolicyTrainable):
-
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
 
-    var actor_pair:  OnlineTargetPair[Self.ACTOR]
+    var actor_pair: OnlineTargetPair[Self.ACTOR]
     var critic_pair: OnlineTargetPair[Self.CRITIC]
-    var actor_opt:   Adam
-    var critic_opt:  Adam
+    var actor_opt: Adam
+    var critic_opt: Adam
 
     var sample_blk: UniformSampleCpuStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.REPLAY_CAPACITY,
     ]
     var target_y_blk: DDPGTargetYStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.ACTOR,
+        Self.CRITIC,
     ]
     var critic_blk: SingleCriticStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.CRITIC,
     ]
     var actor_blk: DDPGActorStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.ACTOR,
+        Self.CRITIC,
     ]
     var polyak_blk: DDPGPolyakStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.ACTOR,
+        Self.CRITIC,
     ]
 
     var policy_head: ActionSamplingBlock[
         Self.ACTOR, Self.OBS_DIM, Self.ACT_DIM, Self.ACT_DIM
     ]
 
-    var state:   TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
+    var state: TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
     var tracker: EpisodeTracker
 
-    var action_scale:    Scalar[DT]
-    var noise_scale:     Scalar[DT]
+    var action_scale: Scalar[DT]
+    var noise_scale: Scalar[DT]
     var learning_starts: Int
 
-    var _actor_L_accum:  Scalar[DT]
+    var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
-    var _update_count:   Int
+    var _update_count: Int
 
     def __init__(out self):
-        self.actor_pair  = OnlineTargetPair[Self.ACTOR]()
+        self.actor_pair = OnlineTargetPair[Self.ACTOR]()
         self.critic_pair = OnlineTargetPair[Self.CRITIC]()
-        self.actor_opt   = Adam()
-        self.critic_opt  = Adam()
+        self.actor_opt = Adam()
+        self.critic_opt = Adam()
         self.sample_blk = UniformSampleCpuStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.REPLAY_CAPACITY,
         ]()
         self.target_y_blk = DDPGTargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ]()
         self.critic_blk = SingleCriticStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.CRITIC,
         ]()
         self.actor_blk = DDPGActorStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ]()
         self.polyak_blk = DDPGPolyakStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ]()
         self.policy_head = ActionSamplingBlock[
-            Self.ACTOR, Self.OBS_DIM, Self.ACT_DIM, Self.ACT_DIM,
+            Self.ACTOR,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.ACT_DIM,
         ]()
         self.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ]()
         self.tracker = EpisodeTracker(
-            window=List[Scalar[DT]](), window_size=0, idx=0,
-            current_return=Scalar[DT](0.0), ep_count=0,
+            window=List[Scalar[DT]](),
+            window_size=0,
+            idx=0,
+            current_return=Scalar[DT](0.0),
+            ep_count=0,
         )
         self.action_scale = Scalar[DT](1.0)
         self.noise_scale = Scalar[DT](0.1)
@@ -112,7 +155,9 @@ struct DDPGTrainer[
         self._update_count = 0
 
     @staticmethod
-    def make[target: StaticString](
+    def make[
+        target: StaticString
+    ](
         actor_lr: Scalar[DT] = Scalar[DT](1e-4),
         critic_lr: Scalar[DT] = Scalar[DT](1e-3),
         gamma: Scalar[DT] = Scalar[DT](0.99),
@@ -142,16 +187,31 @@ struct DDPGTrainer[
         t.critic_opt.max_grad_norm = max_grad_norm
 
         t.target_y_blk = DDPGTargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ].make["cpu"](action_scale=action_scale, gamma=gamma)
         t.critic_blk = SingleCriticStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.CRITIC,
         ].make["cpu"]()
         t.actor_blk = DDPGActorStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ].make["cpu"]()
         t.polyak_blk = DDPGPolyakStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ].make(tau=tau)
         t.policy_head = ActionSamplingBlock[
             Self.ACTOR, Self.OBS_DIM, Self.ACT_DIM, Self.ACT_DIM
@@ -161,7 +221,9 @@ struct DDPGTrainer[
             window_size=window_size, initial_fill=initial_episode_fill
         )
         t.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ].make["cpu"]()
 
         init_scratch_auto[Self, target="cpu"](t)
@@ -182,9 +244,13 @@ struct DDPGTrainer[
         step_idx: Int,
     ) raises:
         self.policy_head.select_deterministic_with_noise["cpu"](
-            self.actor_pair.online, obs, action_out,
-            step_idx=step_idx, learning_starts=self.learning_starts,
-            action_scale=self.action_scale, noise_scale=self.noise_scale,
+            self.actor_pair.online,
+            obs,
+            action_out,
+            step_idx=step_idx,
+            learning_starts=self.learning_starts,
+            action_scale=self.action_scale,
+            noise_scale=self.noise_scale,
         )
 
     def select_greedy_action(
@@ -193,7 +259,9 @@ struct DDPGTrainer[
         mut action_out: List[Scalar[DT]],
     ) raises:
         self.policy_head.select_deterministic_with_noise["cpu"](
-            self.actor_pair.online, obs, action_out,
+            self.actor_pair.online,
+            obs,
+            action_out,
             step_idx=self.learning_starts,
             learning_starts=self.learning_starts,
             action_scale=self.action_scale,
@@ -224,22 +292,29 @@ struct DDPGTrainer[
 
         self.target_y_blk.step["cpu"](
             self.state,
-            self.actor_pair.target_net, self.critic_pair.target_net,
+            self.actor_pair.target_net,
+            self.critic_pair.target_net,
         )
         self.critic_blk.step["cpu"](
-            self.state, self.critic_pair.online, self.critic_opt,
+            self.state,
+            self.critic_pair.online,
+            self.critic_opt,
         )
         self.actor_blk.step["cpu"](
-            self.state, self.actor_pair.online, self.actor_opt,
+            self.state,
+            self.actor_pair.online,
+            self.actor_opt,
             self.critic_pair.online,
         )
         self.polyak_blk.step["cpu"](
-            self.state, self.actor_pair, self.critic_pair,
+            self.state,
+            self.actor_pair,
+            self.critic_pair,
         )
 
-        self._actor_L_accum  += self.state.actor_loss
+        self._actor_L_accum += self.state.actor_loss
         self._critic_L_accum += self.state.critic_loss
-        self._update_count   += 1
+        self._update_count += 1
         return True
 
     def mean_return(self) -> Scalar[DT]:

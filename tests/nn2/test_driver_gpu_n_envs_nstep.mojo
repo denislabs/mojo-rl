@@ -29,7 +29,7 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks_ref import UniformSampleGpuStep
+from mojo_rl.nn2.training.blocks import UniformSampleGpuStep
 from mojo_rl.nn2.training.driver_gpu import run_offpolicy_train_gpu_n_envs
 
 from mojo_rl.envs.pendulum.pendulum_v2 import PendulumV2
@@ -45,13 +45,18 @@ comptime N_STEP = 3
 comptime TOTAL_ENV_STEPS = 4_000
 
 comptime ActorNet = StochasticActor[
-    OBS_DIM, ACT_DIM,
-    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    OBS_DIM,
+    ACT_DIM,
+    Linear[OBS_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
@@ -65,11 +70,14 @@ def test_driver_gpu_n_envs_nstep_smoke() raises:
     var trainer = SACTrainer[
         "gpu",
         UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-        ActorNet, CriticNet,
+        ActorNet,
+        CriticNet,
     ].make(
         ctx=ctx,
-        action_scale=Scalar[DT](2.0), gamma=gamma_n,
-        learning_starts=500, window_size=10,
+        action_scale=Scalar[DT](2.0),
+        gamma=gamma_n,
+        learning_starts=500,
+        window_size=10,
         initial_episode_fill=Scalar[DT](-1250.0),
     )
     var env = PendulumV2[DT]()
@@ -78,16 +86,21 @@ def test_driver_gpu_n_envs_nstep_smoke() raises:
         SACTrainer[
             "gpu",
             UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-            ActorNet, CriticNet,
+            ActorNet,
+            CriticNet,
         ],
         PendulumV2[DT],
         N_ENVS,
-        N_STEP,           # NS — driver routes via record_batch_gpu_nstep
+        N_STEP,  # NS — driver routes via record_batch_gpu_nstep
     ](
-        ctx, trainer, env, TOTAL_ENV_STEPS,
+        ctx,
+        trainer,
+        env,
+        TOTAL_ENV_STEPS,
         rng_seed=UInt64(42),
         updates_per_step=1,
-        print_every=0, verbose=False,
+        print_every=0,
+        verbose=False,
         nstep_gamma=Scalar[DT](0.99),
     )
 
@@ -96,12 +109,16 @@ def test_driver_gpu_n_envs_nstep_smoke() raises:
     assert_true(
         n_eps >= 8,
         "Expected >=8 completed episodes from 4k env steps × N_ENVS=4 "
-        + "(n-step compressed), got " + String(n_eps),
+        + "(n-step compressed), got "
+        + String(n_eps),
     )
     assert_true(
         len(ep_returns) == n_eps,
-        "Driver returned " + String(len(ep_returns))
-        + " entries but trainer reports " + String(n_eps) + " episodes",
+        "Driver returned "
+        + String(len(ep_returns))
+        + " entries but trainer reports "
+        + String(n_eps)
+        + " episodes",
     )
     assert_true(
         (mr - Scalar[DT](-1250.0)).__abs__() > Scalar[DT](1.0),
@@ -117,8 +134,11 @@ def test_driver_gpu_n_envs_nstep_smoke() raises:
         "Pendulum mean_return looks pathological; got " + String(mr),
     )
     print(
-        "  test_driver_gpu_n_envs_nstep_smoke PASSED (eps=", n_eps,
-        " mean_ret(10)=", mr, ")",
+        "  test_driver_gpu_n_envs_nstep_smoke PASSED (eps=",
+        n_eps,
+        " mean_ret(10)=",
+        mr,
+        ")",
     )
 
 

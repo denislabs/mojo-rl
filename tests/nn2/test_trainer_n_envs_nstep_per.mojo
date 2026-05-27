@@ -33,8 +33,9 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks_ref import (
-    UniformSampleGpuStep, PerSampleGpuStep,
+from mojo_rl.nn2.training.blocks import (
+    UniformSampleGpuStep,
+    PerSampleGpuStep,
 )
 from mojo_rl.nn2.data.n_step_replay import GPUNStepBuffer
 
@@ -48,18 +49,28 @@ comptime N_ENVS = 4
 comptime N_STEP = 3
 
 comptime ActorNet = StochasticActor[
-    OBS_DIM, ACT_DIM,
-    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    OBS_DIM,
+    ACT_DIM,
+    Linear[OBS_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
 
-def _fill(buf: DeviceBuffer[DT], h: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int, val: Scalar[DT]) raises:
+def _fill(
+    buf: DeviceBuffer[DT],
+    h: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    n: Int,
+    val: Scalar[DT],
+) raises:
     for i in range(n):
         h[i] = val
 
@@ -67,12 +78,14 @@ def _fill(buf: DeviceBuffer[DT], h: UnsafePointer[Scalar[DT], MutAnyOrigin], n: 
 comptime PerT = SACTrainer[
     "gpu",
     PerSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-    ActorNet, CriticNet,
+    ActorNet,
+    CriticNet,
 ]
 comptime UniformT = SACTrainer[
     "gpu",
     UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-    ActorNet, CriticNet,
+    ActorNet,
+    CriticNet,
 ]
 
 
@@ -107,23 +120,30 @@ def test_record_batch_gpu_routes_to_per() raises:
     dne.enqueue_fill(Scalar[DT](0.0))
 
     trainer.record_batch_gpu[N_ENVS](
-        ctx, pre_obs, act, rew, obs, dne,
+        ctx,
+        pre_obs,
+        act,
+        rew,
+        obs,
+        dne,
     )
     assert_true(
         trainer.sample_blk.buf.value().base.size == N_ENVS,
         "buf_per.base.size after record_batch_gpu[N_ENVS] should be "
-        + String(N_ENVS) + ", got "
+        + String(N_ENVS)
+        + ", got "
         + String(trainer.sample_blk.buf.value().base.size),
     )
     var total = trainer.sample_blk.buf.value()._tree_total()
     assert_true(
         Float64(total) > 0.0,
-        "Sum-tree total should be > 0 after batched add; got "
-        + String(total),
+        "Sum-tree total should be > 0 after batched add; got " + String(total),
     )
     print(
         "  test_record_batch_gpu_routes_to_per PASSED size=",
-        trainer.sample_blk.buf.value().base.size, " total=", total,
+        trainer.sample_blk.buf.value().base.size,
+        " total=",
+        total,
     )
 
 
@@ -134,7 +154,10 @@ def test_record_batch_gpu_nstep_compresses_n_to_one_per_env() raises:
     var ctx = DeviceContext()
     var trainer = _build_nstep_per_trainer(ctx)
     var nstep_buf = GPUNStepBuffer[
-        N_STEP, OBS_DIM, ACT_DIM, N_ENVS,
+        N_STEP,
+        OBS_DIM,
+        ACT_DIM,
+        N_ENVS,
     ].new(ctx, gamma=Scalar[DT](0.99))
 
     var pre_obs = ctx.enqueue_create_buffer[DT](N_ENVS * OBS_DIM)
@@ -151,7 +174,13 @@ def test_record_batch_gpu_nstep_compresses_n_to_one_per_env() raises:
     # First 2 calls: ring fills, no emit yet.
     for _ in range(N_STEP - 1):
         trainer.record_batch_gpu_nstep[N_ENVS, N_STEP](
-            ctx, nstep_buf, pre_obs, act, rew, obs, dne,
+            ctx,
+            nstep_buf,
+            pre_obs,
+            act,
+            rew,
+            obs,
+            dne,
         )
     # GPUNStepBuffer.store_into is BLIND (pushes all N_ENVS slots
     # regardless of out_valid). So size advances by N_ENVS per call
@@ -161,19 +190,29 @@ def test_record_batch_gpu_nstep_compresses_n_to_one_per_env() raises:
     # received the batched store (size monotonically grows).
     var pre_emit_size = trainer.sample_blk.buf.value().base.size
     trainer.record_batch_gpu_nstep[N_ENVS, N_STEP](
-        ctx, nstep_buf, pre_obs, act, rew, obs, dne,
+        ctx,
+        nstep_buf,
+        pre_obs,
+        act,
+        rew,
+        obs,
+        dne,
     )
     var post_size = trainer.sample_blk.buf.value().base.size
     assert_true(
         post_size == pre_emit_size + N_ENVS,
         "After N_STEP-th nstep batched call, replay size should "
-        + "have grown by N_ENVS=" + String(N_ENVS)
-        + "; pre=" + String(pre_emit_size)
-        + " post=" + String(post_size),
+        + "have grown by N_ENVS="
+        + String(N_ENVS)
+        + "; pre="
+        + String(pre_emit_size)
+        + " post="
+        + String(post_size),
     )
     print(
         "  test_record_batch_gpu_nstep_compresses_n_to_one_per_env "
-        + "PASSED size=", post_size,
+        + "PASSED size=",
+        post_size,
     )
 
 
@@ -183,10 +222,15 @@ def test_record_batch_gpu_nstep_to_buf_gpu() raises:
     var ctx = DeviceContext()
     var gamma_n = Scalar[DT](0.99 ** Float64(N_STEP))
     var trainer = UniformT.make(
-        ctx=ctx, gamma=gamma_n, learning_starts=500,
+        ctx=ctx,
+        gamma=gamma_n,
+        learning_starts=500,
     )
     var nstep_buf = GPUNStepBuffer[
-        N_STEP, OBS_DIM, ACT_DIM, N_ENVS,
+        N_STEP,
+        OBS_DIM,
+        ACT_DIM,
+        N_ENVS,
     ].new(ctx, gamma=Scalar[DT](0.99))
 
     var pre_obs = ctx.enqueue_create_buffer[DT](N_ENVS * OBS_DIM)
@@ -201,12 +245,19 @@ def test_record_batch_gpu_nstep_to_buf_gpu() raises:
     dne.enqueue_fill(Scalar[DT](0.0))
 
     trainer.record_batch_gpu_nstep[N_ENVS, N_STEP](
-        ctx, nstep_buf, pre_obs, act, rew, obs, dne,
+        ctx,
+        nstep_buf,
+        pre_obs,
+        act,
+        rew,
+        obs,
+        dne,
     )
     assert_true(
         trainer.sample_blk.buf.value().size == N_ENVS,
         "Uniform buf_gpu.size should equal N_ENVS after one nstep "
-        + "batched call; got " + String(trainer.sample_blk.buf.value().size),
+        + "batched call; got "
+        + String(trainer.sample_blk.buf.value().size),
     )
     print(
         "  test_record_batch_gpu_nstep_to_buf_gpu PASSED size=",

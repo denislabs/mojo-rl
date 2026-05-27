@@ -66,15 +66,25 @@ struct TargetStorage(Movable & ImplicitlyDestructible):
         """GPU-tagged storage with the DeviceContext stamped in."""
         return Self(target_tag=TARGET_GPU, ctx=ctx)
 
+    @staticmethod
+    def make[target: StaticString](ctx: Optional[DeviceContext] = None) -> Self:
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "TargetStorage.make[target='cpu' or 'gpu']"
+        comptime if target == "cpu":
+            return Self(target_tag=TARGET_CPU, ctx=None)
+        else:
+            return Self(target_tag=TARGET_GPU, ctx=ctx)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # assert_tag_for — replaces the per-leaf `_assert_tag[target]` method.
 # ──────────────────────────────────────────────────────────────────────
 
 
-def assert_tag_for[name: StaticString, target: StaticString](
-    tag: Int8,
-) raises:
+def assert_tag_for[
+    name: StaticString, target: StaticString
+](tag: Int8,) raises:
     """Raise if `tag` does not match the comptime-resolved `target`.
 
     Call from method bodies:
@@ -85,10 +95,14 @@ def assert_tag_for[name: StaticString, target: StaticString](
     comptime expected = target_tag_for[target]()
     if tag != expected:
         raise Error(
-            "[" + String(name) + "] method called with [target='"
+            "["
+            + String(name)
+            + "] method called with [target='"
             + String(target)
             + "'] but module was make'd for a different target "
-            + "(tag=" + String(Int(tag)) + ")"
+            + "(tag="
+            + String(Int(tag))
+            + ")"
         )
 
 

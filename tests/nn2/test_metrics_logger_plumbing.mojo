@@ -26,7 +26,7 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks_ref import UniformSampleCpuStep
+from mojo_rl.nn2.training.blocks import UniformSampleCpuStep
 from mojo_rl.nn2.training.sac_metrics import SACMetrics
 
 
@@ -57,7 +57,10 @@ struct ListLogger(Logger):
         self.steps.append(step)
 
     def log_scalars(
-        mut self, names: List[String], values: List[Float64], step: Int,
+        mut self,
+        names: List[String],
+        values: List[Float64],
+        step: Int,
     ) raises:
         for i in range(len(names)):
             self.log_scalar(names[i], values[i], step)
@@ -136,19 +139,25 @@ comptime HIDDEN = 64
 comptime BATCH = 256
 comptime REPLAY = 50_000
 comptime ActorNet = StochasticActor[
-    OBS_DIM, ACT_DIM,
-    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    OBS_DIM,
+    ACT_DIM,
+    Linear[OBS_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
 comptime SACT = SACTrainer[
     "cpu",
     UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY],
-    ActorNet, CriticNet,
+    ActorNet,
+    CriticNet,
 ]
 
 
@@ -158,9 +167,9 @@ def test_trainer_flush_metrics_emits() raises:
     var trainer = SACT.make()
 
     # Hand-inject 3 fake "updates" worth of accumulated losses.
-    trainer._actor_L_accum = Scalar[DT](6.0)   # mean over 3 → 2.0
+    trainer._actor_L_accum = Scalar[DT](6.0)  # mean over 3 → 2.0
     trainer._critic_L_accum = Scalar[DT](3.0)  # mean over 3 → 1.0
-    trainer._alpha_accum = Scalar[DT](0.6)     # mean over 3 → 0.2
+    trainer._alpha_accum = Scalar[DT](0.6)  # mean over 3 → 0.2
     trainer._update_count = 3
 
     var logger = ListLogger()
@@ -170,7 +179,7 @@ def test_trainer_flush_metrics_emits() raises:
         ),
         step=500,
     )
-    _ = logger    # lifetime extender — trainer holds raw pointer.
+    _ = logger  # lifetime extender — trainer holds raw pointer.
 
     # 4 SACMetrics fields → 4 log_scalar calls.
     assert_equal(len(logger.names), 4)
@@ -190,8 +199,12 @@ def test_trainer_flush_metrics_emits() raises:
         assert_equal(logger.steps[i], 500)
 
     # Returned bundle matches the emitted values.
-    assert_true((bundle.actor_loss.v - Scalar[DT](2.0)).__abs__() < Scalar[DT](1e-5))
-    assert_true((bundle.critic_loss.v - Scalar[DT](1.0)).__abs__() < Scalar[DT](1e-5))
+    assert_true(
+        (bundle.actor_loss.v - Scalar[DT](2.0)).__abs__() < Scalar[DT](1e-5)
+    )
+    assert_true(
+        (bundle.critic_loss.v - Scalar[DT](1.0)).__abs__() < Scalar[DT](1e-5)
+    )
     assert_true((bundle.alpha.v - Scalar[DT](0.2)).__abs__() < Scalar[DT](1e-5))
     assert_equal(Int(bundle.n_updates.v), 3)
 
@@ -227,7 +240,7 @@ def test_multiple_flushes_accumulate() raises:
         trainer._alpha_accum = Scalar[DT](Float64(i + 1) * 0.1)
         trainer._update_count = 1
         _ = trainer.flush_metrics(logger=logger_ptr, step=100 * (i + 1))
-    _ = logger    # lifetime extender
+    _ = logger  # lifetime extender
 
     assert_equal(len(logger.names), K * 4)
     # Check that step values cycle 100, 100, 100, 100, 200, 200, ...

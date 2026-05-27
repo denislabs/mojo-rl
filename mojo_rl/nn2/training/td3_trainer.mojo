@@ -17,7 +17,7 @@ from .action_sampling_block import ActionSamplingBlock
 from .episode_tracker import EpisodeTracker
 from .trainer_block import TrainerState
 from .driver_cpu import OffPolicyTrainable
-from .blocks_ref import (
+from .blocks import (
     UniformSampleCpuStep,
     TD3TargetYStep,
     TwinCriticStep,
@@ -33,44 +33,57 @@ struct TD3Trainer[
     BATCH: Int,
     REPLAY_CAPACITY: Int,
 ](OffPolicyTrainable):
-
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
 
-    var actor_pair:  OnlineTargetPair[Self.ACTOR]
-    var pair1:       OnlineTargetPair[Self.CRITIC]
-    var pair2:       OnlineTargetPair[Self.CRITIC]
-    var actor_opt:   Adam
+    var actor_pair: OnlineTargetPair[Self.ACTOR]
+    var pair1: OnlineTargetPair[Self.CRITIC]
+    var pair2: OnlineTargetPair[Self.CRITIC]
+    var actor_opt: Adam
     var critic1_opt: Adam
     var critic2_opt: Adam
 
     var sample_blk: UniformSampleCpuStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.REPLAY_CAPACITY,
     ]
     var target_y_blk: TD3TargetYStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.ACTOR,
+        Self.CRITIC,
     ]
     var twin_critic_blk: TwinCriticStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.CRITIC,
     ]
     var actor_polyak_blk: TD3DelayedActorPolyakStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.ACTOR,
+        Self.CRITIC,
     ]
 
     var policy_head: ActionSamplingBlock[
         Self.ACTOR, Self.OBS_DIM, Self.ACT_DIM, Self.ACT_DIM
     ]
 
-    var state:   TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
+    var state: TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
     var tracker: EpisodeTracker
 
-    var action_scale:      Scalar[DT]
+    var action_scale: Scalar[DT]
     var exploration_noise: Scalar[DT]
-    var learning_starts:   Int
+    var learning_starts: Int
 
-    var _actor_L_accum:  Scalar[DT]
+    var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
-    var _actor_updates:  Int
+    var _actor_updates: Int
     var _critic_updates: Int
 
     def __init__(out self):
@@ -82,27 +95,49 @@ struct TD3Trainer[
         self.critic2_opt = Adam()
 
         self.sample_blk = UniformSampleCpuStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.REPLAY_CAPACITY,
         ]()
         self.target_y_blk = TD3TargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ]()
         self.twin_critic_blk = TwinCriticStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.CRITIC,
         ]()
         self.actor_polyak_blk = TD3DelayedActorPolyakStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ]()
         self.policy_head = ActionSamplingBlock[
-            Self.ACTOR, Self.OBS_DIM, Self.ACT_DIM, Self.ACT_DIM,
+            Self.ACTOR,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.ACT_DIM,
         ]()
 
         self.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ]()
         self.tracker = EpisodeTracker(
-            window=List[Scalar[DT]](), window_size=0, idx=0,
-            current_return=Scalar[DT](0.0), ep_count=0,
+            window=List[Scalar[DT]](),
+            window_size=0,
+            idx=0,
+            current_return=Scalar[DT](0.0),
+            ep_count=0,
         )
         self.action_scale = Scalar[DT](1.0)
         self.exploration_noise = Scalar[DT](0.1)
@@ -113,7 +148,9 @@ struct TD3Trainer[
         self._critic_updates = 0
 
     @staticmethod
-    def make[target: StaticString](
+    def make[
+        target: StaticString
+    ](
         actor_lr: Scalar[DT] = Scalar[DT](3e-4),
         critic_lr: Scalar[DT] = Scalar[DT](3e-4),
         gamma: Scalar[DT] = Scalar[DT](0.99),
@@ -139,9 +176,7 @@ struct TD3Trainer[
         t.pair2 = OnlineTargetPair[Self.CRITIC].make[
             target="cpu", INIT=Xavier
         ]()
-        t.actor_opt = Adam.make[target="cpu", M=Self.ACTOR](
-            t.actor_pair.online
-        )
+        t.actor_opt = Adam.make[target="cpu", M=Self.ACTOR](t.actor_pair.online)
         t.actor_opt.lr = actor_lr
         t.actor_opt.max_grad_norm = max_grad_norm
         t.critic1_opt = Adam.make[target="cpu", M=Self.CRITIC](t.pair1.online)
@@ -152,26 +187,44 @@ struct TD3Trainer[
         t.critic2_opt.max_grad_norm = max_grad_norm
 
         t.target_y_blk = TD3TargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ].make["cpu"](
-            action_scale=action_scale, gamma=gamma,
-            noise_std=target_policy_noise, noise_clip=target_noise_clip,
+            action_scale=action_scale,
+            gamma=gamma,
+            noise_std=target_policy_noise,
+            noise_clip=target_noise_clip,
         )
         t.twin_critic_blk = TwinCriticStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.CRITIC,
         ].make["cpu"]()
         t.actor_polyak_blk = TD3DelayedActorPolyakStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ].make["cpu"](policy_delay=policy_delay, tau=tau)
         t.policy_head = ActionSamplingBlock[
-            Self.ACTOR, Self.OBS_DIM, Self.ACT_DIM, Self.ACT_DIM,
+            Self.ACTOR,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.ACT_DIM,
         ].make["cpu"]()
 
         t.tracker = EpisodeTracker.new(
             window_size=window_size, initial_fill=initial_episode_fill
         )
         t.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ].make["cpu"]()
 
         init_scratch_auto[Self, target="cpu"](t)
@@ -192,8 +245,11 @@ struct TD3Trainer[
         step_idx: Int,
     ) raises:
         self.policy_head.select_deterministic_with_noise["cpu"](
-            self.actor_pair.online, obs, action_out,
-            step_idx=step_idx, learning_starts=self.learning_starts,
+            self.actor_pair.online,
+            obs,
+            action_out,
+            step_idx=step_idx,
+            learning_starts=self.learning_starts,
             action_scale=self.action_scale,
             noise_scale=self.exploration_noise,
         )
@@ -204,7 +260,9 @@ struct TD3Trainer[
         mut action_out: List[Scalar[DT]],
     ) raises:
         self.policy_head.select_deterministic_with_noise["cpu"](
-            self.actor_pair.online, obs, action_out,
+            self.actor_pair.online,
+            obs,
+            action_out,
             step_idx=self.learning_starts,
             learning_starts=self.learning_starts,
             action_scale=self.action_scale,
@@ -234,13 +292,17 @@ struct TD3Trainer[
             return False
 
         self.target_y_blk.step["cpu"](
-            self.state, self.actor_pair.target_net,
-            self.pair1.target_net, self.pair2.target_net,
+            self.state,
+            self.actor_pair.target_net,
+            self.pair1.target_net,
+            self.pair2.target_net,
         )
         self.twin_critic_blk.step["cpu"](
             self.state,
-            self.pair1.online, self.critic1_opt,
-            self.pair2.online, self.critic2_opt,
+            self.pair1.online,
+            self.critic1_opt,
+            self.pair2.online,
+            self.critic2_opt,
         )
         self._critic_L_accum += self.state.critic_loss
         self._critic_updates += 1
@@ -250,8 +312,11 @@ struct TD3Trainer[
         # internally — avoids Mojo aliasing rejection of passing pair +
         # pair.online simultaneously.
         self.actor_polyak_blk.step["cpu"](
-            self.state, self.actor_opt,
-            self.actor_pair, self.pair1, self.pair2,
+            self.state,
+            self.actor_opt,
+            self.actor_pair,
+            self.pair1,
+            self.pair2,
         )
         # Block resets _counter to 0 when it fires; reads state.actor_loss
         # only when the block actually ran.

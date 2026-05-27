@@ -18,7 +18,7 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks_ref import UniformSampleCpuStep
+from mojo_rl.nn2.training.blocks import UniformSampleCpuStep
 from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
 
 from mojo_rl.envs.pendulum import PendulumEnv
@@ -32,13 +32,18 @@ comptime REPLAY_CAPACITY = 50_000
 comptime TOTAL_TIMESTEPS = 30_000
 
 comptime ActorNet = StochasticActor[
-    OBS_DIM, ACT_DIM,
-    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    OBS_DIM,
+    ACT_DIM,
+    Linear[OBS_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
@@ -52,21 +57,31 @@ def main() raises:
     var trainer = SACTrainer[
         "cpu",
         UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-        ActorNet, CriticNet,
+        ActorNet,
+        CriticNet,
     ].make(
-        actor_lr=Scalar[DT](3e-4), critic_lr=Scalar[DT](1e-3),
-        alpha_lr=Scalar[DT](3e-4), gamma=Scalar[DT](0.99),
-        tau=Scalar[DT](0.005), action_scale=Scalar[DT](2.0),
-        init_alpha=Scalar[DT](0.2), target_entropy=Scalar[DT](-1.0),
+        actor_lr=Scalar[DT](3e-4),
+        critic_lr=Scalar[DT](1e-3),
+        alpha_lr=Scalar[DT](3e-4),
+        gamma=Scalar[DT](0.99),
+        tau=Scalar[DT](0.005),
+        action_scale=Scalar[DT](2.0),
+        init_alpha=Scalar[DT](0.2),
+        target_entropy=Scalar[DT](-1.0),
         learning_starts=1_000,
-        window_size=10, initial_episode_fill=Scalar[DT](-1250.0),
+        window_size=10,
+        initial_episode_fill=Scalar[DT](-1250.0),
     )
     var env = PendulumEnv[DT]()
 
     var ep_returns = run_offpolicy_train_cpu(
-        trainer, env, TOTAL_TIMESTEPS,
-        obs_dim=OBS_DIM, act_dim=ACT_DIM,
-        print_every=1_000, verbose=True,
+        trainer,
+        env,
+        TOTAL_TIMESTEPS,
+        obs_dim=OBS_DIM,
+        act_dim=ACT_DIM,
+        print_every=1_000,
+        verbose=True,
     )
 
     print("=" * 70)

@@ -21,7 +21,7 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks_ref import UniformSampleGpuStep
+from mojo_rl.nn2.training.blocks import UniformSampleGpuStep
 
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -33,20 +33,26 @@ comptime REPLAY_CAPACITY = 5_000
 comptime SMOKE_STEPS = 2_000
 
 comptime ActorNet = StochasticActor[
-    OBS_DIM, ACT_DIM,
-    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    OBS_DIM,
+    ACT_DIM,
+    Linear[OBS_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
 comptime Trainer = SACTrainer[
     "gpu",
     UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-    ActorNet, CriticNet,
+    ActorNet,
+    CriticNet,
 ]
 
 
@@ -68,7 +74,10 @@ def _train_2k(mut trainer: Trainer) raises -> Scalar[DT]:
         for d in range(OBS_DIM):
             next_obs[d] = nxt[d]
         trainer.record(
-            obs, action, reward, next_obs,
+            obs,
+            action,
+            reward,
+            next_obs,
             Scalar[DT](1.0) if done else Scalar[DT](0.0),
         )
         if done:
@@ -87,11 +96,13 @@ def test_use_bf16_kwarg() raises:
     var ctx = DeviceContext()
     var trainer = Trainer.make(
         ctx=ctx,
-        actor_lr=Scalar[DT](3e-4), critic_lr=Scalar[DT](1e-3),
+        actor_lr=Scalar[DT](3e-4),
+        critic_lr=Scalar[DT](1e-3),
         alpha_lr=Scalar[DT](3e-4),
         action_scale=Scalar[DT](2.0),
         learning_starts=500,
-        window_size=10, initial_episode_fill=Scalar[DT](-1250.0),
+        window_size=10,
+        initial_episode_fill=Scalar[DT](-1250.0),
         use_bf16=True,
     )
     assert_true(trainer._use_bf16, "use_bf16 kwarg not stored")
@@ -111,13 +122,17 @@ def test_use_ere_kwarg() raises:
     var ctx = DeviceContext()
     var trainer = Trainer.make(
         ctx=ctx,
-        actor_lr=Scalar[DT](3e-4), critic_lr=Scalar[DT](1e-3),
+        actor_lr=Scalar[DT](3e-4),
+        critic_lr=Scalar[DT](1e-3),
         alpha_lr=Scalar[DT](3e-4),
         action_scale=Scalar[DT](2.0),
         learning_starts=500,
-        window_size=10, initial_episode_fill=Scalar[DT](-1250.0),
-        use_ere=True, ere_eta=Scalar[DT](0.996),
-        ere_c_min=256, ere_k_max=4,
+        window_size=10,
+        initial_episode_fill=Scalar[DT](-1250.0),
+        use_ere=True,
+        ere_eta=Scalar[DT](0.996),
+        ere_c_min=256,
+        ere_k_max=4,
     )
     var mr = _train_2k(trainer)
     print("  mean_return:", mr)

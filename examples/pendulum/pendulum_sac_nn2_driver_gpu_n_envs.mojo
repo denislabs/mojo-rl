@@ -19,7 +19,7 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks_ref import UniformSampleGpuStep
+from mojo_rl.nn2.training.blocks import UniformSampleGpuStep
 from mojo_rl.nn2.training.driver_gpu import run_offpolicy_train_gpu_n_envs
 
 from mojo_rl.envs.pendulum.pendulum_v2 import PendulumV2
@@ -35,13 +35,18 @@ comptime TOTAL_ENV_STEPS = 30_000
 
 
 comptime ActorNet = StochasticActor[
-    OBS_DIM, ACT_DIM,
-    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    OBS_DIM,
+    ACT_DIM,
+    Linear[OBS_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
@@ -50,23 +55,36 @@ def main() raises:
     seed(42)
     print("=" * 70)
     print("nn2 SAC (Phase B.5b N_ENVS GPU driver) — Pendulum V2 (GPU)")
-    print("  N_ENVS=", N_ENVS, " TOTAL_ENV_STEPS=", TOTAL_ENV_STEPS,
-          " BATCH=", BATCH, " UTD_per_iter=N_ENVS")
+    print(
+        "  N_ENVS=",
+        N_ENVS,
+        " TOTAL_ENV_STEPS=",
+        TOTAL_ENV_STEPS,
+        " BATCH=",
+        BATCH,
+        " UTD_per_iter=N_ENVS",
+    )
     print("=" * 70)
 
     var ctx = DeviceContext()
     var trainer = SACTrainer[
         "gpu",
         UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-        ActorNet, CriticNet,
+        ActorNet,
+        CriticNet,
     ].make(
         ctx=ctx,
-        actor_lr=Scalar[DT](3e-4), critic_lr=Scalar[DT](1e-3),
-        alpha_lr=Scalar[DT](3e-4), gamma=Scalar[DT](0.99),
-        tau=Scalar[DT](0.005), action_scale=Scalar[DT](2.0),
-        init_alpha=Scalar[DT](0.2), target_entropy=Scalar[DT](-1.0),
+        actor_lr=Scalar[DT](3e-4),
+        critic_lr=Scalar[DT](1e-3),
+        alpha_lr=Scalar[DT](3e-4),
+        gamma=Scalar[DT](0.99),
+        tau=Scalar[DT](0.005),
+        action_scale=Scalar[DT](2.0),
+        init_alpha=Scalar[DT](0.2),
+        target_entropy=Scalar[DT](-1.0),
         learning_starts=1_000,
-        window_size=10, initial_episode_fill=Scalar[DT](-1250.0),
+        window_size=10,
+        initial_episode_fill=Scalar[DT](-1250.0),
     )
     var env = PendulumV2[DT]()
 
@@ -75,15 +93,20 @@ def main() raises:
         SACTrainer[
             "gpu",
             UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-            ActorNet, CriticNet,
+            ActorNet,
+            CriticNet,
         ],
         PendulumV2[DT],
         N_ENVS,
     ](
-        ctx, trainer, env, TOTAL_ENV_STEPS,
+        ctx,
+        trainer,
+        env,
+        TOTAL_ENV_STEPS,
         rng_seed=UInt64(42),
         updates_per_step=N_ENVS,
-        print_every=5_000, verbose=True,
+        print_every=5_000,
+        verbose=True,
     )
     var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
 

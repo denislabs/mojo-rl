@@ -27,7 +27,7 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks_ref import UniformSampleCpuStep
+from mojo_rl.nn2.training.blocks import UniformSampleCpuStep
 from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
 
 from mojo_rl.envs.pendulum import PendulumEnv
@@ -42,30 +42,41 @@ comptime TRAIN_STEPS = 30_000
 comptime EVAL_EPISODES = 20
 
 comptime ActorNet = StochasticActor[
-    OBS_DIM, ACT_DIM,
-    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    OBS_DIM,
+    ACT_DIM,
+    Linear[OBS_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
 comptime Trainer = SACTrainer[
     "cpu",
     UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-    ActorNet, CriticNet,
+    ActorNet,
+    CriticNet,
 ]
 
 
 def _make_trainer() raises -> Trainer:
     return Trainer.make(
-        actor_lr=Scalar[DT](3e-4), critic_lr=Scalar[DT](1e-3),
-        alpha_lr=Scalar[DT](3e-4), gamma=Scalar[DT](0.99),
-        tau=Scalar[DT](0.005), action_scale=Scalar[DT](2.0),
-        init_alpha=Scalar[DT](0.2), target_entropy=Scalar[DT](-1.0),
+        actor_lr=Scalar[DT](3e-4),
+        critic_lr=Scalar[DT](1e-3),
+        alpha_lr=Scalar[DT](3e-4),
+        gamma=Scalar[DT](0.99),
+        tau=Scalar[DT](0.005),
+        action_scale=Scalar[DT](2.0),
+        init_alpha=Scalar[DT](0.2),
+        target_entropy=Scalar[DT](-1.0),
         learning_starts=1_000,
-        window_size=10, initial_episode_fill=Scalar[DT](-1250.0),
+        window_size=10,
+        initial_episode_fill=Scalar[DT](-1250.0),
     )
 
 
@@ -143,9 +154,13 @@ def test_save_resume_eval_equivalence() raises:
     var trainer_a = _make_trainer()
     var env_a = PendulumEnv[DT]()
     _ = run_offpolicy_train_cpu(
-        trainer_a, env_a, TRAIN_STEPS,
-        obs_dim=OBS_DIM, act_dim=ACT_DIM,
-        print_every=0, verbose=False,
+        trainer_a,
+        env_a,
+        TRAIN_STEPS,
+        obs_dim=OBS_DIM,
+        act_dim=ACT_DIM,
+        print_every=0,
+        verbose=False,
     )
     var train_mean = trainer_a.mean_return()
     print("  trainer A train mean_ret(10):", train_mean)
@@ -164,14 +179,21 @@ def test_save_resume_eval_equivalence() raises:
     _load_all(trainer_c, ckpt_prefix)
 
     var eval_c = _eval_greedy(trainer_c, EVAL_EPISODES)
-    print("  trainer C post-load eval mean_ret over", EVAL_EPISODES, "eps:", eval_c)
+    print(
+        "  trainer C post-load eval mean_ret over",
+        EVAL_EPISODES,
+        "eps:",
+        eval_c,
+    )
 
     # ─── Assertion 1: load actually changed something. ────────────────
     var loaded_improvement = eval_c - eval_c_before_load
     assert_true(
         loaded_improvement > Scalar[DT](100.0),
         "load_state_v2 didn't move trainer C: pre-load eval="
-        + String(eval_c_before_load) + " post-load eval=" + String(eval_c)
+        + String(eval_c_before_load)
+        + " post-load eval="
+        + String(eval_c)
         + " (expected post-load to be ≥100 better; if not, load is a no-op)",
     )
 
@@ -179,8 +201,12 @@ def test_save_resume_eval_equivalence() raises:
     var delta = eval_a - eval_c if eval_a > eval_c else eval_c - eval_a
     assert_true(
         delta < Scalar[DT](20.0),
-        "Eval drift after save/load: A=" + String(eval_a)
-        + " C=" + String(eval_c) + " |Δ|=" + String(delta)
+        "Eval drift after save/load: A="
+        + String(eval_a)
+        + " C="
+        + String(eval_c)
+        + " |Δ|="
+        + String(delta)
         + " (expected < 20.0)",
     )
     print("  eval equivalence |A - C| =", delta, " (< 20.0) PASS")

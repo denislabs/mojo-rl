@@ -53,8 +53,9 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks_ref import (
-    UniformSampleGpuStep, PerSampleGpuStep,
+from mojo_rl.nn2.training.blocks import (
+    UniformSampleGpuStep,
+    PerSampleGpuStep,
 )
 from mojo_rl.nn2.training.driver_gpu import run_offpolicy_train_gpu_n_envs
 
@@ -70,13 +71,18 @@ comptime N_ENVS = 4
 comptime TOTAL_ENV_STEPS = 4_000
 
 comptime ActorNet = StochasticActor[
-    OBS_DIM, ACT_DIM,
-    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    OBS_DIM,
+    ACT_DIM,
+    Linear[OBS_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
@@ -84,12 +90,14 @@ comptime CriticNet = Sequential[
 comptime UniformT = SACTrainer[
     "gpu",
     UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-    ActorNet, CriticNet,
+    ActorNet,
+    CriticNet,
 ]
 comptime PerT = SACTrainer[
     "gpu",
     PerSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-    ActorNet, CriticNet,
+    ActorNet,
+    CriticNet,
 ]
 
 
@@ -99,14 +107,19 @@ def _run_uniform(ctx: DeviceContext) raises -> Tuple[Scalar[DT], Int]:
         ctx=ctx,
         action_scale=Scalar[DT](2.0),
         learning_starts=500,
-        window_size=10, initial_episode_fill=Scalar[DT](-1250.0),
+        window_size=10,
+        initial_episode_fill=Scalar[DT](-1250.0),
     )
     var env = PendulumV2[DT]()
     _ = run_offpolicy_train_gpu_n_envs[UniformT, PendulumV2[DT], N_ENVS](
-        ctx, trainer, env, TOTAL_ENV_STEPS,
+        ctx,
+        trainer,
+        env,
+        TOTAL_ENV_STEPS,
         rng_seed=UInt64(42),
         updates_per_step=1,
-        print_every=0, verbose=False,
+        print_every=0,
+        verbose=False,
     )
     return (trainer.mean_return(), trainer.ep_count())
 
@@ -117,14 +130,19 @@ def _run_per(ctx: DeviceContext) raises -> Tuple[Scalar[DT], Int]:
         ctx=ctx,
         action_scale=Scalar[DT](2.0),
         learning_starts=500,
-        window_size=10, initial_episode_fill=Scalar[DT](-1250.0),
+        window_size=10,
+        initial_episode_fill=Scalar[DT](-1250.0),
     )
     var env = PendulumV2[DT]()
     _ = run_offpolicy_train_gpu_n_envs[PerT, PendulumV2[DT], N_ENVS](
-        ctx, trainer, env, TOTAL_ENV_STEPS,
+        ctx,
+        trainer,
+        env,
+        TOTAL_ENV_STEPS,
         rng_seed=UInt64(42),
         updates_per_step=1,
-        print_every=0, verbose=False,
+        print_every=0,
+        verbose=False,
     )
     return (trainer.mean_return(), trainer.ep_count())
 
@@ -140,7 +158,9 @@ def test_per_vs_uniform_driver_eval() raises:
     var mr_per = per[0]
     var eps_per = per[1]
 
-    print("  Uniform replay:    eps=", eps_uniform, " mean_ret(10)=", mr_uniform)
+    print(
+        "  Uniform replay:    eps=", eps_uniform, " mean_ret(10)=", mr_uniform
+    )
     print("  Prioritized (PER): eps=", eps_per, " mean_ret(10)=", mr_per)
     print("  delta (PER - uniform) =", mr_per - mr_uniform)
 
@@ -182,8 +202,10 @@ def test_per_vs_uniform_driver_eval() raises:
     assert_true(
         ep_delta <= 2,
         "Episode count delta should be small; got "
-        + "uniform=" + String(eps_uniform)
-        + " per=" + String(eps_per),
+        + "uniform="
+        + String(eps_uniform)
+        + " per="
+        + String(eps_per),
     )
 
     # Non-identity gate — if PER were a no-op the two mean_returns
@@ -206,8 +228,11 @@ def test_per_vs_uniform_driver_eval() raises:
 def main() raises:
     print("=" * 60)
     print(
-        "Driver-level PER eval (N_ENVS=", N_ENVS,
-        ", ", TOTAL_ENV_STEPS, " env steps)",
+        "Driver-level PER eval (N_ENVS=",
+        N_ENVS,
+        ", ",
+        TOTAL_ENV_STEPS,
+        " env steps)",
     )
     print("=" * 60)
     test_per_vs_uniform_driver_eval()

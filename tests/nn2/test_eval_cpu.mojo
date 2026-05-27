@@ -22,7 +22,7 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks_ref import UniformSampleCpuStep
+from mojo_rl.nn2.training.blocks import UniformSampleCpuStep
 from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
 from mojo_rl.nn2.training.eval_cpu import run_offpolicy_eval_cpu
 
@@ -37,13 +37,18 @@ comptime REPLAY_CAPACITY = 50_000
 comptime TRAIN_STEPS = 30_000
 
 comptime ActorNet = StochasticActor[
-    OBS_DIM, ACT_DIM,
-    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    OBS_DIM,
+    ACT_DIM,
+    Linear[OBS_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
@@ -54,13 +59,18 @@ def test_eval_untrained_sac_runs() raises:
     var trainer = SACTrainer[
         "cpu",
         UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-        ActorNet, CriticNet,
+        ActorNet,
+        CriticNet,
     ].make(action_scale=Scalar[DT](2.0))
     var env = PendulumEnv[DT]()
     var mean = run_offpolicy_eval_cpu(
-        trainer, env, num_episodes=3,
-        obs_dim=OBS_DIM, act_dim=ACT_DIM,
-        max_steps_per_episode=200, verbose=False,
+        trainer,
+        env,
+        num_episodes=3,
+        obs_dim=OBS_DIM,
+        act_dim=ACT_DIM,
+        max_steps_per_episode=200,
+        verbose=False,
     )
     # Untrained policy on Pendulum: episode returns roughly in
     # [-1500, -500] depending on init. Just sanity-check the value
@@ -83,20 +93,30 @@ def test_eval_after_30k_train_converges() raises:
     var trainer = SACTrainer[
         "cpu",
         UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-        ActorNet, CriticNet,
+        ActorNet,
+        CriticNet,
     ].make(
-        actor_lr=Scalar[DT](3e-4), critic_lr=Scalar[DT](1e-3),
-        alpha_lr=Scalar[DT](3e-4), gamma=Scalar[DT](0.99),
-        tau=Scalar[DT](0.005), action_scale=Scalar[DT](2.0),
-        init_alpha=Scalar[DT](0.2), target_entropy=Scalar[DT](-1.0),
+        actor_lr=Scalar[DT](3e-4),
+        critic_lr=Scalar[DT](1e-3),
+        alpha_lr=Scalar[DT](3e-4),
+        gamma=Scalar[DT](0.99),
+        tau=Scalar[DT](0.005),
+        action_scale=Scalar[DT](2.0),
+        init_alpha=Scalar[DT](0.2),
+        target_entropy=Scalar[DT](-1.0),
         learning_starts=1_000,
-        window_size=10, initial_episode_fill=Scalar[DT](-1250.0),
+        window_size=10,
+        initial_episode_fill=Scalar[DT](-1250.0),
     )
     var env = PendulumEnv[DT]()
     var _ep_returns = run_offpolicy_train_cpu(
-        trainer, env, TRAIN_STEPS,
-        obs_dim=OBS_DIM, act_dim=ACT_DIM,
-        print_every=0, verbose=False,
+        trainer,
+        env,
+        TRAIN_STEPS,
+        obs_dim=OBS_DIM,
+        act_dim=ACT_DIM,
+        print_every=0,
+        verbose=False,
     )
     var train_mean = trainer.mean_return()
     var train_ep = trainer.ep_count()
@@ -104,20 +124,28 @@ def test_eval_after_30k_train_converges() raises:
     # Eval with a fresh env.
     var eval_env = PendulumEnv[DT]()
     var eval_mean = run_offpolicy_eval_cpu(
-        trainer, eval_env, num_episodes=10,
-        obs_dim=OBS_DIM, act_dim=ACT_DIM,
-        max_steps_per_episode=200, verbose=False,
+        trainer,
+        eval_env,
+        num_episodes=10,
+        obs_dim=OBS_DIM,
+        act_dim=ACT_DIM,
+        max_steps_per_episode=200,
+        verbose=False,
     )
     # Post-eval, train tracker must be unchanged.
     assert_true(
         trainer.ep_count() == train_ep,
         "Eval should not mutate trainer.ep_count: "
-        + String(train_ep) + " -> " + String(trainer.ep_count()),
+        + String(train_ep)
+        + " -> "
+        + String(trainer.ep_count()),
     )
     assert_true(
         (trainer.mean_return() - train_mean).__abs__() < Scalar[DT](1e-5),
         "Eval should not mutate trainer.mean_return: "
-        + String(train_mean) + " -> " + String(trainer.mean_return()),
+        + String(train_mean)
+        + " -> "
+        + String(trainer.mean_return()),
     )
     assert_true(
         eval_mean > Scalar[DT](-300.0),
@@ -126,7 +154,11 @@ def test_eval_after_30k_train_converges() raises:
     )
     print(
         "  test_eval_after_30k_train_converges PASSED",
-        "(train_mean=", train_mean, " eval_mean=", eval_mean, ")",
+        "(train_mean=",
+        train_mean,
+        " eval_mean=",
+        eval_mean,
+        ")",
     )
 
 

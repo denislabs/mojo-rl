@@ -33,8 +33,9 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks_ref import (
-    UniformSampleGpuStep, PerSampleGpuStep,
+from mojo_rl.nn2.training.blocks import (
+    UniformSampleGpuStep,
+    PerSampleGpuStep,
 )
 from mojo_rl.nn2.loss.critic_update_block import _scale_grad_by_weights_kernel
 
@@ -49,13 +50,18 @@ comptime REPLAY_CAPACITY = 5_000
 comptime SMOKE_STEPS = 1_500
 
 comptime ActorNet = StochasticActor[
-    OBS_DIM, ACT_DIM,
-    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    OBS_DIM,
+    ACT_DIM,
+    Linear[OBS_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
@@ -69,21 +75,28 @@ def test_scale_grad_kernel_unit() raises:
     var h_grad = alloc[Scalar[DT]](N)
     var h_weights = alloc[Scalar[DT]](N)
     for i in range(N):
-        h_grad[i] = Scalar[DT](Float64(i) + 1.0)        # 1, 2, ..., 8
+        h_grad[i] = Scalar[DT](Float64(i) + 1.0)  # 1, 2, ..., 8
         h_weights[i] = Scalar[DT](1.0 / (Float64(i) + 1.0))  # 1, 1/2, ..., 1/8
     ctx.enqueue_copy(grad_dev, h_grad)
     ctx.enqueue_copy(weights_dev, h_weights)
     var grad_lt = LayoutTensor[
-        DT, Layout.row_major(N, 1), MutAnyOrigin,
+        DT,
+        Layout.row_major(N, 1),
+        MutAnyOrigin,
     ](grad_dev.unsafe_ptr())
     var w_lt = LayoutTensor[
-        DT, Layout.row_major(N), MutAnyOrigin,
+        DT,
+        Layout.row_major(N),
+        MutAnyOrigin,
     ](weights_dev.unsafe_ptr())
     comptime TPB = 128
     comptime n_blocks = (N + TPB - 1) // TPB
     comptime k = _scale_grad_by_weights_kernel[N]
     ctx.enqueue_function[k](
-        grad_lt, w_lt, grid_dim=n_blocks, block_dim=TPB,
+        grad_lt,
+        w_lt,
+        grid_dim=n_blocks,
+        block_dim=TPB,
     )
     var h_out = alloc[Scalar[DT]](N)
     ctx.enqueue_copy(h_out, grad_dev)
@@ -108,10 +121,12 @@ def test_null_sentinel_unaffected() raises:
     var trainer = SACTrainer[
         "gpu",
         UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-        ActorNet, CriticNet,
+        ActorNet,
+        CriticNet,
     ].make(
         ctx=ctx,
-        learning_starts=500, window_size=10,
+        learning_starts=500,
+        window_size=10,
     )
     var env = PendulumEnv[DT]()
     var obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
@@ -131,7 +146,10 @@ def test_null_sentinel_unaffected() raises:
         for d in range(OBS_DIM):
             next_obs[d] = nxt[d]
         trainer.record(
-            obs, action, reward, next_obs,
+            obs,
+            action,
+            reward,
+            next_obs,
             Scalar[DT](1.0) if done else Scalar[DT](0.0),
         )
         if done:
@@ -161,11 +179,14 @@ def test_per_weights_are_nontrivial() raises:
     var trainer = SACTrainer[
         "gpu",
         PerSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-        ActorNet, CriticNet,
+        ActorNet,
+        CriticNet,
     ].make(
         ctx=ctx,
-        per_alpha=Scalar[DT](0.6), per_beta=Scalar[DT](0.4),
-        learning_starts=500, window_size=10,
+        per_alpha=Scalar[DT](0.6),
+        per_beta=Scalar[DT](0.4),
+        learning_starts=500,
+        window_size=10,
     )
     var env = PendulumEnv[DT]()
     var obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
@@ -183,7 +204,10 @@ def test_per_weights_are_nontrivial() raises:
         for d in range(OBS_DIM):
             next_obs[d] = nxt[d]
         trainer.record(
-            obs, action, step_res[1], next_obs,
+            obs,
+            action,
+            step_res[1],
+            next_obs,
             Scalar[DT](1.0) if step_res[2] else Scalar[DT](0.0),
         )
         if step_res[2]:
@@ -215,7 +239,8 @@ def test_per_weights_are_nontrivial() raises:
     assert_true(
         w_min < Scalar[DT](0.999),
         "min IS weight should be strictly < 1.0 (heterogeneous "
-        + "priorities); got " + String(w_min),
+        + "priorities); got "
+        + String(w_min),
     )
     # And the trainer should still train without diverging.
     var mr = trainer.mean_return()

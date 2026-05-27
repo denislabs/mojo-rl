@@ -53,9 +53,11 @@ from .sac_metrics import SACMetrics
 from .timer import Timer
 from .trainer_block import TrainerState
 from .driver_cpu import (
-    OffPolicyTrainable, OffPolicyTrainableGpu, OffPolicyTrainableGpuBatched,
+    OffPolicyTrainable,
+    OffPolicyTrainableGpu,
+    OffPolicyTrainableGpuBatched,
 )
-from .blocks_ref import (
+from .blocks import (
     SampleBlock,
     TargetYStep,
     TwinCriticStep,
@@ -71,9 +73,13 @@ from .blocks_ref import (
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _warmup_uniform_kernel[N_ENVS: Int, ACT: Int](
+def _warmup_uniform_kernel[
+    N_ENVS: Int, ACT: Int
+](
     action_dest: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, ACT),
+        MutAnyOrigin,
     ],
     action_scale: Scalar[DT],
     seed: UInt64,
@@ -92,12 +98,18 @@ def _warmup_uniform_kernel[N_ENVS: Int, ACT: Int](
     action_dest[env, j] = s * action_scale
 
 
-def _action_clamp_kernel[N_ENVS: Int, ACT: Int](
+def _action_clamp_kernel[
+    N_ENVS: Int, ACT: Int
+](
     alp: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, ACT + 1), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, ACT + 1),
+        MutAnyOrigin,
     ],
     action_out: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, ACT),
+        MutAnyOrigin,
     ],
     action_scale: Scalar[DT],
 ):
@@ -132,61 +144,75 @@ struct SACTrainer[
 
     comptime OBS_DIM: Int = Self.SAMPLE.OBS
     comptime ACT_DIM: Int = Self.SAMPLE.ACT
-    comptime BATCH:   Int = Self.SAMPLE.BATCH
+    comptime BATCH: Int = Self.SAMPLE.BATCH
 
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
 
     # Timer section indices. Order matches `add_section` calls in `make`.
-    comptime _T_SAMPLE   = 0
+    comptime _T_SAMPLE = 0
     comptime _T_TARGET_Y = 1
-    comptime _T_CRITIC   = 2
-    comptime _T_ACTOR    = 3
-    comptime _T_ALPHA    = 4
-    comptime _T_POLYAK   = 5
+    comptime _T_CRITIC = 2
+    comptime _T_ACTOR = 3
+    comptime _T_ALPHA = 4
+    comptime _T_POLYAK = 5
 
-    var actor:       Self.ACTOR
-    var pair1:       OnlineTargetPair[Self.CRITIC]
-    var pair2:       OnlineTargetPair[Self.CRITIC]
-    var actor_opt:   Adam
+    var actor: Self.ACTOR
+    var pair1: OnlineTargetPair[Self.CRITIC]
+    var pair2: OnlineTargetPair[Self.CRITIC]
+    var actor_opt: Adam
     var critic1_opt: Adam
     var critic2_opt: Adam
-    var alpha_opt:   ScalarAdam
+    var alpha_opt: ScalarAdam
 
     var sample_blk: Self.SAMPLE
     var target_y_blk: TargetYStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.ACTOR,
+        Self.CRITIC,
     ]
     var twin_critic_blk: TwinCriticStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.CRITIC,
     ]
     var actor_blk: SACActorStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.ACTOR,
+        Self.CRITIC,
     ]
     var alpha_blk: AlphaUpdateStep[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
     var polyak_blk: PolyakStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.CRITIC,
     ]
 
-    var state:   TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
+    var state: TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
     var tracker: EpisodeTracker
-    var ctx:     Optional[DeviceContext]
+    var ctx: Optional[DeviceContext]
 
-    var _ob1:  Scratch["ob1",  Self.OBS_DIM, True]
-    var _ao1:  Scratch["ao1",  2 * Self.ACT_DIM, True]
+    var _ob1: Scratch["ob1", Self.OBS_DIM, True]
+    var _ao1: Scratch["ao1", 2 * Self.ACT_DIM, True]
     var _alp1: Scratch["alp1", Self.ACT_DIM + 1, True]
 
-    var action_scale:    Scalar[DT]
+    var action_scale: Scalar[DT]
     var learning_starts: Int
-    var _use_bf16:       Bool
+    var _use_bf16: Bool
     # Philox state for batched warmup uniform actions (N_ENVS path only).
-    var _warmup_rng_seed:   UInt64
+    var _warmup_rng_seed: UInt64
     var _warmup_rng_offset: UInt64
 
-    var _actor_L_accum:  Scalar[DT]
+    var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
-    var _alpha_accum:    Scalar[DT]
-    var _update_count:   Int
+    var _alpha_accum: Scalar[DT]
+    var _update_count: Int
 
     var timer: Timer
 
@@ -194,49 +220,76 @@ struct SACTrainer[
         self.actor = Self.ACTOR()
         self.pair1 = OnlineTargetPair[Self.CRITIC]()
         self.pair2 = OnlineTargetPair[Self.CRITIC]()
-        self.actor_opt   = Adam()
+        self.actor_opt = Adam()
         self.critic1_opt = Adam()
         self.critic2_opt = Adam()
         self.alpha_opt = ScalarAdam(
-            value=0.0, m=0.0, v=0.0, t=0,
-            lr=0.0003, beta1=0.9, beta2=0.999, eps=1e-8,
+            value=0.0,
+            m=0.0,
+            v=0.0,
+            t=0,
+            lr=0.0003,
+            beta1=0.9,
+            beta2=0.999,
+            eps=1e-8,
         )
         self.sample_blk = Self.SAMPLE()
         self.target_y_blk = TargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ]()
         self.twin_critic_blk = TwinCriticStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.CRITIC,
         ]()
         self.actor_blk = SACActorStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ]()
         self.alpha_blk = AlphaUpdateStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ]()
         self.polyak_blk = PolyakStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.CRITIC,
         ]()
         self.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ]()
         self.tracker = EpisodeTracker(
-            window=List[Scalar[DT]](), window_size=0, idx=0,
-            current_return=Scalar[DT](0.0), ep_count=0,
+            window=List[Scalar[DT]](),
+            window_size=0,
+            idx=0,
+            current_return=Scalar[DT](0.0),
+            ep_count=0,
         )
         self.ctx = None
-        self._ob1  = Scratch["ob1",  Self.OBS_DIM, True]()
-        self._ao1  = Scratch["ao1",  2 * Self.ACT_DIM, True]()
+        self._ob1 = Scratch["ob1", Self.OBS_DIM, True]()
+        self._ao1 = Scratch["ao1", 2 * Self.ACT_DIM, True]()
         self._alp1 = Scratch["alp1", Self.ACT_DIM + 1, True]()
         self.action_scale = Scalar[DT](1.0)
         self.learning_starts = 1_000
         self._use_bf16 = False
         self._warmup_rng_seed = UInt64(0xC0FFEE_C0DE)
         self._warmup_rng_offset = UInt64(0)
-        self._actor_L_accum  = Scalar[DT](0.0)
+        self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
-        self._alpha_accum    = Scalar[DT](0.0)
-        self._update_count   = 0
+        self._alpha_accum = Scalar[DT](0.0)
+        self._update_count = 0
         self.timer = Timer.new()
 
     @staticmethod
@@ -266,9 +319,9 @@ struct SACTrainer[
         """Unified factory. PER args are applied unconditionally via the
         SampleBlock trait's `configure_per` (no-op default for uniform
         blocks). `ctx` is required for `target="gpu"`."""
-        comptime assert Self.target == "cpu" or Self.target == "gpu", (
-            "SACTrainer: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            Self.target == "cpu" or Self.target == "gpu"
+        ), "SACTrainer: target must be 'cpu' or 'gpu'"
         comptime if Self.target == "gpu":
             if not ctx:
                 raise Error("SACTrainer.make[target='gpu']: ctx required")
@@ -284,30 +337,48 @@ struct SACTrainer[
             target=Self.target, INIT=Xavier
         ](ctx=ctx)
         t.actor_opt = Adam.make[target=Self.target, M=Self.ACTOR](
-            t.actor, ctx=ctx,
+            t.actor,
+            ctx=ctx,
         )
         t.critic1_opt = Adam.make[target=Self.target, M=Self.CRITIC](
-            t.pair1.online, ctx=ctx,
+            t.pair1.online,
+            ctx=ctx,
         )
         t.critic2_opt = Adam.make[target=Self.target, M=Self.CRITIC](
-            t.pair2.online, ctx=ctx,
+            t.pair2.online,
+            ctx=ctx,
         )
         t.target_y_blk = TargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-            Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ].make[Self.target](
-            action_scale=action_scale, gamma=gamma, ctx=ctx,
+            action_scale=action_scale,
+            gamma=gamma,
+            ctx=ctx,
         )
         t.twin_critic_blk = TwinCriticStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.CRITIC,
         ].make[Self.target](ctx=ctx)
         t.actor_blk = SACActorStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-            Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ].make[Self.target](action_scale=action_scale, ctx=ctx)
         t.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-        ].make[Self.target](ctx=ctx)
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+        ].make[
+            Self.target
+        ](ctx=ctx)
 
         t.actor_opt.lr = actor_lr
         t.actor_opt.max_grad_norm = max_grad_norm
@@ -318,10 +389,15 @@ struct SACTrainer[
         t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
 
         t.alpha_blk = AlphaUpdateStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ].make(target_entropy=target_entropy)
         t.polyak_blk = PolyakStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.CRITIC,
         ].make(tau=tau)
 
         t.tracker = EpisodeTracker.new(
@@ -336,13 +412,18 @@ struct SACTrainer[
 
         # PER hyperparameter wiring: no-op default for uniform blocks.
         t.sample_blk.configure_per(
-            alpha=per_alpha, beta=per_beta, epsilon=per_epsilon,
+            alpha=per_alpha,
+            beta=per_beta,
+            epsilon=per_epsilon,
         )
         t.sample_blk.setup(learning_starts, ctx=ctx)
         # ERE wiring: no-op default for blocks that don't own GPUReplay.
         # Must come AFTER setup() (GPUReplay is constructed there).
         t.sample_blk.configure_ere(
-            enable=use_ere, eta=ere_eta, c_min=ere_c_min, k_max=ere_k_max,
+            enable=use_ere,
+            eta=ere_eta,
+            c_min=ere_c_min,
+            k_max=ere_k_max,
         )
 
         # Timer sections — index order MUST match the `_T_*` comptime
@@ -381,15 +462,15 @@ struct SACTrainer[
 
         comptime if Self.target == "cpu":
             var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
-            var ao1_t = TileTensor(
-                ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM]()
-            )
+            var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM]())
             self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
             var alp1_t = TileTensor(
-                alp1_cpu_p, row_major[1, Self.ACT_DIM + 1](),
+                alp1_cpu_p,
+                row_major[1, Self.ACT_DIM + 1](),
             )
             self.actor_blk.inner.rsample.forward["cpu", 1](
-                ao1_t, output=alp1_t,
+                ao1_t,
+                output=alp1_t,
             )
         else:
             var ctx = self.ctx.value()
@@ -401,10 +482,12 @@ struct SACTrainer[
             var ao1_t = TileTensor(ao1_p, row_major[1, 2 * Self.ACT_DIM]())
             self.actor.forward["gpu", 1](ob1_t, output=ao1_t)
             var alp1_t = TileTensor(
-                alp1_p, row_major[1, Self.ACT_DIM + 1](),
+                alp1_p,
+                row_major[1, Self.ACT_DIM + 1](),
             )
             self.actor_blk.inner.rsample.forward["gpu", 1](
-                ao1_t, output=alp1_t,
+                ao1_t,
+                output=alp1_t,
             )
             ctx.enqueue_copy(alp1_cpu_p, self._alp1.dev.value())
             ctx.synchronize()
@@ -429,18 +512,18 @@ struct SACTrainer[
 
         comptime if Self.target == "cpu":
             var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
-            var ao1_t = TileTensor(
-                ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM]()
-            )
+            var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM]())
             self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
         else:
             var ctx = self.ctx.value()
             ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
             var ob1_t = TileTensor(
-                self._ob1.dev_ptr(), row_major[1, Self.OBS_DIM](),
+                self._ob1.dev_ptr(),
+                row_major[1, Self.OBS_DIM](),
             )
             var ao1_t = TileTensor(
-                self._ao1.dev_ptr(), row_major[1, 2 * Self.ACT_DIM](),
+                self._ao1.dev_ptr(),
+                row_major[1, 2 * Self.ACT_DIM](),
             )
             self.actor.forward["gpu", 1](ob1_t, output=ao1_t)
             ctx.enqueue_copy(ao1_cpu_p, self._ao1.dev.value())
@@ -476,23 +559,30 @@ struct SACTrainer[
 
         var t_ty = perf_counter_ns()
         self.target_y_blk.step[Self.target, POLICY](
-            self.state, self.actor,
-            self.pair1.target_net, self.pair2.target_net,
+            self.state,
+            self.actor,
+            self.pair1.target_net,
+            self.pair2.target_net,
         )
         self.timer.accumulate(Self._T_TARGET_Y, t_ty)
 
         var t_crit = perf_counter_ns()
         self.twin_critic_blk.step[Self.target, POLICY](
             self.state,
-            self.pair1.online, self.critic1_opt,
-            self.pair2.online, self.critic2_opt,
+            self.pair1.online,
+            self.critic1_opt,
+            self.pair2.online,
+            self.critic2_opt,
         )
         self.timer.accumulate(Self._T_CRITIC, t_crit)
 
         var t_act = perf_counter_ns()
         self.actor_blk.step[Self.target, POLICY](
-            self.state, self.actor, self.actor_opt,
-            self.pair1.online, self.pair2.online,
+            self.state,
+            self.actor,
+            self.actor_opt,
+            self.pair1.online,
+            self.pair2.online,
         )
         self.timer.accumulate(Self._T_ACTOR, t_act)
 
@@ -502,17 +592,19 @@ struct SACTrainer[
 
         var t_pol = perf_counter_ns()
         self.polyak_blk.step[Self.target](
-            self.state, self.pair1, self.pair2,
+            self.state,
+            self.pair1,
+            self.pair2,
         )
         self.timer.accumulate(Self._T_POLYAK, t_pol)
 
         # PER tail (no-op for uniform blocks).
         self.sample_blk.update_priorities(self.state)
 
-        self._actor_L_accum  += self.state.actor_loss
+        self._actor_L_accum += self.state.actor_loss
         self._critic_L_accum += self.state.critic_loss
-        self._alpha_accum    += fexp(self.alpha_opt.value)
-        self._update_count   += 1
+        self._alpha_accum += fexp(self.alpha_opt.value)
+        self._update_count += 1
         return True
 
     def _record_impl(
@@ -525,7 +617,12 @@ struct SACTrainer[
     ) raises:
         self.tracker.add_reward(reward)
         self.sample_blk.add(
-            obs, action, reward, next_obs, done, ctx=self.ctx,
+            obs,
+            action,
+            reward,
+            next_obs,
+            done,
+            ctx=self.ctx,
         )
 
     # ─── OffPolicyTrainable (CPU) surface ─────────────────────────────
@@ -537,9 +634,7 @@ struct SACTrainer[
         step_idx: Int,
     ) raises:
         comptime if Self.target != "cpu":
-            raise Error(
-                "SACTrainer[target='gpu']: use select_action_gpu"
-            )
+            raise Error("SACTrainer[target='gpu']: use select_action_gpu")
         self._select_action_impl(obs, action_out, step_idx)
 
     def select_greedy_action(
@@ -567,9 +662,7 @@ struct SACTrainer[
         step_idx: Int,
     ) raises:
         comptime if Self.target != "gpu":
-            raise Error(
-                "SACTrainer[target='cpu']: use select_action"
-            )
+            raise Error("SACTrainer[target='cpu']: use select_action")
         self._select_action_impl(obs, action_out, step_idx)
 
     def select_greedy_action_gpu(
@@ -578,9 +671,7 @@ struct SACTrainer[
         mut action_out: List[Scalar[DT]],
     ) raises:
         comptime if Self.target != "gpu":
-            raise Error(
-                "SACTrainer[target='cpu']: use select_greedy_action"
-            )
+            raise Error("SACTrainer[target='cpu']: use select_greedy_action")
         self._select_greedy_action_impl(obs, action_out)
 
     def train_step_gpu(mut self, step_idx: Int) raises -> Bool:
@@ -595,7 +686,9 @@ struct SACTrainer[
 
     # ─── OffPolicyTrainableGpuBatched (N_ENVS) surface ────────────────
 
-    def select_action_gpu_batched[N_ENVS: Int](
+    def select_action_gpu_batched[
+        N_ENVS: Int
+    ](
         mut self,
         ctx: DeviceContext,
         obs_dev: DeviceBuffer[DT],
@@ -607,12 +700,14 @@ struct SACTrainer[
         """Batched policy step for N_ENVS envs. Mirrors legacy
         SACTrainer.select_action_gpu_batched. Driver owns the
         N_ENVS-sized scratches."""
-        comptime assert Self.target == "gpu", (
-            "select_action_gpu_batched: target must be 'gpu'"
-        )
+        comptime assert (
+            Self.target == "gpu"
+        ), "select_action_gpu_batched: target must be 'gpu'"
         comptime assert N_ENVS > 0, "N_ENVS must be > 0"
         var action_lt = LayoutTensor[
-            DT, Layout.row_major(N_ENVS, Self.ACT_DIM), MutAnyOrigin,
+            DT,
+            Layout.row_major(N_ENVS, Self.ACT_DIM),
+            MutAnyOrigin,
         ](action_dev.unsafe_ptr())
 
         if step_idx < self.learning_starts:
@@ -620,14 +715,16 @@ struct SACTrainer[
             comptime total = N_ENVS * Self.ACT_DIM
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime warmup_kernel = _warmup_uniform_kernel[
-                N_ENVS, Self.ACT_DIM,
+                N_ENVS,
+                Self.ACT_DIM,
             ]
             ctx.enqueue_function[warmup_kernel](
                 action_lt,
                 self.action_scale,
                 self._warmup_rng_seed,
                 self._warmup_rng_offset,
-                grid_dim=n_blocks, block_dim=TPB,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
             self._warmup_rng_offset += UInt64(N_ENVS * Self.ACT_DIM * 2)
             return
@@ -641,35 +738,38 @@ struct SACTrainer[
         var alp_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             alp_scratch_dev.unsafe_ptr()
         )
-        var obs_t = TileTensor(
-            obs_p, row_major[N_ENVS, Self.OBS_DIM]()
-        )
-        var ao_t = TileTensor(
-            ao_p, row_major[N_ENVS, 2 * Self.ACT_DIM]()
-        )
-        var alp_t = TileTensor(
-            alp_p, row_major[N_ENVS, Self.ACT_DIM + 1]()
-        )
+        var obs_t = TileTensor(obs_p, row_major[N_ENVS, Self.OBS_DIM]())
+        var ao_t = TileTensor(ao_p, row_major[N_ENVS, 2 * Self.ACT_DIM]())
+        var alp_t = TileTensor(alp_p, row_major[N_ENVS, Self.ACT_DIM + 1]())
         self.actor.forward["gpu", N_ENVS](obs_t, output=ao_t)
         self.actor_blk.inner.rsample.forward["gpu", N_ENVS](
-            ao_t, output=alp_t,
+            ao_t,
+            output=alp_t,
         )
 
         var alp_lt = LayoutTensor[
-            DT, Layout.row_major(N_ENVS, Self.ACT_DIM + 1), MutAnyOrigin,
+            DT,
+            Layout.row_major(N_ENVS, Self.ACT_DIM + 1),
+            MutAnyOrigin,
         ](alp_scratch_dev.unsafe_ptr())
         comptime TPB = 128
         comptime total = N_ENVS * Self.ACT_DIM
         comptime n_blocks = (total + TPB - 1) // TPB
         comptime clamp_kernel = _action_clamp_kernel[
-            N_ENVS, Self.ACT_DIM,
+            N_ENVS,
+            Self.ACT_DIM,
         ]
         ctx.enqueue_function[clamp_kernel](
-            alp_lt, action_lt, self.action_scale,
-            grid_dim=n_blocks, block_dim=TPB,
+            alp_lt,
+            action_lt,
+            self.action_scale,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
 
-    def record_batch_gpu[N_ENVS: Int](
+    def record_batch_gpu[
+        N_ENVS: Int
+    ](
         mut self,
         ctx: DeviceContext,
         prev_obs_dev: DeviceBuffer[DT],
@@ -683,14 +783,23 @@ struct SACTrainer[
         single-env n-step wrappers)."""
         self.sample_blk.add_batch_gpu[N_ENVS](
             ctx,
-            prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
+            prev_obs_dev,
+            action_dev,
+            reward_dev,
+            obs_dev,
+            done_dev,
         )
 
-    def record_batch_gpu_nstep[N_ENVS: Int, NS: Int](
+    def record_batch_gpu_nstep[
+        N_ENVS: Int, NS: Int
+    ](
         mut self,
         ctx: DeviceContext,
         mut nstep_buf: GPUNStepBuffer[
-            NS, Self.AGENT_OBS_DIM, Self.AGENT_ACT_DIM, N_ENVS,
+            NS,
+            Self.AGENT_OBS_DIM,
+            Self.AGENT_ACT_DIM,
+            N_ENVS,
         ],
         prev_obs_dev: DeviceBuffer[DT],
         action_dev: DeviceBuffer[DT],
@@ -713,7 +822,12 @@ struct SACTrainer[
         target_y γ^N bake, AND that the sample block supports
         store_via_block_gpu (only GPU uniform / PER blocks do today)."""
         nstep_buf.process(
-            ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
+            ctx,
+            prev_obs_dev,
+            action_dev,
+            reward_dev,
+            obs_dev,
+            done_dev,
         )
         self.sample_blk.store_via_block_gpu[N_ENVS, NS](ctx, nstep_buf)
 
@@ -746,9 +860,9 @@ struct SACTrainer[
 
     # ─── Logging surface (parity with legacy SACTrainer) ──────────────
 
-    def flush_train_log(mut self) -> Tuple[
-        Scalar[DT], Scalar[DT], Scalar[DT], Int
-    ]:
+    def flush_train_log(
+        mut self,
+    ) -> Tuple[Scalar[DT], Scalar[DT], Scalar[DT], Int]:
         """Return (mean_actor_loss, mean_critic_loss, mean_alpha, n_updates)
         accumulated since the last flush. Resets accumulators."""
         var n = self._update_count if self._update_count > 0 else 1
@@ -759,13 +873,15 @@ struct SACTrainer[
             self._alpha_accum * inv,
             self._update_count,
         )
-        self._actor_L_accum  = Scalar[DT](0.0)
+        self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
-        self._alpha_accum    = Scalar[DT](0.0)
-        self._update_count   = 0
+        self._alpha_accum = Scalar[DT](0.0)
+        self._update_count = 0
         return out
 
-    def flush_metrics[L: Logger = NoOpLogger](
+    def flush_metrics[
+        L: Logger = NoOpLogger
+    ](
         mut self,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
@@ -781,10 +897,10 @@ struct SACTrainer[
             alpha=LogScalar[DT](self._alpha_accum * inv),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
-        self._actor_L_accum  = Scalar[DT](0.0)
+        self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
-        self._alpha_accum    = Scalar[DT](0.0)
-        self._update_count   = 0
+        self._alpha_accum = Scalar[DT](0.0)
+        self._update_count = 0
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^

@@ -28,7 +28,7 @@ from .dynamics_ensemble_block import DynamicsEnsembleBlock
 from .episode_tracker import EpisodeTracker
 from .trainer_block import TrainerState
 from .driver_cpu import OffPolicyTrainable
-from .blocks_ref import (
+from .blocks import (
     DualSampleCpuStep,
     TargetYStep,
     TwinCriticStep,
@@ -53,7 +53,6 @@ struct MBPOTrainer[
     LOGVAR_MIN: Float64 = -10.0,
     LOGVAR_MAX: Float64 = -2.0,
 ](OffPolicyTrainable):
-
     comptime DYN_IN: Int = Self.OBS_DIM + Self.ACT_DIM
     comptime DYN_PRED: Int = 1 + Self.OBS_DIM
     comptime DYN_OUT: Int = 2 * Self.DYN_PRED
@@ -61,81 +60,104 @@ struct MBPOTrainer[
     comptime SYNTH_BS: Int = Self.BATCH - Self.REAL_BS
 
     comptime ENSEMBLE = DynamicsEnsembleBlock[
-        Self.DynNet, Self.N_ENSEMBLE, Self.NUM_ELITES,
-        Self.DYN_IN, Self.DYN_OUT, Self.BATCH,
-        Self.LOGVAR_MIN, Self.LOGVAR_MAX,
+        Self.DynNet,
+        Self.N_ENSEMBLE,
+        Self.NUM_ELITES,
+        Self.DYN_IN,
+        Self.DYN_OUT,
+        Self.BATCH,
+        Self.LOGVAR_MIN,
+        Self.LOGVAR_MAX,
     ]
 
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
 
-    var actor:       Self.ACTOR
-    var pair1:       OnlineTargetPair[Self.CRITIC]
-    var pair2:       OnlineTargetPair[Self.CRITIC]
-    var actor_opt:   Adam
+    var actor: Self.ACTOR
+    var pair1: OnlineTargetPair[Self.CRITIC]
+    var pair2: OnlineTargetPair[Self.CRITIC]
+    var actor_opt: Adam
     var critic1_opt: Adam
     var critic2_opt: Adam
-    var alpha_opt:   ScalarAdam
+    var alpha_opt: ScalarAdam
 
     var sample_blk: DualSampleCpuStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-        Self.REPLAY_CAPACITY, Self.SYNTH_CAPACITY,
-        Self.REAL_BS, Self.SYNTH_BS,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.REPLAY_CAPACITY,
+        Self.SYNTH_CAPACITY,
+        Self.REAL_BS,
+        Self.SYNTH_BS,
     ]
     var target_y_blk: TargetYStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.ACTOR,
+        Self.CRITIC,
     ]
     var twin_critic_blk: TwinCriticStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.CRITIC,
     ]
     var actor_blk: SACActorStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.ACTOR,
+        Self.CRITIC,
     ]
     var alpha_blk: AlphaUpdateStep[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
     var polyak_blk: PolyakStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
+        Self.CRITIC,
     ]
 
     var ensemble: Self.ENSEMBLE
-    var state:    TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
-    var tracker:  EpisodeTracker
+    var state: TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
+    var tracker: EpisodeTracker
 
     # select_action scratches (mirror SACTrainer).
-    var _ob1:  Scratch["ob1",  Self.OBS_DIM, True]
-    var _ao1:  Scratch["ao1",  2 * Self.ACT_DIM, True]
+    var _ob1: Scratch["ob1", Self.OBS_DIM, True]
+    var _ao1: Scratch["ao1", 2 * Self.ACT_DIM, True]
     var _alp1: Scratch["alp1", Self.ACT_DIM + 1, True]
 
     # Dynamics training / rollout scratches.
-    var _dyn_in:  Scratch["dyn_in",  Self.BATCH * Self.DYN_IN]
+    var _dyn_in: Scratch["dyn_in", Self.BATCH * Self.DYN_IN]
     var _dyn_tgt: Scratch["dyn_tgt", Self.BATCH * Self.DYN_PRED]
-    var _ro_obs:  Scratch["ro_obs",  Self.BATCH * Self.OBS_DIM]
-    var _ro_act:  Scratch["ro_act",  Self.BATCH * Self.ACT_DIM]
-    var _ro_nxt:  Scratch["ro_nxt",  Self.BATCH * Self.OBS_DIM]
-    var _ro_mu:   Scratch["ro_mu",   Self.BATCH * Self.DYN_PRED]
-    var _ro_lv:   Scratch["ro_lv",   Self.BATCH * Self.DYN_PRED]
+    var _ro_obs: Scratch["ro_obs", Self.BATCH * Self.OBS_DIM]
+    var _ro_act: Scratch["ro_act", Self.BATCH * Self.ACT_DIM]
+    var _ro_nxt: Scratch["ro_nxt", Self.BATCH * Self.OBS_DIM]
+    var _ro_mu: Scratch["ro_mu", Self.BATCH * Self.DYN_PRED]
+    var _ro_lv: Scratch["ro_lv", Self.BATCH * Self.DYN_PRED]
 
-    var action_scale:    Scalar[DT]
+    var action_scale: Scalar[DT]
     var learning_starts: Int
 
-    var model_train_freq:      Int
-    var dyn_epochs_per_round:  Int
-    var rollout_length:        Int
+    var model_train_freq: Int
+    var dyn_epochs_per_round: Int
+    var rollout_length: Int
     var num_rollouts_per_step: Int
-    var sac_updates_per_step:  Int
-    var dyn_batch_size:        Int
-    var last_dyn_step:         Int
+    var sac_updates_per_step: Int
+    var dyn_batch_size: Int
+    var last_dyn_step: Int
 
-    var _actor_L_accum:  Scalar[DT]
+    var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
-    var _update_count:   Int
+    var _update_count: Int
 
     def __init__(out self):
-        comptime assert Self.DynNet.IN_DIMS[0] == Self.DYN_IN, (
-            "MBPOTrainer: DynNet.IN_DIM must equal OBS_DIM + ACT_DIM"
-        )
-        comptime assert Self.DynNet.OUT_DIM == Self.DYN_OUT, (
-            "MBPOTrainer: DynNet.OUT_DIM must equal 2 * (1 + OBS_DIM)"
-        )
+        comptime assert (
+            Self.DynNet.IN_DIMS[0] == Self.DYN_IN
+        ), "MBPOTrainer: DynNet.IN_DIM must equal OBS_DIM + ACT_DIM"
+        comptime assert (
+            Self.DynNet.OUT_DIM == Self.DYN_OUT
+        ), "MBPOTrainer: DynNet.OUT_DIM must equal 2 * (1 + OBS_DIM)"
         comptime assert (
             Self.REAL_RATIO_PCT >= 0 and Self.REAL_RATIO_PCT <= 100
         ), "REAL_RATIO_PCT must be in [0, 100]"
@@ -149,47 +171,78 @@ struct MBPOTrainer[
         self.critic1_opt = Adam()
         self.critic2_opt = Adam()
         self.alpha_opt = ScalarAdam(
-            value=0.0, m=0.0, v=0.0, t=0,
-            lr=0.0003, beta1=0.9, beta2=0.999, eps=1e-8,
+            value=0.0,
+            m=0.0,
+            v=0.0,
+            t=0,
+            lr=0.0003,
+            beta1=0.9,
+            beta2=0.999,
+            eps=1e-8,
         )
         self.sample_blk = DualSampleCpuStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-            Self.REPLAY_CAPACITY, Self.SYNTH_CAPACITY,
-            Self.REAL_BS, Self.SYNTH_BS,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.REPLAY_CAPACITY,
+            Self.SYNTH_CAPACITY,
+            Self.REAL_BS,
+            Self.SYNTH_BS,
         ]()
         self.target_y_blk = TargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ]()
         self.twin_critic_blk = TwinCriticStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.CRITIC,
         ]()
         self.actor_blk = SACActorStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ]()
         self.alpha_blk = AlphaUpdateStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ]()
         self.polyak_blk = PolyakStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.CRITIC,
         ]()
         self.ensemble = Self.ENSEMBLE()
         self.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ]()
         self.tracker = EpisodeTracker(
-            window=List[Scalar[DT]](), window_size=0, idx=0,
-            current_return=Scalar[DT](0.0), ep_count=0,
+            window=List[Scalar[DT]](),
+            window_size=0,
+            idx=0,
+            current_return=Scalar[DT](0.0),
+            ep_count=0,
         )
-        self._ob1  = Scratch["ob1",  Self.OBS_DIM, True]()
-        self._ao1  = Scratch["ao1",  2 * Self.ACT_DIM, True]()
+        self._ob1 = Scratch["ob1", Self.OBS_DIM, True]()
+        self._ao1 = Scratch["ao1", 2 * Self.ACT_DIM, True]()
         self._alp1 = Scratch["alp1", Self.ACT_DIM + 1, True]()
-        self._dyn_in  = Scratch["dyn_in",  Self.BATCH * Self.DYN_IN]()
+        self._dyn_in = Scratch["dyn_in", Self.BATCH * Self.DYN_IN]()
         self._dyn_tgt = Scratch["dyn_tgt", Self.BATCH * Self.DYN_PRED]()
-        self._ro_obs  = Scratch["ro_obs",  Self.BATCH * Self.OBS_DIM]()
-        self._ro_act  = Scratch["ro_act",  Self.BATCH * Self.ACT_DIM]()
-        self._ro_nxt  = Scratch["ro_nxt",  Self.BATCH * Self.OBS_DIM]()
-        self._ro_mu   = Scratch["ro_mu",   Self.BATCH * Self.DYN_PRED]()
-        self._ro_lv   = Scratch["ro_lv",   Self.BATCH * Self.DYN_PRED]()
+        self._ro_obs = Scratch["ro_obs", Self.BATCH * Self.OBS_DIM]()
+        self._ro_act = Scratch["ro_act", Self.BATCH * Self.ACT_DIM]()
+        self._ro_nxt = Scratch["ro_nxt", Self.BATCH * Self.OBS_DIM]()
+        self._ro_mu = Scratch["ro_mu", Self.BATCH * Self.DYN_PRED]()
+        self._ro_lv = Scratch["ro_lv", Self.BATCH * Self.DYN_PRED]()
         self.action_scale = Scalar[DT](1.0)
         self.learning_starts = 1_000
         self.model_train_freq = 250
@@ -199,12 +252,14 @@ struct MBPOTrainer[
         self.sac_updates_per_step = 20
         self.dyn_batch_size = 256
         self.last_dyn_step = -1
-        self._actor_L_accum  = Scalar[DT](0.0)
+        self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
-        self._update_count   = 0
+        self._update_count = 0
 
     @staticmethod
-    def make[target: StaticString](
+    def make[
+        target: StaticString
+    ](
         actor_lr: Scalar[DT] = Scalar[DT](3e-4),
         critic_lr: Scalar[DT] = Scalar[DT](3e-4),
         alpha_lr: Scalar[DT] = Scalar[DT](3e-4),
@@ -242,19 +297,35 @@ struct MBPOTrainer[
         t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
 
         t.target_y_blk = TargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ].make["cpu"](action_scale=action_scale, gamma=gamma)
         t.twin_critic_blk = TwinCriticStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.CRITIC,
         ].make["cpu"]()
         t.actor_blk = SACActorStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
         ].make["cpu"](action_scale=action_scale)
         t.alpha_blk = AlphaUpdateStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ].make(target_entropy=target_entropy)
         t.polyak_blk = PolyakStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+            Self.CRITIC,
         ].make(tau=tau)
 
         t.ensemble = Self.ENSEMBLE.make[target, INIT=Kaiming]()
@@ -263,7 +334,9 @@ struct MBPOTrainer[
             window_size=window_size, initial_fill=initial_episode_fill
         )
         t.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ].make["cpu"]()
 
         init_scratch_auto[Self, target="cpu"](t)
@@ -301,9 +374,7 @@ struct MBPOTrainer[
         var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
         var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM]())
         self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
-        var alp1_t = TileTensor(
-            alp1_cpu_p, row_major[1, Self.ACT_DIM + 1]()
-        )
+        var alp1_t = TileTensor(alp1_cpu_p, row_major[1, Self.ACT_DIM + 1]())
         self.actor_blk.inner.rsample.forward["cpu", 1](ao1_t, output=alp1_t)
         for j in range(Self.ACT_DIM):
             var a = alp1_cpu_p[j]
@@ -319,6 +390,7 @@ struct MBPOTrainer[
         mut action_out: List[Scalar[DT]],
     ) raises:
         from std.math import tanh as ftanh
+
         var ob1_cpu_p = self._ob1.cpu_ptr()
         var ao1_cpu_p = self._ao1.cpu_ptr()
         for d in range(Self.OBS_DIM):
@@ -380,26 +452,35 @@ struct MBPOTrainer[
                 continue
 
             self.target_y_blk.step["cpu"](
-                self.state, self.actor,
-                self.pair1.target_net, self.pair2.target_net,
+                self.state,
+                self.actor,
+                self.pair1.target_net,
+                self.pair2.target_net,
             )
             self.twin_critic_blk.step["cpu"](
                 self.state,
-                self.pair1.online, self.critic1_opt,
-                self.pair2.online, self.critic2_opt,
+                self.pair1.online,
+                self.critic1_opt,
+                self.pair2.online,
+                self.critic2_opt,
             )
             self.actor_blk.step["cpu"](
-                self.state, self.actor, self.actor_opt,
-                self.pair1.online, self.pair2.online,
+                self.state,
+                self.actor,
+                self.actor_opt,
+                self.pair1.online,
+                self.pair2.online,
             )
             self.alpha_blk.step(self.state, self.alpha_opt)
             self.polyak_blk.step["cpu"](
-                self.state, self.pair1, self.pair2,
+                self.state,
+                self.pair1,
+                self.pair2,
             )
 
-            self._actor_L_accum  += self.state.actor_loss
+            self._actor_L_accum += self.state.actor_loss
             self._critic_L_accum += self.state.critic_loss
-            self._update_count   += 1
+            self._update_count += 1
             any = True
         return any
 
@@ -438,13 +519,13 @@ struct MBPOTrainer[
                     if idx >= n_data:
                         idx = n_data - 1
                     for d in range(Self.OBS_DIM):
-                        dyn_in_p[k * Self.DYN_IN + d] = (
-                            rb_obs[idx * Self.OBS_DIM + d]
-                        )
+                        dyn_in_p[k * Self.DYN_IN + d] = rb_obs[
+                            idx * Self.OBS_DIM + d
+                        ]
                     for j in range(Self.ACT_DIM):
-                        dyn_in_p[k * Self.DYN_IN + Self.OBS_DIM + j] = (
-                            rb_act[idx * Self.ACT_DIM + j]
-                        )
+                        dyn_in_p[k * Self.DYN_IN + Self.OBS_DIM + j] = rb_act[
+                            idx * Self.ACT_DIM + j
+                        ]
                     dyn_tgt_p[k * Self.DYN_PRED + 0] = rb_rew[idx]
                     for d in range(Self.OBS_DIM):
                         dyn_tgt_p[k * Self.DYN_PRED + 1 + d] = (
@@ -458,7 +539,9 @@ struct MBPOTrainer[
                     dyn_tgt_p, row_major[Self.BATCH, Self.DYN_PRED]()
                 )
                 _ = self.ensemble.train_member_step["cpu"](
-                    m, dyn_in_t, dyn_tgt_t,
+                    m,
+                    dyn_in_t,
+                    dyn_tgt_t,
                 )
 
     def _generate_synthetic_rollouts(mut self) raises:
@@ -486,9 +569,9 @@ struct MBPOTrainer[
                 if idx >= real_buf_size:
                     idx = real_buf_size - 1
                 for d in range(Self.OBS_DIM):
-                    roll_obs_p[k * Self.OBS_DIM + d] = (
-                        rb_obs[idx * Self.OBS_DIM + d]
-                    )
+                    roll_obs_p[k * Self.OBS_DIM + d] = rb_obs[
+                        idx * Self.OBS_DIM + d
+                    ]
 
             for _ in range(self.rollout_length):
                 for k in range(this_batch):
@@ -499,20 +582,22 @@ struct MBPOTrainer[
                     for _ in range(Self.ACT_DIM):
                         act_list.append(Scalar[DT](0.0))
                     self.select_action(
-                        obs_list, act_list, self.learning_starts + 1,
+                        obs_list,
+                        act_list,
+                        self.learning_starts + 1,
                     )
                     for j in range(Self.ACT_DIM):
                         roll_act_p[k * Self.ACT_DIM + j] = act_list[j]
 
                 for k in range(this_batch):
                     for d in range(Self.OBS_DIM):
-                        dyn_in_p[k * Self.DYN_IN + d] = (
-                            roll_obs_p[k * Self.OBS_DIM + d]
-                        )
+                        dyn_in_p[k * Self.DYN_IN + d] = roll_obs_p[
+                            k * Self.OBS_DIM + d
+                        ]
                     for j in range(Self.ACT_DIM):
-                        dyn_in_p[k * Self.DYN_IN + Self.OBS_DIM + j] = (
-                            roll_act_p[k * Self.ACT_DIM + j]
-                        )
+                        dyn_in_p[
+                            k * Self.DYN_IN + Self.OBS_DIM + j
+                        ] = roll_act_p[k * Self.ACT_DIM + j]
                 var dyn_in_t = TileTensor(
                     dyn_in_p, row_major[Self.BATCH, Self.DYN_IN]()
                 )
@@ -528,7 +613,10 @@ struct MBPOTrainer[
                     elite_pick = n_elites - 1
                 var member_idx = self.ensemble.elite_indices[elite_pick]
                 self.ensemble.predict_member["cpu"](
-                    member_idx, dyn_in_t, ro_mu_t, ro_lv_t,
+                    member_idx,
+                    dyn_in_t,
+                    ro_mu_t,
+                    ro_lv_t,
                 )
 
                 var s_list = List[Scalar[DT]](capacity=Self.OBS_DIM)
@@ -558,7 +646,11 @@ struct MBPOTrainer[
                     for j in range(Self.ACT_DIM):
                         a_list[j] = roll_act_p[k * Self.ACT_DIM + j]
                     self.sample_blk.synth_add(
-                        s_list, a_list, rew, sp_list, Scalar[DT](0.0),
+                        s_list,
+                        a_list,
+                        rew,
+                        sp_list,
+                        Scalar[DT](0.0),
                     )
 
                 for k in range(this_batch * Self.OBS_DIM):

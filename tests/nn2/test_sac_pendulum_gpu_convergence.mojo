@@ -25,7 +25,7 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks_ref import UniformSampleGpuStep
+from mojo_rl.nn2.training.blocks import UniformSampleGpuStep
 
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -39,13 +39,18 @@ comptime TOTAL_TIMESTEPS = 30_000
 comptime CONVERGENCE_THRESHOLD = -200.0  # GPU SAC must beat random baseline by a margin
 
 comptime ActorNet = StochasticActor[
-    OBS_DIM, ACT_DIM,
-    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    OBS_DIM,
+    ACT_DIM,
+    Linear[OBS_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
@@ -56,15 +61,21 @@ def test_sac_pendulum_gpu_convergence() raises:
     var trainer = SACTrainer[
         "gpu",
         UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-        ActorNet, CriticNet,
+        ActorNet,
+        CriticNet,
     ].make(
         ctx=ctx,
-        actor_lr=Scalar[DT](3e-4), critic_lr=Scalar[DT](1e-3),
-        alpha_lr=Scalar[DT](3e-4), gamma=Scalar[DT](0.99),
-        tau=Scalar[DT](0.005), action_scale=Scalar[DT](2.0),
-        init_alpha=Scalar[DT](0.2), target_entropy=Scalar[DT](-1.0),
+        actor_lr=Scalar[DT](3e-4),
+        critic_lr=Scalar[DT](1e-3),
+        alpha_lr=Scalar[DT](3e-4),
+        gamma=Scalar[DT](0.99),
+        tau=Scalar[DT](0.005),
+        action_scale=Scalar[DT](2.0),
+        init_alpha=Scalar[DT](0.2),
+        target_entropy=Scalar[DT](-1.0),
         learning_starts=1_000,
-        window_size=10, initial_episode_fill=Scalar[DT](-1250.0),
+        window_size=10,
+        initial_episode_fill=Scalar[DT](-1250.0),
     )
 
     var obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
@@ -87,7 +98,10 @@ def test_sac_pendulum_gpu_convergence() raises:
         for d in range(OBS_DIM):
             next_obs[d] = nxt[d]
         trainer.record(
-            obs, action, reward, next_obs,
+            obs,
+            action,
+            reward,
+            next_obs,
             Scalar[DT](1.0) if done else Scalar[DT](0.0),
         )
         if done:
@@ -102,21 +116,29 @@ def test_sac_pendulum_gpu_convergence() raises:
         if step % 5_000 == 0:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
-                "[step ", step, "] mean_ret(10)=", trainer.mean_return(),
-                " ep=", trainer.ep_count(),
-                " elapsed=", elapsed, "s",
+                "[step ",
+                step,
+                "] mean_ret(10)=",
+                trainer.mean_return(),
+                " ep=",
+                trainer.ep_count(),
+                " elapsed=",
+                elapsed,
+                "s",
             )
 
     var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
     var final_mean = Float64(trainer.mean_return())
     print("=" * 70)
-    print("Final mean10 =", final_mean, " (threshold:", CONVERGENCE_THRESHOLD, ")")
+    print(
+        "Final mean10 =", final_mean, " (threshold:", CONVERGENCE_THRESHOLD, ")"
+    )
     print("Total wall-time =", elapsed, "s")
     print(trainer.flush_timer_log())
     print("=" * 70)
     assert_true(
         final_mean > CONVERGENCE_THRESHOLD,
-        "GPU SAC failed convergence regression: mean10 not above threshold"
+        "GPU SAC failed convergence regression: mean10 not above threshold",
     )
     print("  test_sac_pendulum_gpu_convergence PASSED")
 
