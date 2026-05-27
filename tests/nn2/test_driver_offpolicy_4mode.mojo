@@ -224,7 +224,7 @@ def test_mode4_gpu_gpu_n4() raises:
 
 def main() raises:
     print("=" * 70)
-    print("Tier-3 — ONE unified driver across 4 same-target modes")
+    print("Tier-3 — ONE driver across 4 same-target modes")
     print("=" * 70)
     test_mode1_cpu_cpu_n1()
     test_mode2_cpu_cpu_n4()

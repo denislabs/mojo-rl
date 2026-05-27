@@ -59,7 +59,7 @@ comptime CriticNet = Sequential[
 ]
 
 
-def test_unified_cpu() raises:
+def test_offpolicy_cpu() raises:
     print("--- run_offpolicy_train[target=cpu] ---")
     seed(42)
     var trainer = SACTrainer[
@@ -90,7 +90,7 @@ def test_unified_cpu() raises:
     assert_true(trainer.ep_count() > 0, "CPU no episodes completed")
 
 
-def test_unified_gpu() raises:
+def test_offpolicy_gpu() raises:
     print("--- run_offpolicy_train[target=gpu] ---")
     seed(42)
     var ctx = DeviceContext()
@@ -126,10 +126,10 @@ def test_unified_gpu() raises:
 
 def main() raises:
     print("=" * 60)
-    print("Unified single-env driver — both targets")
+    print("run_offpolicy_train single-env driver — both targets")
     print("=" * 60)
-    test_unified_cpu()
-    test_unified_gpu()
+    test_offpolicy_cpu()
+    test_offpolicy_gpu()
     print("=" * 60)
     print("ALL PASSED")
     print("=" * 60)

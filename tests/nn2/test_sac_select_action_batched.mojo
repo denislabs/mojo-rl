@@ -10,7 +10,7 @@ serves all three legacy call surfaces from a single body:
   3. GPU trainer, N_ENVS>1, device pointers.
 
 Each path is built from the same trainer struct (target-comptime'd at
-make time) + the same `DriverScratch` storage abstraction. The unified
+make time) + the same `DriverScratch` storage abstraction. The
 method dispatches via comptime branches on `target` and `N_ENVS`.
 
 Assertions are intentionally loose: actions must be finite and within
@@ -127,7 +127,7 @@ def test_gpu_n1() raises:
         learning_starts=WARMUP,
     )
     # `with_host_mirror=True` on the staging scratches gives us the
-    # host-side ptr for H2D upload / D2H download around the unified
+    # host-side ptr for H2D upload / D2H download around the
     # call. This is the N_ENVS=1 GPU driver pattern.
     var obs = DriverScratch["obs", 1, OBS].make["gpu"](
         ctx=ctx, with_host_mirror=True,

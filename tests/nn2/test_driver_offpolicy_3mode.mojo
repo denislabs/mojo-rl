@@ -1,4 +1,4 @@
-"""Tier-1 Phase 3.5 — dual-target unified drivers, all three modes.
+"""Tier-1 Phase 3.5 — dual-target off-policy drivers, all three modes.
 
 Three configurations exercised through two driver functions, with
 (env_target, train_target, N_ENVS) made explicit:
@@ -176,7 +176,7 @@ def test_mode3_gpu_env_gpu_train_n1() raises:
 
 def main() raises:
     print("=" * 70)
-    print("Dual-target unified drivers — three (env_target, train_target, N) modes")
+    print("Dual-target off-policy drivers — three (env_target, train_target, N) modes")
     print("=" * 70)
     test_mode1_cpu_env_cpu_train()
     test_mode2_cpu_env_gpu_train()
