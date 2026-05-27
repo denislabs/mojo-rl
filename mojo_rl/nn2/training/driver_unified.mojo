@@ -571,15 +571,17 @@ def run_offpolicy_train_unified_gpu_env[
 
 
 # ──────────────────────────────────────────────────────────────────────
-# run_offpolicy_train_batched_cpu_env — Tier-2: cpu env × cpu train × N≥1
+# run_offpolicy_train_batched — Tier-3: ONE driver for all
+#   (env_target, train_target, N_ENVS) combos via BatchedEnv.
 # ──────────────────────────────────────────────────────────────────────
 
 
-def run_offpolicy_train_batched_cpu_env[
-    A: OffPolicyAgentUnified,
+def run_offpolicy_train_batched[
+    A: OffPolicyAgentUnifiedGpu,
     E: BatchedEnv,
     N_ENVS: Int = 1,
 ](
+    ctx: Optional[DeviceContext],
     mut trainer: A,
     mut env: E,
     total_env_steps: Int,
@@ -589,67 +591,83 @@ def run_offpolicy_train_batched_cpu_env[
     print_every: Int = 5_000,
     verbose: Bool = True,
 ) raises -> List[Scalar[DT]]:
-    """Single unified driver for (env_target='cpu', train_target='cpu')
-    at any `N_ENVS >= 1`. Built on the Tier-2 `BatchedEnv` trait so it
-    works against `BatchedCpuEnv[E, N_ENVS, OBS, ACT]` wrapping any
-    CPU env (no per-env refactor required).
+    """Tier-3 off-policy driver covering same-target (env_target ==
+    train_target) combinations through the `BatchedEnv` trait:
+
+      env_target | train_target | N_ENVS | covered
+      -----------|--------------|--------|--------
+      cpu        | cpu          | >=1    | yes  (via BatchedCpuEnv)
+      gpu        | gpu          | >=1    | yes  (via BatchedGpuEnv)
+
+    Cross-target combinations are NOT covered here:
+      - (cpu env, gpu train) reachable via `run_offpolicy_train_unified`
+        (Tier-1 Phase 3) at N_ENVS=1. Batched cross-target requires
+        H2D-ing prev_obs/action/reward/obs/done before record_batch_gpu;
+        the boundary plumbing is straightforward but the use case is
+        rare (people with a GPU usually also have a GPU env), so it's
+        deferred until a consumer needs it.
+      - (gpu env, cpu train) rejected as degenerate (D2H every obs).
+
+    Bounded on `OffPolicyAgentUnifiedGpu` because the gpu-env branch
+    needs `record_batch_gpu`; the cpu-env branch uses `record_batch_cpu`
+    inherited from the parent. The driver comptime-branches on
+    `(env_target, N_ENVS)` so each combination compiles only the
+    kernels it actually needs.
+
+    `ctx` is required for `env_target == "gpu"`; pass `None` for the
+    pure CPU case.
 
     Loop:
-      1. snapshot prev_obs (D→D copy in host scratches)
-      2. trainer.select_action_unified[N_ENVS]  → action
-      3. env.step_batch[N_ENVS]                  → obs / reward / done
-      4. trainer.record_batch_cpu[N_ENVS]        → replay push
+      1. snapshot env.obs_ptr()           → prev_obs (driver-owned)
+      2. trainer.select_action_unified[N_ENVS] → env.action_ptr() directly
+      3. env.step_batch[N_ENVS]           → env.obs / .reward / .done
+      4. trainer.record_batch_cpu OR record_batch_gpu (env-side ptrs)
       5. per-env return accumulation + add_complete_return on done
-      6. env.selective_reset_batch[N_ENVS]       → reset done lanes
+      6. env.selective_reset_batch[N_ENVS]
       7. updates_per_step × trainer.train_step_unified
-
-    Loop semantics at N_ENVS=1 mirror the legacy CPU driver but route
-    through select_action_unified + record_batch_cpu, NOT trainer.record
-    (which would auto-update the tracker). Per-env return accumulators
-    are driver-owned; trainer.add_complete_return flushes complete
-    episodes into the trainer's rolling-window mean_return.
-
-    The (env_target='cpu', train_target='gpu') combination is reachable
-    via `run_offpolicy_train_unified` (Tier-1 Phase 3) at N_ENVS=1; a
-    batched (cpu env, gpu train) extension is straightforward but
-    deferred until a consumer needs it.
     """
     comptime env_target: StaticString = E.ENV_TARGET
     comptime train_target: StaticString = A.AGENT_TRAIN_TARGET
     comptime OBS = A.AGENT_OBS_DIM
     comptime ACT = A.AGENT_ACT_DIM
+
     comptime assert (
-        env_target == "cpu" and train_target == "cpu"
-    ), (
-        "run_offpolicy_train_batched_cpu_env: env_target and"
-        " train_target must both be 'cpu' in this variant"
+        env_target == "cpu" or env_target == "gpu"
+    ), "env_target must be 'cpu' or 'gpu'"
+    comptime assert (
+        train_target == "cpu" or train_target == "gpu"
+    ), "train_target must be 'cpu' or 'gpu'"
+    comptime assert env_target == train_target, (
+        "run_offpolicy_train_batched: env_target must equal train_target."
+        " Cross-target combinations: (cpu env, gpu train) → use"
+        " run_offpolicy_train_unified (Tier-1, single-env); (gpu env,"
+        " cpu train) → rejected as degenerate."
     )
     comptime assert N_ENVS > 0, "N_ENVS must be > 0"
     comptime assert (
         E.OBS_DIM == OBS and E.ACT_DIM == ACT
-    ), (
-        "BatchedEnv dimensions must match trainer dimensions"
-    )
+    ), "BatchedEnv dimensions must match trainer dimensions"
+    comptime if env_target == "gpu":
+        if not ctx:
+            raise Error(
+                "run_offpolicy_train_batched: ctx required when"
+                " env_target is 'gpu'"
+            )
 
-    # Driver-owned scratches — host-only since both env and train are CPU.
-    var obs_buf = DriverScratch["obs", N_ENVS, OBS].make["cpu"]()
-    var prev_obs = DriverScratch["prev_obs", N_ENVS, OBS].make["cpu"]()
-    var actions = DriverScratch["actions", N_ENVS, ACT].make["cpu"]()
-    var rewards = DriverScratch["rewards", N_ENVS, 1].make["cpu"]()
-    var dones = DriverScratch["dones", N_ENVS, 1].make["cpu"]()
-    var ao = DriverScratch["ao", N_ENVS, 2 * ACT].make["cpu"]()
-    var alp = DriverScratch["alp", N_ENVS, ACT + 1].make["cpu"]()
+    # All scratches on the single target (env_target == train_target).
+    var ao = DriverScratch["ao", N_ENVS, 2 * ACT].make[train_target](ctx=ctx)
+    var alp = DriverScratch["alp", N_ENVS, ACT + 1].make[train_target](
+        ctx=ctx
+    )
+    var prev_obs = DriverScratch["prev_obs", N_ENVS, OBS].make[
+        env_target
+    ](ctx=ctx)
 
     var per_env_returns = List[Scalar[DT]](
         length=N_ENVS, fill=Scalar[DT](0.0),
     )
 
-    # Initial env reset.
-    env.reset_batch[N_ENVS](
-        ctx=None,
-        obs_ptr=obs_buf.host_ptr(),
-        rng_seed=rng_seed,
-    )
+    env.reset_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed)
 
     var ep_returns = List[Scalar[DT]]()
     var t_start = perf_counter_ns()
@@ -658,58 +676,114 @@ def run_offpolicy_train_batched_cpu_env[
     var next_print: Int = print_every
 
     while step_idx < total_env_steps:
-        # Snapshot prev_obs from obs_buf (host memcpy).
-        var po_p = prev_obs.host_ptr()
-        var ob_p = obs_buf.host_ptr()
-        for k in range(N_ENVS * OBS):
-            po_p[k] = ob_p[k]
+        # ── 1. Snapshot prev_obs from env.obs_ptr().
+        comptime if env_target == "cpu":
+            var po_p = prev_obs.host_ptr()
+            var ob_p = env.obs_ptr()
+            for k in range(N_ENVS * OBS):
+                po_p[k] = ob_p[k]
+        else:
+            # GPU env: D→D enqueue_copy. Reconstruct DeviceBuffer view
+            # over env.obs_ptr() (owning=False — env still owns memory).
+            var c = ctx.value()
+            var env_obs_view = DeviceBuffer[DT](
+                c, env.obs_ptr(), N_ENVS * OBS, owning=False,
+            )
+            c.enqueue_copy(prev_obs.dev.value(), env_obs_view)
 
+        # ── 2. Trainer writes action directly into env.action_ptr().
+        # env_target == train_target so the pointer is on the right side.
         trainer.select_action_unified[N_ENVS](
-            obs_buf.host_ptr(),
-            actions.host_ptr(),
-            ao.host_ptr(),
-            alp.host_ptr(),
+            env.obs_ptr(),
+            env.action_ptr(),
+            ao.target_ptr[train_target](),
+            alp.target_ptr[train_target](),
             step_idx,
         )
 
+        # ── 3. Env step (writes env-internal obs/reward/done).
         env.step_batch[N_ENVS](
-            ctx=None,
-            action_ptr=actions.host_ptr(),
-            obs_ptr=obs_buf.host_ptr(),
-            reward_ptr=rewards.host_ptr(),
-            done_ptr=dones.host_ptr(),
+            ctx=ctx,
             rng_seed=rng_seed + UInt64(iter_idx + 1),
         )
 
-        trainer.record_batch_cpu[N_ENVS](
-            prev_obs.host_ptr(),
-            actions.host_ptr(),
-            rewards.host_ptr(),
-            obs_buf.host_ptr(),
-            dones.host_ptr(),
-        )
+        # ── 4. Replay push (env-target-specific).
+        comptime if env_target == "cpu":
+            trainer.record_batch_cpu[N_ENVS](
+                prev_obs.host_ptr(),
+                env.action_ptr(),
+                env.reward_ptr(),
+                env.obs_ptr(),
+                env.done_ptr(),
+            )
+        else:
+            # GPU env. Reconstruct non-owning DeviceBuffer views over
+            # the env's pointers to pass to record_batch_gpu.
+            var c = ctx.value()
+            var action_buf = DeviceBuffer[DT](
+                c, env.action_ptr(), N_ENVS * ACT, owning=False,
+            )
+            var reward_buf = DeviceBuffer[DT](
+                c, env.reward_ptr(), N_ENVS, owning=False,
+            )
+            var obs_buf = DeviceBuffer[DT](
+                c, env.obs_ptr(), N_ENVS * OBS, owning=False,
+            )
+            var done_buf = DeviceBuffer[DT](
+                c, env.done_ptr(), N_ENVS, owning=False,
+            )
+            trainer.record_batch_gpu[N_ENVS](
+                c,
+                prev_obs.dev.value(),
+                action_buf,
+                reward_buf,
+                obs_buf,
+                done_buf,
+            )
 
-        # Per-env episode tracking.
-        var rewards_h = rewards.host_ptr()
-        var dones_h = dones.host_ptr()
-        for e in range(N_ENVS):
-            per_env_returns[e] = per_env_returns[e] + rewards_h[e]
-            if dones_h[e] > Scalar[DT](0.5):
-                trainer.add_complete_return(per_env_returns[e])
-                per_env_returns[e] = Scalar[DT](0.0)
-                ep_returns.append(trainer.mean_return())
+        # ── 5. Per-env episode tracking. Needs host-side reward+done.
+        comptime if env_target == "cpu":
+            var rewards_h = env.reward_ptr()
+            var dones_h = env.done_ptr()
+            for e in range(N_ENVS):
+                per_env_returns[e] = per_env_returns[e] + rewards_h[e]
+                if dones_h[e] > Scalar[DT](0.5):
+                    trainer.add_complete_return(per_env_returns[e])
+                    per_env_returns[e] = Scalar[DT](0.0)
+                    ep_returns.append(trainer.mean_return())
+        else:
+            # GPU env: D2H of reward + done (small, N_ENVS*2 scalars).
+            var c = ctx.value()
+            var host_rewards = c.enqueue_create_host_buffer[DT](N_ENVS)
+            var host_dones = c.enqueue_create_host_buffer[DT](N_ENVS)
+            var reward_view = DeviceBuffer[DT](
+                c, env.reward_ptr(), N_ENVS, owning=False,
+            )
+            var done_view = DeviceBuffer[DT](
+                c, env.done_ptr(), N_ENVS, owning=False,
+            )
+            c.enqueue_copy(host_rewards, reward_view)
+            c.enqueue_copy(host_dones, done_view)
+            c.synchronize()
+            var rewards_h = host_rewards.unsafe_ptr()
+            var dones_h = host_dones.unsafe_ptr()
+            for e in range(N_ENVS):
+                per_env_returns[e] = per_env_returns[e] + rewards_h[e]
+                if dones_h[e] > Scalar[DT](0.5):
+                    trainer.add_complete_return(per_env_returns[e])
+                    per_env_returns[e] = Scalar[DT](0.0)
+                    ep_returns.append(trainer.mean_return())
 
-        # Selective env reset.
+        # ── 8. Selective env reset.
         env.selective_reset_batch[N_ENVS](
-            ctx=None,
-            obs_ptr=obs_buf.host_ptr(),
-            dones_ptr=dones.host_ptr(),
+            ctx=ctx,
             rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
         )
 
         step_idx += N_ENVS
         iter_idx += 1
 
+        # ── 9. Trainer updates.
         for _ in range(updates_per_step):
             _ = trainer.train_step_unified(step_idx)
 

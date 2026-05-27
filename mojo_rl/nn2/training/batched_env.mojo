@@ -1,52 +1,49 @@
-"""BatchedEnv trait + BatchedCpuEnv adapter — Tier-2 prototype.
+"""BatchedEnv trait + BatchedCpuEnv / BatchedGpuEnv adapters — Tier-3.
 
-The Tier-1 unified drivers had to remain two functions because the env
-interaction APIs differ structurally between CPU envs
-(`BoxContinuousActionEnv.step_continuous_vec` returns host Lists) and
-GPU envs (`GPUContinuousEnv.step_kernel_gpu` writes into device
-buffers). Tier-2 lifts a uniform `BatchedEnv` trait over both:
+The Tier-1 unified drivers had to remain two functions because env
+APIs differ structurally — CPU envs return host Lists, GPU envs take
+DeviceBuffer kernel args. Tier-3 lifts a uniform `BatchedEnv` trait
+over both via the **env-owns-buffers** pattern:
 
-  comptime ENV_TARGET: StaticString   # "cpu" or "gpu"
-  comptime OBS_DIM: Int
-  comptime ACT_DIM: Int
+  trait BatchedEnv:
+      comptime ENV_TARGET: StaticString
+      comptime OBS_DIM: Int
+      comptime ACT_DIM: Int
 
-  def reset_batch[N_ENVS](
-      mut self, ctx, obs_ptr, rng_seed,
-  ) raises
-  def step_batch[N_ENVS](
-      mut self, ctx, action_ptr, obs_ptr, reward_ptr, done_ptr,
-      rng_seed,
-  ) raises
-  def selective_reset_batch[N_ENVS](
-      mut self, ctx, obs_ptr, dones_ptr, rng_seed,
-  ) raises
+      def reset_batch[BATCH](mut self, ctx, rng_seed) raises
+      def step_batch[BATCH](mut self, ctx, rng_seed) raises
+      def selective_reset_batch[BATCH](mut self, ctx, rng_seed) raises
 
-Pointer semantics: target-side scalars, all sized N_ENVS × {dim}.
-For ENV_TARGET="cpu" the caller passes host pointers; for "gpu",
-device pointers. `ctx: Optional[DeviceContext]` is `None` for CPU
-envs and required for GPU envs.
+      def obs_ptr(self)    -> UnsafePointer[Scalar[DT], MutAnyOrigin]
+      def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]
+      def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]
+      def done_ptr(self)   -> UnsafePointer[Scalar[DT], MutAnyOrigin]
 
-`BatchedCpuEnv[E: BoxContinuousActionEnv & Copyable & Movable, N_ENVS]`
-adapter: wraps any CPU env conforming to the existing trait via an
-`InlineArray[E, N_ENVS]` of independent env instances (verified by the
-Tier-2 spike: each instance holds independent state). Implements
-`BatchedEnv` by looping N_ENVS times inside each method and converting
-E.dtype ↔ DT at the boundary. This is the "every env gets batched-CPU
-for free via an adapter" piece — no per-env refactor required.
+The env adapter owns the obs/action/reward/done buffers (host List for
+CPU, DeviceBuffer for GPU). The driver writes actions into
+`env.action_ptr()`, calls `env.step_batch()`, then reads
+obs/reward/done via the accessor pointers.
 
-GPU adapter is intentionally NOT in this file. The GPU env kernels
-(E.step_kernel_gpu, E.reset_kernel_gpu, etc.) expect
-`mut DeviceBuffer[dtype]` parameters, not raw pointers — wrapping a
-raw pointer in a synthetic DeviceBuffer isn't safely expressible in
-Mojo nightly. The existing `run_offpolicy_train_unified_gpu_env`
-driver (Phase 3.5) continues to handle the GPU env case; a BatchedEnv-
-conforming GPU adapter is Tier-3 work.
+Two adapters:
+
+  - `BatchedCpuEnv[E, N_ENVS, OBS_DIM, ACT_DIM]` wraps any
+    `BoxContinuousActionEnv & Copyable & Movable` env. Holds
+    `InlineArray[E, N_ENVS]` of independent env instances.
+  - `BatchedGpuEnv[E, N_ENVS, OBS_DIM, ACT_DIM, STATE_SIZE]` wraps any
+    `GPUContinuousEnv`. Holds internal `DeviceBuffer` fields for
+    state/obs/action/reward/done/terminated; dispatches the env's
+    static `*_kernel_gpu` methods.
+
+For consumers needing the underlying `DeviceBuffer` (e.g. to call
+trainer.record_batch_gpu which takes DeviceBuffer args), the driver
+reconstructs non-owning views via
+`DeviceBuffer[DT](ctx, env.obs_ptr(), N*OBS, owning=False)`.
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import DT
-from mojo_rl.core.env_traits import BoxContinuousActionEnv
+from mojo_rl.core.env_traits import BoxContinuousActionEnv, GPUContinuousEnv
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -55,62 +52,66 @@ from mojo_rl.core.env_traits import BoxContinuousActionEnv
 
 
 trait BatchedEnv(Movable & ImplicitlyDestructible):
-    """Uniform N_ENVS-batched env interaction surface. Pointer args
-    are always sized N_ENVS × {dim} and live on ENV_TARGET.
-
-    `rng_seed` is consumed deterministically per call. CPU envs may
-    ignore it (they typically rely on the std lib's global PRNG state
-    via `random_float64`) or fold it in for testability; GPU envs use
-    it to seed Philox kernels."""
+    """Uniform N_ENVS-batched env surface. Env owns its
+    obs/action/reward/done buffers internally; driver reads/writes via
+    pointer accessors. Method comptime is `BATCH` (not `N_ENVS`) so
+    impls whose struct already has an N_ENVS comptime can conform
+    without name shadowing."""
 
     comptime ENV_TARGET: StaticString
     comptime OBS_DIM: Int
     comptime ACT_DIM: Int
 
-    def reset_batch[
-        BATCH: Int
-    ](
+    def reset_batch[BATCH: Int](
         mut self,
         ctx: Optional[DeviceContext],
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         rng_seed: UInt64,
     ) raises:
-        """Initial reset for all N envs. Writes N_ENVS * OBS_DIM
-        scalars into `obs_ptr`."""
+        """Initial reset for all N envs. Writes the env's internal
+        obs buffer; subsequent `obs_ptr()` reads see the new obs."""
         ...
 
-    def step_batch[
-        BATCH: Int
-    ](
+    def step_batch[BATCH: Int](
         mut self,
         ctx: Optional[DeviceContext],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         rng_seed: UInt64,
     ) raises:
-        """Step all N envs in parallel. `action_ptr` is read; `obs_ptr`
-        is overwritten with next_obs in place; `reward_ptr` and
-        `done_ptr` are written as outputs (each N_ENVS scalars)."""
+        """Step all N envs. Reads the env's `action_ptr()`; overwrites
+        `obs_ptr()`, `reward_ptr()`, `done_ptr()` in place."""
         ...
 
-    def selective_reset_batch[
-        BATCH: Int
-    ](
+    def selective_reset_batch[BATCH: Int](
         mut self,
         ctx: Optional[DeviceContext],
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        dones_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         rng_seed: UInt64,
     ) raises:
-        """Reset only envs where `dones_ptr[i] > 0.5`. Refreshes
-        `obs_ptr` for reset envs; leaves other slots untouched."""
+        """Reset only envs where the last `step_batch` wrote
+        `done > 0.5`; obs for reset envs gets refreshed. Reads
+        `done_ptr()`."""
+        ...
+
+    # ─── Pointer accessors — same return type for CPU and GPU ────────
+
+    def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Pointer to the [N_ENVS, OBS_DIM] obs slab on ENV_TARGET."""
+        ...
+
+    def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Pointer to the [N_ENVS, ACT_DIM] action slab. Driver
+        writes action into this slab before calling step_batch."""
+        ...
+
+    def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Pointer to the [N_ENVS] reward slab."""
+        ...
+
+    def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Pointer to the [N_ENVS] done slab (1.0 if done else 0.0)."""
         ...
 
 
 # ──────────────────────────────────────────────────────────────────────
-# BatchedCpuEnv[E, N_ENVS] — CPU env adapter.
+# BatchedCpuEnv[E, N_ENVS, OBS, ACT] — CPU env adapter.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -120,12 +121,10 @@ struct BatchedCpuEnv[
     OBS_DIM_: Int,
     ACT_DIM_: Int,
 ](BatchedEnv):
-    """Adapter that holds N independent instances of a CPU env `E`
-    and dispatches the BatchedEnv surface by looping internally.
-
-    Per-env state independence is verified by the Tier-2 viability
-    spike (envs stepped different numbers of times produce distinct
-    observations).
+    """Wraps N independent instances of a CPU env via
+    `InlineArray[E, N_ENVS]` and owns the obs/action/reward/done host
+    buffers. Per-env state independence is verified by the Tier-2
+    viability spike.
 
     Construction:
         var template = PendulumEnv[DT]()  # OBS=3, ACT=1
@@ -133,13 +132,8 @@ struct BatchedCpuEnv[
 
     `OBS_DIM_` / `ACT_DIM_` are explicit comptime params because
     `BoxContinuousActionEnv` exposes obs/action dimensions only as
-    runtime methods (`obs_dim()` / `action_dim()`), not comptime
-    members — we need them comptime to lay out the pointer slabs.
-
-    The template-clone pattern (caller passes one configured env, the
-    wrapper clones it `N_ENVS` times via `InlineArray(fill=template)`)
-    avoids requiring E to conform to `Defaultable` — works with any
-    `BoxContinuousActionEnv & Copyable & Movable` env.
+    runtime methods, not comptime members — we need them comptime to
+    size the internal buffers.
     """
 
     comptime ENV_TARGET: StaticString = "cpu"
@@ -148,26 +142,39 @@ struct BatchedCpuEnv[
 
     var envs: InlineArray[Self.E, Self.N_ENVS]
 
+    # Internally-owned host buffers — driver reads/writes via accessors.
+    var _obs: List[Scalar[DT]]
+    var _action: List[Scalar[DT]]
+    var _reward: List[Scalar[DT]]
+    var _done: List[Scalar[DT]]
+
     # Pre-allocated host scratch for the per-env action List we feed
     # into `step_continuous_vec` (avoids allocating a new List every
-    # step × env). Sized ACT_DIM (single env's action), not N×ACT.
+    # step × env). E.dtype may differ from DT.
     var _action_scratch: List[Scalar[Self.E.dtype]]
 
     def __init__(out self, template: Self.E):
         self.envs = InlineArray[Self.E, Self.N_ENVS](fill=template)
+        self._obs = List[Scalar[DT]](
+            length=Self.N_ENVS * Self.OBS_DIM, fill=Scalar[DT](0.0),
+        )
+        self._action = List[Scalar[DT]](
+            length=Self.N_ENVS * Self.ACT_DIM, fill=Scalar[DT](0.0),
+        )
+        self._reward = List[Scalar[DT]](
+            length=Self.N_ENVS, fill=Scalar[DT](0.0),
+        )
+        self._done = List[Scalar[DT]](
+            length=Self.N_ENVS, fill=Scalar[DT](0.0),
+        )
         self._action_scratch = List[Scalar[Self.E.dtype]](
-            capacity=Self.ACT_DIM
+            capacity=Self.ACT_DIM,
         )
         for _ in range(Self.ACT_DIM):
             self._action_scratch.append(Scalar[Self.E.dtype](0.0))
 
-    def reset_batch[
-        BATCH: Int
-    ](
-        mut self,
-        ctx: Optional[DeviceContext],
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        rng_seed: UInt64,
+    def reset_batch[BATCH: Int](
+        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
     ) raises:
         comptime assert BATCH == Self.N_ENVS, (
             "BatchedCpuEnv: reset_batch BATCH must match struct param"
@@ -177,18 +184,12 @@ struct BatchedCpuEnv[
         for env_idx in range(Self.N_ENVS):
             var obs_list = self.envs[env_idx].reset_obs_list()
             for d in range(Self.OBS_DIM):
-                obs_ptr[env_idx * Self.OBS_DIM + d] = Scalar[DT](obs_list[d])
+                self._obs[env_idx * Self.OBS_DIM + d] = Scalar[DT](
+                    obs_list[d]
+                )
 
-    def step_batch[
-        BATCH: Int
-    ](
-        mut self,
-        ctx: Optional[DeviceContext],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        rng_seed: UInt64,
+    def step_batch[BATCH: Int](
+        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
     ) raises:
         comptime assert BATCH == Self.N_ENVS, (
             "BatchedCpuEnv: step_batch BATCH must match struct param"
@@ -196,11 +197,10 @@ struct BatchedCpuEnv[
         _ = ctx
         _ = rng_seed
         for env_idx in range(Self.N_ENVS):
-            # Stage this env's slice of actions into the per-env List
-            # (E.dtype may differ from DT).
+            # Stage this env's action lane (E.dtype) from the host buf.
             for j in range(Self.ACT_DIM):
                 self._action_scratch[j] = Scalar[Self.E.dtype](
-                    action_ptr[env_idx * Self.ACT_DIM + j]
+                    self._action[env_idx * Self.ACT_DIM + j]
                 )
             var step_res = self.envs[env_idx].step_continuous_vec[
                 Self.E.dtype
@@ -209,18 +209,14 @@ struct BatchedCpuEnv[
             var reward = step_res[1]
             var done = step_res[2]
             for d in range(Self.OBS_DIM):
-                obs_ptr[env_idx * Self.OBS_DIM + d] = Scalar[DT](nxt[d])
-            reward_ptr[env_idx] = Scalar[DT](reward)
-            done_ptr[env_idx] = Scalar[DT](1.0) if done else Scalar[DT](0.0)
+                self._obs[env_idx * Self.OBS_DIM + d] = Scalar[DT](nxt[d])
+            self._reward[env_idx] = Scalar[DT](reward)
+            self._done[env_idx] = (
+                Scalar[DT](1.0) if done else Scalar[DT](0.0)
+            )
 
-    def selective_reset_batch[
-        BATCH: Int
-    ](
-        mut self,
-        ctx: Optional[DeviceContext],
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        dones_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        rng_seed: UInt64,
+    def selective_reset_batch[BATCH: Int](
+        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
     ) raises:
         comptime assert BATCH == Self.N_ENVS, (
             "BatchedCpuEnv: selective_reset_batch BATCH must match struct param"
@@ -228,9 +224,167 @@ struct BatchedCpuEnv[
         _ = ctx
         _ = rng_seed
         for env_idx in range(Self.N_ENVS):
-            if dones_ptr[env_idx] > Scalar[DT](0.5):
+            if self._done[env_idx] > Scalar[DT](0.5):
                 var obs_list = self.envs[env_idx].reset_obs_list()
                 for d in range(Self.OBS_DIM):
-                    obs_ptr[env_idx * Self.OBS_DIM + d] = Scalar[DT](
+                    self._obs[env_idx * Self.OBS_DIM + d] = Scalar[DT](
                         obs_list[d]
                     )
+
+    def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._obs.unsafe_ptr()
+        )
+
+    def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._action.unsafe_ptr()
+        )
+
+    def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._reward.unsafe_ptr()
+        )
+
+    def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._done.unsafe_ptr()
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BatchedGpuEnv[E, N_ENVS, OBS, ACT, STATE_SIZE] — GPU env adapter.
+# ──────────────────────────────────────────────────────────────────────
+
+
+struct BatchedGpuEnv[
+    E: GPUContinuousEnv,
+    N_ENVS: Int,
+    OBS_DIM_: Int,
+    ACT_DIM_: Int,
+](BatchedEnv):
+    """Wraps a `GPUContinuousEnv` and owns the per-step device buffers
+    (state, obs, action, reward, done, terminated). Dispatches the
+    env's static `*_kernel_gpu` methods inside the BatchedEnv methods.
+
+    Construction:
+        var ctx = DeviceContext()
+        var env = BatchedGpuEnv[PendulumV2[DT], 4, 3, 1](ctx)
+
+    `STATE_SIZE` is derived from `E.STATE_SIZE` — the trait surface
+    exposes it directly, so taking it as a separate comptime would
+    invite the caller-passes-wrong-value bug (which we hit during
+    Tier-3 bring-up when STATE_SIZE=3 was passed for PendulumV2
+    whose actual STATE_SIZE=6, sizing the state buffer too small
+    and making the kernel read garbage step-counters).
+
+    The adapter is intentionally `E`-agnostic for its buffers — only
+    the kernel dispatches use `E`. Driver bounds on `BatchedEnv`
+    (uniform trait); the driver reconstructs `DeviceBuffer` views
+    from `obs_ptr()` etc. via `(ctx, ptr, size, owning=False)` to
+    pass to trainer.record_batch_gpu.
+    """
+
+    comptime ENV_TARGET: StaticString = "gpu"
+    comptime OBS_DIM: Int = Self.OBS_DIM_
+    comptime ACT_DIM: Int = Self.ACT_DIM_
+    comptime STATE_SIZE: Int = Self.E.STATE_SIZE
+
+    var _states: DeviceBuffer[DT]
+    var _obs: DeviceBuffer[DT]
+    var _action: DeviceBuffer[DT]
+    var _reward: DeviceBuffer[DT]
+    var _done: DeviceBuffer[DT]
+    var _terminated: DeviceBuffer[DT]
+
+    def __init__(out self, ctx: DeviceContext) raises:
+        self._states = ctx.enqueue_create_buffer[DT](
+            Self.N_ENVS * Self.STATE_SIZE
+        )
+        self._obs = ctx.enqueue_create_buffer[DT](
+            Self.N_ENVS * Self.OBS_DIM
+        )
+        self._action = ctx.enqueue_create_buffer[DT](
+            Self.N_ENVS * Self.ACT_DIM
+        )
+        self._reward = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
+        self._done = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
+        self._terminated = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
+        ctx.enqueue_memset(self._action, 0)
+        ctx.enqueue_memset(self._reward, 0)
+        ctx.enqueue_memset(self._done, 0)
+        ctx.enqueue_memset(self._terminated, 0)
+
+    def reset_batch[BATCH: Int](
+        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
+    ) raises:
+        comptime assert BATCH == Self.N_ENVS, (
+            "BatchedGpuEnv: reset_batch BATCH must match struct param"
+        )
+        if not ctx:
+            raise Error("BatchedGpuEnv.reset_batch: ctx required")
+        var c = ctx.value()
+        Self.E.reset_kernel_gpu[Self.N_ENVS, Self.STATE_SIZE](
+            c, self._states, rng_seed=rng_seed,
+        )
+        Self.E.extract_obs_kernel_gpu[
+            Self.N_ENVS, Self.STATE_SIZE, Self.OBS_DIM
+        ](c, self._states, self._obs)
+
+    def step_batch[BATCH: Int](
+        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
+    ) raises:
+        comptime assert BATCH == Self.N_ENVS, (
+            "BatchedGpuEnv: step_batch BATCH must match struct param"
+        )
+        if not ctx:
+            raise Error("BatchedGpuEnv.step_batch: ctx required")
+        var c = ctx.value()
+        Self.E.step_kernel_gpu[
+            Self.N_ENVS, Self.STATE_SIZE, Self.OBS_DIM, Self.ACT_DIM
+        ](
+            c,
+            self._states,
+            self._action,
+            self._reward,
+            self._done,
+            self._terminated,
+            self._obs,
+            rng_seed=rng_seed,
+        )
+
+    def selective_reset_batch[BATCH: Int](
+        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
+    ) raises:
+        comptime assert BATCH == Self.N_ENVS, (
+            "BatchedGpuEnv: selective_reset_batch BATCH must match struct param"
+        )
+        if not ctx:
+            raise Error("BatchedGpuEnv.selective_reset_batch: ctx required")
+        var c = ctx.value()
+        Self.E.selective_reset_kernel_gpu[
+            Self.N_ENVS, Self.STATE_SIZE
+        ](c, self._states, self._done, rng_seed=rng_seed)
+        Self.E.extract_obs_kernel_gpu[
+            Self.N_ENVS, Self.STATE_SIZE, Self.OBS_DIM
+        ](c, self._states, self._obs)
+
+    def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._obs.unsafe_ptr()
+        )
+
+    def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._action.unsafe_ptr()
+        )
+
+    def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._reward.unsafe_ptr()
+        )
+
+    def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._done.unsafe_ptr()
+        )

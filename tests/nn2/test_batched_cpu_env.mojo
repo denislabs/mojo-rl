@@ -29,7 +29,7 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.batched_env import BatchedCpuEnv
 from mojo_rl.nn2.training.driver_unified import (
-    run_offpolicy_train_batched_cpu_env,
+    run_offpolicy_train_batched,
 )
 from mojo_rl.nn2.training.blocks import UniformSampleCpuStep
 
@@ -79,7 +79,7 @@ def test_batched_cpu_n1() raises:
     var template = PendulumEnv[DT]()
     var env = BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM](template)
 
-    var ep_returns = run_offpolicy_train_batched_cpu_env[
+    var ep_returns = run_offpolicy_train_batched[
         SACTrainer[
             "cpu",
             UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, CAP],
@@ -89,7 +89,7 @@ def test_batched_cpu_n1() raises:
         BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM],
         1,
     ](
-        trainer, env, TOTAL_STEPS_N1,
+        None, trainer, env, TOTAL_STEPS_N1,
         rng_seed=UInt64(42),
         updates_per_step=1,
         print_every=0,
@@ -122,7 +122,7 @@ def test_batched_cpu_n4() raises:
     var template = PendulumEnv[DT]()
     var env = BatchedCpuEnv[PendulumEnv[DT], 4, OBS_DIM, ACT_DIM](template)
 
-    var ep_returns = run_offpolicy_train_batched_cpu_env[
+    var ep_returns = run_offpolicy_train_batched[
         SACTrainer[
             "cpu",
             UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, CAP],
@@ -132,7 +132,7 @@ def test_batched_cpu_n4() raises:
         BatchedCpuEnv[PendulumEnv[DT], 4, OBS_DIM, ACT_DIM],
         4,
     ](
-        trainer, env, TOTAL_STEPS_N4,
+        None, trainer, env, TOTAL_STEPS_N4,
         rng_seed=UInt64(42),
         updates_per_step=1,
         print_every=0,
@@ -211,7 +211,7 @@ def test_bit_identity_at_n1() raises:
     var template = PendulumEnv[DT]()
     var env = BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM](template)
 
-    _ = run_offpolicy_train_batched_cpu_env[
+    _ = run_offpolicy_train_batched[
         SACTrainer[
             "cpu",
             UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH_GATE, CAP_GATE],
@@ -221,7 +221,7 @@ def test_bit_identity_at_n1() raises:
         BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM],
         1,
     ](
-        trainer, env, TOTAL_GATE,
+        None, trainer, env, TOTAL_GATE,
         rng_seed=UInt64(42),
         updates_per_step=1,
         print_every=0,
