@@ -25,3 +25,5 @@ from .ddpg_actor_step        import DDPGActorStep
 from .ddpg_polyak_step       import DDPGPolyakStep
 from .td3_delayed_actor_polyak_step import TD3DelayedActorPolyakStep
 from .dual_sample_cpu_step    import DualSampleCpuStep
+from .n_step_sample_cpu_step  import NStepSampleCpuStep
+from .n_step_sample_gpu_step  import NStepSampleGpuStep
