@@ -134,3 +134,10 @@ from .stl_loader import load_stl
 from .png_loader import load_png, TextureData
 from .light import Light, LightMode
 from .video_recorder import VideoRecorder
+from .image_writer import (
+    save_ppm,
+    save_reconstruction_grid,
+    save_image_row,
+    save_vector_heatmap,
+    save_vector_comparison,
+)
