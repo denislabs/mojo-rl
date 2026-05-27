@@ -1,7 +1,7 @@
-"""SACTrainerV2R N_ENVS GPU driver smoke.
+"""SACTrainer N_ENVS GPU driver smoke.
 
-V2R parity for the legacy test_driver_gpu_n_envs.mojo gate. Confirms
-SACTrainerV2R conforms to OffPolicyTrainableGpuBatched so the existing
+Parity for the legacy test_driver_gpu_n_envs.mojo gate. Confirms
+SACTrainer conforms to OffPolicyTrainableGpuBatched so the existing
 run_offpolicy_train_gpu_n_envs driver function picks it up unchanged.
 
 NOT a convergence regression; just verifies the batched plumbing
@@ -18,7 +18,7 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks_ref import UniformSampleGpuStep
 from mojo_rl.nn2.training.driver_gpu import run_offpolicy_train_gpu_n_envs
 
@@ -44,10 +44,10 @@ comptime CriticNet = Sequential[
 ]
 
 
-def test_v2r_driver_gpu_n_envs_smoke() raises:
+def test_driver_gpu_n_envs_smoke() raises:
     seed(42)
     var ctx = DeviceContext()
-    var trainer = SACTrainerV2R[
+    var trainer = SACTrainer[
         "gpu",
         UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
         ActorNet, CriticNet,
@@ -63,7 +63,7 @@ def test_v2r_driver_gpu_n_envs_smoke() raises:
     var env = PendulumV2[DT]()
 
     var ep_returns = run_offpolicy_train_gpu_n_envs[
-        SACTrainerV2R[
+        SACTrainer[
             "gpu",
             UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
             ActorNet, CriticNet,
@@ -104,16 +104,16 @@ def test_v2r_driver_gpu_n_envs_smoke() raises:
     )
 
     print(
-        "  test_v2r_driver_gpu_n_envs_smoke PASSED (eps=", n_eps,
+        "  test_driver_gpu_n_envs_smoke PASSED (eps=", n_eps,
         " mean_ret(10)=", mr, ")",
     )
 
 
 def main() raises:
     print("=" * 60)
-    print("V2R N_ENVS GPU driver smoke (N_ENVS=", N_ENVS, ")")
+    print("N_ENVS GPU driver smoke (N_ENVS=", N_ENVS, ")")
     print("=" * 60)
-    test_v2r_driver_gpu_n_envs_smoke()
+    test_driver_gpu_n_envs_smoke()
     print("=" * 60)
     print("ALL PASSED")
     print("=" * 60)

@@ -32,7 +32,7 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks_ref import (
     UniformSampleGpuStep, PerSampleGpuStep,
 )
@@ -64,12 +64,12 @@ def _fill(buf: DeviceBuffer[DT], h: UnsafePointer[Scalar[DT], MutAnyOrigin], n: 
         h[i] = val
 
 
-comptime PerT = SACTrainerV2R[
+comptime PerT = SACTrainer[
     "gpu",
     PerSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
     ActorNet, CriticNet,
 ]
-comptime UniformT = SACTrainerV2R[
+comptime UniformT = SACTrainer[
     "gpu",
     UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
     ActorNet, CriticNet,
@@ -82,7 +82,7 @@ def _build_per_trainer(ctx: DeviceContext) raises -> PerT:
 
 def _build_nstep_per_trainer(ctx: DeviceContext) raises -> PerT:
     # γ^N_STEP bootstrap discount; legacy did this via comptime N_STEP
-    # param + use_n_step flag, V2R via direct gamma kwarg.
+    # param + use_n_step flag, SACTrainer via direct gamma kwarg.
     var gamma_n = Scalar[DT](0.99 ** Float64(N_STEP))
     return PerT.make(ctx=ctx, gamma=gamma_n, learning_starts=500)
 

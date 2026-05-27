@@ -52,7 +52,7 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks_ref import (
     UniformSampleGpuStep, PerSampleGpuStep,
 )
@@ -81,12 +81,12 @@ comptime CriticNet = Sequential[
 ]
 
 
-comptime UniformT = SACTrainerV2R[
+comptime UniformT = SACTrainer[
     "gpu",
     UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
     ActorNet, CriticNet,
 ]
-comptime PerT = SACTrainerV2R[
+comptime PerT = SACTrainer[
     "gpu",
     PerSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
     ActorNet, CriticNet,

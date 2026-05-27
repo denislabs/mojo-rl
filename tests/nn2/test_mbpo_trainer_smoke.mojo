@@ -1,4 +1,4 @@
-"""MBPOTrainerV2R smoke test (Step 4)."""
+"""MBPOTrainer smoke test (Step 4)."""
 
 from std.random import seed
 from std.testing import assert_true
@@ -10,7 +10,7 @@ from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.elementwise import Elementwise
 from mojo_rl.nn2.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.mbpo_trainer_v2r import MBPOTrainerV2R
+from mojo_rl.nn2.training.mbpo_trainer import MBPOTrainer
 from mojo_rl.envs.pendulum import PendulumEnv
 
 
@@ -39,7 +39,7 @@ comptime DynNet = Sequential[
     Linear[DYN_HIDDEN, DYN_HIDDEN], Elementwise[DYN_HIDDEN, SwishOp],
     Linear[DYN_HIDDEN, 2 * (1 + OBS)],
 ]
-comptime Trainer = MBPOTrainerV2R[
+comptime Trainer = MBPOTrainer[
     ActorNet, CriticNet, DynNet,
     OBS, ACT, BATCH, REPLAY_CAP, SYNTH_CAP, N_ENS, N_ELITES, 5,
 ]
@@ -102,7 +102,7 @@ def test_end_to_end_few_steps() raises:
 
 def main() raises:
     print("=" * 70)
-    print("Step 4 — MBPOTrainerV2R smoke")
+    print("Step 4 — MBPOTrainer smoke")
     print("=" * 70)
     test_end_to_end_few_steps()
     print("=" * 70)

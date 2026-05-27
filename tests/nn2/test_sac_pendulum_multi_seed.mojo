@@ -1,15 +1,15 @@
-"""J.2-followup — multi-seed robustness gate for the unified SACTrainerV2R.
+"""J.2-followup — multi-seed robustness gate for the unified SACTrainer.
 
 Mirrors `test_sac_pendulum_multi_seed.mojo` (the legacy SACTrainer gate)
-but exercises the unified `SACTrainerV2R["cpu", UniformSampleCpuStep, …]`
+but exercises the unified `SACTrainer["cpu", UniformSampleCpuStep, …]`
 path. The framework's primary gate is the single-seed bit-identity check
 (seed=42 → mean10 = -169.04118 at 30k steps); bit-identity catches math
 regressions but is silent on RNG-path drift or fp-ordering changes that
-average out across seeds. This test fills that gap for V2R.
+average out across seeds. This test fills that gap.
 
-For each seed in {42, 137, 2026, 31337, 9999}, train a fresh CPU V2R
+For each seed in {42, 137, 2026, 31337, 9999}, train a fresh CPU
 trainer on Pendulum for 30k steps with the same hyperparameters as
-`examples/pendulum/pendulum_sac_nn2_driver_v2r.mojo`, and assert the final
+`examples/pendulum/pendulum_sac_nn2_driver.mojo`, and assert the final
 mean10 lies inside `[-200, -100]`. Five seeds × ~20s ≈ < 2min total.
 
 Failure mode this catches: a refactor that holds seed=42 bit-identical
@@ -24,7 +24,7 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks_ref import UniformSampleCpuStep
 from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
 
@@ -56,9 +56,9 @@ comptime CriticNet = Sequential[
 
 
 def _train_one(rng_seed: Int) raises -> Scalar[DT]:
-    """Fresh trainer + env, 30k Pendulum SAC V2R, return final mean10."""
+    """Fresh trainer + env, 30k Pendulum SAC, return final mean10."""
     seed(rng_seed)
-    var trainer = SACTrainerV2R[
+    var trainer = SACTrainer[
         "cpu",
         UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
         ActorNet, CriticNet,
@@ -105,7 +105,7 @@ def test_multi_seed_robustness() raises:
             )
 
     if len(failed) > 0:
-        var msg = String("Pendulum V2R SAC multi-seed gate failed for ")
+        var msg = String("Pendulum SAC multi-seed gate failed for ")
         msg += String(len(failed)) + "/" + String(len(seeds)) + " seeds:"
         for k in range(len(failed)):
             msg += String("\n  - ") + failed[k]
@@ -114,7 +114,7 @@ def test_multi_seed_robustness() raises:
 
 def main() raises:
     print("=" * 70)
-    print("V2R: Multi-seed Pendulum SAC robustness gate (CPU, 30k × 5 seeds)")
+    print("Multi-seed Pendulum SAC robustness gate (CPU, 30k × 5 seeds)")
     print("=" * 70)
     test_multi_seed_robustness()
     print("=" * 70)

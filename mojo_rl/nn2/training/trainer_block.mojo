@@ -6,7 +6,7 @@ walker. After the J.1.g-redesign-v2 port to ref-based block calls, the
 trait surface and walker were deleted; only TrainerState survives as
 the canonical inter-block flow container.
 
-Held by every V2R trainer (SAC/SAC-GPU/DDPG/TD3/MBPO) and passed by
+Held by every trainer (SAC/SAC-GPU/DDPG/TD3/MBPO) and passed by
 `mut state` into every block's `step[target]` method. Carries:
   - the canonical minibatch six-pack (mb_s/a/r/sp/d/y)
   - inter-block scalars (alpha, log_prob_mean, critic_loss, actor_loss)

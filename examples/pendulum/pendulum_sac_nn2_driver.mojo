@@ -1,4 +1,4 @@
-"""J.1.g-redesign-v2 — SAC training on Pendulum V1 via SACTrainerV2R.
+"""J.1.g-redesign-v2 — SAC training on Pendulum V1 via SACTrainer.
 
 Bit-identity gate vs SACTrainerV2:
   seed=42, 30k steps → mean_ret(10) = -167.572
@@ -7,7 +7,7 @@ If this number matches the V2 driver, the ref-based block design is
 operationally equivalent (no algo or RNG-consumption-order drift).
 
 Run:
-    pixi run mojo run -I . examples/pendulum/pendulum_sac_nn2_driver_v2r.mojo
+    pixi run mojo run -I . examples/pendulum/pendulum_sac_nn2_driver.mojo
 """
 
 from std.random import seed
@@ -17,7 +17,7 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks_ref import UniformSampleCpuStep
 from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
 
@@ -46,10 +46,10 @@ comptime CriticNet = Sequential[
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("nn2 SAC V2R (ref-based blocks, no graph) — Pendulum V1 (CPU)")
+    print("nn2 SAC (ref-based blocks, no graph) — Pendulum V1 (CPU)")
     print("=" * 70)
 
-    var trainer = SACTrainerV2R[
+    var trainer = SACTrainer[
         "cpu",
         UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
         ActorNet, CriticNet,

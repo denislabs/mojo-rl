@@ -21,7 +21,7 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks_ref import UniformSampleCpuStep
 from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
 from mojo_rl.nn2.training.eval_cpu import run_offpolicy_eval_cpu
@@ -51,7 +51,7 @@ comptime CriticNet = Sequential[
 def test_eval_untrained_sac_runs() raises:
     """Pure smoke — untrained SAC produces a number without crashing."""
     seed(42)
-    var trainer = SACTrainerV2R[
+    var trainer = SACTrainer[
         "cpu",
         UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
         ActorNet, CriticNet,
@@ -80,7 +80,7 @@ def test_eval_untrained_sac_runs() raises:
 def test_eval_after_30k_train_converges() raises:
     """SAC trained 30k Pendulum → greedy eval mean should beat -300."""
     seed(42)
-    var trainer = SACTrainerV2R[
+    var trainer = SACTrainer[
         "cpu",
         UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
         ActorNet, CriticNet,

@@ -1,8 +1,8 @@
-"""J.2-followup — SACTrainerV2R save → resume integration test.
+"""J.2-followup — SACTrainer save → resume integration test.
 
 Mirrors `test_sac_resume_integration.mojo` (the legacy SACTrainer G.3
-gate) but exercises the unified `SACTrainerV2R["cpu", UniformSampleCpuStep, …]`.
-V2R has the same network field layout as legacy SACTrainer (actor +
+gate) but exercises the unified `SACTrainer["cpu", UniformSampleCpuStep, …]`.
+SACTrainer has the same network field layout as the legacy trainer (actor +
 pair1.{online,target_net} + pair2.{online,target_net}), so the same v2
 checkpoint flow round-trips without trainer-side changes.
 
@@ -26,7 +26,7 @@ from mojo_rl.nn2.core.checkpoint import save_state_v2, load_state_v2
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks_ref import UniformSampleCpuStep
 from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
 
@@ -51,7 +51,7 @@ comptime CriticNet = Sequential[
     Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
-comptime Trainer = SACTrainerV2R[
+comptime Trainer = SACTrainer[
     "cpu",
     UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
     ActorNet, CriticNet,
@@ -135,7 +135,7 @@ def _eval_greedy(mut t: Trainer, episodes: Int) raises -> Scalar[DT]:
 
 
 def test_save_resume_eval_equivalence() raises:
-    var ckpt_prefix = String("/tmp/nn2_v2r_resume_")
+    var ckpt_prefix = String("/tmp/nn2_resume_")
 
     # ─── Step 1: train trainer A for TRAIN_STEPS, save weights. ───────
     print("Training trainer A for", TRAIN_STEPS, "steps...")
@@ -188,7 +188,7 @@ def test_save_resume_eval_equivalence() raises:
 
 def main() raises:
     print("=" * 70)
-    print("V2R: SAC trainer save → resume integration test")
+    print("SAC trainer save → resume integration test")
     print("=" * 70)
     test_save_resume_eval_equivalence()
     print("=" * 70)

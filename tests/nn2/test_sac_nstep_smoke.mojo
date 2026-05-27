@@ -1,4 +1,4 @@
-"""SACTrainerV2R + n-step sample block smoke (CPU + GPU).
+"""SACTrainer + n-step sample block smoke (CPU + GPU).
 
 Validates the NStepSampleCpuStep / NStepSampleGpuStep wrapper plumbs
 through the unified SAC trainer without crashing. Does NOT check
@@ -21,7 +21,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.combinators import Sequential
-from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks_ref import (
     NStepSampleCpuStep,
     NStepSampleGpuStep,
@@ -45,7 +45,7 @@ comptime CriticNet = Sequential[
 
 def test_cpu_nstep() raises:
     print("--- CPU + n-step (N=", N_STEP, ") ---")
-    var trainer = SACTrainerV2R[
+    var trainer = SACTrainer[
         "cpu",
         NStepSampleCpuStep[N_STEP, OBS, ACT, BATCH, CAP],
         ActorNet, CriticNet,
@@ -91,7 +91,7 @@ def test_cpu_nstep() raises:
 def test_gpu_nstep() raises:
     print("--- GPU + n-step (N=", N_STEP, ") ---")
     var ctx = DeviceContext()
-    var trainer = SACTrainerV2R[
+    var trainer = SACTrainer[
         "gpu",
         NStepSampleGpuStep[N_STEP, OBS, ACT, BATCH, CAP],
         ActorNet, CriticNet,
@@ -137,7 +137,7 @@ def test_gpu_nstep() raises:
 
 def main() raises:
     print("=" * 60)
-    print("SACTrainerV2R + n-step smoke (CPU + GPU)")
+    print("SACTrainer + n-step smoke (CPU + GPU)")
     print("=" * 60)
     test_cpu_nstep()
     test_gpu_nstep()

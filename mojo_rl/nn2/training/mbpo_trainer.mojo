@@ -1,4 +1,4 @@
-"""MBPOTrainerV2R — J.1.g-redesign-v2 Step 4 — MBPO via ref-based blocks.
+"""MBPOTrainer — J.1.g-redesign-v2 Step 4 — MBPO via ref-based blocks.
 
 Pipeline (6 blocks):
   DualSample → TargetY → TwinCritic → SACActor → AlphaUpdate → Polyak
@@ -38,7 +38,7 @@ from .blocks_ref import (
 )
 
 
-struct MBPOTrainerV2R[
+struct MBPOTrainer[
     ACTOR: Module,
     CRITIC: Module,
     DynNet: Module,
@@ -100,7 +100,7 @@ struct MBPOTrainerV2R[
     var state:    TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
     var tracker:  EpisodeTracker
 
-    # select_action scratches (mirror SACTrainerV2R).
+    # select_action scratches (mirror SACTrainer).
     var _ob1:  Scratch["ob1",  Self.OBS_DIM, True]
     var _ao1:  Scratch["ao1",  2 * Self.ACT_DIM, True]
     var _alp1: Scratch["alp1", Self.ACT_DIM + 1, True]
@@ -131,10 +131,10 @@ struct MBPOTrainerV2R[
 
     def __init__(out self):
         comptime assert Self.DynNet.IN_DIMS[0] == Self.DYN_IN, (
-            "MBPOTrainerV2R: DynNet.IN_DIM must equal OBS_DIM + ACT_DIM"
+            "MBPOTrainer: DynNet.IN_DIM must equal OBS_DIM + ACT_DIM"
         )
         comptime assert Self.DynNet.OUT_DIM == Self.DYN_OUT, (
-            "MBPOTrainerV2R: DynNet.OUT_DIM must equal 2 * (1 + OBS_DIM)"
+            "MBPOTrainer: DynNet.OUT_DIM must equal 2 * (1 + OBS_DIM)"
         )
         comptime assert (
             Self.REAL_RATIO_PCT >= 0 and Self.REAL_RATIO_PCT <= 100
@@ -224,7 +224,7 @@ struct MBPOTrainerV2R[
         sac_updates_per_step: Int = 20,
         dyn_batch_size: Int = 256,
     ) raises -> Self:
-        comptime assert target == "cpu", "MBPOTrainerV2R: CPU only"
+        comptime assert target == "cpu", "MBPOTrainer: CPU only"
         var t = Self()
         t.actor = Self.ACTOR.make[target="cpu", INIT=Xavier]()
         t.pair1 = OnlineTargetPair[Self.CRITIC].make[

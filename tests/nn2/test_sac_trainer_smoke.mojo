@@ -1,4 +1,4 @@
-"""Unified SACTrainerV2R smoke tests — three configs in one file.
+"""Unified SACTrainer smoke tests — three configs in one file.
 
 Validates that the same trainer struct serves CPU/uniform, GPU/uniform,
 and GPU/PER by varying only the target + SAMPLE comptime params.
@@ -11,7 +11,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.combinators import Sequential
-from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks_ref import (
     UniformSampleCpuStep,
     UniformSampleGpuStep,
@@ -36,7 +36,7 @@ comptime CriticNet = Sequential[
 
 def test_cpu_uniform() raises:
     print("--- CPU + uniform ---")
-    var trainer = SACTrainerV2R[
+    var trainer = SACTrainer[
         "cpu",
         UniformSampleCpuStep[OBS, ACT, BATCH, CAP],
         ActorNet, CriticNet,
@@ -79,7 +79,7 @@ def test_cpu_uniform() raises:
 def test_gpu_uniform() raises:
     print("--- GPU + uniform ---")
     var ctx = DeviceContext()
-    var trainer = SACTrainerV2R[
+    var trainer = SACTrainer[
         "gpu",
         UniformSampleGpuStep[OBS, ACT, BATCH, CAP],
         ActorNet, CriticNet,
@@ -123,7 +123,7 @@ def test_gpu_uniform() raises:
 def test_gpu_per() raises:
     print("--- GPU + PER ---")
     var ctx = DeviceContext()
-    var trainer = SACTrainerV2R[
+    var trainer = SACTrainer[
         "gpu",
         PerSampleGpuStep[OBS, ACT, BATCH, CAP],
         ActorNet, CriticNet,
@@ -177,7 +177,7 @@ def test_gpu_per() raises:
 
 def main() raises:
     print("=" * 60)
-    print("Unified SACTrainerV2R — smoke matrix")
+    print("Unified SACTrainer — smoke matrix")
     print("=" * 60)
     test_cpu_uniform()
     test_gpu_uniform()

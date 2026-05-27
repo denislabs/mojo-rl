@@ -1,18 +1,18 @@
-"""TD3TrainerV2R smoke test (Step 3)."""
+"""TD3Trainer smoke test (Step 3)."""
 
 from std.math import isfinite
 from std.random import random_float64, seed
 from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.training.td3_trainer_v2r import TD3TrainerV2R
+from mojo_rl.nn2.training.td3_trainer import TD3Trainer
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.tanh import Tanh
 
 
-def test_td3_trainer_v2r_smoke() raises:
+def test_td3_trainer_smoke() raises:
     comptime OBS = 3
     comptime ACT = 1
     comptime BATCH = 64
@@ -25,7 +25,7 @@ def test_td3_trainer_v2r_smoke() raises:
         Linear[64, 1],
     ]
     seed(67)
-    var trainer = TD3TrainerV2R[
+    var trainer = TD3Trainer[
         ActorNet, CriticNet, OBS, ACT, BATCH, 4096,
     ].make["cpu"](
         actor_lr=3e-4, critic_lr=3e-4,
@@ -75,14 +75,14 @@ def test_td3_trainer_v2r_smoke() raises:
         trainer._critic_updates == 30,
         "expected 30 critic updates, got " + String(trainer._critic_updates),
     )
-    print("  test_td3_trainer_v2r_smoke PASSED")
+    print("  test_td3_trainer_smoke PASSED")
 
 
 def main() raises:
     print("=" * 60)
-    print("Step 3 — TD3TrainerV2R smoke")
+    print("Step 3 — TD3Trainer smoke")
     print("=" * 60)
-    test_td3_trainer_v2r_smoke()
+    test_td3_trainer_smoke()
     print("=" * 60)
     print("ALL PASSED")
     print("=" * 60)

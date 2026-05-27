@@ -18,7 +18,7 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks_ref import UniformSampleGpuStep
 from mojo_rl.nn2.training.driver_gpu import run_offpolicy_train_gpu_n_envs
 
@@ -55,7 +55,7 @@ def main() raises:
     print("=" * 70)
 
     var ctx = DeviceContext()
-    var trainer = SACTrainerV2R[
+    var trainer = SACTrainer[
         "gpu",
         UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
         ActorNet, CriticNet,
@@ -72,7 +72,7 @@ def main() raises:
 
     var t_start = perf_counter_ns()
     var _ep_returns = run_offpolicy_train_gpu_n_envs[
-        SACTrainerV2R[
+        SACTrainer[
             "gpu",
             UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
             ActorNet, CriticNet,

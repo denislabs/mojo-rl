@@ -1,4 +1,4 @@
-"""TD3TrainerV2R — J.1.g-redesign-v2 Step 3 — TD3 via ref-based blocks.
+"""TD3Trainer — J.1.g-redesign-v2 Step 3 — TD3 via ref-based blocks.
 
 CPU only. Pipeline (4 blocks):
   Sample → TD3TargetY → TwinCritic [reused from SAC] → TD3DelayedActorPolyak
@@ -25,7 +25,7 @@ from .blocks_ref import (
 )
 
 
-struct TD3TrainerV2R[
+struct TD3Trainer[
     ACTOR: Module,
     CRITIC: Module,
     OBS_DIM: Int,
@@ -128,7 +128,7 @@ struct TD3TrainerV2R[
         initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
         max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises -> Self:
-        comptime assert target == "cpu", "TD3TrainerV2R: CPU only"
+        comptime assert target == "cpu", "TD3Trainer: CPU only"
         var t = Self()
         t.actor_pair = OnlineTargetPair[Self.ACTOR].make[
             target="cpu", INIT=Xavier

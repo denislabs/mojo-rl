@@ -1,7 +1,7 @@
-"""SACTrainerV2R — unified SAC trainer: CPU/GPU × uniform/PER replay.
+"""SACTrainer — unified SAC trainer: CPU/GPU × uniform/PER replay.
 
-Replaces the previous three-trainer matrix (SACTrainerV2R / SACTrainerV2RGpu /
-SACPerTrainerV2RGpu) with one struct parameterised on:
+Replaces the previous three-trainer matrix (SACTrainer / SACTrainerGpu /
+SACPerTrainerGpu) with one struct parameterised on:
 
   - `target: StaticString` — "cpu" or "gpu" — kernel dispatch
   - `SAMPLE: SampleBlock`  — replay-buffer-owning block, picks uniform
@@ -17,11 +17,11 @@ Dual driver-trait conformance: exposes both `train_step` /
 `select_action_gpu` (satisfies `OffPolicyTrainableGpu`). Each
 non-parametric method dispatches into the parametric `_impl[target]`.
 Calling the wrong surface (e.g. `train_step` on a `target="gpu"`
-instance) raises at runtime. This keeps legacy non-V2R trainers on
+instance) raises at runtime. This keeps legacy legacy trainers on
 their existing traits unchanged until they're sunset; after that we
 can collapse to a single parametric trait method.
 
-Bit-equivalent to the previous SACTrainerV2R when
+Bit-equivalent to the previous SACTrainer when
 `SAMPLE = UniformSampleCpuStep` + `target = "cpu"` (validated by
 the bit-identity gate −169.04118 @ 30k Pendulum seed=42).
 """
@@ -71,7 +71,7 @@ from .blocks_ref import (
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _v2r_warmup_uniform_kernel[N_ENVS: Int, ACT: Int](
+def _warmup_uniform_kernel[N_ENVS: Int, ACT: Int](
     action_dest: LayoutTensor[
         DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
     ],
@@ -92,7 +92,7 @@ def _v2r_warmup_uniform_kernel[N_ENVS: Int, ACT: Int](
     action_dest[env, j] = s * action_scale
 
 
-def _v2r_action_clamp_kernel[N_ENVS: Int, ACT: Int](
+def _action_clamp_kernel[N_ENVS: Int, ACT: Int](
     alp: LayoutTensor[
         DT, Layout.row_major(N_ENVS, ACT + 1), MutAnyOrigin,
     ],
@@ -116,7 +116,7 @@ def _v2r_action_clamp_kernel[N_ENVS: Int, ACT: Int](
     action_out[env, j] = a
 
 
-struct SACTrainerV2R[
+struct SACTrainer[
     target: StaticString,
     SAMPLE: SampleBlock,
     ACTOR: Module,
@@ -267,11 +267,11 @@ struct SACTrainerV2R[
         SampleBlock trait's `configure_per` (no-op default for uniform
         blocks). `ctx` is required for `target="gpu"`."""
         comptime assert Self.target == "cpu" or Self.target == "gpu", (
-            "SACTrainerV2R: target must be 'cpu' or 'gpu'"
+            "SACTrainer: target must be 'cpu' or 'gpu'"
         )
         comptime if Self.target == "gpu":
             if not ctx:
-                raise Error("SACTrainerV2R.make[target='gpu']: ctx required")
+                raise Error("SACTrainer.make[target='gpu']: ctx required")
 
         var t = Self()
         t.ctx = ctx
@@ -538,7 +538,7 @@ struct SACTrainerV2R[
     ) raises:
         comptime if Self.target != "cpu":
             raise Error(
-                "SACTrainerV2R[target='gpu']: use select_action_gpu"
+                "SACTrainer[target='gpu']: use select_action_gpu"
             )
         self._select_action_impl(obs, action_out, step_idx)
 
@@ -549,13 +549,13 @@ struct SACTrainerV2R[
     ) raises:
         comptime if Self.target != "cpu":
             raise Error(
-                "SACTrainerV2R[target='gpu']: use select_greedy_action_gpu"
+                "SACTrainer[target='gpu']: use select_greedy_action_gpu"
             )
         self._select_greedy_action_impl(obs, action_out)
 
     def train_step(mut self, step_idx: Int) raises -> Bool:
         comptime if Self.target != "cpu":
-            raise Error("SACTrainerV2R[target='gpu']: use train_step_gpu")
+            raise Error("SACTrainer[target='gpu']: use train_step_gpu")
         return self._train_step_impl[NoAMP](step_idx)
 
     # ─── OffPolicyTrainableGpu (GPU) surface ──────────────────────────
@@ -568,7 +568,7 @@ struct SACTrainerV2R[
     ) raises:
         comptime if Self.target != "gpu":
             raise Error(
-                "SACTrainerV2R[target='cpu']: use select_action"
+                "SACTrainer[target='cpu']: use select_action"
             )
         self._select_action_impl(obs, action_out, step_idx)
 
@@ -579,7 +579,7 @@ struct SACTrainerV2R[
     ) raises:
         comptime if Self.target != "gpu":
             raise Error(
-                "SACTrainerV2R[target='cpu']: use select_greedy_action"
+                "SACTrainer[target='cpu']: use select_greedy_action"
             )
         self._select_greedy_action_impl(obs, action_out)
 
@@ -588,7 +588,7 @@ struct SACTrainerV2R[
         with `use_bf16=True`, else `NoAMP`. Both specializations compile;
         only one is exercised per call. Mirrors legacy SACTrainer."""
         comptime if Self.target != "gpu":
-            raise Error("SACTrainerV2R[target='cpu']: use train_step")
+            raise Error("SACTrainer[target='cpu']: use train_step")
         if self._use_bf16:
             return self._train_step_impl[Bf16Compute](step_idx)
         return self._train_step_impl[NoAMP](step_idx)
@@ -619,7 +619,7 @@ struct SACTrainerV2R[
             comptime TPB = 128
             comptime total = N_ENVS * Self.ACT_DIM
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime warmup_kernel = _v2r_warmup_uniform_kernel[
+            comptime warmup_kernel = _warmup_uniform_kernel[
                 N_ENVS, Self.ACT_DIM,
             ]
             ctx.enqueue_function[warmup_kernel](
@@ -661,7 +661,7 @@ struct SACTrainerV2R[
         comptime TPB = 128
         comptime total = N_ENVS * Self.ACT_DIM
         comptime n_blocks = (total + TPB - 1) // TPB
-        comptime clamp_kernel = _v2r_action_clamp_kernel[
+        comptime clamp_kernel = _action_clamp_kernel[
             N_ENVS, Self.ACT_DIM,
         ]
         ctx.enqueue_function[clamp_kernel](

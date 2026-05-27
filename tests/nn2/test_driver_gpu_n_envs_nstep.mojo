@@ -28,7 +28,7 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks_ref import UniformSampleGpuStep
 from mojo_rl.nn2.training.driver_gpu import run_offpolicy_train_gpu_n_envs
 
@@ -59,10 +59,10 @@ comptime CriticNet = Sequential[
 def test_driver_gpu_n_envs_nstep_smoke() raises:
     seed(42)
     var ctx = DeviceContext()
-    # γ^N_STEP bootstrap discount — caller computes manually for V2R
+    # γ^N_STEP bootstrap discount — caller computes manually
     # (legacy comptime N_STEP param replaced by a runtime gamma kwarg).
     var gamma_n = Scalar[DT](0.99 ** Float64(N_STEP))
-    var trainer = SACTrainerV2R[
+    var trainer = SACTrainer[
         "gpu",
         UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
         ActorNet, CriticNet,
@@ -75,7 +75,7 @@ def test_driver_gpu_n_envs_nstep_smoke() raises:
     var env = PendulumV2[DT]()
 
     var ep_returns = run_offpolicy_train_gpu_n_envs[
-        SACTrainerV2R[
+        SACTrainer[
             "gpu",
             UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
             ActorNet, CriticNet,

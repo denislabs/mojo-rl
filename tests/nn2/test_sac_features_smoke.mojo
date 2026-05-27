@@ -1,12 +1,12 @@
-"""V2R kwarg smoke for bf16/AMP + ERE features.
+"""Kwarg smoke for bf16/AMP + ERE features.
 
-PER + n-step are covered by test_sac_trainer_v2r_smoke.mojo and
-test_sac_v2r_nstep_smoke.mojo respectively. This file fills the gap
+PER + n-step are covered by test_sac_trainer_smoke.mojo and
+test_sac_nstep_smoke.mojo respectively. This file fills the gap
 for use_bf16 (Bf16Compute auto-routing) and use_ere (recency-biased
 sampling). Both are GPU-only.
 
 Replaces the legacy test_trainer_auto_bf16.mojo + test_trainer_auto_ere.mojo
-which exercised SACConfig → trainer wiring; V2R uses direct kwargs so
+which exercised SACConfig → trainer wiring; SACTrainer uses direct kwargs so
 the round-trip layer is gone.
 """
 
@@ -20,7 +20,7 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks_ref import UniformSampleGpuStep
 
 from mojo_rl.envs.pendulum import PendulumEnv
@@ -43,7 +43,7 @@ comptime CriticNet = Sequential[
     Linear[HIDDEN, 1],
 ]
 
-comptime Trainer = SACTrainerV2R[
+comptime Trainer = SACTrainer[
     "gpu",
     UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
     ActorNet, CriticNet,
@@ -131,7 +131,7 @@ def test_use_ere_kwarg() raises:
 
 def main() raises:
     print("=" * 60)
-    print("V2R feature kwarg smoke (bf16 + ERE)")
+    print("SAC feature kwarg smoke (bf16 + ERE)")
     print("=" * 60)
     test_use_bf16_kwarg()
     test_use_ere_kwarg()

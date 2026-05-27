@@ -1,4 +1,4 @@
-"""DDPGTrainerV2R — J.1.g-redesign-v2 Step 3 — DDPG via ref-based blocks.
+"""DDPGTrainer — J.1.g-redesign-v2 Step 3 — DDPG via ref-based blocks.
 
 CPU only. Pipeline (5 blocks):
   Sample → DDPGTargetY → SingleCritic → DDPGActor → DDPGPolyak
@@ -26,7 +26,7 @@ from .blocks_ref import (
 )
 
 
-struct DDPGTrainerV2R[
+struct DDPGTrainer[
     ACTOR: Module,
     CRITIC: Module,
     OBS_DIM: Int,
@@ -124,7 +124,7 @@ struct DDPGTrainerV2R[
         initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
         max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises -> Self:
-        comptime assert target == "cpu", "DDPGTrainerV2R: CPU only"
+        comptime assert target == "cpu", "DDPGTrainer: CPU only"
         var t = Self()
         t.actor_pair = OnlineTargetPair[Self.ACTOR].make[
             target="cpu", INIT=Xavier
