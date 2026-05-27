@@ -5,7 +5,7 @@ SACPerTrainerGpu) with one struct parameterised on:
 
   - `train_target: StaticString` — "cpu" or "gpu" — kernel dispatch.
     Renamed from `target` (Phase 3.5) to disambiguate from the env's
-    `ENV_TARGET` introduced by the dual-target unified driver.
+    `ENV_TARGET` introduced by the dual-target off-policy driver.
   - `SAMPLE: SampleBlock` — replay-buffer-owning block, picks uniform
                              vs PER vs (future) N-step / sequence
 
@@ -15,20 +15,21 @@ Single pipeline body in `_train_step_impl[train_target]`. Single
 time → zero runtime branches on target or replay kind beyond the
 comptime-if already inside each block.
 
-Driver-trait conformance: `OffPolicyAgentUnifiedGpu` via
-`train_step_unified` / `select_action_unified` /
-`select_greedy_action_unified` / `record_batch_cpu` /
-`record_batch_gpu[_nstep]`. Three host-list aliases (`select_action`,
-`select_greedy_action`, `train_step`) are kept as user-facing entry
-points for smoke tests that bypass the driver — they delegate into the
-unified paths. There is no per-target raise guard: `train_target` is a
-struct comptime param, so the wrong wrapper can't be invoked.
+Driver-trait conformance: `OffPolicyAgentGpu` via
+`train_step` / `select_action_batched` /
+`select_greedy_action` / `record_batch_cpu` /
+`record_batch_gpu[_nstep]`. One host-list wrapper (`select_action`) is
+kept as a user-facing entry point for smoke tests that bypass the
+driver — it stages obs/action through scratch and delegates to
+`select_action_batched[1]`. There is no per-target raise guard:
+`train_target` is a struct comptime param, so the wrong wrapper can't
+be invoked.
 
 Bit-equivalent to the previous SACTrainer when
 `SAMPLE = UniformSampleCpuStep` + `train_target = "cpu"` (validated by
 the bit-identity gate −169.04118 @ 30k Pendulum seed=42). On GPU,
 warmup RNG migrated from CPU `random_float64` (legacy `_gpu` path) to
-Philox (unified path), so GPU loss values shift slightly between
+Philox (batched path), so GPU loss values shift slightly between
 pre-Option-B and post-Option-B baselines — still convergent, still
 finite.
 """
@@ -59,7 +60,7 @@ from .episode_tracker import EpisodeTracker
 from .sac_metrics import SACMetrics
 from .timer import Timer
 from .trainer_block import TrainerState
-from .driver_unified import OffPolicyAgentUnifiedGpu
+from .driver_offpolicy import OffPolicyAgentGpu
 from .blocks import (
     SampleBlock,
     TargetYStep,
@@ -136,7 +137,7 @@ struct SACTrainer[
     SAMPLE: SampleBlock,
     ACTOR: Module,
     CRITIC: Module,
-](OffPolicyAgentUnifiedGpu):
+](OffPolicyAgentGpu):
     """Dimensions (OBS / ACT / BATCH) are derived from SAMPLE so the
     user specifies them ONCE (on the sample block type), not on both
     the trainer and the block. Symbolic-equality follows: the
@@ -152,9 +153,9 @@ struct SACTrainer[
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
     # Trait-visible alias of the struct's `train_target` comptime param,
-    # so `OffPolicyAgentUnified` (and any future trait that needs to
+    # so `OffPolicyAgent` (and any future trait that needs to
     # gate on the trainer's compute target) can see it as a member.
-    # Distinct from the env's ENV_TARGET — see driver_unified docs.
+    # Distinct from the env's ENV_TARGET — see driver_offpolicy docs.
     comptime AGENT_TRAIN_TARGET: StaticString = Self.train_target
 
     # Timer section indices. Order matches `add_section` calls in `make`.
@@ -583,17 +584,13 @@ struct SACTrainer[
 
     # ─── Direct-callable (host-list) surface ─────────────────────────
     #
-    # User-facing entry points for smoke tests that bypass the driver.
-    # All three delegate into the unified paths via host-list staging
-    # through the trainer's `_ob1` / `_ao1` / `_alp1` scratches:
-    #
-    #   select_action       → select_action_unified[1]
-    #   select_greedy_action → select_greedy_action_unified (host-list)
-    #   train_step           → train_step_unified
-    #
-    # The trainer is the single source of truth on its `train_target`
-    # comptime param; there's no per-target raise guard to enforce
-    # because the wrong target literally can't be constructed.
+    # `select_action` is the user-facing host-list entry point for
+    # smoke tests that bypass the driver. It stages obs into the
+    # trainer's `_ob1` / `_ao1` / `_alp1` scratches and delegates to
+    # `select_action_batched[1]`. The trainer is the single source of
+    # truth on its `train_target` comptime param; there's no per-target
+    # raise guard to enforce because the wrong target literally can't
+    # be constructed.
 
     def select_action(
         mut self,
@@ -602,7 +599,7 @@ struct SACTrainer[
         step_idx: Int,
     ) raises:
         """Host-list wrapper. Stages obs into `_ob1` (H2D if GPU),
-        delegates to `select_action_unified[1]` which writes the
+        delegates to `select_action_batched[1]` which writes the
         clamped action into the first ACT_DIM scalars of `_alp1`
         (action_ptr aliased with alp_scratch_ptr — safe at N=1, both
         warmup and policy paths write before reading per-element).
@@ -612,7 +609,7 @@ struct SACTrainer[
             ob1_cpu_p[d] = obs[d]
         comptime if Self.train_target == "gpu":
             self.ctx.value().enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
-        self.select_action_unified[1](
+        self.select_action_batched[1](
             self._ob1.target_ptr[Self.train_target](),
             self._alp1.target_ptr[Self.train_target](),
             self._ao1.target_ptr[Self.train_target](),
@@ -627,22 +624,12 @@ struct SACTrainer[
         for j in range(Self.ACT_DIM):
             action_out[j] = alp1_cpu_p[j]
 
-    def select_greedy_action(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-    ) raises:
-        self.select_greedy_action_unified(obs, action_out)
-
-    def train_step(mut self, step_idx: Int) raises -> Bool:
-        return self.train_step_unified(step_idx)
-
-    # ─── Tier-1 unified train_step — target-agnostic ─────────────────
+    # ─── train_step — target-agnostic ─────────────────────────────────
     #
     # Picks the right AMP policy (NoAMP / Bf16Compute) and dispatches
-    # to `_train_step_impl[POLICY]`. Used by the unified single-env
-    # driver and by the host-list `train_step` wrapper above.
-    def train_step_unified(mut self, step_idx: Int) raises -> Bool:
+    # to `_train_step_impl[POLICY]`. Single entry point for the
+    # off-policy driver and for direct smoke-test callers.
+    def train_step(mut self, step_idx: Int) raises -> Bool:
         comptime if Self.train_target == "cpu":
             return self._train_step_impl[NoAMP](step_idx)
         else:
@@ -650,14 +637,13 @@ struct SACTrainer[
                 return self._train_step_impl[Bf16Compute](step_idx)
             return self._train_step_impl[NoAMP](step_idx)
 
-    # ─── Tier-1 unified greedy eval — target-agnostic ────────────────
+    # ─── Greedy eval — target-agnostic ───────────────────────────────
     #
     # Single host-list greedy path; comptime-branches on
     # `Self.train_target`. CPU runs native; GPU uploads obs, forwards
     # the actor on device, downloads the mean, applies tanh+clamp on
-    # host. Used by `run_offpolicy_eval_unified` (trait surface) and
-    # by the host-list `select_greedy_action` wrapper above.
-    def select_greedy_action_unified(
+    # host. Used by `run_offpolicy_eval` and direct smoke-test callers.
+    def select_greedy_action(
         mut self,
         ref obs: List[Scalar[DT]],
         mut action_out: List[Scalar[DT]],
@@ -695,12 +681,12 @@ struct SACTrainer[
                 a = -self.action_scale
             action_out[j] = a
 
-    # ─── Tier-1 unified select_action ────────────────────────────────
+    # ─── select_action_batched — single batched entry point ──────────
     #
-    # `select_action_unified[N_ENVS]` is the single entry point for all
-    # (target, N_ENVS) combinations. The CPU/GPU split happens via
-    # `Self.train_target` (the struct comptime), and N_ENVS rolls
-    # through transparently for both warmup and policy paths.
+    # The single entry point for all (target, N_ENVS) combinations.
+    # The CPU/GPU split happens via `Self.train_target` (the struct
+    # comptime), and N_ENVS rolls through transparently for both
+    # warmup and policy paths.
     #
     # The CPU/GPU branch is taken on `Self.train_target` (the struct comptime),
     # not a per-method parameter — `target` is already pinned at make
@@ -717,7 +703,7 @@ struct SACTrainer[
     #   action_ptr     — N_ENVS * ACT_DIM         (output)
     #   ao_scratch_ptr — N_ENVS * 2 * ACT_DIM     (actor output cache)
     #   alp_scratch_ptr— N_ENVS * (ACT_DIM + 1)   (action + log_prob)
-    def select_action_unified[
+    def select_action_batched[
         N_ENVS: Int,
     ](
         mut self,

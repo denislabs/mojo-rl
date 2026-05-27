@@ -12,7 +12,7 @@ Four modes exercised through `run_offpolicy_train_batched`:
 
 All four hit the SAME driver function bound on the uniform `BatchedEnv`
 trait; internal comptime branches dispatch the env adapter and record
-path. Cross-target (cpu env, gpu train) stays in `run_offpolicy_train_unified`
+path. Cross-target (cpu env, gpu train) stays in `run_offpolicy_train`
 (Tier-1 Phase 3) at N=1 — the boundary plumbing for batched cross-
 target is straightforward but the use case is rare.
 
@@ -34,7 +34,7 @@ from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.batched_env import BatchedCpuEnv, BatchedGpuEnv
-from mojo_rl.nn2.training.driver_unified import run_offpolicy_train_batched
+from mojo_rl.nn2.training.driver_offpolicy import run_offpolicy_train_batched
 from mojo_rl.nn2.training.blocks import (
     UniformSampleCpuStep,
     UniformSampleGpuStep,

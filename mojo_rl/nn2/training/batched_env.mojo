@@ -1,6 +1,6 @@
 """BatchedEnv trait + BatchedCpuEnv / BatchedGpuEnv adapters — Tier-3.
 
-The Tier-1 unified drivers had to remain two functions because env
+The Tier-1 drivers had to remain two functions because env
 APIs differ structurally — CPU envs return host Lists, GPU envs take
 DeviceBuffer kernel args. Tier-3 lifts a uniform `BatchedEnv` trait
 over both via the **env-owns-buffers** pattern:

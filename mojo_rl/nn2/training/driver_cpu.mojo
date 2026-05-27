@@ -1,16 +1,16 @@
 """On-policy CPU training driver — surviving from Phase B.1.
 
-Off-policy CPU/GPU/batched training is fully unified in
-`driver_unified.mojo` (`OffPolicyAgentUnifiedGpu` + `run_offpolicy_*`).
-Off-policy eval is unified there too (`run_offpolicy_eval_unified`).
-The legacy `OffPolicyTrainable[Gpu/GpuBatched]` traits and the matching
-CPU/GPU/eval drivers were deleted once SAC/MBPO/DDPG/TD3 all migrated.
+Off-policy CPU/GPU/batched training + eval live in
+`driver_offpolicy.mojo` (`OffPolicyAgent` / `OffPolicyAgentGpu` +
+`run_offpolicy_*`). The legacy `OffPolicyTrainable[Gpu/GpuBatched]`
+traits and the matching CPU/GPU/eval drivers were deleted once
+SAC/MBPO/DDPG/TD3 all migrated.
 
 What remains in this file:
   - `OnPolicyTrainable` — used by PPO via `run_onpolicy_train_cpu`.
   - `run_onpolicy_train_cpu` — on-policy step-based CPU driver.
 
-PPO's on-policy unification is tracked separately (task #96).
+PPO's on-policy port is tracked separately (task #96).
 """
 
 from std.time import perf_counter_ns

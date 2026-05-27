@@ -6,7 +6,7 @@ CPU only. Pipeline (5 blocks):
 `policy_head` is kept as a plain helper field for select_action (not a
 pipeline block — it's used in env-interaction, not the train_step graph).
 
-Conforms to `OffPolicyAgentUnifiedGpu` so it's drivable through the
+Conforms to `OffPolicyAgentGpu` so it's drivable through the
 Tier-3 `run_offpolicy_train_batched` (CPU env path only). The GPU record
 stubs raise — unreachable on the CPU env branch which the Tier-3 driver
 comptime-elides for `env_target == "cpu"`.
@@ -25,7 +25,7 @@ from ..initializer import Xavier
 from ..optimizer.adam import Adam
 from ..random.box_muller import box_muller_normal
 from .action_sampling_block import ActionSamplingBlock
-from .driver_unified import OffPolicyAgentUnifiedGpu
+from .driver_offpolicy import OffPolicyAgentGpu
 from .episode_tracker import EpisodeTracker
 from .trainer_block import TrainerState
 from .blocks import (
@@ -44,10 +44,10 @@ struct DDPGTrainer[
     ACT_DIM: Int,
     BATCH: Int,
     REPLAY_CAPACITY: Int,
-](OffPolicyAgentUnifiedGpu):
+](OffPolicyAgentGpu):
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
-    # DDPG is CPU-only; the OffPolicyAgentUnifiedGpu GPU stubs raise.
+    # DDPG is CPU-only; the OffPolicyAgentGpu GPU stubs raise.
     comptime AGENT_TRAIN_TARGET: StaticString = "cpu"
 
     var actor_pair: OnlineTargetPair[Self.ACTOR]
@@ -250,7 +250,7 @@ struct DDPGTrainer[
 
     # ─── Direct-callable (host-list) surface ─────────────────────────
     # Used by smoke tests that call the trainer directly without a
-    # driver. The Tier-3 driver uses the `*_unified` methods below.
+    # driver, and by the off-policy driver via the OffPolicyAgent trait.
 
     def select_action(
         mut self,
@@ -338,14 +338,14 @@ struct DDPGTrainer[
     def ep_count(self) -> Int:
         return self.tracker.ep_count
 
-    # ─── OffPolicyAgentUnifiedGpu surface (Tier-3 driver) ────────────
+    # ─── OffPolicyAgentGpu surface (Tier-3 driver) ────────────
     #
     # DDPG is CPU-only — the GPU record stubs raise. The Tier-3 driver
     # comptime-elides those branches when env_target == "cpu", so the
     # stubs are never invoked from a correctly-built driver. Pattern
-    # mirrors MBPOTrainer's unified surface.
+    # mirrors MBPOTrainer's trait surface.
 
-    def select_action_unified[
+    def select_action_batched[
         N_ENVS: Int
     ](
         mut self,
@@ -383,16 +383,6 @@ struct DDPGTrainer[
             elif a < -self.action_scale:
                 a = -self.action_scale
             action_ptr[i] = a
-
-    def train_step_unified(mut self, step_idx: Int) raises -> Bool:
-        return self.train_step(step_idx)
-
-    def select_greedy_action_unified(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-    ) raises:
-        self.select_greedy_action(obs, action_out)
 
     def add_complete_return(mut self, ret: Scalar[DT]):
         self.tracker.add_complete_return(ret)

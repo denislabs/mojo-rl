@@ -9,7 +9,7 @@ they're trainer methods invoked from train_step on a `model_train_freq`
 cadence (block decomposition isn't the right fit for multi-epoch /
 multi-step orchestration).
 
-CPU only. Conforms to `OffPolicyAgentUnifiedGpu` (Tier-3 driver
+CPU only. Conforms to `OffPolicyAgentGpu` (Tier-3 driver
 surface); GPU record stubs raise — unreachable on the CPU env branch.
 """
 
@@ -30,7 +30,7 @@ from ..optimizer.scalar_adam import ScalarAdam
 from .dynamics_ensemble_block import DynamicsEnsembleBlock
 from .episode_tracker import EpisodeTracker
 from .trainer_block import TrainerState
-from .driver_unified import OffPolicyAgentUnifiedGpu
+from .driver_offpolicy import OffPolicyAgentGpu
 from .blocks import (
     DualSampleCpuStep,
     TargetYStep,
@@ -55,7 +55,7 @@ struct MBPOTrainer[
     REAL_RATIO_PCT: Int = 5,
     LOGVAR_MIN: Float64 = -10.0,
     LOGVAR_MAX: Float64 = -2.0,
-](OffPolicyAgentUnifiedGpu):
+](OffPolicyAgentGpu):
     comptime DYN_IN: Int = Self.OBS_DIM + Self.ACT_DIM
     comptime DYN_PRED: Int = 1 + Self.OBS_DIM
     comptime DYN_OUT: Int = 2 * Self.DYN_PRED
@@ -75,7 +75,7 @@ struct MBPOTrainer[
 
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
-    # MBPO is CPU-only; the OffPolicyAgentUnifiedGpu GPU stubs raise.
+    # MBPO is CPU-only; the OffPolicyAgentGpu GPU stubs raise.
     comptime AGENT_TRAIN_TARGET: StaticString = "cpu"
 
     var actor: Self.ACTOR
@@ -360,7 +360,7 @@ struct MBPOTrainer[
 
     # ─── Direct-callable (host-list) surface ─────────────────────────
     # Used by smoke tests that call the trainer directly without a
-    # driver. The Tier-3 driver uses the `*_unified` methods below.
+    # driver, and by the off-policy driver via the OffPolicyAgent trait.
 
     def select_action(
         mut self,
@@ -497,13 +497,13 @@ struct MBPOTrainer[
     def ep_count(self) -> Int:
         return self.tracker.ep_count
 
-    # ─── OffPolicyAgentUnifiedGpu surface (Tier-3 driver) ────────────
+    # ─── OffPolicyAgentGpu surface (Tier-3 driver) ────────────
     #
     # MBPO is CPU-only — the GPU record stubs raise. The Tier-3 driver
     # comptime-elides those branches when env_target == "cpu", so the
     # stubs are never invoked from a correctly-built driver.
 
-    def select_action_unified[
+    def select_action_batched[
         N_ENVS: Int
     ](
         mut self,
@@ -544,16 +544,6 @@ struct MBPOTrainer[
                 elif a < -self.action_scale:
                     a = -self.action_scale
                 dst[j] = a
-
-    def train_step_unified(mut self, step_idx: Int) raises -> Bool:
-        return self.train_step(step_idx)
-
-    def select_greedy_action_unified(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-    ) raises:
-        self.select_greedy_action(obs, action_out)
 
     def add_complete_return(mut self, ret: Scalar[DT]):
         self.tracker.add_complete_return(ret)

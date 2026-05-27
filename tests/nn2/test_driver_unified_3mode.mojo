@@ -3,11 +3,11 @@
 Three configurations exercised through two driver functions, with
 (env_target, train_target, N_ENVS) made explicit:
 
-  1. env=cpu, train=cpu, N=1   → run_offpolicy_train_unified + PendulumEnv
-  2. env=cpu, train=gpu, N=1   → run_offpolicy_train_unified + PendulumEnv
+  1. env=cpu, train=cpu, N=1   → run_offpolicy_train + PendulumEnv
+  2. env=cpu, train=gpu, N=1   → run_offpolicy_train + PendulumEnv
                                   (H2D obs / D2H action per step around the
                                    trainer call — boundary copies present)
-  3. env=gpu, train=gpu, N=1   → run_offpolicy_train_unified_gpu_env +
+  3. env=gpu, train=gpu, N=1   → run_offpolicy_train_gpu_env +
                                   PendulumV2   (NEW capability — no per-
                                    step env-data boundary copies)
 
@@ -33,8 +33,8 @@ from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.batched_env import BatchedGpuEnv
-from mojo_rl.nn2.training.driver_unified import (
-    run_offpolicy_train_unified,
+from mojo_rl.nn2.training.driver_offpolicy import (
+    run_offpolicy_train,
     run_offpolicy_train_batched,
 )
 from mojo_rl.nn2.training.blocks import (
@@ -92,7 +92,7 @@ def test_mode1_cpu_env_cpu_train() raises:
         initial_episode_fill=Scalar[DT](-1250.0),
     )
     var env = PendulumEnv[DT]()
-    _ = run_offpolicy_train_unified(
+    _ = run_offpolicy_train(
         trainer, env, TOTAL_STEPS_SINGLE,
         print_every=0, verbose=False,
     )
@@ -118,7 +118,7 @@ def test_mode2_cpu_env_gpu_train() raises:
         initial_episode_fill=Scalar[DT](-1250.0),
     )
     var env = PendulumEnv[DT]()
-    _ = run_offpolicy_train_unified(
+    _ = run_offpolicy_train(
         trainer, env, TOTAL_STEPS_SINGLE,
         ctx=ctx, print_every=0, verbose=False,
     )

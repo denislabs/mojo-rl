@@ -1,6 +1,6 @@
-"""Tier-1 select_action_unified — three paths, one entry.
+"""Tier-1 select_action_batched — three paths, one entry.
 
-Demonstrates that `SACTrainer.select_action_unified[N_ENVS]`
+Demonstrates that `SACTrainer.select_action_batched[N_ENVS]`
 (`target` is the trainer's struct-comptime, not a per-method param)
 serves all three legacy call surfaces from a single body:
 
@@ -71,7 +71,7 @@ def _assert_finite_clamped(
 
 
 def test_cpu_n1() raises:
-    print("--- CPU + N_ENVS=1 via select_action_unified ---")
+    print("--- CPU + N_ENVS=1 via select_action_batched ---")
     var trainer = SACTrainer[
         "cpu",
         UniformSampleCpuStep[OBS, ACT, BATCH, CAP],
@@ -91,7 +91,7 @@ def test_cpu_n1() raises:
         obs_p[d] = Scalar[DT](0.1 * Float64(d) + 0.05)
 
     # Warmup step.
-    trainer.select_action_unified[1](
+    trainer.select_action_batched[1](
         obs.target_ptr["cpu"](),
         action.target_ptr["cpu"](),
         ao.target_ptr["cpu"](),
@@ -102,7 +102,7 @@ def test_cpu_n1() raises:
     print("  warmup action[0] =", action.host_ptr()[0])
 
     # Post-warmup step (policy path).
-    trainer.select_action_unified[1](
+    trainer.select_action_batched[1](
         obs.target_ptr["cpu"](),
         action.target_ptr["cpu"](),
         ao.target_ptr["cpu"](),
@@ -114,7 +114,7 @@ def test_cpu_n1() raises:
 
 
 def test_gpu_n1() raises:
-    print("--- GPU + N_ENVS=1 via select_action_unified ---")
+    print("--- GPU + N_ENVS=1 via select_action_batched ---")
     var ctx = DeviceContext()
     var trainer = SACTrainer[
         "gpu",
@@ -144,7 +144,7 @@ def test_gpu_n1() raises:
     ctx.enqueue_copy(obs.dev.value(), obs.host_ptr())
 
     # Warmup step.
-    trainer.select_action_unified[1](
+    trainer.select_action_batched[1](
         obs.target_ptr["gpu"](),
         action.target_ptr["gpu"](),
         ao.target_ptr["gpu"](),
@@ -158,7 +158,7 @@ def test_gpu_n1() raises:
     print("  warmup action[0] =", action.host_ptr()[0])
 
     # Post-warmup step (policy path).
-    trainer.select_action_unified[1](
+    trainer.select_action_batched[1](
         obs.target_ptr["gpu"](),
         action.target_ptr["gpu"](),
         ao.target_ptr["gpu"](),
@@ -172,7 +172,7 @@ def test_gpu_n1() raises:
 
 
 def test_gpu_n8() raises:
-    print("--- GPU + N_ENVS=8 via select_action_unified ---")
+    print("--- GPU + N_ENVS=8 via select_action_batched ---")
     comptime N_ENVS = 8
     var ctx = DeviceContext()
     var trainer = SACTrainer[
@@ -202,7 +202,7 @@ def test_gpu_n8() raises:
     ctx.enqueue_copy(obs.dev.value(), obs.host_ptr())
 
     # Warmup step (Philox kernel).
-    trainer.select_action_unified[N_ENVS](
+    trainer.select_action_batched[N_ENVS](
         obs.target_ptr["gpu"](),
         action.target_ptr["gpu"](),
         ao.target_ptr["gpu"](),
@@ -217,7 +217,7 @@ def test_gpu_n8() raises:
           action.host_ptr()[2], ",", action.host_ptr()[3])
 
     # Post-warmup step (batched policy + clamp kernel).
-    trainer.select_action_unified[N_ENVS](
+    trainer.select_action_batched[N_ENVS](
         obs.target_ptr["gpu"](),
         action.target_ptr["gpu"](),
         ao.target_ptr["gpu"](),
@@ -234,7 +234,7 @@ def test_gpu_n8() raises:
 
 def main() raises:
     print("=" * 60)
-    print("select_action_unified — Tier-1 prototype")
+    print("select_action_batched — Tier-1 prototype")
     print("=" * 60)
     test_cpu_n1()
     test_gpu_n1()

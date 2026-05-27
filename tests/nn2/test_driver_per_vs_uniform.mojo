@@ -58,7 +58,7 @@ from mojo_rl.nn2.training.blocks import (
     PerSampleGpuStep,
 )
 from mojo_rl.nn2.training.batched_env import BatchedGpuEnv
-from mojo_rl.nn2.training.driver_unified import run_offpolicy_train_batched
+from mojo_rl.nn2.training.driver_offpolicy import run_offpolicy_train_batched
 
 from mojo_rl.envs.pendulum.pendulum_v2 import PendulumV2
 

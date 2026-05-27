@@ -1,4 +1,4 @@
-"""Off-policy unified training + eval drivers — Tier-1 + Tier-3.
+"""Off-policy training + eval drivers — Tier-1 + Tier-3.
 
 Two training driver functions covering all useful (env_target,
 train_target, N_ENVS) combinations:
@@ -7,12 +7,12 @@ train_target, N_ENVS) combinations:
   -----------|--------------|--------|----------------------------------
   cpu        | cpu          | >=1    | run_offpolicy_train_batched
   gpu        | gpu          | >=1    | run_offpolicy_train_batched
-  cpu        | gpu          | 1      | run_offpolicy_train_unified
+  cpu        | gpu          | 1      | run_offpolicy_train
 
-Plus one eval driver `run_offpolicy_eval_unified` that replaces the
+Plus one eval driver `run_offpolicy_eval` that replaces the
 legacy `run_offpolicy_eval_cpu` / `run_offpolicy_eval_gpu` split — the
 trainer dispatches CPU vs GPU internally inside
-`select_greedy_action_unified`.
+`select_greedy_action`.
 
 The (env=gpu, train=cpu) combination is omitted as degenerate
 (D2H every obs back to CPU for training — never useful in practice).
@@ -21,10 +21,10 @@ principle by extending `run_offpolicy_train_batched` with H2D/D2H
 boundary plumbing; deferred until a consumer needs it.
 
 Trait surface
-  - `OffPolicyAgentUnified` — minimal: select_action_unified[N_ENVS],
-    record, train_step_unified, episode tracker accessors, batched
+  - `OffPolicyAgent` — minimal: select_action_batched[N_ENVS],
+    record, train_step, episode tracker accessors, batched
     CPU record + add_complete_return.
-  - `OffPolicyAgentUnifiedGpu(OffPolicyAgentUnified)` — adds
+  - `OffPolicyAgentGpu(OffPolicyAgent)` — adds
     record_batch_gpu / record_batch_gpu_nstep for the gpu-env path.
 
 Storage: all driver-owned buffers live in `DriverScratch[NAME, N, DIM]`
@@ -45,19 +45,19 @@ from .driver_scratch import DriverScratch
 
 
 # ──────────────────────────────────────────────────────────────────────
-# OffPolicyAgentUnified — trait for the unified drivers.
+# OffPolicyAgent — trait for the off-policy drivers.
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait OffPolicyAgentUnified(Movable, ImplicitlyDestructible):
-    """Single-trait surface for the unified off-policy drivers.
+trait OffPolicyAgent(Movable, ImplicitlyDestructible):
+    """Single-trait surface for the off-policy drivers.
     Exposes `AGENT_TRAIN_TARGET` (so the driver can comptime-gate
     H2D/D2H around the env step) and routes all action selection
-    through one `select_action_unified[N_ENVS]` entry instead of the
+    through one `select_action_batched[N_ENVS]` entry instead of the
     historic three `select_action[/_gpu/_gpu_batched]` variants.
 
     `record` keeps a host-`List` signature for single-env use (env step
-    returns Lists). Batched record paths live on the `OffPolicyAgentUnifiedGpu`
+    returns Lists). Batched record paths live on the `OffPolicyAgentGpu`
     sub-trait (or, for the CPU env batched path, in `record_batch_cpu`
     here). SAC / MBPO / DDPG / TD3 all conform."""
 
@@ -71,7 +71,7 @@ trait OffPolicyAgentUnified(Movable, ImplicitlyDestructible):
     comptime AGENT_OBS_DIM: Int
     comptime AGENT_ACT_DIM: Int
 
-    def select_action_unified[
+    def select_action_batched[
         N_ENVS: Int
     ](
         mut self,
@@ -83,7 +83,7 @@ trait OffPolicyAgentUnified(Movable, ImplicitlyDestructible):
     ) raises:
         ...
 
-    def select_greedy_action_unified(
+    def select_greedy_action(
         mut self,
         ref obs: List[Scalar[DT]],
         mut action_out: List[Scalar[DT]],
@@ -92,7 +92,7 @@ trait OffPolicyAgentUnified(Movable, ImplicitlyDestructible):
         Host-list signature; trainers dispatch internally on
         `AGENT_TRAIN_TARGET` (CPU trainers run native, GPU trainers
         H2D the obs and D2H the action under the hood). Used by
-        `run_offpolicy_eval_unified`."""
+        `run_offpolicy_eval`."""
         ...
 
     def record(
@@ -108,7 +108,7 @@ trait OffPolicyAgentUnified(Movable, ImplicitlyDestructible):
     def end_episode(mut self):
         ...
 
-    def train_step_unified(mut self, step_idx: Int) raises -> Bool:
+    def train_step(mut self, step_idx: Int) raises -> Bool:
         ...
 
     def mean_return(self) -> Scalar[DT]:
@@ -127,7 +127,7 @@ trait OffPolicyAgentUnified(Movable, ImplicitlyDestructible):
     # can manage per-env return accumulators on the host.
     #
     # `add_complete_return` was previously declared on
-    # `OffPolicyAgentUnifiedGpu`; lifted to the parent so both the
+    # `OffPolicyAgentGpu`; lifted to the parent so both the
     # GPU-env driver (Phase 3.5) and the new CPU-env batched driver
     # (Tier-2) share one source of truth — and so the Gpu sub-trait
     # doesn't re-declare it (which would create diamond ambiguity).
@@ -153,13 +153,13 @@ trait OffPolicyAgentUnified(Movable, ImplicitlyDestructible):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# OffPolicyAgentUnifiedGpu — adds GPU-batched methods on top.
+# OffPolicyAgentGpu — adds GPU-batched methods on top.
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait OffPolicyAgentUnifiedGpu(OffPolicyAgentUnified):
-    """Extends `OffPolicyAgentUnified` with the GPU-batched record
-    surfaces needed by the GPU-env unified driver. `add_complete_return`
+trait OffPolicyAgentGpu(OffPolicyAgent):
+    """Extends `OffPolicyAgent` with the GPU-batched record
+    surfaces needed by the GPU-env driver. `add_complete_return`
     is inherited from the parent — single source of truth.
 
     CPU-only trainers (e.g. MBPOTrainer) conform with raising stubs for
@@ -198,12 +198,12 @@ trait OffPolicyAgentUnifiedGpu(OffPolicyAgentUnified):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# run_offpolicy_train_unified — single-env, env_target="cpu".
+# run_offpolicy_train — single-env, env_target="cpu".
 # ──────────────────────────────────────────────────────────────────────
 
 
-def run_offpolicy_train_unified[
-    A: OffPolicyAgentUnified,
+def run_offpolicy_train[
+    A: OffPolicyAgent,
     E: BoxContinuousActionEnv,
 ](
     mut trainer: A,
@@ -223,8 +223,8 @@ def run_offpolicy_train_unified[
     SAME `DeviceContext` the trainer was built with — Apple Metal's
     queue pool exhausts if a new context is constructed per call.
 
-    Loop semantics: one env step + one `train_step_unified` per
-    iteration. `select_action_unified` consumes RNG in the same order
+    Loop semantics: one env step + one `train_step` per
+    iteration. `select_action_batched` consumes RNG in the same order
     on CPU as the legacy single-env CPU path. The GPU branch differs
     in warmup RNG (Philox kernel vs host `random_float64`).
     """
@@ -237,16 +237,16 @@ def run_offpolicy_train_unified[
 
     comptime assert (
         train_target == "cpu" or train_target == "gpu"
-    ), "run_offpolicy_train_unified: train_target must be 'cpu' or 'gpu'"
+    ), "run_offpolicy_train: train_target must be 'cpu' or 'gpu'"
     comptime if train_target == "gpu":
         if not ctx:
             raise Error(
-                "run_offpolicy_train_unified[train_target='gpu']:"
+                "run_offpolicy_train[train_target='gpu']:"
                 " ctx required for env→trainer H2D/D2H staging"
             )
 
     # Driver-owned scratches. Allocated on train_target so the trainer's
-    # select_action_unified consumes them natively. When env_target !=
+    # select_action_batched consumes them natively. When env_target !=
     # train_target (cpu env + gpu trainer), obs + action also need host
     # mirrors for the per-step H2D/D2H around the env step.
     comptime needs_boundary_copy: Bool = env_target != train_target
@@ -277,7 +277,7 @@ def run_offpolicy_train_unified[
     var step: Int = 0
     while step < total_timesteps:
         # Copy env obs (E.dtype) into obs_list (DT) for record + into
-        # the driver scratch (DT) for the unified select_action call.
+        # the driver scratch (DT) for the select_action_batched call.
         # When train_target=="cpu", obs_scratch.host_ptr() IS the
         # scratch's only storage; when "gpu" it's the host mirror that
         # will be H2D'd below.
@@ -293,7 +293,7 @@ def run_offpolicy_train_unified[
             var c = ctx.value()
             c.enqueue_copy(obs_scratch.dev.value(), obs_scratch_h)
 
-        trainer.select_action_unified[1](
+        trainer.select_action_batched[1](
             obs_scratch.target_ptr[train_target](),
             action_scratch.target_ptr[train_target](),
             ao.target_ptr[train_target](),
@@ -342,7 +342,7 @@ def run_offpolicy_train_unified[
             env_obs = nxt^
 
         step += 1
-        _ = trainer.train_step_unified(step)
+        _ = trainer.train_step(step)
 
         if verbose and print_every > 0 and step % print_every == 0:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
@@ -368,7 +368,7 @@ def run_offpolicy_train_unified[
 
 
 def run_offpolicy_train_batched[
-    A: OffPolicyAgentUnifiedGpu,
+    A: OffPolicyAgentGpu,
     E: BatchedEnv,
     N_ENVS: Int = 1,
     NS: Int = 1,
@@ -393,7 +393,7 @@ def run_offpolicy_train_batched[
       gpu        | gpu          | >=1    | yes  (via BatchedGpuEnv)
 
     Cross-target combinations are NOT covered here:
-      - (cpu env, gpu train) reachable via `run_offpolicy_train_unified`
+      - (cpu env, gpu train) reachable via `run_offpolicy_train`
         (Tier-1 Phase 3) at N_ENVS=1. Batched cross-target requires
         H2D-ing prev_obs/action/reward/obs/done before record_batch_gpu;
         the boundary plumbing is straightforward but the use case is
@@ -401,7 +401,7 @@ def run_offpolicy_train_batched[
         deferred until a consumer needs it.
       - (gpu env, cpu train) rejected as degenerate (D2H every obs).
 
-    Bounded on `OffPolicyAgentUnifiedGpu` because the gpu-env branch
+    Bounded on `OffPolicyAgentGpu` because the gpu-env branch
     needs `record_batch_gpu`; the cpu-env branch uses `record_batch_cpu`
     inherited from the parent. The driver comptime-branches on
     `(env_target, N_ENVS)` so each combination compiles only the
@@ -412,12 +412,12 @@ def run_offpolicy_train_batched[
 
     Loop:
       1. snapshot env.obs_ptr()           → prev_obs (driver-owned)
-      2. trainer.select_action_unified[N_ENVS] → env.action_ptr() directly
+      2. trainer.select_action_batched[N_ENVS] → env.action_ptr() directly
       3. env.step_batch[N_ENVS]           → env.obs / .reward / .done
       4. trainer.record_batch_cpu OR record_batch_gpu (env-side ptrs)
       5. per-env return accumulation + add_complete_return on done
       6. env.selective_reset_batch[N_ENVS]
-      7. updates_per_step × trainer.train_step_unified
+      7. updates_per_step × trainer.train_step
     """
     comptime env_target: StaticString = E.ENV_TARGET
     comptime train_target: StaticString = A.AGENT_TRAIN_TARGET
@@ -433,7 +433,7 @@ def run_offpolicy_train_batched[
     comptime assert env_target == train_target, (
         "run_offpolicy_train_batched: env_target must equal train_target."
         " Cross-target combinations: (cpu env, gpu train) → use"
-        " run_offpolicy_train_unified (Tier-1, single-env); (gpu env,"
+        " run_offpolicy_train (Tier-1, single-env); (gpu env,"
         " cpu train) → rejected as degenerate."
     )
     comptime assert N_ENVS > 0, "N_ENVS must be > 0"
@@ -507,7 +507,7 @@ def run_offpolicy_train_batched[
 
         # ── 2. Trainer writes action directly into env.action_ptr().
         # env_target == train_target so the pointer is on the right side.
-        trainer.select_action_unified[N_ENVS](
+        trainer.select_action_batched[N_ENVS](
             env.obs_ptr(),
             env.action_ptr(),
             ao.target_ptr[train_target](),
@@ -611,7 +611,7 @@ def run_offpolicy_train_batched[
 
         # ── 9. Trainer updates.
         for _ in range(updates_per_step):
-            _ = trainer.train_step_unified(step_idx)
+            _ = trainer.train_step(step_idx)
 
         if verbose and print_every > 0 and step_idx >= next_print:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
@@ -632,12 +632,12 @@ def run_offpolicy_train_batched[
 
 
 # ──────────────────────────────────────────────────────────────────────
-# run_offpolicy_eval_unified — single-env greedy eval, target-agnostic.
+# run_offpolicy_eval — single-env greedy eval, target-agnostic.
 # ──────────────────────────────────────────────────────────────────────
 
 
-def run_offpolicy_eval_unified[
-    A: OffPolicyAgentUnified,
+def run_offpolicy_eval[
+    A: OffPolicyAgent,
     E: BoxContinuousActionEnv,
 ](
     mut trainer: A,
@@ -650,10 +650,10 @@ def run_offpolicy_eval_unified[
     """Non-mutating greedy eval driver — replaces both
     `run_offpolicy_eval_cpu` and `run_offpolicy_eval_gpu`.
 
-    Trainer contract: `OffPolicyAgentUnified.select_greedy_action_unified`
+    Trainer contract: `OffPolicyAgent.select_greedy_action`
     handles target dispatch internally (CPU trainers run native; GPU
     trainers H2D the obs and D2H the action under the hood). Only that
-    method is invoked here — `record` / `train_step_unified` /
+    method is invoked here — `record` / `train_step` /
     `end_episode` / `add_complete_return` are intentionally skipped so
     eval doesn't touch the trainer's replay buffer, optimizers, or
     episode tracker. `obs_dim` / `act_dim` are read from
@@ -680,7 +680,7 @@ def run_offpolicy_eval_unified[
         for _ in range(max_steps_per_episode):
             for d in range(OBS):
                 obs[d] = Scalar[DT](obs_list[d])
-            trainer.select_greedy_action_unified(obs, action)
+            trainer.select_greedy_action(obs, action)
             for j in range(ACT):
                 action_list[j] = Scalar[E.dtype](action[j])
             var step_res = env.step_continuous_vec[E.dtype](action_list)

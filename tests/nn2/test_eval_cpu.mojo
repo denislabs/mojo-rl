@@ -24,9 +24,9 @@ from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks import UniformSampleCpuStep
 from mojo_rl.nn2.training.batched_env import BatchedCpuEnv
-from mojo_rl.nn2.training.driver_unified import (
+from mojo_rl.nn2.training.driver_offpolicy import (
     run_offpolicy_train_batched,
-    run_offpolicy_eval_unified,
+    run_offpolicy_eval,
 )
 
 from mojo_rl.envs.pendulum import PendulumEnv
@@ -66,7 +66,7 @@ def test_eval_untrained_sac_runs() raises:
         CriticNet,
     ].make(action_scale=Scalar[DT](2.0))
     var env = PendulumEnv[DT]()
-    var mean = run_offpolicy_eval_unified(
+    var mean = run_offpolicy_eval(
         trainer,
         env,
         num_episodes=3,
@@ -135,7 +135,7 @@ def test_eval_after_30k_train_converges() raises:
 
     # Eval with a fresh env.
     var eval_env = PendulumEnv[DT]()
-    var eval_mean = run_offpolicy_eval_unified(
+    var eval_mean = run_offpolicy_eval(
         trainer,
         eval_env,
         num_episodes=10,

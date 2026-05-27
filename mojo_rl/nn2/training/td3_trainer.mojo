@@ -6,7 +6,7 @@ CPU only. Pipeline (4 blocks):
 TD3DelayedActorPolyakStep bundles actor update + 3 polyaks, gated by an
 internal counter (no state pollution).
 
-Conforms to `OffPolicyAgentUnifiedGpu` so it's drivable through the
+Conforms to `OffPolicyAgentGpu` so it's drivable through the
 Tier-3 `run_offpolicy_train_batched` (CPU env path only). GPU record
 stubs raise — unreachable on the CPU env branch.
 """
@@ -24,7 +24,7 @@ from ..initializer import Xavier
 from ..optimizer.adam import Adam
 from ..random.box_muller import box_muller_normal
 from .action_sampling_block import ActionSamplingBlock
-from .driver_unified import OffPolicyAgentUnifiedGpu
+from .driver_offpolicy import OffPolicyAgentGpu
 from .episode_tracker import EpisodeTracker
 from .trainer_block import TrainerState
 from .blocks import (
@@ -42,10 +42,10 @@ struct TD3Trainer[
     ACT_DIM: Int,
     BATCH: Int,
     REPLAY_CAPACITY: Int,
-](OffPolicyAgentUnifiedGpu):
+](OffPolicyAgentGpu):
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
-    # TD3 is CPU-only; the OffPolicyAgentUnifiedGpu GPU stubs raise.
+    # TD3 is CPU-only; the OffPolicyAgentGpu GPU stubs raise.
     comptime AGENT_TRAIN_TARGET: StaticString = "cpu"
 
     var actor_pair: OnlineTargetPair[Self.ACTOR]
@@ -250,7 +250,7 @@ struct TD3Trainer[
 
     # ─── Direct-callable (host-list) surface ─────────────────────────
     # Used by smoke tests that call the trainer directly without a
-    # driver. The Tier-3 driver uses the `*_unified` methods below.
+    # driver, and by the off-policy driver via the OffPolicyAgent trait.
 
     def select_action(
         mut self,
@@ -345,14 +345,14 @@ struct TD3Trainer[
     def ep_count(self) -> Int:
         return self.tracker.ep_count
 
-    # ─── OffPolicyAgentUnifiedGpu surface (Tier-3 driver) ────────────
+    # ─── OffPolicyAgentGpu surface (Tier-3 driver) ────────────
     #
     # TD3 is CPU-only — the GPU record stubs raise. The Tier-3 driver
     # comptime-elides those branches when env_target == "cpu", so the
     # stubs are never invoked from a correctly-built driver. Pattern
     # mirrors MBPOTrainer / DDPGTrainer.
 
-    def select_action_unified[
+    def select_action_batched[
         N_ENVS: Int
     ](
         mut self,
@@ -387,16 +387,6 @@ struct TD3Trainer[
             elif a < -self.action_scale:
                 a = -self.action_scale
             action_ptr[i] = a
-
-    def train_step_unified(mut self, step_idx: Int) raises -> Bool:
-        return self.train_step(step_idx)
-
-    def select_greedy_action_unified(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-    ) raises:
-        self.select_greedy_action(obs, action_out)
 
     def add_complete_return(mut self, ret: Scalar[DT]):
         self.tracker.add_complete_return(ret)

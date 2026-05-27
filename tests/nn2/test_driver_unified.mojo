@@ -1,6 +1,6 @@
-"""run_offpolicy_train_unified — one driver, both targets.
+"""run_offpolicy_train — one driver, both targets.
 
-Demonstrates that the same `run_offpolicy_train_unified[A, E]` driver
+Demonstrates that the same `run_offpolicy_train[A, E]` driver
 function handles both `target="cpu"` and `target="gpu"` single-env
 trainers against the SAME env (CPU-side PendulumEnv). The body is
 shared; H2D/D2H staging is comptime-elided on CPU.
@@ -24,7 +24,7 @@ from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.driver_unified import run_offpolicy_train_unified
+from mojo_rl.nn2.training.driver_offpolicy import run_offpolicy_train
 from mojo_rl.nn2.training.blocks import (
     UniformSampleCpuStep,
     UniformSampleGpuStep,
@@ -60,7 +60,7 @@ comptime CriticNet = Sequential[
 
 
 def test_unified_cpu() raises:
-    print("--- run_offpolicy_train_unified[target=cpu] ---")
+    print("--- run_offpolicy_train[target=cpu] ---")
     seed(42)
     var trainer = SACTrainer[
         "cpu",
@@ -76,7 +76,7 @@ def test_unified_cpu() raises:
         initial_episode_fill=Scalar[DT](-1250.0),
     )
     var env = PendulumEnv[DT]()
-    _ = run_offpolicy_train_unified(
+    _ = run_offpolicy_train(
         trainer,
         env,
         TOTAL_STEPS,
@@ -91,7 +91,7 @@ def test_unified_cpu() raises:
 
 
 def test_unified_gpu() raises:
-    print("--- run_offpolicy_train_unified[target=gpu] ---")
+    print("--- run_offpolicy_train[target=gpu] ---")
     seed(42)
     var ctx = DeviceContext()
     var trainer = SACTrainer[
@@ -109,7 +109,7 @@ def test_unified_gpu() raises:
         initial_episode_fill=Scalar[DT](-1250.0),
     )
     var env = PendulumEnv[DT]()
-    _ = run_offpolicy_train_unified(
+    _ = run_offpolicy_train(
         trainer,
         env,
         TOTAL_STEPS,

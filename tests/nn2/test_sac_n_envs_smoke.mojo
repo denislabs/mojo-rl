@@ -2,7 +2,7 @@
 
 Smoke gate for the Tier-3 unified driver (`run_offpolicy_train_batched`)
 with `BatchedGpuEnv` at N_ENVS=4. NOT a convergence regression; just
-verifies the batched plumbing (select_action_unified + record_batch_gpu
+verifies the batched plumbing (select_action_batched + record_batch_gpu
 via the sample block's add_batch_gpu method) runs without crashing.
 """
 
@@ -18,7 +18,7 @@ from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks import UniformSampleGpuStep
 from mojo_rl.nn2.training.batched_env import BatchedGpuEnv
-from mojo_rl.nn2.training.driver_unified import run_offpolicy_train_batched
+from mojo_rl.nn2.training.driver_offpolicy import run_offpolicy_train_batched
 
 from mojo_rl.envs.pendulum.pendulum_v2 import PendulumV2
 

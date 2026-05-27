@@ -20,7 +20,7 @@ from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks import UniformSampleCpuStep
 from mojo_rl.nn2.training.batched_env import BatchedCpuEnv
-from mojo_rl.nn2.training.driver_unified import run_offpolicy_train_batched
+from mojo_rl.nn2.training.driver_offpolicy import run_offpolicy_train_batched
 
 from mojo_rl.envs.pendulum import PendulumEnv
 
