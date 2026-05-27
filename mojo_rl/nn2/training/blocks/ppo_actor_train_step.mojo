@@ -56,11 +56,12 @@ struct PPOActorTrainStep[
     def step[
         target: StaticString,
         ROLLOUT_LEN: Int,
+        N_ENVS: Int,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         mut state: OnPolicyState[
-            Self.OBS, Self.ACT, ROLLOUT_LEN, Self.MINIBATCH,
+            Self.OBS, Self.ACT, ROLLOUT_LEN, Self.MINIBATCH, N_ENVS,
         ],
         mut actor: Self.ACTOR,
         mut actor_opt: Adam,

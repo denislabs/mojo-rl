@@ -49,11 +49,12 @@ struct PPOCriticTrainStep[
         target: StaticString,
         ACT: Int,
         ROLLOUT_LEN: Int,
+        N_ENVS: Int,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         mut state: OnPolicyState[
-            Self.OBS, ACT, ROLLOUT_LEN, Self.MINIBATCH,
+            Self.OBS, ACT, ROLLOUT_LEN, Self.MINIBATCH, N_ENVS,
         ],
         mut critic: Self.CRITIC,
         mut critic_opt: Adam,

@@ -45,30 +45,31 @@ struct PPOMinibatchGatherStep[
         )
         return Self()
 
-    def reset_indices[target: StaticString](
+    def reset_indices[target: StaticString, N_ENVS: Int](
         mut self,
         mut state: OnPolicyState[
-            Self.OBS, Self.ACT, Self.ROLLOUT_LEN, Self.MINIBATCH,
+            Self.OBS, Self.ACT, Self.ROLLOUT_LEN, Self.MINIBATCH, N_ENVS,
         ],
     ) raises:
-        """Write [0..ROLLOUT_LEN) into state.indices. Caller invokes
-        this ONCE per rollout, before the K-epoch loop. Subsequent
-        epoch shuffles operate on whatever state the previous epoch
-        left behind — bit-identity-critical (legacy resets once per
-        rollout, not once per epoch)."""
-        for k in range(Self.ROLLOUT_LEN):
+        """Write [0..ROLLOUT_LEN*N_ENVS) into state.indices. Caller
+        invokes this ONCE per rollout before the K-epoch loop.
+        Subsequent epoch shuffles operate on whatever state the
+        previous epoch left behind — bit-identity-critical (legacy
+        resets once per rollout, not once per epoch)."""
+        for k in range(Self.ROLLOUT_LEN * N_ENVS):
             state.indices[k] = Int32(k)
 
-    def shuffle_epoch[target: StaticString](
+    def shuffle_epoch[target: StaticString, N_ENVS: Int](
         mut self,
         mut state: OnPolicyState[
-            Self.OBS, Self.ACT, Self.ROLLOUT_LEN, Self.MINIBATCH,
+            Self.OBS, Self.ACT, Self.ROLLOUT_LEN, Self.MINIBATCH, N_ENVS,
         ],
     ) raises:
-        """In-place Fisher-Yates over state.indices. Caller invokes
-        this once at the top of each K-epoch (after `reset_indices` on
-        the first epoch)."""
-        for t in range(Self.ROLLOUT_LEN - 1, 0, -1):
+        """In-place Fisher-Yates over state.indices (length
+        ROLLOUT_LEN*N_ENVS). Caller invokes this once at the top of
+        each K-epoch (after `reset_indices` on the first epoch)."""
+        var n_total = Self.ROLLOUT_LEN * N_ENVS
+        for t in range(n_total - 1, 0, -1):
             var j = Int(random_float64() * Float64(t + 1))
             if j > t:
                 j = t
@@ -76,19 +77,20 @@ struct PPOMinibatchGatherStep[
             state.indices[t] = state.indices[j]
             state.indices[j] = tmp
 
-    def gather[target: StaticString](
+    def gather[target: StaticString, N_ENVS: Int](
         mut self,
         mut state: OnPolicyState[
-            Self.OBS, Self.ACT, Self.ROLLOUT_LEN, Self.MINIBATCH,
+            Self.OBS, Self.ACT, Self.ROLLOUT_LEN, Self.MINIBATCH, N_ENVS,
         ],
         mb_idx: Int,
     ) raises:
-        """Gather the `mb_idx`-th minibatch into mb_obs/mb_act/mb_olp/
-        mb_adv/mb_ret, mean/std normalise mb_adv in place, then (on
-        GPU) H2D upload the populated mb_* host mirrors so the
-        actor/critic train steps can consume them on device."""
-        # Rollout buffers live host-only on both targets. Gather +
-        # normalise on host into mb_* host mirrors.
+        """Gather the `mb_idx`-th minibatch from the flat
+        ROLLOUT_LEN*N_ENVS pool into mb_obs/mb_act/mb_olp/mb_adv/mb_ret,
+        mean/std normalise mb_adv in place, then (on GPU) H2D upload
+        the populated mb_* host mirrors.
+
+        At N_ENVS=1 the flat index space equals the per-env time index,
+        so the math reduces to the N=1 case bit-identically."""
         var obs_p = state.obs_buf.cpu_ptr()
         var act_p = state.act_buf.cpu_ptr()
         var olp_p = state.olp_buf.cpu_ptr()

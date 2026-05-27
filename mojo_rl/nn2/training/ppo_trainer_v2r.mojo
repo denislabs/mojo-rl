@@ -23,6 +23,7 @@ CPU N_ENVS=1 by construction — same ops, same order, same data.
 """
 
 from std.gpu.host import DeviceContext
+from std.memory import alloc
 
 from ..constants import DT
 from ..core import Module
@@ -51,10 +52,15 @@ struct PPOTrainerV2R[
     ROLLOUT_LEN: Int,
     MINIBATCH: Int,
     N_EPOCHS: Int,
+    N_ENVS: Int = 1,
 ](OnPolicyAgent):
-    """V2R CleanRL-style PPO continuous trainer. CPU N_ENVS=1 in P.1."""
+    """V2R CleanRL-style PPO continuous trainer. N_ENVS defaults to 1
+    so existing single-env consumers (host-list select_action / record_
+    transition surface) stay bit-identical without code changes.
+    N_ENVS > 1 is reached via the batched trainer methods consumed by
+    `run_onpolicy_train_batched` (P.3 driver)."""
 
-    comptime N_MINIBATCHES = Self.ROLLOUT_LEN // Self.MINIBATCH
+    comptime N_MINIBATCHES = (Self.ROLLOUT_LEN * Self.N_ENVS) // Self.MINIBATCH
 
     # ── Networks + optimisers ────────────────────────────────────────
     var actor: Self.ACTOR
@@ -79,7 +85,16 @@ struct PPOTrainerV2R[
     # ── State ────────────────────────────────────────────────────────
     var state: OnPolicyState[
         Self.OBS_DIM, Self.ACT_DIM, Self.ROLLOUT_LEN, Self.MINIBATCH,
+        Self.N_ENVS,
     ]
+
+    # Host-side staging for the N=1 host-list wrapper paths (so they
+    # don't allocate per call).
+    var _obs1: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _act1: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _rew1: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _done1: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _nobs1: UnsafePointer[Scalar[DT], MutAnyOrigin]
 
     # ── Hyperparameters ──────────────────────────────────────────────
     var gamma: Scalar[DT]
@@ -88,8 +103,9 @@ struct PPOTrainerV2R[
     var entropy_coef: Scalar[DT]
     var action_scale: Scalar[DT]
 
-    # ── Episode tracker ──────────────────────────────────────────────
+    # ── Episode tracker (per-env running-return + completed-return window) ─
     var tracker: EpisodeTracker
+    var _ep_returns: UnsafePointer[Scalar[DT], MutAnyOrigin]  # N_ENVS
 
     def __init__(out self):
         comptime assert (
@@ -107,9 +123,10 @@ struct PPOTrainerV2R[
         comptime assert Self.CRITIC.OUT_DIM == 1, (
             "PPOTrainerV2R: CRITIC.OUT_DIM must equal 1"
         )
-        comptime assert Self.ROLLOUT_LEN % Self.MINIBATCH == 0, (
-            "PPOTrainerV2R: ROLLOUT_LEN must be divisible by MINIBATCH"
+        comptime assert (Self.ROLLOUT_LEN * Self.N_ENVS) % Self.MINIBATCH == 0, (
+            "PPOTrainerV2R: ROLLOUT_LEN * N_ENVS must be divisible by MINIBATCH"
         )
+        comptime assert Self.N_ENVS >= 1, "PPOTrainerV2R: N_ENVS must be >= 1"
         self.actor = Self.ACTOR()
         self.critic = Self.CRITIC()
         self.actor_opt = Adam()
@@ -134,7 +151,16 @@ struct PPOTrainerV2R[
         ]()
         self.state = OnPolicyState[
             Self.OBS_DIM, Self.ACT_DIM, Self.ROLLOUT_LEN, Self.MINIBATCH,
+            Self.N_ENVS,
         ]()
+        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=0
+        )
+        self._obs1  = null_p
+        self._act1  = null_p
+        self._rew1  = null_p
+        self._done1 = null_p
+        self._nobs1 = null_p
         self.gamma = Scalar[DT](0.99)
         self.gae_lambda = Scalar[DT](0.95)
         self.clip_eps = Scalar[DT](0.2)
@@ -143,6 +169,7 @@ struct PPOTrainerV2R[
         self.tracker = EpisodeTracker.new(
             window_size=10, initial_fill=Scalar[DT](-1600.0),
         )
+        self._ep_returns = null_p
 
     @staticmethod
     def make(
@@ -203,7 +230,16 @@ struct PPOTrainerV2R[
         ].make[Self.train_target](ctx=ctx)
         t.state = OnPolicyState[
             Self.OBS_DIM, Self.ACT_DIM, Self.ROLLOUT_LEN, Self.MINIBATCH,
+            Self.N_ENVS,
         ].make[Self.train_target](ctx=ctx)
+        t._obs1  = alloc[Scalar[DT]](Self.OBS_DIM)
+        t._act1  = alloc[Scalar[DT]](Self.ACT_DIM)
+        t._rew1  = alloc[Scalar[DT]](1)
+        t._done1 = alloc[Scalar[DT]](1)
+        t._nobs1 = alloc[Scalar[DT]](Self.OBS_DIM)
+        t._ep_returns = alloc[Scalar[DT]](Self.N_ENVS)
+        for e in range(Self.N_ENVS):
+            t._ep_returns[e] = Scalar[DT](0.0)
         t.gamma = gamma
         t.gae_lambda = gae_lambda
         t.clip_eps = clip_eps
@@ -228,9 +264,34 @@ struct PPOTrainerV2R[
         mut action_out: List[Scalar[DT]],
         step_idx: Int,
     ) raises:
+        """N=1 host-list wrapper — only valid when Self.N_ENVS == 1.
+        Stages obs into _obs1, delegates to `select_action_batched`
+        (which is N_ENVS=Self.N_ENVS-wide), then copies _act1 out."""
+        comptime assert Self.N_ENVS == 1, (
+            "PPOTrainerV2R.select_action: host-list wrapper only valid "
+            "at N_ENVS=1; use select_action_batched for N_ENVS>1"
+        )
+        for d in range(Self.OBS_DIM):
+            self._obs1[d] = obs[d]
+        self.select_action_batched(self._obs1, self._act1, step_idx)
+        for j in range(Self.ACT_DIM):
+            action_out[j] = self._act1[j]
+
+    def select_action_batched(
+        mut self,
+        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        step_idx: Int,
+    ) raises:
+        """N_ENVS-wide action selection. Reads N_ENVS*OBS from obs_ptr,
+        writes N_ENVS*ACT into action_ptr, caches per-env sample /
+        log_prob / value into state for the next record."""
         _ = step_idx
-        self.act_step.step[Self.train_target, Self.ROLLOUT_LEN, Self.MINIBATCH](
-            self.state, self.actor, self.critic, obs, action_out, self.action_scale,
+        self.act_step.step[
+            Self.train_target, Self.ROLLOUT_LEN, Self.MINIBATCH, Self.N_ENVS,
+        ](
+            self.state, self.actor, self.critic,
+            obs_ptr, action_ptr, self.action_scale,
         )
 
     def select_greedy_action(
@@ -238,8 +299,10 @@ struct PPOTrainerV2R[
         ref obs: List[Scalar[DT]],
         mut action_out: List[Scalar[DT]],
     ) raises:
-        self.act_step.step_greedy[
-            Self.train_target, Self.ROLLOUT_LEN, Self.MINIBATCH,
+        """Single-env greedy eval — always BATCH=1 even when state is
+        sized for N_ENVS > 1 (eval bypasses the rollout buffer)."""
+        self.act_step.step_greedy_n1[
+            Self.train_target, Self.ROLLOUT_LEN, Self.MINIBATCH, Self.N_ENVS,
         ](self.state, self.actor, obs, action_out, self.action_scale)
 
     def record_transition(
@@ -250,16 +313,62 @@ struct PPOTrainerV2R[
         ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
     ) raises:
+        """N=1 host-list wrapper. Only valid when Self.N_ENVS == 1.
+        Bypasses `record_batch_cpu` to keep the legacy tracker pattern
+        (per-step add_reward + driver-driven end_episode) and stay
+        bit-identical to the pre-N_ENVS PPOTrainer at single-env."""
+        comptime assert Self.N_ENVS == 1, (
+            "PPOTrainerV2R.record_transition: host-list wrapper only "
+            "valid at N_ENVS=1; use record_batch_cpu for N_ENVS>1"
+        )
         _ = action  # env-ready action ignored (cached unbounded used)
-        self.record_step.step[Self.train_target, Self.MINIBATCH](
-            self.state, obs, reward, next_obs, done,
+        for d in range(Self.OBS_DIM):
+            self._obs1[d]  = obs[d]
+            self._nobs1[d] = next_obs[d]
+        self._rew1[0]  = reward
+        self._done1[0] = done
+        self.record_step.step[
+            Self.train_target, Self.MINIBATCH, Self.N_ENVS,
+        ](
+            self.state, self._obs1, self._rew1, self._nobs1, self._done1,
         )
         self.tracker.add_reward(reward)
 
+    def record_batch_cpu(
+        mut self,
+        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """N_ENVS-wide transition record. Maintains a per-env running
+        return sum (_ep_returns[e]); when done[e] is set, pushes the
+        completed return into the EpisodeTracker via the same
+        add_reward + end_episode pattern used by the N=1 wrapper."""
+        self.record_step.step[
+            Self.train_target, Self.MINIBATCH, Self.N_ENVS,
+        ](self.state, obs_ptr, reward_ptr, next_obs_ptr, done_ptr)
+        for e in range(Self.N_ENVS):
+            self._ep_returns[e] += reward_ptr[e]
+            if done_ptr[e] > Scalar[DT](0.5):
+                # Push a single completed-episode return into the tracker
+                # window using its add_reward + end_episode contract.
+                self.tracker.add_reward(self._ep_returns[e])
+                self.tracker.end_episode()
+                self._ep_returns[e] = Scalar[DT](0.0)
+
     def mark_terminal(mut self) raises:
-        self.record_step.mark_terminal[Self.train_target, Self.MINIBATCH](
-            self.state,
+        """N=1 host-list wrapper — env 0 terminal."""
+        comptime assert Self.N_ENVS == 1, (
+            "PPOTrainerV2R.mark_terminal: host-list wrapper only valid "
+            "at N_ENVS=1; pass env_idx via mark_terminal_env"
         )
+        self.mark_terminal_env(0)
+
+    def mark_terminal_env(mut self, env_idx: Int) raises:
+        self.record_step.mark_terminal[
+            Self.train_target, Self.MINIBATCH, Self.N_ENVS,
+        ](self.state, env_idx)
 
     def end_episode(mut self):
         self.tracker.end_episode()
@@ -269,30 +378,37 @@ struct PPOTrainerV2R[
         if self.state.rollout_idx < Self.ROLLOUT_LEN:
             return False
 
-        # ── GAE: bootstrap V(s_T) + backward pass.
-        self.gae_step.step[Self.train_target, Self.ACT_DIM, Self.MINIBATCH](
-            self.state, self.critic, self.gamma, self.gae_lambda,
-        )
+        # ── GAE: bootstrap V(s_T) per env + per-env backward pass.
+        self.gae_step.step[
+            Self.train_target, Self.ACT_DIM, Self.MINIBATCH, Self.N_ENVS,
+        ](self.state, self.critic, self.gamma, self.gae_lambda)
 
         # ── K-epoch minibatch SGD. Reset indices ONCE per rollout
         # (matches legacy ordering for bit-identity); epoch shuffles
         # operate on whatever state the previous epoch left behind.
-        self.gather_step.reset_indices[Self.train_target](self.state)
+        self.gather_step.reset_indices[Self.train_target, Self.N_ENVS](
+            self.state
+        )
         for _epoch in range(Self.N_EPOCHS):
-            self.gather_step.shuffle_epoch[Self.train_target](self.state)
+            self.gather_step.shuffle_epoch[Self.train_target, Self.N_ENVS](
+                self.state
+            )
             for mb in range(Self.N_MINIBATCHES):
-                self.gather_step.gather[Self.train_target](self.state, mb)
+                self.gather_step.gather[Self.train_target, Self.N_ENVS](
+                    self.state, mb
+                )
                 _ = self.actor_train.step[
-                    Self.train_target, Self.ROLLOUT_LEN,
+                    Self.train_target, Self.ROLLOUT_LEN, Self.N_ENVS,
                 ](self.state, self.actor, self.actor_opt)
                 _ = self.critic_train.step[
                     Self.train_target, Self.ACT_DIM, Self.ROLLOUT_LEN,
+                    Self.N_ENVS,
                 ](self.state, self.critic, self.critic_opt)
 
         # ── Reset rollout cursor + clear term buf.
-        self.record_step.reset_rollout[Self.train_target, Self.MINIBATCH](
-            self.state,
-        )
+        self.record_step.reset_rollout[
+            Self.train_target, Self.MINIBATCH, Self.N_ENVS,
+        ](self.state)
         return True
 
     def mean_return(self) -> Scalar[DT]:
