@@ -32,9 +32,10 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.sac_config import SACConfig
-from mojo_rl.nn2.core.save_scalar import SaveBool, SaveI, SaveScalar
+from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.blocks_ref import (
+    UniformSampleGpuStep, PerSampleGpuStep,
+)
 from mojo_rl.nn2.data.n_step_replay import GPUNStepBuffer
 
 
@@ -63,28 +64,27 @@ def _fill(buf: DeviceBuffer[DT], h: UnsafePointer[Scalar[DT], MutAnyOrigin], n: 
         h[i] = val
 
 
-def _build_per_trainer(ctx: DeviceContext) raises -> SACTrainer[
-    ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY,
-]:
-    var cfg = SACConfig.default()
-    cfg.use_per = SaveBool(True)
-    cfg.learning_starts = SaveI(500)
-    return SACTrainer[
-        ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY,
-    ].make["gpu"](ctx, cfg)
+comptime PerT = SACTrainerV2R[
+    "gpu",
+    PerSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+    ActorNet, CriticNet,
+]
+comptime UniformT = SACTrainerV2R[
+    "gpu",
+    UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+    ActorNet, CriticNet,
+]
 
 
-def _build_nstep_per_trainer(ctx: DeviceContext) raises -> SACTrainer[
-    ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, N_STEP,
-]:
-    var cfg = SACConfig.default()
-    cfg.use_per = SaveBool(True)
-    cfg.use_n_step = SaveBool(True)
-    cfg.learning_starts = SaveI(500)
-    return SACTrainer[
-        ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY,
-        N_STEP,
-    ].make["gpu"](ctx, cfg)
+def _build_per_trainer(ctx: DeviceContext) raises -> PerT:
+    return PerT.make(ctx=ctx, learning_starts=500)
+
+
+def _build_nstep_per_trainer(ctx: DeviceContext) raises -> PerT:
+    # γ^N_STEP bootstrap discount; legacy did this via comptime N_STEP
+    # param + use_n_step flag, V2R via direct gamma kwarg.
+    var gamma_n = Scalar[DT](0.99 ** Float64(N_STEP))
+    return PerT.make(ctx=ctx, gamma=gamma_n, learning_starts=500)
 
 
 def test_record_batch_gpu_routes_to_per() raises:
@@ -110,12 +110,12 @@ def test_record_batch_gpu_routes_to_per() raises:
         ctx, pre_obs, act, rew, obs, dne,
     )
     assert_true(
-        trainer.buf_per.value().base.size == N_ENVS,
+        trainer.sample_blk.buf.value().base.size == N_ENVS,
         "buf_per.base.size after record_batch_gpu[N_ENVS] should be "
         + String(N_ENVS) + ", got "
-        + String(trainer.buf_per.value().base.size),
+        + String(trainer.sample_blk.buf.value().base.size),
     )
-    var total = trainer.buf_per.value()._tree_total()
+    var total = trainer.sample_blk.buf.value()._tree_total()
     assert_true(
         Float64(total) > 0.0,
         "Sum-tree total should be > 0 after batched add; got "
@@ -123,7 +123,7 @@ def test_record_batch_gpu_routes_to_per() raises:
     )
     print(
         "  test_record_batch_gpu_routes_to_per PASSED size=",
-        trainer.buf_per.value().base.size, " total=", total,
+        trainer.sample_blk.buf.value().base.size, " total=", total,
     )
 
 
@@ -159,11 +159,11 @@ def test_record_batch_gpu_nstep_compresses_n_to_one_per_env() raises:
     # is acceptable since invalid slots eventually get overwritten as
     # the circular buffer wraps. We measure that the underlying replay
     # received the batched store (size monotonically grows).
-    var pre_emit_size = trainer.buf_per.value().base.size
+    var pre_emit_size = trainer.sample_blk.buf.value().base.size
     trainer.record_batch_gpu_nstep[N_ENVS, N_STEP](
         ctx, nstep_buf, pre_obs, act, rew, obs, dne,
     )
-    var post_size = trainer.buf_per.value().base.size
+    var post_size = trainer.sample_blk.buf.value().base.size
     assert_true(
         post_size == pre_emit_size + N_ENVS,
         "After N_STEP-th nstep batched call, replay size should "
@@ -181,13 +181,10 @@ def test_record_batch_gpu_nstep_to_buf_gpu() raises:
     """Non-PER trainer (uniform replay) routes nstep batched store
     through `buf_gpu` overload of `GPUNStepBuffer.store_into`."""
     var ctx = DeviceContext()
-    var cfg = SACConfig.default()
-    cfg.use_n_step = SaveBool(True)
-    cfg.learning_starts = SaveI(500)
-    var trainer = SACTrainer[
-        ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY,
-        N_STEP,
-    ].make["gpu"](ctx, cfg)
+    var gamma_n = Scalar[DT](0.99 ** Float64(N_STEP))
+    var trainer = UniformT.make(
+        ctx=ctx, gamma=gamma_n, learning_starts=500,
+    )
     var nstep_buf = GPUNStepBuffer[
         N_STEP, OBS_DIM, ACT_DIM, N_ENVS,
     ].new(ctx, gamma=Scalar[DT](0.99))
@@ -207,13 +204,13 @@ def test_record_batch_gpu_nstep_to_buf_gpu() raises:
         ctx, nstep_buf, pre_obs, act, rew, obs, dne,
     )
     assert_true(
-        trainer.buf_gpu.value().size == N_ENVS,
+        trainer.sample_blk.buf.value().size == N_ENVS,
         "Uniform buf_gpu.size should equal N_ENVS after one nstep "
-        + "batched call; got " + String(trainer.buf_gpu.value().size),
+        + "batched call; got " + String(trainer.sample_blk.buf.value().size),
     )
     print(
         "  test_record_batch_gpu_nstep_to_buf_gpu PASSED size=",
-        trainer.buf_gpu.value().size,
+        trainer.sample_blk.buf.value().size,
     )
 
 

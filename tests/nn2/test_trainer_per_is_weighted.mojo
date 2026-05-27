@@ -32,9 +32,10 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.sac_config import SACConfig
-from mojo_rl.nn2.core.save_scalar import SaveBool, SaveI, SaveScalar
+from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.blocks_ref import (
+    UniformSampleGpuStep, PerSampleGpuStep,
+)
 from mojo_rl.nn2.loss.critic_update_block import _scale_grad_by_weights_kernel
 
 from mojo_rl.envs.pendulum import PendulumEnv
@@ -98,18 +99,20 @@ def test_scale_grad_kernel_unit() raises:
 
 
 def test_null_sentinel_unaffected() raises:
-    """Non-PER trainer (`buf_gpu`, no `buf_per`) — the critic step's
+    """Non-PER trainer (UniformSampleGpuStep) — the critic step's
     `weights_p` defaults to null. Verify the training run still
     succeeds and the mean is finite, proving the null-sentinel branch
     is untouched."""
     seed(42)
     var ctx = DeviceContext()
-    var cfg = SACConfig.default()
-    cfg.learning_starts = SaveI(500)
-    cfg.window_size = SaveI(10)
-    var trainer = SACTrainer[
-        ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY,
-    ].make["gpu"](ctx, cfg)
+    var trainer = SACTrainerV2R[
+        "gpu",
+        UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+        ActorNet, CriticNet,
+    ].make(
+        ctx=ctx,
+        learning_starts=500, window_size=10,
+    )
     var env = PendulumEnv[DT]()
     var obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
     var next_obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
@@ -120,7 +123,7 @@ def test_null_sentinel_unaffected() raises:
     while step < SMOKE_STEPS:
         for d in range(OBS_DIM):
             obs[d] = obs_self[d]
-        trainer.select_action["gpu"](obs, action, step)
+        trainer.select_action_gpu(obs, action, step)
         var step_res = env.step_continuous(action[0])
         var nxt = step_res[0].copy()
         var reward = step_res[1]
@@ -155,15 +158,15 @@ def test_per_weights_are_nontrivial() raises:
     real PER IS weights flow into the gradient scaling."""
     seed(42)
     var ctx = DeviceContext()
-    var cfg = SACConfig.default()
-    cfg.use_per = SaveBool(True)
-    cfg.per_alpha = SaveScalar[DT](Scalar[DT](0.6))
-    cfg.per_beta = SaveScalar[DT](Scalar[DT](0.4))
-    cfg.learning_starts = SaveI(500)
-    cfg.window_size = SaveI(10)
-    var trainer = SACTrainer[
-        ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY,
-    ].make["gpu"](ctx, cfg)
+    var trainer = SACTrainerV2R[
+        "gpu",
+        PerSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+        ActorNet, CriticNet,
+    ].make(
+        ctx=ctx,
+        per_alpha=Scalar[DT](0.6), per_beta=Scalar[DT](0.4),
+        learning_starts=500, window_size=10,
+    )
     var env = PendulumEnv[DT]()
     var obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
     var next_obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
@@ -174,7 +177,7 @@ def test_per_weights_are_nontrivial() raises:
     while step < SMOKE_STEPS:
         for d in range(OBS_DIM):
             obs[d] = obs_self[d]
-        trainer.select_action["gpu"](obs, action, step)
+        trainer.select_action_gpu(obs, action, step)
         var step_res = env.step_continuous(action[0])
         var nxt = step_res[0].copy()
         for d in range(OBS_DIM):
@@ -192,9 +195,10 @@ def test_per_weights_are_nontrivial() raises:
         step += 1
         _ = trainer.train_step_gpu(step)
 
-    # D2H buf_per.weights after the last train_step's sample().
+    # D2H buf_per.weights after the last train_step's sample(). The
+    # PER buffer now lives inside the sample block (V2R encapsulation).
     var h_w = alloc[Scalar[DT]](BATCH)
-    ctx.enqueue_copy(h_w, trainer.buf_per.value().weights)
+    ctx.enqueue_copy(h_w, trainer.sample_blk.buf.value().weights)
     ctx.synchronize()
     var w_max = Scalar[DT](0.0)
     var w_min = Scalar[DT](2.0)

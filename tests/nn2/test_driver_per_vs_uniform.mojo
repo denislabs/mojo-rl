@@ -52,10 +52,11 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.sac_config import SACConfig
+from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.blocks_ref import (
+    UniformSampleGpuStep, PerSampleGpuStep,
+)
 from mojo_rl.nn2.training.driver_gpu import run_offpolicy_train_gpu_n_envs
-from mojo_rl.nn2.core.save_scalar import SaveBool, SaveI, SaveScalar
 
 from mojo_rl.envs.pendulum.pendulum_v2 import PendulumV2
 
@@ -80,30 +81,46 @@ comptime CriticNet = Sequential[
 ]
 
 
-def _run_one(ctx: DeviceContext, use_per: Bool) raises -> Tuple[
-    Scalar[DT], Int,
-]:
-    """Run one SAC training pass through the N_ENVS GPU driver.
-    Returns (mean_return, ep_count). All other hyperparameters held
-    constant; `use_per` is the only variable."""
+comptime UniformT = SACTrainerV2R[
+    "gpu",
+    UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+    ActorNet, CriticNet,
+]
+comptime PerT = SACTrainerV2R[
+    "gpu",
+    PerSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+    ActorNet, CriticNet,
+]
+
+
+def _run_uniform(ctx: DeviceContext) raises -> Tuple[Scalar[DT], Int]:
     seed(42)
-    var cfg = SACConfig.default()
-    cfg.use_per = SaveBool(use_per)
-    cfg.action_scale = SaveScalar[DT](Scalar[DT](2.0))
-    cfg.learning_starts = SaveI(500)
-    cfg.window_size = SaveI(10)
-    cfg.initial_episode_fill = SaveScalar[DT](Scalar[DT](-1250.0))
-    var trainer = SACTrainer[
-        ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY,
-    ].make["gpu"](ctx, cfg)
+    var trainer = UniformT.make(
+        ctx=ctx,
+        action_scale=Scalar[DT](2.0),
+        learning_starts=500,
+        window_size=10, initial_episode_fill=Scalar[DT](-1250.0),
+    )
     var env = PendulumV2[DT]()
-    _ = run_offpolicy_train_gpu_n_envs[
-        SACTrainer[
-            ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY,
-        ],
-        PendulumV2[DT],
-        N_ENVS,
-    ](
+    _ = run_offpolicy_train_gpu_n_envs[UniformT, PendulumV2[DT], N_ENVS](
+        ctx, trainer, env, TOTAL_ENV_STEPS,
+        rng_seed=UInt64(42),
+        updates_per_step=1,
+        print_every=0, verbose=False,
+    )
+    return (trainer.mean_return(), trainer.ep_count())
+
+
+def _run_per(ctx: DeviceContext) raises -> Tuple[Scalar[DT], Int]:
+    seed(42)
+    var trainer = PerT.make(
+        ctx=ctx,
+        action_scale=Scalar[DT](2.0),
+        learning_starts=500,
+        window_size=10, initial_episode_fill=Scalar[DT](-1250.0),
+    )
+    var env = PendulumV2[DT]()
+    _ = run_offpolicy_train_gpu_n_envs[PerT, PendulumV2[DT], N_ENVS](
         ctx, trainer, env, TOTAL_ENV_STEPS,
         rng_seed=UInt64(42),
         updates_per_step=1,
@@ -115,8 +132,8 @@ def _run_one(ctx: DeviceContext, use_per: Bool) raises -> Tuple[
 def test_per_vs_uniform_driver_eval() raises:
     var ctx = DeviceContext()
 
-    var uni = _run_one(ctx, use_per=False)
-    var per = _run_one(ctx, use_per=True)
+    var uni = _run_uniform(ctx)
+    var per = _run_per(ctx)
 
     var mr_uniform = uni[0]
     var eps_uniform = uni[1]

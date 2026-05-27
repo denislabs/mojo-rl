@@ -28,10 +28,9 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.sac_config import SACConfig
+from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.blocks_ref import UniformSampleGpuStep
 from mojo_rl.nn2.training.driver_gpu import run_offpolicy_train_gpu_n_envs
-from mojo_rl.nn2.core.save_scalar import SaveBool, SaveI, SaveScalar
 
 from mojo_rl.envs.pendulum.pendulum_v2 import PendulumV2
 
@@ -60,26 +59,30 @@ comptime CriticNet = Sequential[
 def test_driver_gpu_n_envs_nstep_smoke() raises:
     seed(42)
     var ctx = DeviceContext()
-    var cfg = SACConfig.default()
-    cfg.use_n_step = SaveBool(True)
-    cfg.action_scale = SaveScalar[DT](Scalar[DT](2.0))
-    cfg.learning_starts = SaveI(500)
-    cfg.window_size = SaveI(10)
-    cfg.initial_episode_fill = SaveScalar[DT](Scalar[DT](-1250.0))
-    var trainer = SACTrainer[
-        ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY,
-        N_STEP,
-    ].make["gpu"](ctx, cfg)
+    # γ^N_STEP bootstrap discount — caller computes manually for V2R
+    # (legacy comptime N_STEP param replaced by a runtime gamma kwarg).
+    var gamma_n = Scalar[DT](0.99 ** Float64(N_STEP))
+    var trainer = SACTrainerV2R[
+        "gpu",
+        UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+        ActorNet, CriticNet,
+    ].make(
+        ctx=ctx,
+        action_scale=Scalar[DT](2.0), gamma=gamma_n,
+        learning_starts=500, window_size=10,
+        initial_episode_fill=Scalar[DT](-1250.0),
+    )
     var env = PendulumV2[DT]()
 
     var ep_returns = run_offpolicy_train_gpu_n_envs[
-        SACTrainer[
-            ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY,
-            N_STEP,
+        SACTrainerV2R[
+            "gpu",
+            UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+            ActorNet, CriticNet,
         ],
         PendulumV2[DT],
         N_ENVS,
-        N_STEP,           # NS — must match trainer.N_STEP
+        N_STEP,           # NS — driver routes via record_batch_gpu_nstep
     ](
         ctx, trainer, env, TOTAL_ENV_STEPS,
         rng_seed=UInt64(42),

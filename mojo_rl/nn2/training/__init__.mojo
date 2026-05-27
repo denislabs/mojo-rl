@@ -13,7 +13,6 @@ from .target_y_block import TargetYBlock
 from .ddpg_target_y_block import DDPGTargetYBlock
 from .td3_target_y_block import TD3TargetYBlock
 from .action_sampling_block import ActionSamplingBlock
-from .sac_trainer import SACTrainer
 from .driver_cpu import run_offpolicy_train_cpu
 from .driver_gpu import (
     run_offpolicy_train_gpu, run_offpolicy_eval_gpu,

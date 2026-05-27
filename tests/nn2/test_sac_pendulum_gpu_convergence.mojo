@@ -24,7 +24,8 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer import SACTrainer
+from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.blocks_ref import UniformSampleGpuStep
 
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -52,10 +53,12 @@ comptime CriticNet = Sequential[
 def test_sac_pendulum_gpu_convergence() raises:
     seed(42)
     var ctx = DeviceContext()
-    var trainer = SACTrainer[
-        ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY
-    ].make["gpu"](
-        ctx,
+    var trainer = SACTrainerV2R[
+        "gpu",
+        UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+        ActorNet, CriticNet,
+    ].make(
+        ctx=ctx,
         actor_lr=Scalar[DT](3e-4), critic_lr=Scalar[DT](1e-3),
         alpha_lr=Scalar[DT](3e-4), gamma=Scalar[DT](0.99),
         tau=Scalar[DT](0.005), action_scale=Scalar[DT](2.0),
@@ -76,7 +79,7 @@ def test_sac_pendulum_gpu_convergence() raises:
     while step < TOTAL_TIMESTEPS:
         for d in range(OBS_DIM):
             obs[d] = obs_self[d]
-        trainer.select_action["gpu"](obs, action, step)
+        trainer.select_action_gpu(obs, action, step)
         var step_res = env.step_continuous(action[0])
         var nxt = step_res[0].copy()
         var reward = step_res[1]
@@ -94,7 +97,7 @@ def test_sac_pendulum_gpu_convergence() raises:
         else:
             obs_self = nxt.copy()
         step += 1
-        _ = trainer.train_step["gpu"](step)
+        _ = trainer.train_step_gpu(step)
 
         if step % 5_000 == 0:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9

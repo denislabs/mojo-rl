@@ -18,7 +18,8 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer import SACTrainer
+from mojo_rl.nn2.training.sac_trainer_v2r import SACTrainerV2R
+from mojo_rl.nn2.training.blocks_ref import UniformSampleGpuStep
 from mojo_rl.nn2.training.driver_gpu import run_offpolicy_train_gpu_n_envs
 
 from mojo_rl.envs.pendulum.pendulum_v2 import PendulumV2
@@ -54,10 +55,12 @@ def main() raises:
     print("=" * 70)
 
     var ctx = DeviceContext()
-    var trainer = SACTrainer[
-        ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY
-    ].make["gpu"](
-        ctx,
+    var trainer = SACTrainerV2R[
+        "gpu",
+        UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+        ActorNet, CriticNet,
+    ].make(
+        ctx=ctx,
         actor_lr=Scalar[DT](3e-4), critic_lr=Scalar[DT](1e-3),
         alpha_lr=Scalar[DT](3e-4), gamma=Scalar[DT](0.99),
         tau=Scalar[DT](0.005), action_scale=Scalar[DT](2.0),
@@ -69,8 +72,10 @@ def main() raises:
 
     var t_start = perf_counter_ns()
     var _ep_returns = run_offpolicy_train_gpu_n_envs[
-        SACTrainer[
-            ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY,
+        SACTrainerV2R[
+            "gpu",
+            UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+            ActorNet, CriticNet,
         ],
         PendulumV2[DT],
         N_ENVS,
