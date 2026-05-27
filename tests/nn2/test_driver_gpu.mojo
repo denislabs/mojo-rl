@@ -21,10 +21,8 @@ from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks import UniformSampleGpuStep
-from mojo_rl.nn2.training.driver_gpu import (
-    run_offpolicy_train_gpu,
-    run_offpolicy_eval_gpu,
-)
+from mojo_rl.nn2.training.driver_unified import run_offpolicy_train_unified
+from mojo_rl.nn2.training.driver_gpu import run_offpolicy_eval_gpu
 
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -77,12 +75,11 @@ def test_driver_gpu_smoke() raises:
     )
     var env = PendulumEnv[DT]()
 
-    var ep_returns = run_offpolicy_train_gpu(
+    var ep_returns = run_offpolicy_train_unified(
         trainer,
         env,
         SMOKE_STEPS,
-        obs_dim=OBS_DIM,
-        act_dim=ACT_DIM,
+        ctx=ctx,
         print_every=0,
         verbose=False,
     )

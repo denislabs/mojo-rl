@@ -1,19 +1,18 @@
-"""J.2-followup — multi-seed robustness gate for the unified SACTrainer.
-
-Mirrors `test_sac_pendulum_multi_seed.mojo` (the legacy SACTrainer gate)
-but exercises the unified `SACTrainer["cpu", UniformSampleCpuStep, …]`
-path. The framework's primary gate is the single-seed bit-identity check
-(seed=42 → mean10 = -169.04118 at 30k steps); bit-identity catches math
-regressions but is silent on RNG-path drift or fp-ordering changes that
-average out across seeds. This test fills that gap.
+"""Multi-seed Pendulum SAC robustness gate — Tier-3 unified driver.
 
 For each seed in {42, 137, 2026, 31337, 9999}, train a fresh CPU
-trainer on Pendulum for 30k steps with the same hyperparameters as
-`examples/pendulum/pendulum_sac_nn2_driver.mojo`, and assert the final
-mean10 lies inside `[-200, -100]`. Five seeds × ~20s ≈ < 2min total.
+trainer on Pendulum for 30k steps via the Tier-3 unified driver
+`run_offpolicy_train_batched[BatchedCpuEnv, N=1]` and assert the
+final mean10 lies inside [-200, -100]. The single-seed bit-identity
+check (seed=42 → -169.04118) catches math regressions; the multi-
+seed band catches RNG-path drift that averages out at one seed.
 
-Failure mode this catches: a refactor that holds seed=42 bit-identical
-by accident but breaks the algorithm on every other seed.
+Migrated from the legacy `run_offpolicy_train_cpu` driver (deleted
+in commit after the migration). Bit-identity preservation across
+the migration is proven by `test_batched_cpu_env.test_bit_identity_at_n1`
+(seed=42 → -169.04118, |delta|=0.0). The redundant
+`test_sac_pendulum_multi_seed_unified.mojo` (Tier-1 unified variant)
+was removed in the same migration.
 """
 
 from std.random import seed
@@ -26,7 +25,8 @@ from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks import UniformSampleCpuStep
-from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
+from mojo_rl.nn2.training.batched_env import BatchedCpuEnv
+from mojo_rl.nn2.training.driver_unified import run_offpolicy_train_batched
 
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -81,13 +81,24 @@ def _train_one(rng_seed: Int) raises -> Scalar[DT]:
         window_size=10,
         initial_episode_fill=Scalar[DT](-1250.0),
     )
-    var env = PendulumEnv[DT]()
-    _ = run_offpolicy_train_cpu(
+    var template = PendulumEnv[DT]()
+    var env = BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM](template)
+    _ = run_offpolicy_train_batched[
+        SACTrainer[
+            "cpu",
+            UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+            ActorNet,
+            CriticNet,
+        ],
+        BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM],
+        1,
+    ](
+        None,
         trainer,
         env,
         TOTAL_TIMESTEPS,
-        obs_dim=OBS_DIM,
-        act_dim=ACT_DIM,
+        rng_seed=UInt64(rng_seed),
+        updates_per_step=1,
         print_every=0,
         verbose=False,
     )

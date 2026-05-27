@@ -1,42 +1,32 @@
-"""Off-policy unified training drivers — Tier-1 Phase 3.5 (dual-target).
+"""Off-policy unified training drivers — Tier-1 + Tier-3.
 
-Two driver functions covering the three useful (env_target, train_target,
+Two driver functions covering all useful (env_target, train_target,
 N_ENVS) combinations:
 
-  env_target | train_target | N_ENVS | driver function
-  -----------|--------------|--------|---------------------------------------
-  cpu        | cpu          | 1      | run_offpolicy_train_unified
+  env_target | train_target | N_ENVS | driver
+  -----------|--------------|--------|----------------------------------
+  cpu        | cpu          | >=1    | run_offpolicy_train_batched
+  gpu        | gpu          | >=1    | run_offpolicy_train_batched
   cpu        | gpu          | 1      | run_offpolicy_train_unified
-  gpu        | gpu          | >= 1   | run_offpolicy_train_unified_gpu_env
 
-The (env=gpu, train=cpu) combination is omitted as a degenerate case
+The (env=gpu, train=cpu) combination is omitted as degenerate
 (D2H every obs back to CPU for training — never useful in practice).
+Batched cross-target (cpu env, gpu train, N>1) is reachable in
+principle by extending `run_offpolicy_train_batched` with H2D/D2H
+boundary plumbing; deferred until a consumer needs it.
 
-Why two drivers, not one: the env interaction APIs differ structurally
-between CPU and GPU envs. `BoxContinuousActionEnv` exposes
-`step_continuous_vec` which returns host Lists; `GPUContinuousEnv`
-exposes `step_kernel_gpu` which writes into device buffers. Without a
-batched-CPU adapter (Tier-2 work), one driver function can only bound
-its env-type param on one trait at a time. The dual-target concept
-itself is fully expressed in both bodies via `env_target` and
-`train_target` comptime variables; only the dispatch site differs.
-
-Boundary copies between env and trainer:
-  * env_target == train_target → no per-step H2D/D2H
-  * env_target != train_target → H2D obs / D2H action on every step
-
-The CPU-env driver exercises both cases (depending on the trainer's
-train_target). The GPU-env driver asserts env_target == train_target
-== "gpu" and elides all boundary copies — that's the "everything on
-GPU, no D2H" mode.
+Trait surface
+  - `OffPolicyAgentUnified` — minimal: select_action_unified[N_ENVS],
+    record, train_step_unified, episode tracker accessors, batched
+    CPU record + add_complete_return.
+  - `OffPolicyAgentUnifiedGpu(OffPolicyAgentUnified)` — adds
+    record_batch_gpu / record_batch_gpu_nstep for the gpu-env path.
 
 Storage: all driver-owned buffers live in `DriverScratch[NAME, N, DIM]`
 which unifies host `List` and device `DeviceBuffer` backing behind one
-type (see `nn2/training/driver_scratch.mojo`).
-
-Trait surface (`OffPolicyAgentUnified`): minimal — `select_action_unified`
-+ `record` + `train_step_unified` + episode/return accessors. SACTrainer
-conforms today via the `AGENT_TRAIN_TARGET = Self.train_target` alias.
+type. Env adapters (`BatchedCpuEnv`, `BatchedGpuEnv` in `batched_env.mojo`)
+own their obs/action/reward/done buffers and expose pointer accessors
+through the `BatchedEnv` trait.
 """
 
 from std.time import perf_counter_ns
@@ -44,7 +34,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import DT
 from ..data.n_step_replay import GPUNStepBuffer
-from mojo_rl.core.env_traits import BoxContinuousActionEnv, GPUContinuousEnv
+from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from .batched_env import BatchedEnv
 from .driver_scratch import DriverScratch
 
@@ -363,214 +353,6 @@ def run_offpolicy_train_unified[
 
 
 # ──────────────────────────────────────────────────────────────────────
-# run_offpolicy_train_unified_gpu_env — env on GPU, train on GPU, N_ENVS ≥ 1.
-# ──────────────────────────────────────────────────────────────────────
-
-
-def run_offpolicy_train_unified_gpu_env[
-    A: OffPolicyAgentUnifiedGpu,
-    E: GPUContinuousEnv,
-    N_ENVS: Int = 1,
-    NS: Int = 1,
-](
-    ctx: DeviceContext,
-    mut trainer: A,
-    mut env: E,
-    total_env_steps: Int,
-    *,
-    rng_seed: UInt64 = UInt64(42),
-    updates_per_step: Int = 1,
-    print_every: Int = 5_000,
-    verbose: Bool = True,
-    nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
-) raises -> List[Scalar[DT]]:
-    """Unified driver bound on the GPU env trait (`GPUContinuousEnv`).
-    Covers (env_target=gpu, train_target=gpu) at any `N_ENVS >= 1`,
-    including the previously-unreachable single-env full-GPU mode
-    (`N_ENVS=1`). Mirrors the legacy `run_offpolicy_train_gpu_n_envs`
-    body but routes through `select_action_unified[N_ENVS]` +
-    `train_step_unified` instead of the per-target wrappers.
-
-    Because env_target == train_target == "gpu", there are NO per-step
-    H2D/D2H copies for obs/action/reward/done EXCEPT for the tiny
-    `rewards`/`dones` D2H needed for host-side episode tracking. The
-    boundary-copy elision is what the dual-target model unlocks.
-
-    `env` is unused as an instance (the env trait dispatches static
-    methods on the type), but kept in the signature for API symmetry
-    with `run_offpolicy_train_unified` and for future-proofing.
-    """
-    comptime env_target: StaticString = "gpu"
-    comptime train_target: StaticString = A.AGENT_TRAIN_TARGET
-    comptime assert (
-        train_target == "gpu"
-    ), (
-        "run_offpolicy_train_unified_gpu_env: train_target must be 'gpu'"
-        " when env_target='gpu' (full-GPU mode)"
-    )
-    comptime assert N_ENVS > 0, "N_ENVS must be > 0"
-    comptime assert NS > 0, "NS must be > 0"
-
-    _ = env  # unused — env trait dispatches static methods on E
-    comptime STATE_SIZE = E.STATE_SIZE
-    comptime OBS_DIM = E.OBS_DIM
-    comptime ACT_DIM = E.ACTION_DIM
-
-    # All driver-owned buffers live in DriverScratch. The host mirrors
-    # on `rewards` + `dones` carry the per-iter D2H for episode tracking.
-    var states = DriverScratch["states", N_ENVS, STATE_SIZE].make["gpu"](ctx)
-    var prev_obs = DriverScratch["prev_obs", N_ENVS, OBS_DIM].make["gpu"](ctx)
-    var obs_buf = DriverScratch["obs_buf", N_ENVS, OBS_DIM].make["gpu"](ctx)
-    var actions = DriverScratch["actions", N_ENVS, ACT_DIM].make["gpu"](ctx)
-    var rewards = DriverScratch["rewards", N_ENVS, 1].make["gpu"](
-        ctx, with_host_mirror=True,
-    )
-    var dones = DriverScratch["dones", N_ENVS, 1].make["gpu"](
-        ctx, with_host_mirror=True,
-    )
-    var terminated = DriverScratch["terminated", N_ENVS, 1].make["gpu"](ctx)
-    var ao_scratch = DriverScratch["ao", N_ENVS, 2 * ACT_DIM].make["gpu"](ctx)
-    var alp_scratch = DriverScratch["alp", N_ENVS, ACT_DIM + 1].make["gpu"](
-        ctx
-    )
-    ctx.enqueue_memset(actions.dev.value(), 0)
-    ctx.enqueue_memset(rewards.dev.value(), 0)
-    ctx.enqueue_memset(dones.dev.value(), 0)
-    ctx.enqueue_memset(terminated.dev.value(), 0)
-
-    var per_env_returns = List[Scalar[DT]](
-        length=N_ENVS, fill=Scalar[DT](0.0),
-    )
-
-    # n-step ring (NS>1 only). Allocated unconditionally so the binding
-    # is in scope at the dispatch site (comptime-if doesn't bleed
-    # bindings into the enclosing scope in Mojo nightly).
-    var nstep_buf = GPUNStepBuffer[
-        NS, A.AGENT_OBS_DIM, A.AGENT_ACT_DIM, N_ENVS,
-    ].new(ctx, gamma=nstep_gamma)
-
-    # Initial reset + obs extraction.
-    E.reset_kernel_gpu[N_ENVS, STATE_SIZE](
-        ctx, states.dev.value(), rng_seed=rng_seed,
-    )
-    E.extract_obs_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM](
-        ctx, states.dev.value(), obs_buf.dev.value(),
-    )
-
-    var ep_returns = List[Scalar[DT]]()
-    var t_start = perf_counter_ns()
-    var step_idx: Int = 0
-    var iter_idx: Int = 0
-    var next_print: Int = print_every
-
-    while step_idx < total_env_steps:
-        # Snapshot pre-step obs as the transition's prev_obs (D2D copy).
-        ctx.enqueue_copy(prev_obs.dev.value(), obs_buf.dev.value())
-
-        # Batched policy via the unified entry. Warmup branch is
-        # internal (Philox kernel for N_ENVS>1, or even N_ENVS=1 on GPU
-        # — see select_action_unified docstring).
-        trainer.select_action_unified[N_ENVS](
-            obs_buf.target_ptr["gpu"](),
-            actions.target_ptr["gpu"](),
-            ao_scratch.target_ptr["gpu"](),
-            alp_scratch.target_ptr["gpu"](),
-            step_idx,
-        )
-
-        # Env step on GPU. Writes next-obs into obs_buf + rewards/dones/
-        # terminated as outputs. No boundary copy.
-        E.step_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM, ACT_DIM](
-            ctx,
-            states.dev.value(),
-            actions.dev.value(),
-            rewards.dev.value(),
-            dones.dev.value(),
-            terminated.dev.value(),
-            obs_buf.dev.value(),
-            rng_seed=rng_seed + UInt64(iter_idx + 1),
-        )
-
-        # Replay push. The trainer owns the existing record_batch_gpu*
-        # methods — these are not yet part of OffPolicyAgentUnified
-        # because their signatures are heavy. We bind A as
-        # OffPolicyAgentUnified plus rely on duck-typed access for now.
-        # When DDPG/TD3 land V2R, we'll lift these onto the trait.
-        comptime if NS > 1:
-            trainer.record_batch_gpu_nstep[N_ENVS, NS](
-                ctx,
-                nstep_buf,
-                prev_obs.dev.value(),
-                actions.dev.value(),
-                rewards.dev.value(),
-                obs_buf.dev.value(),
-                dones.dev.value(),
-            )
-        else:
-            trainer.record_batch_gpu[N_ENVS](
-                ctx,
-                prev_obs.dev.value(),
-                actions.dev.value(),
-                rewards.dev.value(),
-                obs_buf.dev.value(),
-                dones.dev.value(),
-            )
-
-        # D2H rewards + dones for host-side episode tracking. Tiny
-        # (N_ENVS * 2 scalars per iter) — Apple-friendly. NOT a per-
-        # step env-data D2H — that one IS elided thanks to env_target ==
-        # train_target.
-        ctx.enqueue_copy(rewards.host_ptr(), rewards.dev.value())
-        ctx.enqueue_copy(dones.host_ptr(), dones.dev.value())
-        ctx.synchronize()
-
-        var rewards_h = rewards.host_ptr()
-        var dones_h = dones.host_ptr()
-        for e in range(N_ENVS):
-            per_env_returns[e] = per_env_returns[e] + rewards_h[e]
-            if dones_h[e] > Scalar[DT](0.5):
-                trainer.add_complete_return(per_env_returns[e])
-                per_env_returns[e] = Scalar[DT](0.0)
-                ep_returns.append(trainer.mean_return())
-
-        # Selective env reset for done lanes + obs refresh.
-        E.selective_reset_kernel_gpu[N_ENVS, STATE_SIZE](
-            ctx,
-            states.dev.value(),
-            dones.dev.value(),
-            rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
-        )
-        E.extract_obs_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM](
-            ctx, states.dev.value(), obs_buf.dev.value(),
-        )
-
-        step_idx += N_ENVS
-        iter_idx += 1
-
-        # SAC train_steps via the unified entry. Default UTD = 1/N_ENVS;
-        # callers can pass updates_per_step=N_ENVS for full UTD=1.
-        for _ in range(updates_per_step):
-            _ = trainer.train_step_unified(step_idx)
-
-        if verbose and print_every > 0 and step_idx >= next_print:
-            var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
-            print(
-                "[step ",
-                step_idx,
-                "] mean_ret(10)=",
-                trainer.mean_return(),
-                " ep=",
-                trainer.ep_count(),
-                " elapsed=",
-                elapsed,
-                "s",
-            )
-            next_print += print_every
-
-    return ep_returns^
-
-
-# ──────────────────────────────────────────────────────────────────────
 # run_offpolicy_train_batched — Tier-3: ONE driver for all
 #   (env_target, train_target, N_ENVS) combos via BatchedEnv.
 # ──────────────────────────────────────────────────────────────────────
@@ -580,6 +362,7 @@ def run_offpolicy_train_batched[
     A: OffPolicyAgentUnifiedGpu,
     E: BatchedEnv,
     N_ENVS: Int = 1,
+    NS: Int = 1,
 ](
     ctx: Optional[DeviceContext],
     mut trainer: A,
@@ -590,6 +373,7 @@ def run_offpolicy_train_batched[
     updates_per_step: Int = 1,
     print_every: Int = 5_000,
     verbose: Bool = True,
+    nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
 ) raises -> List[Scalar[DT]]:
     """Tier-3 off-policy driver covering same-target (env_target ==
     train_target) combinations through the `BatchedEnv` trait:
@@ -644,15 +428,36 @@ def run_offpolicy_train_batched[
         " cpu train) → rejected as degenerate."
     )
     comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+    comptime assert NS > 0, "NS must be > 0"
     comptime assert (
         E.OBS_DIM == OBS and E.ACT_DIM == ACT
     ), "BatchedEnv dimensions must match trainer dimensions"
+    comptime if NS > 1:
+        comptime assert env_target == "gpu", (
+            "run_offpolicy_train_batched[NS>1]: n-step only supported"
+            " on GPU env path (GPUNStepBuffer is GPU-only)"
+        )
     comptime if env_target == "gpu":
         if not ctx:
             raise Error(
                 "run_offpolicy_train_batched: ctx required when"
                 " env_target is 'gpu'"
             )
+
+    # n-step buffer (NS > 1 only). Declared as Optional at function
+    # level because Mojo nightly's `comptime if` does not bleed
+    # bindings to sibling blocks — Optional+`if ctx:` is the bridge.
+    # For CPU env (ctx=None), stays None and is never touched
+    # (`comptime assert NS == 1` for the CPU path is enforced above).
+    var nstep_buf: Optional[
+        GPUNStepBuffer[NS, A.AGENT_OBS_DIM, A.AGENT_ACT_DIM, N_ENVS]
+    ] = None
+    if ctx:
+        nstep_buf = Optional(
+            GPUNStepBuffer[
+                NS, A.AGENT_OBS_DIM, A.AGENT_ACT_DIM, N_ENVS,
+            ].new(ctx.value(), gamma=nstep_gamma)
+        )
 
     # All scratches on the single target (env_target == train_target).
     var ao = DriverScratch["ao", N_ENVS, 2 * ACT].make[train_target](ctx=ctx)
@@ -718,7 +523,8 @@ def run_offpolicy_train_batched[
             )
         else:
             # GPU env. Reconstruct non-owning DeviceBuffer views over
-            # the env's pointers to pass to record_batch_gpu.
+            # the env's pointers to pass to record_batch_gpu /
+            # record_batch_gpu_nstep.
             var c = ctx.value()
             var action_buf = DeviceBuffer[DT](
                 c, env.action_ptr(), N_ENVS * ACT, owning=False,
@@ -732,14 +538,25 @@ def run_offpolicy_train_batched[
             var done_buf = DeviceBuffer[DT](
                 c, env.done_ptr(), N_ENVS, owning=False,
             )
-            trainer.record_batch_gpu[N_ENVS](
-                c,
-                prev_obs.dev.value(),
-                action_buf,
-                reward_buf,
-                obs_buf,
-                done_buf,
-            )
+            comptime if NS > 1:
+                trainer.record_batch_gpu_nstep[N_ENVS, NS](
+                    c,
+                    nstep_buf.value(),
+                    prev_obs.dev.value(),
+                    action_buf,
+                    reward_buf,
+                    obs_buf,
+                    done_buf,
+                )
+            else:
+                trainer.record_batch_gpu[N_ENVS](
+                    c,
+                    prev_obs.dev.value(),
+                    action_buf,
+                    reward_buf,
+                    obs_buf,
+                    done_buf,
+                )
 
         # ── 5. Per-env episode tracking. Needs host-side reward+done.
         comptime if env_target == "cpu":

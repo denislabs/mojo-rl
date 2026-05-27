@@ -23,7 +23,8 @@ from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks import UniformSampleCpuStep
-from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
+from mojo_rl.nn2.training.batched_env import BatchedCpuEnv
+from mojo_rl.nn2.training.driver_unified import run_offpolicy_train_batched
 from mojo_rl.nn2.training.eval_cpu import run_offpolicy_eval_cpu
 
 from mojo_rl.envs.pendulum import PendulumEnv
@@ -108,13 +109,24 @@ def test_eval_after_30k_train_converges() raises:
         window_size=10,
         initial_episode_fill=Scalar[DT](-1250.0),
     )
-    var env = PendulumEnv[DT]()
-    var _ep_returns = run_offpolicy_train_cpu(
+    var template = PendulumEnv[DT]()
+    var env = BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM](template)
+    var _ep_returns = run_offpolicy_train_batched[
+        SACTrainer[
+            "cpu",
+            UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+            ActorNet,
+            CriticNet,
+        ],
+        BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM],
+        1,
+    ](
+        None,
         trainer,
         env,
         TRAIN_STEPS,
-        obs_dim=OBS_DIM,
-        act_dim=ACT_DIM,
+        rng_seed=UInt64(42),
+        updates_per_step=1,
         print_every=0,
         verbose=False,
     )

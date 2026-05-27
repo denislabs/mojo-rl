@@ -32,9 +32,10 @@ from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
+from mojo_rl.nn2.training.batched_env import BatchedGpuEnv
 from mojo_rl.nn2.training.driver_unified import (
     run_offpolicy_train_unified,
-    run_offpolicy_train_unified_gpu_env,
+    run_offpolicy_train_batched,
 )
 from mojo_rl.nn2.training.blocks import (
     UniformSampleCpuStep,
@@ -142,15 +143,15 @@ def test_mode3_gpu_env_gpu_train_n1() raises:
         learning_starts=WARMUP,
         initial_episode_fill=Scalar[DT](-1250.0),
     )
-    var env = PendulumV2[DT]()
-    var ep_returns = run_offpolicy_train_unified_gpu_env[
+    var env = BatchedGpuEnv[PendulumV2[DT], 1, OBS_DIM, ACT_DIM](ctx)
+    var ep_returns = run_offpolicy_train_batched[
         SACTrainer[
             "gpu",
             UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, CAP],
             ActorNet,
             CriticNet,
         ],
-        PendulumV2[DT],
+        BatchedGpuEnv[PendulumV2[DT], 1, OBS_DIM, ACT_DIM],
         1,  # N_ENVS — the new single-env GPU-env capability
         1,  # NS
     ](

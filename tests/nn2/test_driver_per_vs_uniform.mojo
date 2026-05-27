@@ -57,7 +57,8 @@ from mojo_rl.nn2.training.blocks import (
     UniformSampleGpuStep,
     PerSampleGpuStep,
 )
-from mojo_rl.nn2.training.driver_gpu import run_offpolicy_train_gpu_n_envs
+from mojo_rl.nn2.training.batched_env import BatchedGpuEnv
+from mojo_rl.nn2.training.driver_unified import run_offpolicy_train_batched
 
 from mojo_rl.envs.pendulum.pendulum_v2 import PendulumV2
 
@@ -110,8 +111,12 @@ def _run_uniform(ctx: DeviceContext) raises -> Tuple[Scalar[DT], Int]:
         window_size=10,
         initial_episode_fill=Scalar[DT](-1250.0),
     )
-    var env = PendulumV2[DT]()
-    _ = run_offpolicy_train_gpu_n_envs[UniformT, PendulumV2[DT], N_ENVS](
+    var env = BatchedGpuEnv[PendulumV2[DT], N_ENVS, OBS_DIM, ACT_DIM](ctx)
+    _ = run_offpolicy_train_batched[
+        UniformT,
+        BatchedGpuEnv[PendulumV2[DT], N_ENVS, OBS_DIM, ACT_DIM],
+        N_ENVS,
+    ](
         ctx,
         trainer,
         env,
@@ -133,8 +138,12 @@ def _run_per(ctx: DeviceContext) raises -> Tuple[Scalar[DT], Int]:
         window_size=10,
         initial_episode_fill=Scalar[DT](-1250.0),
     )
-    var env = PendulumV2[DT]()
-    _ = run_offpolicy_train_gpu_n_envs[PerT, PendulumV2[DT], N_ENVS](
+    var env = BatchedGpuEnv[PendulumV2[DT], N_ENVS, OBS_DIM, ACT_DIM](ctx)
+    _ = run_offpolicy_train_batched[
+        PerT,
+        BatchedGpuEnv[PendulumV2[DT], N_ENVS, OBS_DIM, ACT_DIM],
+        N_ENVS,
+    ](
         ctx,
         trainer,
         env,

@@ -28,7 +28,8 @@ from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks import UniformSampleCpuStep
-from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
+from mojo_rl.nn2.training.batched_env import BatchedCpuEnv
+from mojo_rl.nn2.training.driver_unified import run_offpolicy_train_batched
 
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -152,13 +153,21 @@ def test_save_resume_eval_equivalence() raises:
     print("Training trainer A for", TRAIN_STEPS, "steps...")
     seed(42)
     var trainer_a = _make_trainer()
-    var env_a = PendulumEnv[DT]()
-    _ = run_offpolicy_train_cpu(
+    var template_a = PendulumEnv[DT]()
+    var env_a = BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM](
+        template_a
+    )
+    _ = run_offpolicy_train_batched[
+        Trainer,
+        BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM],
+        1,
+    ](
+        None,
         trainer_a,
         env_a,
         TRAIN_STEPS,
-        obs_dim=OBS_DIM,
-        act_dim=ACT_DIM,
+        rng_seed=UInt64(42),
+        updates_per_step=1,
         print_every=0,
         verbose=False,
     )

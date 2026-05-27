@@ -30,7 +30,8 @@ from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.sac_trainer import SACTrainer
 from mojo_rl.nn2.training.blocks import UniformSampleGpuStep
-from mojo_rl.nn2.training.driver_gpu import run_offpolicy_train_gpu_n_envs
+from mojo_rl.nn2.training.batched_env import BatchedGpuEnv
+from mojo_rl.nn2.training.driver_unified import run_offpolicy_train_batched
 
 from mojo_rl.envs.pendulum.pendulum_v2 import PendulumV2
 
@@ -80,16 +81,16 @@ def test_driver_gpu_n_envs_nstep_smoke() raises:
         window_size=10,
         initial_episode_fill=Scalar[DT](-1250.0),
     )
-    var env = PendulumV2[DT]()
+    var env = BatchedGpuEnv[PendulumV2[DT], N_ENVS, OBS_DIM, ACT_DIM](ctx)
 
-    var ep_returns = run_offpolicy_train_gpu_n_envs[
+    var ep_returns = run_offpolicy_train_batched[
         SACTrainer[
             "gpu",
             UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
             ActorNet,
             CriticNet,
         ],
-        PendulumV2[DT],
+        BatchedGpuEnv[PendulumV2[DT], N_ENVS, OBS_DIM, ACT_DIM],
         N_ENVS,
         N_STEP,  # NS — driver routes via record_batch_gpu_nstep
     ](
