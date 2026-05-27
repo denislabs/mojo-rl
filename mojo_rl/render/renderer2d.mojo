@@ -710,7 +710,9 @@ struct Renderer2D(Movable):
         except:
             pass
 
-    def start_recording(mut self, filename: String, fps: Int = 30) raises:
+    def start_recording(
+        mut self, filename: String, fps: Int = 30, skip: Int = 1
+    ) raises:
         """Start video recording to a file.
 
         Captures every rendered frame via SDL_RenderReadPixels and encodes
@@ -720,8 +722,9 @@ struct Renderer2D(Movable):
         Args:
             filename: Output path, e.g. ``recording_0.mp4`` or ``recording_0.gif``.
             fps: Frames per second written into the video container.
+            skip: Only record every Nth frame (1 = all, 2 = half, etc.).
         """
-        self.recorder.start(filename, fps)
+        self.recorder.start(filename, fps, skip)
         self.recording_counter += 1
 
     def stop_recording(mut self) raises:

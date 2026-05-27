@@ -41,6 +41,7 @@ from mojo_rl.core import (
     BoxContinuousActionEnv,
 )
 from mojo_rl.core.logger import Logger, NoOpLogger
+from mojo_rl.utils.progress import print_progress_bar, clear_progress_bar
 from ..checkpoint_trait import Checkpointable
 
 
@@ -343,6 +344,18 @@ trait OnPolicyDiscreteState:
         """Reset the write pointer (does not zero the buffer)."""
         ...
 
+    def rollout_size(self) -> Int:
+        """Return the number of steps stored in the current rollout."""
+        ...
+
+    def get_step_reward(self, idx: Int) -> Float64:
+        """Return the reward at step idx in the current rollout."""
+        ...
+
+    def get_step_done(self, idx: Int) -> Bool:
+        """Return the done flag at step idx in the current rollout."""
+        ...
+
 
 # =============================================================================
 # OnPolicyContinuousState Trait
@@ -374,6 +387,18 @@ trait OnPolicyContinuousState:
 
     def clear(mut self) -> None:
         """Reset the write pointer (does not zero the buffer)."""
+        ...
+
+    def rollout_size(self) -> Int:
+        """Return the number of steps stored in the current rollout."""
+        ...
+
+    def get_step_reward(self, idx: Int) -> Float64:
+        """Return the reward at step idx in the current rollout."""
+        ...
+
+    def get_step_done(self, idx: Int) -> Bool:
+        """Return the done flag at step idx in the current rollout."""
         ...
 
 
@@ -523,17 +548,32 @@ def run_onpolicy_discrete_train[
         environment_name=environment_name,
     )
 
+    var completed_episodes: Int = 0
+    var total_steps: Int = 0
+    var episode_reward_accum: Float64 = 0.0
+    var episode_rewards = List[Float64]()
+    var next_progress: Int = max(1, print_every // 5)
+    var progress_interval = next_progress
+
     for update in range(num_updates):
         agent.collect_rollout(cpu_state, env)
         agent.compute_advantages(cpu_state)
         var loss = agent.update_epochs(cpu_state)
 
-        metrics.log_episode(
-            update,
-            Scalar[DType.float64](loss),
-            0,
-            agent.get_explore_rate(),
-        )
+        var rollout_len = cpu_state.rollout_size()
+        total_steps += rollout_len
+        for i in range(rollout_len):
+            episode_reward_accum += cpu_state.get_step_reward(i)
+            if cpu_state.get_step_done(i):
+                completed_episodes += 1
+                episode_rewards.append(episode_reward_accum)
+                metrics.log_episode(
+                    completed_episodes,
+                    Scalar[DType.float64](episode_reward_accum),
+                    0,
+                    agent.get_explore_rate(),
+                )
+                episode_reward_accum = 0.0
 
         if Bool(logger):
             logger.value()[].log_scalar("loss", loss, update)
@@ -543,25 +583,78 @@ def run_onpolicy_discrete_train[
                 checkpoint_path + "_update_" + String(update + 1) + ".ckpt"
             )
 
+        if verbose and update + 1 >= next_progress:
+            var interval_pos = (update + 1) % print_every
+            if interval_pos == 0:
+                interval_pos = print_every
+            print_progress_bar(
+                interval_pos, print_every, total_steps, algorithm_name
+            )
+            next_progress += progress_interval
+
         if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             update + 1
         ) % print_every == 0:
-            var avg_loss = metrics.mean_reward_last_n(print_every)
+            var n_avg = min(100, len(episode_rewards))
+            var avg_reward: Float64 = 0.0
+            if n_avg > 0:
+                var total: Float64 = 0.0
+                for i in range(len(episode_rewards) - n_avg, len(episode_rewards)):
+                    total += episode_rewards[i]
+                avg_reward = total / Float64(n_avg)
+
             if Bool(logger):
-                logger.value()[].log_scalar("avg_loss", avg_loss, update)
+                logger.value()[].log_scalar("avg_reward", avg_reward, total_steps)
+                logger.value()[].log_scalar(
+                    "episodes", Float64(completed_episodes), total_steps
+                )
+                logger.value()[].log_scalar("update", Float64(update + 1), total_steps)
 
             if verbose:
+                clear_progress_bar()
                 print(
-                    "Update "
+                    algorithm_name
+                    + " | Episodes: "
+                    + String(completed_episodes)
+                    + " | Update: "
                     + String(update + 1)
-                    + " | Loss: "
-                    + String(avg_loss)[byte=:8]
-                    + " | Explore: "
-                    + String(agent.get_explore_rate())[byte=:5]
+                    + " | AvgR(100): "
+                    + String(avg_reward)[byte=:7]
+                    + " | Steps: "
+                    + String(total_steps)
                 )
 
+    var final_n = min(100, len(episode_rewards))
+    var final_avg: Float64 = 0.0
+    if final_n > 0:
+        var total: Float64 = 0.0
+        for i in range(len(episode_rewards) - final_n, len(episode_rewards)):
+            total += episode_rewards[i]
+        final_avg = total / Float64(final_n)
+
     if Bool(logger):
+        logger.value()[].log_scalar("avg_reward", final_avg, total_steps)
+        logger.value()[].log_scalar(
+            "episodes", Float64(completed_episodes), total_steps
+        )
+        logger.value()[].log_scalar("update", Float64(num_updates), total_steps)
         logger.value()[].flush()
+
+    if verbose:
+        clear_progress_bar()
+        print(
+            algorithm_name
+            + " | Episodes: "
+            + String(completed_episodes)
+            + " | Update: "
+            + String(num_updates)
+            + " | AvgR(100): "
+            + String(final_avg)[byte=:7]
+            + " | Steps: "
+            + String(total_steps)
+            + " [DONE]"
+        )
+
     return metrics^
 
 
@@ -611,24 +704,39 @@ def run_onpolicy_continuous_train[
         logger: Optional metrics logger pointer (default: null = no logging).
 
     Returns:
-        TrainingMetrics with one entry per update (value = policy loss).
+        TrainingMetrics with episode-level statistics.
     """
     var metrics = TrainingMetrics(
         algorithm_name=algorithm_name,
         environment_name=environment_name,
     )
 
+    var completed_episodes: Int = 0
+    var total_steps: Int = 0
+    var episode_reward_accum: Float64 = 0.0
+    var episode_rewards = List[Float64]()
+    var next_progress: Int = max(1, print_every // 5)
+    var progress_interval = next_progress
+
     for update in range(num_updates):
         agent.collect_rollout(cpu_state, env)
         agent.compute_advantages(cpu_state)
         var loss = agent.update_epochs(cpu_state)
 
-        metrics.log_episode(
-            update,
-            Scalar[DType.float64](loss),
-            0,
-            agent.get_explore_rate(),
-        )
+        var rollout_len = cpu_state.rollout_size()
+        total_steps += rollout_len
+        for i in range(rollout_len):
+            episode_reward_accum += cpu_state.get_step_reward(i)
+            if cpu_state.get_step_done(i):
+                completed_episodes += 1
+                episode_rewards.append(episode_reward_accum)
+                metrics.log_episode(
+                    completed_episodes,
+                    Scalar[DType.float64](episode_reward_accum),
+                    0,
+                    agent.get_explore_rate(),
+                )
+                episode_reward_accum = 0.0
 
         if Bool(logger):
             logger.value()[].log_scalar("loss", loss, update)
@@ -638,23 +746,76 @@ def run_onpolicy_continuous_train[
                 checkpoint_path + "_update_" + String(update + 1) + ".ckpt"
             )
 
+        if verbose and update + 1 >= next_progress:
+            var interval_pos = (update + 1) % print_every
+            if interval_pos == 0:
+                interval_pos = print_every
+            print_progress_bar(
+                interval_pos, print_every, total_steps, algorithm_name
+            )
+            next_progress += progress_interval
+
         if (verbose or (Bool(logger) and logger.value()[].is_active())) and (
             update + 1
         ) % print_every == 0:
-            var avg_loss = metrics.mean_reward_last_n(print_every)
+            var n_avg = min(100, len(episode_rewards))
+            var avg_reward: Float64 = 0.0
+            if n_avg > 0:
+                var total: Float64 = 0.0
+                for i in range(len(episode_rewards) - n_avg, len(episode_rewards)):
+                    total += episode_rewards[i]
+                avg_reward = total / Float64(n_avg)
+
             if Bool(logger):
-                logger.value()[].log_scalar("avg_loss", avg_loss, update)
+                logger.value()[].log_scalar("avg_reward", avg_reward, total_steps)
+                logger.value()[].log_scalar(
+                    "episodes", Float64(completed_episodes), total_steps
+                )
+                logger.value()[].log_scalar("update", Float64(update + 1), total_steps)
 
             if verbose:
+                clear_progress_bar()
                 print(
-                    "Update "
+                    algorithm_name
+                    + " | Episodes: "
+                    + String(completed_episodes)
+                    + " | Update: "
                     + String(update + 1)
-                    + " | Loss: "
-                    + String(avg_loss)[byte=:8]
-                    + " | Explore: "
-                    + String(agent.get_explore_rate())[byte=:5]
+                    + " | AvgR(100): "
+                    + String(avg_reward)[byte=:7]
+                    + " | Steps: "
+                    + String(total_steps)
                 )
 
+    var final_n = min(100, len(episode_rewards))
+    var final_avg: Float64 = 0.0
+    if final_n > 0:
+        var total: Float64 = 0.0
+        for i in range(len(episode_rewards) - final_n, len(episode_rewards)):
+            total += episode_rewards[i]
+        final_avg = total / Float64(final_n)
+
     if Bool(logger):
+        logger.value()[].log_scalar("avg_reward", final_avg, total_steps)
+        logger.value()[].log_scalar(
+            "episodes", Float64(completed_episodes), total_steps
+        )
+        logger.value()[].log_scalar("update", Float64(num_updates), total_steps)
         logger.value()[].flush()
+
+    if verbose:
+        clear_progress_bar()
+        print(
+            algorithm_name
+            + " | Episodes: "
+            + String(completed_episodes)
+            + " | Update: "
+            + String(num_updates)
+            + " | AvgR(100): "
+            + String(final_avg)[byte=:7]
+            + " | Steps: "
+            + String(total_steps)
+            + " [DONE]"
+        )
+
     return metrics^

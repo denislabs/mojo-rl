@@ -1028,6 +1028,18 @@ struct AcrobotEnv[DTYPE: DType](
     def renderer_step_once(self) -> Bool:
         return False
 
+    def start_recording(
+        mut self, filename: String, fps: Int = 30, skip: Int = 1
+    ) raises:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].start_recording(filename, fps, skip)
+
+    def stop_recording(mut self) raises:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].stop_recording()
+
     # ========================================================================
     # GPUDiscreteEnv trait methods (for fused GPU kernels)
     # ========================================================================

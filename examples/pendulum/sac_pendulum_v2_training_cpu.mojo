@@ -32,9 +32,9 @@ from mojo_rl.envs.pendulum import PendulumV2
 comptime OBS_DIM = 3
 comptime ACTION_DIM = 1
 
-comptime HIDDEN_DIM = 64
-comptime BUFFER_CAPACITY = 50_000
-comptime BATCH_SIZE = 64
+comptime HIDDEN_DIM = 128
+comptime BUFFER_CAPACITY = 100_000
+comptime BATCH_SIZE = 32
 
 comptime NUM_STEPS = 100_000
 comptime MAX_STEPS_PER_EPISODE = 200
@@ -68,6 +68,8 @@ def main() raises:
         auto_alpha=True,
         alpha_lr=0.0003,
         target_entropy=-1.0,
+        use_ere=True,
+        ere_eta=0.996,
     )
 
     print("Environment: Pendulum V2 (CPU single-env path)")

@@ -486,6 +486,18 @@ struct BreakoutEnv[DTYPE: DType](
             return False
         return self._renderer.value()[].get_should_quit()
 
+    def start_recording(
+        mut self, filename: String, fps: Int = 30, skip: Int = 1
+    ) raises:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].start_recording(filename, fps, skip)
+
+    def stop_recording(mut self) raises:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].stop_recording()
+
     def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:
             return

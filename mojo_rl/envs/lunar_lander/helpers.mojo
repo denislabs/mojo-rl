@@ -24,9 +24,7 @@ def normalize_position[
     )
     var y_norm = (
         y
-        - Scalar[T](
-            LLConstants.HELIPAD_Y + LLConstants.LEG_DOWN / LLConstants.SCALE
-        )
+        - Scalar[T](LLConstants.HELIPAD_Y + LLConstants.LEG_DOWN)
     ) / Scalar[T](LLConstants.H_UNITS / 2.0)
     return (x_norm, y_norm)
 

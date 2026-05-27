@@ -1,11 +1,15 @@
-"""Playable Chess -- two humans alternate moves on an 8x8 board.
+"""Playable Chess with GIF recording.
 
 Controls:
-  Arrow keys: move cursor
-  Space: select piece / confirm move
-  Escape: deselect piece
+  Mouse click: select piece / confirm move
+  Right click: deselect
+  Arrow keys + Space: alternative keyboard control
+  Escape: deselect
   R: reset after game ends
-  Close window to quit
+  Close window to stop recording & quit
+
+Run with:
+    pixi run mojo run -I . examples/board_games/chess_playable_gif.mojo
 """
 
 from std.memory import alloc
@@ -71,7 +75,6 @@ from mojo_rl.render.sdl.sdl_mouse import get_mouse_state, MouseButtonFlags
 
 
 def _file_letter(c: Int) -> String:
-    """Return file letter for column index 0-7."""
     if c == 0:
         return "a"
     if c == 1:
@@ -90,12 +93,10 @@ def _file_letter(c: Int) -> String:
 
 
 def sq_name(sq: Int) -> String:
-    """Convert a square index (0-63) to algebraic notation like 'e4'."""
     return _file_letter(_col(sq)) + String(_row(sq) + 1)
 
 
 def piece_name(piece: Int) -> String:
-    """Return human-readable piece name like 'White Queen'."""
     if piece == EMPTY:
         return "empty"
     var color = String("White") if piece <= 6 else String("Black")
@@ -116,7 +117,6 @@ def piece_name(piece: Int) -> String:
 
 
 def piece_to_sprite_idx(piece: Int) -> Int:
-    """Map piece ID (1-12) to sprite sheet index (0-11)."""
     if piece == W_KING:
         return 0
     if piece == W_QUEEN:
@@ -145,7 +145,6 @@ def piece_to_sprite_idx(piece: Int) -> Int:
 
 
 def piece_char(piece: Int) -> String:
-    """Return the character for a given piece ID (fallback)."""
     if piece == W_KING:
         return "K"
     if piece == W_QUEEN:
@@ -174,40 +173,36 @@ def piece_char(piece: Int) -> String:
 
 
 def main() raises:
-    print("=== Playable Chess ===")
+    print("=== Playable Chess — Recording to GIF ===")
     print("Controls:")
     print("  Mouse click: select piece / confirm move")
-    print("  Right click: deselect")
-    print("  Arrow keys + Space: alternative keyboard control")
-    print("  Escape: deselect")
+    print("  Right click / Escape: deselect")
     print("  R: reset after game ends")
-    print("  Close window to quit")
+    print("  Close window to stop & save")
 
     var env = ChessEnv[DType.float64]()
     _ = env.reset()
 
-    # Window: 536x586 (20px left margin + 512 board + 4px right + 50px status + 20px bottom labels)
     var left_margin = 20
     var top_margin = 4
     var sq_size = 64
-    var board_px = sq_size * 8  # 512
-    var win_w = left_margin + board_px + 4  # 536
-    var win_h = top_margin + board_px + 20 + 50  # 586
+    var board_px = sq_size * 8
+    var win_w = left_margin + board_px + 4
+    var win_h = top_margin + board_px + 20 + 50
 
     var renderer = Renderer2D(width=win_w, height=win_h, fps=30, title="Chess")
+    renderer.start_recording("gifs/chess_playable.gif", fps=15, skip=2)
 
-    # Sprite setup (lazy — created after renderer is initialized on first frame)
     var sprite_pixels = create_sprite_sheet()
     var sprite_texture = UnsafePointer[Texture, MutAnyOrigin](unsafe_from_address=0)
     var has_sprites = False
-    var sprite_draw_size = 48  # Scale 24→48 to fit in 64px cells
+    var sprite_draw_size = 48
     var sprite_pad = (sq_size - sprite_draw_size) // 2
 
-    # Colors
     var light_sq = SDL_Color(r=0xF0, g=0xD9, b=0xB5, a=0xFF)
     var dark_sq = SDL_Color(r=0xB5, g=0x88, b=0x63, a=0xFF)
-    var cursor_color = SDL_Color(r=0xFF, g=0xFF, b=0x00, a=0xFF)  # yellow
-    var select_color = SDL_Color(r=0x00, g=0xFF, b=0x00, a=0xFF)  # green
+    var cursor_color = SDL_Color(r=0xFF, g=0xFF, b=0x00, a=0xFF)
+    var select_color = SDL_Color(r=0x00, g=0xFF, b=0x00, a=0xFF)
     var white_piece_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
     var black_piece_color = SDL_Color(r=0x20, g=0x20, b=0x20, a=0xFF)
     var text_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
@@ -215,15 +210,11 @@ def main() raises:
     var bg_color = SDL_Color(r=0x22, g=0x22, b=0x22, a=0xFF)
     var legal_highlight = SDL_Color(r=0x00, g=0xAA, b=0x00, a=0x60)
 
-    # Cursor position (row, col) in display coords
-    # Display row 0 = rank 8 (top), row 7 = rank 1 (bottom)
-    var cursor_row = 6  # start near white pieces
+    var cursor_row = 6
     var cursor_col = 4
 
-    # Selection state: -1 = no selection, else square index in env coords
     var selected_sq = -1
 
-    # Debounce
     var prev_up = False
     var prev_down = False
     var prev_left = False
@@ -243,7 +234,6 @@ def main() raises:
     numkeys_ptr[] = 0
 
     while renderer.begin_frame_with_color(bg_color):
-        # Lazy sprite texture creation (renderer must be open first)
         if not has_sprites:
             try:
                 var surface = create_surface_from(
@@ -270,7 +260,7 @@ def main() raises:
                 destroy_surface(surface)
                 has_sprites = True
             except:
-                pass  # will retry next frame or fall back to text
+                pass
 
         var keys = get_keyboard_state(numkeys_ptr)
 
@@ -282,21 +272,15 @@ def main() raises:
         var cur_esc = Bool(keys[Int(Scancode.SCANCODE_ESCAPE)])
         var cur_r = Bool(keys[Int(Scancode.SCANCODE_R)])
 
-        # Mouse state
         var mouse_buttons = get_mouse_state(
             rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_x_ptr),
             rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_y_ptr),
         )
-        var cur_mouse_left = (
-            Int(mouse_buttons.value) & 1
-        ) != 0  # SDL_BUTTON_LMASK
-        var cur_mouse_right = (
-            Int(mouse_buttons.value) & 4
-        ) != 0  # SDL_BUTTON_RMASK
+        var cur_mouse_left = (Int(mouse_buttons.value) & 1) != 0
+        var cur_mouse_right = (Int(mouse_buttons.value) & 4) != 0
         var mouse_x = Int(mouse_x_ptr[])
         var mouse_y = Int(mouse_y_ptr[])
 
-        # Convert mouse position to board square
         var mouse_col = (mouse_x - left_margin) // sq_size
         var mouse_row = (mouse_y - top_margin) // sq_size
         var mouse_on_board = (
@@ -306,7 +290,6 @@ def main() raises:
             and mouse_row < 8
         )
 
-        # Update cursor from mouse position (hover)
         if mouse_on_board:
             cursor_row = mouse_row
             cursor_col = mouse_col
@@ -314,13 +297,11 @@ def main() raises:
         var game_over = env.done
         var player = Int(env.state[S_PLAYER])
 
-        # Right click or Escape to deselect
         if (cur_mouse_right and not prev_mouse_right) or (
             cur_esc and not prev_esc
         ):
             selected_sq = -1
 
-        # Handle reset
         if cur_r and not prev_r and game_over:
             _ = env.reset()
             cursor_row = 6
@@ -328,7 +309,6 @@ def main() raises:
             selected_sq = -1
 
         if not game_over:
-            # Arrow key cursor movement
             if cur_up and not prev_up:
                 if cursor_row > 0:
                     cursor_row -= 1
@@ -342,160 +322,41 @@ def main() raises:
                 if cursor_col < 7:
                     cursor_col += 1
 
-            # Space or left click: select or confirm
             var click_triggered = (cur_space and not prev_space) or (
                 cur_mouse_left and not prev_mouse_left and mouse_on_board
             )
             if click_triggered:
-                # Convert display (row, col) to env square
-                # Display row 0 = rank 8 = env row 7
                 var env_row = 7 - cursor_row
                 var env_col = cursor_col
                 var env_sq = env_row * 8 + env_col
 
                 if selected_sq < 0:
-                    # Phase 1: select a piece
                     var piece = Int(env.state[env_sq])
                     if piece != EMPTY and _is_friendly(piece, player):
                         selected_sq = env_sq
                 else:
-                    # Phase 2: confirm move
                     var from_sq = selected_sq
                     var to_sq = env_sq
 
                     if from_sq == to_sq:
-                        # Clicking same square deselects
                         selected_sq = -1
                     else:
-                        # Determine promotion
                         var promo = 0
                         var from_piece = Int(env.state[from_sq])
                         var to_row = to_sq // 8
-                        # White pawn reaching rank 8 (row 7) or black pawn reaching rank 1 (row 0)
                         if from_piece == W_PAWN and to_row == 7:
-                            promo = 5  # queen
+                            promo = 5
                         elif from_piece == B_PAWN and to_row == 0:
-                            promo = 5  # queen
+                            promo = 5
 
-                        # Encode action and check legality
                         var move = Move(from_sq, to_sq, promo)
                         var action = _encode_action(move, player)
 
-                        # Verify action is legal
                         var mask = env.legal_action_mask()
                         if action >= 0 and action < 4672 and mask[action]:
                             _ = env._step_impl(action)
                             selected_sq = -1
                         else:
-                            # --- Diagnostic output for rejected move ---
-                            var from_p = Int(env.state[from_sq])
-                            var to_p = Int(env.state[to_sq])
-                            print(
-                                "Move rejected:",
-                                sq_name(from_sq),
-                                "->",
-                                sq_name(to_sq),
-                            )
-                            print(
-                                "  From:",
-                                piece_name(from_p),
-                                "at",
-                                sq_name(from_sq),
-                            )
-                            var to_desc = String("")
-                            if to_p == EMPTY:
-                                to_desc = " (empty)"
-                            elif _is_enemy(to_p, player):
-                                to_desc = " (enemy - capturable)"
-                            else:
-                                to_desc = " (friendly - blocked)"
-                            print(
-                                "  To:",
-                                piece_name(to_p),
-                                "at",
-                                sq_name(to_sq),
-                                to_desc,
-                            )
-
-                            # Print path for sliding pieces (bishop, rook, queen)
-                            var pt = _piece_type(from_p)
-                            if pt == 3 or pt == 4 or pt == 5:
-                                var dr = 0
-                                var dc = 0
-                                var fr = _row(from_sq)
-                                var fc = _col(from_sq)
-                                var tr = _row(to_sq)
-                                var tc = _col(to_sq)
-                                var diff_r = tr - fr
-                                var diff_c = tc - fc
-                                if diff_r != 0:
-                                    dr = 1 if diff_r > 0 else -1
-                                if diff_c != 0:
-                                    dc = 1 if diff_c > 0 else -1
-                                var cr = fr + dr
-                                var cc = fc + dc
-                                while cr != tr or cc != tc:
-                                    if cr < 0 or cr > 7 or cc < 0 or cc > 7:
-                                        break
-                                    var mid_sq = cr * 8 + cc
-                                    var mid_p = Int(env.state[mid_sq])
-                                    if mid_p == EMPTY:
-                                        print(
-                                            "  Path:",
-                                            sq_name(mid_sq),
-                                            "= empty",
-                                        )
-                                    else:
-                                        print(
-                                            "  Path:",
-                                            sq_name(mid_sq),
-                                            "=",
-                                            piece_name(mid_p),
-                                        )
-                                    cr += dr
-                                    cc += dc
-
-                            # Check if king would be in check after move
-                            var saved_from = env.state[from_sq]
-                            var saved_to = env.state[to_sq]
-                            var saved_wk = env.state[S_WK]
-                            var saved_bk = env.state[S_BK]
-
-                            env.state[to_sq] = env.state[from_sq]
-                            env.state[from_sq] = 0.0
-                            if _piece_type(Int(saved_from)) == 6:
-                                if player == 0:
-                                    env.state[S_WK] = Scalar[env.dtype](to_sq)
-                                else:
-                                    env.state[S_BK] = Scalar[env.dtype](to_sq)
-
-                            var in_check = env._in_check(player)
-
-                            env.state[from_sq] = saved_from
-                            env.state[to_sq] = saved_to
-                            env.state[S_WK] = saved_wk
-                            env.state[S_BK] = saved_bk
-
-                            if in_check:
-                                print(
-                                    "  After move: King would be in"
-                                    " check? YES (pinned!)"
-                                )
-                            else:
-                                print(
-                                    "  After move: King would be in check? NO"
-                                )
-
-                            var wk = Int(env.state[S_WK])
-                            var bk = Int(env.state[S_BK])
-                            print(
-                                "  White King at",
-                                sq_name(wk),
-                                "Black King at",
-                                sq_name(bk),
-                            )
-
-                            # Try clicking a new friendly piece instead
                             var piece = Int(env.state[env_sq])
                             if piece != EMPTY and _is_friendly(piece, player):
                                 selected_sq = env_sq
@@ -504,28 +365,23 @@ def main() raises:
 
         # === Rendering ===
 
-        # Get legal action mask for highlighting
         var legal_mask = env.legal_action_mask()
 
-        # Draw board squares and pieces
         for row in range(8):
             for col in range(8):
                 var px = left_margin + col * sq_size
                 var py = top_margin + row * sq_size
 
-                # Square color
                 var is_light = ((row + col) % 2) == 0
                 if is_light:
                     renderer.draw_rect(px, py, sq_size, sq_size, light_sq)
                 else:
                     renderer.draw_rect(px, py, sq_size, sq_size, dark_sq)
 
-                # Env coords: display row 0 = env row 7
                 var env_row = 7 - row
                 var env_col = col
                 var env_sq = env_row * 8 + env_col
 
-                # Highlight selected square (green border)
                 if env_sq == selected_sq:
                     renderer.draw_rect(
                         px + 1,
@@ -536,13 +392,9 @@ def main() raises:
                         border_width=3,
                     )
 
-                # Highlight legal target squares for selected piece
                 if selected_sq >= 0 and env_sq != selected_sq and not game_over:
-                    # Check all legal actions for moves from selected_sq to this sq
                     var is_legal_target = False
-                    # Try no promo, queen, knight, bishop, rook promotions
                     for promo_val in range(6):
-                        # 0=none, 2=knight, 3=bishop, 4=rook, 5=queen; skip 1
                         if promo_val == 1:
                             continue
                         var test_move = Move(selected_sq, env_sq, promo_val)
@@ -563,13 +415,11 @@ def main() raises:
                             filled=True,
                         )
 
-                # Cursor highlight (yellow border)
                 if row == cursor_row and col == cursor_col:
                     renderer.draw_rect(
                         px, py, sq_size, sq_size, cursor_color, border_width=3
                     )
 
-                # Draw piece
                 var piece = Int(env.state[env_sq])
                 if piece != EMPTY:
                     var sprite_idx = piece_to_sprite_idx(piece)
@@ -604,7 +454,6 @@ def main() raises:
                         src_rect.free()
                         dst_rect.free()
                     else:
-                        # Fallback to text
                         var pc = piece_char(piece)
                         var tx = px + sq_size // 2 - 4
                         var ty = py + sq_size // 2 - 4
@@ -619,21 +468,18 @@ def main() raises:
                             )
                             renderer.draw_text(pc, tx, ty, black_piece_color)
 
-        # File labels (a-h) below the board
         var label_color = SDL_Color(r=0xCC, g=0xCC, b=0xCC, a=0xFF)
         for col in range(8):
             var lx = left_margin + col * sq_size + sq_size // 2 - 4
             var ly = top_margin + 8 * sq_size + 4
             renderer.draw_text(_file_letter(col), lx, ly, label_color)
 
-        # Rank labels (8 down to 1) to the left of the board
         for display_row in range(8):
             var rank_num = 8 - display_row
             var lx = left_margin - 12
             var ly = top_margin + display_row * sq_size + sq_size // 2 - 4
             renderer.draw_text(String(rank_num), lx, ly, label_color)
 
-        # Status bar
         var status_y = top_margin + board_px + 20
         renderer.draw_rect(0, status_y, win_w, 50, status_bg)
 
@@ -668,7 +514,6 @@ def main() raises:
 
         renderer.flip()
 
-        # Save previous key/mouse states
         prev_up = cur_up
         prev_down = cur_down
         prev_left = cur_left
@@ -679,6 +524,7 @@ def main() raises:
         prev_mouse_left = cur_mouse_left
         prev_mouse_right = cur_mouse_right
 
+    renderer.stop_recording()
     mouse_x_ptr.free()
     mouse_y_ptr.free()
     if has_sprites:
@@ -689,4 +535,5 @@ def main() raises:
     sprite_pixels.free()
     numkeys_ptr.free()
     renderer.close()
+    print("Saved: gifs/chess_playable.gif")
     print("=== Done ===")

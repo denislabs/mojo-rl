@@ -187,6 +187,15 @@ struct GenericOnPolicyCPUState[
     def clear(mut self) -> None:
         self.buffer_idx = 0
 
+    def rollout_size(self) -> Int:
+        return self.buffer_idx
+
+    def get_step_reward(self, idx: Int) -> Float64:
+        return Float64(self.buffer_rewards[idx])
+
+    def get_step_done(self, idx: Int) -> Bool:
+        return self.buffer_dones[idx]
+
 
 # =============================================================================
 # PPOGPUStateGeneric — GPU state container for generic on-policy PPO

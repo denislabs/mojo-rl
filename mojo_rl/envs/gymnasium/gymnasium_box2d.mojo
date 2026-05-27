@@ -439,6 +439,258 @@ struct GymLunarLanderEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
 
 
 # ============================================================================
+# GymLunarLanderContinuousEnv - implements BoxContinuousActionEnv & RenderableEnv
+# ============================================================================
+
+
+@fieldwise_init
+struct GymLunarLanderContinuousState(
+    Copyable, ImplicitlyCopyable, Movable, State
+):
+    var index: Int
+
+    def __init__(out self, *, copy: Self):
+        self.index = copy.index
+
+    def __init__(out self, *, deinit take: Self):
+        self.index = take.index
+
+    def __eq__(self, other: Self) -> Bool:
+        return self.index == other.index
+
+
+@fieldwise_init
+struct GymLunarLanderContinuousAction(
+    Action, Copyable, ImplicitlyCopyable, Movable
+):
+    var index: Int
+
+    def __init__(out self, *, copy: Self):
+        self.index = copy.index
+
+    def __init__(out self, *, deinit take: Self):
+        self.index = take.index
+
+
+struct GymLunarLanderContinuousEnv(BoxContinuousActionEnv & RenderableEnv):
+    """LunarLander-v3 (continuous): Land a spacecraft with continuous thrust.
+
+    Observation: Box(8,)
+        [x, y, vx, vy, angle, angular_vel, left_leg_contact, right_leg_contact]
+
+    Actions: Continuous Box(2,)
+        [main_throttle, side_throttle] in [-1, 1]
+
+    Reward:
+        - Moving toward landing pad: positive
+        - Moving away: negative
+        - Crash: -100
+        - Rest: +100
+        - Leg contact: +10 each
+        - Fuel usage: small negative
+
+    Episode ends: Landed, crashed, or 1000 steps
+    Solved: Average reward > 200 over 100 episodes.
+    """
+
+    comptime StateType = GymLunarLanderContinuousState
+    comptime ActionType = GymLunarLanderContinuousAction
+    comptime dtype: DType = DType.float64
+
+    var env: PythonObject
+    var gym: PythonObject
+    var np: PythonObject
+    var current_obs: SIMD[DType.float64, 8]
+    var done: Bool
+    var episode_reward: Float64
+    var episode_length: Int
+    var _render_initialized: Bool
+
+    def __init__(out self, render_mode: String = "") raises:
+        self.gym = Python.import_module("gymnasium")
+        self.np = Python.import_module("numpy")
+
+        if render_mode == "human":
+            self.env = self.gym.make(
+                "LunarLander-v3",
+                continuous=True,
+                render_mode=PythonObject("human"),
+            )
+        else:
+            self.env = self.gym.make("LunarLander-v3", continuous=True)
+
+        self.current_obs = SIMD[DType.float64, 8](0.0)
+        self.done = False
+        self.episode_reward = 0.0
+        self.episode_length = 0
+        self._render_initialized = False
+
+    # ========================================================================
+    # Env base trait methods
+    # ========================================================================
+
+    def reset(mut self) -> GymLunarLanderContinuousState:
+        try:
+            var result = self.env.reset()
+            var obs = result[0]
+            for i in range(8):
+                self.current_obs[i] = Float64(py=obs[i])
+        except:
+            self.current_obs = SIMD[DType.float64, 8](0.0)
+
+        self.done = False
+        self.episode_reward = 0.0
+        self.episode_length = 0
+        return GymLunarLanderContinuousState(index=0)
+
+    def step(
+        mut self,
+        action: GymLunarLanderContinuousAction,
+        verbose: Bool = False,
+    ) -> Tuple[GymLunarLanderContinuousState, Float64, Bool]:
+        return (GymLunarLanderContinuousState(index=0), 0.0, self.done)
+
+    def get_state(self) -> GymLunarLanderContinuousState:
+        return GymLunarLanderContinuousState(index=0)
+
+    # ========================================================================
+    # ContinuousStateEnv trait methods
+    # ========================================================================
+
+    def get_obs_list(self) -> List[Float64]:
+        var obs = List[Float64](capacity=8)
+        for i in range(8):
+            obs.append(self.current_obs[i])
+        return obs^
+
+    def reset_obs_list(mut self) -> List[Float64]:
+        _ = self.reset()
+        return self.get_obs_list()
+
+    def obs_dim(self) -> Int:
+        return 8
+
+    # ========================================================================
+    # ContinuousActionEnv trait methods
+    # ========================================================================
+
+    def action_dim(self) -> Int:
+        return 2
+
+    def action_low(self) -> Float64:
+        return -1.0
+
+    def action_high(self) -> Float64:
+        return 1.0
+
+    # ========================================================================
+    # BoxContinuousActionEnv trait methods
+    # ========================================================================
+
+    def step_continuous[
+        DTYPE: DType
+    ](mut self, action: Scalar[DTYPE]) -> Tuple[
+        List[Scalar[DTYPE]], Scalar[DTYPE], Bool
+    ]:
+        var actions = List[Scalar[DTYPE]]()
+        actions.append(action)
+        actions.append(Scalar[DTYPE](0.0))
+        return self.step_continuous_vec(actions)
+
+    def step_continuous_vec[
+        DTYPE: DType
+    ](
+        mut self, action: List[Scalar[DTYPE]], verbose: Bool = False
+    ) -> Tuple[List[Scalar[DTYPE]], Scalar[DTYPE], Bool]:
+        var reward: Float64 = 0.0
+        try:
+            var builtins = Python.import_module("builtins")
+            var py_list = builtins.list()
+            var a0 = action[0].cast[DType.float64]() if len(
+                action
+            ) > 0 else Float64(0.0)
+            var a1 = action[1].cast[DType.float64]() if len(
+                action
+            ) > 1 else Float64(0.0)
+            _ = py_list.append(a0)
+            _ = py_list.append(a1)
+            var np_action = self.np.array(py_list)
+            var result = self.env.step(np_action)
+            var obs = result[0]
+            reward = Float64(py=result[1])
+            var terminated = result[2].__bool__()
+            var truncated = result[3].__bool__()
+
+            for i in range(8):
+                self.current_obs[i] = Float64(py=obs[i])
+
+            self.done = terminated or truncated
+        except:
+            self.done = True
+
+        self.episode_reward += reward
+        self.episode_length += 1
+
+        var obs_out = List[Scalar[DTYPE]]()
+        for i in range(8):
+            obs_out.append(Scalar[DTYPE](self.current_obs[i]))
+        return (obs_out^, Scalar[DTYPE](reward), self.done)
+
+    # ========================================================================
+    # RenderableEnv trait methods
+    # ========================================================================
+
+    def init_renderer(mut self) raises -> Bool:
+        self._render_initialized = True
+        return True
+
+    def render_frame(mut self) raises -> None:
+        if not self._render_initialized:
+            return
+        try:
+            _ = self.env.render()
+        except:
+            pass
+
+    def close_renderer(mut self) raises -> None:
+        if not self._render_initialized:
+            return
+        try:
+            _ = self.env.close()
+        except:
+            pass
+        self._render_initialized = False
+
+    def is_renderer_open(self) -> Bool:
+        return self._render_initialized
+
+    def check_renderer_quit(mut self) -> Bool:
+        return False
+
+    def renderer_delay(self, ms: Int) -> None:
+        pass
+
+    def renderer_is_paused(self) -> Bool:
+        return False
+
+    def renderer_step_once(self) -> Bool:
+        return False
+
+    # ========================================================================
+    # Additional methods
+    # ========================================================================
+
+    def close(mut self):
+        try:
+            _ = self.env.close()
+        except:
+            pass
+
+    def is_done(self) -> Bool:
+        return self.done
+
+
+# ============================================================================
 # GymBipedalWalkerEnv - implements BoxContinuousActionEnv & RenderableEnv
 # ============================================================================
 

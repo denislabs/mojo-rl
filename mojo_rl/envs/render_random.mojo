@@ -28,6 +28,9 @@ def render_random[
     verbose: Bool = True,
     print_every: Int = 200,
     show_velocity: Bool = True,
+    record_path: String = "",
+    record_fps: Int = 30,
+    record_skip: Int = 1,
 ) raises:
     """Render an environment with uniform random actions.
 
@@ -44,6 +47,9 @@ def render_random[
         verbose: Print step telemetry.
         print_every: Steps between telemetry prints.
         show_velocity: Show velocity vectors in the renderer.
+        record_path: If non-empty, record to this file (.gif or .mp4).
+        record_fps: FPS for the recording (default 30).
+        record_skip: Only record every Nth frame (reduces file size).
     """
     var action_dim = env.action_dim()
     var lo = Float64(env.action_low())
@@ -61,6 +67,13 @@ def render_random[
 
     # Init renderer
     _ = env.init_renderer(show_velocity=show_velocity)
+
+    # Start recording if requested
+    var recording = record_path.byte_length() > 0
+    if recording:
+        env.start_recording(record_path, record_fps, record_skip)
+        if verbose:
+            print("Recording to:", record_path)
 
     # Reset environment
     _ = env.reset_obs_list()
@@ -119,6 +132,12 @@ def render_random[
             _ = env.reset_obs_list()
             if verbose:
                 print("  [Episode done at step", step, "- resetting]")
+
+    # Stop recording before closing
+    if recording:
+        env.stop_recording()
+        if verbose:
+            print("Saved recording:", record_path)
 
     # Cleanup
     env.close_renderer()

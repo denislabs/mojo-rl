@@ -89,45 +89,45 @@ def main() raises:
     print("  Max reward:", String(metrics_q.max_reward())[byte=:8])
     print("")
 
-    # ========================================================================
-    # Algorithm 2: Tiled SARSA(lambda)
-    # ========================================================================
-    print("-" * 60)
-    print("Algorithm 2: Tiled SARSA(lambda)")
-    print("-" * 60)
-    print("SARSA(lambda) with eligibility traces for faster learning.")
-    print("")
+    # # ========================================================================
+    # # Algorithm 2: Tiled SARSA(lambda)
+    # # ========================================================================
+    # print("-" * 60)
+    # print("Algorithm 2: Tiled SARSA(lambda)")
+    # print("-" * 60)
+    # print("SARSA(lambda) with eligibility traces for faster learning.")
+    # print("")
 
-    # Create fresh tile coding
-    var tc_sl = CartPoleEnv[DType.float64].make_tile_coding(
-        num_tilings=8, tiles_per_dim=8
-    )
+    # # Create fresh tile coding
+    # var tc_sl = CartPoleEnv[DType.float64].make_tile_coding(
+    #     num_tilings=8, tiles_per_dim=8
+    # )
 
-    var env_sl = CartPoleEnv[DType.float64]()
-    var agent_sl = TiledSARSALambdaAgent(
-        tile_coding=tc_sl,
-        num_actions=env_sl.num_actions(),
-        learning_rate=0.1,
-        discount_factor=0.99,
-        lambda_=0.9,
-        epsilon=1.0,
-        epsilon_decay=0.995,
-        epsilon_min=0.01,
-    )
+    # var env_sl = CartPoleEnv[DType.float64]()
+    # var agent_sl = TiledSARSALambdaAgent(
+    #     tile_coding=tc_sl,
+    #     num_actions=env_sl.num_actions(),
+    #     learning_rate=0.1,
+    #     discount_factor=0.99,
+    #     lambda_=0.9,
+    #     epsilon=1.0,
+    #     epsilon_decay=0.995,
+    #     epsilon_min=0.01,
+    # )
 
-    var metrics_sl = agent_sl.train(
-        env_sl,
-        tc_sl,
-        num_episodes=2000,
-        max_steps_per_episode=500,
-        verbose=True,
-    )
+    # var metrics_sl = agent_sl.train(
+    #     env_sl,
+    #     tc_sl,
+    #     num_episodes=2000,
+    #     max_steps_per_episode=500,
+    #     verbose=True,
+    # )
 
-    print("")
-    print("Tiled SARSA(lambda) results:")
-    print("  Mean reward:", String(metrics_sl.mean_reward())[byte=:8])
-    print("  Max reward:", String(metrics_sl.max_reward())[byte=:8])
-    print("")
+    # print("")
+    # print("Tiled SARSA(lambda) results:")
+    # print("  Mean reward:", String(metrics_sl.mean_reward())[byte=:8])
+    # print("  Max reward:", String(metrics_sl.max_reward())[byte=:8])
+    # print("")
 
     # ========================================================================
     # Results Summary
@@ -144,12 +144,12 @@ def main() raises:
         "   |",
         String(metrics_q.max_reward())[byte=:8],
     )
-    print(
-        "Tiled SARSA(lambda)|",
-        String(metrics_sl.mean_reward())[byte=:8],
-        "   |",
-        String(metrics_sl.max_reward())[byte=:8],
-    )
+    # print(
+    #     "Tiled SARSA(lambda)|",
+    #     String(metrics_sl.mean_reward())[byte=:8],
+    #     "   |",
+    #     String(metrics_sl.max_reward())[byte=:8],
+    # )
     print("")
     print("Solved: Max reward = 500 (balanced for full episode)")
     print("")
@@ -162,15 +162,15 @@ def main() raises:
     print("-" * 60)
 
     var eval_q = agent_q.evaluate(env_q, tc, num_episodes=100, render=False)
-    var eval_sl = agent_sl.evaluate(
-        env_sl, tc_sl, num_episodes=100, render=False
-    )
+    # var eval_sl = agent_sl.evaluate(
+    #     env_sl, tc_sl, num_episodes=100, render=False
+    # )
 
     print("Tiled Q-Learning avg reward:", String(eval_q)[byte=:8])
-    print("Tiled SARSA(lambda) avg reward:", String(eval_sl)[byte=:8])
+    # print("Tiled SARSA(lambda) avg reward:", String(eval_sl)[byte=:8])
     print("")
 
-    if eval_q >= 475 or eval_sl >= 475:
+    if eval_q >= 475:
         print("SUCCESS: CartPole solved!")
     else:
         print("Training complete. Consider more episodes for better results.")
@@ -193,7 +193,7 @@ def main() raises:
     # Run 1 episode with recording
     var obs_raw = env_q.reset_obs_list()
     var obs_f64 = List[Float64](capacity=obs_raw.byte_length())
-    for i in range(obs_raw.byte_length()):
+    for i in range(len(obs_raw)):
         obs_f64.append(Float64(obs_raw[i]))
 
     for step in range(500):
@@ -207,7 +207,7 @@ def main() raises:
             break
 
         obs_f64.clear()
-        for i in range(result[0].byte_length()):
+        for i in range(len(result[0])):
             obs_f64.append(Float64(result[0][i]))
 
     # Stop recording and clean up

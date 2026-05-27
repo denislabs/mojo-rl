@@ -178,6 +178,15 @@ struct PPOContinuousState[
         """Reset the rollout buffer write pointer."""
         self.buffer_idx = 0
 
+    def rollout_size(self) -> Int:
+        return self.buffer_idx
+
+    def get_step_reward(self, idx: Int) -> Float64:
+        return Float64(self.buffer_rewards[idx])
+
+    def get_step_done(self, idx: Int) -> Bool:
+        return self.buffer_dones[idx]
+
 
 # =============================================================================
 # PPOContinuousGPUState — GPU state container for continuous-action PPO

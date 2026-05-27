@@ -779,18 +779,18 @@ struct LunarLander[
         if right_leg_y - LLConstants.LEG_H <= right_terrain_y + 0.01:
             right_contact = Scalar[Self.dtype](1.0)
 
-        return InlineArray[Scalar[Self.dtype], LLConstants.OBS_DIM_VAL](
-            fill=[
-                Scalar[Self.dtype](pos_norm[0]),
-                Scalar[Self.dtype](pos_norm[1]),
-                Scalar[Self.dtype](vel_norm[0]),
-                Scalar[Self.dtype](vel_norm[1]),
-                Scalar[Self.dtype](angle),
-                Scalar[Self.dtype](omega_norm),
-                left_contact,
-                right_contact,
-            ]
+        var obs = InlineArray[Scalar[Self.dtype], LLConstants.OBS_DIM_VAL](
+            fill=Scalar[Self.dtype](0.0)
         )
+        obs[0] = Scalar[Self.dtype](pos_norm[0])
+        obs[1] = Scalar[Self.dtype](pos_norm[1])
+        obs[2] = Scalar[Self.dtype](vel_norm[0])
+        obs[3] = Scalar[Self.dtype](vel_norm[1])
+        obs[4] = Scalar[Self.dtype](angle)
+        obs[5] = Scalar[Self.dtype](omega_norm)
+        obs[6] = left_contact
+        obs[7] = right_contact
+        return obs
 
     def _get_terrain_height(self, x: Float64) -> Float64:
         """Get terrain height at given x position."""
@@ -1349,14 +1349,14 @@ struct LunarLander[
         """Take 1D continuous action (main engine only) and return (obs, reward, done).
 
         For single-dimensional control, interprets action as main engine throttle.
-        Policy outputs [-1, 1] via tanh, remapped to [0, 1].
+        Gymnasium: action <= 0 → off, action > 0 → power in [0.5, 1.0].
         """
-        # Remap main throttle from [-1, 1] to [0, 1]: (x + 1) / 2
-        var m_power = (Float64(action) + 1.0) * 0.5
-        if m_power < 0.0:
-            m_power = 0.0
-        if m_power > 1.0:
-            m_power = 1.0
+        var raw = Float64(action)
+        var m_power = Float64(0.0)
+        if raw > 0.0:
+            if raw > 1.0:
+                raw = 1.0
+            m_power = (raw + 1.0) * 0.5
         var result = self._step_cpu_continuous(m_power, 0.0, 0.0)
         var obs_self = self.get_obs_list()
         var obs = List[Scalar[DTYPE_SC]](capacity=len(obs_self))
@@ -1371,45 +1371,36 @@ struct LunarLander[
     ) -> Tuple[List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool]:
         """Take 2D continuous action and return (obs, reward, done).
 
-        Action space:
-        - Policy outputs actions in [-1, 1] via tanh
-        - action[0]: main engine throttle - remapped from [-1, 1] to [0, 1]
-        - action[1]: side engine control (-1.0 to 1.0)
-                     negative = left engine, positive = right engine
-                     magnitude determines power (0.5 to 1.0 mapped to 0-100%)
+        Action space (matching Gymnasium):
+        - action[0]: main engine. <= 0 → off; (0,1] → power in [0.5, 1.0]
+        - action[1]: side engine. |val| <= 0.5 → off; |val| in (0.5,1] → power = |val|
         """
-        # Extract and clip actions
         var m_power = Float64(0.0)
         var s_power = Float64(0.0)
         var direction = Float64(0.0)
 
         if len(action) > 0:
-            # Remap main throttle from [-1, 1] to [0, 1]: (x + 1) / 2
-            m_power = (Float64(action[0]) + 1.0) * 0.5
-            # Clip main engine to [0, 1] (safety clamp)
-            if m_power < 0.0:
-                m_power = 0.0
-            if m_power > 1.0:
-                m_power = 1.0
+            var raw = Float64(action[0])
+            if raw < -1.0:
+                raw = -1.0
+            if raw > 1.0:
+                raw = 1.0
+            if raw > 0.0:
+                m_power = (raw + 1.0) * 0.5
 
         if len(action) > 1:
             var side_action = Float64(action[1])
-            # Clip side control to [-1, 1]
             if side_action < -1.0:
                 side_action = -1.0
             if side_action > 1.0:
                 side_action = 1.0
 
-            # Determine direction and power from side action
-            # Matching Gymnasium: abs(action[1]) > 0.5 activates engine
             if side_action < -0.5:
-                direction = -1.0  # Left engine
-                # Map [-1, -0.5] to [1, 0] power
-                s_power = (-side_action - 0.5) * 2.0
+                direction = -1.0
+                s_power = -side_action
             elif side_action > 0.5:
-                direction = 1.0  # Right engine
-                # Map [0.5, 1] to [0, 1] power
-                s_power = (side_action - 0.5) * 2.0
+                direction = 1.0
+                s_power = side_action
 
         var result = self._step_cpu_continuous(m_power, s_power, direction)
 
@@ -1536,6 +1527,18 @@ struct LunarLander[
 
     def renderer_step_once(self) -> Bool:
         return False
+
+    def start_recording(
+        mut self, filename: String, fps: Int = 30, skip: Int = 1
+    ) raises:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].start_recording(filename, fps, skip)
+
+    def stop_recording(mut self) raises:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].stop_recording()
 
     # =========================================================================
     # GPU Kernels
@@ -2164,10 +2167,7 @@ struct LunarLander[
         var y_norm: states.element_type = Scalar[dtype](
             (
                 LLConstants.H_UNITS
-                - (
-                    LLConstants.HELIPAD_Y
-                    + LLConstants.LEG_DOWN / LLConstants.SCALE
-                )
+                - (LLConstants.HELIPAD_Y + LLConstants.LEG_DOWN)
             )
             / (LLConstants.H_UNITS / 2.0)
         )
@@ -3188,42 +3188,37 @@ struct LunarLander[
         # 6. Apply wind forces (compile-time eliminated if ENABLE_WIND=False)
         Self.SelfType._apply_wind_gpu[BATCH_SIZE](env, states, step_count)
 
-        # 7. Extract continuous actions
-        # Policy outputs actions in [-1, 1] via tanh
-        # action[0]: main engine throttle - remap from [-1, 1] to [0, 1]
-        # action[1]: side engine control (-1 to 1) - keep as-is
+        # 7. Extract continuous actions (matching Gymnasium)
+        # action[0]: main engine. <= 0 → off; (0,1] → power in [0.5, 1.0]
+        # action[1]: side engine. |val| <= 0.5 → off; |val| > 0.5 → power = |val|
         var raw_throttle = rebind[Scalar[dtype]](actions[env, 0])
         var side_control = rebind[Scalar[dtype]](actions[env, 1])
 
-        # Remap main throttle from [-1, 1] to [0, 1]: (x + 1) / 2
-        var main_throttle = (raw_throttle + Scalar[dtype](1.0)) * Scalar[dtype](
-            0.5
-        )
-
-        # Clip main engine to [0, 1] (safety clamp)
-        if main_throttle < Scalar[dtype](0.0):
-            main_throttle = Scalar[dtype](0.0)
-        if main_throttle > Scalar[dtype](1.0):
-            main_throttle = Scalar[dtype](1.0)
-
-        # Clip side control to [-1, 1]
+        # Clip inputs to [-1, 1]
+        if raw_throttle < Scalar[dtype](-1.0):
+            raw_throttle = Scalar[dtype](-1.0)
+        if raw_throttle > Scalar[dtype](1.0):
+            raw_throttle = Scalar[dtype](1.0)
         if side_control < Scalar[dtype](-1.0):
             side_control = Scalar[dtype](-1.0)
         if side_control > Scalar[dtype](1.0):
             side_control = Scalar[dtype](1.0)
 
-        # Convert side control to direction and power
-        # Matching Gymnasium: abs(action[1]) > 0.5 activates engine
-        var m_power = main_throttle
+        # Main engine: off when action <= 0, power [0.5, 1.0] when action > 0
+        var m_power = Scalar[dtype](0.0)
+        if raw_throttle > Scalar[dtype](0.0):
+            m_power = (raw_throttle + Scalar[dtype](1.0)) * Scalar[dtype](0.5)
+
+        # Side engine: off when |action| <= 0.5, power = |action| when > 0.5
         var s_power = Scalar[dtype](0.0)
         var direction = Scalar[dtype](0.0)
 
         if side_control < Scalar[dtype](-0.5):
-            direction = Scalar[dtype](-1.0)  # Left engine
-            s_power = (-side_control - Scalar[dtype](0.5)) * Scalar[dtype](2.0)
+            direction = Scalar[dtype](-1.0)
+            s_power = -side_control
         elif side_control > Scalar[dtype](0.5):
-            direction = Scalar[dtype](1.0)  # Right engine
-            s_power = (side_control - Scalar[dtype](0.5)) * Scalar[dtype](2.0)
+            direction = Scalar[dtype](1.0)
+            s_power = side_control
 
         # Early exit if no thrust
         if m_power <= Scalar[dtype](0.0) and s_power <= Scalar[dtype](0.0):
