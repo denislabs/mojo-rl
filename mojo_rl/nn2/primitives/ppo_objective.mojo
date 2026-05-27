@@ -5,7 +5,7 @@ Phase I.2.5. Upgraded from binary (actor_out, packed_aux) to quaternary
 the PPO loss. The earlier aux-packing workaround was a leak in the
 FullGraph thesis at I.2 landing time; I.2.5's GraphNode N-ary refactor
 makes it possible to declare each of the four inputs as a distinct
-InputSlot in `PPOActorLossCG` without packing.
+InputSlot in `PPOActorLoss` without packing.
 
 Inputs (ARITY=4):
 

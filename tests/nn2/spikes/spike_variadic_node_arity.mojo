@@ -3,7 +3,7 @@
 Phase I.2+ exploration. The current `Node` / `ExternalNode` in
 `mojo_rl/nn2/combinators/graph_nodes.mojo` cap at ARITY ≤ 2: they
 carry hardcoded `IN0_NAME` + `IN1_NAME` struct comptime params + per-
-input grad buffer fields. PPOActorLossCG hit this — its loss node
+input grad buffer fields. PPOActorLoss hit this — its loss node
 needs 4 data inputs (actor_out, action, old_log_prob, advantage), so
 we worked around it by packing (action, old_log_prob, advantage) into
 one `InputSlot["aux", ACT+2]`.

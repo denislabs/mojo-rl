@@ -148,7 +148,7 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
     Phase I.2.5 added `IN3_DIM` so quaternary loss leaves (e.g.
     `PPOObjective4(actor_out, action, old_log_prob, advantage)`) can
     declare their fourth input dim natively, retiring the aux-packing
-    workaround that PPOActorLossCG used at I.2 landing time.
+    workaround that PPOActorLoss used at I.2 landing time.
 
     Phase I.2.6.h: `IN_DIMS: InlineArray[Int, Self.ARITY]` is the
     SOLE per-input dim member. The legacy `IN_DIM` / `IN1_DIM` /

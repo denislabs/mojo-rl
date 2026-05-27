@@ -8,7 +8,7 @@ from .cross_entropy import CrossEntropyLoss
 from .gaussian_nll_loss import GaussianNLLLoss
 from .mse import MSELoss
 from .sac_actor_loss import SACActorLoss, SACActorLossOut
-from .ppo_actor_loss_cg import PPOActorLossCG
+from .ppo_actor_loss import PPOActorLoss
 from .critic_update_block import CriticUpdateBlock, TwinCriticUpdateBlock
 from .ddpg_actor_loss import DDPGActorLoss
 from .loss_block import LossBlock

@@ -1,11 +1,11 @@
-"""PPOTrainer — on-policy actor-critic via PPOActorLossCG FullGraph.
+"""PPOTrainer — on-policy actor-critic via PPOActorLoss FullGraph.
 
 Phase I.2.e. CleanRL-style continuous-action PPO:
 
   - Two nets: actor (Linear/Tanh/GaussianHead → 2*ACT) + critic
     (→ scalar V).
   - Two Adam optimisers (distinct lr defaults: actor 3e-4, critic 1e-3).
-  - PPOActorLossCG (the FullGraph form) for the actor loss.
+  - PPOActorLoss (the FullGraph form) for the actor loss.
   - MSELoss for the critic.
   - Internal rollout buffers (obs/action/old_log_prob/value/reward/
     done/terminated), filled by `record_transition`, drained by
@@ -37,7 +37,7 @@ from ..combinators.sequential import Sequential
 from ..core import Module, Optimizer
 from ..core.target_storage import TargetStorage
 from ..loss.mse import MSELoss
-from ..loss.ppo_actor_loss_cg import PPOActorLossCG
+from ..loss.ppo_actor_loss import PPOActorLoss
 from ..optimizer.adam import Adam
 from ..initializer import Xavier
 from ..primitives.gaussian_head import GaussianHead
@@ -110,7 +110,7 @@ struct PPOTrainer[
     var critic: Self.CRITIC
     var actor_opt: Adam
     var critic_opt: Adam
-    var ppo_loss: PPOActorLossCG[Self.ACTOR, Self.MINIBATCH]
+    var ppo_loss: PPOActorLoss[Self.ACTOR, Self.MINIBATCH]
     var mse_loss: MSELoss[1]
 
     # Hyperparameters.
@@ -150,7 +150,7 @@ struct PPOTrainer[
 
     # Minibatch scratch (BATCH=MINIBATCH update). I.2.5: separate
     # mb_act/mb_olp/mb_adv replace the previous packed mb_aux now that
-    # PPOActorLossCG declares each input as its own InputSlot.
+    # PPOActorLoss declares each input as its own InputSlot.
     var mb_obs: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var mb_act: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var mb_olp: UnsafePointer[Scalar[DT], MutAnyOrigin]
@@ -196,7 +196,7 @@ struct PPOTrainer[
         self.critic = Self.CRITIC()
         self.actor_opt = Adam()
         self.critic_opt = Adam()
-        self.ppo_loss = PPOActorLossCG[Self.ACTOR, Self.MINIBATCH]()
+        self.ppo_loss = PPOActorLoss[Self.ACTOR, Self.MINIBATCH]()
         self.mse_loss = MSELoss[1]()
 
         self.gamma = Scalar[DT](0.99)
@@ -260,7 +260,7 @@ struct PPOTrainer[
         t.actor_opt.lr = actor_lr
         t.critic_opt = Adam.make[target="cpu", M=Self.CRITIC](t.critic)
         t.critic_opt.lr = critic_lr
-        t.ppo_loss = PPOActorLossCG[Self.ACTOR, Self.MINIBATCH].make["cpu"](
+        t.ppo_loss = PPOActorLoss[Self.ACTOR, Self.MINIBATCH].make["cpu"](
             clip_eps=clip_eps, entropy_coef=entropy_coef,
         )
         t.mse_loss = MSELoss[1].make["cpu"]()
