@@ -27,3 +27,9 @@ from .td3_delayed_actor_polyak_step import TD3DelayedActorPolyakStep
 from .dual_sample_cpu_step    import DualSampleCpuStep
 from .n_step_sample_cpu_step  import NStepSampleCpuStep
 from .n_step_sample_gpu_step  import NStepSampleGpuStep
+from .ppo_act_step             import PPOActStep
+from .ppo_record_step          import PPORecordStep
+from .ppo_gae_step             import PPOGAEStep
+from .ppo_minibatch_gather_step import PPOMinibatchGatherStep
+from .ppo_actor_train_step     import PPOActorTrainStep
+from .ppo_critic_train_step    import PPOCriticTrainStep
