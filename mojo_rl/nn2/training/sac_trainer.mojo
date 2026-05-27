@@ -3,26 +3,28 @@
 Replaces the previous three-trainer matrix (SACTrainer / SACTrainerGpu /
 SACPerTrainerGpu) with one struct parameterised on:
 
-  - `target: StaticString` — "cpu" or "gpu" — kernel dispatch
-  - `SAMPLE: SampleBlock`  — replay-buffer-owning block, picks uniform
+  - `train_target: StaticString` — "cpu" or "gpu" — kernel dispatch.
+    Renamed from `target` (Phase 3.5) to disambiguate from the env's
+    `ENV_TARGET` introduced by the dual-target unified driver.
+  - `SAMPLE: SampleBlock` — replay-buffer-owning block, picks uniform
                              vs PER vs (future) N-step / sequence
 
-Single pipeline body in `_train_step_impl[target]`. Single `make[target]`
-factory using the matmul-stdlib `Optional[DeviceContext]` idiom. Block
-choices made at type-instantiation time → zero runtime branches on
-target or replay kind beyond the comptime-if already inside each block.
+Single pipeline body in `_train_step_impl[train_target]`. Single
+`make[train_target]` factory using the matmul-stdlib
+`Optional[DeviceContext]` idiom. Block choices made at type-instantiation
+time → zero runtime branches on target or replay kind beyond the
+comptime-if already inside each block.
 
 Dual driver-trait conformance: exposes both `train_step` /
 `select_action` (satisfies `OffPolicyTrainable`) and `train_step_gpu` /
-`select_action_gpu` (satisfies `OffPolicyTrainableGpu`). Each
-non-parametric method dispatches into the parametric `_impl[target]`.
-Calling the wrong surface (e.g. `train_step` on a `target="gpu"`
-instance) raises at runtime. This keeps legacy legacy trainers on
-their existing traits unchanged until they're sunset; after that we
-can collapse to a single parametric trait method.
+`select_action_gpu` (satisfies `OffPolicyTrainableGpu`), plus the
+newer `train_step_unified` / `select_action_unified` (satisfies
+`OffPolicyAgentUnified`). Each non-parametric method dispatches into
+the parametric `_impl[train_target]`. Calling the wrong surface (e.g.
+`train_step` on a `train_target="gpu"` instance) raises at runtime.
 
 Bit-equivalent to the previous SACTrainer when
-`SAMPLE = UniformSampleCpuStep` + `target = "cpu"` (validated by
+`SAMPLE = UniformSampleCpuStep` + `train_target = "cpu"` (validated by
 the bit-identity gate −169.04118 @ 30k Pendulum seed=42).
 """
 
@@ -57,6 +59,7 @@ from .driver_cpu import (
     OffPolicyTrainableGpu,
     OffPolicyTrainableGpuBatched,
 )
+from .driver_unified import OffPolicyAgentUnified, OffPolicyAgentUnifiedGpu
 from .blocks import (
     SampleBlock,
     TargetYStep,
@@ -129,11 +132,17 @@ def _action_clamp_kernel[
 
 
 struct SACTrainer[
-    target: StaticString,
+    train_target: StaticString,
     SAMPLE: SampleBlock,
     ACTOR: Module,
     CRITIC: Module,
-](OffPolicyTrainable, OffPolicyTrainableGpu, OffPolicyTrainableGpuBatched):
+](
+    OffPolicyTrainable,
+    OffPolicyTrainableGpu,
+    OffPolicyTrainableGpuBatched,
+    OffPolicyAgentUnified,
+    OffPolicyAgentUnifiedGpu,
+):
     """Dimensions (OBS / ACT / BATCH) are derived from SAMPLE so the
     user specifies them ONCE (on the sample block type), not on both
     the trainer and the block. Symbolic-equality follows: the
@@ -148,6 +157,11 @@ struct SACTrainer[
 
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
+    # Trait-visible alias of the struct's `train_target` comptime param,
+    # so `OffPolicyAgentUnified` (and any future trait that needs to
+    # gate on the trainer's compute target) can see it as a member.
+    # Distinct from the env's ENV_TARGET — see driver_unified docs.
+    comptime AGENT_TRAIN_TARGET: StaticString = Self.train_target
 
     # Timer section indices. Order matches `add_section` calls in `make`.
     comptime _T_SAMPLE = 0
@@ -320,31 +334,31 @@ struct SACTrainer[
         SampleBlock trait's `configure_per` (no-op default for uniform
         blocks). `ctx` is required for `target="gpu"`."""
         comptime assert (
-            Self.target == "cpu" or Self.target == "gpu"
+            Self.train_target == "cpu" or Self.train_target == "gpu"
         ), "SACTrainer: target must be 'cpu' or 'gpu'"
-        comptime if Self.target == "gpu":
+        comptime if Self.train_target == "gpu":
             if not ctx:
                 raise Error("SACTrainer.make[target='gpu']: ctx required")
 
         var t = Self()
         t.ctx = ctx
 
-        t.actor = Self.ACTOR.make[target=Self.target, INIT=Xavier](ctx=ctx)
+        t.actor = Self.ACTOR.make[target=Self.train_target, INIT=Xavier](ctx=ctx)
         t.pair1 = OnlineTargetPair[Self.CRITIC].make[
-            target=Self.target, INIT=Xavier
+            target=Self.train_target, INIT=Xavier
         ](ctx=ctx)
         t.pair2 = OnlineTargetPair[Self.CRITIC].make[
-            target=Self.target, INIT=Xavier
+            target=Self.train_target, INIT=Xavier
         ](ctx=ctx)
-        t.actor_opt = Adam.make[target=Self.target, M=Self.ACTOR](
+        t.actor_opt = Adam.make[target=Self.train_target, M=Self.ACTOR](
             t.actor,
             ctx=ctx,
         )
-        t.critic1_opt = Adam.make[target=Self.target, M=Self.CRITIC](
+        t.critic1_opt = Adam.make[target=Self.train_target, M=Self.CRITIC](
             t.pair1.online,
             ctx=ctx,
         )
-        t.critic2_opt = Adam.make[target=Self.target, M=Self.CRITIC](
+        t.critic2_opt = Adam.make[target=Self.train_target, M=Self.CRITIC](
             t.pair2.online,
             ctx=ctx,
         )
@@ -354,7 +368,7 @@ struct SACTrainer[
             Self.BATCH,
             Self.ACTOR,
             Self.CRITIC,
-        ].make[Self.target](
+        ].make[Self.train_target](
             action_scale=action_scale,
             gamma=gamma,
             ctx=ctx,
@@ -364,20 +378,20 @@ struct SACTrainer[
             Self.ACT_DIM,
             Self.BATCH,
             Self.CRITIC,
-        ].make[Self.target](ctx=ctx)
+        ].make[Self.train_target](ctx=ctx)
         t.actor_blk = SACActorStep[
             Self.OBS_DIM,
             Self.ACT_DIM,
             Self.BATCH,
             Self.ACTOR,
             Self.CRITIC,
-        ].make[Self.target](action_scale=action_scale, ctx=ctx)
+        ].make[Self.train_target](action_scale=action_scale, ctx=ctx)
         t.state = TrainerState[
             Self.OBS_DIM,
             Self.ACT_DIM,
             Self.BATCH,
         ].make[
-            Self.target
+            Self.train_target
         ](ctx=ctx)
 
         t.actor_opt.lr = actor_lr
@@ -404,7 +418,7 @@ struct SACTrainer[
             window_size=window_size, initial_fill=initial_episode_fill
         )
 
-        init_scratch_auto[Self, target=Self.target](t, ctx)
+        init_scratch_auto[Self, target=Self.train_target](t, ctx)
 
         t.action_scale = action_scale
         t.learning_starts = learning_starts
@@ -460,7 +474,7 @@ struct SACTrainer[
         for d in range(Self.OBS_DIM):
             ob1_cpu_p[d] = obs[d]
 
-        comptime if Self.target == "cpu":
+        comptime if Self.train_target == "cpu":
             var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
             var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM]())
             self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
@@ -510,7 +524,7 @@ struct SACTrainer[
         for d in range(Self.OBS_DIM):
             ob1_cpu_p[d] = obs[d]
 
-        comptime if Self.target == "cpu":
+        comptime if Self.train_target == "cpu":
             var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
             var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM]())
             self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
@@ -544,11 +558,11 @@ struct SACTrainer[
         """Single pipeline body shared across CPU/GPU and uniform/PER.
         Replay-specific behavior lives in `self.sample_blk` (which
         block-internally branches via state.has_per + handles its own
-        target). All other blocks parametric on `[Self.target, POLICY]`."""
+        target). All other blocks parametric on `[Self.train_target, POLICY]`."""
         self.state.step_idx = step_idx
         self.state.did_step = True
         self.state.alpha = fexp(self.alpha_opt.value)
-        comptime if Self.target == "gpu":
+        comptime if Self.train_target == "gpu":
             self.state.ctx = self.ctx
 
         var t_sample = perf_counter_ns()
@@ -558,7 +572,7 @@ struct SACTrainer[
         self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
         var t_ty = perf_counter_ns()
-        self.target_y_blk.step[Self.target, POLICY](
+        self.target_y_blk.step[Self.train_target, POLICY](
             self.state,
             self.actor,
             self.pair1.target_net,
@@ -567,7 +581,7 @@ struct SACTrainer[
         self.timer.accumulate(Self._T_TARGET_Y, t_ty)
 
         var t_crit = perf_counter_ns()
-        self.twin_critic_blk.step[Self.target, POLICY](
+        self.twin_critic_blk.step[Self.train_target, POLICY](
             self.state,
             self.pair1.online,
             self.critic1_opt,
@@ -577,7 +591,7 @@ struct SACTrainer[
         self.timer.accumulate(Self._T_CRITIC, t_crit)
 
         var t_act = perf_counter_ns()
-        self.actor_blk.step[Self.target, POLICY](
+        self.actor_blk.step[Self.train_target, POLICY](
             self.state,
             self.actor,
             self.actor_opt,
@@ -591,7 +605,7 @@ struct SACTrainer[
         self.timer.accumulate(Self._T_ALPHA, t_alp)
 
         var t_pol = perf_counter_ns()
-        self.polyak_blk.step[Self.target](
+        self.polyak_blk.step[Self.train_target](
             self.state,
             self.pair1,
             self.pair2,
@@ -633,7 +647,7 @@ struct SACTrainer[
         mut action_out: List[Scalar[DT]],
         step_idx: Int,
     ) raises:
-        comptime if Self.target != "cpu":
+        comptime if Self.train_target != "cpu":
             raise Error("SACTrainer[target='gpu']: use select_action_gpu")
         self._select_action_impl(obs, action_out, step_idx)
 
@@ -642,16 +656,31 @@ struct SACTrainer[
         ref obs: List[Scalar[DT]],
         mut action_out: List[Scalar[DT]],
     ) raises:
-        comptime if Self.target != "cpu":
+        comptime if Self.train_target != "cpu":
             raise Error(
                 "SACTrainer[target='gpu']: use select_greedy_action_gpu"
             )
         self._select_greedy_action_impl(obs, action_out)
 
     def train_step(mut self, step_idx: Int) raises -> Bool:
-        comptime if Self.target != "cpu":
+        comptime if Self.train_target != "cpu":
             raise Error("SACTrainer[target='gpu']: use train_step_gpu")
         return self._train_step_impl[NoAMP](step_idx)
+
+    # ─── Tier-1 unified train_step — target-agnostic ─────────────────
+    #
+    # `train_step_unified` collapses `train_step` / `train_step_gpu`.
+    # Picks the right AMP policy (NoAMP / Bf16Compute) and dispatches to
+    # `_train_step_impl[POLICY]`. Used by the unified single-env driver
+    # (`run_offpolicy_train_unified`); `OffPolicyAgentUnified`-trait
+    # surface.
+    def train_step_unified(mut self, step_idx: Int) raises -> Bool:
+        comptime if Self.train_target == "cpu":
+            return self._train_step_impl[NoAMP](step_idx)
+        else:
+            if self._use_bf16:
+                return self._train_step_impl[Bf16Compute](step_idx)
+            return self._train_step_impl[NoAMP](step_idx)
 
     # ─── OffPolicyTrainableGpu (GPU) surface ──────────────────────────
 
@@ -661,7 +690,7 @@ struct SACTrainer[
         mut action_out: List[Scalar[DT]],
         step_idx: Int,
     ) raises:
-        comptime if Self.target != "gpu":
+        comptime if Self.train_target != "gpu":
             raise Error("SACTrainer[target='cpu']: use select_action")
         self._select_action_impl(obs, action_out, step_idx)
 
@@ -670,7 +699,7 @@ struct SACTrainer[
         ref obs: List[Scalar[DT]],
         mut action_out: List[Scalar[DT]],
     ) raises:
-        comptime if Self.target != "gpu":
+        comptime if Self.train_target != "gpu":
             raise Error("SACTrainer[target='cpu']: use select_greedy_action")
         self._select_greedy_action_impl(obs, action_out)
 
@@ -678,7 +707,7 @@ struct SACTrainer[
         """Auto-routes through `Bf16Compute` when the trainer was built
         with `use_bf16=True`, else `NoAMP`. Both specializations compile;
         only one is exercised per call. Mirrors legacy SACTrainer."""
-        comptime if Self.target != "gpu":
+        comptime if Self.train_target != "gpu":
             raise Error("SACTrainer[target='cpu']: use train_step")
         if self._use_bf16:
             return self._train_step_impl[Bf16Compute](step_idx)
@@ -697,75 +726,162 @@ struct SACTrainer[
         alp_scratch_dev: DeviceBuffer[DT],
         step_idx: Int,
     ) raises:
-        """Batched policy step for N_ENVS envs. Mirrors legacy
-        SACTrainer.select_action_gpu_batched. Driver owns the
-        N_ENVS-sized scratches."""
+        """Batched policy step for N_ENVS envs — `OffPolicyTrainableGpuBatched`
+        trait surface. Thin pointer-extraction wrapper that delegates to
+        `select_action_unified[N_ENVS]`. The `ctx` arg is retained for
+        trait conformance; the unified core uses `self.ctx` internally
+        (assumed to be the same DeviceContext)."""
         comptime assert (
-            Self.target == "gpu"
+            Self.train_target == "gpu"
         ), "select_action_gpu_batched: target must be 'gpu'"
         comptime assert N_ENVS > 0, "N_ENVS must be > 0"
-        var action_lt = LayoutTensor[
-            DT,
-            Layout.row_major(N_ENVS, Self.ACT_DIM),
-            MutAnyOrigin,
-        ](action_dev.unsafe_ptr())
+        _ = ctx  # unused — unified core threads through self.ctx
+        self.select_action_unified[N_ENVS](
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                obs_dev.unsafe_ptr()
+            ),
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                action_dev.unsafe_ptr()
+            ),
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                ao_scratch_dev.unsafe_ptr()
+            ),
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                alp_scratch_dev.unsafe_ptr()
+            ),
+            step_idx,
+        )
 
+    # ─── Tier-1 unified select_action — prototype ────────────────────
+    #
+    # `select_action_unified[N_ENVS]` collapses the current 3 method
+    # spread (`_select_action_impl` for single-env CPU + GPU,
+    # `select_action_gpu_batched` for N_ENVS GPU) into one parametric
+    # body. The existing methods stay unchanged for back-compat — this
+    # is additive only. Once drivers migrate to the unified surface and
+    # `OffPolicyTrainable*` traits drop the legacy methods, the existing
+    # public wrappers can go away.
+    #
+    # The CPU/GPU branch is taken on `Self.train_target` (the struct comptime),
+    # not a per-method parameter — `target` is already pinned at make
+    # time, so callers don't pass it again.
+    #
+    # Pointer contract: all four pointers (obs / action / ao / alp) must
+    # be target-side (host for CPU, device for GPU). N_ENVS=1 GPU
+    # drivers use `DriverScratch[..., with_host_mirror=True]` and do
+    # the H2D obs / D2H action around this call themselves — the
+    # trainer is no longer responsible for that staging.
+    #
+    # Sizes:
+    #   obs_ptr        — N_ENVS * OBS_DIM
+    #   action_ptr     — N_ENVS * ACT_DIM         (output)
+    #   ao_scratch_ptr — N_ENVS * 2 * ACT_DIM     (actor output cache)
+    #   alp_scratch_ptr— N_ENVS * (ACT_DIM + 1)   (action + log_prob)
+    def select_action_unified[
+        N_ENVS: Int,
+    ](
+        mut self,
+        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ao_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        alp_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        step_idx: Int,
+    ) raises:
+        comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+        comptime if N_ENVS > 1:
+            comptime assert (
+                Self.train_target == "gpu"
+            ), (
+                "select_action_unified[N_ENVS>1]: requires the trainer's"
+                " target to be 'gpu'. Tier-2 (batched CPU envs) will lift"
+                " this restriction."
+            )
+
+        comptime ACT = Self.ACT_DIM
+        comptime OBS = Self.OBS_DIM
+
+        # ── Warmup: uniform random action in [-action_scale, +scale].
         if step_idx < self.learning_starts:
+            comptime if Self.train_target == "cpu":
+                # CPU warmup: random_float64 lane-by-lane. At N_ENVS=1
+                # this consumes exactly ACT random_float64 draws in the
+                # same order as the existing _select_action_impl — so
+                # SAC CPU bit-identity is preserved if a caller swaps in.
+                for i in range(N_ENVS * ACT):
+                    var u = Scalar[DT](2.0 * random_float64() - 1.0)
+                    action_ptr[i] = u * self.action_scale
+            else:
+                # GPU warmup: same Philox kernel select_action_gpu_batched
+                # already uses. Bumps _warmup_rng_offset by 2 draws per
+                # lane (matches the existing batched code path).
+                var action_lt = LayoutTensor[
+                    DT,
+                    Layout.row_major(N_ENVS, ACT),
+                    MutAnyOrigin,
+                ](action_ptr)
+                comptime TPB = 128
+                comptime total = N_ENVS * ACT
+                comptime n_blocks = (total + TPB - 1) // TPB
+                comptime warmup_kernel = _warmup_uniform_kernel[N_ENVS, ACT]
+                var ctx = self.ctx.value()
+                ctx.enqueue_function[warmup_kernel](
+                    action_lt,
+                    self.action_scale,
+                    self._warmup_rng_seed,
+                    self._warmup_rng_offset,
+                    grid_dim=n_blocks,
+                    block_dim=TPB,
+                )
+                self._warmup_rng_offset += UInt64(N_ENVS * ACT * 2)
+            return
+
+        # ── Policy forward — actor + rsample. Identical on CPU and GPU
+        # because both `actor.forward` and `rsample.forward` are
+        # target-parametric. N_ENVS rolls through transparently.
+        var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
+        var ao_t = TileTensor(ao_scratch_ptr, row_major[N_ENVS, 2 * ACT]())
+        var alp_t = TileTensor(alp_scratch_ptr, row_major[N_ENVS, ACT + 1]())
+        self.actor.forward[Self.train_target, N_ENVS](obs_t, output=ao_t)
+        self.actor_blk.inner.rsample.forward[Self.train_target, N_ENVS](
+            ao_t, output=alp_t
+        )
+
+        # ── Clamp + write to action_ptr. CPU loops on host; GPU
+        # dispatches the existing clamp kernel.
+        comptime if Self.train_target == "cpu":
+            for env in range(N_ENVS):
+                var src = alp_scratch_ptr + env * (ACT + 1)
+                var dst = action_ptr + env * ACT
+                for j in range(ACT):
+                    var a = src[j]
+                    if a > self.action_scale:
+                        a = self.action_scale
+                    elif a < -self.action_scale:
+                        a = -self.action_scale
+                    dst[j] = a
+        else:
+            var alp_lt = LayoutTensor[
+                DT,
+                Layout.row_major(N_ENVS, ACT + 1),
+                MutAnyOrigin,
+            ](alp_scratch_ptr)
+            var action_lt = LayoutTensor[
+                DT,
+                Layout.row_major(N_ENVS, ACT),
+                MutAnyOrigin,
+            ](action_ptr)
             comptime TPB = 128
-            comptime total = N_ENVS * Self.ACT_DIM
+            comptime total = N_ENVS * ACT
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime warmup_kernel = _warmup_uniform_kernel[
-                N_ENVS,
-                Self.ACT_DIM,
-            ]
-            ctx.enqueue_function[warmup_kernel](
+            comptime clamp_kernel = _action_clamp_kernel[N_ENVS, ACT]
+            var ctx = self.ctx.value()
+            ctx.enqueue_function[clamp_kernel](
+                alp_lt,
                 action_lt,
                 self.action_scale,
-                self._warmup_rng_seed,
-                self._warmup_rng_offset,
                 grid_dim=n_blocks,
                 block_dim=TPB,
             )
-            self._warmup_rng_offset += UInt64(N_ENVS * Self.ACT_DIM * 2)
-            return
-
-        var obs_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            obs_dev.unsafe_ptr()
-        )
-        var ao_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            ao_scratch_dev.unsafe_ptr()
-        )
-        var alp_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            alp_scratch_dev.unsafe_ptr()
-        )
-        var obs_t = TileTensor(obs_p, row_major[N_ENVS, Self.OBS_DIM]())
-        var ao_t = TileTensor(ao_p, row_major[N_ENVS, 2 * Self.ACT_DIM]())
-        var alp_t = TileTensor(alp_p, row_major[N_ENVS, Self.ACT_DIM + 1]())
-        self.actor.forward["gpu", N_ENVS](obs_t, output=ao_t)
-        self.actor_blk.inner.rsample.forward["gpu", N_ENVS](
-            ao_t,
-            output=alp_t,
-        )
-
-        var alp_lt = LayoutTensor[
-            DT,
-            Layout.row_major(N_ENVS, Self.ACT_DIM + 1),
-            MutAnyOrigin,
-        ](alp_scratch_dev.unsafe_ptr())
-        comptime TPB = 128
-        comptime total = N_ENVS * Self.ACT_DIM
-        comptime n_blocks = (total + TPB - 1) // TPB
-        comptime clamp_kernel = _action_clamp_kernel[
-            N_ENVS,
-            Self.ACT_DIM,
-        ]
-        ctx.enqueue_function[clamp_kernel](
-            alp_lt,
-            action_lt,
-            self.action_scale,
-            grid_dim=n_blocks,
-            block_dim=TPB,
-        )
 
     def record_batch_gpu[
         N_ENVS: Int

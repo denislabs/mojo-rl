@@ -34,6 +34,7 @@ from ..constants import DT
 from ..data.n_step_replay import GPUNStepBuffer
 from mojo_rl.core.env_traits import BoxContinuousActionEnv, GPUContinuousEnv
 from .driver_cpu import OffPolicyTrainableGpu, OffPolicyTrainableGpuBatched
+from .driver_scratch import DriverScratch
 
 
 def run_offpolicy_train_gpu[
@@ -303,24 +304,32 @@ def run_offpolicy_train_gpu_n_envs[
     comptime ACT_DIM = E.ACTION_DIM
 
     # Device buffers — one big alloc up front, reused every iteration.
-    var states = ctx.enqueue_create_buffer[DT](N_ENVS * STATE_SIZE)
-    var prev_obs = ctx.enqueue_create_buffer[DT](N_ENVS * OBS_DIM)
-    var obs_buf = ctx.enqueue_create_buffer[DT](N_ENVS * OBS_DIM)
-    var actions = ctx.enqueue_create_buffer[DT](N_ENVS * ACT_DIM)
-    var rewards = ctx.enqueue_create_buffer[DT](N_ENVS)
-    var dones = ctx.enqueue_create_buffer[DT](N_ENVS)
-    var terminated = ctx.enqueue_create_buffer[DT](N_ENVS)
-    var ao_scratch = ctx.enqueue_create_buffer[DT](N_ENVS * 2 * ACT_DIM)
-    var alp_scratch = ctx.enqueue_create_buffer[DT](N_ENVS * (ACT_DIM + 1))
-    ctx.enqueue_memset(actions, 0)
-    ctx.enqueue_memset(rewards, 0)
-    ctx.enqueue_memset(dones, 0)
-    ctx.enqueue_memset(terminated, 0)
+    # `DriverScratch[NAME, N_ENVS, DIM]` collapses the previous
+    # `ctx.enqueue_create_buffer + host-side alloc` pairs into a single
+    # typed wrapper; `with_host_mirror=True` requests a host mirror for
+    # the buffers we D2H every iteration (rewards / dones).
+    var states = DriverScratch["states", N_ENVS, STATE_SIZE].make["gpu"](ctx)
+    var prev_obs = DriverScratch["prev_obs", N_ENVS, OBS_DIM].make["gpu"](ctx)
+    var obs_buf = DriverScratch["obs_buf", N_ENVS, OBS_DIM].make["gpu"](ctx)
+    var actions = DriverScratch["actions", N_ENVS, ACT_DIM].make["gpu"](ctx)
+    var rewards = DriverScratch["rewards", N_ENVS, 1].make["gpu"](
+        ctx, with_host_mirror=True,
+    )
+    var dones = DriverScratch["dones", N_ENVS, 1].make["gpu"](
+        ctx, with_host_mirror=True,
+    )
+    var terminated = DriverScratch["terminated", N_ENVS, 1].make["gpu"](ctx)
+    var ao_scratch = DriverScratch["ao", N_ENVS, 2 * ACT_DIM].make["gpu"](ctx)
+    var alp_scratch = DriverScratch["alp", N_ENVS, ACT_DIM + 1].make["gpu"](
+        ctx
+    )
+    ctx.enqueue_memset(actions.dev.value(), 0)
+    ctx.enqueue_memset(rewards.dev.value(), 0)
+    ctx.enqueue_memset(dones.dev.value(), 0)
+    ctx.enqueue_memset(terminated.dev.value(), 0)
 
-    # Host scratch — per-iteration D2H of rewards + dones for episode
-    # tracking. Tiny (N_ENVS * 2 scalars), Apple-friendly.
-    var host_rewards = alloc[Scalar[DT]](N_ENVS)
-    var host_dones = alloc[Scalar[DT]](N_ENVS)
+    # Per-env host-side return accumulator. Fed by the D2H of
+    # `rewards.host_ptr()` each iteration (see below).
     var per_env_returns = List[Scalar[DT]](
         length=N_ENVS,
         fill=Scalar[DT](0.0),
@@ -344,11 +353,13 @@ def run_offpolicy_train_gpu_n_envs[
     ].new(ctx, gamma=nstep_gamma)
 
     # Initial reset + obs extraction.
-    E.reset_kernel_gpu[N_ENVS, STATE_SIZE](ctx, states, rng_seed=rng_seed)
+    E.reset_kernel_gpu[N_ENVS, STATE_SIZE](
+        ctx, states.dev.value(), rng_seed=rng_seed,
+    )
     E.extract_obs_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM](
         ctx,
-        states,
-        obs_buf,
+        states.dev.value(),
+        obs_buf.dev.value(),
     )
 
     var ep_returns = List[Scalar[DT]]()
@@ -360,15 +371,15 @@ def run_offpolicy_train_gpu_n_envs[
     while step_idx < total_env_steps:
         # Save the pre-step obs as the transition's `prev_obs`. D2D copy
         # — no host involvement.
-        ctx.enqueue_copy(prev_obs, obs_buf)
+        ctx.enqueue_copy(prev_obs.dev.value(), obs_buf.dev.value())
 
         # Batched policy (warmup uniform if step_idx < learning_starts).
         trainer.select_action_gpu_batched[N_ENVS](
             ctx,
-            obs_buf,
-            actions,
-            ao_scratch,
-            alp_scratch,
+            obs_buf.dev.value(),
+            actions.dev.value(),
+            ao_scratch.dev.value(),
+            alp_scratch.dev.value(),
             step_idx,
         )
 
@@ -377,12 +388,12 @@ def run_offpolicy_train_gpu_n_envs[
         # stochastic envs see fresh randomness.
         E.step_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM, ACT_DIM](
             ctx,
-            states,
-            actions,
-            rewards,
-            dones,
-            terminated,
-            obs_buf,
+            states.dev.value(),
+            actions.dev.value(),
+            rewards.dev.value(),
+            dones.dev.value(),
+            terminated.dev.value(),
+            obs_buf.dev.value(),
             rng_seed=rng_seed + UInt64(iter_idx + 1),
         )
 
@@ -394,32 +405,35 @@ def run_offpolicy_train_gpu_n_envs[
             trainer.record_batch_gpu_nstep[N_ENVS, NS](
                 ctx,
                 nstep_buf,
-                prev_obs,
-                actions,
-                rewards,
-                obs_buf,
-                dones,
+                prev_obs.dev.value(),
+                actions.dev.value(),
+                rewards.dev.value(),
+                obs_buf.dev.value(),
+                dones.dev.value(),
             )
         else:
             trainer.record_batch_gpu[N_ENVS](
                 ctx,
-                prev_obs,
-                actions,
-                rewards,
-                obs_buf,
-                dones,
+                prev_obs.dev.value(),
+                actions.dev.value(),
+                rewards.dev.value(),
+                obs_buf.dev.value(),
+                dones.dev.value(),
             )
 
         # D2H of rewards + dones — small (N_ENVS * 2 scalars), needed
         # synchronously to update host-side per-env return accumulators
-        # and to decide which envs need a selective reset.
-        ctx.enqueue_copy(host_rewards, rewards)
-        ctx.enqueue_copy(host_dones, dones)
+        # and to decide which envs need a selective reset. The host
+        # mirrors live inside the DriverScratch (with_host_mirror=True).
+        ctx.enqueue_copy(rewards.host_ptr(), rewards.dev.value())
+        ctx.enqueue_copy(dones.host_ptr(), dones.dev.value())
         ctx.synchronize()
 
+        var rewards_h = rewards.host_ptr()
+        var dones_h = dones.host_ptr()
         for e in range(N_ENVS):
-            per_env_returns[e] = per_env_returns[e] + host_rewards[e]
-            if host_dones[e] > Scalar[DT](0.5):
+            per_env_returns[e] = per_env_returns[e] + rewards_h[e]
+            if dones_h[e] > Scalar[DT](0.5):
                 trainer.add_complete_return(per_env_returns[e])
                 per_env_returns[e] = Scalar[DT](0.0)
                 ep_returns.append(trainer.mean_return())
@@ -430,14 +444,14 @@ def run_offpolicy_train_gpu_n_envs[
         # their obs is identical to what step_kernel_gpu wrote).
         E.selective_reset_kernel_gpu[N_ENVS, STATE_SIZE](
             ctx,
-            states,
-            dones,
+            states.dev.value(),
+            dones.dev.value(),
             rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
         )
         E.extract_obs_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM](
             ctx,
-            states,
-            obs_buf,
+            states.dev.value(),
+            obs_buf.dev.value(),
         )
 
         step_idx += N_ENVS
