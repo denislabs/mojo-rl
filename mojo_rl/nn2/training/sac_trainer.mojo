@@ -57,7 +57,6 @@ from .trainer_block import TrainerState
 from .driver_cpu import (
     OffPolicyTrainable,
     OffPolicyTrainableGpu,
-    OffPolicyTrainableGpuBatched,
 )
 from .driver_unified import OffPolicyAgentUnified, OffPolicyAgentUnifiedGpu
 from .blocks import (
@@ -139,7 +138,6 @@ struct SACTrainer[
 ](
     OffPolicyTrainable,
     OffPolicyTrainableGpu,
-    OffPolicyTrainableGpuBatched,
     OffPolicyAgentUnified,
     OffPolicyAgentUnifiedGpu,
 ):
@@ -756,54 +754,12 @@ struct SACTrainer[
             return self._train_step_impl[Bf16Compute](step_idx)
         return self._train_step_impl[NoAMP](step_idx)
 
-    # ─── OffPolicyTrainableGpuBatched (N_ENVS) surface ────────────────
-
-    def select_action_gpu_batched[
-        N_ENVS: Int
-    ](
-        mut self,
-        ctx: DeviceContext,
-        obs_dev: DeviceBuffer[DT],
-        action_dev: DeviceBuffer[DT],
-        ao_scratch_dev: DeviceBuffer[DT],
-        alp_scratch_dev: DeviceBuffer[DT],
-        step_idx: Int,
-    ) raises:
-        """Batched policy step for N_ENVS envs — `OffPolicyTrainableGpuBatched`
-        trait surface. Thin pointer-extraction wrapper that delegates to
-        `select_action_unified[N_ENVS]`. The `ctx` arg is retained for
-        trait conformance; the unified core uses `self.ctx` internally
-        (assumed to be the same DeviceContext)."""
-        comptime assert (
-            Self.train_target == "gpu"
-        ), "select_action_gpu_batched: target must be 'gpu'"
-        comptime assert N_ENVS > 0, "N_ENVS must be > 0"
-        _ = ctx  # unused — unified core threads through self.ctx
-        self.select_action_unified[N_ENVS](
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                obs_dev.unsafe_ptr()
-            ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                action_dev.unsafe_ptr()
-            ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                ao_scratch_dev.unsafe_ptr()
-            ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                alp_scratch_dev.unsafe_ptr()
-            ),
-            step_idx,
-        )
-
-    # ─── Tier-1 unified select_action — prototype ────────────────────
+    # ─── Tier-1 unified select_action ────────────────────────────────
     #
-    # `select_action_unified[N_ENVS]` collapses the current 3 method
-    # spread (`_select_action_impl` for single-env CPU + GPU,
-    # `select_action_gpu_batched` for N_ENVS GPU) into one parametric
-    # body. The existing methods stay unchanged for back-compat — this
-    # is additive only. Once drivers migrate to the unified surface and
-    # `OffPolicyTrainable*` traits drop the legacy methods, the existing
-    # public wrappers can go away.
+    # `select_action_unified[N_ENVS]` is the single entry point for all
+    # (target, N_ENVS) combinations. The CPU/GPU split happens via
+    # `Self.train_target` (the struct comptime), and N_ENVS rolls
+    # through transparently for both warmup and policy paths.
     #
     # The CPU/GPU branch is taken on `Self.train_target` (the struct comptime),
     # not a per-method parameter — `target` is already pinned at make
@@ -851,9 +807,8 @@ struct SACTrainer[
                     var u = Scalar[DT](2.0 * random_float64() - 1.0)
                     action_ptr[i] = u * self.action_scale
             else:
-                # GPU warmup: same Philox kernel select_action_gpu_batched
-                # already uses. Bumps _warmup_rng_offset by 2 draws per
-                # lane (matches the existing batched code path).
+                # GPU warmup: Philox kernel, bumps _warmup_rng_offset by
+                # 2 draws per lane.
                 var action_lt = LayoutTensor[
                     DT,
                     Layout.row_major(N_ENVS, ACT),

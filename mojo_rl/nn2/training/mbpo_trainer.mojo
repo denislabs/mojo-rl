@@ -14,6 +14,7 @@ CPU only. Mirrors MBPOTrainerV2 surface (OffPolicyTrainable).
 
 from std.math import exp as fexp, sqrt as fsqrt, log as flog
 from std.random import random_float64, randn_float64
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from ..constants import DT
@@ -21,6 +22,7 @@ from ..core import Module
 from ..core.online_target_pair import OnlineTargetPair
 from ..core.scratch import Scratch
 from ..core.scratch_walkers import init_scratch_auto
+from ..data.n_step_replay import GPUNStepBuffer
 from ..initializer import Xavier, Kaiming
 from ..optimizer.adam import Adam
 from ..optimizer.scalar_adam import ScalarAdam
@@ -28,6 +30,7 @@ from .dynamics_ensemble_block import DynamicsEnsembleBlock
 from .episode_tracker import EpisodeTracker
 from .trainer_block import TrainerState
 from .driver_cpu import OffPolicyTrainable
+from .driver_unified import OffPolicyAgentUnifiedGpu
 from .blocks import (
     DualSampleCpuStep,
     TargetYStep,
@@ -52,7 +55,7 @@ struct MBPOTrainer[
     REAL_RATIO_PCT: Int = 5,
     LOGVAR_MIN: Float64 = -10.0,
     LOGVAR_MAX: Float64 = -2.0,
-](OffPolicyTrainable):
+](OffPolicyTrainable & OffPolicyAgentUnifiedGpu):
     comptime DYN_IN: Int = Self.OBS_DIM + Self.ACT_DIM
     comptime DYN_PRED: Int = 1 + Self.OBS_DIM
     comptime DYN_OUT: Int = 2 * Self.DYN_PRED
@@ -72,6 +75,8 @@ struct MBPOTrainer[
 
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
+    # MBPO is CPU-only; the OffPolicyAgentUnifiedGpu GPU stubs raise.
+    comptime AGENT_TRAIN_TARGET: StaticString = "cpu"
 
     var actor: Self.ACTOR
     var pair1: OnlineTargetPair[Self.CRITIC]
@@ -489,6 +494,124 @@ struct MBPOTrainer[
 
     def ep_count(self) -> Int:
         return self.tracker.ep_count
+
+    # ─── OffPolicyAgentUnifiedGpu surface (Tier-3 driver) ────────────
+    #
+    # MBPO is CPU-only — the GPU record stubs raise. The Tier-3 driver
+    # comptime-elides those branches when env_target == "cpu", so the
+    # stubs are never invoked from a correctly-built driver.
+
+    def select_action_unified[
+        N_ENVS: Int
+    ](
+        mut self,
+        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ao_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        alp_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        step_idx: Int,
+    ) raises:
+        comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+        comptime OBS = Self.OBS_DIM
+        comptime ACT = Self.ACT_DIM
+
+        if step_idx < self.learning_starts:
+            # Per-lane random_float64 — at N_ENVS=1 consumes RNG in the
+            # same order as the legacy `select_action` warmup path.
+            for i in range(N_ENVS * ACT):
+                var u = Scalar[DT](2.0 * random_float64() - 1.0)
+                action_ptr[i] = u * self.action_scale
+            return
+
+        var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
+        var ao_t = TileTensor(ao_scratch_ptr, row_major[N_ENVS, 2 * ACT]())
+        var alp_t = TileTensor(
+            alp_scratch_ptr, row_major[N_ENVS, ACT + 1]()
+        )
+        self.actor.forward["cpu", N_ENVS](obs_t, output=ao_t)
+        self.actor_blk.inner.rsample.forward["cpu", N_ENVS](
+            ao_t, output=alp_t
+        )
+        for env in range(N_ENVS):
+            var src = alp_scratch_ptr + env * (ACT + 1)
+            var dst = action_ptr + env * ACT
+            for j in range(ACT):
+                var a = src[j]
+                if a > self.action_scale:
+                    a = self.action_scale
+                elif a < -self.action_scale:
+                    a = -self.action_scale
+                dst[j] = a
+
+    def train_step_unified(mut self, step_idx: Int) raises -> Bool:
+        return self.train_step(step_idx)
+
+    def add_complete_return(mut self, ret: Scalar[DT]):
+        self.tracker.add_complete_return(ret)
+
+    def record_batch_cpu[
+        N_ENVS: Int
+    ](
+        mut self,
+        prev_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        comptime OBS = Self.OBS_DIM
+        comptime ACT = Self.ACT_DIM
+        var obs_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+        var act_lane = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+        var nxt_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+        for env_idx in range(N_ENVS):
+            for d in range(OBS):
+                obs_lane[d] = prev_obs_ptr[env_idx * OBS + d]
+                nxt_lane[d] = next_obs_ptr[env_idx * OBS + d]
+            for j in range(ACT):
+                act_lane[j] = action_ptr[env_idx * ACT + j]
+            self.sample_blk.real_add(
+                obs_lane,
+                act_lane,
+                reward_ptr[env_idx],
+                nxt_lane,
+                done_ptr[env_idx],
+            )
+
+    def record_batch_gpu[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        raise Error(
+            "MBPOTrainer is CPU-only; record_batch_gpu unreachable"
+            " via the Tier-3 cpu env path"
+        )
+
+    def record_batch_gpu_nstep[
+        N_ENVS: Int, NS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut nstep_buf: GPUNStepBuffer[
+            NS, Self.AGENT_OBS_DIM, Self.AGENT_ACT_DIM, N_ENVS,
+        ],
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        raise Error(
+            "MBPOTrainer is CPU-only; record_batch_gpu_nstep unreachable"
+            " via the Tier-3 cpu env path"
+        )
 
     # ─── Dynamics training + synthetic rollouts (orchestration) ──────
 

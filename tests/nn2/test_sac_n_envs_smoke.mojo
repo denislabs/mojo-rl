@@ -1,12 +1,9 @@
 """SACTrainer N_ENVS GPU driver smoke.
 
-Parity for the legacy test_driver_gpu_n_envs.mojo gate. Confirms
-SACTrainer conforms to OffPolicyTrainableGpuBatched so the existing
-run_offpolicy_train_gpu_n_envs driver function picks it up unchanged.
-
-NOT a convergence regression; just verifies the batched plumbing
-(select_action_gpu_batched + record_batch_gpu via the
-add_batch_gpu sample-block method) runs without crashing.
+Smoke gate for the Tier-3 unified driver (`run_offpolicy_train_batched`)
+with `BatchedGpuEnv` at N_ENVS=4. NOT a convergence regression; just
+verifies the batched plumbing (select_action_unified + record_batch_gpu
+via the sample block's add_batch_gpu method) runs without crashing.
 """
 
 from std.gpu.host import DeviceContext

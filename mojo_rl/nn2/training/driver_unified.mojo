@@ -65,9 +65,8 @@ trait OffPolicyAgentUnified(Movable, ImplicitlyDestructible):
     # Conceptually distinct from the env's `ENV_TARGET` — see the
     # module docstring for the dual-target model.
     comptime AGENT_TRAIN_TARGET: StaticString
-    # `AGENT_` prefix matches the existing `OffPolicyTrainableGpuBatched`
-    # convention so GPUNStepBuffer + record_batch_gpu* signatures stay
-    # symbolically compatible across traits.
+    # `AGENT_` prefix avoids clashing with the struct's own
+    # OBS_DIM/ACT_DIM comptime params on conforming trainers.
     comptime AGENT_OBS_DIM: Int
     comptime AGENT_ACT_DIM: Int
 
@@ -150,11 +149,10 @@ trait OffPolicyAgentUnifiedGpu(OffPolicyAgentUnified):
     surfaces needed by the GPU-env unified driver. `add_complete_return`
     is inherited from the parent — single source of truth.
 
-    Single inheritance (not OffPolicyTrainableGpuBatched intersection)
-    to avoid `mean_return`/`ep_count` ambiguity at trait-method dispatch.
-    SACTrainer's existing record_batch_gpu* implementations (introduced
-    in Phase 2 with the AGENT_OBS_DIM/AGENT_ACT_DIM convention) satisfy
-    both this trait and OffPolicyTrainableGpuBatched simultaneously."""
+    CPU-only trainers (e.g. MBPOTrainer) conform with raising stubs for
+    `record_batch_gpu` / `record_batch_gpu_nstep`; the Tier-3 driver
+    comptime-elides the GPU branch when env_target == "cpu" so the
+    stubs are never invoked."""
 
     def record_batch_gpu[
         N_ENVS: Int
@@ -212,12 +210,10 @@ def run_offpolicy_train_unified[
     SAME `DeviceContext` the trainer was built with — Apple Metal's
     queue pool exhausts if a new context is constructed per call.
 
-    Loop semantics match the existing `run_offpolicy_train_cpu` /
-    `run_offpolicy_train_gpu` per-target drivers; the CPU branch is
-    bit-identical to `run_offpolicy_train_cpu` because
-    `select_action_unified` consumes RNG in the same order as the
-    legacy `_select_action_impl` on CPU. The GPU branch differs in
-    warmup RNG (Philox kernel vs host `random_float64`).
+    Loop semantics: one env step + one `train_step_unified` per
+    iteration. `select_action_unified` consumes RNG in the same order
+    on CPU as the legacy single-env CPU path. The GPU branch differs
+    in warmup RNG (Philox kernel vs host `random_float64`).
     """
     # ENV_TARGET is implicit "cpu" since E is bound on BoxContinuousActionEnv.
     # Made explicit here so the dual-axis model is visible at the dispatch site.

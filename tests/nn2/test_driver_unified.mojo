@@ -5,16 +5,12 @@ function handles both `target="cpu"` and `target="gpu"` single-env
 trainers against the SAME env (CPU-side PendulumEnv). The body is
 shared; H2D/D2H staging is comptime-elided on CPU.
 
-Bit-identity vs the legacy per-target drivers is NOT asserted:
-  * CPU path matches `run_offpolicy_train_cpu` exactly (same RNG, same
-    body). The numbers will agree at seed=42 because select_action_unified
-    CPU branch is bit-identical to `_select_action_impl`'s CPU branch.
-  * GPU path differs in warmup RNG (Philox kernel vs host random_float64),
-    so it has its own baseline.
-
 We just assert finite training (n_trained > 0, mean_return finite) and
 print the final mean10 for both targets so a future regression is
-visible in the test output.
+visible in the test output. The Tier-3 driver
+`run_offpolicy_train_batched` covers same-target combinations
+(including N_ENVS>1); this Tier-1 driver covers the cross-target
+single-env case (cpu env + gpu trainer).
 """
 
 from std.gpu.host import DeviceContext

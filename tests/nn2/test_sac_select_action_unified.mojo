@@ -1,14 +1,13 @@
-"""Tier-1 select_action_unified prototype — three paths, one entry.
+"""Tier-1 select_action_unified — three paths, one entry.
 
 Demonstrates that `SACTrainer.select_action_unified[N_ENVS]`
 (`target` is the trainer's struct-comptime, not a per-method param)
-serves all three legacy call surfaces:
+serves all three legacy call surfaces from a single body:
 
-  1. `select_action`                — CPU trainer, N_ENVS=1, host pointers.
-  2. `select_action_gpu`            — GPU trainer, N_ENVS=1, device pointers
-                                      (caller does H2D obs / D2H action via
-                                      `DriverScratch[..., with_host_mirror=True]`).
-  3. `select_action_gpu_batched[N]` — GPU trainer, N_ENVS>1, device pointers.
+  1. CPU trainer, N_ENVS=1, host pointers.
+  2. GPU trainer, N_ENVS=1, device pointers (caller does H2D obs /
+     D2H action via `DriverScratch[..., with_host_mirror=True]`).
+  3. GPU trainer, N_ENVS>1, device pointers.
 
 Each path is built from the same trainer struct (target-comptime'd at
 make time) + the same `DriverScratch` storage abstraction. The unified
@@ -16,8 +15,7 @@ method dispatches via comptime branches on `target` and `N_ENVS`.
 
 Assertions are intentionally loose: actions must be finite and within
 [-action_scale, +action_scale]. SAC bit-identity is a separate gate
-exercised by `test_sac_pendulum_multi_seed.mojo` against the existing
-public methods (unchanged by this prototype).
+exercised by `test_sac_pendulum_multi_seed.mojo`.
 """
 
 from std.gpu.host import DeviceContext

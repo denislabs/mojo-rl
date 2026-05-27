@@ -1,8 +1,8 @@
-"""MBPO training on Pendulum V1 via the nn2 CPU off-policy driver.
+"""MBPO training on Pendulum V1 via the nn2 Tier-3 off-policy driver.
 
 Uses the unified `MBPOTrainer` (ref-based blocks). Same generic
-driver as `pendulum_sac_nn2_driver.mojo` (the trainer conforms to
-`OffPolicyTrainable`).
+driver as `pendulum_sac_nn2_driver.mojo` — `run_offpolicy_train_batched`
+with `BatchedCpuEnv[E, 1, OBS, ACT]` for single-env CPU.
 
 Hyperparameters mirror the deep_agents reference where applicable:
 
@@ -28,7 +28,8 @@ from mojo_rl.nn2.primitives.elementwise import Elementwise
 from mojo_rl.nn2.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.nn2.training.mbpo_trainer import MBPOTrainer
-from mojo_rl.nn2.training.driver_cpu import run_offpolicy_train_cpu
+from mojo_rl.nn2.training.batched_env import BatchedCpuEnv
+from mojo_rl.nn2.training.driver_unified import run_offpolicy_train_batched
 
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -97,9 +98,10 @@ def main() raises:
         sac_updates_per_step=10,
         dyn_batch_size=256,
     )
-    var env = PendulumEnv[DT]()
+    var template = PendulumEnv[DT]()
+    var env = BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM](template)
 
-    alias _Trainer = MBPOTrainer[
+    comptime _Trainer = MBPOTrainer[
         ActorNet, CriticNet, DynNet,
         OBS_DIM, ACT_DIM, BATCH, REPLAY_CAP, SYNTH_CAP,
         N_ENSEMBLE, NUM_ELITES, REAL_RATIO_PCT,
@@ -110,10 +112,19 @@ def main() raises:
         "LOGVAR_MAX =", LOGVAR_MAX_F,
     )
 
-    var ep_returns = run_offpolicy_train_cpu(
-        trainer, env, TOTAL_TIMESTEPS,
-        obs_dim=OBS_DIM, act_dim=ACT_DIM,
-        print_every=1_000, verbose=True,
+    var ep_returns = run_offpolicy_train_batched[
+        _Trainer,
+        BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM],
+        1,
+    ](
+        None,
+        trainer,
+        env,
+        TOTAL_TIMESTEPS,
+        rng_seed=UInt64(42),
+        updates_per_step=1,
+        print_every=1_000,
+        verbose=True,
     )
 
     print("=" * 70)
