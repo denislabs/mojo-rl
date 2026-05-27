@@ -135,7 +135,12 @@ struct SACActorLoss[
         ctx: Optional[DeviceContext] = None,
         action_scale: Scalar[DT] = Scalar[DT](1.0),
     ) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU.
+
+        Inner ctors (`ComputeGraph.make`, `RSample.make`) raise if
+        `target='gpu'` but `ctx is None`, so by the time we reach the
+        GPU-only host buffer creation, `ctx.value()` is safe.
+        """
         comptime assert target == "cpu" or target == "gpu", (
             "SACActorLoss: target must be 'cpu' or 'gpu'"
         )
@@ -150,23 +155,13 @@ struct SACActorLoss[
         )
 
         var blk = Self()
-        comptime if target == "cpu":
-            blk.graph = Self.ActorGraph.make[target="cpu", INIT=Zero]()
-            blk.rsample = RSample[Self.ACT_DIM].make[target="cpu", INIT=Zero]()
-            blk.rsample.action_scale = action_scale
-            blk.ts = TargetStorage.make_cpu()
-            init_scratch_auto[Self, target="cpu"](blk)
-        else:
-            if not ctx:
-                raise Error(
-                    "SACActorLoss.make[target='gpu']: ctx required"
-                )
+        blk.graph = Self.ActorGraph.make[target, INIT=Zero](ctx=ctx)
+        blk.rsample = RSample[Self.ACT_DIM].make[target, INIT=Zero](ctx=ctx)
+        blk.rsample.action_scale = action_scale
+        blk.ts = TargetStorage.make[target](ctx=ctx)
+        init_scratch_auto[Self, target](blk, ctx)
+        comptime if target == "gpu":
             var ctx_v = ctx.value()
-            blk.graph = Self.ActorGraph.make[target="gpu", INIT=Zero](ctx_v)
-            blk.rsample = RSample[Self.ACT_DIM].make[target="gpu", INIT=Zero](ctx_v)
-            blk.rsample.action_scale = action_scale
-            blk.ts = TargetStorage.make_gpu(ctx_v)
-            init_scratch_auto[Self, target="gpu"](blk, ctx)
             blk._loss_host = ctx_v.enqueue_create_host_buffer[DT](Self.BATCH)
             blk._lp_host = ctx_v.enqueue_create_host_buffer[DT](Self.BATCH)
         return blk^
@@ -203,60 +198,38 @@ struct SACActorLoss[
         self.graph.set_node_attr["alpha_lp", "multiplier"](alpha)
 
         # ── Forward.
-        comptime if target == "cpu":
-            var loss_p = self._loss_out.cpu_ptr()
-            var loss_t = TileTensor(loss_p, row_major[BB, 1]())
-            self.graph.forward["cpu", BB, POLICY](loss_t)
+        var loss_p = self._loss_out.target_ptr[target]()
+        var loss_t = TileTensor(loss_p, row_major[BB, 1]())
+        self.graph.forward[target, BB, POLICY](loss_t)
 
-            # Mean loss + mean log_prob, read directly from the graph.
-            var lp_p = self.graph.node_out_ptr["log_prob"]()
-            var loss_sum: Scalar[DT] = 0.0
-            var lp_sum: Scalar[DT] = 0.0
-            for b in range(BB):
-                loss_sum += loss_p[b]
-                lp_sum += lp_p[b]
-            var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](BB)
-            var loss_mean = loss_sum * inv_b
-            var lp_mean = lp_sum * inv_b
-
-            # Seed grad_out = 1/BATCH, then backward.
-            var grad_p = self._grad_seed.cpu_ptr()
-            seed_grad_inv_batch["cpu", BB](grad_p)
-            var grad_t = TileTensor(grad_p, row_major[BB, 1]())
-            self.graph.vjp["cpu", BB, POLICY](grad_t)
-
-            actor_opt.step["cpu", M=Self.ACTOR](actor)
-            return SACActorLossOut(loss=loss_mean, log_prob_mean=lp_mean)
-        else:
+        # ── Mean reduction. CPU reads the graph buffers directly; GPU
+        # stages loss_per_b + log_prob to host first (cheaper than
+        # launching a reduction kernel at SAC batch sizes ≤ 1024).
+        var lp_p = self.graph.node_out_ptr["log_prob"]()
+        var loss_read_p = loss_p
+        var lp_read_p = lp_p
+        comptime if target == "gpu":
             var ctx = self.ts.ctx.value()
-            var loss_p = self._loss_out.dev_ptr()
-            var loss_t = TileTensor(loss_p, row_major[BB, 1]())
-            self.graph.forward["gpu", BB, POLICY](loss_t)
-
-            # Host-side mean reduction: copy loss_per_b + log_prob to
-            # host, sum, divide. Cheaper than launching a reduction
-            # kernel + scalar download at SAC batch sizes (≤ 1024).
-            var lp_dev_p = self.graph.node_out_ptr["log_prob"]()
             ctx.enqueue_copy(self._loss_host.value(), loss_p)
-            ctx.enqueue_copy(self._lp_host.value(), lp_dev_p)
+            ctx.enqueue_copy(self._lp_host.value(), lp_p)
             ctx.synchronize()
-            var loss_hp = self._loss_host.value().unsafe_ptr()
-            var lp_hp = self._lp_host.value().unsafe_ptr()
-            var loss_sum: Scalar[DT] = 0.0
-            var lp_sum: Scalar[DT] = 0.0
-            for b in range(BB):
-                loss_sum += loss_hp[b]
-                lp_sum += lp_hp[b]
-            var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](BB)
-            var loss_mean = loss_sum * inv_b
-            var lp_mean = lp_sum * inv_b
+            loss_read_p = self._loss_host.value().unsafe_ptr()
+            lp_read_p = self._lp_host.value().unsafe_ptr()
 
-            var grad_p = self._grad_seed.dev_ptr()
-            seed_grad_inv_batch["gpu", BB](
-                grad_p, Optional[DeviceContext](ctx)
-            )
-            var grad_t = TileTensor(grad_p, row_major[BB, 1]())
-            self.graph.vjp["gpu", BB, POLICY](grad_t)
+        var loss_sum: Scalar[DT] = 0.0
+        var lp_sum: Scalar[DT] = 0.0
+        for b in range(BB):
+            loss_sum += loss_read_p[b]
+            lp_sum += lp_read_p[b]
+        var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](BB)
+        var loss_mean = loss_sum * inv_b
+        var lp_mean = lp_sum * inv_b
 
-            actor_opt.step["gpu", M=Self.ACTOR](actor)
-            return SACActorLossOut(loss=loss_mean, log_prob_mean=lp_mean)
+        # ── Seed grad_out = 1/BATCH, then backward + step.
+        var grad_p = self._grad_seed.target_ptr[target]()
+        seed_grad_inv_batch[target, BB](grad_p, ctx=self.ts.ctx)
+        var grad_t = TileTensor(grad_p, row_major[BB, 1]())
+        self.graph.vjp[target, BB, POLICY](grad_t)
+
+        actor_opt.step[target, M=Self.ACTOR](actor)
+        return SACActorLossOut(loss=loss_mean, log_prob_mean=lp_mean)
