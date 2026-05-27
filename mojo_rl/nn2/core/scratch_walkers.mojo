@@ -3,7 +3,7 @@
 Free function that iterates every `IsScratch`-conforming field of a
 struct and dispatches `init_with[target]`. Replaces the per-block
 manual `make[cpu]` / `make[gpu]` lifecycle for every scratch buffer
-(`_mb_ao`, `_mb_alp`, `_mb_sa`, …) in blocks like `SACActorLossCG`,
+(`_mb_ao`, `_mb_alp`, `_mb_sa`, …) in blocks like `SACActorLoss`,
 `TargetYBlock`, `ActionSamplingBlock`, `CriticUpdateBlock`.
 
 Same Mojo nightly limitation as `for_each_param_auto` (`walkers.mojo`):

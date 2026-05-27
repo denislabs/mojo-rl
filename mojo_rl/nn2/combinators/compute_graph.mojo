@@ -386,7 +386,7 @@ struct ComputeGraph[
     # Per-call node attribute mutation. Resolves the target node by
     # name at comptime; the named node's `op` must have a struct field
     # matching `ATTR` (e.g. `Scale.multiplier`). Replaces the hard-coded
-    # `self.nodes[5].op.multiplier = alpha` pattern in SACActorLossCG.
+    # `self.nodes[5].op.multiplier = alpha` pattern in SACActorLoss.
     # ──────────────────────────────────────────────────────────────────
 
     def set_node_attr[

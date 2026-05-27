@@ -9,12 +9,12 @@ A "loss block" is a self-contained struct that owns:
      and returns the scalar loss
 
 Concrete impls (current): `CriticUpdateBlock`, `TwinCriticUpdateBlock`,
-`TargetYBlock`, `SACActorLossCG`.
+`TargetYBlock`, `SACActorLoss`.
 
 **Why a marker, not a method-prescribing trait.** Step signatures vary
 per block — `CriticUpdateBlock.step(critic, opt, sa_t, y_t)` is 4-input,
 `TwinCriticUpdateBlock.step(c1, c1_opt, c2, c2_opt, s_ptr, a_ptr, y_t)`
-is 7-input, `SACActorLossCG.forward_backward(actor, opt, c1, c2, s_ptr,
+is 7-input, `SACActorLoss.forward_backward(actor, opt, c1, c2, s_ptr,
 alpha)` is 6-input and returns a 2-field record. No single trait method
 covers them. The marker form still adds value:
 

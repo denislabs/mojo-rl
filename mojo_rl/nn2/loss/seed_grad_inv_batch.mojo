@@ -6,7 +6,7 @@ loss" helper: when the forward output is `loss_per_b` of shape
 that gradient is the constant `1/BATCH` in every slot.
 
 Replaces the inline `_fill_constant_kernel` previously open-coded in
-`sac_actor_loss_cg.mojo`. Both CPU and GPU paths.
+`sac_actor_loss.mojo`. Both CPU and GPU paths.
 
 Phase 3 — Lives in `loss/` because mean-batch backward is the loss
 contract. Other primitives that need a constant-fill should call this

@@ -25,7 +25,7 @@ grad slots (action / olp / adv are non-differentiable), so the only
 meaningful gradient flowing into the trainer is `grad_actor_output`
 accumulated through the actor.
 
-Public surface mirrors `SACActorLossCG`:
+Public surface mirrors `SACActorLoss`:
   - `make[target="cpu"]()` factory.
   - `forward_backward[target, OPT](actor, actor_opt, s_ptr, a_ptr, olp_ptr, adv_ptr) -> Scalar[DT]`
     runs the whole step + returns the mean per-batch loss for logging.

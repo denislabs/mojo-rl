@@ -7,7 +7,7 @@ sampling + log-prob math. Today this math is duplicated in three places
   1. `nn2/primitives/rsample.mojo` — as `RSample[ACT]` Module.
   2. `nn2/loss/sac_actor_loss.mojo` — as free functions (basically the
      same as here).
-  3. `nn2/loss/sac_actor_loss_cg.mojo` — composes the Module form.
+  3. `nn2/loss/sac_actor_loss.mojo` — composes the Module form.
 
 Phase E added this file as the canonical CPU implementation. Block D
 (2026-05-21) adds the GPU variants `*_gpu`. Same math, one thread per

@@ -1,7 +1,7 @@
-"""SACActorStep — SAC actor gradient step (owns SACActorLossCG).
+"""SACActorStep — SAC actor gradient step (owns SACActorLoss).
 
 Reads state.mb_s, state.alpha → writes state.actor_loss + state.log_prob_mean.
-The owned inner `SACActorLossCG` also holds the shared `rsample` consumed
+The owned inner `SACActorLoss` also holds the shared `rsample` consumed
 by the trainer's `select_action`.
 """
 
@@ -11,7 +11,7 @@ from ...constants import DT
 from ...core.amp import AMPPolicy, NoAMP
 from ...core.module import Module
 from ...optimizer.adam import Adam
-from ...loss.sac_actor_loss_cg import SACActorLossCG
+from ...loss.sac_actor_loss import SACActorLoss
 from ..trainer_block import TrainerState
 
 
@@ -25,7 +25,7 @@ struct SACActorStep[
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
-    comptime Inner = SACActorLossCG[Self.ACTOR, Self.CRITIC, Self.BATCH]
+    comptime Inner = SACActorLoss[Self.ACTOR, Self.CRITIC, Self.BATCH]
 
     var inner: Self.Inner
 

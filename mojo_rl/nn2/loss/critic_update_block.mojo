@@ -9,7 +9,7 @@ inside a `comptime if target == "cpu"` branch.
 
 Self-contained: each block absorbs the scratch buffers (`mb_q`,
 `mb_grad_q`, `mb_grad_sa`) the trainer would otherwise own. Mirrors
-the SACActorLossCG ownership pattern but stays linear — the chain is
+the SACActorLoss ownership pattern but stays linear — the chain is
 a single Module forward + MSELoss + backward + opt step, no fan-out,
 no Slice/Min, so a full ComputeGraph would just add overhead. The win
 here is **scratch ownership**, not DAG topology.

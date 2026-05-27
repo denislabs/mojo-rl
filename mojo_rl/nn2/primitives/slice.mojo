@@ -3,7 +3,7 @@
 Zero-fills the rest of grad_input on backward so that ComputeGraph's
 scatter-add into a shared predecessor `_grad_out_buf` interleaves
 correctly with parallel slicers (e.g. the q1/q2/log_prob unpack in
-`SACActorLossCG`).
+`SACActorLoss`).
 
 No params. Conforms to `Module`. Orchestrator owns slabs;
 `backward[mode]` accepted, has no effect (no params to skip).

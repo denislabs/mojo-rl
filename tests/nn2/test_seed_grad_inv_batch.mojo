@@ -1,12 +1,12 @@
 """Direct test for `seed_grad_inv_batch[target, BATCH]` (Phase 3 helper).
 
 The helper fills a [BATCH] tensor with `1/BATCH`. Used in FullGraph
-loss blocks (SACActorLossCG, soon TargetYBlock) to seed the
+loss blocks (SACActorLoss, soon TargetYBlock) to seed the
 backward pass for a mean-batch loss: when the forward output is
 `loss_per_b ∈ [BATCH, 1]` and the trainer wants `d(mean_b(loss_per_b))/d(loss_per_b)`,
 that gradient is the constant `1/BATCH` in every slot.
 
-Pre-Phase-3 the SACActorLossCG had an inline `_fill_constant_kernel`;
+Pre-Phase-3 the SACActorLoss had an inline `_fill_constant_kernel`;
 this helper extracts that pattern. Currently covered only indirectly
 by the SAC bit-identity gate — a direct test catches regressions
 in isolation (e.g. accidental `1/N` formula bugs at the next

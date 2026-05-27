@@ -8,7 +8,7 @@ it per call via `g.set_external["scaler"](mut my_scale)`. Verifies that
 3. set_external rebinding mid-test routes to the new instance
 4. ExternalNode dispatches through its module too
 
-If this passes, the SACActorLossCG migration in §8.6.1 can declare
+If this passes, the SACActorLoss migration in §8.6.1 can declare
 ACTOR / CRITIC as ExternalNode without owning copies.
 """
 

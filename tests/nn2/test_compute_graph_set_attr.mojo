@@ -6,7 +6,7 @@ via `set_node_attr["alpha_scale", "multiplier"](2.5)` and re-runs forward.
 
 Asserts: output[i] = input[i] × 2.5 after the mutation.
 
-This is the API SACActorLossCG will use post-Phase-3 instead of the
+This is the API SACActorLoss will use post-Phase-3 instead of the
 hard-coded `self._post_graph.nodes[5].op.multiplier = alpha`.
 """
 
