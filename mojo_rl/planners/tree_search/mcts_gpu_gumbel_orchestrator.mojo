@@ -114,7 +114,7 @@ def gz_extract_root_value_kernel[
     root_value_out: LayoutTensor[
         dtype, Layout.row_major(N_ENVS), MutAnyOrigin
     ],
-) where dtype.is_floating_point():
+):
     """MCTS-improved root value: ``Σ_a total_value[root,a] / Σ_a N[root,a]``.
 
     Mirrors ``gpu_mcts_extract_root_value_kernel`` in the vanilla
@@ -127,6 +127,9 @@ def gz_extract_root_value_kernel[
 
     Falls back to ``node_value[root]`` when total_visits = 0 (e.g. if a
     search was skipped). One thread per env."""
+    comptime assert dtype.is_floating_point(), (
+        "gz_extract_root_value_kernel: dtype must be floating-point"
+    )
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
     if e >= N_ENVS:
         return
@@ -821,7 +824,7 @@ struct GumbelGPUMCTS[
         rng_seed: UInt32 = UInt32(0),
         gumbel_scale: Float64 = 1.0,
     ) raises:
-        """mctx-style action selection: ``argmax_a [g_a + log(π̂[a])]``.
+        """Run mctx-style action selection: ``argmax_a [g_a + log(π̂[a])]``.
 
         Adds per-env Gumbel noise to the log-improved-policy and picks
         the argmax over legal actions. The Gumbel noise preserves

@@ -74,6 +74,7 @@ from mojo_rl.planners.tree_search import (
 from .gpu_trait_adapters import (
     AlphaZeroPredGPU,
     AlphaZeroEnvGPU,
+    AlphaZeroEnvGPUSinglePlayer,
     AlphaZeroRepCPU,
     AlphaZeroDynCPU,
     AlphaZeroPredCPU,
@@ -4916,7 +4917,7 @@ struct GenericAlphaZeroAgent[
                         model_state=gpu.prediction.model_state_buf.unsafe_ptr(),
                         workspace=mcts_ws,
                     )
-                    var env_tg = AlphaZeroEnvGPU[E, GS, OBS, ACT]()
+                    var env_tg = AlphaZeroEnvGPUSinglePlayer[E, GS, OBS, ACT]()
 
                     var root_obs_tg = LayoutTensor[
                         dtype,
@@ -4936,7 +4937,7 @@ struct GenericAlphaZeroAgent[
                             Self.Config.PredModel,
                             Self.Config.OptType,
                         ],
-                        AlphaZeroEnvGPU[E, GS, OBS, ACT],
+                        AlphaZeroEnvGPUSinglePlayer[E, GS, OBS, ACT],
                     ](
                         ctx,
                         pred_tg,

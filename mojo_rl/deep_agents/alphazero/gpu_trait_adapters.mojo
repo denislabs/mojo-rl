@@ -36,7 +36,7 @@ from mojo_rl.nn.model.model import Model
 from mojo_rl.nn.optimizer.optimizer import Optimizer
 from mojo_rl.nn.training import Network
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
-from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
+from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv, GPUDiscreteEnv
 
 from mojo_rl.planners.tree_search import (
     Representation,
@@ -354,5 +354,50 @@ struct AlphaZeroEnvGPU[
             terminated_out,
             obs_out,
             legal_masks_out,
+            rng_seed=rng_seed,
+        )
+
+
+@fieldwise_init
+struct AlphaZeroEnvGPUSinglePlayer[
+    E: GPUDiscreteEnv,
+    STATE: Int,
+    OBSD: Int,
+    A: Int,
+](Movable, ImplicitlyDestructible, EnvStepGPU):
+    """Single-player variant of ``AlphaZeroEnvGPU`` for envs that conform
+    to ``GPUDiscreteEnv`` (no per-step legal-mask output). The
+    ``legal_masks_out`` buffer is left untouched — callers pre-fill it
+    with ``1.0`` so the orchestrator's masked-expand kernel treats every
+    action as legal. Used by ``AlphaZeroAgent.train_gpu`` for the
+    single-player CartPole baseline."""
+
+    comptime STATE_SIZE: Int = Self.STATE
+    comptime OBS_DIM: Int = Self.OBSD
+    comptime ACTION_DIM: Int = Self.A
+
+    def step_gpu[B: Int](
+        mut self,
+        ctx: DeviceContext,
+        mut states: DeviceBuffer[dtype],
+        actions: DeviceBuffer[dtype],
+        mut rewards_out: DeviceBuffer[dtype],
+        mut dones_out: DeviceBuffer[dtype],
+        mut terminated_out: DeviceBuffer[dtype],
+        mut obs_out: DeviceBuffer[dtype],
+        mut legal_masks_out: DeviceBuffer[dtype],
+        rng_seed: UInt64,
+    ) raises:
+        _ = legal_masks_out
+        Self.E.step_kernel_gpu[
+            B, Self.STATE_SIZE, Self.OBS_DIM
+        ](
+            ctx,
+            states,
+            actions,
+            rewards_out,
+            dones_out,
+            terminated_out,
+            obs_out,
             rng_seed=rng_seed,
         )

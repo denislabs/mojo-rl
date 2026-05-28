@@ -4147,13 +4147,16 @@ def compute_scaler_mean_kernel[
     out_mean: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
     data: LayoutTensor[dtype, Layout.row_major(CAP, D), MutAnyOrigin],
     n_samples: Int,
-) where dtype.is_floating_point():
+):
     """Per-column mean over first `n_samples` rows of `data`. One block per dim.
 
     Grid: (D,), Block: (1,). Single-thread serial sum per dim. Cheap because
     it only runs every model_train_freq env steps and N is at most the real
     buffer size (~1M for HalfCheetah).
     """
+    comptime assert dtype.is_floating_point(), (
+        "compute_scaler_mean_kernel: dtype must be floating-point"
+    )
     var d = Int(block_idx.x)
     if d >= D:
         return
@@ -4179,13 +4182,16 @@ def compute_scaler_std_kernel[
     in_mean: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
     n_samples: Int,
     min_std: Scalar[dtype],
-) where dtype.is_floating_point():
+):
     """Per-column std over first `n_samples` rows. Must be called after mean.
 
     Matches reference utils.py:49 behavior: `sigma[sigma < 1e-12] = 1.0` — if
     a dim has near-zero variance (constant), fall back to std=1.0 so
     normalization leaves it approximately unchanged instead of dividing by 0.
     """
+    comptime assert dtype.is_floating_point(), (
+        "compute_scaler_std_kernel: dtype must be floating-point"
+    )
     var d = Int(block_idx.x)
     if d >= D:
         return

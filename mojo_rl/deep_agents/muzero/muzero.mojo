@@ -2024,7 +2024,7 @@ struct GenericMuZeroAgent[
     def print_eval[
         E: TwoPlayerDiscreteEnv,
         EvalType: Evaluator,
-    ](mut self, mut env: E, mut evaluator: EvalType, num_games: Int = 50,):
+    ](mut self, mut env: E, mut evaluator: EvalType, num_games: Int = 50,) raises:
         """Evaluate and print results against one evaluator."""
         var r = self.evaluate_against[E, EvalType](env, evaluator, num_games)
         print(
@@ -2391,9 +2391,12 @@ struct GenericMuZeroAgent[
 
         Args:
             env: TTT/Connect4-style two-player env, reset each game.
-            prev_rep / prev_dyn / prev_pred: previous-best param
-                snapshots. Lengths must match
-                ``Self.Config.{Rep,Dyn,Pred}Model.PARAM_SIZE``.
+            prev_rep: Previous-best representation param snapshot. Length
+                must match ``Self.Config.RepModel.PARAM_SIZE``.
+            prev_dyn: Previous-best dynamics param snapshot. Length must
+                match ``Self.Config.DynModel.PARAM_SIZE``.
+            prev_pred: Previous-best prediction param snapshot. Length
+                must match ``Self.Config.PredModel.PARAM_SIZE``.
             num_games: Games played (half as P0, half as P1).
             threshold: Score fraction required to accept new.
 
@@ -2595,13 +2598,19 @@ struct GenericMuZeroAgent[
                 ``train_selfplay_gpu``).
 
         Args:
-            env, evaluator, evaluator2: Standard CPU eval interface.
+            env: Standard CPU eval env.
+            evaluator: First evaluator (standard CPU eval interface).
+            evaluator2: Second evaluator (standard CPU eval interface).
             num_iters: Outer self-play / train iteration count.
             steps_per_iter: Env-steps to collect per iteration.
             train_epochs: Epochs over the current replay window per iter.
             warmup_iters: Random-play iterations before MCTS starts.
-            do_eval / do_eval2: Toggle each evaluator.
+            do_eval: Toggle the first evaluator.
+            do_eval2: Toggle the second evaluator.
             eval_games: Games per evaluator (split half-as-P0, half-as-P1).
+            do_arena: If True, gate model promotion behind an arena match.
+            arena_threshold: Score fraction required to accept new model.
+            arena_games: Arena games played during promotion gating.
             checkpoint_every: Save every N iters (0 disables).
             checkpoint_path: Path for the periodic checkpoint.
             use_reanalyze: If True, ``update()`` refreshes a fraction of
