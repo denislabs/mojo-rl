@@ -5,7 +5,7 @@ from std.random import random_float64, seed
 from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.training.td3_trainer import TD3Trainer
+from mojo_rl.deep_agents2.training.td3_trainer import TD3Trainer
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU

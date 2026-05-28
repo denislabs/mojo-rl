@@ -20,11 +20,11 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
-from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks import UniformSampleCpuStep
-from mojo_rl.nn2.training.batched_env import BatchedCpuEnv
-from mojo_rl.nn2.training.driver_offpolicy import (
+from mojo_rl.deep_agents2.primitives.stochastic_actor import StochasticActor
+from mojo_rl.deep_agents2.training.sac_trainer import SACTrainer
+from mojo_rl.deep_agents2.training.blocks import UniformSampleCpuStep
+from mojo_rl.deep_agents2.training.batched_env import BatchedCpuEnv
+from mojo_rl.deep_agents2.training.driver_offpolicy import (
     run_offpolicy_train_batched,
     run_offpolicy_eval,
 )

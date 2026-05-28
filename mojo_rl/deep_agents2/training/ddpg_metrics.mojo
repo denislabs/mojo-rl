@@ -1,0 +1,11 @@
+"""DDPGMetrics — per-train-step bundle for the DDPG trainer."""
+
+from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.metric import LogScalar
+
+
+@fieldwise_init
+struct DDPGMetrics(Copyable, Movable, ImplicitlyDestructible):
+    var actor_loss:  LogScalar[DT]
+    var critic_loss: LogScalar[DT]
+    var n_updates:   LogScalar[DT]

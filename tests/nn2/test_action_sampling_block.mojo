@@ -20,8 +20,8 @@ from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.primitives.linear import Linear
-from mojo_rl.nn2.primitives.rsample import RSample
-from mojo_rl.nn2.training.action_sampling_block import ActionSamplingBlock
+from mojo_rl.deep_agents2.primitives.rsample import RSample
+from mojo_rl.deep_agents2.training.action_sampling_block import ActionSamplingBlock
 from mojo_rl.nn2.initializer import Kaiming
 
 

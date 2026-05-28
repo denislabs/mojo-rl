@@ -24,10 +24,10 @@ from mojo_rl.nn2.core.log_bundle import log_bundle
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
-from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks import UniformSampleCpuStep
-from mojo_rl.nn2.training.sac_metrics import SACMetrics
+from mojo_rl.deep_agents2.primitives.stochastic_actor import StochasticActor
+from mojo_rl.deep_agents2.training.sac_trainer import SACTrainer
+from mojo_rl.deep_agents2.training.blocks import UniformSampleCpuStep
+from mojo_rl.deep_agents2.training.sac_metrics import SACMetrics
 
 
 # ──────────────────────────────────────────────────────────────────────

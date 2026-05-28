@@ -9,8 +9,8 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.elementwise import Elementwise
 from mojo_rl.nn2.primitives.ops.swish_op import SwishOp
-from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.mbpo_trainer import MBPOTrainer
+from mojo_rl.deep_agents2.primitives.stochastic_actor import StochasticActor
+from mojo_rl.deep_agents2.training.mbpo_trainer import MBPOTrainer
 from mojo_rl.envs.pendulum import PendulumEnv
 
 

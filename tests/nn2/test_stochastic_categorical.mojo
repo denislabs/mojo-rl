@@ -14,7 +14,7 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.primitives.stochastic_categorical import StochasticCategorical
+from mojo_rl.deep_agents2.primitives.stochastic_categorical import StochasticCategorical
 from mojo_rl.nn2.initializer import Kaiming
 
 

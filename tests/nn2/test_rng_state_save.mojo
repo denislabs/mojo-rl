@@ -23,7 +23,7 @@ Sub-tests:
 
 from std.testing import assert_equal, assert_true
 
-from mojo_rl.nn2.primitives.rsample import RSample
+from mojo_rl.deep_agents2.primitives.rsample import RSample
 from mojo_rl.nn2.core.saveable import Saveable
 from mojo_rl.nn2.core.state_walker import dump_state, load_state
 

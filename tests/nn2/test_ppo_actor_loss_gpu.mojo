@@ -21,10 +21,10 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.tanh import Tanh
-from mojo_rl.nn2.primitives.gaussian_head import GaussianHead
+from mojo_rl.deep_agents2.primitives.gaussian_head import GaussianHead
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.initializer import Xavier
-from mojo_rl.nn2.loss.ppo_actor_loss import PPOActorLoss
+from mojo_rl.deep_agents2.loss.ppo_actor_loss import PPOActorLoss
 
 
 comptime OBS_DIM = 4

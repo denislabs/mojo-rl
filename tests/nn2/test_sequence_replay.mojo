@@ -13,7 +13,7 @@ from std.random import seed
 from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.data.sequence_replay import SequenceReplay
+from mojo_rl.deep_agents2.data.sequence_replay import SequenceReplay
 
 
 def test_basic_record_and_sample() raises:

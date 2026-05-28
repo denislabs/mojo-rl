@@ -15,7 +15,6 @@ from .initializer import Initializer
 from .amp import AMPPolicy, NoAMP, Bf16Compute
 from .named_params import NamedParam, named_params
 from .map_params import polyak_update, hard_copy_params
-from .online_target_pair import OnlineTargetPair
 from .param import Param, IsParam
 from .walkers import for_each_param_auto, zero_grad_auto
 from .grad_clip import clip_grads_auto

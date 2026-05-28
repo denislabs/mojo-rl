@@ -31,13 +31,13 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
-from mojo_rl.nn2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.nn2.training.sac_trainer import SACTrainer
-from mojo_rl.nn2.training.blocks import (
+from mojo_rl.deep_agents2.primitives.stochastic_actor import StochasticActor
+from mojo_rl.deep_agents2.training.sac_trainer import SACTrainer
+from mojo_rl.deep_agents2.training.blocks import (
     UniformSampleGpuStep,
     PerSampleGpuStep,
 )
-from mojo_rl.nn2.loss.critic_update_block import _scale_grad_by_weights_kernel
+from mojo_rl.deep_agents2.loss.critic_update_block import _scale_grad_by_weights_kernel
 
 from mojo_rl.envs.pendulum import PendulumEnv
 

@@ -23,7 +23,7 @@ from std.random import seed
 from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.data.gpu_replay import GPUReplay
+from mojo_rl.deep_agents2.data.gpu_replay import GPUReplay
 
 
 comptime OBS = 2

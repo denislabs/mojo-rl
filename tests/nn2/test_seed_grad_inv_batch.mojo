@@ -18,7 +18,7 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.loss.seed_grad_inv_batch import seed_grad_inv_batch
+from mojo_rl.deep_agents2.loss.seed_grad_inv_batch import seed_grad_inv_batch
 
 
 def test_cpu_basic() raises:

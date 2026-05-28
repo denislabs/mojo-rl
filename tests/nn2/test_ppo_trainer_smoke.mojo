@@ -13,8 +13,8 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.tanh import Tanh
-from mojo_rl.nn2.primitives.gaussian_head import GaussianHead
-from mojo_rl.nn2.training.ppo_trainer import PPOTrainer
+from mojo_rl.deep_agents2.primitives.gaussian_head import GaussianHead
+from mojo_rl.deep_agents2.training.ppo_trainer import PPOTrainer
 from mojo_rl.envs.pendulum import PendulumEnv
 
 

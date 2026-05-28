@@ -21,7 +21,7 @@ from std.memory import alloc
 from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.data.n_step_replay import (
+from mojo_rl.deep_agents2.data.n_step_replay import (
     NStepBuffer, GPUNStepBuffer,
 )
 
