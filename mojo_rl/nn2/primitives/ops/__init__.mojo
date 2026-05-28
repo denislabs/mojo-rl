@@ -11,6 +11,8 @@ from .tanh_op import TanhOp
 from .relu_op import ReLUOp
 from .symlog_op import SymlogOp
 from .swish_op import SwishOp
+from .mish_op import MishOp
+from .sigmoid_op import SigmoidOp
 from .stop_grad_op import StopGradOp
 from .sum_op import SumOp
 from .mean_op import MeanOp
