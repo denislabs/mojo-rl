@@ -1,4 +1,11 @@
-"""RL training loop coordinators."""
+"""RL training loop coordinators.
+
+Agent-specific trainers (SAC / DDPG / TD3 / PPO / DQN / MBPO) and their
+target-Y blocks now live under each agent's own `<agent>/` package
+after the per-agent reorganization. This module retains only the
+shared infrastructure (drivers, replay glue, episode tracking, GAE,
+batched env adapter).
+"""
 
 from .episode_tracker import EpisodeTracker
 from .gae import compute_gae, normalize_in_place
@@ -7,9 +14,6 @@ from .off_policy_critic import (
     critic_update_step,
     twin_critic_update_step,
 )
-from .target_y_block import TargetYBlock
-from .ddpg_target_y_block import DDPGTargetYBlock
-from .td3_target_y_block import TD3TargetYBlock
 from .action_sampling_block import ActionSamplingBlock
 from .driver_offpolicy import (
     run_offpolicy_train,
@@ -21,7 +25,6 @@ from .driver_offpolicy_discrete import (
     run_offpolicy_discrete_train,
     run_offpolicy_discrete_eval,
 )
-from .dqn_trainer import DQNTrainer
 from .driver_onpolicy import (
     OnPolicyAgent,
     OnPolicyAgentBatched,

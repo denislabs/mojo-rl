@@ -24,7 +24,7 @@ from mojo_rl.nn2.primitives.tanh import Tanh
 from mojo_rl.deep_agents2.primitives.gaussian_head import GaussianHead
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.initializer import Xavier
-from mojo_rl.deep_agents2.loss.ppo_actor_loss import PPOActorLoss
+from mojo_rl.deep_agents2.ppo.actor_loss import PPOActorLoss
 
 
 comptime OBS_DIM = 4

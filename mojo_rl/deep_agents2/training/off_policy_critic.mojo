@@ -39,7 +39,9 @@ from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.loss.mse import MSELoss
 
 
-def concat_sa[OBS: Int, ACT: Int, B: Int](
+def concat_sa[
+    OBS: Int, ACT: Int, B: Int
+](
     obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
     act: UnsafePointer[Scalar[DT], MutAnyOrigin],
     out_sa: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -53,7 +55,9 @@ def concat_sa[OBS: Int, ACT: Int, B: Int](
             out_sa[b * SA + OBS + j] = act[b * ACT + j]
 
 
-def _concat_sa_kernel[OBS: Int, ACT: Int, B: Int](
+def _concat_sa_kernel[
+    OBS: Int, ACT: Int, B: Int
+](
     obs: LayoutTensor[DT, Layout.row_major(B, OBS), MutAnyOrigin],
     act: LayoutTensor[DT, Layout.row_major(B, ACT), MutAnyOrigin],
     out_sa: LayoutTensor[DT, Layout.row_major(B, OBS + ACT), MutAnyOrigin],
@@ -70,7 +74,9 @@ def _concat_sa_kernel[OBS: Int, ACT: Int, B: Int](
             out_sa[b, d] = rebind[Scalar[DT]](act[b, d - OBS])
 
 
-def concat_sa_gpu[OBS: Int, ACT: Int, B: Int](
+def concat_sa_gpu[
+    OBS: Int, ACT: Int, B: Int
+](
     ctx: DeviceContext,
     obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
     act: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -86,18 +92,28 @@ def concat_sa_gpu[OBS: Int, ACT: Int, B: Int](
     comptime n_blocks = (total + TPB - 1) // TPB
     comptime kernel = _concat_sa_kernel[OBS, ACT, B]
     ctx.enqueue_function[kernel](
-        obs_lt, act_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+        obs_lt,
+        act_lt,
+        out_lt,
+        grid_dim=n_blocks,
+        block_dim=TPB,
     )
 
 
 def critic_update_step[
-    CRITIC: Module, BATCH: Int, SA_DIM: Int,
+    CRITIC: Module,
+    BATCH: Int,
+    SA_DIM: Int,
 ](
     mut critic: CRITIC,
     mut opt: Adam,
     mut mse_loss: MSELoss[1],
     mb_sa_t: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT,
+        address_space=AddressSpace.GENERIC,
+        element_size=1,
+        origin=MutAnyOrigin,
+        ...,
     ],
     mb_y_t: TileTensor[
         dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
@@ -126,7 +142,10 @@ def critic_update_step[
 
 
 def twin_critic_update_step[
-    CRITIC: Module, BATCH: Int, OBS: Int, ACT: Int,
+    CRITIC: Module,
+    BATCH: Int,
+    OBS: Int,
+    ACT: Int,
 ](
     mut critic1: CRITIC,
     mut critic1_opt: Adam,
@@ -153,11 +172,23 @@ def twin_critic_update_step[
     concat_sa[OBS, ACT, BATCH](mb_s_ptr, mb_a_ptr, mb_sa_ptr)
     var mb_sa_t = TileTensor(mb_sa_ptr, row_major[BATCH, SA]())
     var loss1 = critic_update_step[CRITIC, BATCH, SA](
-        critic1, critic1_opt, mse_loss, mb_sa_t, mb_y_t,
-        mb_q1_ptr, mb_grad_q1_ptr, mb_grad_sa1_ptr,
+        critic1,
+        critic1_opt,
+        mse_loss,
+        mb_sa_t,
+        mb_y_t,
+        mb_q1_ptr,
+        mb_grad_q1_ptr,
+        mb_grad_sa1_ptr,
     )
     var loss2 = critic_update_step[CRITIC, BATCH, SA](
-        critic2, critic2_opt, mse_loss, mb_sa_t, mb_y_t,
-        mb_q2_ptr, mb_grad_q2_ptr, mb_grad_sa2_ptr,
+        critic2,
+        critic2_opt,
+        mse_loss,
+        mb_sa_t,
+        mb_y_t,
+        mb_q2_ptr,
+        mb_grad_q2_ptr,
+        mb_grad_sa2_ptr,
     )
     return loss1 + loss2
