@@ -54,14 +54,22 @@ slab + SIMD-add elsewhere — same Apple-vs-other split.
   nn2 currently does BATCH separate sgemm calls. Gain depends on
   BATCH and the constant-time sgemm setup overhead. Port when a CNN
   agent moves to deep_agents2 and benchmarks show it matters.
-- **Conv2D GPU im2col+matmul.** Forward + backward both need GPU
-  kernels for the im2col packing and a tuned matmul. Forward only,
-  no autodiff: cheap; full backward including `d_col` cblas-style
-  transpose: not cheap. Same consumer gate.
-- **BatchNorm1D / 2D GPU**, **MaxPool / AvgPool GPU**,
-  **SimNorm / MinMaxNorm GPU**, **Dropout GPU**. None of these have
-  a matmul, so the perf story is just "kernel launches + reductions"
-  rather than "BLAS". All consumer-gated.
+- **Conv2D GPU im2col + tiled matmul.** The current GPU path uses
+  direct-convolution kernels (one thread per output / input / weight
+  scalar) — correct and atomics-free, but ~K·K slower than tiled
+  im2col+gemm on dense workloads. Forward only, no autodiff: cheap;
+  full backward including `d_col` cblas-style transpose: not cheap.
+  Consumer-gated.
+
+### Outstanding non-matmul GPU follow-ups (consumer-gated)
+
+- **None at landing.** Phase 2 / 4 / 5 GPU paths are now in tree
+  (SimNorm / MinMaxNorm / Dropout / BatchNorm1D / BatchNorm2D /
+  MaxPool / AvgPool / Conv2D direct-conv). Pool backward and Conv2D
+  d_input use input-indexed kernels (one thread per input cell looping
+  over overlapping output windows) — matches the nn2 / deep_agents2
+  no-atomics convention. See `test_nn2_gpu_parity.mojo` for the
+  CPU/GPU parity gate.
 
 ## Status legend
 
@@ -101,15 +109,20 @@ Picks up the non-Conv2D blockers for TDMPC2 / DreamerV3 / MuZero / EZ-V2.
       per-group softmax over the DIM/GROUPS subvectors).
       Forward: per-group max-subtracted softmax. Backward: standard
       softmax Jacobian per group, `grad_x = y · (grad_y - <grad_y, y>)`.
-      CPU-only at landing (GPU make path raises); cache_y leaf-owned.
-      Tests: forward Σ_g sums to 1; backward matches analytic per-group
-      Jacobian to 8e-10; per-group sum-zero invariant to 1e-7.
+      CPU + GPU paths. GPU: one thread per (batch, group), serial inner
+      loop over GROUP_SIZE (≤32 in TDMPC2). cache_y is a leaf-owned
+      List + lazy DeviceBuffer. Tests: forward Σ_g sums to 1; backward
+      matches analytic per-group Jacobian to 8e-10; per-group sum-zero
+      invariant to 1e-7. GPU parity: fwd 3e-8, dx 1.4e-7.
 - [x] `primitives/min_max_norm.mojo` — `MinMaxNorm[DIM]` (MuZero / EZ-V2
       hidden-state bound). Per-row rescaling `(x - min) / (max - min)`
       with ε clamp and degenerate-row zero-grad. Backward special-cases
-      argmin/argmax lanes. Tests: forward [0,1] bounds + argmin→0 +
-      argmax→1 exact; backward interior-lane FD 3e-5 at eps=1e-3;
-      shift-invariance Σ grad_x = 0 to 1e-7; degenerate row clean zero.
+      argmin/argmax lanes. CPU + GPU paths. GPU: one block per sample,
+      `block.min` / `block.max` / `block.sum` for stats / argmin/argmax /
+      G / Gy reductions (sentinel-index trick for argmin/argmax). Tests:
+      forward [0,1] bounds + argmin→0 + argmax→1 exact; backward
+      interior-lane FD 3e-5 at eps=1e-3; shift-invariance Σ grad_x = 0
+      to 1e-7; degenerate row clean zero. GPU parity: fwd 0, dx 6e-6.
 - [x] `primitives/flatten.mojo` — identity-copy Module with SIMD CPU
       and GPU memcpy kernel. No params, no cache. Tests: bit-identical
       round-trip at non-SIMD-aligned DIM=13.
@@ -130,8 +143,13 @@ Picks up the non-Conv2D blockers for TDMPC2 / DreamerV3 / MuZero / EZ-V2.
       within 3σ (1.013 vs target 1.0 over 8192 lanes, p=0.3); drop
       fraction 0.291 vs target 0.3; backward equals grad_y · mask
       exactly; successive train calls differ on 127/256 lanes;
-      set_attr["training"] flips state. CPU only; GPU follow-up
-      gated on consumer demand.
+      set_attr["training"] flips state. CPU + GPU paths. GPU: flat
+      1-D launch over BATCH·DIM, PhiloxRandom seeded with `Self.SEED`
+      and `(call_counter, idx)` offset — host-side counter bumps each
+      train forward (no on-device counter, since nn2 doesn't do CUDA
+      graph capture). Cache mask in a lazy DeviceBuffer. GPU parity:
+      eval is identity (0 diff); train mask is {0, 1/(1-p)} only,
+      backward = grad_y·mask exactly, frac_zero ≈ 0.303 vs target 0.3.
 - [-] `primitives/normed_linear.mojo` — **deliberately not ported as a
       hand-fused Module.** Composed as `Sequential[Linear, LayerNorm, Mish]`.
       Revisit only if profiling shows kernel-launch overhead matters.
@@ -162,28 +180,34 @@ encoder). First cross-cutting running-stats story for nn2.
       on first consumer**: write a `RunningStat[NAME, SIZE]` Saveable
       wrapper so checkpoints round-trip running stats. At landing,
       checkpoints save γ/β only.
-- [x] `primitives/batch_norm_1d.mojo` — CPU only. Per-instance
+- [x] `primitives/batch_norm_1d.mojo` — CPU + GPU. Per-instance
       `training: Bool` + `cache_is_training` flag. Train forward:
       batch stats + EMA-update running stats. Eval forward: running
       stats, no EMA. Backward gated on `cache_is_training` (raises
       if user calls `vjp` after an eval forward — the standard PyTorch
       footgun, caught explicitly here). Standard BN backward with
       cache_xhat + cache_inv_std. Mirrors LayerNorm's Module surface
-      one-for-one. Tests: per-feature zero-mean (5e-8) + unit-var
-      (1.2e-5); running stats converge to batch truth under 200
-      train forwards (1e-7 mean, exact var); eval uses running stats
-      exactly (0); FD gradcheck gi 3.8e-5, dγ 1.2e-5, dβ 5.7e-6;
-      `vjp` after eval raises.
+      one-for-one. GPU: one block per feature, threads parallel-reduce
+      over BATCH via `block.sum` (LayerNorm pattern, orthogonal axis).
+      Train kernel updates running stats from thread 0. Tests:
+      per-feature zero-mean (5e-8) + unit-var (1.2e-5); running stats
+      converge to batch truth under 200 train forwards (1e-7 mean,
+      exact var); eval uses running stats exactly (0); FD gradcheck
+      gi 3.8e-5, dγ 1.2e-5, dβ 5.7e-6; `vjp` after eval raises.
+      GPU parity: fwd 2.4e-7, dx 6.3e-7, dγ 3.8e-6, dβ 2.9e-6.
 - [x] `primitives/batch_norm_2d.mojo` — landed alongside Phase 5
       (see Phase 5d below). Per-channel stats reduced over BATCH·H·W;
-      otherwise identical surface + behaviour to BN1D.
+      otherwise identical surface + behaviour to BN1D. CPU + GPU.
+      GPU: one block per channel, threads stride over the joint
+      (batch, spatial) sample axis. GPU parity: fwd 1.2e-7, dx 2.9e-7,
+      dγ 2.9e-6, dβ 1.9e-6.
 
 ## Phase 5 — Conv2D + Pool stack ✅
 
 Unlocks CNN agents on nn2. Largest single chunk.
 
-- [x] **5a — `primitives/conv2d.mojo`** — Module form, CPU only.
-      **im2col + `max_matmul`** reduction (matches `linear.mojo`'s
+- [x] **5a — `primitives/conv2d.mojo`** — Module form, CPU + GPU.
+      CPU: **im2col + `max_matmul`** reduction (matches `linear.mojo`'s
       pattern — flows through Apple Accelerate cblas on macOS fp32 and
       `linalg.matmul`'s tuned kernels elsewhere). Per-batch matmul:
       `out_b [OC, SPATIAL_OUT] = W [OC, COL_SIZE] @ col_b.T`, where
@@ -192,33 +216,41 @@ Unlocks CNN agents on nn2. Largest single chunk.
       with derived `OH = (H+2P-K)//S + 1`. Module trait `IN_DIM =
       IC·H·W`, `OUT_DIM = OC·OH·OW`. Params: `weight [OC·IC·K·K]`
       decay=True, `bias [OC]` decay=False. Input-alias via
-      `_cached_input_ptr` (mirror Linear/Clamp). Backward:
+      `_cached_input_ptr` (mirror Linear/Clamp). CPU backward:
       `d_bias += column-sum(d_out_b)`; `d_weight += d_out_b @ col_b`
       via Apple cblas `beta=1` on macOS fp32 (single call, no temp)
       or `max_matmul` into a temp slab + SIMD add elsewhere;
       `d_col_b = d_out_b.T @ W` via Apple cblas `TRANSPOSE_A` on macOS
       or an explicit transpose buffer + `max_matmul` elsewhere
       (`max_matmul` rejects `transpose_a=True`, mirrors Linear); then
-      col2im scatter-adds into `d_input`. Tests: 1×1 identity exact;
-      explicit 3×3 forward matches hand-computed reference 1e-6; FD
-      gradcheck grad_input 1e-3, grad_weight 8e-5, grad_bias 1.4e-3
-      (tol 2e-2). GPU path deliberately raises (perf-port follow-up).
-      Apple-batched single-sgemm optimisation deferred — gated on a
-      real CNN consumer.
+      col2im scatter-adds into `d_input`. GPU: direct-convolution
+      kernels — one thread per output (forward), per input (d_input),
+      per weight scalar (d_weight), per output channel (d_bias). No
+      atomics (mirrors `c51/target_y_block.mojo:48` convention). Tests:
+      1×1 identity exact; explicit 3×3 forward matches hand-computed
+      reference 1e-6; FD gradcheck grad_input 1e-3, grad_weight 8e-5,
+      grad_bias 1.4e-3 (tol 2e-2). GPU parity: fwd 3.8e-6, dx 2.9e-6,
+      dW 1.2e-4, db 1.5e-5. Apple-batched single-sgemm and tiled
+      GPU im2col+gemm deferred — gated on a real CNN consumer.
 - [x] **5b — `primitives/max_pool_2d.mojo`** — no params, input-alias
       pattern (re-finds argmax in backward; K·K extra ops is trivial
       vs avoiding cache fragility). Forward picks per-window max with
       `-1e30` sentinel for padded lanes. Backward routes grad only
-      to argmax lane (PyTorch-style first-occurrence tie-break).
-      Tests: 2×2 max-pool of 0..15 grid picks 5/7/13/15; backward
-      routes grad to exactly those four lanes, zero elsewhere.
+      to argmax lane (PyTorch-style first-occurrence tie-break). CPU
+      + GPU. GPU forward: 1 thread per output. GPU backward:
+      input-indexed (1 thread per input cell, looping over overlapping
+      output windows that contain it). No atomics — every kernel
+      writes a unique destination slot. Tests: 2×2 max-pool of 0..15
+      grid picks 5/7/13/15; backward routes grad to exactly those four
+      lanes, zero elsewhere. GPU parity: fwd 0, dx 0.
 - [x] **5c — `primitives/avg_pool_2d.mojo`** — no params, no cache
       (gradient is uniform broadcast). `count_include_pad = True`
       convention (denominator is K·K regardless of padding overlap;
       padded cells contribute 0 in forward, receive 0 in backward).
-      Tests: 2×2 avg-pool of 0..15 → 2.5/4.5/10.5/12.5 exact;
-      backward with go=1 → 0.25 per lane exact (every input lane in
-      exactly one window).
+      CPU + GPU. Same input-indexed GPU backward layout as MaxPool2D.
+      Tests: 2×2 avg-pool of 0..15 → 2.5/4.5/10.5/12.5 exact; backward
+      with go=1 → 0.25 per lane exact (every input lane in exactly
+      one window). GPU parity: fwd 0, dx 0.
 - [x] **5d — `primitives/batch_norm_2d.mojo`** — per-channel BN with
       stats reduced over BATCH·H·W. Identical surface to BN1D
       (`gamma`/`beta` Params decay=False; running_mean/var side-channel

@@ -8,13 +8,11 @@ question for any future EMA-like layer:
     surface to LayerNorm.
 
   - Running mean / running var are stored as plain `List[Scalar[DT]]`
-    side-channel fields. They are NOT walked by the param visitor (the
-    optimizer ignores them), and at landing they are NOT checkpointed
-    (no Saveable wrapper). A consumer that needs them in checkpoints
-    will trip a follow-up task; see PORTING_PLAN.md Phase 4 follow-up
-    note. Rationale: keeps the landing tight and avoids prematurely
-    inventing a `RunningStat` wrapper type before the first consumer
-    arrives to constrain the design.
+    side-channel fields (CPU) plus `DeviceBuffer[DT]` (GPU). They are
+    NOT walked by the param visitor (the optimizer ignores them), and
+    at landing they are NOT checkpointed (no Saveable wrapper). A
+    consumer that needs them in checkpoints will trip a follow-up task;
+    see PORTING_PLAN.md Phase 4 follow-up note.
 
   - `training: Bool` is a per-instance runtime field (same pattern as
     `dropout.mojo`). `set_attr["training"](v > 0.5)` flips it.
@@ -32,14 +30,18 @@ Calling `vjp` after an eval forward is a programming error — the
 training cache is stale. We assert against it with a `cache_is_training`
 flag; misuse raises.
 
-CPU-only at landing. GPU is a follow-up gated on a real consumer
-(NatureDQN typically doesn't use BN anyway).
+GPU layout: one block per feature, threads parallel-reduce over BATCH
+via `block.sum[block_size=BN_TPB]` from `std.gpu.primitives`. Mirrors
+LayerNorm's GPU pattern but on the orthogonal axis (BN reduces over
+samples, LN over features).
 """
 
 from std.math import sqrt
-from std.gpu.host import DeviceContext
+from std.gpu import thread_idx, block_idx
+from std.gpu.primitives import block
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
@@ -61,6 +63,169 @@ from ..core.target_storage import (
 
 comptime BN_DEFAULT_EPS: Float64 = 1e-5
 comptime BN_DEFAULT_MOM: Float64 = 0.1
+comptime BN_TPB: Int = 128
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GPU kernels — one block per feature, threads stride over BATCH.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _bn1d_forward_train_kernel[
+    BATCH: Int, DIM: Int,
+    EPSILON: Float64, MOMENTUM: Float64,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    beta:  LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    running_mean: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    running_var:  LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    cache_inv_std: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+):
+    var f = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if f >= DIM:
+        return
+
+    var inv_n: Scalar[DT] = 1.0 / Scalar[DT](Float32(BATCH))
+    var eps = Scalar[DT](EPSILON)
+    var mom = Scalar[DT](MOMENTUM)
+    var one_m = Scalar[DT](1.0) - mom
+
+    var my_sum: Scalar[DT] = 0.0
+    var b = t
+    while b < BATCH:
+        my_sum += rebind[Scalar[DT]](input[b, f])
+        b += BN_TPB
+    var mean = (
+        block.sum[block_size=BN_TPB, broadcast=True](val=my_sum) * inv_n
+    )
+
+    var my_var: Scalar[DT] = 0.0
+    b = t
+    while b < BATCH:
+        var d = rebind[Scalar[DT]](input[b, f]) - mean
+        my_var += d * d
+        b += BN_TPB
+    var var_ = (
+        block.sum[block_size=BN_TPB, broadcast=True](val=my_var) * inv_n
+    )
+
+    var inv_std: Scalar[DT] = 1.0 / sqrt(var_ + eps)
+    if t == 0:
+        cache_inv_std[f] = inv_std
+        var rm = rebind[Scalar[DT]](running_mean[f])
+        var rv = rebind[Scalar[DT]](running_var[f])
+        running_mean[f] = one_m * rm + mom * mean
+        running_var[f]  = one_m * rv + mom * var_
+
+    var g = rebind[Scalar[DT]](gamma[f])
+    var bt = rebind[Scalar[DT]](beta[f])
+    b = t
+    while b < BATCH:
+        var x = rebind[Scalar[DT]](input[b, f])
+        var xh = (x - mean) * inv_std
+        cache_xhat[b, f] = xh
+        output[b, f] = g * xh + bt
+        b += BN_TPB
+
+
+def _bn1d_forward_eval_kernel[
+    BATCH: Int, DIM: Int, EPSILON: Float64,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    beta:  LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    running_mean: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    running_var:  LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+):
+    var f = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if f >= DIM:
+        return
+    var eps = Scalar[DT](EPSILON)
+    var rm = rebind[Scalar[DT]](running_mean[f])
+    var rv = rebind[Scalar[DT]](running_var[f])
+    var inv_std: Scalar[DT] = 1.0 / sqrt(rv + eps)
+    var g = rebind[Scalar[DT]](gamma[f])
+    var bt = rebind[Scalar[DT]](beta[f])
+    var b = t
+    while b < BATCH:
+        var x = rebind[Scalar[DT]](input[b, f])
+        output[b, f] = g * (x - rm) * inv_std + bt
+        b += BN_TPB
+
+
+def _bn1d_backward_kernel[
+    BATCH: Int, DIM: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    cache_inv_std: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    grad_gamma: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    grad_beta:  LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+):
+    var f = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if f >= DIM:
+        return
+    var inv_n: Scalar[DT] = 1.0 / Scalar[DT](Float32(BATCH))
+    var g = rebind[Scalar[DT]](gamma[f])
+    var inv_std = rebind[Scalar[DT]](cache_inv_std[f])
+
+    # Pass 1: reduce across BATCH to get sum_dxhat, sum_dxhat_xhat,
+    # dgamma, dbeta. Four independent block.sum calls (each has its own
+    # barriers internally).
+    var my_sum_dxhat: Scalar[DT] = 0.0
+    var my_sum_dxhat_xhat: Scalar[DT] = 0.0
+    var my_dgamma: Scalar[DT] = 0.0
+    var my_dbeta:  Scalar[DT] = 0.0
+    var b = t
+    while b < BATCH:
+        var dy = rebind[Scalar[DT]](grad_output[b, f])
+        var xh = rebind[Scalar[DT]](cache_xhat[b, f])
+        var dxhat = dy * g
+        my_sum_dxhat += dxhat
+        my_sum_dxhat_xhat += dxhat * xh
+        my_dgamma += dy * xh
+        my_dbeta  += dy
+        b += BN_TPB
+    var sum_dxhat = block.sum[block_size=BN_TPB, broadcast=True](
+        val=my_sum_dxhat
+    )
+    var sum_dxhat_xhat = block.sum[block_size=BN_TPB, broadcast=True](
+        val=my_sum_dxhat_xhat
+    )
+    var d_gamma_tot = block.sum[block_size=BN_TPB, broadcast=False](
+        val=my_dgamma
+    )
+    var d_beta_tot = block.sum[block_size=BN_TPB, broadcast=False](
+        val=my_dbeta
+    )
+    if t == 0:
+        grad_gamma[f] = (
+            rebind[Scalar[DT]](grad_gamma[f]) + d_gamma_tot[0]
+        )
+        grad_beta[f] = (
+            rebind[Scalar[DT]](grad_beta[f]) + d_beta_tot[0]
+        )
+
+    var m1 = sum_dxhat * inv_n
+    var m2 = sum_dxhat_xhat * inv_n
+
+    # Pass 2: scatter grad_input.
+    b = t
+    while b < BATCH:
+        var dy = rebind[Scalar[DT]](grad_output[b, f])
+        var xh = rebind[Scalar[DT]](cache_xhat[b, f])
+        var dxhat = dy * g
+        grad_input[b, f] = inv_std * (dxhat - m1 - xh * m2)
+        b += BN_TPB
 
 
 struct BatchNorm1D[
@@ -78,9 +243,14 @@ struct BatchNorm1D[
     # Running stats — side-channel, not walked by ParamVisitor.
     var running_mean: List[Scalar[DT]]
     var running_var:  List[Scalar[DT]]
+    var running_mean_dev: Optional[DeviceBuffer[DT]]
+    var running_var_dev:  Optional[DeviceBuffer[DT]]
     # Training-only cache (output-caching).
     var cache_xhat: List[Scalar[DT]]      # [BATCH, DIM]
     var cache_inv_std: List[Scalar[DT]]   # [DIM]
+    var cache_xhat_dev: Optional[DeviceBuffer[DT]]
+    var cache_inv_std_dev: Optional[DeviceBuffer[DT]]
+    var cache_n_batch: Int
     var cache_is_training: Bool
     # Runtime mode flag (default True). Mirrors Dropout.
     var training: Bool
@@ -91,8 +261,13 @@ struct BatchNorm1D[
         self.beta  = Param["beta",  False, Self.DIM]()
         self.running_mean = List[Scalar[DT]]()
         self.running_var  = List[Scalar[DT]]()
+        self.running_mean_dev = None
+        self.running_var_dev  = None
         self.cache_xhat = List[Scalar[DT]]()
         self.cache_inv_std = List[Scalar[DT]]()
+        self.cache_xhat_dev = None
+        self.cache_inv_std_dev = None
+        self.cache_n_batch = 0
         self.cache_is_training = False
         self.training = True
         self.ts = TargetStorage.make_uninit()
@@ -103,10 +278,7 @@ struct BatchNorm1D[
     ](
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        """Unified CPU/GPU factory. γ←1, β←0, running_mean←0, running_var←1.
-        INIT accepted for `Sequential.make[target, INIT]` uniformity but
-        ignored (universal BN init). GPU path raises — see
-        `PORTING_PLAN.md` Phase 4."""
+        """Unified CPU/GPU factory. γ←1, β←0, running_mean←0, running_var←1."""
         comptime assert target == "cpu" or target == "gpu", (
             "BatchNorm1D: target must be 'cpu' or 'gpu'"
         )
@@ -121,7 +293,6 @@ struct BatchNorm1D[
             var g_ptr = bn.gamma.value_unsafe_ptr_cpu()
             for k in range(Self.DIM):
                 g_ptr[k] = Scalar[DT](1.0)
-            # β starts at 0 (Param.make_cpu zero-filled).
             bn.running_mean = List[Scalar[DT]](
                 length=Self.DIM, fill=Scalar[DT](0.0),
             )
@@ -132,11 +303,30 @@ struct BatchNorm1D[
         else:
             if not ctx:
                 raise Error("BatchNorm1D.make[target='gpu']: ctx required")
-            raise Error(
-                "BatchNorm1D: GPU path not implemented yet (see"
-                " PORTING_PLAN.md Phase 4)"
-            )
+            var ctx_v = ctx.value()
+            bn.gamma = Param["gamma", False, Self.DIM].make_gpu(ctx_v)
+            bn.beta  = Param["beta",  False, Self.DIM].make_gpu(ctx_v)
+            bn.gamma.value_dev.value().enqueue_fill(1.0)
+            bn.beta.value_dev.value().enqueue_fill(0.0)
+            var rm_dev = ctx_v.enqueue_create_buffer[DT](Self.DIM)
+            var rv_dev = ctx_v.enqueue_create_buffer[DT](Self.DIM)
+            rm_dev.enqueue_fill(0.0)
+            rv_dev.enqueue_fill(1.0)
+            bn.running_mean_dev = rm_dev^
+            bn.running_var_dev  = rv_dev^
+            bn.cache_xhat_dev    = ctx_v.enqueue_create_buffer[DT](1)
+            bn.cache_inv_std_dev = ctx_v.enqueue_create_buffer[DT](Self.DIM)
+            bn.cache_n_batch = 0
+            bn.ts = TargetStorage.make_gpu(ctx_v)
         return bn^
+
+    def _ensure_cache_gpu(mut self, batch: Int) raises:
+        if self.cache_n_batch < batch:
+            var ctx = self.ts.ctx.value()
+            self.cache_xhat_dev = ctx.enqueue_create_buffer[DT](
+                batch * Self.DIM
+            )
+            self.cache_n_batch = batch
 
     # ----- Forward ---------------------------------------------------------
 
@@ -211,10 +401,56 @@ struct BatchNorm1D[
                         output_v[b, f] = (
                             g * (input[b, f] - rm) * inv_std + bt
                         )
-                # Don't touch cache_is_training — keep prior state. Backward
-                # already gates on this flag.
+                # Don't touch cache_is_training — keep prior state.
         else:
-            raise Error("BatchNorm1D.forward[target='gpu']: not implemented")
+            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
+            comptime layout_d  = Layout.row_major(Self.DIM)
+            var in_p_w  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                input.ptr
+            )
+            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                output_v.ptr
+            )
+            var in_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p_w)
+            var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p_w)
+            var g_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
+                self.gamma.value_dev.value()
+            )
+            var b_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
+                self.beta.value_dev.value()
+            )
+            var rm_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
+                self.running_mean_dev.value()
+            )
+            var rv_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
+                self.running_var_dev.value()
+            )
+            var ctx = self.ts.ctx.value()
+            if self.training:
+                self._ensure_cache_gpu(BATCH)
+                var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
+                    self.cache_xhat_dev.value()
+                )
+                var is_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
+                    self.cache_inv_std_dev.value()
+                )
+                comptime fkernel = _bn1d_forward_train_kernel[
+                    BATCH, Self.DIM, Self.EPSILON, Self.MOMENTUM,
+                ]
+                ctx.enqueue_function[fkernel](
+                    in_lt, out_lt, g_lt, b_lt, rm_lt, rv_lt,
+                    xh_lt, is_lt,
+                    grid_dim=Self.DIM, block_dim=BN_TPB,
+                )
+                self.cache_is_training = True
+            else:
+                comptime ekernel = _bn1d_forward_eval_kernel[
+                    BATCH, Self.DIM, Self.EPSILON,
+                ]
+                ctx.enqueue_function[ekernel](
+                    in_lt, out_lt, g_lt, b_lt, rm_lt, rv_lt,
+                    grid_dim=Self.DIM, block_dim=BN_TPB,
+                )
 
     # ----- Backward --------------------------------------------------------
 
@@ -285,7 +521,36 @@ struct BatchNorm1D[
                     dgamma_v[f] += d_gamma
                     dbeta_v[f]  += d_beta
         else:
-            raise Error("BatchNorm1D.vjp[target='gpu']: not implemented")
+            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
+            comptime layout_d  = Layout.row_major(Self.DIM)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_output_v.ptr
+            )
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_input_v.ptr
+            )
+            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
+            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
+            var g_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
+                self.gamma.value_dev.value()
+            )
+            var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
+                self.cache_xhat_dev.value()
+            )
+            var is_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
+                self.cache_inv_std_dev.value()
+            )
+            var dg_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
+                self.gamma.grad_dev.value()
+            )
+            var db_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
+                self.beta.grad_dev.value()
+            )
+            comptime kernel = _bn1d_backward_kernel[BATCH, Self.DIM]
+            self.ts.ctx.value().enqueue_function[kernel](
+                go_lt, g_lt, xh_lt, is_lt, gi_lt, dg_lt, db_lt,
+                grid_dim=Self.DIM, block_dim=BN_TPB,
+            )
 
     # ----- Walkers ---------------------------------------------------------
 

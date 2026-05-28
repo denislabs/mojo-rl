@@ -14,14 +14,16 @@ Comptime shape: input `[BATCH, C, H, W]` flattened to `[BATCH, C·H·W]`;
 output is the same shape. Used after every `Conv2D` in a CNN trunk
 (NatureDQN doesn't use it, but ResNet-style trunks do).
 
-CPU only at landing — GPU follow-up is gated on a real CNN consumer,
-same triage as Conv2D / Pool2D.
+GPU layout: one block per channel, threads stride over BATCH·SPATIAL
+samples and reduce via `block.sum[block_size=BN2D_TPB]`.
 """
 
 from std.math import sqrt
-from std.gpu.host import DeviceContext
+from std.gpu import thread_idx, block_idx
+from std.gpu.primitives import block
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
@@ -43,6 +45,188 @@ from ..core.target_storage import (
 
 comptime BN2D_DEFAULT_EPS: Float64 = 1e-5
 comptime BN2D_DEFAULT_MOM: Float64 = 0.1
+comptime BN2D_TPB: Int = 128
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GPU kernels — one block per channel, threads stride over the joint
+# (batch, spatial) sample axis. Flat storage layout `[BATCH, C, SPATIAL]`
+# is consumed via explicit address arithmetic so the LayoutTensor stays
+# at a single 1-D shape we can index directly.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _bn2d_forward_train_kernel[
+    BATCH: Int, C: Int, SPATIAL: Int, FLAT: Int,
+    EPSILON: Float64, MOMENTUM: Float64,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    beta:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    running_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    running_var:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    cache_inv_std: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    var c = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if c >= C:
+        return
+
+    var n_eff = BATCH * SPATIAL
+    var inv_n: Scalar[DT] = 1.0 / Scalar[DT](Float32(n_eff))
+    var eps = Scalar[DT](EPSILON)
+    var mom = Scalar[DT](MOMENTUM)
+    var one_m = Scalar[DT](1.0) - mom
+
+    var my_sum: Scalar[DT] = 0.0
+    var idx = t
+    while idx < n_eff:
+        var b = idx // SPATIAL
+        var s = idx % SPATIAL
+        var off = c * SPATIAL + s
+        my_sum += rebind[Scalar[DT]](input[b, off])
+        idx += BN2D_TPB
+    var mean = (
+        block.sum[block_size=BN2D_TPB, broadcast=True](val=my_sum) * inv_n
+    )
+
+    var my_var: Scalar[DT] = 0.0
+    idx = t
+    while idx < n_eff:
+        var b = idx // SPATIAL
+        var s = idx % SPATIAL
+        var off = c * SPATIAL + s
+        var d = rebind[Scalar[DT]](input[b, off]) - mean
+        my_var += d * d
+        idx += BN2D_TPB
+    var var_ = (
+        block.sum[block_size=BN2D_TPB, broadcast=True](val=my_var) * inv_n
+    )
+
+    var inv_std: Scalar[DT] = 1.0 / sqrt(var_ + eps)
+    if t == 0:
+        cache_inv_std[c] = inv_std
+        var rm = rebind[Scalar[DT]](running_mean[c])
+        var rv = rebind[Scalar[DT]](running_var[c])
+        running_mean[c] = one_m * rm + mom * mean
+        running_var[c]  = one_m * rv + mom * var_
+
+    var g = rebind[Scalar[DT]](gamma[c])
+    var bt = rebind[Scalar[DT]](beta[c])
+    idx = t
+    while idx < n_eff:
+        var b = idx // SPATIAL
+        var s = idx % SPATIAL
+        var off = c * SPATIAL + s
+        var x = rebind[Scalar[DT]](input[b, off])
+        var xh = (x - mean) * inv_std
+        cache_xhat[b, off] = xh
+        output[b, off] = g * xh + bt
+        idx += BN2D_TPB
+
+
+def _bn2d_forward_eval_kernel[
+    BATCH: Int, C: Int, SPATIAL: Int, FLAT: Int, EPSILON: Float64,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    beta:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    running_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    running_var:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    var c = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if c >= C:
+        return
+    var eps = Scalar[DT](EPSILON)
+    var rm = rebind[Scalar[DT]](running_mean[c])
+    var rv = rebind[Scalar[DT]](running_var[c])
+    var inv_std: Scalar[DT] = 1.0 / sqrt(rv + eps)
+    var g = rebind[Scalar[DT]](gamma[c])
+    var bt = rebind[Scalar[DT]](beta[c])
+    var n_eff = BATCH * SPATIAL
+    var idx = t
+    while idx < n_eff:
+        var b = idx // SPATIAL
+        var s = idx % SPATIAL
+        var off = c * SPATIAL + s
+        var x = rebind[Scalar[DT]](input[b, off])
+        output[b, off] = g * (x - rm) * inv_std + bt
+        idx += BN2D_TPB
+
+
+def _bn2d_backward_kernel[
+    BATCH: Int, C: Int, SPATIAL: Int, FLAT: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    cache_inv_std: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    grad_gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_beta:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    var c = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if c >= C:
+        return
+    var n_eff = BATCH * SPATIAL
+    var inv_n: Scalar[DT] = 1.0 / Scalar[DT](Float32(n_eff))
+    var g = rebind[Scalar[DT]](gamma[c])
+    var inv_std = rebind[Scalar[DT]](cache_inv_std[c])
+
+    var my_sum_dxhat: Scalar[DT] = 0.0
+    var my_sum_dxhat_xhat: Scalar[DT] = 0.0
+    var my_dgamma: Scalar[DT] = 0.0
+    var my_dbeta:  Scalar[DT] = 0.0
+    var idx = t
+    while idx < n_eff:
+        var b = idx // SPATIAL
+        var s = idx % SPATIAL
+        var off = c * SPATIAL + s
+        var dy = rebind[Scalar[DT]](grad_output[b, off])
+        var xh = rebind[Scalar[DT]](cache_xhat[b, off])
+        var dxhat = dy * g
+        my_sum_dxhat += dxhat
+        my_sum_dxhat_xhat += dxhat * xh
+        my_dgamma += dy * xh
+        my_dbeta  += dy
+        idx += BN2D_TPB
+    var sum_dxhat = block.sum[block_size=BN2D_TPB, broadcast=True](
+        val=my_sum_dxhat
+    )
+    var sum_dxhat_xhat = block.sum[block_size=BN2D_TPB, broadcast=True](
+        val=my_sum_dxhat_xhat
+    )
+    var d_gamma_tot = block.sum[block_size=BN2D_TPB, broadcast=False](
+        val=my_dgamma
+    )
+    var d_beta_tot = block.sum[block_size=BN2D_TPB, broadcast=False](
+        val=my_dbeta
+    )
+    if t == 0:
+        grad_gamma[c] = (
+            rebind[Scalar[DT]](grad_gamma[c]) + d_gamma_tot[0]
+        )
+        grad_beta[c] = (
+            rebind[Scalar[DT]](grad_beta[c]) + d_beta_tot[0]
+        )
+
+    var m1 = sum_dxhat * inv_n
+    var m2 = sum_dxhat_xhat * inv_n
+    idx = t
+    while idx < n_eff:
+        var b = idx // SPATIAL
+        var s = idx % SPATIAL
+        var off = c * SPATIAL + s
+        var dy = rebind[Scalar[DT]](grad_output[b, off])
+        var xh = rebind[Scalar[DT]](cache_xhat[b, off])
+        var dxhat = dy * g
+        grad_input[b, off] = inv_std * (dxhat - m1 - xh * m2)
+        idx += BN2D_TPB
 
 
 struct BatchNorm2D[
@@ -60,8 +244,13 @@ struct BatchNorm2D[
     var beta:  Param["beta",  False, Self.C]
     var running_mean: List[Scalar[DT]]
     var running_var:  List[Scalar[DT]]
+    var running_mean_dev: Optional[DeviceBuffer[DT]]
+    var running_var_dev:  Optional[DeviceBuffer[DT]]
     var cache_xhat: List[Scalar[DT]]     # [BATCH, C, H, W] flat
     var cache_inv_std: List[Scalar[DT]]  # [C]
+    var cache_xhat_dev: Optional[DeviceBuffer[DT]]
+    var cache_inv_std_dev: Optional[DeviceBuffer[DT]]
+    var cache_n_batch: Int
     var cache_is_training: Bool
     var training: Bool
     var ts: TargetStorage
@@ -71,8 +260,13 @@ struct BatchNorm2D[
         self.beta  = Param["beta",  False, Self.C]()
         self.running_mean = List[Scalar[DT]]()
         self.running_var  = List[Scalar[DT]]()
+        self.running_mean_dev = None
+        self.running_var_dev  = None
         self.cache_xhat = List[Scalar[DT]]()
         self.cache_inv_std = List[Scalar[DT]]()
+        self.cache_xhat_dev = None
+        self.cache_inv_std_dev = None
+        self.cache_n_batch = 0
         self.cache_is_training = False
         self.training = True
         self.ts = TargetStorage.make_uninit()
@@ -109,11 +303,30 @@ struct BatchNorm2D[
         else:
             if not ctx:
                 raise Error("BatchNorm2D.make[target='gpu']: ctx required")
-            raise Error(
-                "BatchNorm2D: GPU path not implemented yet (see"
-                " PORTING_PLAN.md Phase 5)"
-            )
+            var ctx_v = ctx.value()
+            bn.gamma = Param["gamma", False, Self.C].make_gpu(ctx_v)
+            bn.beta  = Param["beta",  False, Self.C].make_gpu(ctx_v)
+            bn.gamma.value_dev.value().enqueue_fill(1.0)
+            bn.beta.value_dev.value().enqueue_fill(0.0)
+            var rm_dev = ctx_v.enqueue_create_buffer[DT](Self.C)
+            var rv_dev = ctx_v.enqueue_create_buffer[DT](Self.C)
+            rm_dev.enqueue_fill(0.0)
+            rv_dev.enqueue_fill(1.0)
+            bn.running_mean_dev = rm_dev^
+            bn.running_var_dev  = rv_dev^
+            bn.cache_xhat_dev    = ctx_v.enqueue_create_buffer[DT](1)
+            bn.cache_inv_std_dev = ctx_v.enqueue_create_buffer[DT](Self.C)
+            bn.cache_n_batch = 0
+            bn.ts = TargetStorage.make_gpu(ctx_v)
         return bn^
+
+    def _ensure_cache_gpu(mut self, batch: Int) raises:
+        if self.cache_n_batch < batch:
+            var ctx = self.ts.ctx.value()
+            self.cache_xhat_dev = ctx.enqueue_create_buffer[DT](
+                batch * Self.FLAT_DIM
+            )
+            self.cache_n_batch = batch
 
     # ----- Forward ---------------------------------------------------------
 
@@ -210,7 +423,56 @@ struct BatchNorm2D[
                                 g * (in_p[base + s] - rm) * inv_std + bt
                             )
         else:
-            raise Error("BatchNorm2D.forward[target='gpu']: not implemented")
+            comptime layout_2d = Layout.row_major(BATCH, Self.FLAT_DIM)
+            comptime layout_c  = Layout.row_major(Self.C)
+            var in_p_w  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                input.ptr
+            )
+            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                output_v.ptr
+            )
+            var in_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p_w)
+            var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p_w)
+            var g_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
+                self.gamma.value_dev.value()
+            )
+            var b_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
+                self.beta.value_dev.value()
+            )
+            var rm_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
+                self.running_mean_dev.value()
+            )
+            var rv_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
+                self.running_var_dev.value()
+            )
+            var ctx = self.ts.ctx.value()
+            if self.training:
+                self._ensure_cache_gpu(BATCH)
+                var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
+                    self.cache_xhat_dev.value()
+                )
+                var is_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
+                    self.cache_inv_std_dev.value()
+                )
+                comptime fkernel = _bn2d_forward_train_kernel[
+                    BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM,
+                    Self.EPSILON, Self.MOMENTUM,
+                ]
+                ctx.enqueue_function[fkernel](
+                    in_lt, out_lt, g_lt, b_lt, rm_lt, rv_lt,
+                    xh_lt, is_lt,
+                    grid_dim=Self.C, block_dim=BN2D_TPB,
+                )
+                self.cache_is_training = True
+            else:
+                comptime ekernel = _bn2d_forward_eval_kernel[
+                    BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM,
+                    Self.EPSILON,
+                ]
+                ctx.enqueue_function[ekernel](
+                    in_lt, out_lt, g_lt, b_lt, rm_lt, rv_lt,
+                    grid_dim=Self.C, block_dim=BN2D_TPB,
+                )
 
     # ----- Backward --------------------------------------------------------
 
@@ -292,7 +554,38 @@ struct BatchNorm2D[
                     dg_p[c] += d_gamma
                     db_p[c] += d_beta
         else:
-            raise Error("BatchNorm2D.vjp[target='gpu']: not implemented")
+            comptime layout_2d = Layout.row_major(BATCH, Self.FLAT_DIM)
+            comptime layout_c  = Layout.row_major(Self.C)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_output_v.ptr
+            )
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_input_v.ptr
+            )
+            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
+            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
+            var g_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
+                self.gamma.value_dev.value()
+            )
+            var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
+                self.cache_xhat_dev.value()
+            )
+            var is_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
+                self.cache_inv_std_dev.value()
+            )
+            var dg_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
+                self.gamma.grad_dev.value()
+            )
+            var db_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
+                self.beta.grad_dev.value()
+            )
+            comptime kernel = _bn2d_backward_kernel[
+                BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM,
+            ]
+            self.ts.ctx.value().enqueue_function[kernel](
+                go_lt, g_lt, xh_lt, is_lt, gi_lt, dg_lt, db_lt,
+                grid_dim=Self.C, block_dim=BN2D_TPB,
+            )
 
     # Inline helper so we don't read `beta.value` through `value_unsafe_ptr_cpu`
     # twice (one less symbol to update if Param's API shifts).

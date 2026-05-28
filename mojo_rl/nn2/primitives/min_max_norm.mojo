@@ -22,12 +22,15 @@ y is shift-invariant in x).
 
 Cache: leaf-owned copy of the input row, so backward can re-derive
 min/max/argmin/argmax without indexing the orchestrator's input slab.
-CPU-only at landing — GPU is a follow-up once a consumer needs it.
+CPU + GPU paths. GPU layout: one block per sample, threads parallelise
+DIM. Block reductions handle min / max / argmin / argmax / G / Gy.
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu import thread_idx, block_idx
+from std.gpu.primitives import block
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP
@@ -40,6 +43,144 @@ from ..core.target_storage import (
 
 
 comptime MMN_EPS: Scalar[DT] = 1e-5
+comptime MMN_TPB: Int = 128
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GPU kernels — one block per sample, threads stride over DIM.
+# Block reductions: min, max for stats; min over argmin/argmax sentinels
+# for index resolution; sum for G = Σ grad_y and Gy = Σ grad_y · y.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _min_max_norm_forward_kernel[
+    BATCH: Int, DIM: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    cache: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+):
+    var b = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var pos_inf = Scalar[DT](1e30)
+    var neg_inf = Scalar[DT](-1e30)
+    var my_min = pos_inf
+    var my_max = neg_inf
+    var idx = t
+    while idx < DIM:
+        var v = rebind[Scalar[DT]](input[b, idx])
+        if v < my_min:
+            my_min = v
+        if v > my_max:
+            my_max = v
+        idx += MMN_TPB
+
+    var min_val = block.min[block_size=MMN_TPB, broadcast=True](val=my_min)
+    var max_val = block.max[block_size=MMN_TPB, broadcast=True](val=my_max)
+
+    var s = max_val - min_val
+    if s < MMN_EPS:
+        s = MMN_EPS
+    var inv_s = Scalar[DT](1.0) / s
+
+    idx = t
+    while idx < DIM:
+        var x = rebind[Scalar[DT]](input[b, idx])
+        cache[b, idx] = x
+        output[b, idx] = (x - min_val) * inv_s
+        idx += MMN_TPB
+
+
+def _min_max_norm_backward_kernel[
+    BATCH: Int, DIM: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    cache: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+):
+    var b = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var pos_inf = Scalar[DT](1e30)
+    var neg_inf = Scalar[DT](-1e30)
+    var my_min = pos_inf
+    var my_max = neg_inf
+    var my_argmin: Int = 0
+    var my_argmax: Int = 0
+    var idx = t
+    while idx < DIM:
+        var v = rebind[Scalar[DT]](cache[b, idx])
+        if v < my_min:
+            my_min = v
+            my_argmin = idx
+        if v > my_max:
+            my_max = v
+            my_argmax = idx
+        idx += MMN_TPB
+
+    var min_val = block.min[block_size=MMN_TPB, broadcast=True](val=my_min)
+    var max_val = block.max[block_size=MMN_TPB, broadcast=True](val=my_max)
+
+    # Resolve argmin/argmax: threads that don't hold the block min/max
+    # emit a sentinel (DIM), then block.min finds the smallest valid index.
+    var SENTINEL = DIM
+    var my_argmin_s: Int = my_argmin if my_min == min_val else SENTINEL
+    var my_argmax_s: Int = my_argmax if my_max == max_val else SENTINEL
+    var argmin = block.min[block_size=MMN_TPB, broadcast=True](
+        val=Scalar[DType.int32](my_argmin_s)
+    )
+    var argmax = block.min[block_size=MMN_TPB, broadcast=True](
+        val=Scalar[DType.int32](my_argmax_s)
+    )
+
+    var s = max_val - min_val
+    var degenerate = s < MMN_EPS
+    if degenerate:
+        s = MMN_EPS
+    var inv_s = Scalar[DT](1.0) / s
+
+    if degenerate:
+        idx = t
+        while idx < DIM:
+            grad_input[b, idx] = Scalar[DT](0.0)
+            idx += MMN_TPB
+        return
+
+    var my_G = Scalar[DT](0.0)
+    var my_Gy = Scalar[DT](0.0)
+    idx = t
+    while idx < DIM:
+        var x = rebind[Scalar[DT]](cache[b, idx])
+        var y = (x - min_val) * inv_s
+        var dy = rebind[Scalar[DT]](grad_output[b, idx])
+        my_G += dy
+        my_Gy += dy * y
+        idx += MMN_TPB
+    var G = block.sum[block_size=MMN_TPB, broadcast=True](val=my_G)
+    var Gy = block.sum[block_size=MMN_TPB, broadcast=True](val=my_Gy)
+
+    var dy_argmin = rebind[Scalar[DT]](grad_output[b, Int(argmin)])
+    var dy_argmax = rebind[Scalar[DT]](grad_output[b, Int(argmax)])
+
+    idx = t
+    while idx < DIM:
+        var dy = rebind[Scalar[DT]](grad_output[b, idx])
+        var dx: Scalar[DT]
+        if Int32(idx) == argmin and Int32(idx) == argmax:
+            dx = Scalar[DT](0.0)
+        elif Int32(idx) == argmin:
+            dx = (Gy + dy_argmin - G) * inv_s
+        elif Int32(idx) == argmax:
+            dx = (dy_argmax - Gy) * inv_s
+        else:
+            dx = dy * inv_s
+        grad_input[b, idx] = dx
+        idx += MMN_TPB
 
 
 struct MinMaxNorm[DIM: Int](Module):
@@ -50,10 +191,14 @@ struct MinMaxNorm[DIM: Int](Module):
     # Cache: per-sample copy of x, re-scanned for min/max/argmin/argmax
     # in vjp. Cheaper than caching indices (no int-as-float fragility).
     var cache_x: List[Scalar[DT]]
+    var cache_x_dev: Optional[DeviceBuffer[DT]]
+    var cache_n_batch: Int
     var ts: TargetStorage
 
     def __init__(out self):
         self.cache_x = List[Scalar[DT]]()
+        self.cache_x_dev = None
+        self.cache_n_batch = 0
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -62,9 +207,7 @@ struct MinMaxNorm[DIM: Int](Module):
     ](
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        """Unified CPU/GPU factory. INIT ignored (no params). GPU path
-        raises — no nn2 consumer needs it yet (see PORTING_PLAN.md
-        Phase 2)."""
+        """Unified CPU/GPU factory. INIT ignored (no params)."""
         comptime assert target == "cpu" or target == "gpu", (
             "MinMaxNorm: target must be 'cpu' or 'gpu'"
         )
@@ -75,11 +218,19 @@ struct MinMaxNorm[DIM: Int](Module):
         else:
             if not ctx:
                 raise Error("MinMaxNorm.make[target='gpu']: ctx required")
-            raise Error(
-                "MinMaxNorm: GPU path not implemented yet (see"
-                " PORTING_PLAN.md Phase 2)"
-            )
+            var ctx_v = ctx.value()
+            n.cache_x_dev = ctx_v.enqueue_create_buffer[DT](1)
+            n.cache_n_batch = 0
+            n.ts = TargetStorage.make_gpu(ctx_v)
         return n^
+
+    def _ensure_cache_gpu(mut self, batch: Int) raises:
+        if self.cache_n_batch < batch:
+            var ctx = self.ts.ctx.value()
+            self.cache_x_dev = ctx.enqueue_create_buffer[DT](
+                batch * Self.DIM
+            )
+            self.cache_n_batch = batch
 
     def forward[
         target: StaticString,
@@ -124,7 +275,24 @@ struct MinMaxNorm[DIM: Int](Module):
                 for i in range(Self.DIM):
                     output_v[b, i] = (cache_v[b, i] - min_val) * inv_s
         else:
-            raise Error("MinMaxNorm.forward[target='gpu']: not implemented")
+            self._ensure_cache_gpu(BATCH)
+            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
+            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                input.ptr
+            )
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                output_v.ptr
+            )
+            var in_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p)
+            var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p)
+            var cache_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
+                self.cache_x_dev.value()
+            )
+            comptime kernel = _min_max_norm_forward_kernel[BATCH, Self.DIM]
+            self.ts.ctx.value().enqueue_function[kernel](
+                in_lt, out_lt, cache_lt,
+                grid_dim=BATCH, block_dim=MMN_TPB,
+            )
 
     def vjp[
         target: StaticString,
@@ -198,4 +366,20 @@ struct MinMaxNorm[DIM: Int](Module):
                         dx = dy * inv_s
                     grad_input_v[b, i] = dx
         else:
-            raise Error("MinMaxNorm.vjp[target='gpu']: not implemented")
+            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_output_v.ptr
+            )
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_input_v.ptr
+            )
+            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
+            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
+            var cache_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
+                self.cache_x_dev.value()
+            )
+            comptime kernel = _min_max_norm_backward_kernel[BATCH, Self.DIM]
+            self.ts.ctx.value().enqueue_function[kernel](
+                go_lt, cache_lt, gi_lt,
+                grid_dim=BATCH, block_dim=MMN_TPB,
+            )

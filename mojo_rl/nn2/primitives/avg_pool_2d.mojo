@@ -1,6 +1,6 @@
 """AvgPool2D[C, K, S, P, H, W] — 2D average pooling with zero padding.
 
-Phase 5 of `nn2/PORTING_PLAN.md`. CPU-only.
+Phase 5 of `nn2/PORTING_PLAN.md`.
 
 Comptime shape mirrors `MaxPool2D` — `[BATCH, C·H·W]` in, `[BATCH, C·OH·OW]`
 out where `OH = (H + 2P - K) // S + 1`, `OW = (W + 2P - K) // S + 1`.
@@ -13,16 +13,116 @@ edge cases.
 No params, no cache. Backward broadcasts each output gradient uniformly
 to its `K·K` input window with weight `1/(K·K)`; padded lanes never
 receive gradient.
+
+GPU layout: forward is output-indexed (1 thread per output cell);
+backward is **input-indexed** (1 thread per input cell, looping over
+overlapping output windows). Matches `MaxPool2D` so the same no-atomics
+convention holds for overlapping pool configurations.
 """
 
+from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT
+from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
+
+
+def _avg_pool_2d_forward_kernel[
+    BATCH: Int, C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, OUT_FLAT: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin],
+    inv_kk: Scalar[DT],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = BATCH * OUT_FLAT
+    if idx >= total:
+        return
+    var b = idx // OUT_FLAT
+    var out_pos = idx % OUT_FLAT
+    var spatial_out = OH * OW
+    var c = out_pos // spatial_out
+    var rem = out_pos % spatial_out
+    var oh = rem // OW
+    var ow = rem % OW
+
+    var in_c_off = c * H * W
+    var s: Scalar[DT] = 0.0
+    for kh in range(K):
+        var ih = oh * S + kh - P
+        if ih < 0 or ih >= H:
+            continue
+        for kw in range(K):
+            var iw = ow * S + kw - P
+            if iw < 0 or iw >= W:
+                continue
+            s += rebind[Scalar[DT]](input[b, in_c_off + ih * W + iw])
+    output[b, out_pos] = s * inv_kk
+
+
+def _avg_pool_2d_backward_kernel[
+    BATCH: Int, C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, OUT_FLAT: Int,
+](
+    grad_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
+    ],
+    grad_input: LayoutTensor[
+        DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin,
+    ],
+    inv_kk: Scalar[DT],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = BATCH * IN_FLAT
+    if idx >= total:
+        return
+    var b = idx // IN_FLAT
+    var in_pos = idx % IN_FLAT
+    var hw = H * W
+    var c = in_pos // hw
+    var rem = in_pos % hw
+    var ih = rem // W
+    var iw = rem % W
+
+    # Output windows that contain input cell (ih, iw).
+    var oh_max_raw = ih + P
+    var ow_max_raw = iw + P
+    if oh_max_raw < 0 or ow_max_raw < 0:
+        grad_input[b, in_pos] = Scalar[DT](0.0)
+        return
+    var oh_top = oh_max_raw // S
+    var ow_top = ow_max_raw // S
+    var oh_bot_raw = ih + P - K + 1
+    var ow_bot_raw = iw + P - K + 1
+    var oh_bot: Int = 0
+    if oh_bot_raw > 0:
+        oh_bot = (oh_bot_raw + S - 1) // S
+    var ow_bot: Int = 0
+    if ow_bot_raw > 0:
+        ow_bot = (ow_bot_raw + S - 1) // S
+    if oh_top >= OH:
+        oh_top = OH - 1
+    if ow_top >= OW:
+        ow_top = OW - 1
+
+    var spatial_out = OH * OW
+    var out_c_off = c * spatial_out
+    var acc: Scalar[DT] = 0.0
+    var oh = oh_bot
+    while oh <= oh_top:
+        var ow = ow_bot
+        while ow <= ow_top:
+            acc += rebind[Scalar[DT]](
+                grad_output[b, out_c_off + oh * OW + ow]
+            )
+            ow += 1
+        oh += 1
+    grad_input[b, in_pos] = acc * inv_kk
 
 
 struct AvgPool2D[
@@ -62,10 +162,7 @@ struct AvgPool2D[
         else:
             if not ctx:
                 raise Error("AvgPool2D.make[target='gpu']: ctx required")
-            raise Error(
-                "AvgPool2D: GPU path not implemented yet (see"
-                " PORTING_PLAN.md Phase 5)"
-            )
+            a.ts = TargetStorage.make_gpu(ctx.value())
         return a^
 
     def forward[
@@ -86,14 +183,14 @@ struct AvgPool2D[
         assert_tag_for["AvgPool2D", target](self.ts.target_tag)
         var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
+        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            input.ptr
+        )
+        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            output_v.ptr
+        )
 
         comptime if target == "cpu":
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                input.ptr
-            )
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
             var inv_kk = Scalar[DT](1.0 / Float64(Self.K * Self.K))
             for b in range(BATCH):
                 var in_base = b * Self.IN_DIM_FLAT
@@ -119,7 +216,22 @@ struct AvgPool2D[
                                 s * inv_kk
                             )
         else:
-            raise Error("AvgPool2D.forward[target='gpu']: not implemented")
+            comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
+            comptime out_layout = Layout.row_major(BATCH, Self.OUT_DIM_FLAT)
+            var in_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](in_p)
+            var out_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](out_p)
+            var inv_kk = Scalar[DT](1.0 / Float64(Self.K * Self.K))
+            comptime total = BATCH * Self.OUT_DIM_FLAT
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime kernel = _avg_pool_2d_forward_kernel[
+                BATCH, Self.C, Self.K, Self.S, Self.P,
+                Self.H, Self.W, Self.OH, Self.OW,
+                Self.IN_DIM_FLAT, Self.OUT_DIM_FLAT,
+            ]
+            self.ts.ctx.value().enqueue_function[kernel](
+                in_lt, out_lt, inv_kk,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
 
     def vjp[
         target: StaticString,
@@ -180,4 +292,25 @@ struct AvgPool2D[
                                         in_c_base + ih * Self.W + iw
                                     ] += go_val
         else:
-            raise Error("AvgPool2D.vjp[target='gpu']: not implemented")
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_output_v.ptr
+            )
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_input_v.ptr
+            )
+            comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
+            comptime out_layout = Layout.row_major(BATCH, Self.OUT_DIM_FLAT)
+            var go_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](go_p)
+            var gi_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](gi_p)
+            var inv_kk = Scalar[DT](1.0 / Float64(Self.K * Self.K))
+            comptime total = BATCH * Self.IN_DIM_FLAT
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime kernel = _avg_pool_2d_backward_kernel[
+                BATCH, Self.C, Self.K, Self.S, Self.P,
+                Self.H, Self.W, Self.OH, Self.OW,
+                Self.IN_DIM_FLAT, Self.OUT_DIM_FLAT,
+            ]
+            self.ts.ctx.value().enqueue_function[kernel](
+                go_lt, gi_lt, inv_kk,
+                grid_dim=n_blocks, block_dim=TPB,
+            )

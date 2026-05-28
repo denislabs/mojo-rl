@@ -13,7 +13,10 @@ Phase 2 train/eval section):
     only leaf that needs train/eval, so we keep the surface local.
   - **Per-instance counter `call_counter: UInt64`**, bumped on every
     forward to give each call a unique PhiloxRandom offset. Mirrors
-    the legacy `STATE_SIZE=1` GPU counter slot, just on the host.
+    the legacy `STATE_SIZE=1` GPU counter slot, just on the host —
+    the GPU kernel reads it as a scalar arg instead of a device buffer
+    (nn2 doesn't do CUDA-graph capture, so the host-side counter is
+    fine; same pattern `box_muller.mojo` uses for SAC noise).
 
 Math (inverted dropout, identical to PyTorch):
     training:  mask ~ Bernoulli(1 - p), y = x · mask / (1 - p)
@@ -24,19 +27,17 @@ Backward (mask cached from forward):
     eval:      grad_x = grad_y
 
 Cache: leaf-owned `[BATCH, DIM]` slab — we cache the scaled mask
-(0 or 1/(1-p)) so backward is a single elementwise multiply.
-
-CPU-only at landing — no nn2 consumer needs Dropout yet; GPU is a
-follow-up once one does (Phase 5 CNN agents typically don't use it
-either, so this is genuinely on-demand work).
+(0 or 1/(1-p)) so backward is a single elementwise multiply. On GPU
+the cache lives in a `DeviceBuffer[DT]` sized lazily on first forward.
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from std.random.philox import Random as PhiloxRandom
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT
+from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
@@ -44,6 +45,59 @@ from ..core.target_storage import (
     assert_tag_for,
     ensure_cpu_buffer,
 )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GPU kernels — flat 1-D launch over BATCH·DIM. PhiloxRandom seeded
+# with the per-layer SEED (caller-supplied comptime) and offset
+# (base_offset + idx) so each (forward, lane) pair has a fresh seed.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _dropout_train_forward_kernel[
+    N: Int, SEED: UInt64,
+](
+    input: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    cache: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    base_offset: UInt64,
+    threshold: Scalar[DT],
+    scale: Scalar[DT],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= N:
+        return
+    var rng = PhiloxRandom(
+        seed=SEED, offset=base_offset + UInt64(idx),
+    )
+    var rand = Scalar[DT](rng.step_uniform()[0])
+    var mask: Scalar[DT] = scale if rand >= threshold else Scalar[DT](0.0)
+    cache[idx] = mask
+    output[idx] = rebind[Scalar[DT]](input[idx]) * mask
+
+
+def _dropout_eval_kernel[N: Int](
+    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= N:
+        return
+    dst[idx] = rebind[Scalar[DT]](src[idx])
+
+
+def _dropout_train_backward_kernel[N: Int](
+    grad_output: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    cache: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= N:
+        return
+    grad_input[idx] = (
+        rebind[Scalar[DT]](grad_output[idx])
+        * rebind[Scalar[DT]](cache[idx])
+    )
 
 
 struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
@@ -56,12 +110,16 @@ struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
     var call_counter: UInt64
     # Mask cache [BATCH, DIM] — scaled (0 or 1/(1-p)).
     var cache_mask: List[Scalar[DT]]
+    var cache_mask_dev: Optional[DeviceBuffer[DT]]
+    var cache_n_batch: Int
     var ts: TargetStorage
 
     def __init__(out self):
         self.training = True
         self.call_counter = 0
         self.cache_mask = List[Scalar[DT]]()
+        self.cache_mask_dev = None
+        self.cache_n_batch = 0
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -70,9 +128,7 @@ struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
     ](
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        """Unified CPU/GPU factory. INIT ignored (no params). GPU path
-        raises — no nn2 consumer needs Dropout yet (PORTING_PLAN.md
-        Phase 2)."""
+        """Unified CPU/GPU factory. INIT ignored (no params)."""
         comptime assert target == "cpu" or target == "gpu", (
             "Dropout: target must be 'cpu' or 'gpu'"
         )
@@ -85,11 +141,19 @@ struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
         else:
             if not ctx:
                 raise Error("Dropout.make[target='gpu']: ctx required")
-            raise Error(
-                "Dropout: GPU path not implemented yet (see"
-                " PORTING_PLAN.md Phase 2)"
-            )
+            var ctx_v = ctx.value()
+            d.cache_mask_dev = ctx_v.enqueue_create_buffer[DT](1)
+            d.cache_n_batch = 0
+            d.ts = TargetStorage.make_gpu(ctx_v)
         return d^
+
+    def _ensure_cache_gpu(mut self, batch: Int) raises:
+        if self.cache_n_batch < batch:
+            var ctx = self.ts.ctx.value()
+            self.cache_mask_dev = ctx.enqueue_create_buffer[DT](
+                batch * Self.DIM
+            )
+            self.cache_n_batch = batch
 
     def forward[
         target: StaticString,
@@ -139,7 +203,42 @@ struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
                     output_v[b, i] = input[b, i] * mask
             self.call_counter += 1
         else:
-            raise Error("Dropout.forward[target='gpu']: not implemented")
+            comptime N = BATCH * Self.DIM
+            comptime n_blocks = (N + TPB - 1) // TPB
+            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                input.ptr
+            )
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                output_v.ptr
+            )
+            var in_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](in_p)
+            var out_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](out_p)
+            if not self.training:
+                comptime eval_kernel = _dropout_eval_kernel[N]
+                self.ts.ctx.value().enqueue_function[eval_kernel](
+                    in_lt, out_lt,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
+                return
+            self._ensure_cache_gpu(BATCH)
+            var cache_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](self.cache_mask_dev.value())
+            var scale = Scalar[DT](1.0 / (1.0 - Self.p))
+            var threshold = Scalar[DT](Self.p)
+            var base_offset = self.call_counter * UInt64(N)
+            comptime train_kernel = _dropout_train_forward_kernel[
+                N, Self.SEED,
+            ]
+            self.ts.ctx.value().enqueue_function[train_kernel](
+                in_lt, out_lt, cache_lt, base_offset, threshold, scale,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
+            self.call_counter += 1
 
     def vjp[
         target: StaticString,
@@ -181,7 +280,35 @@ struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
                         grad_output_v[b, i] * cache_v[b, i]
                     )
         else:
-            raise Error("Dropout.vjp[target='gpu']: not implemented")
+            comptime N = BATCH * Self.DIM
+            comptime n_blocks = (N + TPB - 1) // TPB
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_output_v.ptr
+            )
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_input_v.ptr
+            )
+            var go_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](go_p)
+            var gi_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](gi_p)
+            if not self.training:
+                comptime eval_kernel = _dropout_eval_kernel[N]
+                self.ts.ctx.value().enqueue_function[eval_kernel](
+                    go_lt, gi_lt,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
+                return
+            var cache_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](self.cache_mask_dev.value())
+            comptime back_kernel = _dropout_train_backward_kernel[N]
+            self.ts.ctx.value().enqueue_function[back_kernel](
+                go_lt, cache_lt, gi_lt,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
 
     # `set_attr["training"]` lets ComputeGraph / training-loop callers
     # flip the train/eval flag without naming the field directly. Value

@@ -35,15 +35,23 @@ trick `linear.mojo` uses. On other targets we matmul into a temp slab
 and add elementwise. Both paths produce identical numerics modulo
 float32 rounding.
 
-CPU only at landing. GPU follow-up is gated on a real CNN consumer.
+GPU path: **naive-but-correct direct convolution kernels** — one thread
+per output position for the forward, one thread per input position
+for `d_input`, one thread per weight scalar for `d_weight`, one thread
+per output channel for `d_bias`. Mirrors the legacy nn
+`backward_dx_kernel_impl` layout (one thread per input element with no
+atomics — see `nn/autodiff/primitives/conv2d.mojo:790`). Tuned tiled +
+im2col-on-GPU paths are a follow-up; the plan documents them as
+consumer-gated under "Outstanding matmul-perf follow-ups".
 """
 
 from std.math import ceildiv
 from std.memory import alloc
 from std.sys import CompilationTarget
+from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 from linalg.matmul.cpu.apple_accelerate import (
     get_cblas_f32_function,
@@ -51,7 +59,7 @@ from linalg.matmul.cpu.apple_accelerate import (
     _CBLASTranspose,
 )
 
-from ..constants import DT, CPU_SIMD_W
+from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import (
     Initializer,
     AMPPolicy,
@@ -137,6 +145,189 @@ def _col2im_one_batch[
                         )
 
 
+# ──────────────────────────────────────────────────────────────────────
+# GPU kernels — direct convolution (no GPU im2col yet).
+#
+#   forward:    1 thread per (b, oc, oh, ow).
+#   backward_dx 1 thread per (b, ic, ih, iw).
+#   backward_dw 1 thread per (oc, ic, kh, kw). Sums over BATCH·OH·OW.
+#   backward_db 1 thread per oc.               Sums over BATCH·OH·OW.
+#
+# No atomics — every kernel writes a unique destination slot, matching
+# the deep_agents2 / nn2 convention (`c51/target_y_block.mojo:48`).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _conv2d_forward_kernel[
+    BATCH: Int, IC: Int, OC: Int, K: Int, S: Int, P: Int,
+    H: Int, W: Int, OH: Int, OW: Int,
+    IN_FLAT: Int, OUT_FLAT: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
+    weight: LayoutTensor[
+        DT, Layout.row_major(OC * IC * K * K), MutAnyOrigin,
+    ],
+    bias:   LayoutTensor[DT, Layout.row_major(OC), MutAnyOrigin],
+    output: LayoutTensor[
+        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
+    ],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = BATCH * OUT_FLAT
+    if idx >= total:
+        return
+    var b = idx // OUT_FLAT
+    var out_pos = idx % OUT_FLAT
+    var spatial_out = OH * OW
+    var oc = out_pos // spatial_out
+    var rem = out_pos % spatial_out
+    var oh = rem // OW
+    var ow = rem % OW
+
+    var acc = rebind[Scalar[DT]](bias[oc])
+    var w_oc_off = oc * IC * K * K
+    for ic in range(IC):
+        var in_c_off = ic * H * W
+        var w_ic_off = w_oc_off + ic * K * K
+        for kh in range(K):
+            var ih = oh * S + kh - P
+            if ih < 0 or ih >= H:
+                continue
+            var w_kh_off = w_ic_off + kh * K
+            for kw in range(K):
+                var iw = ow * S + kw - P
+                if iw < 0 or iw >= W:
+                    continue
+                acc += (
+                    rebind[Scalar[DT]](input[b, in_c_off + ih * W + iw])
+                    * rebind[Scalar[DT]](weight[w_kh_off + kw])
+                )
+    output[b, out_pos] = acc
+
+
+def _conv2d_backward_dx_kernel[
+    BATCH: Int, IC: Int, OC: Int, K: Int, S: Int, P: Int,
+    H: Int, W: Int, OH: Int, OW: Int,
+    IN_FLAT: Int, OUT_FLAT: Int,
+](
+    grad_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
+    ],
+    weight: LayoutTensor[
+        DT, Layout.row_major(OC * IC * K * K), MutAnyOrigin,
+    ],
+    grad_input: LayoutTensor[
+        DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin,
+    ],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = BATCH * IN_FLAT
+    if idx >= total:
+        return
+    var b = idx // IN_FLAT
+    var in_pos = idx % IN_FLAT
+    var hw = H * W
+    var ic = in_pos // hw
+    var rem = in_pos % hw
+    var ih = rem // W
+    var iw = rem % W
+
+    var acc: Scalar[DT] = 0.0
+    for kh in range(K):
+        var oh_num = ih + P - kh
+        if oh_num < 0 or oh_num % S != 0:
+            continue
+        var oh = oh_num // S
+        if oh >= OH:
+            continue
+        for kw in range(K):
+            var ow_num = iw + P - kw
+            if ow_num < 0 or ow_num % S != 0:
+                continue
+            var ow = ow_num // S
+            if ow >= OW:
+                continue
+            var out_pos_base = oh * OW + ow
+            for oc in range(OC):
+                var w_off = (
+                    ((oc * IC + ic) * K + kh) * K + kw
+                )
+                acc += (
+                    rebind[Scalar[DT]](weight[w_off])
+                    * rebind[Scalar[DT]](
+                        grad_output[b, oc * OH * OW + out_pos_base]
+                    )
+                )
+    grad_input[b, in_pos] = acc
+
+
+def _conv2d_backward_dw_kernel[
+    BATCH: Int, IC: Int, OC: Int, K: Int, S: Int, P: Int,
+    H: Int, W: Int, OH: Int, OW: Int,
+    IN_FLAT: Int, OUT_FLAT: Int,
+](
+    grad_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
+    ],
+    input: LayoutTensor[
+        DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin,
+    ],
+    grad_weight: LayoutTensor[
+        DT, Layout.row_major(OC * IC * K * K), MutAnyOrigin,
+    ],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = OC * IC * K * K
+    if idx >= total:
+        return
+    var oc = idx // (IC * K * K)
+    var rem0 = idx % (IC * K * K)
+    var ic = rem0 // (K * K)
+    var rem1 = rem0 % (K * K)
+    var kh = rem1 // K
+    var kw = rem1 % K
+
+    var acc: Scalar[DT] = 0.0
+    var in_c_off = ic * H * W
+    var out_c_off = oc * OH * OW
+    for b in range(BATCH):
+        for oh in range(OH):
+            var ih = oh * S + kh - P
+            if ih < 0 or ih >= H:
+                continue
+            for ow in range(OW):
+                var iw = ow * S + kw - P
+                if iw < 0 or iw >= W:
+                    continue
+                acc += (
+                    rebind[Scalar[DT]](input[b, in_c_off + ih * W + iw])
+                    * rebind[Scalar[DT]](
+                        grad_output[b, out_c_off + oh * OW + ow]
+                    )
+                )
+    grad_weight[idx] = rebind[Scalar[DT]](grad_weight[idx]) + acc
+
+
+def _conv2d_backward_db_kernel[
+    BATCH: Int, OC: Int, OH: Int, OW: Int, OUT_FLAT: Int,
+](
+    grad_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
+    ],
+    grad_bias: LayoutTensor[DT, Layout.row_major(OC), MutAnyOrigin],
+):
+    var oc = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if oc >= OC:
+        return
+    var spatial_out = OH * OW
+    var out_c_off = oc * spatial_out
+    var acc: Scalar[DT] = 0.0
+    for b in range(BATCH):
+        for s in range(spatial_out):
+            acc += rebind[Scalar[DT]](grad_output[b, out_c_off + s])
+    grad_bias[oc] = rebind[Scalar[DT]](grad_bias[oc]) + acc
+
+
 struct Conv2D[
     IC: Int, OC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
 ](Module):
@@ -197,10 +388,39 @@ struct Conv2D[
         else:
             if not ctx:
                 raise Error("Conv2D.make[target='gpu']: ctx required")
-            raise Error(
-                "Conv2D: GPU path not implemented yet (see"
-                " PORTING_PLAN.md Phase 5)"
+            var ctx_v = ctx.value()
+            c.weight = Param["weight", True,  Self.W_SIZE].make_gpu(ctx_v)
+            c.bias   = Param["bias",   False, Self.B_SIZE].make_gpu(ctx_v)
+            # Initialise CPU storage with the chosen INIT, then enqueue
+            # a copy to the device buffer — same pattern Linear uses for
+            # Kaiming/Xavier weight init on GPU.
+            var w_host = List[Scalar[DT]](length=Self.W_SIZE, fill=0.0)
+            var b_host = List[Scalar[DT]](length=Self.B_SIZE, fill=0.0)
+            INIT.init_weight(
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    w_host.unsafe_ptr()
+                ),
+                Self.W_SIZE,
+                Self.IC * Self.K * Self.K,
+                Self.OC * Self.K * Self.K,
             )
+            INIT.init_bias(
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    b_host.unsafe_ptr()
+                ),
+                Self.B_SIZE,
+            )
+            var w_hb = ctx_v.enqueue_create_host_buffer[DT](Self.W_SIZE)
+            var b_hb = ctx_v.enqueue_create_host_buffer[DT](Self.B_SIZE)
+            ctx_v.synchronize()
+            for k in range(Self.W_SIZE):
+                w_hb.unsafe_ptr()[k] = w_host[k]
+            for k in range(Self.B_SIZE):
+                b_hb.unsafe_ptr()[k] = b_host[k]
+            ctx_v.enqueue_copy(c.weight.value_dev.value(), w_hb)
+            ctx_v.enqueue_copy(c.bias.value_dev.value(),   b_hb)
+            ctx_v.synchronize()
+            c.ts = TargetStorage.make_gpu(ctx_v)
         return c^
 
     # ----- Forward ---------------------------------------------------------
@@ -223,15 +443,15 @@ struct Conv2D[
         assert_tag_for["Conv2D", target](self.ts.target_tag)
         var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
+        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            input.ptr
+        )
+        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            output_v.ptr
+        )
+        self._cached_input_ptr = in_p
 
         comptime if target == "cpu":
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                input.ptr
-            )
-            self._cached_input_ptr = in_p
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
             var w_p = self.weight.value_unsafe_ptr_cpu()
             var b_p = self.bias.value_unsafe_ptr_cpu()
             var col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
@@ -277,7 +497,33 @@ struct Conv2D[
                         i += 1
             col_buf.free()
         else:
-            raise Error("Conv2D.forward[target='gpu']: not implemented")
+            comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
+            comptime out_layout = Layout.row_major(
+                BATCH, Self.OUT_DIM_FLAT
+            )
+            comptime w_layout = Layout.row_major(Self.W_SIZE)
+            comptime b_layout = Layout.row_major(Self.B_SIZE)
+            var in_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](in_p)
+            var out_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](
+                out_p
+            )
+            var w_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
+                self.weight.value_dev.value()
+            )
+            var b_lt = LayoutTensor[DT, b_layout, MutAnyOrigin](
+                self.bias.value_dev.value()
+            )
+            comptime total = BATCH * Self.OUT_DIM_FLAT
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime kernel = _conv2d_forward_kernel[
+                BATCH, Self.IC, Self.OC, Self.K, Self.S, Self.P,
+                Self.H, Self.W, Self.OH, Self.OW,
+                Self.IN_DIM_FLAT, Self.OUT_DIM_FLAT,
+            ]
+            self.ts.ctx.value().enqueue_function[kernel](
+                in_lt, w_lt, b_lt, out_lt,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
 
     # ----- Backward --------------------------------------------------------
 
@@ -500,7 +746,71 @@ struct Conv2D[
                 dw_tmp.free()
                 go_b_T_buf.free()
         else:
-            raise Error("Conv2D.vjp[target='gpu']: not implemented")
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_output_v.ptr
+            )
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_input_v.ptr
+            )
+            var x_p = self._cached_input_ptr
+            comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
+            comptime out_layout = Layout.row_major(
+                BATCH, Self.OUT_DIM_FLAT
+            )
+            comptime w_layout = Layout.row_major(Self.W_SIZE)
+            comptime b_layout = Layout.row_major(Self.B_SIZE)
+            var go_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](go_p)
+            var in_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](x_p)
+            var gi_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](gi_p)
+            var w_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
+                self.weight.value_dev.value()
+            )
+            var ctx = self.ts.ctx.value()
+
+            # d_input — 1 thread per (b, ic, ih, iw).
+            comptime total_in = BATCH * Self.IN_DIM_FLAT
+            comptime n_blocks_in = (total_in + TPB - 1) // TPB
+            comptime dx_kernel = _conv2d_backward_dx_kernel[
+                BATCH, Self.IC, Self.OC, Self.K, Self.S, Self.P,
+                Self.H, Self.W, Self.OH, Self.OW,
+                Self.IN_DIM_FLAT, Self.OUT_DIM_FLAT,
+            ]
+            ctx.enqueue_function[dx_kernel](
+                go_lt, w_lt, gi_lt,
+                grid_dim=n_blocks_in, block_dim=TPB,
+            )
+
+            comptime if mode == "all":
+                var dw_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
+                    self.weight.grad_dev.value()
+                )
+                var db_lt = LayoutTensor[DT, b_layout, MutAnyOrigin](
+                    self.bias.grad_dev.value()
+                )
+
+                # d_weight — 1 thread per weight scalar.
+                comptime n_blocks_w = (
+                    Self.W_SIZE + TPB - 1
+                ) // TPB
+                comptime dw_kernel = _conv2d_backward_dw_kernel[
+                    BATCH, Self.IC, Self.OC, Self.K, Self.S, Self.P,
+                    Self.H, Self.W, Self.OH, Self.OW,
+                    Self.IN_DIM_FLAT, Self.OUT_DIM_FLAT,
+                ]
+                ctx.enqueue_function[dw_kernel](
+                    go_lt, in_lt, dw_lt,
+                    grid_dim=n_blocks_w, block_dim=TPB,
+                )
+
+                # d_bias — 1 thread per OC.
+                comptime n_blocks_b = (Self.OC + TPB - 1) // TPB
+                comptime db_kernel = _conv2d_backward_db_kernel[
+                    BATCH, Self.OC, Self.OH, Self.OW, Self.OUT_DIM_FLAT,
+                ]
+                ctx.enqueue_function[db_kernel](
+                    go_lt, db_lt,
+                    grid_dim=n_blocks_b, block_dim=TPB,
+                )
 
     # ----- Walkers ---------------------------------------------------------
 

@@ -15,16 +15,18 @@ Backward (per group, standard softmax Jacobian):
     grad_x[g·G+k] = y[g·G+k] · (grad_y[g·G+k] - dot_g)
 
 Output-cache leaf (`y` lives in a leaf-owned buffer); backward order is
-grad_input only (no params). CPU-only at landing — GPU is a follow-up
-once a consumer needs it.
+grad_input only (no params). CPU + GPU paths. The GPU kernel runs one
+thread per `(batch, group)` — group sizes are small (≤32 in TDMPC2), so
+no in-block reduction is needed.
 """
 
 from std.math import exp
-from std.gpu.host import DeviceContext
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT
+from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
@@ -32,6 +34,72 @@ from ..core.target_storage import (
     assert_tag_for,
     ensure_cpu_buffer,
 )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GPU kernels — one thread per (batch, group). The serial inner loop
+# over GROUP_SIZE is the canonical TDMPC2 layout (GROUP_SIZE ≤ 32) so
+# no in-block reduction is required.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _sim_norm_forward_kernel[
+    BATCH: Int, DIM: Int, GROUPS: Int, GROUP_SIZE: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    cache: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= BATCH * GROUPS:
+        return
+    var b = idx // GROUPS
+    var g = idx % GROUPS
+    var base = g * GROUP_SIZE
+
+    var max_val = rebind[Scalar[DT]](input[b, base])
+    for k in range(1, GROUP_SIZE):
+        var v = rebind[Scalar[DT]](input[b, base + k])
+        if v > max_val:
+            max_val = v
+
+    var sum_exp: Scalar[DT] = 0.0
+    for k in range(GROUP_SIZE):
+        var v = rebind[Scalar[DT]](input[b, base + k])
+        sum_exp += exp(v - max_val)
+    var inv_sum = Scalar[DT](1.0) / sum_exp
+
+    for k in range(GROUP_SIZE):
+        var v = rebind[Scalar[DT]](input[b, base + k])
+        var y = exp(v - max_val) * inv_sum
+        output[b, base + k] = y
+        cache[b, base + k] = y
+
+
+def _sim_norm_backward_kernel[
+    BATCH: Int, DIM: Int, GROUPS: Int, GROUP_SIZE: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    cache: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= BATCH * GROUPS:
+        return
+    var b = idx // GROUPS
+    var g = idx % GROUPS
+    var base = g * GROUP_SIZE
+
+    var dot: Scalar[DT] = 0.0
+    for k in range(GROUP_SIZE):
+        var dy = rebind[Scalar[DT]](grad_output[b, base + k])
+        var y = rebind[Scalar[DT]](cache[b, base + k])
+        dot += dy * y
+
+    for k in range(GROUP_SIZE):
+        var dy = rebind[Scalar[DT]](grad_output[b, base + k])
+        var y = rebind[Scalar[DT]](cache[b, base + k])
+        grad_input[b, base + k] = y * (dy - dot)
 
 
 struct SimNorm[DIM: Int, GROUPS: Int](Module):
@@ -42,10 +110,14 @@ struct SimNorm[DIM: Int, GROUPS: Int](Module):
 
     # Cache holds softmax outputs `[BATCH, DIM]` for backward.
     var cache_y: List[Scalar[DT]]
+    var cache_y_dev: Optional[DeviceBuffer[DT]]
+    var cache_n_batch: Int
     var ts: TargetStorage
 
     def __init__(out self):
         self.cache_y = List[Scalar[DT]]()
+        self.cache_y_dev = None
+        self.cache_n_batch = 0
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -55,8 +127,7 @@ struct SimNorm[DIM: Int, GROUPS: Int](Module):
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
         """Unified CPU/GPU factory. INIT ignored (no params) but accepted
-        for `Sequential.make[target, INIT]` uniformity. GPU path raises —
-        no consumer needs it yet, see PORTING_PLAN.md Phase 2."""
+        for `Sequential.make[target, INIT]` uniformity."""
         comptime assert target == "cpu" or target == "gpu", (
             "SimNorm: target must be 'cpu' or 'gpu'"
         )
@@ -70,11 +141,20 @@ struct SimNorm[DIM: Int, GROUPS: Int](Module):
         else:
             if not ctx:
                 raise Error("SimNorm.make[target='gpu']: ctx required")
-            raise Error(
-                "SimNorm: GPU path not implemented yet (see PORTING_PLAN.md"
-                " Phase 2)"
-            )
+            var ctx_v = ctx.value()
+            # Placeholder device buffer — real size set on first forward.
+            s.cache_y_dev = ctx_v.enqueue_create_buffer[DT](1)
+            s.cache_n_batch = 0
+            s.ts = TargetStorage.make_gpu(ctx_v)
         return s^
+
+    def _ensure_cache_gpu(mut self, batch: Int) raises:
+        if self.cache_n_batch < batch:
+            var ctx = self.ts.ctx.value()
+            self.cache_y_dev = ctx.enqueue_create_buffer[DT](
+                batch * Self.DIM
+            )
+            self.cache_n_batch = batch
 
     def forward[
         target: StaticString,
@@ -103,7 +183,6 @@ struct SimNorm[DIM: Int, GROUPS: Int](Module):
             for b in range(BATCH):
                 for g in range(Self.GROUPS):
                     var base = g * Self.GROUP_SIZE
-                    # Per-group max for numerical stability.
                     var max_val: Scalar[DT] = input[b, base]
                     for k in range(1, Self.GROUP_SIZE):
                         var v = input[b, base + k]
@@ -118,7 +197,28 @@ struct SimNorm[DIM: Int, GROUPS: Int](Module):
                         output_v[b, base + k] = y
                         cache_v[b, base + k] = y
         else:
-            raise Error("SimNorm.forward[target='gpu']: not implemented")
+            self._ensure_cache_gpu(BATCH)
+            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
+            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                input.ptr
+            )
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                output_v.ptr
+            )
+            var in_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p)
+            var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p)
+            var cache_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
+                self.cache_y_dev.value()
+            )
+            comptime total = BATCH * Self.GROUPS
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime kernel = _sim_norm_forward_kernel[
+                BATCH, Self.DIM, Self.GROUPS, Self.GROUP_SIZE,
+            ]
+            self.ts.ctx.value().enqueue_function[kernel](
+                in_lt, out_lt, cache_lt,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
 
     def vjp[
         target: StaticString,
@@ -163,4 +263,24 @@ struct SimNorm[DIM: Int, GROUPS: Int](Module):
                             y * (grad_output_v[b, base + k] - dot)
                         )
         else:
-            raise Error("SimNorm.vjp[target='gpu']: not implemented")
+            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_output_v.ptr
+            )
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_input_v.ptr
+            )
+            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
+            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
+            var cache_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
+                self.cache_y_dev.value()
+            )
+            comptime total = BATCH * Self.GROUPS
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime kernel = _sim_norm_backward_kernel[
+                BATCH, Self.DIM, Self.GROUPS, Self.GROUP_SIZE,
+            ]
+            self.ts.ctx.value().enqueue_function[kernel](
+                go_lt, cache_lt, gi_lt,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
