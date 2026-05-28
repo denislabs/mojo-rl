@@ -71,6 +71,22 @@ slab + SIMD-add elsewhere — same Apple-vs-other split.
   no-atomics convention. See `test_nn2_gpu_parity.mojo` for the
   CPU/GPU parity gate.
 
+### Post-landing GPU optimizations (already applied)
+
+- **Conv2D dW / dB block-reduce.** The first cut had one thread per
+  weight scalar (or per OC for dB) doing a `BATCH·OH·OW` inner loop
+  (~6k iterations per thread on NatureDQN-sized inputs). Replaced with
+  one block per weight scalar / OC, `CONV_DW_TPB=128` threads reducing
+  over `BATCH·OH·OW` via `block.sum` — the same primitive LayerNorm
+  uses. Mirrors the legacy `nn/autodiff/primitives/conv2d.mojo:1492`
+  `backward_db_kernel` pattern but cleaner (no manual smem ladder).
+- **BatchNorm2D divmod hoist.** Forward / eval / backward kernels
+  originally did `b = idx // SPATIAL; s = idx % SPATIAL` per element.
+  Replaced with nested `for b in range(BATCH): while s < SPATIAL: ...
+  s += BN2D_TPB` traversal — eliminates the per-element integer
+  division (expensive on GPU at `SPATIAL = H·W = 196` for 14×14 feature
+  maps).
+
 ## Status legend
 
 - `[ ]` not started

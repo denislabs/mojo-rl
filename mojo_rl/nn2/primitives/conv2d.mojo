@@ -49,6 +49,7 @@ from std.math import ceildiv
 from std.memory import alloc
 from std.sys import CompilationTarget
 from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -60,6 +61,9 @@ from linalg.matmul.cpu.apple_accelerate import (
 )
 
 from ..constants import DT, CPU_SIMD_W, TPB
+
+
+comptime CONV_DW_TPB: Int = 128
 from ..core import (
     Initializer,
     AMPPolicy,
@@ -276,36 +280,57 @@ def _conv2d_backward_dw_kernel[
         DT, Layout.row_major(OC * IC * K * K), MutAnyOrigin,
     ],
 ):
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    var total = OC * IC * K * K
-    if idx >= total:
+    """dW reduction — one block per weight scalar, CONV_DW_TPB threads
+    stride over BATCH·OH·OW and `block.sum` the partials. Mirrors the
+    LayerNorm dx pattern (one block per sample, threads reduce over DIM)
+    but on the per-weight axis: every weight scalar accumulates over the
+    full `(b, oh, ow)` set. Replaces the previous "1 thread per weight
+    scalar with BATCH·OH·OW inner loop" layout, which had a 6k-iteration
+    inner loop per thread on NatureDQN-sized inputs."""
+    var weight_idx = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    var total_weights = OC * IC * K * K
+    if weight_idx >= total_weights:
         return
-    var oc = idx // (IC * K * K)
-    var rem0 = idx % (IC * K * K)
+
+    var oc = weight_idx // (IC * K * K)
+    var rem0 = weight_idx % (IC * K * K)
     var ic = rem0 // (K * K)
     var rem1 = rem0 % (K * K)
     var kh = rem1 // K
     var kw = rem1 % K
 
-    var acc: Scalar[DT] = 0.0
+    var spatial_out = OH * OW
+    var n_eff = BATCH * spatial_out
     var in_c_off = ic * H * W
-    var out_c_off = oc * OH * OW
-    for b in range(BATCH):
-        for oh in range(OH):
-            var ih = oh * S + kh - P
-            if ih < 0 or ih >= H:
-                continue
-            for ow in range(OW):
-                var iw = ow * S + kw - P
-                if iw < 0 or iw >= W:
-                    continue
-                acc += (
-                    rebind[Scalar[DT]](input[b, in_c_off + ih * W + iw])
-                    * rebind[Scalar[DT]](
-                        grad_output[b, out_c_off + oh * OW + ow]
-                    )
+    var out_c_off = oc * spatial_out
+
+    var my_acc: Scalar[DT] = 0.0
+    var idx = t
+    while idx < n_eff:
+        var b = idx // spatial_out
+        var s_pos = idx % spatial_out
+        var oh = s_pos // OW
+        var ow = s_pos % OW
+        var ih = oh * S + kh - P
+        var iw = ow * S + kw - P
+        if ih >= 0 and ih < H and iw >= 0 and iw < W:
+            my_acc += (
+                rebind[Scalar[DT]](
+                    input[b, in_c_off + ih * W + iw]
                 )
-    grad_weight[idx] = rebind[Scalar[DT]](grad_weight[idx]) + acc
+                * rebind[Scalar[DT]](
+                    grad_output[b, out_c_off + s_pos]
+                )
+            )
+        idx += CONV_DW_TPB
+    var total = block.sum[block_size=CONV_DW_TPB, broadcast=False](
+        val=my_acc
+    )
+    if t == 0:
+        grad_weight[weight_idx] = (
+            rebind[Scalar[DT]](grad_weight[weight_idx]) + total[0]
+        )
 
 
 def _conv2d_backward_db_kernel[
@@ -316,16 +341,30 @@ def _conv2d_backward_db_kernel[
     ],
     grad_bias: LayoutTensor[DT, Layout.row_major(OC), MutAnyOrigin],
 ):
-    var oc = Int(block_dim.x * block_idx.x + thread_idx.x)
+    """dB reduction — one block per OC, CONV_DW_TPB threads stride over
+    BATCH·OH·OW and `block.sum` the partials. Same pattern as `dW`."""
+    var oc = Int(block_idx.x)
+    var t = Int(thread_idx.x)
     if oc >= OC:
         return
     var spatial_out = OH * OW
+    var n_eff = BATCH * spatial_out
     var out_c_off = oc * spatial_out
-    var acc: Scalar[DT] = 0.0
-    for b in range(BATCH):
-        for s in range(spatial_out):
-            acc += rebind[Scalar[DT]](grad_output[b, out_c_off + s])
-    grad_bias[oc] = rebind[Scalar[DT]](grad_bias[oc]) + acc
+
+    var my_acc: Scalar[DT] = 0.0
+    var idx = t
+    while idx < n_eff:
+        var b = idx // spatial_out
+        var s_pos = idx % spatial_out
+        my_acc += rebind[Scalar[DT]](grad_output[b, out_c_off + s_pos])
+        idx += CONV_DW_TPB
+    var total = block.sum[block_size=CONV_DW_TPB, broadcast=False](
+        val=my_acc
+    )
+    if t == 0:
+        grad_bias[oc] = (
+            rebind[Scalar[DT]](grad_bias[oc]) + total[0]
+        )
 
 
 struct Conv2D[
@@ -788,10 +827,8 @@ struct Conv2D[
                     self.bias.grad_dev.value()
                 )
 
-                # d_weight — 1 thread per weight scalar.
-                comptime n_blocks_w = (
-                    Self.W_SIZE + TPB - 1
-                ) // TPB
+                # d_weight — 1 block per weight scalar, CONV_DW_TPB
+                # threads reduce over BATCH·OH·OW via `block.sum`.
                 comptime dw_kernel = _conv2d_backward_dw_kernel[
                     BATCH, Self.IC, Self.OC, Self.K, Self.S, Self.P,
                     Self.H, Self.W, Self.OH, Self.OW,
@@ -799,17 +836,17 @@ struct Conv2D[
                 ]
                 ctx.enqueue_function[dw_kernel](
                     go_lt, in_lt, dw_lt,
-                    grid_dim=n_blocks_w, block_dim=TPB,
+                    grid_dim=Self.W_SIZE, block_dim=CONV_DW_TPB,
                 )
 
-                # d_bias — 1 thread per OC.
-                comptime n_blocks_b = (Self.OC + TPB - 1) // TPB
+                # d_bias — 1 block per OC, CONV_DW_TPB threads reduce
+                # over BATCH·OH·OW via `block.sum`.
                 comptime db_kernel = _conv2d_backward_db_kernel[
                     BATCH, Self.OC, Self.OH, Self.OW, Self.OUT_DIM_FLAT,
                 ]
                 ctx.enqueue_function[db_kernel](
                     go_lt, db_lt,
-                    grid_dim=n_blocks_b, block_dim=TPB,
+                    grid_dim=Self.OC, block_dim=CONV_DW_TPB,
                 )
 
     # ----- Walkers ---------------------------------------------------------

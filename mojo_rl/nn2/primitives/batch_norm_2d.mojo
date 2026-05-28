@@ -79,28 +79,29 @@ def _bn2d_forward_train_kernel[
     var eps = Scalar[DT](EPSILON)
     var mom = Scalar[DT](MOMENTUM)
     var one_m = Scalar[DT](1.0) - mom
+    var c_off = c * SPATIAL
 
+    # Three reduction passes (mean, var, xhat/scatter) all step (b, s)
+    # through the per-channel slab as nested loops — avoids a `% SPATIAL`
+    # / `// SPATIAL` per element. Each thread handles
+    # SPATIAL // BN2D_TPB samples per batch (+1 for the tail).
     var my_sum: Scalar[DT] = 0.0
-    var idx = t
-    while idx < n_eff:
-        var b = idx // SPATIAL
-        var s = idx % SPATIAL
-        var off = c * SPATIAL + s
-        my_sum += rebind[Scalar[DT]](input[b, off])
-        idx += BN2D_TPB
+    for b in range(BATCH):
+        var s = t
+        while s < SPATIAL:
+            my_sum += rebind[Scalar[DT]](input[b, c_off + s])
+            s += BN2D_TPB
     var mean = (
         block.sum[block_size=BN2D_TPB, broadcast=True](val=my_sum) * inv_n
     )
 
     var my_var: Scalar[DT] = 0.0
-    idx = t
-    while idx < n_eff:
-        var b = idx // SPATIAL
-        var s = idx % SPATIAL
-        var off = c * SPATIAL + s
-        var d = rebind[Scalar[DT]](input[b, off]) - mean
-        my_var += d * d
-        idx += BN2D_TPB
+    for b in range(BATCH):
+        var s = t
+        while s < SPATIAL:
+            var d = rebind[Scalar[DT]](input[b, c_off + s]) - mean
+            my_var += d * d
+            s += BN2D_TPB
     var var_ = (
         block.sum[block_size=BN2D_TPB, broadcast=True](val=my_var) * inv_n
     )
@@ -115,16 +116,15 @@ def _bn2d_forward_train_kernel[
 
     var g = rebind[Scalar[DT]](gamma[c])
     var bt = rebind[Scalar[DT]](beta[c])
-    idx = t
-    while idx < n_eff:
-        var b = idx // SPATIAL
-        var s = idx % SPATIAL
-        var off = c * SPATIAL + s
-        var x = rebind[Scalar[DT]](input[b, off])
-        var xh = (x - mean) * inv_std
-        cache_xhat[b, off] = xh
-        output[b, off] = g * xh + bt
-        idx += BN2D_TPB
+    for b in range(BATCH):
+        var s = t
+        while s < SPATIAL:
+            var off = c_off + s
+            var x = rebind[Scalar[DT]](input[b, off])
+            var xh = (x - mean) * inv_std
+            cache_xhat[b, off] = xh
+            output[b, off] = g * xh + bt
+            s += BN2D_TPB
 
 
 def _bn2d_forward_eval_kernel[
@@ -147,15 +147,14 @@ def _bn2d_forward_eval_kernel[
     var inv_std: Scalar[DT] = 1.0 / sqrt(rv + eps)
     var g = rebind[Scalar[DT]](gamma[c])
     var bt = rebind[Scalar[DT]](beta[c])
-    var n_eff = BATCH * SPATIAL
-    var idx = t
-    while idx < n_eff:
-        var b = idx // SPATIAL
-        var s = idx % SPATIAL
-        var off = c * SPATIAL + s
-        var x = rebind[Scalar[DT]](input[b, off])
-        output[b, off] = g * (x - rm) * inv_std + bt
-        idx += BN2D_TPB
+    var c_off = c * SPATIAL
+    for b in range(BATCH):
+        var s = t
+        while s < SPATIAL:
+            var off = c_off + s
+            var x = rebind[Scalar[DT]](input[b, off])
+            output[b, off] = g * (x - rm) * inv_std + bt
+            s += BN2D_TPB
 
 
 def _bn2d_backward_kernel[
@@ -177,24 +176,26 @@ def _bn2d_backward_kernel[
     var inv_n: Scalar[DT] = 1.0 / Scalar[DT](Float32(n_eff))
     var g = rebind[Scalar[DT]](gamma[c])
     var inv_std = rebind[Scalar[DT]](cache_inv_std[c])
+    var c_off = c * SPATIAL
 
+    # Same nested-(b, s) traversal as the forward — avoids per-element
+    # `% SPATIAL` / `// SPATIAL` divisions.
     var my_sum_dxhat: Scalar[DT] = 0.0
     var my_sum_dxhat_xhat: Scalar[DT] = 0.0
     var my_dgamma: Scalar[DT] = 0.0
     var my_dbeta:  Scalar[DT] = 0.0
-    var idx = t
-    while idx < n_eff:
-        var b = idx // SPATIAL
-        var s = idx % SPATIAL
-        var off = c * SPATIAL + s
-        var dy = rebind[Scalar[DT]](grad_output[b, off])
-        var xh = rebind[Scalar[DT]](cache_xhat[b, off])
-        var dxhat = dy * g
-        my_sum_dxhat += dxhat
-        my_sum_dxhat_xhat += dxhat * xh
-        my_dgamma += dy * xh
-        my_dbeta  += dy
-        idx += BN2D_TPB
+    for b in range(BATCH):
+        var s = t
+        while s < SPATIAL:
+            var off = c_off + s
+            var dy = rebind[Scalar[DT]](grad_output[b, off])
+            var xh = rebind[Scalar[DT]](cache_xhat[b, off])
+            var dxhat = dy * g
+            my_sum_dxhat += dxhat
+            my_sum_dxhat_xhat += dxhat * xh
+            my_dgamma += dy * xh
+            my_dbeta  += dy
+            s += BN2D_TPB
     var sum_dxhat = block.sum[block_size=BN2D_TPB, broadcast=True](
         val=my_sum_dxhat
     )
@@ -217,16 +218,15 @@ def _bn2d_backward_kernel[
 
     var m1 = sum_dxhat * inv_n
     var m2 = sum_dxhat_xhat * inv_n
-    idx = t
-    while idx < n_eff:
-        var b = idx // SPATIAL
-        var s = idx % SPATIAL
-        var off = c * SPATIAL + s
-        var dy = rebind[Scalar[DT]](grad_output[b, off])
-        var xh = rebind[Scalar[DT]](cache_xhat[b, off])
-        var dxhat = dy * g
-        grad_input[b, off] = inv_std * (dxhat - m1 - xh * m2)
-        idx += BN2D_TPB
+    for b in range(BATCH):
+        var s = t
+        while s < SPATIAL:
+            var off = c_off + s
+            var dy = rebind[Scalar[DT]](grad_output[b, off])
+            var xh = rebind[Scalar[DT]](cache_xhat[b, off])
+            var dxhat = dy * g
+            grad_input[b, off] = inv_std * (dxhat - m1 - xh * m2)
+            s += BN2D_TPB
 
 
 struct BatchNorm2D[
