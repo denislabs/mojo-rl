@@ -14,7 +14,7 @@ from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
-from ..constants import DT
+from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
@@ -119,7 +119,6 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
             var out_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
             ](out_p)
-            comptime TPB = 128
             comptime n_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
             comptime kernel = _slice_forward_kernel[
                 BATCH, Self.IN, Self.START, Self.OUT_DIM,
@@ -171,7 +170,6 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
             var gi_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin,
             ](gi_p)
-            comptime TPB = 128
             comptime n_blocks = (BATCH * Self.IN + TPB - 1) // TPB
             comptime kernel = _slice_backward_kernel[
                 BATCH, Self.IN, Self.START, Self.OUT_DIM,

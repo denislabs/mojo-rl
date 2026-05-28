@@ -241,6 +241,10 @@ def _branch_concat_forward_cpu[
     comptime for i in range(N):
         c._ensure_slab_cpu[i](BATCH * BRANCHES[i].OUT_DIM)
 
+    comptime assert output.flat_rank == 2, (
+        "_branch_concat_forward_cpu: output must have flat_rank == 2"
+    )
+
     comptime for i in range(N):
         var slab_ptr = c.out_slabs_cpu[i]
         var slab_tt = TileTensor(slab_ptr, row_major[BATCH, BRANCHES[i].OUT_DIM]())
@@ -290,6 +294,9 @@ def _branch_concat_backward_cpu[
         gi_p[k0] = Scalar[DT](0)
         k0 += 1
 
+    comptime assert grad_output.flat_rank == 2, (
+        "_branch_concat_backward_cpu: grad_output must have flat_rank == 2"
+    )
     comptime for i in range(N):
         comptime off = _cumulative_offset[i, *BRANCHES]()
         comptime out_i = BRANCHES[i].OUT_DIM

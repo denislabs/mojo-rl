@@ -35,7 +35,7 @@ from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
-from ..constants import DT
+from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
@@ -153,7 +153,6 @@ struct GatherCols[NA: Int](Module):
             var o_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
             ](o_p)
-            comptime TPB = 128
             comptime n_blocks = (BATCH + TPB - 1) // TPB
             comptime kernel = _gather_cols_forward_kernel[BATCH, Self.NA]
             self.ts.ctx.value().enqueue_function[kernel](
@@ -199,7 +198,6 @@ struct GatherCols[NA: Int](Module):
             var gi_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
             ](gi_p)
-            comptime TPB = 128
             comptime values_total = BATCH * Self.NA
             comptime values_blocks = (values_total + TPB - 1) // TPB
             comptime values_kernel = _gather_cols_zero_values_grad_kernel[

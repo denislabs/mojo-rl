@@ -15,7 +15,7 @@ from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
-from ..constants import DT
+from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.reduce_op import ReduceOp
@@ -132,7 +132,6 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
             var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             var in_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](in_p)
             var out_lt = LayoutTensor[DT, layout_out, MutAnyOrigin](out_p)
-            comptime TPB = 128
             comptime n_blocks = (BATCH + TPB - 1) // TPB
             comptime kernel = _reduce_forward_kernel[BATCH, Self.DIM, Self.OP]
             self.ts.ctx.value().enqueue_function[kernel](
@@ -175,7 +174,6 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
             var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
             var go_lt = LayoutTensor[DT, layout_go, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, layout_gi, MutAnyOrigin](gi_p)
-            comptime TPB = 128
             comptime total = BATCH * Self.DIM
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime kernel = _reduce_broadcast_kernel[BATCH, Self.DIM, Self.OP]

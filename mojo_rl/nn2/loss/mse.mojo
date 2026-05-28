@@ -18,7 +18,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, CPU_SIMD_W
+from ..constants import DT, CPU_SIMD_W, TPB, TPB_REDUCE
 from ..core import Loss, AMPPolicy, NoAMP
 from ..core.target_storage import TargetStorage, assert_tag_for
 
@@ -185,7 +185,7 @@ struct MSELoss[DIM: Int](Loss):
             # Copy logits to cache so backward kernel can reference them
             # without depending on the caller keeping logits buffer alive.
             ctx.enqueue_copy(self.cache_logits_dev.value(), lp_w)
-            comptime TPB = 64
+            comptime TPB = TPB_REDUCE
             comptime n_blocks = (BATCH + TPB - 1) // TPB
             comptime kernel = _mse_forward_kernel[BATCH, Self.DIM]
             ctx.enqueue_function[kernel](
@@ -247,7 +247,6 @@ struct MSELoss[DIM: Int](Loss):
             )
             var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
             var grad_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](gp_w)
-            comptime TPB = 128
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
             comptime kernel = _mse_backward_kernel[BATCH, Self.DIM]
             ctx.enqueue_function[kernel](

@@ -25,7 +25,7 @@ from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
-from ..constants import DT
+from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
@@ -127,7 +127,6 @@ struct ReduceMax[NA: Int](Module):
             var out_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
             ](out_p)
-            comptime TPB = 128
             comptime n_blocks = (BATCH + TPB - 1) // TPB
             comptime kernel = _reduce_max_forward_kernel[BATCH, Self.NA]
             self.ts.ctx.value().enqueue_function[kernel](
@@ -168,7 +167,6 @@ struct ReduceMax[NA: Int](Module):
             var gi_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.NA), MutAnyOrigin,
             ](gi_p)
-            comptime TPB = 128
             comptime total = BATCH * Self.NA
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime kernel = _reduce_max_zero_grad_kernel[BATCH, Self.NA]

@@ -22,7 +22,7 @@ from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
-from ..constants import DT
+from ..constants import DT, TPB
 
 
 def box_muller_normal(out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int):
@@ -89,7 +89,6 @@ def box_muller_normal_gpu[N: Int](
     (seed, offset_base) pair.
     """
     var noise_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](out_ptr)
-    comptime TPB = 128
     comptime n_blocks = (N + TPB - 1) // TPB
     comptime kernel = _box_muller_kernel[N]
     ctx.enqueue_function[kernel](

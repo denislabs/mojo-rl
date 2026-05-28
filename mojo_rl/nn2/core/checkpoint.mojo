@@ -283,22 +283,53 @@ struct _LoadStateV2Visitor(ParamVisitor):
         self.idx_ptr[] = idx
 
 
-def save_state_v2[M: Module](mut model: M, path: String) raises:
-    """Write all Param values in `model` to `path` in v2 format."""
-    var body = String("")
-    var v = _SaveStateV2Visitor(out_ptr=UnsafePointer(to=body))
-    model.for_each_param[target="cpu", V=_SaveStateV2Visitor](
-        String(""), v,
-    )
-    _ = body^  # lifetime extender — visitor holds UnsafePointer(to=body)
+def save_state_v2_body[M: Module](
+    mut model: M, mut out: String, prefix: String,
+) raises:
+    """Append every Param's serialized section to `out`, with `prefix`
+    accumulated into each section header. Used by composite checkpoints
+    that pack several modules + optimizers into a single v2 envelope.
 
+    No header is written — callers prepend `nn2-ckpt v2\\n` themselves
+    (or use `save_state_v2` for the single-module shortcut)."""
+    var v = _SaveStateV2Visitor(out_ptr=UnsafePointer(to=out))
+    model.for_each_param[target="cpu", V=_SaveStateV2Visitor](
+        prefix, v,
+    )
+    _ = out  # lifetime extender — visitor holds UnsafePointer(to=out)
+
+
+def load_state_v2_body[M: Module](
+    mut model: M,
+    lines: List[String],
+    mut idx: Int,
+    prefix: String,
+) raises:
+    """Consume Param sections from `lines[idx:]` (advancing `idx`) using
+    `prefix` for the expected section header. Counterpart of
+    `save_state_v2_body`."""
+    var v = _LoadStateV2Visitor(
+        lines=lines.copy(), idx_ptr=UnsafePointer(to=idx),
+    )
+    model.for_each_param[target="cpu", V=_LoadStateV2Visitor](
+        prefix, v,
+    )
+    _ = idx  # lifetime extender — visitor holds UnsafePointer(to=idx)
+
+
+def save_state_v2[M: Module](mut model: M, path: String) raises:
+    """Write all Param values in `model` to `path` in v2 format.
+    Single-module convenience wrapper over `save_state_v2_body`."""
+    var body = String("")
+    save_state_v2_body(model, body, String(""))
     var content = String("nn2-ckpt v2\n") + body
     with open(path, "w") as f:
         f.write(content)
 
 
 def load_state_v2[M: Module](mut model: M, path: String) raises:
-    """Read a v2 checkpoint and overwrite every Param in `model`."""
+    """Read a v2 checkpoint and overwrite every Param in `model`.
+    Single-module convenience wrapper over `load_state_v2_body`."""
     var content = _read_file(path)
     var lines = _split_lines(content)
     if len(lines) == 0 or lines[0] != String("nn2-ckpt v2"):
@@ -307,10 +338,4 @@ def load_state_v2[M: Module](mut model: M, path: String) raises:
             + (lines[0] if len(lines) > 0 else String("<empty>")) + "`"
         )
     var idx: Int = 1
-    var v = _LoadStateV2Visitor(
-        lines=lines^, idx_ptr=UnsafePointer(to=idx),
-    )
-    model.for_each_param[target="cpu", V=_LoadStateV2Visitor](
-        String(""), v,
-    )
-    _ = idx  # lifetime extender — visitor holds UnsafePointer(to=idx)
+    load_state_v2_body(model, lines, idx, String(""))

@@ -21,7 +21,7 @@ from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
-from ..constants import DT, CPU_SIMD_W
+from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
@@ -158,7 +158,6 @@ struct Clamp[DIM: Int](Module):
             var out_lt = LayoutTensor[
                 DT, Layout.row_major(N), MutAnyOrigin,
             ](out_p)
-            comptime TPB = 128
             comptime n_blocks = (N + TPB - 1) // TPB
             comptime kernel = _clamp_forward_kernel[N]
             self.ts.ctx.value().enqueue_function[kernel](
@@ -226,7 +225,6 @@ struct Clamp[DIM: Int](Module):
             var gi_lt = LayoutTensor[
                 DT, Layout.row_major(N), MutAnyOrigin,
             ](gi_p)
-            comptime TPB = 128
             comptime n_blocks = (N + TPB - 1) // TPB
             comptime kernel = _clamp_backward_kernel[N]
             self.ts.ctx.value().enqueue_function[kernel](

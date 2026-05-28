@@ -24,7 +24,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, CPU_SIMD_W
+from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
@@ -217,7 +217,6 @@ struct Parallel[A: Module, B: Module](Module):
             var a_lt = LayoutTensor[DT, layout_a, MutAnyOrigin](self.out_a_dev.value())
             var b_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](self.out_b_dev.value())
             var p_lt = LayoutTensor[DT, layout_p, MutAnyOrigin](out_p_w)
-            comptime TPB = 128
             comptime n_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
             comptime kernel = _parallel_concat_kernel[BATCH, Self.OUT_A, Self.OUT_B]
             self.ts.ctx.value().enqueue_function[kernel](
@@ -296,7 +295,6 @@ struct Parallel[A: Module, B: Module](Module):
             var p_lt = LayoutTensor[DT, layout_p, MutAnyOrigin](go_p_w)
             var a_lt = LayoutTensor[DT, layout_a, MutAnyOrigin](self.out_a_dev.value())
             var b_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](self.out_b_dev.value())
-            comptime TPB = 128
             comptime n_blocks_split = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
             comptime split_kernel = _parallel_split_kernel[
                 BATCH, Self.OUT_A, Self.OUT_B

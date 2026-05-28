@@ -64,7 +64,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, CPU_SIMD_W
+from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import (
     GraphNode,
     Module,
@@ -172,7 +172,6 @@ def _enqueue_zero[N: Int](
     p: UnsafePointer[Scalar[DT], MutAnyOrigin],
 ) raises:
     var lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
-    comptime TPB = 128
     comptime n_blocks = (N + TPB - 1) // TPB
     comptime kernel = _zero_kernel[N]
     ctx.enqueue_function[kernel](lt, grid_dim=n_blocks, block_dim=TPB)
@@ -185,7 +184,6 @@ def _enqueue_add[N: Int](
 ) raises:
     var dst_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](dst)
     var src_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](src)
-    comptime TPB = 128
     comptime n_blocks = (N + TPB - 1) // TPB
     comptime kernel = _add_kernel[N]
     ctx.enqueue_function[kernel](
@@ -200,7 +198,6 @@ def _enqueue_copy[N: Int](
 ) raises:
     var dst_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](dst)
     var src_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](src)
-    comptime TPB = 128
     comptime n_blocks = (N + TPB - 1) // TPB
     comptime kernel = _copy_kernel[N]
     ctx.enqueue_function[kernel](

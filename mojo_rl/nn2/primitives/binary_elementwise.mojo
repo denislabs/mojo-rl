@@ -37,7 +37,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
-from ..constants import DT, CPU_SIMD_W
+from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.binary_element_op import BinaryElementOp
 from ..core.module import Module, typed_view, typed_view_mut
@@ -233,7 +233,6 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
             var i0_lt = LayoutTensor[DT, layout, MutAnyOrigin](i0_p)
             var i1_lt = LayoutTensor[DT, layout, MutAnyOrigin](i1_p)
             var o_lt = LayoutTensor[DT, layout, MutAnyOrigin](o_p)
-            comptime TPB = 128
             comptime n_blocks = (N + TPB - 1) // TPB
 
             comptime if Self.OP.owns_cache:
@@ -324,7 +323,6 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
             var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](go_p)
             var gi0_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi0_p)
             var gi1_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi1_p)
-            comptime TPB = 128
             comptime n_blocks = (N + TPB - 1) // TPB
 
             comptime if Self.OP.owns_cache:

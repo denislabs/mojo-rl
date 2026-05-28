@@ -42,7 +42,7 @@ from linalg.matmul.cpu.apple_accelerate import (
     _CBLASTranspose,
 )
 
-from ..constants import DT, CPU_SIMD_W
+from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import (
     Initializer,
     AMPPolicy,
@@ -335,7 +335,6 @@ struct Linear[IN: Int, OUT: Int](Module):
             var bias_lt = LayoutTensor[DT, bias_layout, MutAnyOrigin](
                 self.bias.value_dev.value()
             )
-            comptime TPB = 128
             comptime n_blocks_ba = (BATCH * Self.OUT + TPB - 1) // TPB
             comptime ba_kernel = _bias_add_kernel[BATCH, Self.OUT]
             ctx.enqueue_function[ba_kernel](
@@ -499,7 +498,6 @@ struct Linear[IN: Int, OUT: Int](Module):
                 )
         else:
             var ctx = self.ts.ctx.value()
-            comptime TPB = 128
 
             # ── (1) grad_b ─────────────────────────────────────────────
             comptime if mode == "all":

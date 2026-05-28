@@ -20,7 +20,7 @@ from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
-from ..constants import DT, CPU_SIMD_W
+from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
@@ -136,7 +136,6 @@ struct Add[DIM_: Int, N_: Int](Module):
                     kk += 1
         else:
             comptime layout = Layout.row_major(TOTAL)
-            comptime TPB = 128
             comptime n_blocks = (TOTAL + TPB - 1) // TPB
             var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
             var o_lt = LayoutTensor[DT, layout, MutAnyOrigin](o_p)
@@ -201,7 +200,6 @@ struct Add[DIM_: Int, N_: Int](Module):
                     k += 1
         else:
             comptime layout = Layout.row_major(TOTAL)
-            comptime TPB = 128
             comptime n_blocks = (TOTAL + TPB - 1) // TPB
             var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 grad_output.ptr

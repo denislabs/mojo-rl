@@ -34,7 +34,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
-from ..constants import DT, CPU_SIMD_W
+from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.element_op import ElementOp
 from ..core.module import Module, typed_view, typed_view_mut
@@ -225,7 +225,6 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
                 var cache_lt = LayoutTensor[DT, layout, MutAnyOrigin](
                     self.cache_dev.value()
                 )
-                comptime TPB = 128
                 comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
                 comptime kernel = _elementwise_forward_kernel[
                     BATCH, Self.DIM, Self.OP,
@@ -243,7 +242,6 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
                 # kernel write `cache[b, d] = x` to the same buffer it
                 # just read from (idempotent).
                 self._cached_input_ptr = in_ptr
-                comptime TPB = 128
                 comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
                 comptime kernel = _elementwise_forward_kernel[
                     BATCH, Self.DIM, Self.OP,
@@ -314,7 +312,6 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
                 cache_lt = LayoutTensor[DT, layout, MutAnyOrigin](
                     self._cached_input_ptr
                 )
-            comptime TPB = 128
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
             comptime kernel = _elementwise_backward_kernel[
                 BATCH, Self.DIM, Self.OP,

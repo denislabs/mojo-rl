@@ -10,7 +10,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT
+from ..constants import DT, TPB, TPB_REDUCE
 from ..core import Loss, AMPPolicy, NoAMP
 from ..core.target_storage import TargetStorage, assert_tag_for
 
@@ -174,7 +174,7 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
             var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
             var softmax_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](self.softmax_dev.value())
             var partial_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](self.partial_loss_dev.value())
-            comptime TPB = 64
+            comptime TPB = TPB_REDUCE
             comptime n_blocks = (BATCH + TPB - 1) // TPB
             comptime kernel = _ce_forward_kernel[BATCH, Self.N_CLASSES]
             ctx.enqueue_function[kernel](
@@ -221,7 +221,6 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
             var softmax_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](self.softmax_dev.value())
             var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
             var grad_lt    = LayoutTensor[DT, mat_layout, MutAnyOrigin](gp_w)
-            comptime TPB = 128
             comptime n_blocks = (BATCH * Self.N_CLASSES + TPB - 1) // TPB
             comptime kernel = _ce_backward_kernel[BATCH, Self.N_CLASSES]
             ctx.enqueue_function[kernel](

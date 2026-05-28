@@ -21,7 +21,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor
 
-from ..constants import DT
+from ..constants import DT, TPB
 from .module import Module
 from .named_params import NamedParam, named_params
 from .target_tag import TARGET_GPU, target_tag_for
@@ -143,7 +143,6 @@ def _polyak_launch_gpu(
     per train step exhausts Apple Metal command-queue resources within a
     few hundred SAC train steps."""
     var n = op.n_elems
-    comptime TPB = 128
     var n_blocks = (n + TPB - 1) // TPB
     ctx.enqueue_function[_polyak_kernel](
         op.param_ptr, tp.param_ptr, one_minus_tau, tau, n,

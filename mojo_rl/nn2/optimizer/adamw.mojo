@@ -19,7 +19,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
-from ..constants import DT, CPU_SIMD_W
+from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import ParamVisitor
 from ..core.module import Module
 from ..core.optimizer import Optimizer
@@ -281,7 +281,6 @@ struct _AdamWGPUStepVisitor(ParamVisitor):
         var v_off = self.v_base + off
         var param_w_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
         var grad_w_ptr  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
-        comptime TPB = 128
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_adamw_update_kernel](
             param_w_ptr, grad_w_ptr, m_off, v_off, self.bc_base, n_elems,
@@ -310,7 +309,6 @@ struct _ZeroGradGPUVisitor(ParamVisitor):
         apply_decay: Bool,
     ) raises:
         var grad_w_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
-        comptime TPB = 128
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_zero_fill_kernel](
             grad_w_ptr, n_elems, grid_dim=n_blocks, block_dim=TPB,

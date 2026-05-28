@@ -17,7 +17,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, CPU_SIMD_W
+from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
@@ -147,7 +147,6 @@ struct Residual[Inner: Module](Module):
             var mid_lt = LayoutTensor[DT, layout, MutAnyOrigin](self.mid_dev.value())
             var in_lt  = LayoutTensor[DT, layout, MutAnyOrigin](in_p_w)
             var out_lt = LayoutTensor[DT, layout, MutAnyOrigin](out_p_w)
-            comptime TPB = 128
             comptime n_blocks = (BATCH * Self.IN_DIMS[0] + TPB - 1) // TPB
             comptime kernel = _elementwise_add_kernel[BATCH, Self.IN_DIMS[0]]
             self.ts.ctx.value().enqueue_function[kernel](
@@ -213,7 +212,6 @@ struct Residual[Inner: Module](Module):
             var tmp_lt = LayoutTensor[DT, layout, MutAnyOrigin](self.mid_dev.value())
             var go_lt  = LayoutTensor[DT, layout, MutAnyOrigin](go_p_w)
             var gi_lt  = LayoutTensor[DT, layout, MutAnyOrigin](gi_p_w)
-            comptime TPB = 128
             comptime n_blocks = (BATCH * Self.IN_DIMS[0] + TPB - 1) // TPB
             comptime kernel = _elementwise_add_kernel[BATCH, Self.IN_DIMS[0]]
             self.ts.ctx.value().enqueue_function[kernel](

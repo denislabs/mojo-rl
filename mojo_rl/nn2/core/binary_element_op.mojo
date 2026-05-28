@@ -70,8 +70,8 @@ trait BinaryElementOp(Movable & ImplicitlyDestructible):
 
     @staticmethod
     def backward_scalar_x(c: Scalar[DT], go: Scalar[DT]) -> Scalar[DT]:
-        """gi0 = ∂f/∂x · go. `c` is the cached carry when `owns_cache`,
-        unused otherwise."""
+        """Compute `gi0 = ∂f/∂x · go`. `c` is the cached carry when
+        `owns_cache`, unused otherwise."""
         ...
 
     @staticmethod
@@ -82,7 +82,7 @@ trait BinaryElementOp(Movable & ImplicitlyDestructible):
 
     @staticmethod
     def backward_scalar_y(c: Scalar[DT], go: Scalar[DT]) -> Scalar[DT]:
-        """gi1 = ∂f/∂y · go."""
+        """Compute `gi1 = ∂f/∂y · go`."""
         ...
 
     @staticmethod

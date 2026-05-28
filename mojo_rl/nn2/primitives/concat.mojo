@@ -24,7 +24,7 @@ from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
-from ..constants import DT
+from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
@@ -175,7 +175,6 @@ struct Concat[*DIMS: Int](Module):
             var o_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
             ](o_p)
-            comptime TPB = 128
             comptime for i in range(Self.DIMS.size):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
@@ -232,7 +231,6 @@ struct Concat[*DIMS: Int](Module):
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
             ](go_p)
-            comptime TPB = 128
             comptime for i in range(Self.DIMS.size):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()

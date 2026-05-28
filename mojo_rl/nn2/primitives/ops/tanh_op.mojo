@@ -13,7 +13,7 @@ from ...core.element_op import ElementOp
 
 
 struct TanhOp(ElementOp):
-    """tanh activation with `y`-caching backward."""
+    """Tanh activation with `y`-caching backward."""
 
     comptime owns_cache = True
 

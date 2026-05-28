@@ -34,7 +34,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from ..constants import DT, CPU_SIMD_W
+from ..constants import DT, CPU_SIMD_W, TPB
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -96,7 +96,6 @@ def cast_fp32_to_bf16[target: StaticString, N: Int](
         var dst_lt = LayoutTensor[
             DType.bfloat16, Layout.row_major(N), MutAnyOrigin,
         ](dst)
-        comptime TPB = 128
         comptime n_blocks = (N + TPB - 1) // TPB
         comptime kernel = _fp32_to_bf16_kernel[N]
         actx.enqueue_function[kernel](
@@ -127,7 +126,6 @@ def cast_bf16_to_fp32[target: StaticString, N: Int](
             DType.bfloat16, Layout.row_major(N), MutAnyOrigin,
         ](src)
         var dst_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](dst)
-        comptime TPB = 128
         comptime n_blocks = (N + TPB - 1) // TPB
         comptime kernel = _bf16_to_fp32_kernel[N]
         actx.enqueue_function[kernel](
@@ -144,7 +142,7 @@ def cast_bf16_to_fp32[target: StaticString, N: Int](
 
 @fieldwise_init
 struct LinearAMPState[IN: Int, OUT: Int](Movable & ImplicitlyDestructible):
-    """bf16 scratch cluster for the cast-around-matmul path.
+    """Bf16 scratch cluster for the cast-around-matmul path.
 
     Holds:
       - `w_bf16` — IN*OUT bf16 weight scratch. Re-cast every fwd/bwd.
