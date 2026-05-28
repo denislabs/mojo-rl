@@ -42,7 +42,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
@@ -215,7 +215,6 @@ struct CriticUpdateBlock[
                 var out_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
                 ](td_residuals_p)
-                comptime TPB = 128
                 comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
                 comptime capture_kernel = _capture_td_residuals_kernel[
                     Self.BATCH
@@ -238,7 +237,6 @@ struct CriticUpdateBlock[
                 var w_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
                 ](weights_p)
-                comptime TPB = 128
                 comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
                 comptime scale_kernel = _scale_grad_by_weights_kernel[
                     Self.BATCH

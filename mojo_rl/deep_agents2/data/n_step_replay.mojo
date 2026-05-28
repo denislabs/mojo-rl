@@ -43,7 +43,7 @@ from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from .gpu_replay import GPUReplay
 from .per_replay import GPUPrioritizedReplay
 
@@ -472,7 +472,6 @@ struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
             DType.int32, Layout.row_major(Self.N_ENVS), MutAnyOrigin,
         ](self.out_valid.unsafe_ptr())
 
-        comptime TPB = 128
         comptime n_blocks = (Self.N_ENVS + TPB - 1) // TPB
         comptime kernel = _nstep_process_kernel[
             Self.N_ENVS, Self.N, Self.OBS, Self.ACT,

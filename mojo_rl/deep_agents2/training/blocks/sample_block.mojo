@@ -88,6 +88,13 @@ trait SampleBlock(Defaultable, Movable, ImplicitlyDestructible):
         block type."""
         pass
 
+    def configure_gamma(mut self, gamma: Scalar[DT]):
+        """Align the sample block's discount with the trainer's γ. Used
+        by n-step blocks to ensure the per-step n-step return is computed
+        with the same γ the target-Y bootstrap uses. No-op for blocks
+        that don't accumulate multi-step returns (uniform, PER)."""
+        pass
+
     def configure_ere(
         mut self,
         enable: Bool = False,

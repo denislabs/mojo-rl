@@ -61,7 +61,7 @@ from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
@@ -381,7 +381,6 @@ struct PPOObjective[ACT_: Int](Module):
             var out_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
             ](out_p)
-            comptime TPB = 128
             comptime n_blocks = (BATCH + TPB - 1) // TPB
             comptime fwd_kernel = _ppo_forward_kernel[ACT, BATCH]
             var ctx = self.ts.ctx.value()
@@ -534,7 +533,6 @@ struct PPOObjective[ACT_: Int](Module):
             var gi3_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
             ](gi3_p)
-            comptime TPB = 128
             comptime n_blocks = (BATCH + TPB - 1) // TPB
             comptime vjp_kernel = _ppo_vjp_kernel[ACT, BATCH]
             var ctx = self.ts.ctx.value()

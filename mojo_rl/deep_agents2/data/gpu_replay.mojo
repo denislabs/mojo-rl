@@ -35,7 +35,7 @@ from std.memory import alloc
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -510,7 +510,6 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
             DT, Layout.row_major(Self.CAP), MutAnyOrigin
         ](self.dne.unsafe_ptr())
 
-        comptime TPB = 128
         comptime n_blocks = (N_ENVS + TPB - 1) // TPB
         comptime kernel = _store_batch_kernel[
             N_ENVS, Self.OBS, Self.ACT, Self.CAP
@@ -554,7 +553,6 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
         var idx_lt = LayoutTensor[
             DType.int32, Layout.row_major(BATCH), MutAnyOrigin
         ](self.indices.unsafe_ptr())
-        comptime TPB = 128
         comptime n_blocks = (BATCH + TPB - 1) // TPB
         if self.ere_enabled:
             # Host-side compute c_k = clamp(floor(size · η^k), c_min, size).

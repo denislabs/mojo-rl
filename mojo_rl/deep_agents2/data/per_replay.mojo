@@ -52,7 +52,7 @@ from std.memory import alloc
 from std.random import random_float64
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from .gpu_replay import GPUReplay, _gather_batch_kernel
 
 
@@ -363,7 +363,6 @@ struct GPUPrioritizedReplay[OBS: Int, ACT: Int, CAP: Int](
             DT, Layout.row_major(Self.CAP), MutAnyOrigin,
         ](self.base.dne.unsafe_ptr())
 
-        comptime TPB = 128
         comptime n_blocks = (BATCH + TPB - 1) // TPB
         comptime gather_kernel = _gather_batch_kernel[
             BATCH, Self.OBS, Self.ACT, Self.CAP,

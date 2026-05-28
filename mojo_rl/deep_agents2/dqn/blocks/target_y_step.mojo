@@ -34,10 +34,11 @@ struct DQNTargetYStep[
     @staticmethod
     def make[target: StaticString = "cpu"](
         gamma: Scalar[DT] = Scalar[DT](0.99),
+        nstep: Int = 1,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
         var b = Self()
-        b.inner = Self.Inner.make[target](gamma=gamma, ctx=ctx)
+        b.inner = Self.Inner.make[target](gamma=gamma, nstep=nstep, ctx=ctx)
         return b^
 
     def step[

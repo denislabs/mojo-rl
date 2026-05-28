@@ -28,7 +28,7 @@ from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
@@ -43,6 +43,42 @@ from mojo_rl.nn2.primitives.gather_cols import GatherCols
 # ──────────────────────────────────────────────────────────────────────
 # Block-owned kernels.
 # ──────────────────────────────────────────────────────────────────────
+
+
+def _capture_td_residuals_kernel[BATCH: Int](
+    mb_grad_q: LayoutTensor[
+        DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
+    ],
+    out_residuals: LayoutTensor[
+        DT, Layout.row_major(BATCH), MutAnyOrigin,
+    ],
+):
+    """`out_residuals[i] = mb_grad_q[i, 0] * BATCH` — recovers the raw
+    signed TD residual `Q − y` from the value MSE.vjp wrote
+    (`mb_grad_q = (Q − y) / BATCH`). Used by PER to refresh sum-tree
+    priorities AFTER the gather and BEFORE the IS-weight scaling so the
+    captured residuals are the raw signed TD error, not the IS-weighted
+    gradient. Mirrors loss/critic_update_block.mojo:85-102."""
+    var i = Int(global_idx.x)
+    if i >= BATCH:
+        return
+    out_residuals[i] = mb_grad_q[i, 0] * Scalar[DT](BATCH)
+
+
+def _scale_grad_by_weights_kernel[BATCH: Int](
+    mb_grad_q: LayoutTensor[
+        DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
+    ],
+    weights: LayoutTensor[
+        DT, Layout.row_major(BATCH), MutAnyOrigin,
+    ],
+):
+    """In-place: `mb_grad_q[i, 0] *= weights[i]`. The PER IS-weight
+    scaling step. Mirrors loss/critic_update_block.mojo:62-82."""
+    var i = Int(global_idx.x)
+    if i >= BATCH:
+        return
+    mb_grad_q[i, 0] = mb_grad_q[i, 0] * weights[i]
 
 
 def _scatter_action_grad_kernel[
@@ -124,9 +160,22 @@ struct DQNQUpdateBlock[
         mb_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        weights_p: UnsafePointer[
+            Scalar[DT], MutAnyOrigin,
+        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
+        td_residuals_p: UnsafePointer[
+            Scalar[DT], MutAnyOrigin,
+        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
     ) raises -> Scalar[DT]:
-        """Run zero_grad → Q.forward → gather → MSE forward+vjp → scatter →
-        Q.vjp → opt.step. Returns scalar loss."""
+        """Run zero_grad → Q.forward → gather → MSE forward+vjp → (PER hooks)
+        → scatter → Q.vjp → opt.step. Returns scalar loss.
+
+        PER hooks (gated on non-null sentinels; null = uniform, bit-
+        identical to pre-PER):
+          - `td_residuals_p` ([BATCH]) : captures raw signed TD residual
+            `(Q − y) = mb_grad_q · BATCH` AFTER mse.vjp, BEFORE IS scaling.
+          - `weights_p`     ([BATCH]) : scales `mb_grad_q[i] *= weights[i]`
+            in-place so the scatter+Q.vjp gradient is IS-weighted."""
         assert_tag_for["DQNQUpdateBlock", target](self.ts.target_tag)
 
         var q_all_p = self._mb_q_all.target_ptr[target]()
@@ -168,6 +217,53 @@ struct DQNQUpdateBlock[
         var grad_q_t = TileTensor(grad_q_p, row_major[Self.BATCH, 1]())
         self.mse_loss.vjp[target, Self.BATCH, POLICY](y_t, grad_q_t)
 
+        # 5a. PER residual capture (raw signed TD `Q − y = mb_grad_q · BATCH`),
+        # taken BEFORE the IS-weight scaling below so priorities reflect
+        # error magnitude not weighted gradient. Null pointer → no capture.
+        if Int(td_residuals_p) != 0:
+            comptime if target == "cpu":
+                var scale = Scalar[DT](Self.BATCH)
+                for i in range(Self.BATCH):
+                    td_residuals_p[i] = grad_q_p[i] * scale
+            else:
+                var grad_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin,
+                ](grad_q_p)
+                var out_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+                ](td_residuals_p)
+                comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
+                comptime capture_kernel = _capture_td_residuals_kernel[
+                    Self.BATCH,
+                ]
+                var ctx = self.ts.ctx.value()
+                ctx.enqueue_function[capture_kernel](
+                    grad_lt, out_lt,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
+
+        # 5b. PER IS-weight scaling. Null pointer → no scaling.
+        if Int(weights_p) != 0:
+            comptime if target == "cpu":
+                for i in range(Self.BATCH):
+                    grad_q_p[i] = grad_q_p[i] * weights_p[i]
+            else:
+                var grad_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin,
+                ](grad_q_p)
+                var w_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+                ](weights_p)
+                comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
+                comptime scale_kernel = _scale_grad_by_weights_kernel[
+                    Self.BATCH,
+                ]
+                var ctx = self.ts.ctx.value()
+                ctx.enqueue_function[scale_kernel](
+                    grad_lt, w_lt,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
+
         # 6. Scatter grad_q into grad_q_all at the taken-action slot.
         comptime if target == "cpu":
             for b in range(Self.BATCH):
@@ -187,7 +283,6 @@ struct DQNQUpdateBlock[
             var gqa_lt = LayoutTensor[
                 DT, Layout.row_major(Self.BATCH, Self.NA), MutAnyOrigin,
             ](grad_q_all_p)
-            comptime TPB = 128
             comptime total = Self.BATCH * Self.NA
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime kernel = _scatter_action_grad_kernel[Self.BATCH, Self.NA]

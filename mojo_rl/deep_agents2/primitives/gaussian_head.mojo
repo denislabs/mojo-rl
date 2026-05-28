@@ -28,7 +28,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import (
     Initializer,
     AMPPolicy,
@@ -281,7 +281,6 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
             )
             var output_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](out_p_w)
 
-            comptime TPB = 128
             comptime n_blocks_fwd = (BATCH * 2 * Self.ACT + TPB - 1) // TPB
             comptime fwd_kernel = _gauss_head_forward_kernel[
                 BATCH, Self.IN, Self.ACT
@@ -366,7 +365,6 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
             var w_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
                 self.weight.value_dev.value()
             )
-            comptime TPB = 128
 
             # (1) grad_b, grad_log_std
             comptime if mode == "all":

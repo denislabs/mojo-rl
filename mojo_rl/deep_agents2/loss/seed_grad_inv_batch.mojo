@@ -17,7 +17,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 
 
 def _seed_inv_batch_kernel[N: Int](
@@ -50,7 +50,6 @@ def seed_grad_inv_batch[
         var buf_lt = LayoutTensor[
             DT, Layout.row_major(BATCH), MutAnyOrigin,
         ](grad_out_ptr)
-        comptime TPB = 128
         comptime n_blocks = (BATCH + TPB - 1) // TPB
         comptime kernel = _seed_inv_batch_kernel[BATCH]
         c.enqueue_function[kernel](

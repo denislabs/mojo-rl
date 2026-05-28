@@ -44,7 +44,7 @@ from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB, TPB_REDUCE
 
 
 comptime LOG_STD_MIN: Scalar[DT] = -5.0
@@ -305,7 +305,7 @@ def squashed_gaussian_forward_gpu[ACT: Int, BATCH: Int](
     var z_lt = LayoutTensor[DT, Layout.row_major(BATCH, ACT), MutAnyOrigin](z_ptr)
     var a_lt = LayoutTensor[DT, Layout.row_major(BATCH, ACT), MutAnyOrigin](action_ptr)
     var lp_lt = LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin](log_prob_ptr)
-    comptime TPB = 64
+    comptime TPB = TPB_REDUCE
     comptime n_blocks = (BATCH + TPB - 1) // TPB
     comptime kernel = _sg_forward_kernel[ACT, BATCH]
     ctx.enqueue_function[kernel](
@@ -337,7 +337,6 @@ def squashed_gaussian_backward_gpu[ACT: Int, BATCH: Int](
     var gao_lt = LayoutTensor[
         DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin,
     ](grad_actor_output_ptr)
-    comptime TPB = 128
     comptime total = BATCH * ACT
     comptime n_blocks = (total + TPB - 1) // TPB
     comptime kernel = _sg_backward_kernel[ACT, BATCH]

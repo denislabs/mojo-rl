@@ -45,7 +45,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..data.n_step_replay import GPUNStepBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Module
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP, Bf16Compute
 from mojo_rl.nn2.core.log_bundle import log_bundle
@@ -217,7 +217,14 @@ struct SACTrainer[
     var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
     var _alpha_accum: Scalar[DT]
+    var _target_accum: Scalar[DT]
+    var _reward_accum: Scalar[DT]
+    var _done_accum: Scalar[DT]
+    var _abs_action_accum: Scalar[DT]
     var _update_count: Int
+    # Never reset by `flush_*` — emitted as `train_steps` so the
+    # downstream monitor can plot cumulative updates over time.
+    var _total_train_steps: Int
 
     var timer: Timer
 
@@ -294,7 +301,12 @@ struct SACTrainer[
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._alpha_accum = Scalar[DT](0.0)
+        self._target_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
+        self._done_accum = Scalar[DT](0.0)
+        self._abs_action_accum = Scalar[DT](0.0)
         self._update_count = 0
+        self._total_train_steps = 0
         self.timer = Timer.new()
 
     @staticmethod
@@ -515,6 +527,34 @@ struct SACTrainer[
         self._critic_L_accum += self.state.critic_loss
         self._alpha_accum += fexp(self.alpha_opt.value)
         self._update_count += 1
+        self._total_train_steps += 1
+
+        # Per-batch diagnostic means — matches the GPU-SAC legacy bundle
+        # at offpolicy_agent.mojo:1958-1976. CPU-only: GPU train_target
+        # would need D2H copies of the mb_* scratches; deferred.
+        comptime if Self.train_target == "cpu":
+            var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
+            var y_p = self.state.mb_y.target_ptr["cpu"]()
+            var r_p = self.state.mb_r.target_ptr["cpu"]()
+            var d_p = self.state.mb_d.target_ptr["cpu"]()
+            var a_p = self.state.mb_a.target_ptr["cpu"]()
+            var sum_y: Scalar[DT] = 0.0
+            var sum_r: Scalar[DT] = 0.0
+            var sum_d: Scalar[DT] = 0.0
+            for i in range(Self.BATCH):
+                sum_y += y_p[i]
+                sum_r += r_p[i]
+                sum_d += d_p[i]
+            var sum_a: Scalar[DT] = 0.0
+            for i in range(Self.BATCH * Self.ACT_DIM):
+                var av = a_p[i]
+                sum_a += av if av >= Scalar[DT](0.0) else -av
+            self._target_accum += sum_y * inv_b
+            self._reward_accum += sum_r * inv_b
+            self._done_accum += sum_d * inv_b
+            self._abs_action_accum += sum_a * (
+                Scalar[DT](1.0) / Scalar[DT](Self.BATCH * Self.ACT_DIM)
+            )
         return True
 
     def _record_impl(
@@ -738,7 +778,6 @@ struct SACTrainer[
                     Layout.row_major(N_ENVS, ACT),
                     MutAnyOrigin,
                 ](action_ptr)
-                comptime TPB = 128
                 comptime total = N_ENVS * ACT
                 comptime n_blocks = (total + TPB - 1) // TPB
                 comptime warmup_kernel = _warmup_uniform_kernel[N_ENVS, ACT]
@@ -789,7 +828,6 @@ struct SACTrainer[
                 Layout.row_major(N_ENVS, ACT),
                 MutAnyOrigin,
             ](action_ptr)
-            comptime TPB = 128
             comptime total = N_ENVS * ACT
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime clamp_kernel = _action_clamp_kernel[N_ENVS, ACT]
@@ -914,6 +952,12 @@ struct SACTrainer[
         self._update_count = 0
         return out
 
+    def total_train_steps(self) -> Int:
+        """Cumulative training updates since trainer was made. Not reset
+        by `flush_*`. Used as the `train_steps` metric and by external
+        schedulers."""
+        return self._total_train_steps
+
     def flush_metrics[
         L: Logger = NoOpLogger
     ](
@@ -923,18 +967,28 @@ struct SACTrainer[
     ) raises -> SACMetrics:
         """Drain accumulators into a SACMetrics bundle. If a logger
         pointer is wired, also emit one log_scalar per metric field.
-        Resets accumulators on every call."""
+        Resets per-chunk accumulators on every call; the cumulative
+        `_total_train_steps` counter is NOT reset."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
         var bundle = SACMetrics(
             actor_loss=LogScalar[DT](self._actor_L_accum * inv),
             critic_loss=LogScalar[DT](self._critic_L_accum * inv),
             alpha=LogScalar[DT](self._alpha_accum * inv),
+            mean_target=LogScalar[DT](self._target_accum * inv),
+            mean_reward=LogScalar[DT](self._reward_accum * inv),
+            mean_done=LogScalar[DT](self._done_accum * inv),
+            mean_abs_action=LogScalar[DT](self._abs_action_accum * inv),
+            train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._alpha_accum = Scalar[DT](0.0)
+        self._target_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
+        self._done_accum = Scalar[DT](0.0)
+        self._abs_action_accum = Scalar[DT](0.0)
         self._update_count = 0
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)

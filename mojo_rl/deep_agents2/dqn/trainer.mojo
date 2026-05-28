@@ -155,6 +155,10 @@ struct DQNTrainer[
         window_size: Int = 10,
         initial_episode_fill: Scalar[DT] = Scalar[DT](0.0),
         max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
+        per_alpha: Scalar[DT] = Scalar[DT](0.6),
+        per_beta: Scalar[DT] = Scalar[DT](0.4),
+        per_epsilon: Scalar[DT] = Scalar[DT](1e-6),
+        nstep: Int = 1,
     ) raises -> Self:
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
@@ -188,7 +192,7 @@ struct DQNTrainer[
         t.target_y_blk = DQNTargetYStep[
             Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.NUM_ACTIONS,
             Self.Q_NET, Self.DOUBLE,
-        ].make[Self.train_target](gamma=gamma, ctx=ctx)
+        ].make[Self.train_target](gamma=gamma, nstep=nstep, ctx=ctx)
 
         t.q_update_blk = DQNQUpdateStep[
             Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.NUM_ACTIONS,
@@ -210,6 +214,12 @@ struct DQNTrainer[
 
         init_scratch_auto[Self, target=Self.train_target](t, ctx)
 
+        # PER hyperparameter wiring: no-op default for uniform blocks.
+        t.sample_blk.configure_per(
+            alpha=per_alpha, beta=per_beta, epsilon=per_epsilon,
+        )
+        # N-step γ alignment: no-op default for non-nstep blocks.
+        t.sample_blk.configure_gamma(gamma)
         t.sample_blk.setup(learning_starts, ctx=ctx)
 
         t.timer.add_section("sample")
@@ -256,12 +266,20 @@ struct DQNTrainer[
         self.polyak_blk.step[Self.train_target](self.state, self.pair)
         self.timer.accumulate(Self._T_POLYAK, t_poly)
 
+        # PER tail (no-op for uniform blocks).
+        self.sample_blk.update_priorities(self.state)
+
         self._loss_accum += self.state.critic_loss
         self._update_count += 1
         return True
 
     def train_step(mut self, step_idx: Int) raises -> Bool:
         return self._train_step_impl[NoAMP](step_idx)
+
+    def set_beta(mut self, beta: Scalar[DT]):
+        """PER IS-β anneal hook (callers ramp 0.4 → 1.0). No-op for
+        uniform sample blocks."""
+        self.sample_blk.set_beta(beta)
 
     # ─── Record ──────────────────────────────────────────────────────
 

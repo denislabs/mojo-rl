@@ -181,12 +181,12 @@ def run_onpolicy_train[
                 and Bool(logger)
             ):
                 logger.value()[].log_scalar(
-                    "env/mean_ret",
+                    "avg_reward",
                     Float64(trainer.mean_return()),
                     step,
                 )
                 logger.value()[].log_scalar(
-                    "env/ep_count", Float64(trainer.ep_count()), step,
+                    "episodes", Float64(trainer.ep_count()), step,
                 )
                 logger.value()[].flush()
 
@@ -492,12 +492,12 @@ def run_onpolicy_train_batched[
                 and Bool(logger)
             ):
                 logger.value()[].log_scalar(
-                    "env/mean_ret",
+                    "avg_reward",
                     Float64(trainer.mean_return()),
                     step_idx,
                 )
                 logger.value()[].log_scalar(
-                    "env/ep_count",
+                    "episodes",
                     Float64(trainer.ep_count()),
                     step_idx,
                 )

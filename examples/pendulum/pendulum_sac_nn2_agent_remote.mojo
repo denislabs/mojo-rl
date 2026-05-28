@@ -2,7 +2,7 @@
 
 Demonstrates the Track-1 monitoring path with the post-#23 driver-level
 logger threading: pass a single `logger=` kwarg to `agent.train()` and
-the off-policy driver emits `env/mean_ret` + `env/ep_count` at the
+the off-policy driver emits `avg_reward` + `episodes` at the
 `print_every` cadence automatically. After training, drain the
 trainer-side `SACMetrics` bundle via `agent.flush_metrics(logger)`
 and round-trip the agent through `save()` / `load()`.
@@ -107,8 +107,8 @@ def main() raises:
     var template = PendulumEnv[DT]()
     var env = BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM](template)
 
-    # 3. Single train() call — the driver flushes `env/mean_ret` and
-    # `env/ep_count` through the logger at `print_every` cadence
+    # 3. Single train() call — the driver flushes `avg_reward` and
+    # `episodes` through the logger at `print_every` cadence
     # automatically (#23). Drain the SAC-specific metric bundle once
     # at the end via `agent.flush_metrics(logger)`.
     var logger_ptr = Optional[UnsafePointer[RemoteLogger, MutAnyOrigin]](

@@ -33,7 +33,7 @@ from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.loss.mse import MSELoss
@@ -87,7 +87,6 @@ def concat_sa_gpu[
     var obs_lt = LayoutTensor[DT, Layout.row_major(B, OBS), MutAnyOrigin](obs)
     var act_lt = LayoutTensor[DT, Layout.row_major(B, ACT), MutAnyOrigin](act)
     var out_lt = LayoutTensor[DT, Layout.row_major(B, SA), MutAnyOrigin](out_sa)
-    comptime TPB = 128
     comptime total = B * SA
     comptime n_blocks = (total + TPB - 1) // TPB
     comptime kernel = _concat_sa_kernel[OBS, ACT, B]

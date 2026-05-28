@@ -28,7 +28,7 @@ from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
@@ -124,9 +124,18 @@ struct DQNTargetYBlock[
         target: StaticString
     ](
         gamma: Scalar[DT] = Scalar[DT](0.99),
+        nstep: Int = 1,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        """Unified CPU/GPU factory."""
+        """Unified CPU/GPU factory.
+
+        `nstep` (default 1) bakes `γ^nstep` into the effective discount
+        used by the finalize fuse. For n-step DQN the sample block emits
+        compressed transitions where `mb_r` is the n-step return
+        `Σ_{i<N} γ^i r_i` and `mb_sp` is the state at `t+N`; the bootstrap
+        therefore uses `γ^N`. For uniform / 1-step replay, `nstep=1`
+        keeps the discount at γ (bit-identical to pre-N-step).
+        """
         comptime assert (
             target == "cpu" or target == "gpu"
         ), "DQNTargetYBlock: target must be 'cpu' or 'gpu'"
@@ -137,7 +146,13 @@ struct DQNTargetYBlock[
             Self.Q_NET.OUT_DIM == Self.NA
         ), "DQNTargetYBlock: Q_NET.OUT_DIM must equal NA"
         var b = Self()
-        b.gamma = gamma
+        # Bake γ^nstep so the finalize kernel multiplies by the right
+        # discount regardless of replay flavor. CPU loop — nstep is small
+        # (typically 1..10) so a runtime pow is fine.
+        var gamma_n: Scalar[DT] = Scalar[DT](1.0)
+        for _ in range(nstep):
+            gamma_n = gamma_n * gamma
+        b.gamma = gamma_n
         b.ts = TargetStorage.make[target](ctx=ctx)
         b.reduce_max = ReduceMax[Self.NA].make[target, INIT=Zero](ctx=ctx)
         b.gather_cols = GatherCols[Self.NA].make[target, INIT=Zero](ctx=ctx)
@@ -200,7 +215,6 @@ struct DQNTargetYBlock[
                     Layout.row_major(Self.BATCH, 1),
                     MutAnyOrigin,
                 ](idx_p)
-                comptime TPB = 128
                 comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
                 comptime kernel = _argmax_idx_kernel[Self.BATCH, Self.NA]
                 self.ts.ctx.value().enqueue_function[kernel](
@@ -264,7 +278,6 @@ struct DQNTargetYBlock[
                 Layout.row_major(Self.BATCH),
                 MutAnyOrigin,
             ](mb_y_ptr)
-            comptime TPB = 128
             comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
             comptime kernel = _target_y_finalize_kernel[Self.BATCH]
             self.ts.ctx.value().enqueue_function[kernel](

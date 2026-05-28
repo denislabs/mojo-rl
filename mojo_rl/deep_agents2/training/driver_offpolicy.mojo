@@ -216,6 +216,7 @@ def run_offpolicy_train[
     print_every: Int = 1_000,
     verbose: Bool = True,
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    base_step: Int = 0,
 ) raises -> List[Scalar[DT]]:
     """Single-env off-policy training driver bound on the CPU env trait
     (`BoxContinuousActionEnv`). Covers (env_target=cpu, train_target=cpu)
@@ -351,7 +352,7 @@ def run_offpolicy_train[
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
                 "[step ",
-                step,
+                base_step + step,
                 "] mean_ret(10)=",
                 trainer.mean_return(),
                 " ep=",
@@ -370,12 +371,14 @@ def run_offpolicy_train[
                 and Bool(logger)
             ):
                 logger.value()[].log_scalar(
-                    "env/mean_ret",
+                    "avg_reward",
                     Float64(trainer.mean_return()),
-                    step,
+                    base_step + step,
                 )
                 logger.value()[].log_scalar(
-                    "env/ep_count", Float64(trainer.ep_count()), step,
+                    "episodes",
+                    Float64(trainer.ep_count()),
+                    base_step + step,
                 )
                 logger.value()[].flush()
 
@@ -666,12 +669,12 @@ def run_offpolicy_train_batched[
                 and Bool(logger)
             ):
                 logger.value()[].log_scalar(
-                    "env/mean_ret",
+                    "avg_reward",
                     Float64(trainer.mean_return()),
                     step_idx,
                 )
                 logger.value()[].log_scalar(
-                    "env/ep_count",
+                    "episodes",
                     Float64(trainer.ep_count()),
                     step_idx,
                 )

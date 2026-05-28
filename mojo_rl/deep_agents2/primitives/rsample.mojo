@@ -18,7 +18,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
 from mojo_rl.nn2.core.saveable import Saveable
@@ -280,7 +280,6 @@ struct RSample[ACT: Int](Module, Saveable):
             var out_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.ACT + 1), MutAnyOrigin,
             ](out_p)
-            comptime TPB = 128
             comptime total = BATCH * (Self.ACT + 1)
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime kernel = _rsample_pack_kernel[Self.ACT, BATCH]
@@ -359,7 +358,6 @@ struct RSample[ACT: Int](Module, Saveable):
             var glp_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH), MutAnyOrigin,
             ](glp_p)
-            comptime TPB = 128
             comptime total = BATCH * (Self.ACT + 1)
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime kernel = _rsample_unpack_kernel[Self.ACT, BATCH]
