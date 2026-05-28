@@ -482,8 +482,22 @@ def _http_post(
     payload: PythonObject,
     api_key: String = "",
 ) raises:
-    """POST JSON payload to a URL. Silently ignores errors to avoid
-    disrupting training if the server is down."""
+    """POST a JSON payload to `url`. Synchronous — see the comment
+    below on why the daemon-thread variant didn't ship.
+
+    Errors are silently swallowed so a dead/slow server can't kill
+    training or pollute stdout.
+
+    Note on async: a `threading.Thread(daemon=True)` variant was tried
+    but Mojo's current Python embedding holds the GIL continuously
+    between Python calls, starving the worker thread — POSTs never
+    actually fired and the dashboard received nothing. A true non-
+    blocking path needs either (a) a long-lived subprocess that
+    consumes payloads via a Unix socket / stdin (bypasses the GIL
+    entirely), or (b) Mojo growing native async/await primitives.
+    Until then, the practical knob is `buffer_size` — larger buffers
+    amortize the synchronous POST cost across more log_scalar calls.
+    """
     try:
         var data = json_mod.dumps(payload).encode("utf-8")
         var req = urllib_request.Request(

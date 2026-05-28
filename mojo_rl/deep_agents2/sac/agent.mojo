@@ -38,10 +38,6 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.checkpoint import (
-    save_state_v2_body, load_state_v2_body,
-)
-from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 
@@ -51,15 +47,6 @@ from ..training.driver_offpolicy import (
     run_offpolicy_train,
     run_offpolicy_train_batched,
     run_offpolicy_eval,
-)
-from ..core.checkpoint_helpers import (
-    save_optimizer_v2_body,
-    load_optimizer_v2_body,
-    save_scalar_adam_v2_body,
-    load_scalar_adam_v2_body,
-    split_lines_v2,
-    read_file_v2,
-    expect_v2_header,
 )
 
 from .metrics import SACMetrics
@@ -219,100 +206,42 @@ struct SACAgent[
         target. For batched same-target, use `train()` instead.
 
         Auto-flush + auto-save (matches the legacy `DeepSACAgent.train`):
-          * `diag_every` (env steps, default 0 = off): when > 0, drive the
-            env loop in chunks of `diag_every` steps and call
-            `flush_metrics(logger, step)` between chunks — emits the full
-            `SACMetrics` bundle (actor_loss / critic_loss / alpha /
-            mean_target / mean_reward / mean_done / mean_abs_action /
-            train_steps / n_updates) through the logger.
-          * `checkpoint_every` (env steps, default 0 = off): when > 0
-            AND `checkpoint_path` is non-empty, overwrite
-            `checkpoint_path` every `checkpoint_every` env steps with
-            the one-file v2 checkpoint. A final save runs at the end.
+          * `diag_every` (env steps, default 0 = off): when > 0, the
+            driver calls `trainer.flush_metrics_through_logger(logger,
+            step)` inline every `diag_every` env-steps — emits the full
+            `SACMetrics` bundle (`actor_loss`, `critic_loss`, `alpha`,
+            `mean_q`, `mean_target`, `mean_reward`, `mean_done`,
+            `mean_abs_action`, `train_steps`, `n_updates`).
+          * `checkpoint_every` (env steps, default 0 = off) +
+            `checkpoint_path`: when both set, the driver calls
+            `trainer.save_state(checkpoint_path)` inline every
+            `checkpoint_every` env-steps and one final time at the end.
 
-        When both `diag_every` and `checkpoint_every` are 0, this is a
-        pure single-call passthrough to the driver (no chunking — same
-        bit-identity profile as the bespoke `run_offpolicy_train`
-        invocation).
-        """
+        The env-loop is NEVER chunked — same single pass as the bespoke
+        `run_offpolicy_train` invocation, just with extra `if`s at the
+        cadence boundaries. Same bit-identity profile as before."""
         var ctx = self.trainer.ctx
-
-        # Fast path: no auto-flush, no auto-checkpoint → one driver call.
-        var auto_flush = diag_every > 0 and Bool(logger)
-        var auto_ckpt = (
-            checkpoint_every > 0 and checkpoint_path.byte_length() > 0
+        return run_offpolicy_train[
+            SACTrainer[
+                Self.train_target,
+                Self.SAMPLE,
+                Self.ACTOR,
+                Self.CRITIC,
+            ],
+            E,
+            L,
+        ](
+            self.trainer,
+            env,
+            total_timesteps,
+            ctx=ctx,
+            print_every=print_every,
+            verbose=verbose,
+            logger=logger,
+            diag_every=diag_every,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
         )
-        if not (auto_flush or auto_ckpt):
-            return run_offpolicy_train[
-                SACTrainer[
-                    Self.train_target,
-                    Self.SAMPLE,
-                    Self.ACTOR,
-                    Self.CRITIC,
-                ],
-                E,
-                L,
-            ](
-                self.trainer,
-                env,
-                total_timesteps,
-                ctx=ctx,
-                print_every=print_every,
-                verbose=verbose,
-                logger=logger,
-            )
-
-        # Chunked path: drive in cadence-sized blocks. Chunk size = the
-        # smallest non-zero cadence (diag_every or checkpoint_every).
-        var chunk: Int = total_timesteps
-        if diag_every > 0:
-            chunk = diag_every
-        if checkpoint_every > 0 and (
-            checkpoint_every < chunk or chunk == total_timesteps
-        ):
-            chunk = checkpoint_every
-
-        var ep_returns = List[Scalar[DT]]()
-        var done: Int = 0
-        while done < total_timesteps:
-            var remaining = total_timesteps - done
-            var this_chunk = chunk if chunk < remaining else remaining
-            var chunk_returns = run_offpolicy_train[
-                SACTrainer[
-                    Self.train_target,
-                    Self.SAMPLE,
-                    Self.ACTOR,
-                    Self.CRITIC,
-                ],
-                E,
-                L,
-            ](
-                self.trainer,
-                env,
-                this_chunk,
-                ctx=ctx,
-                print_every=print_every,
-                verbose=verbose,
-                logger=logger,
-                base_step=done,
-            )
-            for r in chunk_returns:
-                ep_returns.append(r)
-            done += this_chunk
-
-            if auto_flush and (done % diag_every == 0 or done == total_timesteps):
-                var bundle = self.flush_metrics[L](logger, done)
-                _ = bundle^
-            if auto_ckpt and done % checkpoint_every == 0:
-                self.save(checkpoint_path)
-
-        # Always overwrite the final checkpoint at end (regardless of
-        # whether `done` lined up with `checkpoint_every`), so resume
-        # picks up the freshest weights.
-        if auto_ckpt:
-            self.save(checkpoint_path)
-
-        return ep_returns^
 
     # ─── Evaluation ─────────────────────────────────────────────────────
 
@@ -394,71 +323,17 @@ struct SACAgent[
         """Per-section wall-time report (resets accumulators)."""
         return self.trainer.flush_timer_log()
 
-    # ─── Checkpointing (CPU only) ──────────────────────────────────────
+    # ─── Checkpointing (CPU only — delegates to trainer.save_state) ───
 
     def save(mut self, path: String) raises:
-        """Persist networks + optimizer state to ONE file at `path`
-        (overwrites). Replay buffer and episode tracker are NOT
-        included — resume starts with a fresh replay.
-
-        The on-disk format is a single `nn2-ckpt v2\\n<body>` envelope
-        where `<body>` concatenates prefixed sections for each module
-        (`actor.*`, `critic1.*`, `critic2.*`) and each optimizer
-        (`actor_opt.*`, `critic1_opt.*`, `critic2_opt.*`,
-        `alpha_opt.*`).
-
-        CPU-only: GPU agents store params in DeviceBuffers; this writes
-        the stale CPU mirror. A GPU sync helper will land in a follow-up."""
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "SACAgent.save: GPU save/load not yet supported. Train on"
-                " CPU or wait for the device-sync helper."
-            )
-        var body = String("")
-        save_state_v2_body(self.trainer.actor, body, "actor")
-        save_state_v2_body(self.trainer.pair1.online, body, "critic1")
-        save_state_v2_body(self.trainer.pair2.online, body, "critic2")
-        save_optimizer_v2_body(self.trainer.actor_opt, body, "actor_opt")
-        save_optimizer_v2_body(self.trainer.critic1_opt, body, "critic1_opt")
-        save_optimizer_v2_body(self.trainer.critic2_opt, body, "critic2_opt")
-        save_scalar_adam_v2_body(self.trainer.alpha_opt, body, "alpha_opt")
-        var content = String("nn2-ckpt v2\n") + body
-        with open(path, "w") as f:
-            f.write(content)
+        """Thin passthrough to `trainer.save_state(path)`. Writes ONE
+        file (`nn2-ckpt v2` envelope) with prefixed sections for
+        actor, critic1, critic2, actor_opt, critic1_opt, critic2_opt,
+        alpha_opt. Replay buffer and episode tracker are NOT
+        included — resume starts with a fresh replay. CPU-only."""
+        self.trainer.save_state(path)
 
     def load(mut self, path: String) raises:
-        """Restore networks + optimizer state from a single file
-        previously written by `save()`. Target critics are hard-copied
-        from their online twins."""
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "SACAgent.load: GPU save/load not yet supported. Train on"
-                " CPU or wait for the device-sync helper."
-            )
-        var content = read_file_v2(path)
-        var lines = split_lines_v2(content)
-        expect_v2_header(lines)
-        var idx: Int = 1
-        load_state_v2_body(self.trainer.actor, lines, idx, "actor")
-        load_state_v2_body(self.trainer.pair1.online, lines, idx, "critic1")
-        load_state_v2_body(self.trainer.pair2.online, lines, idx, "critic2")
-        load_optimizer_v2_body(
-            self.trainer.actor_opt, lines, idx, "actor_opt",
-        )
-        load_optimizer_v2_body(
-            self.trainer.critic1_opt, lines, idx, "critic1_opt",
-        )
-        load_optimizer_v2_body(
-            self.trainer.critic2_opt, lines, idx, "critic2_opt",
-        )
-        load_scalar_adam_v2_body(
-            self.trainer.alpha_opt, lines, idx, "alpha_opt",
-        )
-        hard_copy_params[Self.train_target, M=Self.CRITIC](
-            self.trainer.pair1.online, self.trainer.pair1.target_net,
-            self.trainer.ctx,
-        )
-        hard_copy_params[Self.train_target, M=Self.CRITIC](
-            self.trainer.pair2.online, self.trainer.pair2.target_net,
-            self.trainer.ctx,
-        )
+        """Inverse of `save`. Target critics are hard-copied from their
+        online twins after the online params are restored."""
+        self.trainer.load_state(path)

@@ -155,6 +155,7 @@ def run_offpolicy_discrete_train[
     print_every: Int = 1_000,
     verbose: Bool = True,
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    base_step: Int = 0,
 ) raises -> List[Scalar[DT]]:
     """Single-env discrete off-policy training driver.
 
@@ -221,10 +222,12 @@ def run_offpolicy_discrete_train[
             var c = ctx.value()
             c.enqueue_copy(obs_scratch.dev.value(), obs_scratch_h)
 
+        # `base_step + step` — cumulative env-step counter for the
+        # trainer's warmup gating. Equivalent to `step` when base_step=0.
         trainer.select_action_batched[1](
             obs_scratch.target_ptr[train_target](),
             action_scratch.target_ptr[train_target](),
-            step,
+            base_step + step,
         )
 
         comptime if needs_boundary_copy:
@@ -262,13 +265,13 @@ def run_offpolicy_discrete_train[
             env_obs = nxt^
 
         step += 1
-        _ = trainer.train_step(step)
+        _ = trainer.train_step(base_step + step)
 
         if verbose and print_every > 0 and step % print_every == 0:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
                 "[step ",
-                step,
+                base_step + step,
                 "] mean_ret(10)=",
                 trainer.mean_return(),
                 " ep=",
@@ -289,12 +292,16 @@ def run_offpolicy_discrete_train[
                 logger.value()[].log_scalar(
                     "avg_reward",
                     Float64(trainer.mean_return()),
-                    step,
+                    base_step + step,
                 )
                 logger.value()[].log_scalar(
-                    "episodes", Float64(trainer.ep_count()), step,
+                    "episodes",
+                    Float64(trainer.ep_count()),
+                    base_step + step,
                 )
-                logger.value()[].flush()
+                # No forced flush — `log_scalar` auto-flushes when the
+                # logger's buffer fills; user controls cadence via
+                # `buffer_size`. Final residual sent by `logger.close()`.
 
     return ep_returns^
 

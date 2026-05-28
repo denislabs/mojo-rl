@@ -48,8 +48,17 @@ from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Module
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP, Bf16Compute
+from mojo_rl.nn2.core.checkpoint import (
+    save_state_v2_body, load_state_v2_body,
+)
 from mojo_rl.nn2.core.log_bundle import log_bundle
+from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.metric import LogScalar
+from ..core.checkpoint_helpers import (
+    save_optimizer_v2_body, load_optimizer_v2_body,
+    save_scalar_adam_v2_body, load_scalar_adam_v2_body,
+    split_lines_v2, read_file_v2, expect_v2_header,
+)
 from ..core.online_target_pair import OnlineTargetPair
 from mojo_rl.nn2.core.scratch import Scratch
 from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
@@ -161,6 +170,7 @@ struct SACTrainer[
     comptime _T_ACTOR = 3
     comptime _T_ALPHA = 4
     comptime _T_POLYAK = 5
+    comptime _T_DIAG = 6
 
     var actor: Self.ACTOR
     var pair1: OnlineTargetPair[Self.CRITIC]
@@ -217,6 +227,7 @@ struct SACTrainer[
     var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
     var _alpha_accum: Scalar[DT]
+    var _q_accum: Scalar[DT]
     var _target_accum: Scalar[DT]
     var _reward_accum: Scalar[DT]
     var _done_accum: Scalar[DT]
@@ -301,6 +312,7 @@ struct SACTrainer[
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._alpha_accum = Scalar[DT](0.0)
+        self._q_accum = Scalar[DT](0.0)
         self._target_accum = Scalar[DT](0.0)
         self._reward_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
@@ -451,6 +463,7 @@ struct SACTrainer[
         t.timer.add_section("actor")
         t.timer.add_section("alpha")
         t.timer.add_section("polyak")
+        t.timer.add_section("diag")
         return t^
 
     def set_beta(mut self, beta: Scalar[DT]):
@@ -532,29 +545,44 @@ struct SACTrainer[
         # Per-batch diagnostic means — matches the GPU-SAC legacy bundle
         # at offpolicy_agent.mojo:1958-1976. CPU-only: GPU train_target
         # would need D2H copies of the mb_* scratches; deferred.
+        #
+        # `mean_q` reads `twin_critic_blk.inner.c1._mb_q`, the Q1(s, a)
+        # batch output populated by critic.forward inside
+        # `twin_critic_blk.step` and NOT overwritten by `actor_blk.step`
+        # (the actor loss has its own internal Q scratch).
+        #
+        # Timed under `_T_DIAG` so `flush_timer_log` reports the exact
+        # cost of the diag walk — useful for sizing the trade-off when
+        # the user disables some accumulators or raises diag_every.
+        var t_diag = perf_counter_ns()
         comptime if Self.train_target == "cpu":
             var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
             var y_p = self.state.mb_y.target_ptr["cpu"]()
             var r_p = self.state.mb_r.target_ptr["cpu"]()
             var d_p = self.state.mb_d.target_ptr["cpu"]()
             var a_p = self.state.mb_a.target_ptr["cpu"]()
+            var q_p = self.twin_critic_blk.inner.c1._mb_q.target_ptr["cpu"]()
             var sum_y: Scalar[DT] = 0.0
             var sum_r: Scalar[DT] = 0.0
             var sum_d: Scalar[DT] = 0.0
+            var sum_q: Scalar[DT] = 0.0
             for i in range(Self.BATCH):
                 sum_y += y_p[i]
                 sum_r += r_p[i]
                 sum_d += d_p[i]
+                sum_q += q_p[i]
             var sum_a: Scalar[DT] = 0.0
             for i in range(Self.BATCH * Self.ACT_DIM):
                 var av = a_p[i]
                 sum_a += av if av >= Scalar[DT](0.0) else -av
+            self._q_accum += sum_q * inv_b
             self._target_accum += sum_y * inv_b
             self._reward_accum += sum_r * inv_b
             self._done_accum += sum_d * inv_b
             self._abs_action_accum += sum_a * (
                 Scalar[DT](1.0) / Scalar[DT](Self.BATCH * Self.ACT_DIM)
             )
+        self.timer.accumulate(Self._T_DIAG, t_diag)
         return True
 
     def _record_impl(
@@ -975,6 +1003,7 @@ struct SACTrainer[
             actor_loss=LogScalar[DT](self._actor_L_accum * inv),
             critic_loss=LogScalar[DT](self._critic_L_accum * inv),
             alpha=LogScalar[DT](self._alpha_accum * inv),
+            mean_q=LogScalar[DT](self._q_accum * inv),
             mean_target=LogScalar[DT](self._target_accum * inv),
             mean_reward=LogScalar[DT](self._reward_accum * inv),
             mean_done=LogScalar[DT](self._done_accum * inv),
@@ -985,6 +1014,7 @@ struct SACTrainer[
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._alpha_accum = Scalar[DT](0.0)
+        self._q_accum = Scalar[DT](0.0)
         self._target_accum = Scalar[DT](0.0)
         self._reward_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
@@ -993,6 +1023,65 @@ struct SACTrainer[
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^
+
+    # ─── Trait-uniform cadence hooks (consumed by the driver) ─────────
+
+    def flush_metrics_through_logger[L: Logger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        step: Int,
+    ) raises:
+        """Trait-uniform passthrough: drains the SAC metric accumulators
+        through `flush_metrics` and discards the typed bundle. The
+        driver calls this at the user's `diag_every` cadence so no
+        chunking is needed."""
+        _ = self.flush_metrics[L](logger, step)
+
+    def save_state(mut self, path: String) raises:
+        """One-file v2 checkpoint of every SAC module + optimizer.
+        Sections: `actor.*`, `critic1.*`, `critic2.*`, `actor_opt.*`,
+        `critic1_opt.*`, `critic2_opt.*`, `alpha_opt.*`. Overwrites
+        `path`. CPU-only."""
+        comptime if Self.train_target != "cpu":
+            raise Error(
+                "SACTrainer.save_state: GPU save/load not yet supported."
+            )
+        var body = String("")
+        save_state_v2_body(self.actor, body, "actor")
+        save_state_v2_body(self.pair1.online, body, "critic1")
+        save_state_v2_body(self.pair2.online, body, "critic2")
+        save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
+        save_optimizer_v2_body(self.critic1_opt, body, "critic1_opt")
+        save_optimizer_v2_body(self.critic2_opt, body, "critic2_opt")
+        save_scalar_adam_v2_body(self.alpha_opt, body, "alpha_opt")
+        var content = String("nn2-ckpt v2\n") + body
+        with open(path, "w") as f:
+            f.write(content)
+
+    def load_state(mut self, path: String) raises:
+        """Inverse of `save_state`. Target critics are hard-copied from
+        their online twins after the online params are restored."""
+        comptime if Self.train_target != "cpu":
+            raise Error(
+                "SACTrainer.load_state: GPU save/load not yet supported."
+            )
+        var content = read_file_v2(path)
+        var lines = split_lines_v2(content)
+        expect_v2_header(lines)
+        var idx: Int = 1
+        load_state_v2_body(self.actor, lines, idx, "actor")
+        load_state_v2_body(self.pair1.online, lines, idx, "critic1")
+        load_state_v2_body(self.pair2.online, lines, idx, "critic2")
+        load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
+        load_optimizer_v2_body(self.critic1_opt, lines, idx, "critic1_opt")
+        load_optimizer_v2_body(self.critic2_opt, lines, idx, "critic2_opt")
+        load_scalar_adam_v2_body(self.alpha_opt, lines, idx, "alpha_opt")
+        hard_copy_params[Self.train_target, M=Self.CRITIC](
+            self.pair1.online, self.pair1.target_net, self.ctx,
+        )
+        hard_copy_params[Self.train_target, M=Self.CRITIC](
+            self.pair2.online, self.pair2.target_net, self.ctx,
+        )
 
     def flush_timer_log(mut self) -> String:
         """Return a per-section wall-time report (one line per sub-step:

@@ -12,6 +12,7 @@ Naming convention (one-to-one with legacy):
   actor_loss      — mean SAC actor loss across the chunk
   critic_loss     — mean SAC critic loss (twin-critic min) across the chunk
   alpha           — point-in-time entropy temperature (= exp(log_alpha))
+  mean_q          — mean of online Q1(s, a) over the batch
   mean_target     — mean of target_y (Bellman target) across the chunk
   mean_reward     — mean of batch reward across the chunk
   mean_done       — mean of batch done across the chunk
@@ -19,11 +20,10 @@ Naming convention (one-to-one with legacy):
   train_steps     — cumulative training updates so far (NOT reset on flush)
   n_updates       — training updates THIS chunk (reset on flush)
 
-`mean_q` and `mean_next_q` from the legacy bundle are deferred — both
-require exposing the Q-network's batch output from
-`TwinCriticUpdateBlock`, which means an extra forward pass (or capturing
-the existing pre-loss tensor) and a bit-identity re-verification. Track
-post-Track-1."""
+`mean_next_q` from the legacy bundle is deferred — it requires
+exposing the `min_q` intermediate from `TargetYBlock`'s ComputeGraph
+(no node-output accessor yet) or duplicating the target-critic
+forward pass. Track post-Track-1."""
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.metric import LogScalar
@@ -34,6 +34,7 @@ struct SACMetrics(Copyable, Movable, ImplicitlyDestructible):
     var actor_loss:      LogScalar[DT]
     var critic_loss:     LogScalar[DT]
     var alpha:           LogScalar[DT]
+    var mean_q:          LogScalar[DT]
     var mean_target:     LogScalar[DT]
     var mean_reward:     LogScalar[DT]
     var mean_done:       LogScalar[DT]

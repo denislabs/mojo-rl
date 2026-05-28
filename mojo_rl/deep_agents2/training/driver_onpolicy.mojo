@@ -101,6 +101,7 @@ def run_onpolicy_train[
     print_every: Int = 1_000,
     verbose: Bool = True,
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    base_step: Int = 0,
 ) raises -> List[Scalar[DT]]:
     """Step-based on-policy single-env training driver.
 
@@ -139,7 +140,9 @@ def run_onpolicy_train[
     while step < total_timesteps:
         for d in range(obs_dim):
             obs[d] = Scalar[DT](obs_list[d])
-        trainer.select_action(obs, action, step)
+        # `base_step + step` — cumulative env-step counter for the
+        # trainer's warmup gating (when chunked through agent wrappers).
+        trainer.select_action(obs, action, base_step + step)
         for j in range(act_dim):
             action_list[j] = Scalar[E.dtype](action[j])
         var step_res = env.step_continuous_vec[E.dtype](action_list)
@@ -162,12 +165,12 @@ def run_onpolicy_train[
         else:
             obs_list = nxt^
         step += 1
-        _ = trainer.train_step(step)
+        _ = trainer.train_step(base_step + step)
 
         if verbose and print_every > 0 and step % print_every == 0:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
-                "[step ", step, "] mean_ret(10)=", trainer.mean_return(),
+                "[step ", base_step + step, "] mean_ret(10)=", trainer.mean_return(),
                 " ep=", trainer.ep_count(),
                 " elapsed=", elapsed, "s",
             )
@@ -183,12 +186,16 @@ def run_onpolicy_train[
                 logger.value()[].log_scalar(
                     "avg_reward",
                     Float64(trainer.mean_return()),
-                    step,
+                    base_step + step,
                 )
                 logger.value()[].log_scalar(
-                    "episodes", Float64(trainer.ep_count()), step,
+                    "episodes",
+                    Float64(trainer.ep_count()),
+                    base_step + step,
                 )
-                logger.value()[].flush()
+                # No forced flush — `log_scalar` auto-flushes when the
+                # logger's buffer fills; user controls cadence via
+                # `buffer_size`. Final residual sent by `logger.close()`.
 
     return ep_returns^
 
@@ -274,6 +281,7 @@ def run_onpolicy_train_batched[
     print_every: Int = 5_000,
     verbose: Bool = True,
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    base_step: Int = 0,
 ) raises -> List[Scalar[DT]]:
     """Tier-3 on-policy driver covering same-target combinations.
 
@@ -386,10 +394,12 @@ def run_onpolicy_train_batched[
                 po_p[k] = ph[k]
 
         # ── 2. Trainer writes action into host scratch.
+        # `base_step + step_idx` — cumulative env-step counter (see
+        # the `base_step` note on `run_offpolicy_train`).
         trainer.select_action_batched(
             po_p,
             action_h.host_ptr(),
-            step_idx,
+            base_step + step_idx,
         )
 
         # ── 3. (gpu env) H2D action into env.action_ptr().
@@ -465,7 +475,7 @@ def run_onpolicy_train_batched[
         iter_idx += 1
 
         # ── 8. Trainer update (returns True at K-epoch boundary).
-        _ = trainer.train_step(step_idx)
+        _ = trainer.train_step(base_step + step_idx)
 
         # Snapshot mean_return whenever an episode completes.
         var new_ep_count = trainer.ep_count()
@@ -476,7 +486,7 @@ def run_onpolicy_train_batched[
         if verbose and print_every > 0 and step_idx >= next_print:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
-                "[step ", step_idx, "] mean_ret(10)=",
+                "[step ", base_step + step_idx, "] mean_ret(10)=",
                 trainer.mean_return(),
                 " ep=", trainer.ep_count(),
                 " elapsed=", elapsed, "s",
@@ -494,14 +504,14 @@ def run_onpolicy_train_batched[
                 logger.value()[].log_scalar(
                     "avg_reward",
                     Float64(trainer.mean_return()),
-                    step_idx,
+                    base_step + step_idx,
                 )
                 logger.value()[].log_scalar(
                     "episodes",
                     Float64(trainer.ep_count()),
-                    step_idx,
+                    base_step + step_idx,
                 )
-                logger.value()[].flush()
+                # No forced flush — see note in run_offpolicy_train.
                 next_log += print_every
 
     return ep_returns^

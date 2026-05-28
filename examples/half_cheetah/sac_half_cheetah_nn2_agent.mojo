@@ -58,14 +58,14 @@ from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
 comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM  #  6
 comptime HIDDEN = 256
-comptime BATCH = 256
+comptime BATCH = 64
 comptime REPLAY_CAPACITY = 100_000
 
 # Training duration. Match the legacy script's 500k-step run; if you want
 # a smoke run, drop NUM_STEPS to 20_000 and NUM_CHECKPOINTS to 2.
-comptime NUM_STEPS = 500_000
-comptime PRINT_EVERY = 5_000        # driver-cadence verbose + `avg_reward`/`episodes` emit
-comptime DIAG_EVERY = 10_000        # `flush_metrics` cadence — full SACMetrics bundle
+comptime NUM_STEPS = 100_000
+comptime PRINT_EVERY = 5_000  # driver-cadence verbose + `avg_reward`/`episodes` emit
+comptime DIAG_EVERY = 5_000  # `flush_metrics` cadence — full SACMetrics bundle
 comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
 
 comptime CHECKPOINT_PATH = "sac_half_cheetah_nn2.ckpt"
@@ -111,10 +111,18 @@ def main() raises:
     var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
     var url = env_vars.get("RL_MONITOR_URL", "")
 
+    # `buffer_size` controls how many `log_scalar` calls accumulate
+    # before the logger does a synchronous HTTP POST. Larger buffer =
+    # fewer flushes = lower training overhead. At the default 200, a
+    # 500k-step HalfCheetah run sees ~3-5 flushes total (vs. 100+ if
+    # we forced a flush every print_every). The dashboard receives
+    # data slightly less often, but for offline analysis there's no
+    # practical difference. Drop to ~20 for near-real-time monitoring
+    # at the cost of more network roundtrips.
     var logger = RemoteLogger(
         server_url=url,
         run_name="SAC HalfCheetah NN2 (CPU)",
-        buffer_size=64,
+        buffer_size=200,
         api_key=api_key,
     )
     logger.set_config("algorithm", "SAC")
@@ -145,7 +153,7 @@ def main() raises:
         initial_episode_fill=0.0,
         # ERE — same shape used in sac_pendulum_v2_training_cpu.mojo:71-72.
         # Down-weights ancient transitions; helps on long horizons.
-        use_ere=True,
+        use_ere=False,
         ere_eta=0.996,
     )
     var env = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]()

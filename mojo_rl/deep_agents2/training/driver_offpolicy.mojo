@@ -152,6 +152,30 @@ trait OffPolicyAgent(Movable, ImplicitlyDestructible):
         `add_complete_return`."""
         ...
 
+    # ─── Optional cadence hooks (default no-op) ──────────────────────
+    #
+    # These let the driver call into the trainer at the user's
+    # `diag_every` / `checkpoint_every` cadences without splitting the
+    # env-loop into chunks. Each has a `pass` default so existing
+    # trainers (DDPG/TD3/PPO/MBPO/DQN) don't need to do anything until
+    # their own metric/checkpoint paths are wired up. SACTrainer
+    # overrides both with real bodies that call its `flush_metrics` and
+    # a one-file v2 `save_state` writer.
+    #
+    # `flush_metrics_through_logger[L]` discards the typed bundle so
+    # the trait can be uniform across algorithms whose `flush_metrics`
+    # return different `*Metrics` structs.
+
+    def flush_metrics_through_logger[L: Logger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        step: Int,
+    ) raises:
+        pass
+
+    def save_state(mut self, path: String) raises:
+        pass
+
 
 # ──────────────────────────────────────────────────────────────────────
 # OffPolicyAgentGpu — adds GPU-batched methods on top.
@@ -216,6 +240,9 @@ def run_offpolicy_train[
     print_every: Int = 1_000,
     verbose: Bool = True,
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    diag_every: Int = 0,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     base_step: Int = 0,
 ) raises -> List[Scalar[DT]]:
     """Single-env off-policy training driver bound on the CPU env trait
@@ -297,12 +324,17 @@ def run_offpolicy_train[
             var c = ctx.value()
             c.enqueue_copy(obs_scratch.dev.value(), obs_scratch_h)
 
+        # `base_step + step` is the cumulative env-step counter — required
+        # so the trainer's `learning_starts` warmup gate stays correct
+        # across chunked calls (see `SACAgent.train_single` which loops
+        # this driver in cadence-sized blocks). Equivalent to `step` when
+        # `base_step=0` (single-call usage).
         trainer.select_action_batched[1](
             obs_scratch.target_ptr[train_target](),
             action_scratch.target_ptr[train_target](),
             ao.target_ptr[train_target](),
             alp.target_ptr[train_target](),
-            step,
+            base_step + step,
         )
 
         # Boundary copy: env_target != train_target requires D2H action.
@@ -346,13 +378,15 @@ def run_offpolicy_train[
             env_obs = nxt^
 
         step += 1
-        _ = trainer.train_step(step)
+        _ = trainer.train_step(base_step + step)
 
-        if verbose and print_every > 0 and step % print_every == 0:
+        var abs_step = base_step + step
+
+        if verbose and print_every > 0 and abs_step % print_every == 0:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
                 "[step ",
-                base_step + step,
+                abs_step,
                 "] mean_ret(10)=",
                 trainer.mean_return(),
                 " ep=",
@@ -362,25 +396,58 @@ def run_offpolicy_train[
                 "s",
             )
 
-        # Logger emit at the same cadence. Comptime-elided when
+        # Logger emit at the print cadence. Comptime-elided when
         # L=NoOpLogger (default).
+        #
+        # NOTE: no forced `.flush()` here — `log_scalar` auto-flushes
+        # when the logger's buffer fills (CsvLogger / RemoteLogger
+        # check `len(entries) >= buffer_size`). The user controls flush
+        # cadence via `buffer_size`. Final residual entries are sent
+        # by `logger.close()` at end of training. Synchronous flushes
+        # are expensive (~50-200 ms per HTTP POST on a remote
+        # endpoint); forcing one every print_every was the dominant
+        # logger overhead in profiling.
         comptime if L.ENABLED:
             if (
                 print_every > 0
-                and step % print_every == 0
+                and abs_step % print_every == 0
                 and Bool(logger)
             ):
                 logger.value()[].log_scalar(
                     "avg_reward",
                     Float64(trainer.mean_return()),
-                    base_step + step,
+                    abs_step,
                 )
                 logger.value()[].log_scalar(
                     "episodes",
                     Float64(trainer.ep_count()),
-                    base_step + step,
+                    abs_step,
                 )
-                logger.value()[].flush()
+
+        # `diag_every` — drain the trainer's metric bundle through the
+        # logger at its own cadence. Default trait impl is no-op for
+        # trainers that haven't wired this up yet.
+        comptime if L.ENABLED:
+            if (
+                diag_every > 0
+                and abs_step % diag_every == 0
+                and Bool(logger)
+            ):
+                trainer.flush_metrics_through_logger[L](logger, abs_step)
+
+        # `checkpoint_every` — overwrite `checkpoint_path` with the
+        # trainer's one-file v2 envelope. Default trait impl is no-op.
+        if (
+            checkpoint_every > 0
+            and abs_step % checkpoint_every == 0
+            and checkpoint_path.byte_length() > 0
+        ):
+            trainer.save_state(checkpoint_path)
+
+    # Always overwrite the final checkpoint at end so resume gets the
+    # freshest weights regardless of cadence alignment.
+    if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
+        trainer.save_state(checkpoint_path)
 
     return ep_returns^
 
@@ -409,6 +476,7 @@ def run_offpolicy_train_batched[
     verbose: Bool = True,
     nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    base_step: Int = 0,
 ) raises -> List[Scalar[DT]]:
     """Tier-3 off-policy driver covering same-target combinations.
 
@@ -539,12 +607,14 @@ def run_offpolicy_train_batched[
 
         # ── 2. Trainer writes action directly into env.action_ptr().
         # env_target == train_target so the pointer is on the right side.
+        # `base_step + step_idx` is the cumulative env-step counter (see
+        # the `base_step` note in `run_offpolicy_train`).
         trainer.select_action_batched[N_ENVS](
             env.obs_ptr(),
             env.action_ptr(),
             ao.target_ptr[train_target](),
             alp.target_ptr[train_target](),
-            step_idx,
+            base_step + step_idx,
         )
 
         # ── 3. Env step (writes env-internal obs/reward/done).
@@ -643,13 +713,13 @@ def run_offpolicy_train_batched[
 
         # ── 9. Trainer updates.
         for _ in range(updates_per_step):
-            _ = trainer.train_step(step_idx)
+            _ = trainer.train_step(base_step + step_idx)
 
         if verbose and print_every > 0 and step_idx >= next_print:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
                 "[step ",
-                step_idx,
+                base_step + step_idx,
                 "] mean_ret(10)=",
                 trainer.mean_return(),
                 " ep=",
@@ -671,14 +741,14 @@ def run_offpolicy_train_batched[
                 logger.value()[].log_scalar(
                     "avg_reward",
                     Float64(trainer.mean_return()),
-                    step_idx,
+                    base_step + step_idx,
                 )
                 logger.value()[].log_scalar(
                     "episodes",
                     Float64(trainer.ep_count()),
-                    step_idx,
+                    base_step + step_idx,
                 )
-                logger.value()[].flush()
+                # No forced flush — see note in run_offpolicy_train.
                 next_log += print_every
 
     return ep_returns^
