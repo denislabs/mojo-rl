@@ -13,20 +13,30 @@ comptime-elides for `env_target == "cpu"`.
 """
 
 from std.random import random_float64
+from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Module
+from mojo_rl.nn2.core.checkpoint import (
+    save_state_v2_body, load_state_v2_body,
+)
 from mojo_rl.nn2.core.log_bundle import log_bundle
+from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.metric import LogScalar
+from ..core.checkpoint_helpers import (
+    save_optimizer_v2_body, load_optimizer_v2_body,
+    split_lines_v2, read_file_v2, expect_v2_header,
+)
 from ..core.online_target_pair import OnlineTargetPair
 from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
 from ..data.n_step_replay import GPUNStepBuffer
 from mojo_rl.nn2.initializer import Xavier
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.random.box_muller import box_muller_normal
+from mojo_rl.nn2.training.timer import Timer
 from ..training.action_sampling_block import ActionSamplingBlock
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.episode_tracker import EpisodeTracker
@@ -50,6 +60,13 @@ struct DDPGTrainer[
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
     # DDPG is CPU-only; the OffPolicyAgentGpu GPU stubs raise.
     comptime AGENT_TRAIN_TARGET: StaticString = "cpu"
+
+    # Timer section indices — order matches `add_section` calls in `make`.
+    comptime _T_SAMPLE = 0
+    comptime _T_TARGET_Y = 1
+    comptime _T_CRITIC = 2
+    comptime _T_ACTOR = 3
+    comptime _T_POLYAK = 4
 
     var actor_pair: OnlineTargetPair[Self.ACTOR]
     var critic_pair: OnlineTargetPair[Self.CRITIC]
@@ -104,6 +121,11 @@ struct DDPGTrainer[
     var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
     var _update_count: Int
+    # Never reset by `flush_*` — emitted as `train_steps` so the
+    # downstream monitor can plot cumulative updates over time.
+    var _total_train_steps: Int
+
+    var timer: Timer
 
     def __init__(out self):
         self.actor_pair = OnlineTargetPair[Self.ACTOR]()
@@ -167,6 +189,8 @@ struct DDPGTrainer[
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._update_count = 0
+        self._total_train_steps = 0
+        self.timer = Timer.new()
 
     @staticmethod
     def make[
@@ -247,6 +271,14 @@ struct DDPGTrainer[
         t.learning_starts = learning_starts
 
         t.sample_blk.setup(learning_starts)
+
+        # Timer sections — index order MUST match the `_T_*` comptime
+        # constants above.
+        t.timer.add_section("sample")
+        t.timer.add_section("target_y")
+        t.timer.add_section("critic")
+        t.timer.add_section("actor")
+        t.timer.add_section("polyak")
         return t^
 
     # ─── Direct-callable (host-list) surface ─────────────────────────
@@ -302,35 +334,49 @@ struct DDPGTrainer[
         self.state.step_idx = step_idx
         self.state.did_step = True
 
+        var t_sample = perf_counter_ns()
         self.sample_blk.step(self.state)
         if not self.state.did_step:
             return False
+        self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
+        var t_ty = perf_counter_ns()
         self.target_y_blk.step["cpu"](
             self.state,
             self.actor_pair.target_net,
             self.critic_pair.target_net,
         )
+        self.timer.accumulate(Self._T_TARGET_Y, t_ty)
+
+        var t_crit = perf_counter_ns()
         self.critic_blk.step["cpu"](
             self.state,
             self.critic_pair.online,
             self.critic_opt,
         )
+        self.timer.accumulate(Self._T_CRITIC, t_crit)
+
+        var t_act = perf_counter_ns()
         self.actor_blk.step["cpu"](
             self.state,
             self.actor_pair.online,
             self.actor_opt,
             self.critic_pair.online,
         )
+        self.timer.accumulate(Self._T_ACTOR, t_act)
+
+        var t_pol = perf_counter_ns()
         self.polyak_blk.step["cpu"](
             self.state,
             self.actor_pair,
             self.critic_pair,
         )
+        self.timer.accumulate(Self._T_POLYAK, t_pol)
 
         self._actor_L_accum += self.state.actor_loss
         self._critic_L_accum += self.state.critic_loss
         self._update_count += 1
+        self._total_train_steps += 1
         return True
 
     def mean_return(self) -> Scalar[DT]:
@@ -471,6 +517,12 @@ struct DDPGTrainer[
         self._update_count = 0
         return out
 
+    def total_train_steps(self) -> Int:
+        """Cumulative training updates since trainer was made. Not reset
+        by `flush_*`. Used as the `train_steps` metric and by external
+        schedulers."""
+        return self._total_train_steps
+
     def flush_metrics[
         L: Logger = NoOpLogger
     ](
@@ -480,12 +532,14 @@ struct DDPGTrainer[
     ) raises -> DDPGMetrics:
         """Drain accumulators into a DDPGMetrics bundle. If a logger
         pointer is wired, also emit one log_scalar per metric field.
-        Resets accumulators on every call."""
+        Resets per-chunk accumulators on every call; the cumulative
+        `_total_train_steps` counter is NOT reset."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
         var bundle = DDPGMetrics(
             actor_loss=LogScalar[DT](self._actor_L_accum * inv),
             critic_loss=LogScalar[DT](self._critic_L_accum * inv),
+            train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
         self._actor_L_accum = Scalar[DT](0.0)
@@ -495,7 +549,54 @@ struct DDPGTrainer[
             log_bundle(logger.value()[], bundle, step)
         return bundle^
 
+    # ─── Trait-uniform cadence hooks (consumed by the driver) ─────────
+
+    def flush_metrics_through_logger[L: Logger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        step: Int,
+    ) raises:
+        """Trait-uniform passthrough: drains the DDPG metric accumulators
+        through `flush_metrics` and discards the typed bundle. The
+        driver calls this at the user's `diag_every` cadence so no
+        chunking is needed."""
+        _ = self.flush_metrics[L](logger, step)
+
+    def save_state(mut self, path: String) raises:
+        """One-file v2 checkpoint of every DDPG module + optimizer.
+        Sections: `actor.*`, `critic.*`, `actor_opt.*`, `critic_opt.*`.
+        Overwrites `path`. CPU-only."""
+        var body = String("")
+        save_state_v2_body(self.actor_pair.online, body, "actor")
+        save_state_v2_body(self.critic_pair.online, body, "critic")
+        save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
+        save_optimizer_v2_body(self.critic_opt, body, "critic_opt")
+        var content = String("nn2-ckpt v2\n") + body
+        with open(path, "w") as f:
+            f.write(content)
+
+    def load_state(mut self, path: String) raises:
+        """Inverse of `save_state`. Target nets are hard-copied from
+        their online twins after the online params are restored."""
+        var content = read_file_v2(path)
+        var lines = split_lines_v2(content)
+        expect_v2_header(lines)
+        var idx: Int = 1
+        load_state_v2_body(self.actor_pair.online, lines, idx, "actor")
+        load_state_v2_body(self.critic_pair.online, lines, idx, "critic")
+        load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
+        load_optimizer_v2_body(self.critic_opt, lines, idx, "critic_opt")
+        hard_copy_params["cpu", M=Self.ACTOR](
+            self.actor_pair.online, self.actor_pair.target_net, None,
+        )
+        hard_copy_params["cpu", M=Self.CRITIC](
+            self.critic_pair.online, self.critic_pair.target_net, None,
+        )
+
     def flush_timer_log(mut self) -> String:
-        """No timer instrumentation yet (CPU-only trainer). Returns a
-        placeholder for API parity with SACTrainer/DQNTrainer."""
-        return String("DDPGTrainer: no timer instrumentation")
+        """Per-section wall-time report (one line per sub-step:
+        sample / target_y / critic / actor / polyak) and reset the
+        accumulators."""
+        var report = self.timer.format_report()
+        self.timer.reset()
+        return report

@@ -18,8 +18,6 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.checkpoint import save_state_v2, load_state_v2
-from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 
@@ -27,10 +25,6 @@ from ..training.blocks import SampleBlock
 from ..training.driver_offpolicy_discrete import (
     run_offpolicy_discrete_train,
     run_offpolicy_discrete_eval,
-)
-from ..core.checkpoint_helpers import (
-    save_optimizer_v2,
-    load_optimizer_v2,
 )
 
 from .metrics import DQNMetrics
@@ -95,10 +89,16 @@ struct DQNAgent[
         print_every: Int = 1_000,
         verbose: Bool = True,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        diag_every: Int = 0,
+        checkpoint_path: String = "",
+        checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         """Single-env discrete off-policy training via
         `run_offpolicy_discrete_train`. Covers `(env=cpu, train=cpu)` and
-        `(env=cpu, train=gpu)` — env is always CPU-side for discrete."""
+        `(env=cpu, train=gpu)` — env is always CPU-side for discrete.
+
+        See `SACAgent.train_single` for `diag_every` / `checkpoint_*`
+        semantics; the discrete driver wires them the same way."""
         var ctx = self.trainer.ctx
         return run_offpolicy_discrete_train[
             DQNTrainer[
@@ -114,6 +114,9 @@ struct DQNAgent[
             print_every=print_every,
             verbose=verbose,
             logger=logger,
+            diag_every=diag_every,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
         )
 
     # ─── Evaluation ─────────────────────────────────────────────────────
@@ -177,27 +180,13 @@ struct DQNAgent[
     # ─── Checkpointing (CPU only) ──────────────────────────────────────
 
     def save(mut self, path: String) raises:
-        """Persist Q-network + optimizer to `path/` (must exist).
-        CPU-only — see SACAgent.save for the GPU caveat."""
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "DQNAgent.save: GPU save/load not yet supported. Train on"
-                " CPU or wait for the device-sync helper."
-            )
-        save_state_v2(self.trainer.pair.online, path + "/q_net.ckpt")
-        save_optimizer_v2(self.trainer.q_opt, path + "/q_opt.ckpt")
+        """Thin passthrough to `trainer.save_state(path)`. Writes ONE
+        file (`nn2-ckpt v2` envelope) with prefixed sections for q_net
+        and q_opt. Replay buffer + episode tracker NOT included.
+        CPU-only — GPU trainer raises with a helpful message."""
+        self.trainer.save_state(path)
 
     def load(mut self, path: String) raises:
-        """Restore Q-network + optimizer. Target net hard-copied from
-        the online net."""
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "DQNAgent.load: GPU save/load not yet supported. Train on"
-                " CPU or wait for the device-sync helper."
-            )
-        load_state_v2(self.trainer.pair.online, path + "/q_net.ckpt")
-        hard_copy_params[Self.train_target, M=Self.Q_NET](
-            self.trainer.pair.online, self.trainer.pair.target_net,
-            self.trainer.ctx,
-        )
-        load_optimizer_v2(self.trainer.q_opt, path + "/q_opt.ckpt")
+        """Inverse of `save`. Target net hard-copied from the online net
+        after the online params are restored."""
+        self.trainer.load_state(path)

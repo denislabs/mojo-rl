@@ -9,7 +9,9 @@ MBPO train_step (against the mixed real+synthetic batch):
   * `actor_loss`  — mean SAC actor loss
   * `critic_loss` — mean SAC critic loss
   * `alpha`       — current entropy temperature (point-in-time)
-  * `n_updates`   — total SAC mini-updates this round
+  * `train_steps` — cumulative SAC mini-updates since trainer was made
+                    (NOT reset on flush)
+  * `n_updates`   — total SAC mini-updates this chunk
                     (typically `sac_updates_per_step`).
 
 Dynamics-ensemble loss is not exposed here yet — the ensemble trains on a
@@ -24,4 +26,5 @@ struct MBPOMetrics(Copyable, Movable, ImplicitlyDestructible):
     var actor_loss:  LogScalar[DT]
     var critic_loss: LogScalar[DT]
     var alpha:       LogScalar[DT]
+    var train_steps: LogScalar[DT]
     var n_updates:   LogScalar[DT]

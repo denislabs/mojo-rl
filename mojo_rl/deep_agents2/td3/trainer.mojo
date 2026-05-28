@@ -12,20 +12,30 @@ stubs raise — unreachable on the CPU env branch.
 """
 
 from std.random import random_float64
+from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Module
+from mojo_rl.nn2.core.checkpoint import (
+    save_state_v2_body, load_state_v2_body,
+)
 from mojo_rl.nn2.core.log_bundle import log_bundle
+from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.metric import LogScalar
+from ..core.checkpoint_helpers import (
+    save_optimizer_v2_body, load_optimizer_v2_body,
+    split_lines_v2, read_file_v2, expect_v2_header,
+)
 from ..core.online_target_pair import OnlineTargetPair
 from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
 from ..data.n_step_replay import GPUNStepBuffer
 from mojo_rl.nn2.initializer import Xavier
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.random.box_muller import box_muller_normal
+from mojo_rl.nn2.training.timer import Timer
 from ..training.action_sampling_block import ActionSamplingBlock
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.episode_tracker import EpisodeTracker
@@ -48,6 +58,14 @@ struct TD3Trainer[
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
     # TD3 is CPU-only; the OffPolicyAgentGpu GPU stubs raise.
     comptime AGENT_TRAIN_TARGET: StaticString = "cpu"
+
+    # Timer section indices — order matches `add_section` calls in `make`.
+    # `actor_polyak` is one section because the TD3DelayedActorPolyakStep
+    # bundles actor update + 3 polyaks under its internal counter.
+    comptime _T_SAMPLE = 0
+    comptime _T_TARGET_Y = 1
+    comptime _T_CRITIC = 2
+    comptime _T_ACTOR_POLYAK = 3
 
     var actor_pair: OnlineTargetPair[Self.ACTOR]
     var pair1: OnlineTargetPair[Self.CRITIC]
@@ -98,6 +116,11 @@ struct TD3Trainer[
     var _critic_L_accum: Scalar[DT]
     var _actor_updates: Int
     var _critic_updates: Int
+    # Never reset by `flush_*` — emitted as `train_steps` so the
+    # downstream monitor can plot cumulative critic updates over time.
+    var _total_train_steps: Int
+
+    var timer: Timer
 
     def __init__(out self):
         self.actor_pair = OnlineTargetPair[Self.ACTOR]()
@@ -159,6 +182,8 @@ struct TD3Trainer[
         self._critic_L_accum = Scalar[DT](0.0)
         self._actor_updates = 0
         self._critic_updates = 0
+        self._total_train_steps = 0
+        self.timer = Timer.new()
 
     @staticmethod
     def make[
@@ -247,6 +272,13 @@ struct TD3Trainer[
         t.learning_starts = learning_starts
 
         t.sample_blk.setup(learning_starts)
+
+        # Timer sections — index order MUST match the `_T_*` comptime
+        # constants above.
+        t.timer.add_section("sample")
+        t.timer.add_section("target_y")
+        t.timer.add_section("critic")
+        t.timer.add_section("actor_polyak")
         return t^
 
     # ─── Direct-callable (host-list) surface ─────────────────────────
@@ -302,16 +334,22 @@ struct TD3Trainer[
         self.state.step_idx = step_idx
         self.state.did_step = True
 
+        var t_sample = perf_counter_ns()
         self.sample_blk.step(self.state)
         if not self.state.did_step:
             return False
+        self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
+        var t_ty = perf_counter_ns()
         self.target_y_blk.step["cpu"](
             self.state,
             self.actor_pair.target_net,
             self.pair1.target_net,
             self.pair2.target_net,
         )
+        self.timer.accumulate(Self._T_TARGET_Y, t_ty)
+
+        var t_crit = perf_counter_ns()
         self.twin_critic_blk.step["cpu"](
             self.state,
             self.pair1.online,
@@ -319,6 +357,7 @@ struct TD3Trainer[
             self.pair2.online,
             self.critic2_opt,
         )
+        self.timer.accumulate(Self._T_CRITIC, t_crit)
         self._critic_L_accum += self.state.critic_loss
         self._critic_updates += 1
 
@@ -326,6 +365,7 @@ struct TD3Trainer[
         # accesses actor via actor_pair.online + critic1 via pair1.online
         # internally — avoids Mojo aliasing rejection of passing pair +
         # pair.online simultaneously.
+        var t_act = perf_counter_ns()
         self.actor_polyak_blk.step["cpu"](
             self.state,
             self.actor_opt,
@@ -333,11 +373,13 @@ struct TD3Trainer[
             self.pair1,
             self.pair2,
         )
+        self.timer.accumulate(Self._T_ACTOR_POLYAK, t_act)
         # Block resets _counter to 0 when it fires; reads state.actor_loss
         # only when the block actually ran.
         if self.actor_polyak_blk._counter == 0:
             self._actor_L_accum += self.state.actor_loss
             self._actor_updates += 1
+        self._total_train_steps += 1
         return True
 
     def mean_return(self) -> Scalar[DT]:
@@ -481,6 +523,11 @@ struct TD3Trainer[
         self._critic_updates = 0
         return out
 
+    def total_train_steps(self) -> Int:
+        """Cumulative training updates since trainer was made. Not reset
+        by `flush_*`."""
+        return self._total_train_steps
+
     def flush_metrics[
         L: Logger = NoOpLogger
     ](
@@ -490,7 +537,8 @@ struct TD3Trainer[
     ) raises -> TD3Metrics:
         """Drain accumulators into a TD3Metrics bundle. If a logger
         pointer is wired, also emit one log_scalar per metric field.
-        Resets accumulators on every call."""
+        Resets per-chunk accumulators on every call; the cumulative
+        `_total_train_steps` counter is NOT reset."""
         var na = self._actor_updates if self._actor_updates > 0 else 1
         var nc = self._critic_updates if self._critic_updates > 0 else 1
         var inv_a = Scalar[DT](1.0) / Scalar[DT](na)
@@ -498,6 +546,7 @@ struct TD3Trainer[
         var bundle = TD3Metrics(
             actor_loss=LogScalar[DT](self._actor_L_accum * inv_a),
             critic_loss=LogScalar[DT](self._critic_L_accum * inv_c),
+            train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_actor_updates=LogScalar[DT](Scalar[DT](self._actor_updates)),
             n_critic_updates=LogScalar[DT](Scalar[DT](self._critic_updates)),
         )
@@ -509,7 +558,61 @@ struct TD3Trainer[
             log_bundle(logger.value()[], bundle, step)
         return bundle^
 
+    # ─── Trait-uniform cadence hooks (consumed by the driver) ─────────
+
+    def flush_metrics_through_logger[L: Logger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        step: Int,
+    ) raises:
+        """Trait-uniform passthrough: drains the TD3 metric accumulators
+        through `flush_metrics` and discards the typed bundle. The
+        driver calls this at the user's `diag_every` cadence so no
+        chunking is needed."""
+        _ = self.flush_metrics[L](logger, step)
+
+    def save_state(mut self, path: String) raises:
+        """One-file v2 checkpoint of every TD3 module + optimizer.
+        Sections: `actor.*`, `critic1.*`, `critic2.*`, `actor_opt.*`,
+        `critic1_opt.*`, `critic2_opt.*`. Overwrites `path`. CPU-only."""
+        var body = String("")
+        save_state_v2_body(self.actor_pair.online, body, "actor")
+        save_state_v2_body(self.pair1.online, body, "critic1")
+        save_state_v2_body(self.pair2.online, body, "critic2")
+        save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
+        save_optimizer_v2_body(self.critic1_opt, body, "critic1_opt")
+        save_optimizer_v2_body(self.critic2_opt, body, "critic2_opt")
+        var content = String("nn2-ckpt v2\n") + body
+        with open(path, "w") as f:
+            f.write(content)
+
+    def load_state(mut self, path: String) raises:
+        """Inverse of `save_state`. Target nets are hard-copied from
+        their online twins after the online params are restored."""
+        var content = read_file_v2(path)
+        var lines = split_lines_v2(content)
+        expect_v2_header(lines)
+        var idx: Int = 1
+        load_state_v2_body(self.actor_pair.online, lines, idx, "actor")
+        load_state_v2_body(self.pair1.online, lines, idx, "critic1")
+        load_state_v2_body(self.pair2.online, lines, idx, "critic2")
+        load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
+        load_optimizer_v2_body(self.critic1_opt, lines, idx, "critic1_opt")
+        load_optimizer_v2_body(self.critic2_opt, lines, idx, "critic2_opt")
+        hard_copy_params["cpu", M=Self.ACTOR](
+            self.actor_pair.online, self.actor_pair.target_net, None,
+        )
+        hard_copy_params["cpu", M=Self.CRITIC](
+            self.pair1.online, self.pair1.target_net, None,
+        )
+        hard_copy_params["cpu", M=Self.CRITIC](
+            self.pair2.online, self.pair2.target_net, None,
+        )
+
     def flush_timer_log(mut self) -> String:
-        """No timer instrumentation yet (CPU-only trainer). Returns a
-        placeholder for API parity with SACTrainer/DQNTrainer."""
-        return String("TD3Trainer: no timer instrumentation")
+        """Per-section wall-time report (one line per sub-step:
+        sample / target_y / critic / actor_polyak) and reset the
+        accumulators."""
+        var report = self.timer.format_report()
+        self.timer.reset()
+        return report

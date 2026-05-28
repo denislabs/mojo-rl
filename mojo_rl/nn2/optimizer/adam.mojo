@@ -26,7 +26,11 @@ from layout import TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import ParamVisitor
-from ..core.grad_clip import clip_grads_auto
+from ..core.grad_clip import (
+    clip_grads_auto,
+    clip_grads_auto_gpu,
+    GradClipState,
+)
 from ..core.module import Module
 from ..core.optimizer import Optimizer
 from ..core.saveable import Saveable
@@ -310,14 +314,22 @@ struct Adam(Optimizer, Saveable):
     var beta1_pow_t: Scalar[DT]
     var beta2_pow_t: Scalar[DT]
 
-    # Phase B.3 — global L2 grad-norm clip threshold.
-    # `0.0` (default) means disabled — `Adam.step` skips the clip walker
-    # entirely, preserving bit-identity with pre-B.3 behaviour. Set on
-    # the optimizer instance after `make`, typically wired from the
-    # trainer's Config struct (`SACConfig.max_grad_norm` etc.).
-    # CPU only: GPU `step` raises when this is > 0 (the clip walker is
-    # CPU-only in B.3). See `mojo_rl/nn2/core/grad_clip.mojo`.
+    # Phase B.3 — global L2 grad-norm clip threshold. `0.0` (default)
+    # means disabled — `Adam.step` skips the clip pipeline entirely,
+    # preserving bit-identity with pre-B.3 behaviour. Set on the
+    # optimizer instance after `make`, typically wired from the trainer's
+    # Config struct (`SACConfig.max_grad_norm` etc.).
+    #
+    # GPU path: lazy-allocates `_clip_state` (per-Param partials buffer +
+    # scale scalar + norm scalar) on the first GPU `step` with
+    # `max_grad_norm > 0`. Three on-device passes, zero D2H.
+    # See `mojo_rl/nn2/core/grad_clip.mojo`.
     var max_grad_norm: Scalar[DT]
+
+    # Lazy-allocated GPU clip state (None on CPU or before first clipped
+    # GPU step). `n_params` is exactly `len(self.offsets)` — known after
+    # the init walker has run.
+    var _clip_state: Optional[GradClipState]
 
     var ts: TargetStorage
 
@@ -336,6 +348,7 @@ struct Adam(Optimizer, Saveable):
         self.beta1_pow_t = Scalar[DT](1.0)
         self.beta2_pow_t = Scalar[DT](1.0)
         self.max_grad_norm = Scalar[DT](0.0)
+        self._clip_state = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -405,8 +418,23 @@ struct Adam(Optimizer, Saveable):
 
         # Phase B.3 — global grad-norm clip. No-op when `max_grad_norm == 0`
         # (the default sentinel) → bit-identical to pre-B.3 behaviour.
-        # CPU only: GPU raises if max_grad_norm > 0.
-        _ = clip_grads_auto[M, target](model, self.max_grad_norm)
+        comptime if target == "cpu":
+            _ = clip_grads_auto[M, target](model, self.max_grad_norm)
+        else:
+            if self.max_grad_norm > Scalar[DT](0.0):
+                # Lazy-allocate clip state on first clipped GPU step.
+                # `len(self.offsets)` is the Param count after the init
+                # walker ran in `make[target='gpu']`.
+                if not self._clip_state:
+                    self._clip_state = GradClipState.make(
+                        self.ts.ctx.value(), len(self.offsets),
+                    )
+                clip_grads_auto_gpu[M](
+                    model,
+                    self.ts.ctx.value(),
+                    self._clip_state.value(),
+                    self.max_grad_norm,
+                )
 
         comptime if target == "cpu":
             var visitor = _AdamCPUStepVisitor(

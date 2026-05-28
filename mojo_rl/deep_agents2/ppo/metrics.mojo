@@ -8,6 +8,8 @@ Fields correspond to what `PPOTrainer` accumulates over the K-epoch
 minibatch SGD inside one `train_step`:
   * `actor_loss`  — mean of PPO clipped-surrogate loss across all minibatches
   * `critic_loss` — mean of value MSE across all minibatches
+  * `train_steps` — cumulative minibatch updates since trainer was made
+                    (NOT reset on flush)
   * `n_updates`   — total minibatch updates inside this train_step
                     (= N_EPOCHS * N_MINIBATCHES). Cast to Float64
                     for uniform Logger surface.
@@ -23,4 +25,5 @@ from mojo_rl.nn2.core.metric import LogScalar
 struct PPOMetrics(Copyable, Movable, ImplicitlyDestructible):
     var actor_loss:  LogScalar[DT]
     var critic_loss: LogScalar[DT]
+    var train_steps: LogScalar[DT]
     var n_updates:   LogScalar[DT]

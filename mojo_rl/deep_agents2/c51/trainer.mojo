@@ -17,7 +17,7 @@ from the SAMPLE block + target-Y γ^n.
 
 from std.math import exp as fexp
 from std.random import random_float64
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
@@ -165,8 +165,8 @@ struct C51Trainer[
         v_max: Scalar[DT] = Scalar[DT](10.0),
     ) raises -> Self:
         comptime assert (
-            Self.train_target == "cpu"
-        ), "C51Trainer: GPU target not yet supported (CPU-only port)"
+            Self.train_target == "cpu" or Self.train_target == "gpu"
+        ), "C51Trainer: train_target must be 'cpu' or 'gpu'"
         comptime assert (
             Self.ACT_DIM == 1
         ), "C51Trainer: SAMPLE.ACT must be 1 (discrete action index)"
@@ -250,7 +250,7 @@ struct C51Trainer[
         self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
         var t_ty = perf_counter_ns()
-        var m_ptr = self._mb_m.cpu_ptr()
+        var m_ptr = self._mb_m.target_ptr[Self.train_target]()
         self.target_y_blk.step[Self.train_target, POLICY](
             self.state, self.pair.target_net, self.pair.online, m_ptr,
         )
@@ -363,34 +363,79 @@ struct C51Trainer[
         comptime NK = Self.N_ATOMS
         comptime OBS = Self.OBS_DIM
 
-        # Warmup: uniform random action (CPU path; obs/action are host).
+        # Warmup: uniform random action.
         if step_idx < self.learning_starts:
-            for i in range(N_ENVS):
+            comptime if Self.train_target == "cpu":
+                for i in range(N_ENVS):
+                    var r = random_float64()
+                    action_ptr[i] = Scalar[DT](Int(r * Float64(NA)))
+            else:
+                comptime assert (
+                    N_ENVS == 1
+                ), "GPU C51 select_action_batched warmup: N_ENVS>1 not yet supported"
+                var ctx = self.ctx.value()
                 var r = random_float64()
-                action_ptr[i] = Scalar[DT](Int(r * Float64(NA)))
+                self._q_logits.cpu_ptr()[0] = Scalar[DT](
+                    Int(r * Float64(NA))
+                )
+                var action_dev = DeviceBuffer[DT](
+                    ctx, action_ptr, 1, owning=False,
+                )
+                ctx.enqueue_copy(action_dev, self._q_logits.cpu_ptr())
             return
 
-        # Policy: batched forward then per-env expected-Q argmax.
-        var q_buf = List[Scalar[DT]](
-            length=N_ENVS * NA * NK, fill=Scalar[DT](0.0),
-        )
-        var q_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            q_buf.unsafe_ptr()
-        )
-        var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
-        var q_t = TileTensor(q_ptr, row_major[N_ENVS, NA * NK]())
-        self.pair.online.forward[Self.train_target, N_ENVS](obs_t, output=q_t)
-
-        for i in range(N_ENVS):
+        comptime if Self.train_target == "cpu":
+            # Policy: batched forward then per-env expected-Q argmax.
+            var q_buf = List[Scalar[DT]](
+                length=N_ENVS * NA * NK, fill=Scalar[DT](0.0),
+            )
+            var q_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                q_buf.unsafe_ptr()
+            )
+            var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
+            var q_t = TileTensor(q_ptr, row_major[N_ENVS, NA * NK]())
+            self.pair.online.forward[Self.train_target, N_ENVS](
+                obs_t, output=q_t,
+            )
+            for i in range(N_ENVS):
+                var r = random_float64()
+                if r < Float64(self.epsilon):
+                    action_ptr[i] = Scalar[DT](
+                        Int(random_float64() * Float64(NA))
+                    )
+                else:
+                    action_ptr[i] = Scalar[DT](
+                        self._expected_q_argmax(q_ptr + i * NA * NK)
+                    )
+        else:
+            comptime assert (
+                N_ENVS == 1
+            ), "GPU C51 select_action_batched: N_ENVS>1 not yet supported"
+            var ctx = self.ctx.value()
+            var obs_t = TileTensor(obs_ptr, row_major[1, OBS]())
+            var q_t = TileTensor(
+                self._q_logits.dev_ptr(), row_major[1, NA * NK](),
+            )
+            self.pair.online.forward[Self.train_target, 1](
+                obs_t, output=q_t,
+            )
+            ctx.enqueue_copy(
+                self._q_logits.cpu_ptr(), self._q_logits.dev.value(),
+            )
+            ctx.synchronize()
             var r = random_float64()
+            var act: Scalar[DT]
             if r < Float64(self.epsilon):
-                action_ptr[i] = Scalar[DT](
-                    Int(random_float64() * Float64(NA))
-                )
+                act = Scalar[DT](Int(random_float64() * Float64(NA)))
             else:
-                action_ptr[i] = Scalar[DT](
-                    self._expected_q_argmax(q_ptr + i * NA * NK)
+                act = Scalar[DT](
+                    self._expected_q_argmax(self._q_logits.cpu_ptr())
                 )
+            self._q_logits.cpu_ptr()[0] = act
+            var action_dev = DeviceBuffer[DT](
+                ctx, action_ptr, 1, owning=False,
+            )
+            ctx.enqueue_copy(action_dev, self._q_logits.cpu_ptr())
 
     def select_greedy_action(
         mut self,
@@ -402,11 +447,31 @@ struct C51Trainer[
         var ob1_p = self._ob1.cpu_ptr()
         for d in range(OBS):
             ob1_p[d] = obs[d]
-        var ob1_t = TileTensor(ob1_p, row_major[1, OBS]())
-        var q_p = self._q_logits.cpu_ptr()
-        var q_t = TileTensor(q_p, row_major[1, NA * NK]())
-        self.pair.online.forward[Self.train_target, 1](ob1_t, output=q_t)
-        return self._expected_q_argmax(q_p)
+        comptime if Self.train_target == "cpu":
+            var ob1_t = TileTensor(ob1_p, row_major[1, OBS]())
+            var q_p = self._q_logits.cpu_ptr()
+            var q_t = TileTensor(q_p, row_major[1, NA * NK]())
+            self.pair.online.forward[Self.train_target, 1](
+                ob1_t, output=q_t,
+            )
+            return self._expected_q_argmax(q_p)
+        else:
+            var ctx = self.ctx.value()
+            ctx.enqueue_copy(self._ob1.dev.value(), ob1_p)
+            var ob1_t = TileTensor(
+                self._ob1.dev_ptr(), row_major[1, OBS](),
+            )
+            var q_t = TileTensor(
+                self._q_logits.dev_ptr(), row_major[1, NA * NK](),
+            )
+            self.pair.online.forward[Self.train_target, 1](
+                ob1_t, output=q_t,
+            )
+            ctx.enqueue_copy(
+                self._q_logits.cpu_ptr(), self._q_logits.dev.value(),
+            )
+            ctx.synchronize()
+            return self._expected_q_argmax(self._q_logits.cpu_ptr())
 
     # ─── Episode tracking ────────────────────────────────────────────
 

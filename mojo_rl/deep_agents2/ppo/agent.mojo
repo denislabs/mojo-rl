@@ -24,7 +24,6 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.checkpoint import save_state_v2, load_state_v2
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 
@@ -32,10 +31,6 @@ from ..training.batched_env import BatchedEnv
 from ..training.driver_onpolicy import (
     run_onpolicy_train,
     run_onpolicy_train_batched,
-)
-from ..core.checkpoint_helpers import (
-    save_optimizer_v2,
-    load_optimizer_v2,
 )
 
 from .metrics import PPOMetrics
@@ -74,8 +69,15 @@ struct PPOAgent[
         log_std_init: Scalar[DT] = -0.5,
         window_size: Int = 10,
         initial_episode_fill: Scalar[DT] = -1600.0,
+        max_grad_norm: Scalar[DT] = 0.0,
     ) raises:
-        """Construct a PPOAgent. Forwards every kwarg to `PPOTrainer.make`."""
+        """Construct a PPOAgent. Forwards every kwarg to `PPOTrainer.make`.
+
+        `max_grad_norm` is the canonical PPO L2 grad-norm clip (Schulman
+        2017 default 0.5; distinct from `clip_eps`, the policy ratio
+        surrogate clip). 0.0 disables clipping — bit-identical to the
+        pre-clip code path.
+        """
         self.trainer = PPOTrainer[
             Self.train_target, Self.ACTOR, Self.CRITIC,
             Self.OBS_DIM, Self.ACT_DIM, Self.ROLLOUT_LEN, Self.MINIBATCH,
@@ -91,6 +93,7 @@ struct PPOAgent[
             log_std_init=log_std_init,
             window_size=window_size,
             initial_episode_fill=initial_episode_fill,
+            max_grad_norm=max_grad_norm,
             ctx=ctx,
         )
 
@@ -108,12 +111,18 @@ struct PPOAgent[
         print_every: Int = 5_000,
         verbose: Bool = True,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        diag_every: Int = 0,
+        checkpoint_path: String = "",
+        checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         """On-policy training via `run_onpolicy_train_batched`.
 
         Covers same-target (cpu+cpu, gpu+gpu) at the trainer's
         compile-time `N_ENVS`. For single-env / cross-target, use
         `train_single()` instead.
+
+        See `SACAgent.train_single` for `diag_every` / `checkpoint_*`
+        semantics.
         """
         var ctx = self.trainer.state.ctx
         return run_onpolicy_train_batched[
@@ -133,6 +142,9 @@ struct PPOAgent[
             print_every=print_every,
             verbose=verbose,
             logger=logger,
+            diag_every=diag_every,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
         )
 
     def train_single[
@@ -146,9 +158,15 @@ struct PPOAgent[
         print_every: Int = 1_000,
         verbose: Bool = True,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        diag_every: Int = 0,
+        checkpoint_path: String = "",
+        checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         """Single-env on-policy training via `run_onpolicy_train`. Covers
-        `(env=cpu, train=cpu)` and `(env=cpu, train=gpu)` cross-target."""
+        `(env=cpu, train=cpu)` and `(env=cpu, train=gpu)` cross-target.
+
+        See `SACAgent.train_single` for `diag_every` / `checkpoint_*`
+        semantics."""
         return run_onpolicy_train[
             PPOTrainer[
                 Self.train_target, Self.ACTOR, Self.CRITIC,
@@ -166,6 +184,9 @@ struct PPOAgent[
             print_every=print_every,
             verbose=verbose,
             logger=logger,
+            diag_every=diag_every,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
         )
 
     # ─── Single-step inference (host-list interface) ───────────────────
@@ -213,26 +234,12 @@ struct PPOAgent[
     # ─── Checkpointing (CPU only) ──────────────────────────────────────
 
     def save(mut self, path: String) raises:
-        """Persist actor + critic + optimizers to `path/` (must exist).
-        No target nets in PPO. CPU-only."""
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "PPOAgent.save: GPU save/load not yet supported. Train on"
-                " CPU or wait for the device-sync helper."
-            )
-        save_state_v2(self.trainer.actor, path + "/actor.ckpt")
-        save_state_v2(self.trainer.critic, path + "/critic.ckpt")
-        save_optimizer_v2(self.trainer.actor_opt, path + "/actor_opt.ckpt")
-        save_optimizer_v2(self.trainer.critic_opt, path + "/critic_opt.ckpt")
+        """Thin passthrough to `trainer.save_state(path)`. Writes ONE
+        file (`nn2-ckpt v2` envelope) with prefixed sections for
+        actor, critic, actor_opt, critic_opt. Rollout buffer NOT
+        included (on-policy resume re-rolls). CPU-only."""
+        self.trainer.save_state(path)
 
     def load(mut self, path: String) raises:
-        """Restore actor + critic + optimizers."""
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "PPOAgent.load: GPU save/load not yet supported. Train on"
-                " CPU or wait for the device-sync helper."
-            )
-        load_state_v2(self.trainer.actor, path + "/actor.ckpt")
-        load_state_v2(self.trainer.critic, path + "/critic.ckpt")
-        load_optimizer_v2(self.trainer.actor_opt, path + "/actor_opt.ckpt")
-        load_optimizer_v2(self.trainer.critic_opt, path + "/critic_opt.ckpt")
+        """Inverse of `save`. No target nets in PPO; nothing to hard-copy."""
+        self.trainer.load_state(path)

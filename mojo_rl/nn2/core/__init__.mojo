@@ -17,7 +17,7 @@ from .named_params import NamedParam, named_params
 from .map_params import polyak_update, hard_copy_params
 from .param import Param, IsParam
 from .walkers import for_each_param_auto, zero_grad_auto
-from .grad_clip import clip_grads_auto
+from .grad_clip import clip_grads_auto, clip_grads_auto_gpu, GradClipState
 from .element_op import ElementOp
 from .reduce_op import ReduceOp
 from .scratch import Scratch, IsScratch

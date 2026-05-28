@@ -86,6 +86,23 @@ trait OnPolicyAgent(Movable, ImplicitlyDestructible):
     def ep_count(self) -> Int:
         ...
 
+    # ─── Optional cadence hooks (default no-op) ──────────────────────
+    #
+    # Mirror the off-policy surface so the on-policy driver can call
+    # into the trainer at `diag_every` / `checkpoint_every` cadences.
+    # Each has a `pass` default; PPOTrainer overrides both with real
+    # bodies.
+
+    def flush_metrics_through_logger[L: Logger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        step: Int,
+    ) raises:
+        pass
+
+    def save_state(mut self, path: String) raises:
+        pass
+
 
 def run_onpolicy_train[
     A: OnPolicyAgent,
@@ -101,6 +118,9 @@ def run_onpolicy_train[
     print_every: Int = 1_000,
     verbose: Bool = True,
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    diag_every: Int = 0,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     base_step: Int = 0,
 ) raises -> List[Scalar[DT]]:
     """Step-based on-policy single-env training driver.
@@ -167,10 +187,12 @@ def run_onpolicy_train[
         step += 1
         _ = trainer.train_step(base_step + step)
 
-        if verbose and print_every > 0 and step % print_every == 0:
+        var abs_step = base_step + step
+
+        if verbose and print_every > 0 and abs_step % print_every == 0:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
-                "[step ", base_step + step, "] mean_ret(10)=", trainer.mean_return(),
+                "[step ", abs_step, "] mean_ret(10)=", trainer.mean_return(),
                 " ep=", trainer.ep_count(),
                 " elapsed=", elapsed, "s",
             )
@@ -180,22 +202,47 @@ def run_onpolicy_train[
         comptime if L.ENABLED:
             if (
                 print_every > 0
-                and step % print_every == 0
+                and abs_step % print_every == 0
                 and Bool(logger)
             ):
                 logger.value()[].log_scalar(
                     "avg_reward",
                     Float64(trainer.mean_return()),
-                    base_step + step,
+                    abs_step,
                 )
                 logger.value()[].log_scalar(
                     "episodes",
                     Float64(trainer.ep_count()),
-                    base_step + step,
+                    abs_step,
                 )
                 # No forced flush — `log_scalar` auto-flushes when the
                 # logger's buffer fills; user controls cadence via
                 # `buffer_size`. Final residual sent by `logger.close()`.
+
+        # `diag_every` — drain the trainer's metric bundle through the
+        # logger at its own cadence. Default trait impl is no-op for
+        # trainers that haven't wired this up yet.
+        comptime if L.ENABLED:
+            if (
+                diag_every > 0
+                and abs_step % diag_every == 0
+                and Bool(logger)
+            ):
+                trainer.flush_metrics_through_logger[L](logger, abs_step)
+
+        # `checkpoint_every` — overwrite `checkpoint_path` with the
+        # trainer's one-file v2 envelope. Default trait impl is no-op.
+        if (
+            checkpoint_every > 0
+            and abs_step % checkpoint_every == 0
+            and checkpoint_path.byte_length() > 0
+        ):
+            trainer.save_state(checkpoint_path)
+
+    # Always overwrite the final checkpoint at end so resume gets the
+    # freshest weights regardless of cadence alignment.
+    if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
+        trainer.save_state(checkpoint_path)
 
     return ep_returns^
 
@@ -266,6 +313,18 @@ trait OnPolicyAgentBatched(Movable, ImplicitlyDestructible):
     def ep_count(self) -> Int:
         ...
 
+    # ─── Optional cadence hooks (default no-op) ──────────────────────
+
+    def flush_metrics_through_logger[L: Logger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        step: Int,
+    ) raises:
+        pass
+
+    def save_state(mut self, path: String) raises:
+        pass
+
 
 def run_onpolicy_train_batched[
     A: OnPolicyAgentBatched,
@@ -281,6 +340,9 @@ def run_onpolicy_train_batched[
     print_every: Int = 5_000,
     verbose: Bool = True,
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    diag_every: Int = 0,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     base_step: Int = 0,
 ) raises -> List[Scalar[DT]]:
     """Tier-3 on-policy driver covering same-target combinations.
@@ -483,10 +545,12 @@ def run_onpolicy_train_batched[
             ep_returns.append(trainer.mean_return())
             last_ep_count = new_ep_count
 
+        var abs_step = base_step + step_idx
+
         if verbose and print_every > 0 and step_idx >= next_print:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
-                "[step ", base_step + step_idx, "] mean_ret(10)=",
+                "[step ", abs_step, "] mean_ret(10)=",
                 trainer.mean_return(),
                 " ep=", trainer.ep_count(),
                 " elapsed=", elapsed, "s",
@@ -504,14 +568,37 @@ def run_onpolicy_train_batched[
                 logger.value()[].log_scalar(
                     "avg_reward",
                     Float64(trainer.mean_return()),
-                    base_step + step_idx,
+                    abs_step,
                 )
                 logger.value()[].log_scalar(
                     "episodes",
                     Float64(trainer.ep_count()),
-                    base_step + step_idx,
+                    abs_step,
                 )
                 # No forced flush — see note in run_offpolicy_train.
                 next_log += print_every
+
+        # `diag_every` — drain the trainer's metric bundle through the
+        # logger at its own cadence. Default trait impl is no-op for
+        # trainers that haven't wired this up yet.
+        comptime if L.ENABLED:
+            if (
+                diag_every > 0
+                and abs_step % diag_every == 0
+                and Bool(logger)
+            ):
+                trainer.flush_metrics_through_logger[L](logger, abs_step)
+
+        # `checkpoint_every` — overwrite `checkpoint_path` with the
+        # trainer's one-file v2 envelope. Default trait impl is no-op.
+        if (
+            checkpoint_every > 0
+            and abs_step % checkpoint_every == 0
+            and checkpoint_path.byte_length() > 0
+        ):
+            trainer.save_state(checkpoint_path)
+
+    if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
+        trainer.save_state(checkpoint_path)
 
     return ep_returns^

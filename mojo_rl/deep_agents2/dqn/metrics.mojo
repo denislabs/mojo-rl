@@ -6,7 +6,8 @@ emits one `log_scalar` call per field.
 
 Fields correspond to what `DQNTrainer` accumulates in
 `_loss_accum` (mean over `_update_count`), plus current epsilon
-(point-in-time, not averaged)."""
+(point-in-time, not averaged). `train_steps` is the cumulative count of
+trainer updates (NOT reset on flush); `n_updates` is per-chunk."""
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.metric import LogScalar
@@ -14,6 +15,7 @@ from mojo_rl.nn2.core.metric import LogScalar
 
 @fieldwise_init
 struct DQNMetrics(Copyable, Movable, ImplicitlyDestructible):
-    var loss:      LogScalar[DT]
-    var epsilon:   LogScalar[DT]
-    var n_updates: LogScalar[DT]
+    var loss:        LogScalar[DT]
+    var epsilon:     LogScalar[DT]
+    var train_steps: LogScalar[DT]
+    var n_updates:   LogScalar[DT]

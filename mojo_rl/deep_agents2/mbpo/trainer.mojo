@@ -15,14 +15,24 @@ surface); GPU record stubs raise — unreachable on the CPU env branch.
 
 from std.math import exp as fexp, sqrt as fsqrt, log as flog
 from std.random import random_float64, randn_float64
+from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Module
+from mojo_rl.nn2.core.checkpoint import (
+    save_state_v2_body, load_state_v2_body,
+)
 from mojo_rl.nn2.core.log_bundle import log_bundle
+from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.metric import LogScalar
+from ..core.checkpoint_helpers import (
+    save_optimizer_v2_body, load_optimizer_v2_body,
+    save_scalar_adam_v2_body, load_scalar_adam_v2_body,
+    split_lines_v2, read_file_v2, expect_v2_header,
+)
 from ..core.online_target_pair import OnlineTargetPair
 from mojo_rl.nn2.core.scratch import Scratch
 from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
@@ -30,6 +40,7 @@ from ..data.n_step_replay import GPUNStepBuffer
 from mojo_rl.nn2.initializer import Xavier, Kaiming
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.optimizer.scalar_adam import ScalarAdam
+from mojo_rl.nn2.training.timer import Timer
 from .dynamics_ensemble_block import DynamicsEnsembleBlock
 from ..training.episode_tracker import EpisodeTracker
 from ..training.trainer_block import TrainerState
@@ -77,6 +88,21 @@ struct MBPOTrainer[
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
     # MBPO is CPU-only; the OffPolicyAgentGpu GPU stubs raise.
     comptime AGENT_TRAIN_TARGET: StaticString = "cpu"
+
+    # Timer section indices — order matches `add_section` calls in `make`.
+    # MBPO's outer train_step bundles (a) a periodic dynamics-ensemble
+    # train (every model_train_freq steps), (b) a periodic synthetic
+    # rollout phase, and (c) `sac_updates_per_step` SAC inner updates.
+    # The SAC sub-blocks are timed individually because the inner loop
+    # dominates wall time.
+    comptime _T_DYN_TRAIN = 0
+    comptime _T_ROLLOUT   = 1
+    comptime _T_SAMPLE    = 2
+    comptime _T_TARGET_Y  = 3
+    comptime _T_CRITIC    = 4
+    comptime _T_ACTOR     = 5
+    comptime _T_ALPHA     = 6
+    comptime _T_POLYAK    = 7
 
     var actor: Self.ACTOR
     var pair1: OnlineTargetPair[Self.CRITIC]
@@ -155,6 +181,11 @@ struct MBPOTrainer[
     var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
     var _update_count: Int
+    # Never reset by `flush_*` — emitted as `train_steps` so the
+    # downstream monitor can plot cumulative inner SAC updates.
+    var _total_train_steps: Int
+
+    var timer: Timer
 
     def __init__(out self):
         comptime assert (
@@ -260,6 +291,8 @@ struct MBPOTrainer[
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._update_count = 0
+        self._total_train_steps = 0
+        self.timer = Timer.new()
 
     @staticmethod
     def make[
@@ -356,6 +389,17 @@ struct MBPOTrainer[
         t.dyn_batch_size = dyn_batch_size
 
         t.sample_blk.setup(learning_starts)
+
+        # Timer sections — index order MUST match the `_T_*` comptime
+        # constants above.
+        t.timer.add_section("dyn_train")
+        t.timer.add_section("rollout")
+        t.timer.add_section("sample")
+        t.timer.add_section("target_y")
+        t.timer.add_section("critic")
+        t.timer.add_section("actor")
+        t.timer.add_section("alpha")
+        t.timer.add_section("polyak")
         return t^
 
     # ─── Direct-callable (host-list) surface ─────────────────────────
@@ -438,8 +482,13 @@ struct MBPOTrainer[
             or step_idx - self.last_dyn_step >= self.model_train_freq
         )
         if should_train_dyn:
+            var t_dyn = perf_counter_ns()
             self._train_dynamics_ensemble()
+            self.timer.accumulate(Self._T_DYN_TRAIN, t_dyn)
+
+            var t_ro = perf_counter_ns()
             self._generate_synthetic_rollouts()
+            self.timer.accumulate(Self._T_ROLLOUT, t_ro)
             self.last_dyn_step = step_idx
 
         # Need both buffers populated enough for the dual sample.
@@ -454,16 +503,22 @@ struct MBPOTrainer[
             self.state.did_step = True
             self.state.alpha = fexp(self.alpha_opt.value)
 
+            var t_sample = perf_counter_ns()
             self.sample_blk.step(self.state)
             if not self.state.did_step:
                 continue
+            self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
+            var t_ty = perf_counter_ns()
             self.target_y_blk.step["cpu"](
                 self.state,
                 self.actor,
                 self.pair1.target_net,
                 self.pair2.target_net,
             )
+            self.timer.accumulate(Self._T_TARGET_Y, t_ty)
+
+            var t_crit = perf_counter_ns()
             self.twin_critic_blk.step["cpu"](
                 self.state,
                 self.pair1.online,
@@ -471,6 +526,9 @@ struct MBPOTrainer[
                 self.pair2.online,
                 self.critic2_opt,
             )
+            self.timer.accumulate(Self._T_CRITIC, t_crit)
+
+            var t_act = perf_counter_ns()
             self.actor_blk.step["cpu"](
                 self.state,
                 self.actor,
@@ -478,16 +536,24 @@ struct MBPOTrainer[
                 self.pair1.online,
                 self.pair2.online,
             )
+            self.timer.accumulate(Self._T_ACTOR, t_act)
+
+            var t_alp = perf_counter_ns()
             self.alpha_blk.step(self.state, self.alpha_opt)
+            self.timer.accumulate(Self._T_ALPHA, t_alp)
+
+            var t_pol = perf_counter_ns()
             self.polyak_blk.step["cpu"](
                 self.state,
                 self.pair1,
                 self.pair2,
             )
+            self.timer.accumulate(Self._T_POLYAK, t_pol)
 
             self._actor_L_accum += self.state.actor_loss
             self._critic_L_accum += self.state.critic_loss
             self._update_count += 1
+            self._total_train_steps += 1
             any = True
         return any
 
@@ -519,6 +585,11 @@ struct MBPOTrainer[
         self._update_count = 0
         return out
 
+    def total_train_steps(self) -> Int:
+        """Cumulative SAC inner updates since trainer was made. Not reset
+        by `flush_*`."""
+        return self._total_train_steps
+
     def flush_metrics[
         L: Logger = NoOpLogger
     ](
@@ -528,13 +599,15 @@ struct MBPOTrainer[
     ) raises -> MBPOMetrics:
         """Drain accumulators into an MBPOMetrics bundle. If a logger
         pointer is wired, also emit one log_scalar per metric field.
-        Resets accumulators on every call."""
+        Resets per-chunk accumulators on every call; the cumulative
+        `_total_train_steps` counter is NOT reset."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
         var bundle = MBPOMetrics(
             actor_loss=LogScalar[DT](self._actor_L_accum * inv),
             critic_loss=LogScalar[DT](self._critic_L_accum * inv),
             alpha=LogScalar[DT](fexp(self.alpha_opt.value)),
+            train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
         self._actor_L_accum = Scalar[DT](0.0)
@@ -544,10 +617,69 @@ struct MBPOTrainer[
             log_bundle(logger.value()[], bundle, step)
         return bundle^
 
+    # ─── Trait-uniform cadence hooks (consumed by the driver) ─────────
+
+    def flush_metrics_through_logger[L: Logger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        step: Int,
+    ) raises:
+        """Trait-uniform passthrough: drains the MBPO metric accumulators
+        through `flush_metrics` and discards the typed bundle. The
+        driver calls this at the user's `diag_every` cadence so no
+        chunking is needed."""
+        _ = self.flush_metrics[L](logger, step)
+
+    def save_state(mut self, path: String) raises:
+        """One-file v2 checkpoint of every MBPO SAC module + optimizer.
+        Sections: `actor.*`, `critic1.*`, `critic2.*`, `actor_opt.*`,
+        `critic1_opt.*`, `critic2_opt.*`, `alpha_opt.*`. Overwrites
+        `path`. CPU-only.
+
+        NOT saved: dynamics ensemble nets + optimizers (`ensemble.members`,
+        `ensemble.opts`). Resume re-trains dynamics from scratch in the
+        first `model_train_freq` env steps after load. Tracked in the
+        deep_agents2 plan as a follow-up."""
+        var body = String("")
+        save_state_v2_body(self.actor, body, "actor")
+        save_state_v2_body(self.pair1.online, body, "critic1")
+        save_state_v2_body(self.pair2.online, body, "critic2")
+        save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
+        save_optimizer_v2_body(self.critic1_opt, body, "critic1_opt")
+        save_optimizer_v2_body(self.critic2_opt, body, "critic2_opt")
+        save_scalar_adam_v2_body(self.alpha_opt, body, "alpha_opt")
+        var content = String("nn2-ckpt v2\n") + body
+        with open(path, "w") as f:
+            f.write(content)
+
+    def load_state(mut self, path: String) raises:
+        """Inverse of `save_state`. Target critics are hard-copied from
+        their online twins after the online params are restored."""
+        var content = read_file_v2(path)
+        var lines = split_lines_v2(content)
+        expect_v2_header(lines)
+        var idx: Int = 1
+        load_state_v2_body(self.actor, lines, idx, "actor")
+        load_state_v2_body(self.pair1.online, lines, idx, "critic1")
+        load_state_v2_body(self.pair2.online, lines, idx, "critic2")
+        load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
+        load_optimizer_v2_body(self.critic1_opt, lines, idx, "critic1_opt")
+        load_optimizer_v2_body(self.critic2_opt, lines, idx, "critic2_opt")
+        load_scalar_adam_v2_body(self.alpha_opt, lines, idx, "alpha_opt")
+        hard_copy_params["cpu", M=Self.CRITIC](
+            self.pair1.online, self.pair1.target_net, None,
+        )
+        hard_copy_params["cpu", M=Self.CRITIC](
+            self.pair2.online, self.pair2.target_net, None,
+        )
+
     def flush_timer_log(mut self) -> String:
-        """No timer instrumentation yet (CPU-only trainer). Returns a
-        placeholder for API parity with SACTrainer/DQNTrainer."""
-        return String("MBPOTrainer: no timer instrumentation")
+        """Per-section wall-time report (one line per sub-step:
+        dyn_train / rollout / sample / target_y / critic / actor / alpha
+        / polyak) and reset the accumulators."""
+        var report = self.timer.format_report()
+        self.timer.reset()
+        return report
 
     # ─── OffPolicyAgentGpu surface (Tier-3 driver) ────────────
     #

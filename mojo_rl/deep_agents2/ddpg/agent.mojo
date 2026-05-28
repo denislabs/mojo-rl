@@ -21,8 +21,6 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.checkpoint import save_state_v2, load_state_v2
-from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 
@@ -31,10 +29,6 @@ from ..training.driver_offpolicy import (
     run_offpolicy_train,
     run_offpolicy_train_batched,
     run_offpolicy_eval,
-)
-from ..core.checkpoint_helpers import (
-    save_optimizer_v2,
-    load_optimizer_v2,
 )
 
 from .metrics import DDPGMetrics
@@ -139,8 +133,13 @@ struct DDPGAgent[
         print_every: Int = 1_000,
         verbose: Bool = True,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        diag_every: Int = 0,
+        checkpoint_path: String = "",
+        checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
-        """Single-env off-policy training via `run_offpolicy_train`."""
+        """Single-env off-policy training via `run_offpolicy_train`.
+        See `SACAgent.train_single` for `diag_every` / `checkpoint_*`
+        semantics."""
         return run_offpolicy_train[
             DDPGTrainer[
                 Self.ACTOR, Self.CRITIC,
@@ -155,6 +154,9 @@ struct DDPGAgent[
             print_every=print_every,
             verbose=verbose,
             logger=logger,
+            diag_every=diag_every,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
         )
 
     # ─── Evaluation ─────────────────────────────────────────────────────
@@ -227,28 +229,13 @@ struct DDPGAgent[
     # ─── Checkpointing (CPU only — DDPG is CPU-only by construction) ──
 
     def save(mut self, path: String) raises:
-        """Persist networks + optimizer state to `path/` (a directory
-        that must already exist). Replay buffer / episode tracker are
-        NOT included."""
-        save_state_v2(self.trainer.actor_pair.online, path + "/actor.ckpt")
-        save_state_v2(self.trainer.critic_pair.online, path + "/critic.ckpt")
-        save_optimizer_v2(self.trainer.actor_opt, path + "/actor_opt.ckpt")
-        save_optimizer_v2(self.trainer.critic_opt, path + "/critic_opt.ckpt")
+        """Thin passthrough to `trainer.save_state(path)`. Writes ONE
+        file (`nn2-ckpt v2` envelope) with prefixed sections for
+        actor, critic, actor_opt, critic_opt. Replay buffer + episode
+        tracker NOT included."""
+        self.trainer.save_state(path)
 
     def load(mut self, path: String) raises:
-        """Restore networks + optimizers. Target nets hard-copied from
-        their online twins."""
-        load_state_v2(self.trainer.actor_pair.online, path + "/actor.ckpt")
-        load_state_v2(self.trainer.critic_pair.online, path + "/critic.ckpt")
-        hard_copy_params["cpu", M=Self.ACTOR](
-            self.trainer.actor_pair.online,
-            self.trainer.actor_pair.target_net,
-            None,
-        )
-        hard_copy_params["cpu", M=Self.CRITIC](
-            self.trainer.critic_pair.online,
-            self.trainer.critic_pair.target_net,
-            None,
-        )
-        load_optimizer_v2(self.trainer.actor_opt, path + "/actor_opt.ckpt")
-        load_optimizer_v2(self.trainer.critic_opt, path + "/critic_opt.ckpt")
+        """Inverse of `save`. Target nets hard-copied from their online
+        twins after the online params are restored."""
+        self.trainer.load_state(path)

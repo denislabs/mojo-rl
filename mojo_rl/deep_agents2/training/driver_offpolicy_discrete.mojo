@@ -136,6 +136,24 @@ trait OffPolicyDiscreteAgent(Movable, ImplicitlyDestructible):
         the episode tracker."""
         ...
 
+    # ─── Optional cadence hooks (default no-op) ──────────────────────
+    #
+    # Mirror the continuous `OffPolicyAgent` surface so the discrete
+    # driver can call into the trainer at `diag_every` / `checkpoint_every`
+    # cadences. Each has a `pass` default; DQNTrainer overrides both with
+    # real bodies that drain its `DQNMetrics` bundle and write a one-file
+    # v2 checkpoint envelope.
+
+    def flush_metrics_through_logger[L: Logger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        step: Int,
+    ) raises:
+        pass
+
+    def save_state(mut self, path: String) raises:
+        pass
+
 
 # ──────────────────────────────────────────────────────────────────────
 # run_offpolicy_discrete_train — single-env, env_target="cpu".
@@ -155,6 +173,9 @@ def run_offpolicy_discrete_train[
     print_every: Int = 1_000,
     verbose: Bool = True,
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    diag_every: Int = 0,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
     base_step: Int = 0,
 ) raises -> List[Scalar[DT]]:
     """Single-env discrete off-policy training driver.
@@ -267,11 +288,13 @@ def run_offpolicy_discrete_train[
         step += 1
         _ = trainer.train_step(base_step + step)
 
-        if verbose and print_every > 0 and step % print_every == 0:
+        var abs_step = base_step + step
+
+        if verbose and print_every > 0 and abs_step % print_every == 0:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
                 "[step ",
-                base_step + step,
+                abs_step,
                 "] mean_ret(10)=",
                 trainer.mean_return(),
                 " ep=",
@@ -286,22 +309,47 @@ def run_offpolicy_discrete_train[
         comptime if L.ENABLED:
             if (
                 print_every > 0
-                and step % print_every == 0
+                and abs_step % print_every == 0
                 and Bool(logger)
             ):
                 logger.value()[].log_scalar(
                     "avg_reward",
                     Float64(trainer.mean_return()),
-                    base_step + step,
+                    abs_step,
                 )
                 logger.value()[].log_scalar(
                     "episodes",
                     Float64(trainer.ep_count()),
-                    base_step + step,
+                    abs_step,
                 )
                 # No forced flush — `log_scalar` auto-flushes when the
                 # logger's buffer fills; user controls cadence via
                 # `buffer_size`. Final residual sent by `logger.close()`.
+
+        # `diag_every` — drain the trainer's metric bundle through the
+        # logger at its own cadence. Default trait impl is no-op for
+        # trainers that haven't wired this up yet.
+        comptime if L.ENABLED:
+            if (
+                diag_every > 0
+                and abs_step % diag_every == 0
+                and Bool(logger)
+            ):
+                trainer.flush_metrics_through_logger[L](logger, abs_step)
+
+        # `checkpoint_every` — overwrite `checkpoint_path` with the
+        # trainer's one-file v2 envelope. Default trait impl is no-op.
+        if (
+            checkpoint_every > 0
+            and abs_step % checkpoint_every == 0
+            and checkpoint_path.byte_length() > 0
+        ):
+            trainer.save_state(checkpoint_path)
+
+    # Always overwrite the final checkpoint at end so resume gets the
+    # freshest weights regardless of cadence alignment.
+    if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
+        trainer.save_state(checkpoint_path)
 
     return ep_returns^
 

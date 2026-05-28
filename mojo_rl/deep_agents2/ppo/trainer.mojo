@@ -25,15 +25,24 @@ mb_* scratches before each PPOActorTrainStep / PPOCriticTrainStep.
 
 from std.gpu.host import DeviceContext
 from std.memory import alloc
+from std.time import perf_counter_ns
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Module
+from mojo_rl.nn2.core.checkpoint import (
+    save_state_v2_body, load_state_v2_body,
+)
 from mojo_rl.nn2.core.log_bundle import log_bundle
 from mojo_rl.nn2.core.metric import LogScalar
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.initializer import Xavier
 from mojo_rl.nn2.optimizer.adam import Adam
+from mojo_rl.nn2.training.timer import Timer
+from ..core.checkpoint_helpers import (
+    save_optimizer_v2_body, load_optimizer_v2_body,
+    split_lines_v2, read_file_v2, expect_v2_header,
+)
 from ..training.episode_tracker import EpisodeTracker
 from ..training.onpolicy_state import OnPolicyState
 from ..training.driver_onpolicy import OnPolicyAgent, OnPolicyAgentBatched
@@ -69,6 +78,13 @@ struct PPOTrainer[
     comptime AGENT_N_ENVS       = Self.N_ENVS
 
     comptime N_MINIBATCHES = (Self.ROLLOUT_LEN * Self.N_ENVS) // Self.MINIBATCH
+
+    # Timer section indices — order matches `add_section` calls in `make`.
+    # PPO's train_step body is dominated by the K-epoch SGD loop (single
+    # section: `update`). GAE bootstrap + per-env backward is its own
+    # `gae` section. Sample / target_y / polyak don't apply to on-policy.
+    comptime _T_GAE = 0
+    comptime _T_UPDATE = 1
 
     # ── Networks + optimisers ────────────────────────────────────────
     var actor: Self.ACTOR
@@ -119,6 +135,11 @@ struct PPOTrainer[
     var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
     var _update_count: Int
+    # Never reset by `flush_*` — emitted as `train_steps` so the
+    # downstream monitor can plot cumulative minibatch updates.
+    var _total_train_steps: Int
+
+    var timer: Timer
 
     def __init__(out self):
         comptime assert (
@@ -186,6 +207,8 @@ struct PPOTrainer[
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._update_count = 0
+        self._total_train_steps = 0
+        self.timer = Timer.new()
 
     @staticmethod
     def make(
@@ -199,6 +222,12 @@ struct PPOTrainer[
         log_std_init: Scalar[DT] = Scalar[DT](-0.5),
         window_size: Int = 10,
         initial_episode_fill: Scalar[DT] = Scalar[DT](-1600.0),
+        # Canonical PPO uses max_grad_norm=0.5 (Schulman 2017 + most
+        # implementations). Default 0 keeps bit-identity for callers
+        # that previously trained unclipped. Wired to both optimizers
+        # below — separate from `clip_eps`, which is the policy-ratio
+        # surrogate clip, not the gradient-norm clip.
+        max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
         comptime assert (
@@ -220,10 +249,12 @@ struct PPOTrainer[
             t.actor, ctx=ctx,
         )
         t.actor_opt.lr = actor_lr
+        t.actor_opt.max_grad_norm = max_grad_norm
         t.critic_opt = Adam.make[target=Self.train_target, M=Self.CRITIC](
             t.critic, ctx=ctx,
         )
         t.critic_opt.lr = critic_lr
+        t.critic_opt.max_grad_norm = max_grad_norm
         t.act_step = PPOActStep[
             Self.OBS_DIM, Self.ACT_DIM, Self.ACTOR, Self.CRITIC,
         ].make[Self.train_target](ctx=ctx)
@@ -268,6 +299,11 @@ struct PPOTrainer[
         t.tracker = EpisodeTracker.new(
             window_size=window_size, initial_fill=initial_episode_fill,
         )
+
+        # Timer sections — index order MUST match the `_T_*` comptime
+        # constants above.
+        t.timer.add_section("gae")
+        t.timer.add_section("update")
         return t^
 
     # ──────────────────────────────────────────────────────────────────
@@ -395,13 +431,16 @@ struct PPOTrainer[
             return False
 
         # ── GAE: bootstrap V(s_T) per env + per-env backward pass.
+        var t_gae = perf_counter_ns()
         self.gae_step.step[
             Self.train_target, Self.ACT_DIM, Self.MINIBATCH, Self.N_ENVS,
         ](self.state, self.critic, self.gamma, self.gae_lambda)
+        self.timer.accumulate(Self._T_GAE, t_gae)
 
         # ── K-epoch minibatch SGD. Reset indices ONCE per rollout
         # (matches legacy ordering for bit-identity); epoch shuffles
         # operate on whatever state the previous epoch left behind.
+        var t_upd = perf_counter_ns()
         self.gather_step.reset_indices[Self.train_target, Self.N_ENVS](
             self.state
         )
@@ -423,6 +462,8 @@ struct PPOTrainer[
                 self._actor_L_accum += aL
                 self._critic_L_accum += cL
                 self._update_count += 1
+                self._total_train_steps += 1
+        self.timer.accumulate(Self._T_UPDATE, t_upd)
 
         # ── Reset rollout cursor + clear term buf.
         self.record_step.reset_rollout[
@@ -456,6 +497,11 @@ struct PPOTrainer[
         self._update_count = 0
         return out
 
+    def total_train_steps(self) -> Int:
+        """Cumulative minibatch updates since trainer was made. Not reset
+        by `flush_*`."""
+        return self._total_train_steps
+
     def flush_metrics[
         L: Logger = NoOpLogger
     ](
@@ -465,12 +511,14 @@ struct PPOTrainer[
     ) raises -> PPOMetrics:
         """Drain accumulators into a PPOMetrics bundle. If a logger
         pointer is wired, also emit one log_scalar per metric field.
-        Resets accumulators on every call."""
+        Resets per-chunk accumulators on every call; the cumulative
+        `_total_train_steps` counter is NOT reset."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
         var bundle = PPOMetrics(
             actor_loss=LogScalar[DT](self._actor_L_accum * inv),
             critic_loss=LogScalar[DT](self._critic_L_accum * inv),
+            train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
         self._actor_L_accum = Scalar[DT](0.0)
@@ -480,7 +528,58 @@ struct PPOTrainer[
             log_bundle(logger.value()[], bundle, step)
         return bundle^
 
+    # ─── Trait-uniform cadence hooks (consumed by the driver) ─────────
+
+    def flush_metrics_through_logger[L: Logger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        step: Int,
+    ) raises:
+        """Trait-uniform passthrough: drains the PPO metric accumulators
+        through `flush_metrics` and discards the typed bundle. The
+        driver calls this at the user's `diag_every` cadence so no
+        chunking is needed."""
+        _ = self.flush_metrics[L](logger, step)
+
+    def save_state(mut self, path: String) raises:
+        """One-file v2 checkpoint of every PPO module + optimizer.
+        Sections: `actor.*`, `critic.*`, `actor_opt.*`, `critic_opt.*`.
+        Overwrites `path`. CPU-only; GPU save/load would need device→host
+        sync first."""
+        comptime if Self.train_target != "cpu":
+            raise Error(
+                "PPOTrainer.save_state: GPU save/load not yet supported."
+            )
+        var body = String("")
+        save_state_v2_body(self.actor, body, "actor")
+        save_state_v2_body(self.critic, body, "critic")
+        save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
+        save_optimizer_v2_body(self.critic_opt, body, "critic_opt")
+        var content = String("nn2-ckpt v2\n") + body
+        with open(path, "w") as f:
+            f.write(content)
+
+    def load_state(mut self, path: String) raises:
+        """Inverse of `save_state`. PPO has no target nets, so no
+        hard-copy step is needed."""
+        comptime if Self.train_target != "cpu":
+            raise Error(
+                "PPOTrainer.load_state: GPU save/load not yet supported."
+            )
+        var content = read_file_v2(path)
+        var lines = split_lines_v2(content)
+        expect_v2_header(lines)
+        var idx: Int = 1
+        load_state_v2_body(self.actor, lines, idx, "actor")
+        load_state_v2_body(self.critic, lines, idx, "critic")
+        load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
+        load_optimizer_v2_body(self.critic_opt, lines, idx, "critic_opt")
+
     def flush_timer_log(mut self) -> String:
-        """No timer instrumentation yet (on-policy trainer). Returns a
-        placeholder for API parity with SACTrainer/DQNTrainer."""
-        return String("PPOTrainer: no timer instrumentation")
+        """Per-section wall-time report (one line per sub-step:
+        gae / update) and reset the accumulators. PPO's train_step only
+        fires at rollout-length boundaries, so per-section costs are
+        amortised across many env steps."""
+        var report = self.timer.format_report()
+        self.timer.reset()
+        return report
