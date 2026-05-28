@@ -22,7 +22,9 @@ Usage:
 
 from std.gpu.host import DeviceContext
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.checkpoint import save_state_v2, load_state_v2
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 
@@ -31,7 +33,12 @@ from ..training.driver_onpolicy import (
     run_onpolicy_train,
     run_onpolicy_train_batched,
 )
+from ..core.checkpoint_helpers import (
+    save_optimizer_v2,
+    load_optimizer_v2,
+)
 
+from .metrics import PPOMetrics
 from .trainer import PPOTrainer
 
 
@@ -91,6 +98,7 @@ struct PPOAgent[
 
     def train[
         E: BatchedEnv,
+        L: Logger = NoOpLogger,
     ](
         mut self,
         mut env: E,
@@ -99,6 +107,7 @@ struct PPOAgent[
         rng_seed: UInt64 = 42,
         print_every: Int = 5_000,
         verbose: Bool = True,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     ) raises -> List[Scalar[DT]]:
         """On-policy training via `run_onpolicy_train_batched`.
 
@@ -106,7 +115,7 @@ struct PPOAgent[
         compile-time `N_ENVS`. For single-env / cross-target, use
         `train_single()` instead.
         """
-        var ctx = self.trainer.ctx
+        var ctx = self.trainer.state.ctx
         return run_onpolicy_train_batched[
             PPOTrainer[
                 Self.train_target, Self.ACTOR, Self.CRITIC,
@@ -114,6 +123,7 @@ struct PPOAgent[
                 Self.MINIBATCH, Self.N_EPOCHS, Self.N_ENVS,
             ],
             E,
+            L,
         ](
             ctx,
             self.trainer,
@@ -122,10 +132,12 @@ struct PPOAgent[
             rng_seed=rng_seed,
             print_every=print_every,
             verbose=verbose,
+            logger=logger,
         )
 
     def train_single[
         E: BoxContinuousActionEnv,
+        L: Logger = NoOpLogger,
     ](
         mut self,
         mut env: E,
@@ -133,6 +145,7 @@ struct PPOAgent[
         *,
         print_every: Int = 1_000,
         verbose: Bool = True,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     ) raises -> List[Scalar[DT]]:
         """Single-env on-policy training via `run_onpolicy_train`. Covers
         `(env=cpu, train=cpu)` and `(env=cpu, train=gpu)` cross-target."""
@@ -143,6 +156,7 @@ struct PPOAgent[
                 Self.MINIBATCH, Self.N_EPOCHS, Self.N_ENVS,
             ],
             E,
+            L,
         ](
             self.trainer,
             env,
@@ -151,6 +165,7 @@ struct PPOAgent[
             act_dim=Self.ACT_DIM,
             print_every=print_every,
             verbose=verbose,
+            logger=logger,
         )
 
     # ─── Single-step inference (host-list interface) ───────────────────
@@ -179,3 +194,45 @@ struct PPOAgent[
 
     def ep_count(self) -> Int:
         return self.trainer.ep_count()
+
+    # ─── Metrics / logging passthrough ─────────────────────────────────
+
+    def flush_metrics[
+        L: Logger = NoOpLogger
+    ](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        step: Int = 0,
+    ) raises -> PPOMetrics:
+        """Drain trainer accumulators into a PPOMetrics bundle."""
+        return self.trainer.flush_metrics[L](logger, step)
+
+    def flush_timer_log(mut self) -> String:
+        return self.trainer.flush_timer_log()
+
+    # ─── Checkpointing (CPU only) ──────────────────────────────────────
+
+    def save(mut self, path: String) raises:
+        """Persist actor + critic + optimizers to `path/` (must exist).
+        No target nets in PPO. CPU-only."""
+        comptime if Self.train_target != "cpu":
+            raise Error(
+                "PPOAgent.save: GPU save/load not yet supported. Train on"
+                " CPU or wait for the device-sync helper."
+            )
+        save_state_v2(self.trainer.actor, path + "/actor.ckpt")
+        save_state_v2(self.trainer.critic, path + "/critic.ckpt")
+        save_optimizer_v2(self.trainer.actor_opt, path + "/actor_opt.ckpt")
+        save_optimizer_v2(self.trainer.critic_opt, path + "/critic_opt.ckpt")
+
+    def load(mut self, path: String) raises:
+        """Restore actor + critic + optimizers."""
+        comptime if Self.train_target != "cpu":
+            raise Error(
+                "PPOAgent.load: GPU save/load not yet supported. Train on"
+                " CPU or wait for the device-sync helper."
+            )
+        load_state_v2(self.trainer.actor, path + "/actor.ckpt")
+        load_state_v2(self.trainer.critic, path + "/critic.ckpt")
+        load_optimizer_v2(self.trainer.actor_opt, path + "/actor_opt.ckpt")
+        load_optimizer_v2(self.trainer.critic_opt, path + "/critic_opt.ckpt")

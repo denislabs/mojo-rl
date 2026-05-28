@@ -18,7 +18,10 @@ Usage:
 
 from std.gpu.host import DeviceContext
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.checkpoint import save_state_v2, load_state_v2
+from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 
@@ -28,7 +31,12 @@ from ..training.driver_offpolicy import (
     run_offpolicy_train_batched,
     run_offpolicy_eval,
 )
+from ..core.checkpoint_helpers import (
+    save_optimizer_v2,
+    load_optimizer_v2,
+)
 
+from .metrics import TD3Metrics
 from .trainer import TD3Trainer
 
 
@@ -89,6 +97,7 @@ struct TD3Agent[
         E: BatchedEnv,
         N_ENVS: Int = 1,
         NS: Int = 1,
+        L: Logger = NoOpLogger,
     ](
         mut self,
         mut env: E,
@@ -99,6 +108,7 @@ struct TD3Agent[
         print_every: Int = 5_000,
         verbose: Bool = True,
         nstep_gamma: Scalar[DT] = 0.99,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     ) raises -> List[Scalar[DT]]:
         """Off-policy training via `run_offpolicy_train_batched` (CPU)."""
         return run_offpolicy_train_batched[
@@ -109,6 +119,7 @@ struct TD3Agent[
             E,
             N_ENVS,
             NS,
+            L,
         ](
             None,
             self.trainer,
@@ -119,10 +130,12 @@ struct TD3Agent[
             print_every=print_every,
             verbose=verbose,
             nstep_gamma=nstep_gamma,
+            logger=logger,
         )
 
     def train_single[
         E: BoxContinuousActionEnv,
+        L: Logger = NoOpLogger,
     ](
         mut self,
         mut env: E,
@@ -130,6 +143,7 @@ struct TD3Agent[
         *,
         print_every: Int = 1_000,
         verbose: Bool = True,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     ) raises -> List[Scalar[DT]]:
         """Single-env off-policy training via `run_offpolicy_train`."""
         return run_offpolicy_train[
@@ -138,12 +152,14 @@ struct TD3Agent[
                 Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
             ],
             E,
+            L,
         ](
             self.trainer,
             env,
             total_timesteps,
             print_every=print_every,
             verbose=verbose,
+            logger=logger,
         )
 
     # ─── Evaluation ─────────────────────────────────────────────────────
@@ -197,3 +213,50 @@ struct TD3Agent[
 
     def ep_count(self) -> Int:
         return self.trainer.ep_count()
+
+    # ─── Metrics / logging passthrough ─────────────────────────────────
+
+    def flush_metrics[
+        L: Logger = NoOpLogger
+    ](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        step: Int = 0,
+    ) raises -> TD3Metrics:
+        """Drain trainer accumulators into a TD3Metrics bundle."""
+        return self.trainer.flush_metrics[L](logger, step)
+
+    def flush_timer_log(mut self) -> String:
+        return self.trainer.flush_timer_log()
+
+    # ─── Checkpointing (CPU only — TD3 is CPU-only by construction) ──
+
+    def save(mut self, path: String) raises:
+        """Persist networks + optimizer state to `path/` (must exist)."""
+        save_state_v2(self.trainer.actor_pair.online, path + "/actor.ckpt")
+        save_state_v2(self.trainer.pair1.online, path + "/critic1.ckpt")
+        save_state_v2(self.trainer.pair2.online, path + "/critic2.ckpt")
+        save_optimizer_v2(self.trainer.actor_opt, path + "/actor_opt.ckpt")
+        save_optimizer_v2(self.trainer.critic1_opt, path + "/critic1_opt.ckpt")
+        save_optimizer_v2(self.trainer.critic2_opt, path + "/critic2_opt.ckpt")
+
+    def load(mut self, path: String) raises:
+        """Restore networks + optimizers. Target nets hard-copied from
+        their online twins."""
+        load_state_v2(self.trainer.actor_pair.online, path + "/actor.ckpt")
+        load_state_v2(self.trainer.pair1.online, path + "/critic1.ckpt")
+        load_state_v2(self.trainer.pair2.online, path + "/critic2.ckpt")
+        hard_copy_params["cpu", M=Self.ACTOR](
+            self.trainer.actor_pair.online,
+            self.trainer.actor_pair.target_net,
+            None,
+        )
+        hard_copy_params["cpu", M=Self.CRITIC](
+            self.trainer.pair1.online, self.trainer.pair1.target_net, None,
+        )
+        hard_copy_params["cpu", M=Self.CRITIC](
+            self.trainer.pair2.online, self.trainer.pair2.target_net, None,
+        )
+        load_optimizer_v2(self.trainer.actor_opt, path + "/actor_opt.ckpt")
+        load_optimizer_v2(self.trainer.critic1_opt, path + "/critic1_opt.ckpt")
+        load_optimizer_v2(self.trainer.critic2_opt, path + "/critic2_opt.ckpt")

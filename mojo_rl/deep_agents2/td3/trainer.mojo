@@ -15,8 +15,11 @@ from std.random import random_float64
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Module
+from mojo_rl.nn2.core.log_bundle import log_bundle
+from mojo_rl.nn2.core.metric import LogScalar
 from ..core.online_target_pair import OnlineTargetPair
 from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
 from ..data.n_step_replay import GPUNStepBuffer
@@ -30,6 +33,7 @@ from ..training.trainer_block import TrainerState
 from ..training.blocks import UniformSampleCpuStep, TwinCriticStep
 from .blocks.target_y_step import TD3TargetYStep
 from .blocks.delayed_actor_polyak_step import TD3DelayedActorPolyakStep
+from .metrics import TD3Metrics
 
 
 struct TD3Trainer[
@@ -451,3 +455,61 @@ struct TD3Trainer[
             "TD3Trainer is CPU-only; record_batch_gpu_nstep unreachable"
             " via the Tier-3 cpu env path"
         )
+
+    # ─── Logging surface (parity with SACTrainer) ────────────────────────
+
+    def flush_train_log(
+        mut self,
+    ) -> Tuple[Scalar[DT], Scalar[DT], Int, Int]:
+        """Return (mean_actor_loss, mean_critic_loss, n_actor_updates,
+        n_critic_updates) since last flush. TD3 has separate counters
+        because the actor is updated on a `policy_delay` cadence.
+        Resets accumulators."""
+        var na = self._actor_updates if self._actor_updates > 0 else 1
+        var nc = self._critic_updates if self._critic_updates > 0 else 1
+        var inv_a = Scalar[DT](1.0) / Scalar[DT](na)
+        var inv_c = Scalar[DT](1.0) / Scalar[DT](nc)
+        var out = (
+            self._actor_L_accum * inv_a,
+            self._critic_L_accum * inv_c,
+            self._actor_updates,
+            self._critic_updates,
+        )
+        self._actor_L_accum = Scalar[DT](0.0)
+        self._critic_L_accum = Scalar[DT](0.0)
+        self._actor_updates = 0
+        self._critic_updates = 0
+        return out
+
+    def flush_metrics[
+        L: Logger = NoOpLogger
+    ](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        step: Int = 0,
+    ) raises -> TD3Metrics:
+        """Drain accumulators into a TD3Metrics bundle. If a logger
+        pointer is wired, also emit one log_scalar per metric field.
+        Resets accumulators on every call."""
+        var na = self._actor_updates if self._actor_updates > 0 else 1
+        var nc = self._critic_updates if self._critic_updates > 0 else 1
+        var inv_a = Scalar[DT](1.0) / Scalar[DT](na)
+        var inv_c = Scalar[DT](1.0) / Scalar[DT](nc)
+        var bundle = TD3Metrics(
+            actor_loss=LogScalar[DT](self._actor_L_accum * inv_a),
+            critic_loss=LogScalar[DT](self._critic_L_accum * inv_c),
+            n_actor_updates=LogScalar[DT](Scalar[DT](self._actor_updates)),
+            n_critic_updates=LogScalar[DT](Scalar[DT](self._critic_updates)),
+        )
+        self._actor_L_accum = Scalar[DT](0.0)
+        self._critic_L_accum = Scalar[DT](0.0)
+        self._actor_updates = 0
+        self._critic_updates = 0
+        if Bool(logger):
+            log_bundle(logger.value()[], bundle, step)
+        return bundle^
+
+    def flush_timer_log(mut self) -> String:
+        """No timer instrumentation yet (CPU-only trainer). Returns a
+        placeholder for API parity with SACTrainer/DQNTrainer."""
+        return String("TD3Trainer: no timer instrumentation")

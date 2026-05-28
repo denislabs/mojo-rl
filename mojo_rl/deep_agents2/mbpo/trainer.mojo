@@ -18,8 +18,11 @@ from std.random import random_float64, randn_float64
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Module
+from mojo_rl.nn2.core.log_bundle import log_bundle
+from mojo_rl.nn2.core.metric import LogScalar
 from ..core.online_target_pair import OnlineTargetPair
 from mojo_rl.nn2.core.scratch import Scratch
 from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
@@ -35,6 +38,7 @@ from ..training.blocks import DualSampleCpuStep, TwinCriticStep, PolyakStep
 from ..sac.blocks.target_y_step import TargetYStep
 from ..sac.blocks.actor_step import SACActorStep
 from ..sac.blocks.alpha_update_step import AlphaUpdateStep
+from .metrics import MBPOMetrics
 
 
 struct MBPOTrainer[
@@ -492,6 +496,58 @@ struct MBPOTrainer[
 
     def ep_count(self) -> Int:
         return self.tracker.ep_count
+
+    # ─── Logging surface (parity with SACTrainer) ────────────────────────
+
+    def flush_train_log(
+        mut self,
+    ) -> Tuple[Scalar[DT], Scalar[DT], Scalar[DT], Int]:
+        """Return (mean_actor_loss, mean_critic_loss, alpha, n_updates)
+        since last flush. `alpha` is point-in-time (= exp(log_alpha)),
+        not averaged. Resets accumulators."""
+        var n = self._update_count if self._update_count > 0 else 1
+        var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        var alpha_now = fexp(self.alpha_opt.value)
+        var out = (
+            self._actor_L_accum * inv,
+            self._critic_L_accum * inv,
+            alpha_now,
+            self._update_count,
+        )
+        self._actor_L_accum = Scalar[DT](0.0)
+        self._critic_L_accum = Scalar[DT](0.0)
+        self._update_count = 0
+        return out
+
+    def flush_metrics[
+        L: Logger = NoOpLogger
+    ](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        step: Int = 0,
+    ) raises -> MBPOMetrics:
+        """Drain accumulators into an MBPOMetrics bundle. If a logger
+        pointer is wired, also emit one log_scalar per metric field.
+        Resets accumulators on every call."""
+        var n = self._update_count if self._update_count > 0 else 1
+        var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        var bundle = MBPOMetrics(
+            actor_loss=LogScalar[DT](self._actor_L_accum * inv),
+            critic_loss=LogScalar[DT](self._critic_L_accum * inv),
+            alpha=LogScalar[DT](fexp(self.alpha_opt.value)),
+            n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
+        )
+        self._actor_L_accum = Scalar[DT](0.0)
+        self._critic_L_accum = Scalar[DT](0.0)
+        self._update_count = 0
+        if Bool(logger):
+            log_bundle(logger.value()[], bundle, step)
+        return bundle^
+
+    def flush_timer_log(mut self) -> String:
+        """No timer instrumentation yet (CPU-only trainer). Returns a
+        placeholder for API parity with SACTrainer/DQNTrainer."""
+        return String("MBPOTrainer: no timer instrumentation")
 
     # ─── OffPolicyAgentGpu surface (Tier-3 driver) ────────────
     #

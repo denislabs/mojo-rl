@@ -26,8 +26,11 @@ mb_* scratches before each PPOActorTrainStep / PPOCriticTrainStep.
 from std.gpu.host import DeviceContext
 from std.memory import alloc
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Module
+from mojo_rl.nn2.core.log_bundle import log_bundle
+from mojo_rl.nn2.core.metric import LogScalar
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.initializer import Xavier
 from mojo_rl.nn2.optimizer.adam import Adam
@@ -40,6 +43,7 @@ from .blocks.gae_step import PPOGAEStep
 from .blocks.minibatch_gather_step import PPOMinibatchGatherStep
 from .blocks.actor_train_step import PPOActorTrainStep
 from .blocks.critic_train_step import PPOCriticTrainStep
+from .metrics import PPOMetrics
 
 
 struct PPOTrainer[
@@ -111,6 +115,11 @@ struct PPOTrainer[
     var tracker: EpisodeTracker
     var _ep_returns: UnsafePointer[Scalar[DT], MutAnyOrigin]  # N_ENVS
 
+    # ── Train-step accumulators (summed across all minibatch updates) ────
+    var _actor_L_accum: Scalar[DT]
+    var _critic_L_accum: Scalar[DT]
+    var _update_count: Int
+
     def __init__(out self):
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
@@ -174,6 +183,9 @@ struct PPOTrainer[
             window_size=10, initial_fill=Scalar[DT](-1600.0),
         )
         self._ep_returns = null_p
+        self._actor_L_accum = Scalar[DT](0.0)
+        self._critic_L_accum = Scalar[DT](0.0)
+        self._update_count = 0
 
     @staticmethod
     def make(
@@ -401,13 +413,16 @@ struct PPOTrainer[
                 self.gather_step.gather[Self.train_target, Self.N_ENVS](
                     self.state, mb
                 )
-                _ = self.actor_train.step[
+                var aL = self.actor_train.step[
                     Self.train_target, Self.ROLLOUT_LEN, Self.N_ENVS,
                 ](self.state, self.actor, self.actor_opt)
-                _ = self.critic_train.step[
+                var cL = self.critic_train.step[
                     Self.train_target, Self.ACT_DIM, Self.ROLLOUT_LEN,
                     Self.N_ENVS,
                 ](self.state, self.critic, self.critic_opt)
+                self._actor_L_accum += aL
+                self._critic_L_accum += cL
+                self._update_count += 1
 
         # ── Reset rollout cursor + clear term buf.
         self.record_step.reset_rollout[
@@ -420,3 +435,52 @@ struct PPOTrainer[
 
     def ep_count(self) -> Int:
         return self.tracker.ep_count
+
+    # ─── Logging surface (parity with SACTrainer) ────────────────────────
+
+    def flush_train_log(
+        mut self,
+    ) -> Tuple[Scalar[DT], Scalar[DT], Int]:
+        """Return (mean_actor_loss, mean_critic_loss, n_updates) since
+        last flush. `n_updates` counts minibatch updates across the
+        K-epoch SGD inside one train_step. Resets accumulators."""
+        var n = self._update_count if self._update_count > 0 else 1
+        var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        var out = (
+            self._actor_L_accum * inv,
+            self._critic_L_accum * inv,
+            self._update_count,
+        )
+        self._actor_L_accum = Scalar[DT](0.0)
+        self._critic_L_accum = Scalar[DT](0.0)
+        self._update_count = 0
+        return out
+
+    def flush_metrics[
+        L: Logger = NoOpLogger
+    ](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        step: Int = 0,
+    ) raises -> PPOMetrics:
+        """Drain accumulators into a PPOMetrics bundle. If a logger
+        pointer is wired, also emit one log_scalar per metric field.
+        Resets accumulators on every call."""
+        var n = self._update_count if self._update_count > 0 else 1
+        var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        var bundle = PPOMetrics(
+            actor_loss=LogScalar[DT](self._actor_L_accum * inv),
+            critic_loss=LogScalar[DT](self._critic_L_accum * inv),
+            n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
+        )
+        self._actor_L_accum = Scalar[DT](0.0)
+        self._critic_L_accum = Scalar[DT](0.0)
+        self._update_count = 0
+        if Bool(logger):
+            log_bundle(logger.value()[], bundle, step)
+        return bundle^
+
+    def flush_timer_log(mut self) -> String:
+        """No timer instrumentation yet (on-policy trainer). Returns a
+        placeholder for API parity with SACTrainer/DQNTrainer."""
+        return String("PPOTrainer: no timer instrumentation")

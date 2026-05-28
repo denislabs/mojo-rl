@@ -36,7 +36,10 @@ unchanged. `pendulum_sac_nn2_driver.mojo` continues to produce
 
 from std.gpu.host import DeviceContext
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.checkpoint import save_state_v2, load_state_v2
+from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 
@@ -47,7 +50,14 @@ from ..training.driver_offpolicy import (
     run_offpolicy_train_batched,
     run_offpolicy_eval,
 )
+from ..core.checkpoint_helpers import (
+    save_optimizer_v2,
+    load_optimizer_v2,
+    save_scalar_adam_v2,
+    load_scalar_adam_v2,
+)
 
+from .metrics import SACMetrics
 from .trainer import SACTrainer
 
 
@@ -136,6 +146,7 @@ struct SACAgent[
         E: BatchedEnv,
         N_ENVS: Int = 1,
         NS: Int = 1,
+        L: Logger = NoOpLogger,
     ](
         mut self,
         mut env: E,
@@ -146,13 +157,18 @@ struct SACAgent[
         print_every: Int = 5_000,
         verbose: Bool = True,
         nstep_gamma: Scalar[DT] = 0.99,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     ) raises -> List[Scalar[DT]]:
         """Off-policy training via `run_offpolicy_train_batched`.
 
         Covers same-target (cpu+cpu, gpu+gpu) at any `N_ENVS >= 1`. Pass
         `N_ENVS` as a comptime method param when wrapping multiple envs,
         e.g. `agent.train[N_ENVS=8](env, total_timesteps=200_000)`.
-        """
+
+        Pass `logger=Optional[UnsafePointer[L, MutAnyOrigin]](
+        UnsafePointer(to=my_logger))` to stream `env/mean_ret` and
+        `env/ep_count` at `print_every` cadence. Default `L=NoOpLogger`
+        comptime-elides the emit path entirely (bit-identical no-op)."""
         var ctx = self.trainer.ctx
         return run_offpolicy_train_batched[
             SACTrainer[
@@ -164,6 +180,7 @@ struct SACAgent[
             E,
             N_ENVS,
             NS,
+            L,
         ](
             ctx,
             self.trainer,
@@ -174,10 +191,12 @@ struct SACAgent[
             print_every=print_every,
             verbose=verbose,
             nstep_gamma=nstep_gamma,
+            logger=logger,
         )
 
     def train_single[
         E: BoxContinuousActionEnv,
+        L: Logger = NoOpLogger,
     ](
         mut self,
         mut env: E,
@@ -185,6 +204,7 @@ struct SACAgent[
         *,
         print_every: Int = 1_000,
         verbose: Bool = True,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     ) raises -> List[Scalar[DT]]:
         """Single-env off-policy training via `run_offpolicy_train`.
         Covers `(env=cpu, train=cpu)` and `(env=cpu, train=gpu)` cross-
@@ -198,6 +218,7 @@ struct SACAgent[
                 Self.CRITIC,
             ],
             E,
+            L,
         ](
             self.trainer,
             env,
@@ -205,6 +226,7 @@ struct SACAgent[
             ctx=ctx,
             print_every=print_every,
             verbose=verbose,
+            logger=logger,
         )
 
     # ─── Evaluation ─────────────────────────────────────────────────────
@@ -268,3 +290,68 @@ struct SACAgent[
     def ep_count(self) -> Int:
         """Total completed episodes since training began."""
         return self.trainer.ep_count()
+
+    # ─── Metrics / logging passthrough ─────────────────────────────────
+
+    def flush_metrics[
+        L: Logger = NoOpLogger
+    ](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        step: Int = 0,
+    ) raises -> SACMetrics:
+        """Drain trainer accumulators into a SACMetrics bundle. Pass an
+        UnsafePointer-to-logger to also emit one `log_scalar` call per
+        metric field. Resets accumulators on every call."""
+        return self.trainer.flush_metrics[L](logger, step)
+
+    def flush_timer_log(mut self) -> String:
+        """Per-section wall-time report (resets accumulators)."""
+        return self.trainer.flush_timer_log()
+
+    # ─── Checkpointing (CPU only) ──────────────────────────────────────
+
+    def save(mut self, path: String) raises:
+        """Persist networks + optimizer state to `path/` (a directory
+        that must already exist). Replay buffer and episode tracker are
+        NOT included — resume starts with a fresh replay.
+
+        CPU-only: GPU agents store params in DeviceBuffers; this writes
+        the stale CPU mirror. A GPU sync helper will land in a follow-up."""
+        comptime if Self.train_target != "cpu":
+            raise Error(
+                "SACAgent.save: GPU save/load not yet supported. Train on"
+                " CPU or wait for the device-sync helper."
+            )
+        save_state_v2(self.trainer.actor, path + "/actor.ckpt")
+        save_state_v2(self.trainer.pair1.online, path + "/critic1.ckpt")
+        save_state_v2(self.trainer.pair2.online, path + "/critic2.ckpt")
+        save_optimizer_v2(self.trainer.actor_opt, path + "/actor_opt.ckpt")
+        save_optimizer_v2(self.trainer.critic1_opt, path + "/critic1_opt.ckpt")
+        save_optimizer_v2(self.trainer.critic2_opt, path + "/critic2_opt.ckpt")
+        save_scalar_adam_v2(self.trainer.alpha_opt, path + "/alpha_opt.ckpt")
+
+    def load(mut self, path: String) raises:
+        """Restore networks + optimizer state from a directory previously
+        written by `save()`. Target critics are hard-copied from their
+        online twins."""
+        comptime if Self.train_target != "cpu":
+            raise Error(
+                "SACAgent.load: GPU save/load not yet supported. Train on"
+                " CPU or wait for the device-sync helper."
+            )
+        load_state_v2(self.trainer.actor, path + "/actor.ckpt")
+        load_state_v2(self.trainer.pair1.online, path + "/critic1.ckpt")
+        load_state_v2(self.trainer.pair2.online, path + "/critic2.ckpt")
+        hard_copy_params[Self.train_target, M=Self.CRITIC](
+            self.trainer.pair1.online, self.trainer.pair1.target_net,
+            self.trainer.ctx,
+        )
+        hard_copy_params[Self.train_target, M=Self.CRITIC](
+            self.trainer.pair2.online, self.trainer.pair2.target_net,
+            self.trainer.ctx,
+        )
+        load_optimizer_v2(self.trainer.actor_opt, path + "/actor_opt.ckpt")
+        load_optimizer_v2(self.trainer.critic1_opt, path + "/critic1_opt.ckpt")
+        load_optimizer_v2(self.trainer.critic2_opt, path + "/critic2_opt.ckpt")
+        load_scalar_adam_v2(self.trainer.alpha_opt, path + "/alpha_opt.ckpt")

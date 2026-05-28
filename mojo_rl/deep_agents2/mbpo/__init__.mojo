@@ -3,3 +3,4 @@
 from .agent import MBPOAgent
 from .trainer import MBPOTrainer
 from .dynamics_ensemble_block import DynamicsEnsembleBlock
+from .metrics import MBPOMetrics

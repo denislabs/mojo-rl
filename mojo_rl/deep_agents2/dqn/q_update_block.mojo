@@ -125,7 +125,7 @@ struct DQNQUpdateBlock[
         mb_a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises -> Scalar[DT]:
-        """zero_grad → Q.forward → gather → MSE forward+vjp → scatter →
+        """Run zero_grad → Q.forward → gather → MSE forward+vjp → scatter →
         Q.vjp → opt.step. Returns scalar loss."""
         assert_tag_for["DQNQUpdateBlock", target](self.ts.target_tag)
 

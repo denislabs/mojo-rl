@@ -37,6 +37,7 @@ through the `BatchedEnv` trait.
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from ..data.n_step_replay import GPUNStepBuffer
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
@@ -205,6 +206,7 @@ trait OffPolicyAgentGpu(OffPolicyAgent):
 def run_offpolicy_train[
     A: OffPolicyAgent,
     E: BoxContinuousActionEnv,
+    L: Logger = NoOpLogger,
 ](
     mut trainer: A,
     mut env: E,
@@ -213,6 +215,7 @@ def run_offpolicy_train[
     ctx: Optional[DeviceContext] = None,
     print_every: Int = 1_000,
     verbose: Bool = True,
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> List[Scalar[DT]]:
     """Single-env off-policy training driver bound on the CPU env trait
     (`BoxContinuousActionEnv`). Covers (env_target=cpu, train_target=cpu)
@@ -358,6 +361,24 @@ def run_offpolicy_train[
                 "s",
             )
 
+        # Logger emit at the same cadence. Comptime-elided when
+        # L=NoOpLogger (default).
+        comptime if L.ENABLED:
+            if (
+                print_every > 0
+                and step % print_every == 0
+                and Bool(logger)
+            ):
+                logger.value()[].log_scalar(
+                    "env/mean_ret",
+                    Float64(trainer.mean_return()),
+                    step,
+                )
+                logger.value()[].log_scalar(
+                    "env/ep_count", Float64(trainer.ep_count()), step,
+                )
+                logger.value()[].flush()
+
     return ep_returns^
 
 
@@ -372,6 +393,7 @@ def run_offpolicy_train_batched[
     E: BatchedEnv,
     N_ENVS: Int = 1,
     NS: Int = 1,
+    L: Logger = NoOpLogger,
 ](
     ctx: Optional[DeviceContext],
     mut trainer: A,
@@ -383,9 +405,12 @@ def run_offpolicy_train_batched[
     print_every: Int = 5_000,
     verbose: Bool = True,
     nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> List[Scalar[DT]]:
-    """Tier-3 off-policy driver covering same-target (env_target ==
-    train_target) combinations through the `BatchedEnv` trait:
+    """Tier-3 off-policy driver covering same-target combinations.
+
+    Same-target means `env_target == train_target`. Routed through the
+    `BatchedEnv` trait:
 
       env_target | train_target | N_ENVS | covered
       -----------|--------------|--------|--------
@@ -488,6 +513,10 @@ def run_offpolicy_train_batched[
     var step_idx: Int = 0
     var iter_idx: Int = 0
     var next_print: Int = print_every
+    # Independent counter for logger emit; only read inside the
+    # `comptime if L.ENABLED` block so the default (NoOpLogger) path
+    # never reads or writes it after this initialization.
+    var next_log: Int = print_every
 
     while step_idx < total_env_steps:
         # ── 1. Snapshot prev_obs from env.obs_ptr().
@@ -627,6 +656,27 @@ def run_offpolicy_train_batched[
                 "s",
             )
             next_print += print_every
+
+        # Logger emit at the same cadence (independent of verbose).
+        # Comptime-elided when L=NoOpLogger (default).
+        comptime if L.ENABLED:
+            if (
+                print_every > 0
+                and step_idx >= next_log
+                and Bool(logger)
+            ):
+                logger.value()[].log_scalar(
+                    "env/mean_ret",
+                    Float64(trainer.mean_return()),
+                    step_idx,
+                )
+                logger.value()[].log_scalar(
+                    "env/ep_count",
+                    Float64(trainer.ep_count()),
+                    step_idx,
+                )
+                logger.value()[].flush()
+                next_log += print_every
 
     return ep_returns^
 

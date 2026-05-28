@@ -20,6 +20,7 @@ target consistently across env + trainer.
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from .batched_env import BatchedEnv
@@ -89,6 +90,7 @@ trait OnPolicyAgent(Movable, ImplicitlyDestructible):
 def run_onpolicy_train[
     A: OnPolicyAgent,
     E: BoxContinuousActionEnv,
+    L: Logger = NoOpLogger,
 ](
     mut trainer: A,
     mut env: E,
@@ -98,6 +100,7 @@ def run_onpolicy_train[
     act_dim: Int,
     print_every: Int = 1_000,
     verbose: Bool = True,
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> List[Scalar[DT]]:
     """Step-based on-policy single-env training driver.
 
@@ -110,7 +113,8 @@ def run_onpolicy_train[
         trainer: Any nn2 on-policy trainer (PPO today).
         env: Any `BoxContinuousActionEnv`.
         total_timesteps: Number of env steps to run.
-        obs_dim, act_dim: Observation / action dimensionalities.
+        obs_dim: Observation dimensionality.
+        act_dim: Action dimensionality.
         print_every: Verbose status-line cadence (env-steps). 0 disables.
         verbose: Print a per-cadence status line.
 
@@ -167,6 +171,24 @@ def run_onpolicy_train[
                 " ep=", trainer.ep_count(),
                 " elapsed=", elapsed, "s",
             )
+
+        # Logger emit at the same cadence. Comptime-elided when
+        # L=NoOpLogger (default).
+        comptime if L.ENABLED:
+            if (
+                print_every > 0
+                and step % print_every == 0
+                and Bool(logger)
+            ):
+                logger.value()[].log_scalar(
+                    "env/mean_ret",
+                    Float64(trainer.mean_return()),
+                    step,
+                )
+                logger.value()[].log_scalar(
+                    "env/ep_count", Float64(trainer.ep_count()), step,
+                )
+                logger.value()[].flush()
 
     return ep_returns^
 
@@ -241,6 +263,7 @@ trait OnPolicyAgentBatched(Movable, ImplicitlyDestructible):
 def run_onpolicy_train_batched[
     A: OnPolicyAgentBatched,
     E: BatchedEnv,
+    L: Logger = NoOpLogger,
 ](
     ctx: Optional[DeviceContext],
     mut trainer: A,
@@ -250,10 +273,12 @@ def run_onpolicy_train_batched[
     rng_seed: UInt64 = UInt64(42),
     print_every: Int = 5_000,
     verbose: Bool = True,
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> List[Scalar[DT]]:
-    """Tier-3 on-policy driver covering same-target combinations
-    (env_target == train_target) × any N_ENVS through the `BatchedEnv`
-    trait:
+    """Tier-3 on-policy driver covering same-target combinations.
+
+    Same-target means `env_target == train_target` × any N_ENVS through
+    the `BatchedEnv` trait:
 
       env_target | train_target | N_ENVS | covered
       -----------|--------------|--------|--------
@@ -335,6 +360,10 @@ def run_onpolicy_train_batched[
     var step_idx: Int = 0
     var iter_idx: Int = 0
     var next_print: Int = print_every
+    # Independent counter for logger cadence — only read inside the
+    # `comptime if L.ENABLED` block. Bit-identity preserved when
+    # L=NoOpLogger (default).
+    var next_log: Int = print_every
     var last_ep_count = trainer.ep_count()
 
     while step_idx < total_env_steps:
@@ -453,5 +482,26 @@ def run_onpolicy_train_batched[
                 " elapsed=", elapsed, "s",
             )
             next_print += print_every
+
+        # Logger emit at the same cadence (independent of verbose).
+        # Comptime-elided when L=NoOpLogger (default).
+        comptime if L.ENABLED:
+            if (
+                print_every > 0
+                and step_idx >= next_log
+                and Bool(logger)
+            ):
+                logger.value()[].log_scalar(
+                    "env/mean_ret",
+                    Float64(trainer.mean_return()),
+                    step_idx,
+                )
+                logger.value()[].log_scalar(
+                    "env/ep_count",
+                    Float64(trainer.ep_count()),
+                    step_idx,
+                )
+                logger.value()[].flush()
+                next_log += print_every
 
     return ep_returns^

@@ -31,6 +31,7 @@ Batched driver (Tier-3) deferred until a consumer needs it.
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from .driver_scratch import DriverScratch
@@ -144,6 +145,7 @@ trait OffPolicyDiscreteAgent(Movable, ImplicitlyDestructible):
 def run_offpolicy_discrete_train[
     A: OffPolicyDiscreteAgent,
     E: BoxDiscreteActionEnv,
+    L: Logger = NoOpLogger,
 ](
     mut trainer: A,
     mut env: E,
@@ -152,6 +154,7 @@ def run_offpolicy_discrete_train[
     ctx: Optional[DeviceContext] = None,
     print_every: Int = 1_000,
     verbose: Bool = True,
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> List[Scalar[DT]]:
     """Single-env discrete off-policy training driver.
 
@@ -274,6 +277,24 @@ def run_offpolicy_discrete_train[
                 elapsed,
                 "s",
             )
+
+        # Logger emit at the same cadence. Comptime-elided when
+        # L=NoOpLogger (default).
+        comptime if L.ENABLED:
+            if (
+                print_every > 0
+                and step % print_every == 0
+                and Bool(logger)
+            ):
+                logger.value()[].log_scalar(
+                    "env/mean_ret",
+                    Float64(trainer.mean_return()),
+                    step,
+                )
+                logger.value()[].log_scalar(
+                    "env/ep_count", Float64(trainer.ep_count()), step,
+                )
+                logger.value()[].flush()
 
     return ep_returns^
 

@@ -86,6 +86,7 @@ struct DQNAgent[
 
     def train[
         E: BoxDiscreteActionEnv,
+        L: Logger = NoOpLogger,
     ](
         mut self,
         mut env: E,
@@ -93,6 +94,7 @@ struct DQNAgent[
         *,
         print_every: Int = 1_000,
         verbose: Bool = True,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     ) raises -> List[Scalar[DT]]:
         """Single-env discrete off-policy training via
         `run_offpolicy_discrete_train`. Covers `(env=cpu, train=cpu)` and
@@ -103,6 +105,7 @@ struct DQNAgent[
                 Self.train_target, Self.SAMPLE, Self.Q_NET, Self.DOUBLE,
             ],
             E,
+            L,
         ](
             self.trainer,
             env,
@@ -110,6 +113,7 @@ struct DQNAgent[
             ctx=ctx,
             print_every=print_every,
             verbose=verbose,
+            logger=logger,
         )
 
     # ─── Evaluation ─────────────────────────────────────────────────────

@@ -154,11 +154,11 @@ struct NStepBuffer[N: Int, OBS: Int, ACT: Int](
         transition (`valid=True`) once ready, otherwise `valid=False`.
 
         Args:
-            obs_p: current obs list of length OBS.
-            action_p: action list of length ACT.
-            reward: per-step reward.
-            next_obs_p: next obs list of length OBS.
-            done: episode-done flag.
+            obs_p: Current obs list of length OBS.
+            action_p: Action list of length ACT.
+            reward: Per-step reward.
+            next_obs_p: Next obs list of length OBS.
+            done: Episode-done flag.
         """
         var c = self.count
         for d in range(Self.OBS):

@@ -1,4 +1,4 @@
-"""seed_grad_inv_batch — fill a [BATCH, 1] gradient tile with 1/BATCH.
+"""Seed gradient tile of shape [BATCH, 1] with 1/BATCH.
 
 This is the standard "seed the backward pass for a mean-over-batch
 loss" helper: when the forward output is `loss_per_b` of shape
