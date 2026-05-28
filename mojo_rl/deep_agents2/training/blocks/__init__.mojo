@@ -16,7 +16,7 @@ from .uniform_sample_cpu_step import UniformSampleCpuStep
 from .uniform_sample_gpu_step import UniformSampleGpuStep
 from .per_sample_gpu_step     import PerSampleGpuStep
 from .twin_critic_step       import TwinCriticStep
-from .polyak_step            import PolyakStep
+from .polyak_step            import PolyakStep, SinglePolyakStep
 from .single_critic_step     import SingleCriticStep
 from .dual_sample_cpu_step    import DualSampleCpuStep
 from .n_step_sample_cpu_step  import NStepSampleCpuStep

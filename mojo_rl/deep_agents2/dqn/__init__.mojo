@@ -2,3 +2,4 @@
 
 from .agent import DQNAgent
 from .trainer import DQNTrainer
+from .metrics import DQNMetrics

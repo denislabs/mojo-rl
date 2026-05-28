@@ -16,7 +16,10 @@ Usage:
 
 from std.gpu.host import DeviceContext
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.checkpoint import save_state_v2, load_state_v2
+from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 
@@ -25,7 +28,12 @@ from ..training.driver_offpolicy_discrete import (
     run_offpolicy_discrete_train,
     run_offpolicy_discrete_eval,
 )
+from ..core.checkpoint_helpers import (
+    save_optimizer_v2,
+    load_optimizer_v2,
+)
 
+from .metrics import DQNMetrics
 from .trainer import DQNTrainer
 
 
@@ -146,3 +154,46 @@ struct DQNAgent[
 
     def ep_count(self) -> Int:
         return self.trainer.ep_count()
+
+    # ─── Metrics / logging passthrough ─────────────────────────────────
+
+    def flush_metrics[
+        L: Logger = NoOpLogger
+    ](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        step: Int = 0,
+    ) raises -> DQNMetrics:
+        """Drain trainer accumulators into a DQNMetrics bundle."""
+        return self.trainer.flush_metrics[L](logger, step)
+
+    def flush_timer_log(mut self) -> String:
+        return self.trainer.flush_timer_log()
+
+    # ─── Checkpointing (CPU only) ──────────────────────────────────────
+
+    def save(mut self, path: String) raises:
+        """Persist Q-network + optimizer to `path/` (must exist).
+        CPU-only — see SACAgent.save for the GPU caveat."""
+        comptime if Self.train_target != "cpu":
+            raise Error(
+                "DQNAgent.save: GPU save/load not yet supported. Train on"
+                " CPU or wait for the device-sync helper."
+            )
+        save_state_v2(self.trainer.pair.online, path + "/q_net.ckpt")
+        save_optimizer_v2(self.trainer.q_opt, path + "/q_opt.ckpt")
+
+    def load(mut self, path: String) raises:
+        """Restore Q-network + optimizer. Target net hard-copied from
+        the online net."""
+        comptime if Self.train_target != "cpu":
+            raise Error(
+                "DQNAgent.load: GPU save/load not yet supported. Train on"
+                " CPU or wait for the device-sync helper."
+            )
+        load_state_v2(self.trainer.pair.online, path + "/q_net.ckpt")
+        hard_copy_params[Self.train_target, M=Self.Q_NET](
+            self.trainer.pair.online, self.trainer.pair.target_net,
+            self.trainer.ctx,
+        )
+        load_optimizer_v2(self.trainer.q_opt, path + "/q_opt.ckpt")
