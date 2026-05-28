@@ -1,30 +1,20 @@
-"""Sequential[*MODULES] — variadic chain of N Modules, target chosen per call.
+"""Sequential[*MODULES] — variadic chain of N `Module` children.
 
-Phase 2.4: target is a comptime method param. Because every child is
-`Defaultable` (Phase 2.4 invariant), `Tuple[*MODULES]()` works, and
-`Sequential.make[target, INIT](ctx?)` can recursively build each child:
+Mid-slabs persist on the combinator; lazy-grown to
+`BATCH × MODULES[i].OUT_DIM` on first call. Forward and backward share
+the same slabs — Sequential IS the orchestrator, the slabs ARE the
+inter-module wiring.
 
-```mojo
-@staticmethod
-def make[target, INIT](ctx) raises -> Self:
-    var s = Self()                                  # children = default Tuple
-    comptime for i in range(N):
-        s.children[i] = MODULES[i].make[target, INIT](ctx)
-    return s^
-```
+Composition rule (checked at compile time): for each adjacent pair
+`(child_i, child_{i+1})`, `child_i.OUT_DIM == child_{i+1}.IN_DIM`.
 
-Composition rule (checked at compile time):
-  - For each adjacent pair `(child_i, child_{i+1})`,
-    `child_i.OUT_DIM == child_{i+1}.IN_DIM`.
+`backward[mode]` flows the comptime `mode` to every child: `"all"`
+accumulates param grads, `"input_only"` skips them.
 
-**Persistent intermediate buffers.** The N-1 transient slabs needed
-between adjacent children are stored on `Sequential` and lazily grown
-to `BATCH × MODULES[i].OUT_DIM` on the first forward/backward at that
-BATCH. Forward and backward share the slabs (no overlap; each child's
-internal cache holds whatever backward needs from forward).
-
-Per-call slab allocation would race the GPU queue and exhaust device
-memory at scale — same lesson as nn v1's workspace pattern.
+**Backward-order safety**: leaves that obey the param-grads-before-
+grad_input invariant (e.g. Linear) are safe when their
+`_cached_input_ptr` aliases the predecessor's mid slab — the slab
+isn't reused as a grad target until that child's backward returns.
 """
 
 from std.memory import alloc
@@ -34,63 +24,51 @@ from layout import TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
-    Module, ParamVisitor, Initializer,
-    AMPPolicy, NoAMP,
-    TARGET_UNINIT, TARGET_CPU, TARGET_GPU, target_tag_for,
+    Initializer, AMPPolicy, NoAMP, ParamVisitor,
 )
+from ..core.module import Module, typed_view, typed_view_mut
+from ..core.target_storage import TargetStorage, assert_tag_for
 
 
 struct Sequential[*MODULES: Module](Module):
+    comptime ARITY: Int = 1
     comptime N = Self.MODULES.size
-    comptime IN_DIM = Self.MODULES[0].IN_DIM
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.MODULES[0].IN_DIMS[0])
     comptime OUT_DIM = Self.MODULES[Self.N - 1].OUT_DIM
 
     var children: Tuple[*Self.MODULES]
-    var ctx: Optional[DeviceContext]
 
     # Persistent intermediate buffers (N-1 entries each, lazy-grown).
     var mid_cpu: List[UnsafePointer[Scalar[DT], MutAnyOrigin]]
     var mid_dev: List[DeviceBuffer[DT]]
     var mid_caps: List[Int]
 
-    var _target_tag: Int8
-    var _inference: Bool
+    var ts: TargetStorage
 
-    # ------------------------------------------------------------------
-    # Defaultable: each child is Defaultable, so `Tuple[*MODULES]()`
-    # default-constructs every slot.
-    # ------------------------------------------------------------------
+    # ----- Defaultable -----------------------------------------------------
 
     def __init__(out self):
-        """Defaultable form — empty placeholders, tag=UNINIT. Required so
-        `Tuple[*MODULES]()` default-construction works inside nested
-        Sequentials."""
         comptime assert Self.N >= 1, "Sequential requires at least one child"
         comptime if Self.N >= 2:
             comptime for i in range(Self.N - 1):
                 comptime assert (
-                    Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIM
+                    Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIMS[0]
                 ), "Sequential: adjacent child dims must match"
         self.children = Tuple[*Self.MODULES]()
-        self.ctx = None
         self.mid_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
         self.mid_dev = List[DeviceBuffer[DT]]()
         self.mid_caps = List[Int]()
-        self._target_tag = TARGET_UNINIT
-        self._inference = False
+        self.ts = TargetStorage.make_uninit()
 
     def __init__(out self, var *children: *Self.MODULES):
-        """CPU variadic constructor — accepts pre-built CPU children
-        (e.g. via `Linear[...].make["cpu", INIT=Kaiming]()`). Sets
-        tag=CPU. Each child is responsible for its own tag check."""
+        """CPU variadic constructor — accepts pre-built CPU children."""
         comptime assert Self.N >= 1, "Sequential requires at least one child"
         comptime if Self.N >= 2:
             comptime for i in range(Self.N - 1):
                 comptime assert (
-                    Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIM
+                    Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIMS[0]
                 ), "Sequential: adjacent child dims must match"
         self.children = Tuple(*children^)
-        self.ctx = None
         self.mid_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
         self.mid_dev = List[DeviceBuffer[DT]]()
         self.mid_caps = List[Int]()
@@ -99,8 +77,7 @@ struct Sequential[*MODULES: Module](Module):
                 var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](1)
                 self.mid_cpu.append(p)
                 self.mid_caps.append(0)
-        self._target_tag = TARGET_CPU
-        self._inference = False
+        self.ts = TargetStorage.make_cpu()
 
     def __init__(out self, var *children: *Self.MODULES, ctx: DeviceContext) raises:
         """GPU variadic constructor — accepts pre-built GPU children."""
@@ -108,10 +85,9 @@ struct Sequential[*MODULES: Module](Module):
         comptime if Self.N >= 2:
             comptime for i in range(Self.N - 1):
                 comptime assert (
-                    Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIM
+                    Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIMS[0]
                 ), "Sequential: adjacent child dims must match"
         self.children = Tuple(*children^)
-        self.ctx = ctx
         self.mid_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
         self.mid_dev = List[DeviceBuffer[DT]]()
         self.mid_caps = List[Int]()
@@ -119,65 +95,47 @@ struct Sequential[*MODULES: Module](Module):
             for _ in range(Self.N - 1):
                 self.mid_dev.append(ctx.enqueue_create_buffer[DT](1))
                 self.mid_caps.append(0)
-        self._target_tag = TARGET_GPU
-        self._inference = False
+        self.ts = TargetStorage.make_gpu(ctx)
 
-    # ------------------------------------------------------------------
-    # make[target, INIT] — recursive over children.
-    # ------------------------------------------------------------------
+    # ----- Factories -------------------------------------------------------
 
     @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        """CPU factory — recursively builds each child via
-        `MODULES[i].make[target='cpu', INIT]()`. Allocates CPU mid slabs
-        as length-1 stubs (lazy-grown on first forward)."""
-        comptime assert target == "cpu", (
-            "Sequential.make[target='gpu', INIT] requires a DeviceContext"
+    def make[
+        target: StaticString, INIT: Initializer
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory — recurses via
+        `MODULES[i].make[target, INIT](ctx=ctx)`."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Sequential: target must be 'cpu' or 'gpu'"
         )
         var s = Self()
         comptime for i in range(Self.N):
-            s.children[i] = Self.MODULES[i].make[target, INIT]()
-        comptime if Self.N >= 2:
-            for _ in range(Self.N - 1):
-                var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](1)
-                s.mid_cpu.append(p)
-                s.mid_caps.append(0)
-        s._target_tag = TARGET_CPU
-        return s^
-
-    @staticmethod
-    def make[target: StaticString, INIT: Initializer](ctx: DeviceContext) raises -> Self:
-        """GPU factory — recurses via `MODULES[i].make[target='gpu', INIT](ctx)`."""
-        comptime assert target == "gpu", (
-            "Sequential.make[target='cpu', INIT](ctx) — drop ctx for CPU"
-        )
-        var s = Self()
-        comptime for i in range(Self.N):
-            s.children[i] = Self.MODULES[i].make[target, INIT](ctx)
-        s.ctx = ctx
-        comptime if Self.N >= 2:
-            for _ in range(Self.N - 1):
-                s.mid_dev.append(ctx.enqueue_create_buffer[DT](1))
-                s.mid_caps.append(0)
-        s._target_tag = TARGET_GPU
+            s.children[i] = Self.MODULES[i].make[target, INIT](ctx=ctx)
+        comptime if target == "cpu":
+            comptime if Self.N >= 2:
+                for _ in range(Self.N - 1):
+                    var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](1)
+                    s.mid_cpu.append(p)
+                    s.mid_caps.append(0)
+            s.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Sequential.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            comptime if Self.N >= 2:
+                for _ in range(Self.N - 1):
+                    s.mid_dev.append(ctx_v.enqueue_create_buffer[DT](1))
+                    s.mid_caps.append(0)
+            s.ts = TargetStorage.make_gpu(ctx_v)
         return s^
 
     def __del__(deinit self):
         for p in self.mid_cpu:
             p.free()
 
-    # ------------------------------------------------------------------
-    # Tag check + lazy-grow helpers.
-    # ------------------------------------------------------------------
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "Sequential: method called with [target='" + String(target)
-                + "'] but module was make'd for a different target "
-                + "(tag=" + String(Int(self._target_tag)) + ")"
-            )
+    # ----- Lazy-grow helpers ----------------------------------------------
 
     def _ensure_mid_cpu[i: Int](mut self, needed: Int):
         if self.mid_caps[i] < needed:
@@ -187,12 +145,10 @@ struct Sequential[*MODULES: Module](Module):
 
     def _ensure_mid_gpu[i: Int](mut self, needed: Int) raises:
         if self.mid_caps[i] < needed:
-            self.mid_dev[i] = self.ctx.value().enqueue_create_buffer[DT](needed)
+            self.mid_dev[i] = self.ts.ctx.value().enqueue_create_buffer[DT](needed)
             self.mid_caps[i] = needed
 
-    # ------------------------------------------------------------------
-    # Forward — chain N children through N-1 persistent slabs.
-    # ------------------------------------------------------------------
+    # ----- Forward ---------------------------------------------------------
 
     def forward[
         target: StaticString,
@@ -200,116 +156,88 @@ struct Sequential[*MODULES: Module](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank  == 2, "input must be rank-2"
-        comptime assert output.flat_rank == 2, "output must be rank-2"
-        self._assert_tag[target]()
+        assert_tag_for["Sequential", target](self.ts.target_tag)
+        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if Self.N == 1:
-            self.children[0].forward[target, BATCH, POLICY=POLICY](input, output)
+            self.children[0].forward[target, BATCH, POLICY=POLICY](input, output=output_v)
         else:
             comptime if target == "cpu":
-                _forward_cpu[target, BATCH, POLICY=POLICY](self, input, output)
+                _forward_cpu[target, BATCH, POLICY=POLICY](self, input, output_v)
             else:
-                _forward_gpu[target, BATCH, POLICY=POLICY](self, input, output)
+                _forward_gpu[target, BATCH, POLICY=POLICY](self, input, output_v)
 
-    # ------------------------------------------------------------------
-    # Backward — reverse traversal, same N-1 slabs.
-    # ------------------------------------------------------------------
+    # ----- Backward --------------------------------------------------------
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
-        comptime assert grad_input.flat_rank  == 2, "grad_input must be rank-2"
-        self._assert_tag[target]()
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        assert_tag_for["Sequential", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if Self.N == 1:
-            self.children[0].backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)
+            self.children[0].vjp[
+                target, BATCH, POLICY=POLICY, mode=mode,
+            ](grad_output_v, grad_input_v)
         else:
             comptime if target == "cpu":
-                _backward_cpu[target, BATCH, POLICY=POLICY](self, grad_output, grad_input)
+                _backward_cpu[target, BATCH, POLICY=POLICY, mode=mode](
+                    self, grad_output_v, grad_input_v,
+                )
             else:
-                _backward_gpu[target, BATCH, POLICY=POLICY](self, grad_output, grad_input)
+                _backward_gpu[target, BATCH, POLICY=POLICY, mode=mode](
+                    self, grad_output_v, grad_input_v,
+                )
 
-    # ------------------------------------------------------------------
-    # backward_input — same chain as backward, but every child uses its
-    # own `backward_input` so no inner Linear/LayerNorm writes grad_w.
-    # ------------------------------------------------------------------
-
-    def backward_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        mut grad_input: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-    ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output must be rank-2"
-        comptime assert grad_input.flat_rank  == 2, "grad_input must be rank-2"
-        self._assert_tag[target]()
-
-        comptime if Self.N == 1:
-            self.children[0].backward_input[target, BATCH, POLICY=POLICY](grad_output, grad_input)
-        else:
-            comptime if target == "cpu":
-                _backward_input_cpu[target, BATCH, POLICY=POLICY](self, grad_output, grad_input)
-            else:
-                _backward_input_gpu[target, BATCH, POLICY=POLICY](self, grad_output, grad_input)
-
-    # ------------------------------------------------------------------
-    # for_each_param — recurse with indexed prefix.
-    # ------------------------------------------------------------------
+    # ----- Walkers ---------------------------------------------------------
 
     def for_each_param[
         target: StaticString,
         V: ParamVisitor,
-    ](
-        mut self,
-        prefix: String,
-        mut visitor: V,
-    ) raises:
-        self._assert_tag[target]()
+    ](mut self, prefix: String, mut visitor: V) raises:
+        assert_tag_for["Sequential", target](self.ts.target_tag)
         var sep = "." if prefix.byte_length() > 0 else ""
         comptime for i in range(Self.N):
-            self.children[i].for_each_param[target](
-                prefix + sep + String(i), visitor
+            self.children[i].for_each_param[target, V](
+                prefix + sep + String(i), visitor,
             )
 
-    def set_inference(mut self, value: Bool):
-        # Set the flag on this combinator and recurse into every child.
-        self._inference = value
+    def zero_grad[target: StaticString](mut self) raises:
+        assert_tag_for["Sequential", target](self.ts.target_tag)
         comptime for i in range(Self.N):
-            self.children[i].set_inference(value)
+            self.children[i].zero_grad[target]()
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Free functions for forward/backward bodies.
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# Free functions for forward / backward bodies.
+# ──────────────────────────────────────────────────────────────────────
 
 
 def _forward_cpu[
@@ -320,11 +248,12 @@ def _forward_cpu[
 ](
     mut seq: Sequential[*MODULES],
     input: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
     mut output: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
 ) raises:
     comptime N = MODULES.size
@@ -334,15 +263,23 @@ def _forward_cpu[
 
     comptime for i in range(N):
         comptime if i == 0:
-            var out_mid = TileTensor(seq.mid_cpu[0], row_major[BATCH, MODULES[0].OUT_DIM]())
-            seq.children[0].forward[target, BATCH, POLICY=POLICY](input, out_mid)
+            var out_mid = TileTensor(
+                seq.mid_cpu[0], row_major[BATCH, MODULES[0].OUT_DIM](),
+            )
+            seq.children[0].forward[target, BATCH, POLICY=POLICY](input, output=out_mid)
         elif i == N - 1:
-            var in_mid = TileTensor(seq.mid_cpu[N - 2], row_major[BATCH, MODULES[N - 1].IN_DIM]())
-            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output)
+            var in_mid = TileTensor(
+                seq.mid_cpu[N - 2], row_major[BATCH, MODULES[N - 1].IN_DIMS[0]](),
+            )
+            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output=output)
         else:
-            var in_mid  = TileTensor(seq.mid_cpu[i - 1], row_major[BATCH, MODULES[i].IN_DIM]())
-            var out_mid = TileTensor(seq.mid_cpu[i],     row_major[BATCH, MODULES[i].OUT_DIM]())
-            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, out_mid)
+            var in_mid  = TileTensor(
+                seq.mid_cpu[i - 1], row_major[BATCH, MODULES[i].IN_DIMS[0]](),
+            )
+            var out_mid = TileTensor(
+                seq.mid_cpu[i], row_major[BATCH, MODULES[i].OUT_DIM](),
+            )
+            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output=out_mid)
 
 
 def _forward_gpu[
@@ -353,11 +290,12 @@ def _forward_gpu[
 ](
     mut seq: Sequential[*MODULES],
     input: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
     mut output: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
 ) raises:
     comptime N = MODULES.size
@@ -365,39 +303,40 @@ def _forward_gpu[
     comptime for i in range(N - 1):
         seq._ensure_mid_gpu[i](BATCH * MODULES[i].OUT_DIM)
 
-    # Launder the slab pointers through MutAnyOrigin so Mojo's aliasing
-    # analysis doesn't see adjacent slabs (different DeviceBuffers) as
-    # potential aliases via `seq.mid_dev`'s origin.
+    # Launder slab ptrs through MutAnyOrigin so Mojo's aliasing analysis
+    # doesn't flag adjacent slab refs (distinct DeviceBuffers) as aliases.
     comptime for i in range(N):
         comptime if i == 0:
-            var p:  UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[0].unsafe_ptr()
+            var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[0].unsafe_ptr()
             var out_mid = TileTensor(p, row_major[BATCH, MODULES[0].OUT_DIM]())
-            seq.children[0].forward[target, BATCH, POLICY=POLICY](input, out_mid)
+            seq.children[0].forward[target, BATCH, POLICY=POLICY](input, output=out_mid)
         elif i == N - 1:
-            var p:  UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[N - 2].unsafe_ptr()
-            var in_mid = TileTensor(p, row_major[BATCH, MODULES[N - 1].IN_DIM]())
-            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output)
+            var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[N - 2].unsafe_ptr()
+            var in_mid = TileTensor(p, row_major[BATCH, MODULES[N - 1].IN_DIMS[0]]())
+            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output=output)
         else:
             var pi: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i - 1].unsafe_ptr()
             var po: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i].unsafe_ptr()
-            var in_mid  = TileTensor(pi, row_major[BATCH, MODULES[i].IN_DIM]())
+            var in_mid  = TileTensor(pi, row_major[BATCH, MODULES[i].IN_DIMS[0]]())
             var out_mid = TileTensor(po, row_major[BATCH, MODULES[i].OUT_DIM]())
-            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, out_mid)
+            seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output=out_mid)
 
 
 def _backward_cpu[
     target: StaticString,
     BATCH: Int,
     POLICY: AMPPolicy,
+    mode: StaticString,
     *MODULES: Module,
 ](
     mut seq: Sequential[*MODULES],
     grad_output: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
     mut grad_input: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
 ) raises:
     comptime N = MODULES.size
@@ -408,103 +347,46 @@ def _backward_cpu[
     comptime for j in range(N):
         comptime i = N - 1 - j
         comptime if i == N - 1:
-            var out_grad = TileTensor(seq.mid_cpu[N - 2], row_major[BATCH, MODULES[N - 1].IN_DIM]())
-            seq.children[N - 1].backward[target, BATCH, POLICY=POLICY](grad_output, out_grad)
+            var out_grad = TileTensor(
+                seq.mid_cpu[N - 2], row_major[BATCH, MODULES[N - 1].IN_DIMS[0]](),
+            )
+            seq.children[N - 1].vjp[
+                target, BATCH, POLICY=POLICY, mode=mode,
+            ](grad_output, out_grad)
         elif i == 0:
-            var in_grad = TileTensor(seq.mid_cpu[0], row_major[BATCH, MODULES[0].OUT_DIM]())
-            seq.children[0].backward[target, BATCH, POLICY=POLICY](in_grad, grad_input)
+            var in_grad = TileTensor(
+                seq.mid_cpu[0], row_major[BATCH, MODULES[0].OUT_DIM](),
+            )
+            seq.children[0].vjp[
+                target, BATCH, POLICY=POLICY, mode=mode,
+            ](in_grad, grad_input)
         else:
-            var in_grad  = TileTensor(seq.mid_cpu[i],     row_major[BATCH, MODULES[i].OUT_DIM]())
-            var out_grad = TileTensor(seq.mid_cpu[i - 1], row_major[BATCH, MODULES[i].IN_DIM]())
-            seq.children[i].backward[target, BATCH, POLICY=POLICY](in_grad, out_grad)
+            var in_grad  = TileTensor(
+                seq.mid_cpu[i], row_major[BATCH, MODULES[i].OUT_DIM](),
+            )
+            var out_grad = TileTensor(
+                seq.mid_cpu[i - 1], row_major[BATCH, MODULES[i].IN_DIMS[0]](),
+            )
+            seq.children[i].vjp[
+                target, BATCH, POLICY=POLICY, mode=mode,
+            ](in_grad, out_grad)
 
 
 def _backward_gpu[
     target: StaticString,
     BATCH: Int,
     POLICY: AMPPolicy,
+    mode: StaticString,
     *MODULES: Module,
 ](
     mut seq: Sequential[*MODULES],
     grad_output: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
     mut grad_input: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
-    ],
-) raises:
-    comptime N = MODULES.size
-
-    comptime for i in range(N - 1):
-        seq._ensure_mid_gpu[i](BATCH * MODULES[i].OUT_DIM)
-
-    # Same MutAnyOrigin laundering as _forward_gpu (see comment there).
-    comptime for j in range(N):
-        comptime i = N - 1 - j
-        comptime if i == N - 1:
-            var p:  UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[N - 2].unsafe_ptr()
-            var out_grad = TileTensor(p, row_major[BATCH, MODULES[N - 1].IN_DIM]())
-            seq.children[N - 1].backward[target, BATCH, POLICY=POLICY](grad_output, out_grad)
-        elif i == 0:
-            var p:  UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[0].unsafe_ptr()
-            var in_grad = TileTensor(p, row_major[BATCH, MODULES[0].OUT_DIM]())
-            seq.children[0].backward[target, BATCH, POLICY=POLICY](in_grad, grad_input)
-        else:
-            var pi: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i].unsafe_ptr()
-            var po: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i - 1].unsafe_ptr()
-            var in_grad  = TileTensor(pi, row_major[BATCH, MODULES[i].OUT_DIM]())
-            var out_grad = TileTensor(po, row_major[BATCH, MODULES[i].IN_DIM]())
-            seq.children[i].backward[target, BATCH, POLICY=POLICY](in_grad, out_grad)
-
-
-def _backward_input_cpu[
-    target: StaticString,
-    BATCH: Int,
-    POLICY: AMPPolicy,
-    *MODULES: Module,
-](
-    mut seq: Sequential[*MODULES],
-    grad_output: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-    ],
-    mut grad_input: TileTensor[
-        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
-    ],
-) raises:
-    comptime N = MODULES.size
-
-    comptime for i in range(N - 1):
-        seq._ensure_mid_cpu[i](BATCH * MODULES[i].OUT_DIM)
-
-    comptime for j in range(N):
-        comptime i = N - 1 - j
-        comptime if i == N - 1:
-            var out_grad = TileTensor(seq.mid_cpu[N - 2], row_major[BATCH, MODULES[N - 1].IN_DIM]())
-            seq.children[N - 1].backward_input[target, BATCH, POLICY=POLICY](grad_output, out_grad)
-        elif i == 0:
-            var in_grad = TileTensor(seq.mid_cpu[0], row_major[BATCH, MODULES[0].OUT_DIM]())
-            seq.children[0].backward_input[target, BATCH, POLICY=POLICY](in_grad, grad_input)
-        else:
-            var in_grad  = TileTensor(seq.mid_cpu[i],     row_major[BATCH, MODULES[i].OUT_DIM]())
-            var out_grad = TileTensor(seq.mid_cpu[i - 1], row_major[BATCH, MODULES[i].IN_DIM]())
-            seq.children[i].backward_input[target, BATCH, POLICY=POLICY](in_grad, out_grad)
-
-
-def _backward_input_gpu[
-    target: StaticString,
-    BATCH: Int,
-    POLICY: AMPPolicy,
-    *MODULES: Module,
-](
-    mut seq: Sequential[*MODULES],
-    grad_output: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-    ],
-    mut grad_input: TileTensor[
-        mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
+        element_size=1, origin=MutAnyOrigin, ...,
     ],
 ) raises:
     comptime N = MODULES.size
@@ -515,16 +397,22 @@ def _backward_input_gpu[
     comptime for j in range(N):
         comptime i = N - 1 - j
         comptime if i == N - 1:
-            var p:  UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[N - 2].unsafe_ptr()
-            var out_grad = TileTensor(p, row_major[BATCH, MODULES[N - 1].IN_DIM]())
-            seq.children[N - 1].backward_input[target, BATCH, POLICY=POLICY](grad_output, out_grad)
+            var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[N - 2].unsafe_ptr()
+            var out_grad = TileTensor(p, row_major[BATCH, MODULES[N - 1].IN_DIMS[0]]())
+            seq.children[N - 1].vjp[
+                target, BATCH, POLICY=POLICY, mode=mode,
+            ](grad_output, out_grad)
         elif i == 0:
-            var p:  UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[0].unsafe_ptr()
+            var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[0].unsafe_ptr()
             var in_grad = TileTensor(p, row_major[BATCH, MODULES[0].OUT_DIM]())
-            seq.children[0].backward_input[target, BATCH, POLICY=POLICY](in_grad, grad_input)
+            seq.children[0].vjp[
+                target, BATCH, POLICY=POLICY, mode=mode,
+            ](in_grad, grad_input)
         else:
             var pi: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i].unsafe_ptr()
             var po: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i - 1].unsafe_ptr()
             var in_grad  = TileTensor(pi, row_major[BATCH, MODULES[i].OUT_DIM]())
-            var out_grad = TileTensor(po, row_major[BATCH, MODULES[i].IN_DIM]())
-            seq.children[i].backward_input[target, BATCH, POLICY=POLICY](in_grad, out_grad)
+            var out_grad = TileTensor(po, row_major[BATCH, MODULES[i].IN_DIMS[0]]())
+            seq.children[i].vjp[
+                target, BATCH, POLICY=POLICY, mode=mode,
+            ](in_grad, out_grad)

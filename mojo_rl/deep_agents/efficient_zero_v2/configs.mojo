@@ -49,11 +49,9 @@ from mojo_rl.nn.model import (
 from mojo_rl.nn.autodiff.combinators import SplitApply
 from mojo_rl.nn.optimizer import Optimizer, Adam
 from mojo_rl.deep_agents.muzero.configs import MuZeroConfig
-from mojo_rl.deep_agents.muzero.strategies import (
+from mojo_rl.planners.tree_search.strategies import (
     SearchMode,
     LearnedDynamics,
-    ValueEncoding,
-    CategoricalEncoding,
     HiddenScaling,
     MinMaxScale,
     ExplorationNoise,
@@ -64,6 +62,18 @@ from mojo_rl.deep_agents.muzero.strategies import (
     NStepBootstrap,
     PlayerMode,
     SinglePlayer,
+)
+from mojo_rl.planners.common.value_encoding import (
+    ValueEncoding,
+    CategoricalEncoding,
+)
+from mojo_rl.deep_agents.muzero.policy_mode import (
+    MuZeroPolicyMode,
+    MuZeroPUCTPolicy,
+)
+from mojo_rl.deep_agents.alphazero.strategies import (
+    BoardAugmenter,
+    IdentityAugmenter,
 )
 from mojo_rl.deep_agents.efficient_zero_v2.networks import (
     ProjectionMLP,
@@ -232,6 +242,12 @@ trait EZV2DiscreteConfig(MuZeroConfig):
     `DynModel.params`. `branch_types[1].PARAM_SIZE` of the trailing
     Parallel."""
 
+    # ── Phase 3 MCTS strangler flag ──────────────────────────────────────
+    comptime USE_NEW_MCTS: Bool
+    """When True, route MCTS through the `GumbelGPUMCTS` orchestrator in
+    `run_ezv2_train_gpu` / `run_ezv2_continuous_train_gpu`. Default `False`
+    keeps the legacy inline `run_gumbel_search_gpu` path active."""
+
 
 # ═════════════════════════════════════════════════════════════════════════
 # MLP variant
@@ -362,7 +378,11 @@ struct EZV2DiscreteMLPConfig[
     comptime PUCT = AlphaGoPUCT[1.0]
     comptime Backup = NStepBootstrap
     comptime Players = SinglePlayer
+    comptime Aug = IdentityAugmenter
+    comptime PolicyMode = MuZeroPUCTPolicy
 
+    comptime batch_sims: Int = 1
+    comptime virtual_loss: Int = 3
     comptime USE_REANALYZE: Bool = True
     comptime USE_NEW_MCTS: Bool = Self.NEW_MCTS
 
@@ -660,7 +680,11 @@ struct EZV2ContinuousMLPConfig[
     comptime PUCT = AlphaGoPUCT[1.0]
     comptime Backup = NStepBootstrap
     comptime Players = SinglePlayer
+    comptime Aug = IdentityAugmenter
+    comptime PolicyMode = MuZeroPUCTPolicy
 
+    comptime batch_sims: Int = 1
+    comptime virtual_loss: Int = 3
     comptime USE_REANALYZE: Bool = True
     comptime USE_NEW_MCTS: Bool = Self.NEW_MCTS
 
@@ -897,7 +921,11 @@ struct EZV2ContinuousMLPShallowConfig[
     comptime PUCT = AlphaGoPUCT[1.0]
     comptime Backup = NStepBootstrap
     comptime Players = SinglePlayer
+    comptime Aug = IdentityAugmenter
+    comptime PolicyMode = MuZeroPUCTPolicy
 
+    comptime batch_sims: Int = 1
+    comptime virtual_loss: Int = 3
     comptime USE_REANALYZE: Bool = True
     comptime USE_NEW_MCTS: Bool = Self.NEW_MCTS
 

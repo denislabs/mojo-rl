@@ -43,7 +43,7 @@ comptime BUFFER_CAPACITY = 100_000
 comptime BATCH_SIZE = 64
 
 # Training duration
-comptime NUM_STEPS = 500_000
+comptime NUM_STEPS = 100_000
 comptime MAX_STEPS_PER_EPISODE = 1000
 comptime WARMUP_STEPS = 1_000
 

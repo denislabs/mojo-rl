@@ -183,13 +183,16 @@ def ezv2_policy_loss_grad_kernel[
         dtype, Layout.row_major(BATCH), MutAnyOrigin
     ],
     scale: Scalar[dtype],
-) where dtype.is_floating_point():
+):
     """CE(softmax(policy logits) || target) + grad on one time-slice.
 
     Writes scaled grad into the first ACT elements of
     `grad_pred_out_step[b]` and the per-sample CE (UNSCALED) into
     `per_sample_loss[b]`.
     """
+    comptime assert dtype.is_floating_point(), (
+        "ezv2_policy_loss_grad_kernel: dtype must be floating-point"
+    )
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
         return
@@ -288,7 +291,7 @@ def ezv2_policy_loss_grad_continuous_kernel[
     soft_clamp: Scalar[dtype],
     init_std: Scalar[dtype],
     seed: UInt64,
-) where dtype.is_floating_point():
+):
     """Squashed-Gaussian NLL + entropy bonus + grad on one time-slice.
 
     Pred-out layout: `pred_out_step[b, 0:2*ACT_DIM]` = (μ_raw ‖ σ_raw),
@@ -308,6 +311,10 @@ def ezv2_policy_loss_grad_continuous_kernel[
     `log_prob`. `seed` selects the Philox stream; different train-step
     callers should pass distinct seeds to decorrelate gradient noise.
     """
+    comptime assert dtype.is_floating_point(), (
+        "ezv2_policy_loss_grad_continuous_kernel: dtype must be"
+        " floating-point"
+    )
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
         return

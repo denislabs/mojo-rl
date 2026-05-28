@@ -53,7 +53,7 @@ def test_mnist_mlp() raises:
     )
 
     var loss_fn = CrossEntropyLoss[N_CLASSES].make["cpu"]()
-    var optim = Adam.make["cpu"](net, lr=LR)
+    var optim = Adam.make["cpu", M=type_of(net)](net); optim.lr = LR
 
     var trainer = Trainer[
         type_of(net), type_of(optim), type_of(loss_fn), BATCH,

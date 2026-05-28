@@ -30,10 +30,16 @@ from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
-from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
+from std.sys import (
+    is_nvidia_gpu,
+    has_nvidia_gpu_accelerator,
+    CompilationTarget,
+)
+from ..apple_cblas import apple_sgemm_accum
 from std.gpu.compute.mma import mma
 from linalg.matmul import matmul as max_matmul
 from layout.tile_tensor import lt_to_tt
+from std.memory import alloc
 
 
 struct FusedConv2DActivation[
@@ -105,8 +111,9 @@ struct FusedConv2DActivation[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
+        # Step 1: im2col into cache per-batch (unchanged layout; backward
+        # reads cache[b, s*col_size + k]).
         for b in range(BATCH):
-            # im2col into cache[b, 0..CONV_CACHE-1]
             for oh in range(Self.out_h):
                 for ow in range(Self.out_w):
                     var s = oh * Self.out_w + ow
@@ -136,31 +143,154 @@ struct FusedConv2DActivation[
                                 else:
                                     cache[b, col_idx] = 0
 
-            # W @ col + bias, then activation
-            for oc in range(Self.out_channels):
-                for s in range(Self.spatial_out):
-                    var acc: Scalar[dtype] = 0
-                    for k in range(Self.col_size):
-                        var w_val = rebind[Scalar[dtype]](
-                            params[oc * Self.col_size + k]
-                        )
-                        var c_val = rebind[Scalar[dtype]](
-                            cache[b, s * Self.col_size + k]
-                        )
-                        acc += w_val * c_val
-                    # Add bias
-                    acc += rebind[Scalar[dtype]](
+        # Step 2: matmul + bias + activation. Three compile-time paths:
+        #   spatial_out == 1: use cache directly with ldb=CACHE_SIZE.
+        #   spatial_out > 1 + Apple: pack im2col + one big batched matmul.
+        #   else: per-batch BLAS calls.
+        comptime use_apple_sgemm = (
+            CompilationTarget.is_macos() and dtype == DType.float32
+        )
+        comptime use_batched_so1 = (
+            use_apple_sgemm and Self.spatial_out == 1
+        )
+        comptime use_batched_general = (
+            use_apple_sgemm and Self.spatial_out > 1
+        )
+        comptime use_batched = use_batched_so1 or use_batched_general
+        comptime BS = BATCH * Self.spatial_out
+
+        var W_mat = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.out_channels, Self.col_size),
+            MutAnyOrigin,
+        ](params.ptr)
+
+        comptime if use_batched:
+            # matmul_out in (OC, BATCH*so) layout.
+            var matmul_out_buf: UnsafePointer[
+                Scalar[dtype], MutAnyOrigin
+            ] = alloc[Scalar[dtype]](Self.out_channels * BS)
+
+            comptime if use_batched_so1:
+                try:
+                    apple_sgemm_accum[transpose_a=False, transpose_b=True](
+                        Self.out_channels,
+                        BATCH,
+                        Self.col_size,
+                        Float32(1.0),
+                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                            W_mat.ptr
+                        ),
+                        Self.col_size,
+                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                            cache.ptr
+                        ),
+                        Self.CACHE_SIZE,    # strided
+                        Float32(0.0),
+                        rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                            matmul_out_buf
+                        ),
+                        BATCH,
+                    )
+                except e:
+                    pass
+            else:
+                comptime IM2COL_BLOCK = Self.col_size * Self.spatial_out
+                var im2col_packed_buf: UnsafePointer[
+                    Scalar[dtype], MutAnyOrigin
+                ] = alloc[Scalar[dtype]](BATCH * IM2COL_BLOCK)
+                for b in range(BATCH):
+                    var src = cache.ptr + b * Self.CACHE_SIZE
+                    var dst = im2col_packed_buf + b * IM2COL_BLOCK
+                    for i in range(IM2COL_BLOCK):
+                        dst[i] = src[i]
+
+                try:
+                    apple_sgemm_accum[
+                        transpose_a=False, transpose_b=True
+                    ](
+                        Self.out_channels,
+                        BS,
+                        Self.col_size,
+                        Float32(1.0),
+                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                            W_mat.ptr
+                        ),
+                        Self.col_size,
+                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                            im2col_packed_buf
+                        ),
+                        Self.col_size,
+                        Float32(0.0),
+                        rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                            matmul_out_buf
+                        ),
+                        BS,
+                    )
+                except e:
+                    pass
+                im2col_packed_buf.free()
+
+            # Scatter matmul_out[oc, b*so + s] → output[b, oc*so + s] +
+            # bias + activation, cache activation state.
+            for b in range(BATCH):
+                for oc in range(Self.out_channels):
+                    var bias_val = rebind[Scalar[dtype]](
                         params[Self.out_channels * Self.col_size + oc]
                     )
-                    # Fused activation
-                    var pre_act = acc
-                    var act_out = Self.ACT.forward(pre_act)
-                    var out_idx = oc * Self.spatial_out + s
-                    output[b, out_idx] = act_out
-                    # Cache activation state for backward
-                    cache[b, Self.CONV_CACHE + out_idx] = Self.ACT.cache(
-                        pre_act, act_out
+                    var src_row = oc * BS
+                    var dst_off = oc * Self.spatial_out
+                    for s in range(Self.spatial_out):
+                        var pre_act = (
+                            matmul_out_buf[
+                                src_row + b * Self.spatial_out + s
+                            ]
+                            + bias_val
+                        )
+                        var act_out = Self.ACT.forward(pre_act)
+                        output[b, dst_off + s] = act_out
+                        cache[b, Self.CONV_CACHE + dst_off + s] = (
+                            Self.ACT.cache(pre_act, act_out)
+                        )
+
+            matmul_out_buf.free()
+        else:
+            # ─── General fallback: per-batch BLAS calls. ────────────────
+            for b in range(BATCH):
+                var output_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, Self.spatial_out),
+                    MutAnyOrigin,
+                ](output.ptr + b * Self.OUT_DIM)
+                var cache_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.spatial_out, Self.col_size),
+                    MutAnyOrigin,
+                ](cache.ptr + b * Self.CACHE_SIZE)
+                try:
+                    max_matmul[transpose_b=True, target="cpu"](
+                        lt_to_tt(output_b),
+                        lt_to_tt(W_mat),
+                        lt_to_tt(cache_b),
+                        None,
                     )
+                except e:
+                    pass
+                # Add bias + apply activation + cache activation state.
+                for oc in range(Self.out_channels):
+                    var bias_val = rebind[Scalar[dtype]](
+                        params[Self.out_channels * Self.col_size + oc]
+                    )
+                    var dst_off = oc * Self.spatial_out
+                    for s in range(Self.spatial_out):
+                        var pre_act = rebind[Scalar[dtype]](
+                            output_b[oc, s]
+                        ) + bias_val
+                        var act_out = Self.ACT.forward(pre_act)
+                        output[b, dst_off + s] = act_out
+                        cache[b, Self.CONV_CACHE + dst_off + s] = (
+                            Self.ACT.cache(pre_act, act_out)
+                        )
 
     # =========================================================================
     # CPU vjp
@@ -187,91 +317,393 @@ struct FusedConv2DActivation[
         ],
     ):
         comptime W_SIZE = Self.out_channels * Self.col_size
+        comptime use_apple_sgemm = (
+            CompilationTarget.is_macos() and dtype == DType.float32
+        )
+        comptime use_batched_so1 = (
+            use_apple_sgemm and Self.spatial_out == 1
+        )
+        comptime use_batched_general = (
+            use_apple_sgemm and Self.spatial_out > 1
+        )
+        comptime use_batched = use_batched_so1 or use_batched_general
+        comptime BS = BATCH * Self.spatial_out
 
+        # Step 1: materialize masked_grad = ACT.backward(cache_act, grad_output)
+        # in the SAME layout as the original grad_output ((BATCH, OC, so)
+        # row-major: [b * OUT_DIM + oc * so + s]). Needed for both
+        # accumulate paths.
+        var masked_buf: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = alloc[Scalar[dtype]](BATCH * Self.OUT_DIM)
         for b in range(BATCH):
-            # 1. dW += masked_grad @ col.T
             for oc in range(Self.out_channels):
-                for k in range(Self.col_size):
-                    var acc: Scalar[dtype] = 0
-                    for s in range(Self.spatial_out):
-                        var out_idx = oc * Self.spatial_out + s
-                        var cache_val = rebind[Scalar[dtype]](
-                            cache[b, Self.CONV_CACHE + out_idx]
-                        )
-                        var go_val = rebind[Scalar[dtype]](
-                            grad_output[b, out_idx]
-                        )
-                        var masked_go = Self.ACT.backward(cache_val, go_val)
-                        var col_val = rebind[Scalar[dtype]](
-                            cache[b, s * Self.col_size + k]
-                        )
-                        acc += masked_go * col_val
-                    var cur = rebind[Scalar[dtype]](
-                        grad_params[oc * Self.col_size + k]
-                    )
-                    grad_params[oc * Self.col_size + k] = cur + acc
-
-            # 2. db += sum(masked_grad, over spatial)
-            for oc in range(Self.out_channels):
-                var acc: Scalar[dtype] = 0
+                var base = b * Self.OUT_DIM + oc * Self.spatial_out
                 for s in range(Self.spatial_out):
                     var out_idx = oc * Self.spatial_out + s
                     var cache_val = rebind[Scalar[dtype]](
                         cache[b, Self.CONV_CACHE + out_idx]
                     )
-                    var go_val = rebind[Scalar[dtype]](grad_output[b, out_idx])
-                    acc += Self.ACT.backward(cache_val, go_val)
-                var cur = rebind[Scalar[dtype]](grad_params[W_SIZE + oc])
-                grad_params[W_SIZE + oc] = cur + acc
+                    var go_val = rebind[Scalar[dtype]](
+                        grad_output[b, out_idx]
+                    )
+                    masked_buf[base + s] = Self.ACT.backward(
+                        cache_val, go_val
+                    )
 
-            # 3. grad_input via col2im of W.T @ masked_grad
-            for i in range(Self.IN_DIM):
-                grad_input[b, i] = 0
+        # Step 2: db += sum(masked_grad, axis=spatial × batch) per channel.
+        for oc in range(Self.out_channels):
+            var acc: Scalar[dtype] = 0
+            for b in range(BATCH):
+                for s in range(Self.spatial_out):
+                    acc += masked_buf[
+                        b * Self.OUT_DIM + oc * Self.spatial_out + s
+                    ]
+            var cur = rebind[Scalar[dtype]](grad_params[W_SIZE + oc])
+            grad_params[W_SIZE + oc] = cur + acc
 
-            for oh in range(Self.out_h):
-                for ow in range(Self.out_w):
-                    var s = oh * Self.out_w + ow
-                    for c in range(Self.in_channels):
-                        for kh in range(Self.kernel_size):
-                            for kw in range(Self.kernel_size):
-                                var ih = oh * Self.stride - Self.padding + kh
-                                var iw = ow * Self.stride - Self.padding + kw
-                                if (
-                                    ih >= 0
-                                    and ih < Self.in_h
-                                    and iw >= 0
-                                    and iw < Self.in_w
-                                ):
-                                    var in_idx = (
-                                        c * Self.in_h * Self.in_w
-                                        + ih * Self.in_w
-                                        + iw
-                                    )
-                                    var c_k = (
-                                        c * Self.kernel_size * Self.kernel_size
-                                        + kh * Self.kernel_size
-                                        + kw
-                                    )
-                                    var dcol_val: Scalar[dtype] = 0
-                                    for oc in range(Self.out_channels):
-                                        var out_idx = oc * Self.spatial_out + s
-                                        var cache_val = rebind[Scalar[dtype]](
-                                            cache[b, Self.CONV_CACHE + out_idx]
-                                        )
-                                        var go_val = rebind[Scalar[dtype]](
-                                            grad_output[b, out_idx]
-                                        )
-                                        var masked_go = Self.ACT.backward(
-                                            cache_val, go_val
-                                        )
-                                        var w_val = rebind[Scalar[dtype]](
-                                            params[oc * Self.col_size + c_k]
-                                        )
-                                        dcol_val += w_val * masked_go
-                                    var cur = rebind[Scalar[dtype]](
+        # Step 3: dW + dcol via BLAS, three comptime paths.
+        comptime if use_batched_so1:
+            # ─── Fast path: Apple + spatial_out == 1 ────────────────────
+            # masked_buf is (BATCH, OC) row-major (since OUT_DIM=OC).
+            # cache rows hold im2col (col_size,) at offset 0 with row
+            # stride CACHE_SIZE.
+            #
+            # dW += masked.T @ cache_view
+            try:
+                apple_sgemm_accum[transpose_a=True, transpose_b=False](
+                    Self.out_channels,      # M = OC
+                    Self.col_size,          # N
+                    BATCH,                  # K
+                    Float32(1.0),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        masked_buf
+                    ),
+                    Self.out_channels,      # lda
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        cache.ptr
+                    ),
+                    Self.CACHE_SIZE,        # ldb (strided over xhat? no,
+                                            #      just over act-cache region)
+                    Float32(1.0),
+                    rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                        grad_params.ptr
+                    ),
+                    Self.col_size,
+                )
+            except e:
+                pass
+
+            # dcol_packed (col_size, BATCH) = W.T @ masked.T
+            # equivalently  dcol_packed = W^T_T @ masked^T_T
+            # Easier: dcol_packed = (masked @ W).T, but we don't transpose.
+            # Use: max_matmul with W as (OC, col_size); we want
+            #    dcol_packed[k, b] = sum_oc W[oc, k] * masked[b, oc]
+            # = sum_oc masked[b, oc] * W[oc, k]
+            # = (masked @ W)[b, k]
+            # So compute masked_dot_W = masked @ W of shape (BATCH, col_size),
+            # then col2im scatter reads masked_dot_W[b, c_k].
+            var masked_dot_W_buf: UnsafePointer[
+                Scalar[dtype], MutAnyOrigin
+            ] = alloc[Scalar[dtype]](BATCH * Self.col_size)
+            var masked_dot_W = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.col_size),
+                MutAnyOrigin,
+            ](masked_dot_W_buf)
+            var masked_lt = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.out_channels),
+                MutAnyOrigin,
+            ](masked_buf)
+            var W_mat = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.out_channels, Self.col_size),
+                MutAnyOrigin,
+            ](params.ptr)
+            try:
+                max_matmul[target="cpu"](
+                    lt_to_tt(masked_dot_W),
+                    lt_to_tt(masked_lt),
+                    lt_to_tt(W_mat),
+                    None,
+                )
+            except e:
+                pass
+
+            # col2im scatter (spatial_out=1 → oh=ow=s=0; loops collapse).
+            for b in range(BATCH):
+                for i in range(Self.IN_DIM):
+                    grad_input[b, i] = 0
+                for c in range(Self.in_channels):
+                    for kh in range(Self.kernel_size):
+                        for kw in range(Self.kernel_size):
+                            var ih = -Self.padding + kh
+                            var iw = -Self.padding + kw
+                            if (
+                                ih >= 0
+                                and ih < Self.in_h
+                                and iw >= 0
+                                and iw < Self.in_w
+                            ):
+                                var in_idx = (
+                                    c * Self.in_h * Self.in_w
+                                    + ih * Self.in_w
+                                    + iw
+                                )
+                                var c_k = (
+                                    c * Self.kernel_size * Self.kernel_size
+                                    + kh * Self.kernel_size
+                                    + kw
+                                )
+                                grad_input[b, in_idx] = (
+                                    rebind[Scalar[dtype]](
                                         grad_input[b, in_idx]
                                     )
-                                    grad_input[b, in_idx] = cur + dcol_val
+                                    + masked_dot_W_buf[
+                                        b * Self.col_size + c_k
+                                    ]
+                                )
+
+            masked_dot_W_buf.free()
+        elif use_batched_general:
+            # ─── Fast path: Apple + spatial_out > 1 ─────────────────────
+            # Pack im2col into (BATCH*spatial_out, col_size) and transpose
+            # masked from (BATCH, OC, so) → (BATCH*so, OC). Then two big
+            # BLAS calls.
+            comptime IM2COL_BLOCK = Self.col_size * Self.spatial_out
+            var im2col_packed_buf: UnsafePointer[
+                Scalar[dtype], MutAnyOrigin
+            ] = alloc[Scalar[dtype]](BATCH * IM2COL_BLOCK)
+            for b in range(BATCH):
+                var src = cache.ptr + b * Self.CACHE_SIZE
+                var dst = im2col_packed_buf + b * IM2COL_BLOCK
+                for i in range(IM2COL_BLOCK):
+                    dst[i] = src[i]
+
+            var masked_packed_buf: UnsafePointer[
+                Scalar[dtype], MutAnyOrigin
+            ] = alloc[Scalar[dtype]](BATCH * Self.OUT_DIM)
+            for b in range(BATCH):
+                for oc in range(Self.out_channels):
+                    var src_off = (
+                        b * Self.OUT_DIM + oc * Self.spatial_out
+                    )
+                    for s in range(Self.spatial_out):
+                        masked_packed_buf[
+                            (b * Self.spatial_out + s)
+                            * Self.out_channels
+                            + oc
+                        ] = masked_buf[src_off + s]
+
+            # dW += masked_packed.T @ im2col_packed  — one BLAS call.
+            try:
+                apple_sgemm_accum[transpose_a=True, transpose_b=False](
+                    Self.out_channels,
+                    Self.col_size,
+                    BS,
+                    Float32(1.0),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        masked_packed_buf
+                    ),
+                    Self.out_channels,
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        im2col_packed_buf
+                    ),
+                    Self.col_size,
+                    Float32(1.0),
+                    rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                        grad_params.ptr
+                    ),
+                    Self.col_size,
+                )
+            except e:
+                pass
+
+            # dcol_packed = masked_packed @ W. shape (BS, col_size).
+            var dcol_packed_buf: UnsafePointer[
+                Scalar[dtype], MutAnyOrigin
+            ] = alloc[Scalar[dtype]](BS * Self.col_size)
+            var dcol_packed = LayoutTensor[
+                dtype,
+                Layout.row_major(BS, Self.col_size),
+                MutAnyOrigin,
+            ](dcol_packed_buf)
+            var masked_packed_lt = LayoutTensor[
+                dtype,
+                Layout.row_major(BS, Self.out_channels),
+                MutAnyOrigin,
+            ](masked_packed_buf)
+            var W_mat = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.out_channels, Self.col_size),
+                MutAnyOrigin,
+            ](params.ptr)
+            try:
+                max_matmul[target="cpu"](
+                    lt_to_tt(dcol_packed),
+                    lt_to_tt(masked_packed_lt),
+                    lt_to_tt(W_mat),
+                    None,
+                )
+            except e:
+                pass
+
+            # col2im scatter per batch using dcol_packed[b*so+s, c_k].
+            for b in range(BATCH):
+                for i in range(Self.IN_DIM):
+                    grad_input[b, i] = 0
+                for oh in range(Self.out_h):
+                    for ow in range(Self.out_w):
+                        var s = oh * Self.out_w + ow
+                        var packed_row = b * Self.spatial_out + s
+                        for c in range(Self.in_channels):
+                            for kh in range(Self.kernel_size):
+                                for kw in range(Self.kernel_size):
+                                    var ih = oh * Self.stride - Self.padding + kh
+                                    var iw = ow * Self.stride - Self.padding + kw
+                                    if (
+                                        ih >= 0
+                                        and ih < Self.in_h
+                                        and iw >= 0
+                                        and iw < Self.in_w
+                                    ):
+                                        var in_idx = (
+                                            c * Self.in_h * Self.in_w
+                                            + ih * Self.in_w
+                                            + iw
+                                        )
+                                        var c_k = (
+                                            c * Self.kernel_size * Self.kernel_size
+                                            + kh * Self.kernel_size
+                                            + kw
+                                        )
+                                        grad_input[b, in_idx] = (
+                                            rebind[Scalar[dtype]](
+                                                grad_input[b, in_idx]
+                                            )
+                                            + dcol_packed_buf[
+                                                packed_row * Self.col_size
+                                                + c_k
+                                            ]
+                                        )
+
+            im2col_packed_buf.free()
+            masked_packed_buf.free()
+            dcol_packed_buf.free()
+        else:
+            # ─── General fallback: per-batch BLAS calls. ────────────────
+            var dW_tmp_buf: UnsafePointer[
+                Scalar[dtype], MutAnyOrigin
+            ] = alloc[Scalar[dtype]](Self.out_channels * Self.col_size)
+            var dcol_buf: UnsafePointer[
+                Scalar[dtype], MutAnyOrigin
+            ] = alloc[Scalar[dtype]](Self.col_size * Self.spatial_out)
+            var W_T_buf: UnsafePointer[
+                Scalar[dtype], MutAnyOrigin
+            ] = alloc[Scalar[dtype]](Self.col_size * Self.out_channels)
+            var dW_tmp = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.out_channels, Self.col_size),
+                MutAnyOrigin,
+            ](dW_tmp_buf)
+            var dcol = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.col_size, Self.spatial_out),
+                MutAnyOrigin,
+            ](dcol_buf)
+            var W_T = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.col_size, Self.out_channels),
+                MutAnyOrigin,
+            ](W_T_buf)
+
+            # Transpose W once.
+            for oc in range(Self.out_channels):
+                for k in range(Self.col_size):
+                    W_T[k, oc] = rebind[Scalar[dtype]](
+                        params[oc * Self.col_size + k]
+                    )
+
+            for b in range(BATCH):
+                var masked_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, Self.spatial_out),
+                    MutAnyOrigin,
+                ](masked_buf + b * Self.OUT_DIM)
+                var cache_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.spatial_out, Self.col_size),
+                    MutAnyOrigin,
+                ](cache.ptr + b * Self.CACHE_SIZE)
+
+                try:
+                    max_matmul[target="cpu"](
+                        lt_to_tt(dW_tmp),
+                        lt_to_tt(masked_b),
+                        lt_to_tt(cache_b),
+                        None,
+                    )
+                    max_matmul[target="cpu"](
+                        lt_to_tt(dcol),
+                        lt_to_tt(W_T),
+                        lt_to_tt(masked_b),
+                        None,
+                    )
+                except e:
+                    pass
+
+                # dW += dW_tmp (scalar accumulate, non-Apple fallback only).
+                for oc in range(Self.out_channels):
+                    for k in range(Self.col_size):
+                        var cur = rebind[Scalar[dtype]](
+                            grad_params[oc * Self.col_size + k]
+                        )
+                        grad_params[oc * Self.col_size + k] = cur + rebind[
+                            Scalar[dtype]
+                        ](dW_tmp[oc, k])
+
+                # col2im scatter from dcol.
+                for i in range(Self.IN_DIM):
+                    grad_input[b, i] = 0
+                for oh in range(Self.out_h):
+                    for ow in range(Self.out_w):
+                        var s = oh * Self.out_w + ow
+                        for c in range(Self.in_channels):
+                            for kh in range(Self.kernel_size):
+                                for kw in range(Self.kernel_size):
+                                    var ih = oh * Self.stride - Self.padding + kh
+                                    var iw = ow * Self.stride - Self.padding + kw
+                                    if (
+                                        ih >= 0
+                                        and ih < Self.in_h
+                                        and iw >= 0
+                                        and iw < Self.in_w
+                                    ):
+                                        var in_idx = (
+                                            c * Self.in_h * Self.in_w
+                                            + ih * Self.in_w
+                                            + iw
+                                        )
+                                        var c_k = (
+                                            c * Self.kernel_size * Self.kernel_size
+                                            + kh * Self.kernel_size
+                                            + kw
+                                        )
+                                        grad_input[b, in_idx] = (
+                                            rebind[Scalar[dtype]](
+                                                grad_input[b, in_idx]
+                                            )
+                                            + rebind[Scalar[dtype]](
+                                                dcol[c_k, s]
+                                            )
+                                        )
+
+            dW_tmp_buf.free()
+            dcol_buf.free()
+            W_T_buf.free()
+
+        masked_buf.free()
 
     # =========================================================================
     # GPU kernels — naive backward_dx (kept — sufficient parallelism)

@@ -4,6 +4,12 @@ MuZero learns a dynamics model g(s,a) and plans in latent space,
 unlike AlphaZero which uses true game rules. This tests whether
 the learned model is accurate enough for a simple board game.
 
+Uses Gumbel-MuZero (mctx-style) for action selection: Gumbel-Top-k
+root sampling + Sequential Halving + deterministic σ(Q)-N/(1+ΣN)
+interior selection + improved-policy training target. Replaces
+the PUCT + Dirichlet-noise + visit-count target of vanilla MuZero.
+See ``docs/mctx-main/`` for the reference.
+
 Usage:
     pixi run -e nvidia mojo run -I . examples/board_games/tictactoe_muzero.mojo
     pixi run -e apple mojo run -I . examples/board_games/tictactoe_muzero.mojo
@@ -17,6 +23,7 @@ from mojo_rl.deep_agents.muzero import (
     GenericMuZeroAgent,
     MuZeroTicTacToeConfig,
 )
+from mojo_rl.deep_agents.muzero.policy_mode import GumbelMuZeroPolicy
 from mojo_rl.deep_agents.muzero.evaluators import (
     GPUMinimaxTicTacToe,
     RandomOpponent,
@@ -25,7 +32,7 @@ from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
 def main() raises:
-    print("=== MuZero on TicTacToe ===")
+    print("=== MuZero on TicTacToe (Gumbel-MuZero) ===")
     print()
 
     # ── Logger setup ────────────────────────────────────────────
@@ -35,20 +42,28 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="MuZero TicTacToe",
+        run_name="MuZero TicTacToe (Gumbel)",
         buffer_size=13,
         api_key=api_key,
     )
 
-    comptime Config = MuZeroTicTacToeConfig[]
+    # MAX_K=8 = largest power of 2 ≤ ACT (TTT has 9 actions). Sequential
+    # Halving runs log2(8)=3 phases over the SIMS=100 budget — phase 1
+    # tries 8 candidates × 4 sims each, phase 2 halves to 4 candidates ×
+    # 8 sims, phase 3 picks between 2 × 16 sims. 4 leftover sims spent
+    # on the survivor's slot 0.
+    comptime Config = MuZeroTicTacToeConfig[
+        POLICY=GumbelMuZeroPolicy[8],
+    ]
 
-    logger.set_config("agent", "MuZero")
+    logger.set_config("agent", "MuZero-Gumbel")
     logger.set_config("env", "TicTacToe")
     logger.set_config("network", Config.NAME)
     logger.set_config("sims", String(Config.num_simulations))
     logger.set_config("batch_size", String(Config.batch_size))
     logger.set_config("unroll_steps", String(Config.unroll_steps))
     logger.set_config("td_steps", String(Config.td_steps))
+    logger.set_config("max_k", String(Config.PolicyMode.MAX_K))
 
     var ctx = DeviceContext()
     comptime TTT = TicTacToeEnv[DType.float32]

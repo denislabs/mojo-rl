@@ -1,11 +1,6 @@
-"""Loss functions (not Modules — different (logits, targets) → scalar signature)."""
+"""Loss functions (general-purpose, not RL-specific)."""
 
 from .cross_entropy import CrossEntropyLoss
+from .gaussian_nll_loss import GaussianNLLLoss
 from .mse import MSELoss
-from .sac_actor_loss import (
-    squashed_gaussian_sample,
-    sac_actor_backward,
-    sac_actor_loss_value,
-)
-from .sac_actor_loss_cg import SACActorLossCG, SACActorLossOut
-from .critic_update_block import CriticUpdateBlock, TwinCriticUpdateBlock
+from .soft_cross_entropy import SoftCrossEntropyLoss

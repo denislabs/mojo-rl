@@ -1,35 +1,16 @@
-"""AdamW — Loshchilov & Hutter 2019, decoupled weight decay.
+"""AdamW optimizer.
 
-Differs from Adam in two ways:
+Decoupled weight-decay variant of Adam (Loshchilov & Hutter 2019).
+`lr` / `beta1` / `beta2` / `eps` / `weight_decay` are public mut fields,
+not `make`-time args.
 
-  1. **Decoupled weight decay**: the L2 penalty is applied *after* the
-     Adam-normalized step, not folded into the gradient:
+Per-param `apply_decay` flag is collected at init time (visitor reads it
+from each Param's `decay` bit) and stored in a parallel `apply_decay:
+List[Bool]` table — Linear says weight=True, bias=False, LayerNorm says
+γ=False, β=False.
 
-         p_t = p_{t-1} - lr * (m_hat / (sqrt(v_hat) + eps) + λ * p_{t-1})
-
-     This is mathematically distinct from Adam-with-L2 and converges
-     better in practice (LayerNorm + AdamW is the modern default).
-
-  2. **Per-param `apply_decay`**: weight-decay is skipped for params the
-     visitor reports as `apply_decay=False`. Layer-local convention —
-     `Linear` reports `weight=True, bias=False`. AdamW reads the flag at
-     init time and stores it in a parallel `apply_decay: List[Bool]`
-     table indexed by walk order. No name-match filter; convention lives
-     in the layer.
-
-Phase 4 also migrates the optimizer state (`step_count`, `beta1_pow_t`,
-`beta2_pow_t`, `bc1`, `bc2`) to `DeviceBuffer` so that AdamW.step is
-CUDA-graph-capturable end-to-end:
-
-  - `step_dev: DeviceBuffer[UInt32]`  — single u32, step counter
-  - `bc_dev:   DeviceBuffer[DT]` (4 floats)  — [β₁^t, β₂^t, bc1, bc2]
-  - `_adamw_step_prep_kernel(grid=1, block=1)` bumps the counter +
-    recomputes bc1, bc2 in-place each `step()`.
-  - The per-param `_adamw_update_kernel` reads bc1/bc2 from `bc_dev`.
-
-CPU mode keeps host-side scalars — CUDA-graph capture doesn't apply
-there. Bit-exact parity with the GPU path is achievable because the
-update math is identical; only the storage location differs.
+GPU step state (`step_dev`, `bc_dev`) lives on device — CUDA-graph
+capture friendly. CPU path keeps host-side scalars.
 """
 
 from std.math import sqrt
@@ -38,16 +19,16 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
-from ..constants import DT, CPU_SIMD_W
-from ..core import (
-    Module, ParamVisitor, Optimizer,
-    TARGET_UNINIT, TARGET_CPU, TARGET_GPU, target_tag_for,
-)
+from ..constants import DT, CPU_SIMD_W, TPB
+from ..core import ParamVisitor
+from ..core.module import Module
+from ..core.optimizer import Optimizer
+from ..core.target_storage import TargetStorage, assert_tag_for
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# GPU kernels.
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# GPU kernels (lifted from v1).
+# ──────────────────────────────────────────────────────────────────────
 
 
 def _adamw_step_prep_kernel(
@@ -56,14 +37,6 @@ def _adamw_step_prep_kernel(
     beta1: Scalar[DT],
     beta2: Scalar[DT],
 ):
-    """Single-thread kernel: bump step counter, recompute β₁^t, β₂^t, bc1, bc2.
-
-    Layout of `bc_ptr` (4 floats):
-      [0]: β₁^t   running product
-      [1]: β₂^t   running product
-      [2]: bc1   = 1 - β₁^t
-      [3]: bc2   = 1 - β₂^t
-    """
     if Int(global_idx.x) == 0:
         step_ptr[0] = step_ptr[0] + UInt32(1)
         var b1_new = bc_ptr[0] * beta1
@@ -86,7 +59,7 @@ def _adamw_update_kernel(
     beta2: Scalar[DT],
     eps: Scalar[DT],
     weight_decay: Scalar[DT],
-    apply_decay: Int,   # 0 or 1 — kernels can't take Bool
+    apply_decay: Int,
 ):
     var i = Int(global_idx.x)
     if i < n_elems:
@@ -116,9 +89,9 @@ def _zero_fill_kernel(
         ptr[i] = 0.0
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# CPU visitors
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# CPU visitors.
+# ──────────────────────────────────────────────────────────────────────
 
 
 @fieldwise_init
@@ -175,8 +148,6 @@ struct _AdamWCPUStepVisitor(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        # Phase 8.0: SIMD path with branchless decay-mask. nn2 stores m and
-        # v in separate Lists — no AoS deinterleave needed.
         var off = self.offsets_ptr[][self.idx]
         var decay_flag = self.apply_decay_ptr[][self.idx]
         var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
@@ -249,9 +220,9 @@ struct _ZeroGradCPUVisitor(ParamVisitor):
             g_ptr[i] = zero
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# GPU visitors
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# GPU visitors.
+# ──────────────────────────────────────────────────────────────────────
 
 
 @fieldwise_init
@@ -310,7 +281,6 @@ struct _AdamWGPUStepVisitor(ParamVisitor):
         var v_off = self.v_base + off
         var param_w_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
         var grad_w_ptr  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
-        comptime TPB = 128
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_adamw_update_kernel](
             param_w_ptr, grad_w_ptr, m_off, v_off, self.bc_base, n_elems,
@@ -339,16 +309,15 @@ struct _ZeroGradGPUVisitor(ParamVisitor):
         apply_decay: Bool,
     ) raises:
         var grad_w_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
-        comptime TPB = 128
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_zero_fill_kernel](
             grad_w_ptr, n_elems, grid_dim=n_blocks, block_dim=TPB,
         )
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# AdamW — method-level target.
-# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# AdamW.
+# ──────────────────────────────────────────────────────────────────────
 
 
 struct AdamW(Optimizer):
@@ -358,26 +327,24 @@ struct AdamW(Optimizer):
     # GPU storage
     var m_dev: Optional[DeviceBuffer[DT]]
     var v_dev: Optional[DeviceBuffer[DT]]
-    # Device-side step state — [β₁^t, β₂^t, bc1, bc2] + step counter.
     var step_dev: Optional[DeviceBuffer[DType.uint32]]
     var bc_dev: Optional[DeviceBuffer[DT]]
-    var ctx: Optional[DeviceContext]
     # Shared
     var offsets: List[Int]
     var apply_decay: List[Bool]
     var total_size: Int
-    # Host-side step state — used when target=="cpu", else unused (defaults
-    # fine to leave as initial values, the GPU path doesn't read them).
+    # Host-side step state (CPU path).
     var step_count: Int
     var beta1_pow_t: Scalar[DT]
     var beta2_pow_t: Scalar[DT]
-    # Hyperparameters
+    # Public mut hyperparameters.
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
     var beta2: Scalar[DT]
     var eps: Scalar[DT]
     var weight_decay: Scalar[DT]
-    var _target_tag: Int8
+
+    var ts: TargetStorage
 
     def __init__(out self):
         self.m_flat = List[Scalar[DT]]()
@@ -386,173 +353,97 @@ struct AdamW(Optimizer):
         self.v_dev = None
         self.step_dev = None
         self.bc_dev = None
-        self.ctx = None
         self.offsets = List[Int]()
         self.apply_decay = List[Bool]()
         self.total_size = 0
         self.step_count = 0
-        self.beta1_pow_t = 1.0
-        self.beta2_pow_t = 1.0
-        self.lr = 0.001
-        self.beta1 = 0.9
-        self.beta2 = 0.999
-        self.eps = 1e-8
-        self.weight_decay = 0.01
-        self._target_tag = TARGET_UNINIT
-
-    # ------------------------------------------------------------------
-    # Factories — `make[target, M]`. Optimizer trait requires the 4-hyper
-    # signature, so we expose `weight_decay` via a setter post-make.
-    # ------------------------------------------------------------------
+        self.beta1_pow_t = Scalar[DT](1.0)
+        self.beta2_pow_t = Scalar[DT](1.0)
+        self.lr = Scalar[DT](0.001)
+        self.beta1 = Scalar[DT](0.9)
+        self.beta2 = Scalar[DT](0.999)
+        self.eps = Scalar[DT](1e-8)
+        self.weight_decay = Scalar[DT](0.01)
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[target: StaticString, M: Module](
         mut model: M,
-        lr: Scalar[DT] = 0.001,
-        beta1: Scalar[DT] = 0.9,
-        beta2: Scalar[DT] = 0.999,
-        eps: Scalar[DT] = 1e-8,
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        """CPU factory with default weight_decay=0.01."""
-        return Self.make_with_wd[target](
-            model, lr, beta1, beta2, eps, weight_decay=0.01,
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "AdamW: target must be 'cpu' or 'gpu'"
         )
-
-    @staticmethod
-    def make[target: StaticString, M: Module](
-        mut model: M,
-        ctx: DeviceContext,
-        lr: Scalar[DT] = 0.001,
-        beta1: Scalar[DT] = 0.9,
-        beta2: Scalar[DT] = 0.999,
-        eps: Scalar[DT] = 1e-8,
-    ) raises -> Self:
-        """GPU factory with default weight_decay=0.01."""
-        return Self.make_with_wd[target](
-            model, ctx, lr, beta1, beta2, eps, weight_decay=0.01,
-        )
-
-    @staticmethod
-    def make_with_wd[target: StaticString, M: Module](
-        mut model: M,
-        lr: Scalar[DT] = 0.001,
-        beta1: Scalar[DT] = 0.9,
-        beta2: Scalar[DT] = 0.999,
-        eps: Scalar[DT] = 1e-8,
-        weight_decay: Scalar[DT] = 0.01,
-    ) raises -> Self:
-        """CPU factory with explicit weight_decay."""
-        comptime assert target == "cpu", (
-            "AdamW.make_with_wd[target='gpu'] requires a DeviceContext"
-        )
-        var adam = Self()
-        adam.lr = lr
-        adam.beta1 = beta1
-        adam.beta2 = beta2
-        adam.eps = eps
-        adam.weight_decay = weight_decay
-        var visitor = _AdamWCPUInitVisitor(
-            m_flat_ptr=UnsafePointer(to=adam.m_flat),
-            v_flat_ptr=UnsafePointer(to=adam.v_flat),
-            offsets_ptr=UnsafePointer(to=adam.offsets),
-            apply_decay_ptr=UnsafePointer(to=adam.apply_decay),
-        )
-        model.for_each_param[target](String(""), visitor)
-        adam.total_size = len(adam.m_flat)
-        adam._target_tag = TARGET_CPU
-        return adam^
-
-    @staticmethod
-    def make_with_wd[target: StaticString, M: Module](
-        mut model: M,
-        ctx: DeviceContext,
-        lr: Scalar[DT] = 0.001,
-        beta1: Scalar[DT] = 0.9,
-        beta2: Scalar[DT] = 0.999,
-        eps: Scalar[DT] = 1e-8,
-        weight_decay: Scalar[DT] = 0.01,
-    ) raises -> Self:
-        """GPU factory with explicit weight_decay."""
-        comptime assert target == "gpu", (
-            "AdamW.make_with_wd[target='cpu'](model, ctx) — drop ctx for CPU"
-        )
-        var adam = Self()
-        adam.lr = lr
-        adam.beta1 = beta1
-        adam.beta2 = beta2
-        adam.eps = eps
-        adam.weight_decay = weight_decay
-        adam.ctx = ctx
-        # Pass 1: compute offsets + total_size + apply_decay.
-        var visitor = _AdamWGPUInitVisitor(
-            offsets_ptr=UnsafePointer(to=adam.offsets),
-            apply_decay_ptr=UnsafePointer(to=adam.apply_decay),
-            total_ptr=UnsafePointer(to=adam.total_size),
-        )
-        model.for_each_param[target](String(""), visitor)
-        var m_real = ctx.enqueue_create_buffer[DT](adam.total_size)
-        var v_real = ctx.enqueue_create_buffer[DT](adam.total_size)
-        m_real.enqueue_fill(0.0)
-        v_real.enqueue_fill(0.0)
-        adam.m_dev = m_real^
-        adam.v_dev = v_real^
-        # Device-side step state: [β₁^t, β₂^t, bc1, bc2] starts at [1, 1, 0, 0].
-        # After first _adamw_step_prep_kernel: [β₁, β₂, 1-β₁, 1-β₂].
-        var step_real = ctx.enqueue_create_buffer[DType.uint32](1)
-        step_real.enqueue_fill(0)
-        var bc_real = ctx.enqueue_create_buffer[DT](4)
-        var bc_init_host = ctx.enqueue_create_host_buffer[DT](4)
-        ctx.synchronize()
-        bc_init_host.unsafe_ptr()[0] = 1.0
-        bc_init_host.unsafe_ptr()[1] = 1.0
-        bc_init_host.unsafe_ptr()[2] = 0.0
-        bc_init_host.unsafe_ptr()[3] = 0.0
-        ctx.enqueue_copy(bc_real, bc_init_host)
-        adam.step_dev = step_real^
-        adam.bc_dev = bc_real^
-        adam._target_tag = TARGET_GPU
-        return adam^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "AdamW: method called with [target='" + String(target)
-                + "'] but optimizer was make'd for a different target "
-                + "(tag=" + String(Int(self._target_tag)) + ")"
+        var opt = Self()
+        comptime if target == "cpu":
+            var visitor = _AdamWCPUInitVisitor(
+                m_flat_ptr=UnsafePointer(to=opt.m_flat),
+                v_flat_ptr=UnsafePointer(to=opt.v_flat),
+                offsets_ptr=UnsafePointer(to=opt.offsets),
+                apply_decay_ptr=UnsafePointer(to=opt.apply_decay),
             )
-
-    # ------------------------------------------------------------------
-    # zero_grad — clears all grads via for_each_param.
-    # ------------------------------------------------------------------
+            model.for_each_param[target, _AdamWCPUInitVisitor](
+                String(""), visitor,
+            )
+            opt.total_size = len(opt.m_flat)
+            opt.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("AdamW.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            var visitor = _AdamWGPUInitVisitor(
+                offsets_ptr=UnsafePointer(to=opt.offsets),
+                apply_decay_ptr=UnsafePointer(to=opt.apply_decay),
+                total_ptr=UnsafePointer(to=opt.total_size),
+            )
+            model.for_each_param[target, _AdamWGPUInitVisitor](
+                String(""), visitor,
+            )
+            var m_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
+            var v_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
+            m_real.enqueue_fill(0.0)
+            v_real.enqueue_fill(0.0)
+            opt.m_dev = m_real^
+            opt.v_dev = v_real^
+            var step_real = ctx_v.enqueue_create_buffer[DType.uint32](1)
+            step_real.enqueue_fill(0)
+            var bc_real = ctx_v.enqueue_create_buffer[DT](4)
+            var bc_init_host = ctx_v.enqueue_create_host_buffer[DT](4)
+            ctx_v.synchronize()
+            bc_init_host.unsafe_ptr()[0] = Scalar[DT](1.0)
+            bc_init_host.unsafe_ptr()[1] = Scalar[DT](1.0)
+            bc_init_host.unsafe_ptr()[2] = Scalar[DT](0.0)
+            bc_init_host.unsafe_ptr()[3] = Scalar[DT](0.0)
+            ctx_v.enqueue_copy(bc_real, bc_init_host)
+            opt.step_dev = step_real^
+            opt.bc_dev = bc_real^
+            opt.ts = TargetStorage.make_gpu(ctx_v)
+        return opt^
 
     def zero_grad[
         target: StaticString,
         M: Module,
     ](mut self, mut model: M) raises:
-        self._assert_tag[target]()
+        assert_tag_for["AdamW", target](self.ts.target_tag)
         comptime if target == "cpu":
             var v = _ZeroGradCPUVisitor()
-            model.for_each_param[target](String(""), v)
+            model.for_each_param[target, _ZeroGradCPUVisitor](String(""), v)
         else:
-            var v = _ZeroGradGPUVisitor(ctx=self.ctx.value())
-            model.for_each_param[target](String(""), v)
-
-    # ------------------------------------------------------------------
-    # step — bump (β₁^t, β₂^t, bc1, bc2) then per-param update.
-    # ------------------------------------------------------------------
+            var v = _ZeroGradGPUVisitor(ctx=self.ts.ctx.value())
+            model.for_each_param[target, _ZeroGradGPUVisitor](String(""), v)
 
     def step[
         target: StaticString,
         M: Module,
     ](mut self, mut model: M) raises:
-        self._assert_tag[target]()
+        assert_tag_for["AdamW", target](self.ts.target_tag)
         comptime if target == "cpu":
             self.step_count += 1
             self.beta1_pow_t = self.beta1_pow_t * self.beta1
             self.beta2_pow_t = self.beta2_pow_t * self.beta2
-            var bc1: Scalar[DT] = 1.0 - self.beta1_pow_t
-            var bc2: Scalar[DT] = 1.0 - self.beta2_pow_t
+            var bc1: Scalar[DT] = Scalar[DT](1.0) - self.beta1_pow_t
+            var bc2: Scalar[DT] = Scalar[DT](1.0) - self.beta2_pow_t
             var visitor = _AdamWCPUStepVisitor(
                 m_flat_ptr=UnsafePointer(to=self.m_flat),
                 v_flat_ptr=UnsafePointer(to=self.v_flat),
@@ -563,11 +454,9 @@ struct AdamW(Optimizer):
                 weight_decay=self.weight_decay,
                 bc1=bc1, bc2=bc2,
             )
-            model.for_each_param[target](String(""), visitor)
+            model.for_each_param[target, _AdamWCPUStepVisitor](String(""), visitor)
         else:
-            var ctx = self.ctx.value()
-            # Launder pointers through MutAnyOrigin (different fields, different
-            # buffers — but Mojo's analyzer can't see that from `self.*`).
+            var ctx = self.ts.ctx.value()
             var step_ptr: UnsafePointer[UInt32, MutAnyOrigin] = (
                 self.step_dev.value().unsafe_ptr()
             )
@@ -589,4 +478,4 @@ struct AdamW(Optimizer):
                 lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
                 weight_decay=self.weight_decay,
             )
-            model.for_each_param[target](String(""), visitor)
+            model.for_each_param[target, _AdamWGPUStepVisitor](String(""), visitor)

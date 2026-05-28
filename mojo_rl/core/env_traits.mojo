@@ -162,6 +162,23 @@ trait RenderableEnv:
         """
         ...
 
+    def start_recording(
+        mut self, filename: String, fps: Int = 30, skip: Int = 1
+    ) raises:
+        """Start recording rendered frames to a video file.
+
+        Format is determined by file extension (.gif or .mp4).
+        No-op if renderer is not initialized.
+        """
+        pass
+
+    def stop_recording(mut self) raises:
+        """Stop recording and finalize the output file.
+
+        No-op if renderer is not initialized or not recording.
+        """
+        pass
+
 
 # ============================================================================
 # State Space Traits

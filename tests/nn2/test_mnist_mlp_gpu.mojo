@@ -52,7 +52,8 @@ def test_mnist_mlp_gpu() raises:
     )
 
     var loss_fn = CrossEntropyLoss[N_CLASSES].make["gpu"](ctx)
-    var optim = Adam.make["gpu"](net, ctx, lr=LR)
+    var optim = Adam.make["gpu", M=type_of(net)](net, ctx)
+    optim.lr = LR
 
     var trainer = Trainer[
         type_of(net), type_of(optim), type_of(loss_fn), BATCH,

@@ -102,6 +102,48 @@ def mcts_gpu_scale_hidden_kernel[
             hidden[off + i] = (v - mn) * inv
 
 
+def mcts_gpu_scatter_root_hidden_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    LATENT: Int,
+    dtype: DType,
+](
+    hidden: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin
+    ],
+) where dtype.is_floating_point():
+    """Scatter dense ``[N_ENVS, LATENT]`` root hidden into strided tree slots.
+
+    The representation forward writes the root hidden for all envs into
+    the dense prefix ``hidden[0 .. N_ENVS * LATENT)`` (row e at
+    ``e * LATENT``). But every downstream MCTS kernel reads env e's
+    node-0 hidden from the strided offset
+    ``e * MAX_NODES * LATENT + 0 * LATENT``. For ``e=0`` the two
+    coincide (offset 0). For ``e>=1`` the strided slot is uninitialized,
+    so envs 1..N-1 all read whatever happens to be in that memory
+    (typically zeros) — producing wrong, identical-across-envs MCTS
+    trees. See ``tests/deep_agents/test_muzero_gpu_mcts_per_env_isolation.mojo``
+    for the rigorous diagnostic that surfaced this.
+
+    Fix: after rep forward + MinMax post-scale, copy each env's dense
+    row into its strided root slot. The dense region [0, N_ENVS*LATENT)
+    and the strided slots for envs 1..N-1 (each at offset
+    e*MAX_NODES*LATENT ≥ MAX_NODES*LATENT ≥ N_ENVS*LATENT when
+    MAX_NODES ≥ N_ENVS) don't overlap, so there's no data race.
+    One thread per (env, latent_dim) cell. env=0 is a self-copy → skip.
+    """
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= N_ENVS * LATENT:
+        return
+    var e = idx // LATENT
+    var l = idx % LATENT
+    if e == 0:
+        return  # self-copy: src offset = dst offset = l
+    var src = e * LATENT + l
+    var dst = e * MAX_NODES * LATENT + l
+    hidden[dst] = hidden[src]
+
+
 def mcts_gpu_extract_hidden_kernel[
     BATCH: Int,
     LATENT: Int,

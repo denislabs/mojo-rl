@@ -298,6 +298,7 @@ def gz_init_root_kernel[
     k_actual: Scalar[DType.int32],
     apply_legal: Scalar[DType.uint8],
     rng_seed: Scalar[DType.uint32],
+    gumbel_scale: Scalar[dtype] = Scalar[dtype](1.0),
 ) where dtype.is_floating_point():
     """Initialize the root node:
         • copies policy logits from pred_output into node_logits[e][0],
@@ -400,7 +401,10 @@ def gz_init_root_kernel[
             uv = Scalar[dtype](1e-9)
         if uv > Scalar[dtype](1.0) - Scalar[dtype](1e-9):
             uv = Scalar[dtype](1.0) - Scalar[dtype](1e-9)
-        var g = -log(-log(uv))
+        # ``gumbel_scale`` follows mctx convention: 1.0 at train, 0.0
+        # at eval / arena (deterministic root-action ranking — Gumbel
+        # noise zeroed, score reduces to raw logits).
+        var g = gumbel_scale * -log(-log(uv))
         noises[a] = g
         scores[a] = rebind[Scalar[dtype]](node_logits[na_off + a]) + g
         # Exclude illegal actions from Gumbel-Top-k entirely. Without this,
@@ -885,6 +889,7 @@ def gz_expand_kernel[
 
 def gz_backup_kernel[
     N_ENVS: Int, MAX_NODES: Int, ACT: Int, dtype: DType,
+    NEGATE_BACKUP: Bool = False,
 ](
     visit_count: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
@@ -896,6 +901,9 @@ def gz_backup_kernel[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
     ],
     total_visits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
+    node_value: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
     ],
     min_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
@@ -912,7 +920,16 @@ def gz_backup_kernel[
 ) where dtype.is_floating_point():
     """Walk the search path from leaf to root and accumulate the discounted
     return into per-action stats; refresh min_q/max_q for σ(Q)
-    normalization. One thread per env."""
+    normalization. One thread per env.
+
+    ``NEGATE_BACKUP`` (default False) switches between:
+      * False (single-player MuZero / EZv2 discrete): the standard
+        recurrence ``value = reward + gamma · value`` at each parent —
+        per-edge reward is consumed in the dynamics-decoded reward bin.
+      * True (two-player zero-sum / board-game MuZero): ``value = -value``
+        at each parent — perspective flips between plies, and there is
+        no per-step reward (terminal reward was folded into ``leaf_value``
+        by the caller / expand kernel)."""
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
     if e >= N_ENVS:
         return
@@ -928,16 +945,31 @@ def gz_backup_kernel[
         var node_idx = Int(rebind[Scalar[dtype]](search_paths[path_off + idx]))
         var action = Int(rebind[Scalar[dtype]](action_paths[path_off + idx]))
         var na_off = tree_off + node_idx * ACT + action
-        value = rebind[Scalar[dtype]](reward[na_off]) + gamma * value
+        comptime if NEGATE_BACKUP:
+            value = -value
+        else:
+            value = rebind[Scalar[dtype]](reward[na_off]) + gamma * value
         visit_count[na_off] = rebind[Scalar[dtype]](
             visit_count[na_off]
         ) + Scalar[dtype](1.0)
         total_value[na_off] = (
             rebind[Scalar[dtype]](total_value[na_off]) + value
         )
-        total_visits[tv_off + node_idx] = rebind[Scalar[dtype]](
-            total_visits[tv_off + node_idx]
-        ) + Scalar[dtype](1.0)
+        # mctx-style running-mean update on node_value:
+        # ``node_value' = (node_value * count + leaf_value) / (count + 1)``.
+        # ``count`` here is the node's total_visits BEFORE this backup.
+        # Critical for: (a) ``v_mix`` in ``gz_extract_policy_kernel`` (Q
+        # imputed for unvisited actions), and (b) interior selection in
+        # ``gz_select_kernel``. Without this, ``node_value`` stays at the
+        # bare network prediction from ``gz_init_root_kernel`` /
+        # ``gz_expand_kernel`` → ``v_mix`` is stale → improved policy at
+        # depth > 0 is degenerate.
+        var old_count = rebind[Scalar[dtype]](total_visits[tv_off + node_idx])
+        var old_value = rebind[Scalar[dtype]](node_value[tv_off + node_idx])
+        node_value[tv_off + node_idx] = (
+            old_value * old_count + value
+        ) / (old_count + Scalar[dtype](1.0))
+        total_visits[tv_off + node_idx] = old_count + Scalar[dtype](1.0)
 
         var n_a = rebind[Scalar[dtype]](visit_count[na_off])
         var mean_q = rebind[Scalar[dtype]](total_value[na_off]) / n_a
@@ -1745,6 +1777,7 @@ def _run_one_sim_gpu[
         tv_t,
         rw_t,
         tvis_t,
+        nv_t,
         miq_t,
         mxq_t,
         sp_t,

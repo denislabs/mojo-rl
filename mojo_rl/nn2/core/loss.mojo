@@ -21,11 +21,11 @@ trait Loss(Defaultable & Movable & ImplicitlyDestructible):
     comptime OUT_DIM: Int
 
     @staticmethod
-    def make[target: StaticString]() raises -> Self:
-        ...
-
-    @staticmethod
-    def make[target: StaticString](ctx: DeviceContext) raises -> Self:
+    def make[target: StaticString](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU
+        (impls raise at runtime if missing)."""
         ...
 
     def forward[
@@ -43,7 +43,7 @@ trait Loss(Defaultable & Movable & ImplicitlyDestructible):
     ) raises -> Scalar[DT]:
         ...
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -57,4 +57,7 @@ trait Loss(Defaultable & Movable & ImplicitlyDestructible):
             element_size=1, ...,
         ],
     ) raises:
+        """Vector-Jacobian product — gradient of the scalar loss w.r.t.
+        `logits` (the input cached by the most recent `forward`). Phase 4
+        rename of `Loss.backward`, semantics unchanged."""
         ...

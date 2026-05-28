@@ -24,6 +24,8 @@ struct VideoRecorder(Movable):
     var frame_count: Int
     var fps: Int
     var filename: String
+    var skip: Int
+    var _skip_counter: Int
 
     # Python objects (lazily initialised in start())
     var _writer: PythonObject
@@ -37,6 +39,8 @@ struct VideoRecorder(Movable):
         self.frame_count = 0
         self.fps = 30
         self.filename = ""
+        self.skip = 1
+        self._skip_counter = 0
         self._writer = None
         self._np = None
         self._ctypes = None
@@ -47,17 +51,22 @@ struct VideoRecorder(Movable):
         self.frame_count = take.frame_count
         self.fps = take.fps
         self.filename = take.filename^
+        self.skip = take.skip
+        self._skip_counter = take._skip_counter
         self._writer = take._writer^
         self._np = take._np^
         self._ctypes = take._ctypes^
         self._channel_idx = take._channel_idx^
 
-    def start(mut self, filename: String, fps: Int = 30) raises:
+    def start(
+        mut self, filename: String, fps: Int = 30, skip: Int = 1
+    ) raises:
         """Open a video writer.
 
         Args:
             filename: Output path, e.g. ``recording_0.mp4`` or ``recording_0.gif``.
             fps: Frames per second encoded into the file.
+            skip: Only record every Nth frame (1 = every frame, 2 = every other, etc.).
         """
         if self.is_recording:
             self.stop()
@@ -68,9 +77,15 @@ struct VideoRecorder(Movable):
         self._channel_idx = Python.evaluate("[2, 1, 0]")
 
         # imageio.get_writer works for both MP4 (requires imageio-ffmpeg) and GIF.
-        self._writer = imageio.get_writer(filename, fps=fps)
+        # loop=0 → infinite loop for GIFs (default is play-once).
+        if filename.endswith(".gif"):
+            self._writer = imageio.get_writer(filename, fps=fps, loop=0)
+        else:
+            self._writer = imageio.get_writer(filename, fps=fps)
         self.filename = filename
         self.fps = fps
+        self.skip = skip if skip >= 1 else 1
+        self._skip_counter = 0
         self.frame_count = 0
         self.is_recording = True
         print("Recording started: " + filename)
@@ -82,15 +97,21 @@ struct VideoRecorder(Movable):
         which matches the Metal/SDL3 GPU swapchain format and the SDL
         software renderer surface format on little-endian systems.
 
+        Respects the ``skip`` setting: only every Nth call actually encodes a
+        frame.
+
         Args:
             addr: CPU address of the pixel buffer (pass ``Int(ptr)``).
             width: Frame width in pixels.
             height: Frame height in pixels.
         """
+        self._skip_counter += 1
+        if self._skip_counter < self.skip:
+            return
+        self._skip_counter = 0
+
         var size = width * height * 4
-        # Read raw bytes from the mapped CPU buffer via ctypes
         var buf = self._ctypes.string_at(addr, size)
-        # Interpret as uint8 HxWx4 array, then pick channels [2,1,0] = R,G,B
         var arr = self._np.frombuffer(buf, dtype=self._np.uint8).reshape(
             height, width, 4
         )

@@ -24,8 +24,13 @@ Forward without cache (inference): uses mu-only weights (deterministic).
 from ..constants import dtype, TPB
 from .model import Model, PerfTimerPtr, NULL_PERF
 from ..initializer import Initializer
+from ..autodiff.apple_cblas import apple_sgemm_accum
 from layout import LayoutTensor, Layout
+from layout.tile_tensor import lt_to_tt
+from linalg.matmul import matmul as max_matmul
 from std.math import sqrt, abs, log, cos
+from std.memory import alloc
+from std.sys import CompilationTarget
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 from std.random.philox import Random as PhiloxRandom
@@ -207,29 +212,60 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
                 )
             )
 
+        # Cache input + noise per sample (cache layout unchanged for compat).
         for b in range(BATCH):
-            # Cache input
             for i in range(Self.in_dim):
                 cache[b, Self.CACHE_INPUT_OFFSET + i] = input[b, i]
-            # Cache noise (same for all samples)
             for i in range(Self.in_dim):
                 cache[b, Self.CACHE_NOISE_P_OFFSET + i] = noise_p[i]
             for j in range(Self.out_dim):
                 cache[b, Self.CACHE_NOISE_Q_OFFSET + j] = noise_q[j]
 
-            # Compute y = x @ W_noisy + b_noisy
+        # Materialize W_noisy[i, j] = mu_w[i, j] + sigma_w[i, j] * p[i] * q[j]
+        # once into a scratch buffer, then do a single BLAS matmul:
+        #   output (BATCH, OUT) = input (BATCH, IN) @ W_noisy (IN, OUT)
+        # then add bias_noisy[j] = mu_b[j] + sigma_b[j] * q[j].
+        comptime W_SIZE = Self.in_dim * Self.out_dim
+        var W_noisy_buf: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = alloc[Scalar[dtype]](W_SIZE)
+        for i in range(Self.in_dim):
+            var pi = rebind[Scalar[dtype]](noise_p[i])
+            var row_off = i * Self.out_dim
             for j in range(Self.out_dim):
-                var mu_b = params[Self.MU_B_OFFSET + j]
-                var sigma_b = params[Self.SIGMA_B_OFFSET + j]
-                var acc = mu_b + sigma_b * noise_q[j]
-                for i in range(Self.in_dim):
-                    var mu_w = params[Self.MU_W_OFFSET + i * Self.out_dim + j]
-                    var sigma_w = params[
-                        Self.SIGMA_W_OFFSET + i * Self.out_dim + j
-                    ]
-                    var w = mu_w + sigma_w * noise_p[i] * noise_q[j]
-                    acc += rebind[Scalar[dtype]](input[b, i]) * w
-                output[b, j] = acc
+                var qj = rebind[Scalar[dtype]](noise_q[j])
+                var mu_w = rebind[Scalar[dtype]](
+                    params[Self.MU_W_OFFSET + row_off + j]
+                )
+                var sigma_w = rebind[Scalar[dtype]](
+                    params[Self.SIGMA_W_OFFSET + row_off + j]
+                )
+                W_noisy_buf[row_off + j] = mu_w + sigma_w * pi * qj
+
+        var W_noisy_lt = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.in_dim, Self.out_dim),
+            MutAnyOrigin,
+        ](W_noisy_buf)
+        try:
+            max_matmul[target="cpu"](
+                lt_to_tt(output),
+                lt_to_tt(input),
+                lt_to_tt(W_noisy_lt),
+                None,
+            )
+        except e:
+            pass
+        # Add bias_noisy per output feature.
+        for j in range(Self.out_dim):
+            var mu_b = rebind[Scalar[dtype]](params[Self.MU_B_OFFSET + j])
+            var sigma_b = rebind[Scalar[dtype]](
+                params[Self.SIGMA_B_OFFSET + j]
+            )
+            var b_noisy = mu_b + sigma_b * rebind[Scalar[dtype]](noise_q[j])
+            for b in range(BATCH):
+                output[b, j] = output[b, j] + b_noisy
+        W_noisy_buf.free()
 
     # =========================================================================
     # Forward without cache (inference — mu-only, no noise)
@@ -280,23 +316,46 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
                 )
             )
 
-        for b in range(BATCH):
+        # Materialize W_noisy + b_noisy → one BLAS matmul + bias add.
+        comptime W_SIZE = Self.in_dim * Self.out_dim
+        var W_noisy_buf: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = alloc[Scalar[dtype]](W_SIZE)
+        for i in range(Self.in_dim):
+            var pi = rebind[Scalar[dtype]](noise_p[i])
+            var row_off = i * Self.out_dim
             for j in range(Self.out_dim):
-                var mu_b = rebind[Scalar[dtype]](params[Self.MU_B_OFFSET + j])
-                var sigma_b = rebind[Scalar[dtype]](
-                    params[Self.SIGMA_B_OFFSET + j]
+                var qj = rebind[Scalar[dtype]](noise_q[j])
+                var mu_w = rebind[Scalar[dtype]](
+                    params[Self.MU_W_OFFSET + row_off + j]
                 )
-                var acc = mu_b + sigma_b * noise_q[j]
-                for i in range(Self.in_dim):
-                    var mu_w = rebind[Scalar[dtype]](
-                        params[Self.MU_W_OFFSET + i * Self.out_dim + j]
-                    )
-                    var sigma_w = rebind[Scalar[dtype]](
-                        params[Self.SIGMA_W_OFFSET + i * Self.out_dim + j]
-                    )
-                    var w = mu_w + sigma_w * noise_p[i] * noise_q[j]
-                    acc += rebind[Scalar[dtype]](input[b, i]) * w
-                output[b, j] = acc
+                var sigma_w = rebind[Scalar[dtype]](
+                    params[Self.SIGMA_W_OFFSET + row_off + j]
+                )
+                W_noisy_buf[row_off + j] = mu_w + sigma_w * pi * qj
+        var W_noisy_lt = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.in_dim, Self.out_dim),
+            MutAnyOrigin,
+        ](W_noisy_buf)
+        try:
+            max_matmul[target="cpu"](
+                lt_to_tt(output),
+                lt_to_tt(input),
+                lt_to_tt(W_noisy_lt),
+                None,
+            )
+        except e:
+            pass
+        for j in range(Self.out_dim):
+            var mu_b = rebind[Scalar[dtype]](params[Self.MU_B_OFFSET + j])
+            var sigma_b = rebind[Scalar[dtype]](
+                params[Self.SIGMA_B_OFFSET + j]
+            )
+            var b_noisy = mu_b + sigma_b * rebind[Scalar[dtype]](noise_q[j])
+            for b in range(BATCH):
+                output[b, j] = output[b, j] + b_noisy
+        W_noisy_buf.free()
 
     # =========================================================================
     # Backward
@@ -343,49 +402,142 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
                 cache[0, Self.CACHE_NOISE_Q_OFFSET + j]
             )
 
-        for b in range(BATCH):
-            # Read cached input
-            # Compute grad_input: dx = dy @ W.T
-            for i in range(Self.in_dim):
-                var acc = Scalar[dtype](0.0)
-                for j in range(Self.out_dim):
-                    var mu_w = rebind[Scalar[dtype]](
-                        params[Self.MU_W_OFFSET + i * Self.out_dim + j]
-                    )
-                    var sigma_w = rebind[Scalar[dtype]](
-                        params[Self.SIGMA_W_OFFSET + i * Self.out_dim + j]
-                    )
-                    var w = mu_w + sigma_w * noise_p[i] * noise_q[j]
-                    acc += rebind[Scalar[dtype]](grad_output[b, j]) * w
-                grad_input[b, i] = acc
+        # Materialize W_noisy once, then BLAS for grad_input:
+        #   grad_input (BATCH, IN) = grad_output (BATCH, OUT) @ W_noisy.T
+        comptime W_SIZE = Self.in_dim * Self.out_dim
+        var W_noisy_buf: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = alloc[Scalar[dtype]](W_SIZE)
+        for i in range(Self.in_dim):
+            var pi = rebind[Scalar[dtype]](noise_p[i])
+            var row_off = i * Self.out_dim
+            for j in range(Self.out_dim):
+                var qj = rebind[Scalar[dtype]](noise_q[j])
+                var mu_w = rebind[Scalar[dtype]](
+                    params[Self.MU_W_OFFSET + row_off + j]
+                )
+                var sigma_w = rebind[Scalar[dtype]](
+                    params[Self.SIGMA_W_OFFSET + row_off + j]
+                )
+                W_noisy_buf[row_off + j] = mu_w + sigma_w * pi * qj
 
-            # Accumulate parameter gradients
-            var x_cached = InlineArray[Scalar[dtype], Self.in_dim](
-                uninitialized=True
+        var W_noisy_lt = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.in_dim, Self.out_dim),
+            MutAnyOrigin,
+        ](W_noisy_buf)
+        try:
+            max_matmul[transpose_b=True, target="cpu"](
+                lt_to_tt(grad_input),
+                lt_to_tt(grad_output),
+                lt_to_tt(W_noisy_lt),
+                None,
             )
-            for i in range(Self.in_dim):
-                x_cached[i] = rebind[Scalar[dtype]](
-                    cache[b, Self.CACHE_INPUT_OFFSET + i]
+        except e:
+            pass
+
+        # Param gradients:
+        #   dmu_w[i, j]    += sum_b x[b, i] * dy[b, j]
+        #   dsigma_w[i, j] += sum_b x[b, i] * dy[b, j] * p[i] * q[j]
+        #                  = dmu_w[i, j] * p[i] * q[j]
+        # First compute dW_tmp = cache_input.T @ grad_output via BLAS, then
+        # accumulate both gradients elementwise from dW_tmp.
+        comptime use_apple_sgemm = (
+            CompilationTarget.is_macos() and dtype == DType.float32
+        )
+        var dW_tmp_buf: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = alloc[Scalar[dtype]](W_SIZE)
+
+        comptime if use_apple_sgemm:
+            # One Apple cblas call with transpose_a + lda=CACHE_SIZE so we
+            # read the input view directly out of `cache` (which has stride
+            # CACHE_SIZE between batches).
+            try:
+                apple_sgemm_accum[transpose_a=True, transpose_b=False](
+                    Self.in_dim,
+                    Self.out_dim,
+                    BATCH,
+                    Float32(1.0),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        cache.ptr + Self.CACHE_INPUT_OFFSET
+                    ),
+                    Self.CACHE_SIZE,
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        grad_output.ptr
+                    ),
+                    Self.out_dim,
+                    Float32(0.0),
+                    rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                        dW_tmp_buf
+                    ),
+                    Self.out_dim,
+                )
+            except e:
+                pass
+        else:
+            # Non-Apple: physically transpose cache_input then max_matmul.
+            var cache_T_buf: UnsafePointer[
+                Scalar[dtype], MutAnyOrigin
+            ] = alloc[Scalar[dtype]](Self.in_dim * BATCH)
+            for b in range(BATCH):
+                for i in range(Self.in_dim):
+                    cache_T_buf[i * BATCH + b] = rebind[Scalar[dtype]](
+                        cache[b, Self.CACHE_INPUT_OFFSET + i]
+                    )
+            var cache_T = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.in_dim, BATCH),
+                MutAnyOrigin,
+            ](cache_T_buf)
+            var dW_tmp = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.in_dim, Self.out_dim),
+                MutAnyOrigin,
+            ](dW_tmp_buf)
+            try:
+                max_matmul[target="cpu"](
+                    lt_to_tt(dW_tmp),
+                    lt_to_tt(cache_T),
+                    lt_to_tt(grad_output),
+                    None,
+                )
+            except e:
+                pass
+            cache_T_buf.free()
+
+        # Accumulate into mu_w / sigma_w grads. Read dW_tmp once and
+        # produce two updates per element.
+        for i in range(Self.in_dim):
+            var pi = rebind[Scalar[dtype]](noise_p[i])
+            var row_off = i * Self.out_dim
+            for j in range(Self.out_dim):
+                var qj = rebind[Scalar[dtype]](noise_q[j])
+                var xdy_sum = dW_tmp_buf[row_off + j]
+                grads.ptr[Self.MU_W_OFFSET + row_off + j] = (
+                    grads.ptr[Self.MU_W_OFFSET + row_off + j] + xdy_sum
+                )
+                grads.ptr[Self.SIGMA_W_OFFSET + row_off + j] = (
+                    grads.ptr[Self.SIGMA_W_OFFSET + row_off + j]
+                    + xdy_sum * pi * qj
                 )
 
-            for i in range(Self.in_dim):
-                for j in range(Self.out_dim):
-                    var dy = rebind[Scalar[dtype]](grad_output[b, j])
-                    var x_i = x_cached[i]
-                    var xdy = x_i * dy
-                    # dmu_w += x * dy
-                    grads[Self.MU_W_OFFSET + i * Self.out_dim + j] += xdy
-                    # dsigma_w += x * dy * noise_p[i] * noise_q[j]
-                    grads[Self.SIGMA_W_OFFSET + i * Self.out_dim + j] += (
-                        xdy * noise_p[i] * noise_q[j]
-                    )
+        # dmu_b[j]    += sum_b dy[b, j]
+        # dsigma_b[j] += sum_b dy[b, j] * q[j]  =  dmu_b[j] * q[j]
+        for j in range(Self.out_dim):
+            var dy_sum = Scalar[dtype](0.0)
+            for b in range(BATCH):
+                dy_sum += rebind[Scalar[dtype]](grad_output[b, j])
+            grads.ptr[Self.MU_B_OFFSET + j] = (
+                grads.ptr[Self.MU_B_OFFSET + j] + dy_sum
+            )
+            grads.ptr[Self.SIGMA_B_OFFSET + j] = (
+                grads.ptr[Self.SIGMA_B_OFFSET + j]
+                + dy_sum * rebind[Scalar[dtype]](noise_q[j])
+            )
 
-            for j in range(Self.out_dim):
-                var dy = rebind[Scalar[dtype]](grad_output[b, j])
-                # dmu_b += dy
-                grads[Self.MU_B_OFFSET + j] += dy
-                # dsigma_b += dy * noise_q[j]
-                grads[Self.SIGMA_B_OFFSET + j] += dy * noise_q[j]
+        W_noisy_buf.free()
+        dW_tmp_buf.free()
 
     # =========================================================================
     # GPU Forward with cache (training — noisy)

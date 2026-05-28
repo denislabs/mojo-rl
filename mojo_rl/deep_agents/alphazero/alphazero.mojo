@@ -36,7 +36,7 @@ from mojo_rl.core import (
     Saveable,
 )
 from .strategies import BoardAugmenter
-from mojo_rl.deep_agents.muzero.strategies import (
+from mojo_rl.planners.tree_search.strategies import (
     BackupMode,
     PlayerMode,
 )
@@ -54,7 +54,7 @@ from mojo_rl.deep_agents.core.kernels import (
     uniform_random_discrete_actions_kernel,
     uniform_random_legal_actions_kernel,
 )
-from mojo_rl.deep_agents.muzero.gpu_mcts import TPB
+from mojo_rl.planners.tree_search.mcts_gpu import TPB
 
 # extract_hidden_kernel not needed for AlphaZero (no dynamics)
 from mojo_rl.deep_agents.muzero.evaluators import (
@@ -66,9 +66,6 @@ from std.random.philox import Random as PhiloxRandom
 from .configs import AlphaZeroConfig
 from .state import AlphaZeroCPUState, AlphaZeroGPUState
 
-# Phase 3 agent rewiring: optional path through the shared orchestrator.
-# Opt in per-config via ``Config.USE_NEW_MCTS = True``; default is the
-# legacy inline (CUDA-graph-capturable) path below.
 from mojo_rl.planners.tree_search import (
     GenericGPUMCTS,
     GenericCPUMCTS,
@@ -77,6 +74,7 @@ from mojo_rl.planners.tree_search import (
 from .gpu_trait_adapters import (
     AlphaZeroPredGPU,
     AlphaZeroEnvGPU,
+    AlphaZeroEnvGPUSinglePlayer,
     AlphaZeroRepCPU,
     AlphaZeroDynCPU,
     AlphaZeroPredCPU,
@@ -4919,7 +4917,7 @@ struct GenericAlphaZeroAgent[
                         model_state=gpu.prediction.model_state_buf.unsafe_ptr(),
                         workspace=mcts_ws,
                     )
-                    var env_tg = AlphaZeroEnvGPU[E, GS, OBS, ACT]()
+                    var env_tg = AlphaZeroEnvGPUSinglePlayer[E, GS, OBS, ACT]()
 
                     var root_obs_tg = LayoutTensor[
                         dtype,
@@ -4939,7 +4937,7 @@ struct GenericAlphaZeroAgent[
                             Self.Config.PredModel,
                             Self.Config.OptType,
                         ],
-                        AlphaZeroEnvGPU[E, GS, OBS, ACT],
+                        AlphaZeroEnvGPUSinglePlayer[E, GS, OBS, ACT],
                     ](
                         ctx,
                         pred_tg,

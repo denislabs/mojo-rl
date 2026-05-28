@@ -10,7 +10,7 @@ convention as PyTorch `MSELoss(reduction='mean')` which also averages
 over both batch and feature dims, but here we divide by BATCH only to
 match the PPO critic gradient).
 
-Phase 6.3. AMP: POLICY accepted but ignored (loss math is fp32-only).
+AMP: POLICY accepted but ignored (loss math is fp32-only).
 """
 
 from std.gpu import global_idx
@@ -18,11 +18,9 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, CPU_SIMD_W
-from ..core import (
-    Loss, AMPPolicy, NoAMP,
-    TARGET_UNINIT, TARGET_CPU, TARGET_GPU, target_tag_for,
-)
+from ..constants import DT, CPU_SIMD_W, TPB, TPB_REDUCE
+from ..core import Loss, AMPPolicy, NoAMP
+from ..core.target_storage import TargetStorage, assert_tag_for
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -79,9 +77,8 @@ struct MSELoss[DIM: Int](Loss):
     var partial_loss_dev: Optional[DeviceBuffer[DT]]
     var partial_loss_host: Optional[HostBuffer[DT]]
     var partial_loss_n: Int
-    var ctx: Optional[DeviceContext]
 
-    var _target_tag: Int8
+    var ts: TargetStorage
 
     def __init__(out self):
         self.cache_logits = List[Scalar[DT]]()
@@ -90,39 +87,26 @@ struct MSELoss[DIM: Int](Loss):
         self.partial_loss_dev = None
         self.partial_loss_host = None
         self.partial_loss_n = 0
-        self.ctx = None
-        self._target_tag = TARGET_UNINIT
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString]() raises -> Self:
-        comptime assert target == "cpu", (
-            "MSELoss.make[target='gpu'] requires a DeviceContext"
+    def make[target: StaticString](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "MSELoss: target must be 'cpu' or 'gpu'"
         )
         var loss = Self()
-        loss._target_tag = TARGET_CPU
+        loss.ts = TargetStorage.make[target](ctx=ctx)
+        comptime if target == "gpu":
+            if not ctx:
+                raise Error("MSELoss.make[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            loss.cache_logits_dev = ctx_v.enqueue_create_buffer[DT](1)
+            loss.partial_loss_dev = ctx_v.enqueue_create_buffer[DT](1)
+            loss.partial_loss_host = ctx_v.enqueue_create_host_buffer[DT](1)
         return loss^
-
-    @staticmethod
-    def make[target: StaticString](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "MSELoss.make[target='cpu'](ctx) — drop ctx for CPU"
-        )
-        var loss = Self()
-        loss.cache_logits_dev = ctx.enqueue_create_buffer[DT](1)
-        loss.partial_loss_dev = ctx.enqueue_create_buffer[DT](1)
-        loss.partial_loss_host = ctx.enqueue_create_host_buffer[DT](1)
-        loss.ctx = ctx
-        loss._target_tag = TARGET_GPU
-        return loss^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "MSELoss: method called with [target='" + String(target)
-                + "'] but loss was make'd for a different target "
-                + "(tag=" + String(Int(self._target_tag)) + ")"
-            )
 
     def _ensure_cache_cpu(mut self, batch: Int):
         var needed = batch * Self.DIM
@@ -130,7 +114,7 @@ struct MSELoss[DIM: Int](Loss):
             self.cache_logits.resize(needed, 0.0)
 
     def _ensure_buffers_gpu(mut self, batch: Int) raises:
-        var ctx = self.ctx.value()
+        var ctx = self.ts.ctx.value()
         var c_needed = batch * Self.DIM
         if self.cache_logits_dev_n < c_needed:
             self.cache_logits_dev = ctx.enqueue_create_buffer[DT](c_needed)
@@ -155,13 +139,12 @@ struct MSELoss[DIM: Int](Loss):
     ) raises -> Scalar[DT]:
         comptime assert logits.flat_rank == 2, "logits rank-2"
         comptime assert targets.flat_rank == 2, "targets rank-2"
-        self._assert_tag[target]()
+        assert_tag_for["MSELoss", target](self.ts.target_tag)
 
         comptime if target == "cpu":
-            # Phase 8.0: SIMD path. Flat sweep over BATCH * DIM since the
-            # reduction doesn't care about row structure (sum is associative
-            # in fp32 modulo rounding — bit-changes vs scalar are negligible
-            # against the 1/BATCH normalization).
+            # SIMD path. Flat sweep over BATCH * DIM — sum is associative in
+            # fp32 modulo rounding, so row structure doesn't matter (the
+            # 1/BATCH normalization dwarfs the rounding delta).
             self._ensure_cache_cpu(BATCH)
             var lp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
             var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
@@ -186,7 +169,7 @@ struct MSELoss[DIM: Int](Loss):
             return total / Scalar[DT](BATCH)
         else:
             self._ensure_buffers_gpu(BATCH)
-            var ctx = self.ctx.value()
+            var ctx = self.ts.ctx.value()
             comptime mat_layout = Layout.row_major(BATCH, Self.DIM)
             comptime row_layout = Layout.row_major(BATCH)
             var lp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
@@ -202,7 +185,7 @@ struct MSELoss[DIM: Int](Loss):
             # Copy logits to cache so backward kernel can reference them
             # without depending on the caller keeping logits buffer alive.
             ctx.enqueue_copy(self.cache_logits_dev.value(), lp_w)
-            comptime TPB = 64
+            comptime TPB = TPB_REDUCE
             comptime n_blocks = (BATCH + TPB - 1) // TPB
             comptime kernel = _mse_forward_kernel[BATCH, Self.DIM]
             ctx.enqueue_function[kernel](
@@ -219,7 +202,7 @@ struct MSELoss[DIM: Int](Loss):
                 total += hp[b]
             return total / Scalar[DT](BATCH)
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
@@ -235,10 +218,10 @@ struct MSELoss[DIM: Int](Loss):
     ) raises:
         comptime assert targets.flat_rank == 2, "targets rank-2"
         comptime assert grad_logits.flat_rank == 2, "grad_logits rank-2"
-        self._assert_tag[target]()
+        assert_tag_for["MSELoss", target](self.ts.target_tag)
 
         comptime if target == "cpu":
-            # Phase 8.0: SIMD path.
+            # SIMD path.
             var cp = self.cache_logits.unsafe_ptr()
             var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
             var gp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_logits.ptr)
@@ -255,7 +238,7 @@ struct MSELoss[DIM: Int](Loss):
                 gp[k] = (cp[k] - tp[k]) * inv_batch
                 k += 1
         else:
-            var ctx = self.ctx.value()
+            var ctx = self.ts.ctx.value()
             comptime mat_layout = Layout.row_major(BATCH, Self.DIM)
             var tp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
             var gp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_logits.ptr)
@@ -264,7 +247,6 @@ struct MSELoss[DIM: Int](Loss):
             )
             var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
             var grad_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](gp_w)
-            comptime TPB = 128
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
             comptime kernel = _mse_backward_kernel[BATCH, Self.DIM]
             ctx.enqueue_function[kernel](

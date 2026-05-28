@@ -222,6 +222,8 @@ struct GenericCPUMCTS[
     PUCT: PUCTFormula,
     NOISE: ExplorationNoise,
     PLAYER: PlayerMode,
+    BATCH_SIMS: Int = 1,
+    VIRTUAL_LOSS: Int = 3,
 ](ImplicitlyDestructible, Movable):
     """CPU MCTS parameterized by the model contract + strategy traits.
 
@@ -235,6 +237,28 @@ struct GenericCPUMCTS[
             ``EpsilonNoise``, ``NoNoise``).
         PLAYER: ``SinglePlayer`` or ``SelfPlay`` — toggles negation in
             ``_backup`` (matches reference AlphaZero behavior).
+        BATCH_SIMS: Number of simulations selected+expanded per round
+            before any backup runs. ``1`` (default) = pure sequential
+            (each sim's backup runs immediately, vloss has no net
+            effect within a sim). Larger values diversify root-level
+            exploration by holding virtual loss in place across
+            multiple in-flight sims — required to compensate for
+            spiky Dirichlet root priors (e.g. CartPole's
+            ``DirichletNoise[0.25, 0.25]``) that otherwise lock a
+            sequential PUCT walk onto a single noise-picked action.
+        VIRTUAL_LOSS: Magnitude added to ``visit_count`` (and
+            subtracted from per-action mean Q) at every descent step
+            during selection. ``3`` is the canonical AlphaGo Zero
+            value. Net visit change per sim per step is ``+1``
+            (``+VIRTUAL_LOSS`` during select, ``-(VIRTUAL_LOSS-1)``
+            during backup), so the final tree state matches the
+            no-vloss reference. Setting to ``0`` disables vloss
+            entirely.
+
+    Vloss is applied at EVERY descent step (Phase D Bug 2 correct fix
+    from ``docs/PHASE_D_GPU_MCTS_BUG_HUNT.md``), not just at the leaf
+    parent — without this, all sims in a batch share the same root
+    action and only diversify at the deepest level.
 
     Runtime ctor args carry only what's left after strategy traits:
         gamma: discount factor used in the backup recursion.
@@ -366,9 +390,97 @@ struct GenericCPUMCTS[
 
         self.nodes.append(root^)
 
-        # ── 6. Simulations ───────────────────────────────────────────
-        for _ in range(Self.NUM_SIMULATIONS):
-            self._run_simulation[REP, DYN, PRED](rep, dyn, pred)
+        # ── 6. Simulations — batched, with virtual loss ─────────────
+        # Each batch round selects up to ``BATCH_SIMS`` leaves with
+        # virtual loss at every descent step, expands each, then runs
+        # backup for the whole batch. Holding vloss across the batch
+        # is what diversifies root-level action choice when the
+        # network's prior + Dirichlet noise concentrates strongly on
+        # one action. With ``BATCH_SIMS=1`` the math degenerates to
+        # plain sequential MCTS (vloss applied then immediately
+        # removed within the same sim's backup — net zero effect).
+        comptime BSIMS: Int = Self.BATCH_SIMS
+        comptime VLOSS: Int = Self.VIRTUAL_LOSS
+
+        var sims_done: Int = 0
+        while sims_done < Self.NUM_SIMULATIONS:
+            var batch_n: Int = BSIMS
+            if sims_done + batch_n > Self.NUM_SIMULATIONS:
+                batch_n = Self.NUM_SIMULATIONS - sims_done
+
+            # Per-batch scratch — each sim's path/actions/leaf_value
+            # held until phase 2 so vloss stays in place during all
+            # selections in this round.
+            var batch_paths = List[List[Int]](capacity=batch_n)
+            var batch_actions = List[List[Int]](capacity=batch_n)
+            var batch_leafs = List[Float64](capacity=batch_n)
+            var batch_valid = List[Bool](capacity=batch_n)
+
+            # Phase 1: select + expand each sim in the batch.
+            for _ in range(batch_n):
+                var path = List[Int](capacity=64)
+                var actions = List[Int](capacity=64)
+                var node_idx: Int = 0
+                path.append(node_idx)
+
+                while True:
+                    var action = self._select_action(node_idx)
+                    actions.append(action)
+
+                    # Virtual loss at every descent step. Without this,
+                    # all sims in a batch follow the same root action
+                    # and only diversify at the deepest level (the
+                    # Phase D Bug 2 pattern).
+                    comptime if VLOSS != 0:
+                        self.nodes[node_idx].visit_count[
+                            action
+                        ] += VLOSS
+                        self.nodes[node_idx].total_visits += VLOSS
+
+                    if not self.nodes[node_idx].is_expanded(action):
+                        break
+                    node_idx = self.nodes[node_idx].child_idx[action]
+                    path.append(node_idx)
+
+                var parent_idx = path[len(path) - 1]
+                var leaf_action = actions[len(actions) - 1]
+
+                # Tree overflow → undo vloss along this path and skip
+                # the sim. Mirrors the legacy MuZero MCTS overflow path
+                # and the AZ Phase D Bug 2 fix's "remove vloss along
+                # the FULL path, not just at the leaf parent".
+                if len(self.nodes) >= Self.MAX_NODES:
+                    comptime if VLOSS != 0:
+                        for i in range(len(path)):
+                            var nd = path[i]
+                            var ac = actions[i]
+                            self.nodes[nd].visit_count[ac] -= VLOSS
+                            self.nodes[nd].total_visits -= VLOSS
+                    batch_valid.append(False)
+                    batch_paths.append(path^)
+                    batch_actions.append(actions^)
+                    batch_leafs.append(Float64(0.0))
+                    continue
+
+                var child_hidden_idx = len(self.nodes)
+                var leaf_value = self._expand_node[REP, DYN, PRED](
+                    parent_idx, leaf_action, child_hidden_idx, dyn, pred
+                )
+                batch_valid.append(True)
+                batch_paths.append(path^)
+                batch_actions.append(actions^)
+                batch_leafs.append(leaf_value)
+
+            # Phase 2: backup all valid sims. Each backup nets out the
+            # vloss it applied during selection so the final tree state
+            # matches a no-vloss reference run.
+            for b in range(batch_n):
+                if batch_valid[b]:
+                    self._backup_batched(
+                        batch_paths[b], batch_actions[b], batch_leafs[b]
+                    )
+
+            sims_done += batch_n
 
         # ── 7. Visit-count policy ────────────────────────────────────
         var policy = InlineArray[Float64, Self.ACTION_DIM](uninitialized=True)
@@ -407,45 +519,6 @@ struct GenericCPUMCTS[
     # ══════════════════════════════════════════════════════════════════════
     # Internals
     # ══════════════════════════════════════════════════════════════════════
-
-    def _run_simulation[
-        REP: Representation,
-        DYN: Dynamics,
-        PRED: Prediction,
-    ](mut self, mut rep: REP, mut dyn: DYN, mut pred: PRED,) raises:
-        """One simulation: traverse to leaf, expand, back up the value."""
-        var search_path = List[Int](capacity=64)
-        var actions_path = List[Int](capacity=64)
-
-        var node_idx: Int = 0
-        search_path.append(node_idx)
-
-        while True:
-            var action = self._select_action(node_idx)
-            actions_path.append(action)
-
-            if not self.nodes[node_idx].is_expanded(action):
-                break
-
-            node_idx = self.nodes[node_idx].child_idx[action]
-            search_path.append(node_idx)
-
-        var parent_idx = search_path[len(search_path) - 1]
-        var action = actions_path[len(actions_path) - 1]
-
-        # Tree overflow guard — if we're at capacity, treat this sim as
-        # a no-op (path stays unbacked-up). Matches the existing
-        # behavior in ``muzero/mcts.mojo:_run_simulation``.
-        if len(self.nodes) >= Self.MAX_NODES:
-            return
-
-        var child_hidden_idx = len(self.nodes)
-
-        var leaf_value = self._expand_node[REP, DYN, PRED](
-            parent_idx, action, child_hidden_idx, dyn, pred
-        )
-
-        self._backup(search_path, actions_path, leaf_value)
 
     def _select_action(self, node_idx: Int) -> Int:
         """PUCT: argmax_a [Q̂(s, a) + c(s) · P(s, a) · √N(s) / (1+N(s,a))].
@@ -555,18 +628,27 @@ struct GenericCPUMCTS[
 
         return leaf_value
 
-    def _backup(
+    def _backup_batched(
         mut self,
         search_path: List[Int],
         actions_path: List[Int],
         leaf_value: Float64,
     ):
-        """Propagate ``leaf_value`` up the search path, updating N/W/Q.
+        """Propagate ``leaf_value`` up the search path, netting out vloss.
 
         Per-step transform is delegated to ``PLAYER.backup_transform``:
             SinglePlayer: value ← reward + gamma * value
             SelfPlay:     value ← -value (zero-sum, no per-edge reward)
+
+        Visit-count delta per step is ``1 - VIRTUAL_LOSS`` so the
+        ``+VIRTUAL_LOSS`` applied during selection nets to exactly
+        ``+1`` (one real visit per sim per step) once both phases of
+        the batch round complete. For ``VIRTUAL_LOSS=0`` this reduces
+        to the classic ``+1`` sequential backup.
         """
+        comptime VLOSS: Int = Self.VIRTUAL_LOSS
+        comptime DELTA: Int = 1 - VLOSS
+
         var value = leaf_value
         var path_len = len(search_path)
         for i in range(path_len):
@@ -577,7 +659,7 @@ struct GenericCPUMCTS[
             var edge_reward = self.nodes[node_idx].reward[action]
             value = Self.PLAYER.backup_transform(value, edge_reward, self.gamma)
 
-            self.nodes[node_idx].visit_count[action] += 1
+            self.nodes[node_idx].visit_count[action] += DELTA
             self.nodes[node_idx].total_value[action] += value
-            self.nodes[node_idx].total_visits += 1
+            self.nodes[node_idx].total_visits += DELTA
             self.min_max.update(self.nodes[node_idx].mean_value(action))

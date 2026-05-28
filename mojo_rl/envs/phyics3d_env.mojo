@@ -1361,3 +1361,15 @@ struct Phyics3dEnv[
         if not self._renderer_initialized:
             return False
         return self._renderer.value()[].renderer.step_once
+
+    def start_recording(
+        mut self, filename: String, fps: Int = 30, skip: Int = 1
+    ) raises:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].renderer.start_recording(filename, fps, skip)
+
+    def stop_recording(mut self) raises:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].renderer.stop_recording()

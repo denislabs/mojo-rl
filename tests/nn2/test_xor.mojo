@@ -40,7 +40,8 @@ def test_xor_converges() raises:
         Linear[HID, OUT].make["cpu", INIT=Kaiming](),
     )
     var loss_fn = CrossEntropyLoss[OUT].make["cpu"]()
-    var optim = Adam.make["cpu"](net, lr=LR)
+    var optim = Adam.make["cpu", M=type_of(net)](net)
+    optim.lr = LR
 
     # ── XOR data ──────────────────────────────────────────────────────
     # (0, 0) → 0;  (0, 1) → 1;  (1, 0) → 1;  (1, 1) → 0
@@ -74,14 +75,14 @@ def test_xor_converges() raises:
     for step_i in range(N_STEPS):
         optim.zero_grad["cpu"](net)
 
-        net.forward["cpu", BATCH](input, output)
+        net.forward["cpu", BATCH](input, output=output)
         var L = loss_fn.forward["cpu", BATCH](output, targets)
         if step_i == 0:
             initial_loss = L
         final_loss = L
 
-        loss_fn.backward["cpu", BATCH](targets, grad_out)
-        net.backward["cpu", BATCH](grad_out, grad_input)
+        loss_fn.vjp["cpu", BATCH](targets, grad_out)
+        net.vjp["cpu", BATCH](grad_out, grad_input)
         optim.step["cpu"](net)
 
     # Loss should drop substantially.
@@ -90,7 +91,7 @@ def test_xor_converges() raises:
         + " final=" + String(final_loss))
 
     # ── Inference: check accuracy ────────────────────────────────────
-    net.forward["cpu", BATCH](input, output)
+    net.forward["cpu", BATCH](input, output=output)
     var n_correct = 0
     var expected_class = List[Int]()
     expected_class.append(0)

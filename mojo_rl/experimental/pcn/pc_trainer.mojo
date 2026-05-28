@@ -23,11 +23,14 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.math import sqrt, log, cos, sin, tanh, pi
 from std.random.philox import Random as PhiloxRandom
+from std.sys import simd_width_of
 
 from mojo_rl.nn.constants import TPB
 from mojo_rl.nn.initializer import Initializer
 
 from .pc_sequential import PCSequential
+
+comptime _SW = simd_width_of[DType.float32]()
 from .predictive_model import PCBlockTrait
 
 
@@ -660,12 +663,28 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                     )
 
         # ===== Phase D: latents -= lr_x · dx ================================
-        for b in range(BATCH):
-            for k in range(Self.NET.LATENT_DIM):
-                latents[b, k] = (
-                    rebind[Scalar[Self.dtype]](latents[b, k])
-                    - lr_x * rebind[Scalar[Self.dtype]](dx_buf[b, k])
+        var lat_p = rebind[UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]](
+            latents.ptr
+        )
+        var dx_p = rebind[UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]](
+            dx_buf.ptr
+        )
+        comptime N_LAT = BATCH * Self.NET.LATENT_DIM
+        comptime if Self.dtype == DType.float32:
+            var lr_v = SIMD[Self.dtype, _SW](lr_x)
+            var li = 0
+            while li + _SW <= N_LAT:
+                lat_p.store(
+                    li,
+                    lat_p.load[width=_SW](li) - lr_v * dx_p.load[width=_SW](li),
                 )
+                li += _SW
+            while li < N_LAT:
+                lat_p[li] = lat_p[li] - lr_x * dx_p[li]
+                li += 1
+        else:
+            for li in range(N_LAT):
+                lat_p[li] = lat_p[li] - lr_x * dx_p[li]
 
     @staticmethod
     def _modify_readout_eps_for_bounded[BATCH: Int](
@@ -814,12 +833,28 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                     )
 
         # ===== Phase D: latents -= lr_x · dx ================================
-        for b in range(BATCH):
-            for k in range(Self.NET.LATENT_DIM):
-                latents[b, k] = (
-                    rebind[Scalar[Self.dtype]](latents[b, k])
-                    - lr_x * rebind[Scalar[Self.dtype]](dx_buf[b, k])
+        var lat_p = rebind[UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]](
+            latents.ptr
+        )
+        var dx_p = rebind[UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]](
+            dx_buf.ptr
+        )
+        comptime N_LAT = BATCH * Self.NET.LATENT_DIM
+        comptime if Self.dtype == DType.float32:
+            var lr_v = SIMD[Self.dtype, _SW](lr_x)
+            var li = 0
+            while li + _SW <= N_LAT:
+                lat_p.store(
+                    li,
+                    lat_p.load[width=_SW](li) - lr_v * dx_p.load[width=_SW](li),
                 )
+                li += _SW
+            while li < N_LAT:
+                lat_p[li] = lat_p[li] - lr_x * dx_p[li]
+                li += 1
+        else:
+            for li in range(N_LAT):
+                lat_p[li] = lat_p[li] - lr_x * dx_p[li]
 
     @staticmethod
     def _total_energy[BATCH: Int](

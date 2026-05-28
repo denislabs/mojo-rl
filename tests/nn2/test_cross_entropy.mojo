@@ -120,7 +120,7 @@ def test_backward_softmax_minus_target() raises:
 
     var grad_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * N)
     var grad_logits = TileTensor(grad_buf, row_major[BATCH, N]())
-    loss.backward["cpu", BATCH](targets, grad_logits)
+    loss.vjp["cpu", BATCH](targets, grad_logits)
 
     # softmax is uniform 1/3. grad = (1/3 - target) / BATCH.
     # Sample 0: target = [0, 1, 0] → grad = [1/3, 1/3 - 1, 1/3] / 2 = [1/6, -1/3, 1/6]

@@ -14,7 +14,7 @@ from mojo_rl.deep_agents.alphazero import (
     AlphaZeroConnectFourConfig,
 )
 from mojo_rl.deep_agents.muzero.evaluators import RandomOpponent
-from mojo_rl.deep_agents.muzero.gpu_mcts import GPUMCTSState
+from mojo_rl.planners.tree_search.mcts_gpu import GPUMCTSState
 from mojo_rl.envs.board_games.connect_four import ConnectFourEnv
 
 

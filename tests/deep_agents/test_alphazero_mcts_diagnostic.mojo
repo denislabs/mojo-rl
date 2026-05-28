@@ -27,7 +27,7 @@ from mojo_rl.deep_agents.alphazero import (
     AlphaZeroTicTacToeConfig,
 )
 from mojo_rl.deep_agents.alphazero.configs import AlphaZeroConfig
-from mojo_rl.deep_agents.muzero.strategies import (
+from mojo_rl.planners.tree_search.strategies import (
     DirichletNoise, AlphaGoPUCT, SelfPlay,
 )
 from mojo_rl.deep_agents.muzero.evaluators import RandomOpponent, MinimaxTicTacToe

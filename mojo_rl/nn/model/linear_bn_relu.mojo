@@ -21,11 +21,16 @@ BatchNorm is 1D (spatial=1): normalizes each output feature across the batch.
 from ..constants import dtype, TPB
 from .model import Model, PerfTimerPtr, NULL_PERF
 from ..initializer import Initializer
+from ..autodiff.apple_cblas import apple_sgemm_accum
 from layout import LayoutTensor, Layout
+from layout.tile_tensor import lt_to_tt
+from linalg.matmul import matmul as max_matmul
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.memory import AddressSpace
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 from std.math import sqrt
+from std.memory import alloc
+from std.sys import CompilationTarget
 
 
 struct LinearBatchNormReLU[
@@ -135,15 +140,29 @@ struct LinearBatchNormReLU[
         ],
     ):
         """Training forward: Linear → BN (batch stats) → ReLU."""
-        # Step 1: Matmul + bias → output (pre-BN), cache input
+        # Step 1: Cache input, then matmul (BLAS) + bias.
+        # cache[b, 0..in_dim-1] mirrors input row for backward dW.
         for b in range(BATCH):
             for i in range(Self.in_dim):
                 cache[b, i] = input[b, i]
+
+        # output = input @ W using BLAS, then add bias per output feature.
+        var W_mat = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.in_dim, Self.out_dim),
+            MutAnyOrigin,
+        ](params.ptr)
+        try:
+            max_matmul[target="cpu"](
+                lt_to_tt(output), lt_to_tt(input), lt_to_tt(W_mat), None
+            )
+        except e:
+            pass
+        for b in range(BATCH):
             for j in range(Self.out_dim):
-                var acc = rebind[Scalar[dtype]](params[Self.BIAS_OFF + j])
-                for i in range(Self.in_dim):
-                    acc += rebind[Scalar[dtype]](input[b, i]) * rebind[Scalar[dtype]](params[i * Self.out_dim + j])
-                output[b, j] = acc
+                output[b, j] = output[b, j] + rebind[Scalar[dtype]](
+                    params[Self.BIAS_OFF + j]
+                )
 
         # Step 2: BN + ReLU (per feature, across batch)
         var eps = Scalar[dtype](Self.BN_EPSILON)
@@ -206,13 +225,23 @@ struct LinearBatchNormReLU[
         ],
     ):
         """Inference forward: Linear → BN (running stats) → ReLU, no caching."""
-        # Linear into output
+        # output = input @ W (BLAS) + bias
+        var W_mat = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.in_dim, Self.out_dim),
+            MutAnyOrigin,
+        ](params.ptr)
+        try:
+            max_matmul[target="cpu"](
+                lt_to_tt(output), lt_to_tt(input), lt_to_tt(W_mat), None
+            )
+        except e:
+            pass
         for b in range(BATCH):
             for j in range(Self.out_dim):
-                var acc = rebind[Scalar[dtype]](params[Self.BIAS_OFF + j])
-                for i in range(Self.in_dim):
-                    acc += rebind[Scalar[dtype]](input[b, i]) * rebind[Scalar[dtype]](params[i * Self.out_dim + j])
-                output[b, j] = acc
+                output[b, j] = output[b, j] + rebind[Scalar[dtype]](
+                    params[Self.BIAS_OFF + j]
+                )
 
         # BN + ReLU using running stats
         var eps = Scalar[dtype](Self.BN_EPSILON)
@@ -261,10 +290,13 @@ struct LinearBatchNormReLU[
         """Backward: ReLU+BN grad → Linear grad."""
         var n = Scalar[dtype](BATCH)
 
-        # Step 1: ReLU + BN backward per feature → grad w.r.t. linear output
-        var grad_pre_bn = List[Scalar[dtype]](capacity=BATCH * Self.out_dim)
-        for _ in range(BATCH * Self.out_dim):
-            grad_pre_bn.append(Scalar[dtype](0.0))
+        # Step 1: ReLU + BN backward per feature → grad w.r.t. linear output.
+        # Flat heap buffer so we can view as a (BATCH, out_dim) LayoutTensor.
+        var grad_pre_bn_buf: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = alloc[Scalar[dtype]](BATCH * Self.out_dim)
+        for i in range(BATCH * Self.out_dim):
+            grad_pre_bn_buf[i] = Scalar[dtype](0.0)
 
         for f in range(Self.out_dim):
             var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + f])
@@ -296,28 +328,115 @@ struct LinearBatchNormReLU[
                 var dy = rebind[Scalar[dtype]](grad_output[b, f])
                 if pre_relu <= Scalar[dtype](0.0):
                     dy = Scalar[dtype](0.0)
-                grad_pre_bn[b * Self.out_dim + f] = inv_std * (
+                grad_pre_bn_buf[b * Self.out_dim + f] = inv_std * (
                     dy * gamma - sum_dy_g / n - x_hat * sum_dy_g_xh / n
                 )
 
-        # Step 2: Linear backward (dW, db, dx)
-        for b in range(BATCH):
-            # dW += input^T @ grad_pre_bn
-            for i in range(Self.in_dim):
-                var cached_input = rebind[Scalar[dtype]](cache[b, i])
-                for j in range(Self.out_dim):
-                    grads.ptr[i * Self.out_dim + j] = rebind[Scalar[dtype]](grads[i * Self.out_dim + j]) + cached_input * grad_pre_bn[b * Self.out_dim + j]
+        # Step 2: Linear backward (dW, db, dx) — BLAS matmuls.
+        # Views:
+        #   W:         (in_dim, out_dim) at params.ptr
+        #   grad_pre_bn (BATCH, out_dim)  flat buf view
+        #   grad_input (BATCH, in_dim)   from arg
+        #   cache rows 0..in_dim hold the cached input (CACHE_SIZE per row)
+        var W_mat = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.in_dim, Self.out_dim),
+            MutAnyOrigin,
+        ](params.ptr)
+        var dW = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.in_dim, Self.out_dim),
+            MutAnyOrigin,
+        ](grads.ptr)
+        var grad_pre_bn_lt = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
+        ](grad_pre_bn_buf)
 
-            # db += grad_pre_bn
-            for j in range(Self.out_dim):
-                grads.ptr[Self.BIAS_OFF + j] = rebind[Scalar[dtype]](grads[Self.BIAS_OFF + j]) + grad_pre_bn[b * Self.out_dim + j]
+        # dx = grad_pre_bn @ W.T   (overwrite grad_input)
+        try:
+            max_matmul[transpose_b=True, target="cpu"](
+                lt_to_tt(grad_input),
+                lt_to_tt(grad_pre_bn_lt),
+                lt_to_tt(W_mat),
+                None,
+            )
+        except e:
+            pass
 
-            # dx = grad_pre_bn @ W^T
+        # dW += cache_input.T @ grad_pre_bn  — one BLAS call.
+        # On Apple, cblas_sgemm accepts lda > cols of op(A) so we can pass
+        # cache.ptr directly (in_dim rows × in_dim cols of op(A), but the
+        # underlying buffer stride is CACHE_SIZE) without materializing a
+        # contiguous (BATCH, in_dim) copy. Non-Apple: physically transpose.
+        comptime use_apple_sgemm = (
+            CompilationTarget.is_macos() and dtype == DType.float32
+        )
+        comptime if use_apple_sgemm:
+            try:
+                apple_sgemm_accum[transpose_a=True, transpose_b=False](
+                    Self.in_dim,
+                    Self.out_dim,
+                    BATCH,
+                    Float32(1.0),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](cache.ptr),
+                    Self.CACHE_SIZE,
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        grad_pre_bn_buf
+                    ),
+                    Self.out_dim,
+                    Float32(1.0),
+                    rebind[UnsafePointer[Float32, MutAnyOrigin]](dW.ptr),
+                    Self.out_dim,
+                )
+            except e:
+                pass
+        else:
+            # Non-macOS / non-fp32: materialize cache_T (in_dim, BATCH),
+            # call max_matmul, then accumulate.
+            var cache_T_buf: UnsafePointer[
+                Scalar[dtype], MutAnyOrigin
+            ] = alloc[Scalar[dtype]](Self.in_dim * BATCH)
+            var cache_T = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.in_dim, BATCH),
+                MutAnyOrigin,
+            ](cache_T_buf)
+            for b in range(BATCH):
+                for i in range(Self.in_dim):
+                    cache_T[i, b] = rebind[Scalar[dtype]](cache[b, i])
+            var dW_tmp_buf: UnsafePointer[
+                Scalar[dtype], MutAnyOrigin
+            ] = alloc[Scalar[dtype]](Self.in_dim * Self.out_dim)
+            var dW_tmp = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.in_dim, Self.out_dim),
+                MutAnyOrigin,
+            ](dW_tmp_buf)
+            try:
+                max_matmul[target="cpu"](
+                    lt_to_tt(dW_tmp),
+                    lt_to_tt(cache_T),
+                    lt_to_tt(grad_pre_bn_lt),
+                    None,
+                )
+            except e:
+                pass
             for i in range(Self.in_dim):
-                var acc = Scalar[dtype](0.0)
                 for j in range(Self.out_dim):
-                    acc += grad_pre_bn[b * Self.out_dim + j] * rebind[Scalar[dtype]](params[i * Self.out_dim + j])
-                grad_input[b, i] = acc
+                    dW[i, j] = dW[i, j] + dW_tmp[i, j]
+            cache_T_buf.free()
+            dW_tmp_buf.free()
+
+        # db += sum(grad_pre_bn, axis=batch)
+        for j in range(Self.out_dim):
+            var acc: Scalar[dtype] = 0
+            for b in range(BATCH):
+                acc += grad_pre_bn_buf[b * Self.out_dim + j]
+            grads.ptr[Self.BIAS_OFF + j] = (
+                rebind[Scalar[dtype]](grads[Self.BIAS_OFF + j]) + acc
+            )
+
+        grad_pre_bn_buf.free()
 
     # =========================================================================
     # GPU Kernels — Linear matmul then fused BN+ReLU

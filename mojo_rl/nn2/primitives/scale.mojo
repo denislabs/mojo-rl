@@ -1,81 +1,66 @@
-"""Scale[DIM] — multiply by a runtime scalar. Phase 8.4.
+"""Scale[DIM] — multiplies by a runtime scalar `multiplier`.
 
-Trivial elementwise primitive — exists so that the SAC actor loss
-(`α · log_prob - min_q`) can be expressed as a Module chain rather
-than inline arithmetic. The multiplier is a public runtime field
-(`scale.multiplier = current_alpha`), settable per-step to track
-moving values like SAC's auto-tuned α.
+Forward: `out = m·in`,
+Backward: `grad_in = m·grad_out`. The multiplier is a public mut field
+the caller updates per-step (SAC tracks moving α this way).
 
-    out[b, d]      = multiplier · input[b, d]
-    grad_in[b, d]  = multiplier · grad_out[b, d]
-
-No cache (multiplier needed on backward, but it's a field, not derived).
+No cache: multiplier lives on the struct; no need to remember anything
+from forward. Conforms to `Module`.
 """
 
+from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
+from layout import Layout, LayoutTensor, TileTensor
 
-from layout import TileTensor
+from ..constants import DT, CPU_SIMD_W, TPB
+from ..core import Initializer, AMPPolicy, NoAMP
+from ..core.module import Module, typed_view, typed_view_mut
+from ..core.target_storage import TargetStorage, assert_tag_for
 
-from ..constants import DT, CPU_SIMD_W
-from ..core import (
-    Module,
-    ParamVisitor,
-    Initializer,
-    AMPPolicy,
-    NoAMP,
-    TARGET_UNINIT,
-    TARGET_CPU,
-    TARGET_GPU,
-    target_tag_for,
-)
+
+def _scale_kernel[
+    N: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    multiplier: Scalar[DT],
+):
+    var idx = Int(global_idx.x)
+    if idx < N:
+        output[idx] = rebind[Scalar[DT]](input[idx]) * multiplier
 
 
 struct Scale[DIM: Int](Module):
-    comptime IN_DIM = Self.DIM
+    comptime ARITY: Int = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
     comptime OUT_DIM = Self.DIM
 
     var multiplier: Scalar[DT]
-    var ctx: Optional[DeviceContext]
-    var _target_tag: Int8
-    var _inference: Bool
+    var ts: TargetStorage
 
     def __init__(out self):
         self.multiplier = Scalar[DT](1.0)
-        self.ctx = None
-        self._target_tag = TARGET_UNINIT
-        self._inference = False
-
-    @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "Scale.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var s = Self()
-        s._target_tag = TARGET_CPU
-        return s^
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "Scale.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Scale: target must be 'cpu' or 'gpu'"
         )
         var s = Self()
-        s.ctx = ctx
-        s._target_tag = TARGET_GPU
+        comptime if target == "cpu":
+            s.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Scale.make[target='gpu']: ctx required")
+            s.ts = TargetStorage.make_gpu(ctx.value())
         return s^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "Scale: method called with [target='"
-                + String(target)
-                + "'] but module was make'd for a different target (tag="
-                + String(Int(self._target_tag)) + ")"
-            )
 
     def forward[
         target: StaticString,
@@ -83,21 +68,22 @@ struct Scale[DIM: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank == 2, "input rank-2 [BATCH, DIM]"
-        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, DIM]"
-        self._assert_tag[target]()
+        assert_tag_for["Scale", target](self.ts.target_tag)
+        var input_v = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
             var m_v = SIMD[DT, CPU_SIMD_W](self.multiplier)
             comptime N = BATCH * Self.DIM
             var k = 0
@@ -108,29 +94,48 @@ struct Scale[DIM: Int](Module):
                 out_p[k] = in_p[k] * self.multiplier
                 k += 1
         else:
-            raise Error("Scale: GPU path not yet implemented (Phase 8.4 CPU only)")
+            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            comptime N = BATCH * Self.DIM
+            var in_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](in_p)
+            var out_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](out_p)
+            comptime n_blocks = (N + TPB - 1) // TPB
+            comptime kernel = _scale_kernel[N]
+            self.ts.ctx.value().enqueue_function[kernel](
+                in_lt, out_lt, self.multiplier,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
 
-    def backward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
-        self._assert_tag[target]()
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        assert_tag_for["Scale", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
             var m_v = SIMD[DT, CPU_SIMD_W](self.multiplier)
             comptime N = BATCH * Self.DIM
             var k = 0
@@ -141,31 +146,25 @@ struct Scale[DIM: Int](Module):
                 gi_p[k] = go_p[k] * self.multiplier
                 k += 1
         else:
-            raise Error("Scale: GPU backward not yet implemented (Phase 8.4 CPU only)")
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            comptime N = BATCH * Self.DIM
+            var go_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](go_p)
+            var gi_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](gi_p)
+            comptime n_blocks = (N + TPB - 1) // TPB
+            comptime kernel = _scale_kernel[N]
+            self.ts.ctx.value().enqueue_function[kernel](
+                go_lt, gi_lt, self.multiplier,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
 
-    def backward_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        mut grad_input: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-    ) raises:
-        # No parameters — backward_input ≡ backward.
-        self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)
-
-    def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V,) raises:
-        self._assert_tag[target]()
-        pass
-
-    def set_inference(mut self, value: Bool):
-        self._inference = value
+    # Override of Module.set_attr — supports ATTR="multiplier". Other
+    # ATTR strings are no-ops (Mojo nightly can't error on unknown
+    # ATTR from a comptime if without a constexpr-assert).
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        comptime if ATTR == "multiplier":
+            self.multiplier = value

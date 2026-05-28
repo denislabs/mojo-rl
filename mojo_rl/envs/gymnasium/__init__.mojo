@@ -28,8 +28,11 @@ from .gymnasium_box2d import (
     GymBipedalWalkerAction,
     GymCarRacingState,
     GymCarRacingAction,
+    GymLunarLanderContinuousState,
+    GymLunarLanderContinuousAction,
     # Environments
     GymLunarLanderEnv,
+    GymLunarLanderContinuousEnv,
     GymBipedalWalkerEnv,
     GymCarRacingEnv,
 )

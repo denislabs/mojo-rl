@@ -1,85 +1,103 @@
-"""Reduction Modules — Sum[DIM] and Mean[DIM]. Phase 8.4.
+"""Reduction Modules — `Reduce[DIM, OP: ReduceOp]` + `Sum` / `Mean` aliases.
 
-Reduce across the feature axis (column-wise). BATCH dim is preserved so
-combinators like Sequential can still chain afterward.
+Phase 2.5.C migration: pre-Phase-2.5 this file held two near-identical
+135-LOC structs (`Sum[DIM]` and `Mean[DIM]`) differing only in a `1/DIM`
+scale factor. Post-migration both are one-line aliases over
+`Reduce[DIM, OP]`, with the per-op math factored into `SumOp` /
+`MeanOp` (`ReduceOp` trait).
 
-Sum[DIM]:
-    output[b, 0]     = Σ_d input[b, d]
-    grad_input[b, d] = grad_output[b, 0]
-
-Mean[DIM]:
-    output[b, 0]     = (1/DIM) Σ_d input[b, d]
-    grad_input[b, d] = grad_output[b, 0] / DIM
-
-For a batch-wise scalar reduction (e.g. SAC's final per-batch mean to
-produce the scalar loss), the training loop sums the [BATCH, 1] output
-and divides by BATCH outside the Module chain — Mean here reduces the
-*feature* axis, not the batch axis. This deliberately keeps a single
-clean convention: Modules always have a BATCH-preserving signature.
+Forward:  `out[b, 0] = OP.scale_factor[DIM]() · Σ_d input[b, d]`
+Backward: `grad_in[b, d] = OP.scale_factor[DIM]() · grad_out[b, 0]`
 """
 
+from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
+from layout import Layout, LayoutTensor, TileTensor
 
-from layout import TileTensor
-
-from ..constants import DT
-from ..core import (
-    Module,
-    ParamVisitor,
-    Initializer,
-    AMPPolicy,
-    NoAMP,
-    TARGET_UNINIT,
-    TARGET_CPU,
-    TARGET_GPU,
-    target_tag_for,
-)
+from ..constants import DT, TPB
+from ..core import Initializer, AMPPolicy, NoAMP
+from ..core.module import Module, typed_view, typed_view_mut
+from ..core.reduce_op import ReduceOp
+from ..core.target_storage import TargetStorage, assert_tag_for
+from .ops.sum_op import SumOp
+from .ops.mean_op import MeanOp
 
 
-struct Sum[DIM: Int](Module):
-    comptime IN_DIM = Self.DIM
+# ──────────────────────────────────────────────────────────────────────
+# GPU kernels — OP supplies the scale factor via `OP.scale_factor[DIM]()`.
+# Inside top-level kernel functions, must use bare `OP` (not `Self.OP`):
+# see `feedback_mojo_kernel_op_param_scope`.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _reduce_forward_kernel[
+    BATCH: Int, DIM: Int, OP: ReduceOp,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b < BATCH:
+        var acc: Scalar[DT] = 0.0
+        for d in range(DIM):
+            acc += rebind[Scalar[DT]](input[b, d])
+        output[b, 0] = acc * OP.scale_factor[DIM]()
+
+
+def _reduce_broadcast_kernel[
+    BATCH: Int, DIM: Int, OP: ReduceOp,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    var total = BATCH * DIM
+    if idx < total:
+        var b = idx // DIM
+        var d = idx % DIM
+        grad_input[b, d] = (
+            rebind[Scalar[DT]](grad_output[b, 0]) * OP.scale_factor[DIM]()
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Reduce[DIM, OP] — shared body for every linear reduction. Two leaf
+# aliases (`Sum` / `Mean`) cover all current consumers; new ones (e.g.
+# weighted means with a comptime per-element weight) plug in by adding
+# a new `ReduceOp` impl.
+# ──────────────────────────────────────────────────────────────────────
+
+
+struct Reduce[DIM: Int, OP: ReduceOp](Module):
+    comptime ARITY: Int = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
     comptime OUT_DIM = 1
 
-    var ctx: Optional[DeviceContext]
-    var _target_tag: Int8
-    var _inference: Bool
+    var ts: TargetStorage
 
     def __init__(out self):
-        self.ctx = None
-        self._target_tag = TARGET_UNINIT
-        self._inference = False
-
-    @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "Sum.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var s = Self()
-        s._target_tag = TARGET_CPU
-        return s^
+        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "Sum.make[target='cpu', INIT](ctx) — drop ctx for CPU"
+    ](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. INIT ignored (no parameters) but
+        accepted for Sequential.make[target, INIT] uniformity."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "Reduce: target must be 'cpu' or 'gpu'"
         )
-        var s = Self()
-        s.ctx = ctx
-        s._target_tag = TARGET_GPU
-        return s^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "Sum: method called with [target='"
-                + String(target)
-                + "'] but module was make'd for a different target (tag="
-                + String(Int(self._target_tag)) + ")"
-            )
+        var r = Self()
+        comptime if target == "cpu":
+            r.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Reduce.make[target='gpu']: ctx required")
+            r.ts = TargetStorage.make_gpu(ctx.value())
+        return r^
 
     def forward[
         target: StaticString,
@@ -87,200 +105,87 @@ struct Sum[DIM: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert input.flat_rank == 2, "input rank-2 [BATCH, DIM]"
-        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, 1]"
-        self._assert_tag[target]()
+        assert_tag_for["Reduce", target](self.ts.target_tag)
+        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
+            var scale = Self.OP.scale_factor[Self.DIM]()
             for b in range(BATCH):
                 var acc: Scalar[DT] = 0.0
                 for d in range(Self.DIM):
                     acc += input[b, d]
-                output[b, 0] = acc
+                output_v[b, 0] = acc * scale
         else:
-            raise Error("Sum: GPU path not yet implemented (Phase 8.4 CPU only)")
-
-    def backward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        mut grad_input: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-    ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
-        self._assert_tag[target]()
-
-        comptime if target == "cpu":
-            for b in range(BATCH):
-                var go = grad_output[b, 0]
-                for d in range(Self.DIM):
-                    grad_input[b, d] = go
-        else:
-            raise Error("Sum: GPU backward not yet implemented (Phase 8.4 CPU only)")
-
-    def backward_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        mut grad_input: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-    ) raises:
-        self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)
-
-    def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V,) raises:
-        self._assert_tag[target]()
-        pass
-
-    def set_inference(mut self, value: Bool):
-        self._inference = value
-
-
-struct Mean[DIM: Int](Module):
-    comptime IN_DIM = Self.DIM
-    comptime OUT_DIM = 1
-    comptime _INV_DIM: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.DIM)
-
-    var ctx: Optional[DeviceContext]
-    var _target_tag: Int8
-    var _inference: Bool
-
-    def __init__(out self):
-        self.ctx = None
-        self._target_tag = TARGET_UNINIT
-        self._inference = False
-
-    @staticmethod
-    def make[target: StaticString, INIT: Initializer]() raises -> Self:
-        comptime assert target == "cpu", (
-            "Mean.make[target='gpu', INIT] requires a DeviceContext"
-        )
-        var m = Self()
-        m._target_tag = TARGET_CPU
-        return m^
-
-    @staticmethod
-    def make[
-        target: StaticString, INIT: Initializer
-    ](ctx: DeviceContext) raises -> Self:
-        comptime assert target == "gpu", (
-            "Mean.make[target='cpu', INIT](ctx) — drop ctx for CPU"
-        )
-        var m = Self()
-        m.ctx = ctx
-        m._target_tag = TARGET_GPU
-        return m^
-
-    def _assert_tag[target: StaticString](self) raises:
-        comptime expected = target_tag_for[target]()
-        if self._target_tag != expected:
-            raise Error(
-                "Mean: method called with [target='"
-                + String(target)
-                + "'] but module was make'd for a different target (tag="
-                + String(Int(self._target_tag)) + ")"
+            comptime layout_in = Layout.row_major(BATCH, Self.DIM)
+            comptime layout_out = Layout.row_major(BATCH, 1)
+            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](in_p)
+            var out_lt = LayoutTensor[DT, layout_out, MutAnyOrigin](out_p)
+            comptime n_blocks = (BATCH + TPB - 1) // TPB
+            comptime kernel = _reduce_forward_kernel[BATCH, Self.DIM, Self.OP]
+            self.ts.ctx.value().enqueue_function[kernel](
+                in_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
             )
 
-    def forward[
+    def vjp[
         target: StaticString,
         BATCH: Int,
         POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-    ) raises:
-        comptime assert input.flat_rank == 2, "input rank-2 [BATCH, DIM]"
-        comptime assert output.flat_rank == 2, "output rank-2 [BATCH, 1]"
-        self._assert_tag[target]()
-
-        comptime if target == "cpu":
-            for b in range(BATCH):
-                var acc: Scalar[DT] = 0.0
-                for d in range(Self.DIM):
-                    acc += input[b, d]
-                output[b, 0] = acc * Self._INV_DIM
-        else:
-            raise Error("Mean: GPU path not yet implemented (Phase 8.4 CPU only)")
-
-    def backward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut grad_input: TileTensor[
+        mut *grad_inputs: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert grad_output.flat_rank == 2, "grad_output rank-2"
-        comptime assert grad_input.flat_rank == 2, "grad_input rank-2"
-        self._assert_tag[target]()
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        assert_tag_for["Reduce", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
+            var scale = Self.OP.scale_factor[Self.DIM]()
             for b in range(BATCH):
-                var go_inv = grad_output[b, 0] * Self._INV_DIM
+                var go_scaled = grad_output_v[b, 0] * scale
                 for d in range(Self.DIM):
-                    grad_input[b, d] = go_inv
+                    grad_input_v[b, d] = go_scaled
         else:
-            raise Error("Mean: GPU backward not yet implemented (Phase 8.4 CPU only)")
+            comptime layout_go = Layout.row_major(BATCH, 1)
+            comptime layout_gi = Layout.row_major(BATCH, Self.DIM)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var go_lt = LayoutTensor[DT, layout_go, MutAnyOrigin](go_p)
+            var gi_lt = LayoutTensor[DT, layout_gi, MutAnyOrigin](gi_p)
+            comptime total = BATCH * Self.DIM
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime kernel = _reduce_broadcast_kernel[BATCH, Self.DIM, Self.OP]
+            self.ts.ctx.value().enqueue_function[kernel](
+                go_lt, gi_lt, grid_dim=n_blocks, block_dim=TPB,
+            )
 
-    def backward_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        mut grad_input: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
-    ) raises:
-        self.backward[target, BATCH, POLICY=POLICY](grad_output, grad_input)
 
-    def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V,) raises:
-        self._assert_tag[target]()
-        pass
+# ──────────────────────────────────────────────────────────────────────
+# Leaf aliases — pre-Phase-2.5 these were 135-LOC structs each.
+# ──────────────────────────────────────────────────────────────────────
 
-    def set_inference(mut self, value: Bool):
-        self._inference = value
+
+comptime Sum[DIM: Int] = Reduce[DIM, SumOp]
+comptime Mean[DIM: Int] = Reduce[DIM, MeanOp]

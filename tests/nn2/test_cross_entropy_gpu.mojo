@@ -63,8 +63,8 @@ def test_ce_gpu_parity() raises:
     var grad_logits_cpu = TileTensor(gl_cpu_buf, row_major[BATCH, N]())
     var grad_logits_gpu = TileTensor(gl_dev, row_major[BATCH, N]())
 
-    ce_cpu.backward["cpu", BATCH](targets_cpu, grad_logits_cpu)
-    ce_gpu.backward["gpu", BATCH](targets_gpu, grad_logits_gpu)
+    ce_cpu.vjp["cpu", BATCH](targets_cpu, grad_logits_cpu)
+    ce_gpu.vjp["gpu", BATCH](targets_gpu, grad_logits_gpu)
 
     var gl_host = ctx.enqueue_create_host_buffer[DT](BATCH * N)
     ctx.enqueue_copy(gl_host, gl_dev)

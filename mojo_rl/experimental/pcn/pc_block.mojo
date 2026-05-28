@@ -18,12 +18,17 @@ so that callers can pass the result directly to an Optimizer.step().
 For the readout, ε_L = target − output (target plays the role of x_above).
 """
 
-from layout import Layout, LayoutTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
-from std.sys import has_nvidia_gpu_accelerator
+from std.sys import CompilationTarget, has_nvidia_gpu_accelerator, simd_width_of
 from linalg.matmul import matmul as max_matmul
+from linalg.matmul.cpu.apple_accelerate import (
+    get_cblas_f32_function,
+    _CBLASOrder,
+    _CBLASTranspose,
+)
 from layout.tile_tensor import lt_to_tt
 
 from mojo_rl.nn.constants import (
@@ -35,6 +40,8 @@ from mojo_rl.nn.constants import (
 from mojo_rl.nn.initializer import Initializer
 
 from .predictive_model import PCActivation, PCReLU, PCBlockTrait
+
+comptime _SW = simd_width_of[DType.float32]()
 
 
 struct PCBlock[
@@ -125,23 +132,45 @@ struct PCBlock[
         Self.ACT.apply[BATCH, Self.in_dim, dtype](x_below, a_below)
 
         # 2. μ = a_below @ W + b
-        var W = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.in_dim, Self.out_dim),
-            MutAnyOrigin,
-        ](params.ptr)
-        var b_view = LayoutTensor[
-            dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
-        ](params.ptr + Self.in_dim * Self.out_dim)
+        var w_ptr = params.ptr
+        var b_ptr = params.ptr + Self.in_dim * Self.out_dim
 
-        for sb in range(BATCH):
-            for j in range(Self.out_dim):
-                var s: Scalar[dtype] = rebind[Scalar[dtype]](b_view[j])
-                for i in range(Self.in_dim):
-                    s += rebind[Scalar[dtype]](a_below[sb, i]) * rebind[
-                        Scalar[dtype]
-                    ](W[i, j])
-                mu[sb, j] = s
+        var a_tt = TileTensor(
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](a_below.ptr),
+            row_major[BATCH, Self.in_dim](),
+        )
+        var w_tt = TileTensor(
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](w_ptr),
+            row_major[Self.in_dim, Self.out_dim](),
+        )
+        var mu_tt = TileTensor(
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](mu.ptr),
+            row_major[BATCH, Self.out_dim](),
+        )
+        try:
+            max_matmul[target="cpu"](mu_tt, a_tt, w_tt, None)
+        except:
+            pass
+        # bias add (SIMD)
+        var mu_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](mu.ptr)
+        comptime if dtype == DType.float32:
+            for sb in range(BATCH):
+                var off = sb * Self.out_dim
+                var j = 0
+                while j + _SW <= Self.out_dim:
+                    var mv = mu_p.load[width=_SW](off + j)
+                    var bv = b_ptr.load[width=_SW](j)
+                    mu_p.store(off + j, mv + bv)
+                    j += _SW
+                while j < Self.out_dim:
+                    mu_p[off + j] = mu_p[off + j] + b_ptr[j]
+                    j += 1
+        else:
+            for sb in range(BATCH):
+                for j in range(Self.out_dim):
+                    mu_p[sb * Self.out_dim + j] = (
+                        mu_p[sb * Self.out_dim + j] + b_ptr[j]
+                    )
 
     # =========================================================================
     # Local prediction error:  ε = x_above − μ
@@ -161,11 +190,23 @@ struct PCBlock[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
     ):
-        for b in range(BATCH):
-            for j in range(Self.out_dim):
-                eps[b, j] = rebind[Scalar[dtype]](x_above[b, j]) - rebind[
-                    Scalar[dtype]
-                ](mu[b, j])
+        var xa_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+            x_above.ptr
+        )
+        var mu_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](mu.ptr)
+        var ep_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](eps.ptr)
+        comptime N = BATCH * Self.out_dim
+        comptime if dtype == DType.float32:
+            var i = 0
+            while i + _SW <= N:
+                ep_p.store(i, xa_p.load[width=_SW](i) - mu_p.load[width=_SW](i))
+                i += _SW
+            while i < N:
+                ep_p[i] = xa_p[i] - mu_p[i]
+                i += 1
+        else:
+            for i in range(N):
+                ep_p[i] = xa_p[i] - mu_p[i]
 
     # =========================================================================
     # Pull-back to latent below:  z_below = ε_above @ W^T
@@ -186,19 +227,23 @@ struct PCBlock[
         ],
     ):
         """Formula = z_below[b, i] = sum_j ε_above[b, j] * W[i, j]."""
-        var W = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.in_dim, Self.out_dim),
-            MutAnyOrigin,
-        ](params.ptr)
-        for b in range(BATCH):
-            for i in range(Self.in_dim):
-                var s: Scalar[dtype] = 0
-                for j in range(Self.out_dim):
-                    s += rebind[Scalar[dtype]](eps_above[b, j]) * rebind[
-                        Scalar[dtype]
-                    ](W[i, j])
-                z_below[b, i] = s
+        # z_below = eps_above @ W^T  → matmul with transpose_b
+        var eps_tt = TileTensor(
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](eps_above.ptr),
+            row_major[BATCH, Self.out_dim](),
+        )
+        var w_tt = TileTensor(
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](params.ptr),
+            row_major[Self.in_dim, Self.out_dim](),
+        )
+        var z_tt = TileTensor(
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](z_below.ptr),
+            row_major[BATCH, Self.in_dim](),
+        )
+        try:
+            max_matmul[transpose_b=True, target="cpu"](z_tt, eps_tt, w_tt, None)
+        except:
+            pass
 
     # =========================================================================
     # Activation derivative gating:  z_out = z_in ⊙ act'(x_below)
@@ -247,31 +292,99 @@ struct PCBlock[
         Sign baked in so that `params -= lr * grads` performs gradient descent
         on the local energy (or output loss for the readout block).
         """
-        var W_grad = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.in_dim, Self.out_dim),
-            MutAnyOrigin,
-        ](grads.ptr)
-        var b_grad = LayoutTensor[
-            dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
-        ](grads.ptr + Self.in_dim * Self.out_dim)
+        var gw_ptr = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+            grads.ptr
+        )
+        var gb_ptr = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+            grads.ptr + Self.in_dim * Self.out_dim
+        )
+        var ab_ptr = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+            a_below.ptr
+        )
+        var ep_ptr = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+            eps_above.ptr
+        )
 
-        # dE/dW[i, j] = −Σ_b ε_above[b, j] * a_below[b, i]
-        for i in range(Self.in_dim):
+        # dE/dW = −(a_below^T @ eps_above)
+        # Compute a_below^T @ eps_above into gw, then negate.
+        comptime if CompilationTarget.is_macos() and dtype == DType.float32:
+            # Apple Accelerate: dW = cache^T @ eps in one cblas_sgemm call
+            # with transpose_a, beta=0. Then negate in-place.
+            try:
+                var cblas_gemm = get_cblas_f32_function()
+                cblas_gemm(
+                    _CBLASOrder.ROW_MAJOR,
+                    _CBLASTranspose.TRANSPOSE,
+                    _CBLASTranspose.NO_TRANSPOSE,
+                    Int32(Self.in_dim),
+                    Int32(Self.out_dim),
+                    Int32(BATCH),
+                    Float32(1.0),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](ab_ptr),
+                    Int32(Self.in_dim),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](ep_ptr),
+                    Int32(Self.out_dim),
+                    Float32(0.0),
+                    rebind[UnsafePointer[Float32, MutAnyOrigin]](gw_ptr),
+                    Int32(Self.out_dim),
+                )
+            except:
+                pass
+        else:
+            var a_tt = TileTensor(ab_ptr, row_major[BATCH, Self.in_dim]())
+            var e_tt = TileTensor(ep_ptr, row_major[BATCH, Self.out_dim]())
+
+            from std.memory import alloc
+
+            var cT_buf: UnsafePointer[
+                Scalar[dtype], MutAnyOrigin
+            ] = alloc[Scalar[dtype]](BATCH * Self.in_dim)
+            for bi in range(BATCH):
+                for i in range(Self.in_dim):
+                    cT_buf[i * BATCH + bi] = ab_ptr[bi * Self.in_dim + i]
+            var cT_tt = TileTensor(cT_buf, row_major[Self.in_dim, BATCH]())
+            var gw_tt = TileTensor(gw_ptr, row_major[Self.in_dim, Self.out_dim]())
+            try:
+                max_matmul[target="cpu"](gw_tt, cT_tt, e_tt, None)
+            except:
+                pass
+            cT_buf.free()
+
+        # negate dW (SIMD)
+        comptime gw_n = Self.in_dim * Self.out_dim
+        comptime if dtype == DType.float32:
+            var i = 0
+            while i + _SW <= gw_n:
+                gw_ptr.store(i, -gw_ptr.load[width=_SW](i))
+                i += _SW
+            while i < gw_n:
+                gw_ptr[i] = -gw_ptr[i]
+                i += 1
+        else:
+            for i in range(gw_n):
+                gw_ptr[i] = -gw_ptr[i]
+
+        # dE/db[j] = −Σ_b ε_above[b, j] (SIMD column-sum + negate)
+        comptime if dtype == DType.float32:
+            var j = 0
+            while j + _SW <= Self.out_dim:
+                var acc = SIMD[dtype, _SW](0)
+                for sb in range(BATCH):
+                    acc += ep_ptr.load[width=_SW](sb * Self.out_dim + j)
+                gb_ptr.store(j, -acc)
+                j += _SW
+            while j < Self.out_dim:
+                var s: Scalar[dtype] = 0
+                for sb in range(BATCH):
+                    s += ep_ptr[sb * Self.out_dim + j]
+                gb_ptr[j] = -s
+                j += 1
+        else:
             for j in range(Self.out_dim):
                 var s: Scalar[dtype] = 0
                 for sb in range(BATCH):
-                    s += rebind[Scalar[dtype]](eps_above[sb, j]) * rebind[
-                        Scalar[dtype]
-                    ](a_below[sb, i])
-                W_grad[i, j] = -s
-
-        # dE/db[j] = −Σ_b ε_above[b, j]
-        for j in range(Self.out_dim):
-            var s: Scalar[dtype] = 0
-            for sb in range(BATCH):
-                s += rebind[Scalar[dtype]](eps_above[sb, j])
-            b_grad[j] = -s
+                    s += ep_ptr[sb * Self.out_dim + j]
+                gb_ptr[j] = -s
 
     # =========================================================================
     # GPU kernels (elementwise: ε computation, bias gradient)

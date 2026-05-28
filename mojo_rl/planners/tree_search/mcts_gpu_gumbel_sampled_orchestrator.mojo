@@ -504,10 +504,22 @@ struct SampledGumbelGPUMCTS[
         var root_value_t = LayoutTensor[
             dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
         ](self.root_value_out.unsafe_ptr())
+        var vc_root_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.K_PAD),
+            MutAnyOrigin,
+        ](self.state.visit_count.unsafe_ptr())
+        var tv_root_t = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.K_PAD),
+            MutAnyOrigin,
+        ](self.state.total_value.unsafe_ptr())
         comptime run_root_value = gz_extract_root_value_kernel[
-            Self.N_ENVS, Self.MAX_NODES, dtype,
+            Self.N_ENVS, Self.MAX_NODES, Self.K_PAD, dtype,
         ]
         ctx.enqueue_function[run_root_value](
+            vc_root_t,
+            tv_root_t,
             nv_t,
             root_value_t,
             grid_dim=(Self.ENV_BLOCKS,),

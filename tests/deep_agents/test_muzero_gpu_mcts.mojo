@@ -6,7 +6,7 @@ from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.training import Network, GPUNetworkState
 from mojo_rl.nn.optimizer import Adam
 from mojo_rl.deep_agents.muzero.state import MuZeroCPUState, MuZeroGPUState
-from mojo_rl.deep_agents.muzero.gpu_mcts import (
+from mojo_rl.planners.tree_search.mcts_gpu import (
     GPUMCTSState,
     gpu_mcts_init_root_kernel,
     gpu_mcts_select_kernel,
