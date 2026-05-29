@@ -7,6 +7,7 @@ the constants close to their docstring and avoids a stale-re-export
 trap if their shape changes."""
 
 from .param_visitor import ParamVisitor
+from .graph_visitor import GraphVisitor, DisplayStep
 from .module import Module, typed_view, typed_view_mut
 from .graph_node import GraphNode
 from .optimizer import Optimizer

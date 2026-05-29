@@ -55,6 +55,7 @@ from ..core import (
     GraphNode,
     Module,
     ParamVisitor,
+    DisplayStep,
     Initializer,
     AMPPolicy,
     NoAMP,
@@ -86,6 +87,10 @@ struct InputSlot[
     comptime IN_NAMES = InlineArray[StaticString, 0]()
     comptime OUT_DIM = Self.DIM_
     comptime KIND = 0
+
+    @staticmethod
+    def display_label_via() -> String:
+        return String("input")
 
     # CPU/GPU grad accumulator.
     var _grad_out_buf: List[Scalar[DT]]
@@ -228,6 +233,14 @@ struct Node[
     )
     comptime OUT_DIM = Self.Op.OUT_DIM
     comptime KIND = Self.Op.ARITY
+
+    @staticmethod
+    def display_label_via() -> String:
+        return Self.Op.display_label()
+
+    @staticmethod
+    def display_steps_via() -> List[DisplayStep]:
+        return Self.Op.display_steps()
 
     var op: Self.Op
 
@@ -466,6 +479,11 @@ struct Node[
     ):
         self.op.set_attr[ATTR](value)
 
+    def set_op_attr_ptr_via[ATTR: StaticString](
+        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ):
+        self.op.set_attr_ptr[ATTR](p)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # ExternalNode — wraps an externally-owned Module of any arity.
@@ -500,6 +518,14 @@ struct ExternalNode[
     )
     comptime OUT_DIM = Self.M.OUT_DIM
     comptime KIND = Self.M.ARITY
+
+    @staticmethod
+    def display_label_via() -> String:
+        return Self.M.display_label()
+
+    @staticmethod
+    def display_steps_via() -> List[DisplayStep]:
+        return Self.M.display_steps()
 
     # Type-erased so GraphNode.set_external_via carries a uniform
     # signature. Rebound to UnsafePointer[Self.M] at every dispatch site.

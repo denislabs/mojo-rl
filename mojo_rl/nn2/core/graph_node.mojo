@@ -47,6 +47,7 @@ from layout import TileTensor, TensorLayout
 
 from ..constants import DT
 from .param_visitor import ParamVisitor
+from .graph_visitor import DisplayStep
 from .initializer import Initializer
 from .amp import AMPPolicy, NoAMP
 
@@ -197,3 +198,23 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
         no-op for InputSlot (no `.op` field). Node overrides to call
         `self.op.set_attr[ATTR](value)`."""
         pass
+
+    def set_op_attr_ptr_via[ATTR: StaticString](
+        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ):
+        """Forward a device-pointer attribute bind to the inner op.
+        Default no-op (InputSlot / ExternalNode). Node overrides to call
+        `self.op.set_attr_ptr[ATTR](p)`. Used to point a named Scale
+        node at SAC's on-device α buffer for CUDA-graph capture."""
+        pass
+
+    # Display surface for `ComputeGraph.describe` — forwards to the
+    # wrapped op. InputSlot returns "input" + no steps; Node/ExternalNode
+    # return the op's `display_label` / `display_steps`.
+    @staticmethod
+    def display_label_via() -> String:
+        return String("node")
+
+    @staticmethod
+    def display_steps_via() -> List[DisplayStep]:
+        return List[DisplayStep]()

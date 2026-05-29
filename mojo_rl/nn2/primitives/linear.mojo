@@ -127,6 +127,10 @@ struct Linear[IN: Int, OUT: Int](Module):
     comptime W_SIZE = Self.IN * Self.OUT
     comptime B_SIZE = Self.OUT
 
+    @staticmethod
+    def display_label() -> String:
+        return String("Linear")
+
     # Parameters — visible to reflection, walked by for_each_param_auto.
     var weight: Param["weight", True,  Self.W_SIZE]
     var bias:   Param["bias",   False, Self.B_SIZE]

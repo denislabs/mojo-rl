@@ -50,6 +50,7 @@ from ..constants import DT
 from .initializer import Initializer
 from .amp import AMPPolicy, NoAMP
 from .param_visitor import ParamVisitor
+from .graph_visitor import DisplayStep
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -265,3 +266,35 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         with mutable runtime state (e.g. Scale.multiplier, Clamp.min_val)
         override and comptime-branch on `ATTR`."""
         pass
+
+    def set_attr_ptr[ATTR: StaticString](
+        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ):
+        """Bind a device-resident attribute source (CUDA-graph capture).
+        Default no-op. Modules whose runtime attribute can live in a
+        device buffer mutated by another kernel (e.g. `Scale.multiplier`
+        ← SAC's on-device α) override and comptime-branch on `ATTR`.
+        Distinct from `set_attr` (host scalar baked into the kernel arg):
+        a pointer set here is read on-device each forward so the value
+        can change between captured replays without re-baking."""
+        pass
+
+    # ──────────────────────────────────────────────────────────────────
+    # Display surface — read by `ComputeGraph.describe` exporters. Both
+    # carry defaults, so existing conformers need no change; leaves
+    # override `display_label` with their type name, and containers
+    # (Sequential) override `display_steps` to expand into their children.
+    # ──────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def display_label() -> String:
+        """Short display name for graph exporters. Default generic;
+        leaves override with their type name (e.g. "Linear")."""
+        return String("module")
+
+    @staticmethod
+    def display_steps() -> List[DisplayStep]:
+        """Inner display steps for container modules — one per child,
+        each `(child_label, child_out_dim)`. Default empty = atomic leaf;
+        `Sequential` overrides to expand its chain."""
+        return List[DisplayStep]()

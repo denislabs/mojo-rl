@@ -24,7 +24,7 @@ from layout import TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
-    Initializer, AMPPolicy, NoAMP, ParamVisitor,
+    Initializer, AMPPolicy, NoAMP, ParamVisitor, DisplayStep,
 )
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
@@ -35,6 +35,25 @@ struct Sequential[*MODULES: Module](Module):
     comptime N = Self.MODULES.size
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.MODULES[0].IN_DIMS[0])
     comptime OUT_DIM = Self.MODULES[Self.N - 1].OUT_DIM
+
+    @staticmethod
+    def display_label() -> String:
+        return String("Sequential")
+
+    @staticmethod
+    def display_steps() -> List[DisplayStep]:
+        """Expand the chain — one step per child, carrying its display
+        label + output width. Lets `ComputeGraph.describe` exporters open
+        a Sequential node instead of showing one opaque box."""
+        var steps = List[DisplayStep]()
+        comptime for i in range(Self.N):
+            steps.append(
+                DisplayStep(
+                    Self.MODULES[i].display_label(),
+                    Self.MODULES[i].OUT_DIM,
+                )
+            )
+        return steps^
 
     var children: Tuple[*Self.MODULES]
 

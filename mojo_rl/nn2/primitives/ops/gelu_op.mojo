@@ -34,6 +34,10 @@ struct GELUOp(ElementOp):
     comptime owns_cache = False
 
     @staticmethod
+    def display_label() -> String:
+        return String("GELU")
+
+    @staticmethod
     def forward_scalar(x: Scalar[DT]) -> Scalar[DT]:
         var u = _GELU_C * (x + _GELU_A * x * x * x)
         return Scalar[DT](0.5) * x * (Scalar[DT](1.0) + tanh(u))

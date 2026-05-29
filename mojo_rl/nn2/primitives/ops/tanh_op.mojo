@@ -18,6 +18,10 @@ struct TanhOp(ElementOp):
     comptime owns_cache = True
 
     @staticmethod
+    def display_label() -> String:
+        return String("Tanh")
+
+    @staticmethod
     def forward_scalar(x: Scalar[DT]) -> Scalar[DT]:
         return tanh(x)
 

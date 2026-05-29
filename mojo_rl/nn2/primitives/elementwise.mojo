@@ -104,6 +104,10 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
     comptime OUT_DIM = Self.DIM
 
+    @staticmethod
+    def display_label() -> String:
+        return Self.OP.display_label()
+
     var ts: TargetStorage
 
     # owns_cache=True path: own cache buffer (CPU + GPU dual storage).

@@ -26,6 +26,10 @@ struct SigmoidOp(ElementOp):
     comptime owns_cache = True
 
     @staticmethod
+    def display_label() -> String:
+        return String("Sigmoid")
+
+    @staticmethod
     def forward_scalar(x: Scalar[DT]) -> Scalar[DT]:
         var one: Scalar[DT] = 1.0
         return one / (one + exp(-x))

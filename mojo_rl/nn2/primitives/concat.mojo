@@ -109,6 +109,10 @@ struct Concat[*DIMS: Int](Module):
     comptime OUT_DIM: Int = _total_dim[*Self.DIMS]()
 
     @staticmethod
+    def display_label() -> String:
+        return String("Concat")
+
+    @staticmethod
     def _build_in_dims() -> InlineArray[Int, Self.DIMS.size]:
         var d = InlineArray[Int, Self.DIMS.size](fill=0)
         comptime for k in range(Self.DIMS.size):

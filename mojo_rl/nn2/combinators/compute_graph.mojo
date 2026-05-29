@@ -69,6 +69,7 @@ from ..core import (
     GraphNode,
     Module,
     ParamVisitor,
+    GraphVisitor,
     Initializer,
     AMPPolicy,
     NoAMP,
@@ -405,6 +406,23 @@ struct ComputeGraph[
             comptime if Self.NODES[i].NAME == NAME:
                 self.nodes[i].set_op_attr_via[ATTR](value)
 
+    def set_node_attr_ptr[
+        NAME: StaticString, ATTR: StaticString,
+    ](mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+        """Bind a device-resident attribute source on node `NAME`'s op.
+
+        Pointer variant of `set_node_attr`: instead of baking a host
+        scalar into the op's field, points the op's `ATTR` at a device
+        buffer (e.g. SAC's on-device α buffer → a `Scale` node's
+        `multiplier_ptr`). Dispatches via `GraphNode.set_op_attr_ptr_via`
+        (InputSlot/ExternalNode no-op, Node forwards to
+        `self.op.set_attr_ptr[ATTR](p)`). One-time wiring at make — the
+        pointer is stable for the buffer's lifetime, so no per-step host
+        work and CUDA-graph capturable. No-op if `NAME` matches no node."""
+        comptime for i in range(Self.N):
+            comptime if Self.NODES[i].NAME == NAME:
+                self.nodes[i].set_op_attr_ptr_via[ATTR](p)
+
     # ──────────────────────────────────────────────────────────────────
     # Forward — topological walk, comptime name resolution.
     # ──────────────────────────────────────────────────────────────────
@@ -487,6 +505,46 @@ struct ComputeGraph[
                 prefix + sep + String(Self.NODES[i].NAME),
                 visitor,
             )
+
+    # ──────────────────────────────────────────────────────────────────
+    # describe — topology walk into a pluggable GraphVisitor sink.
+    #
+    # Pure comptime-metadata walk (no runtime node state touched), so it
+    # works on a default-constructed graph — no `make` / buffers needed.
+    # Mirrors the `comptime for i ... comptime for k` shape of the
+    # forward/backward bodies, but emits node + edge events instead of
+    # running kernels. See `combinators/graph_export.mojo` for exporters.
+    # ──────────────────────────────────────────────────────────────────
+
+    def describe[
+        V: GraphVisitor,
+    ](self, mut visitor: V, graph_name: String = "") raises:
+        visitor.begin(graph_name, Self.N)
+        comptime for i in range(Self.N):
+            comptime kind = Self.NODES[i].KIND
+            var name = String(Self.NODES[i].NAME)
+            visitor.node(
+                i,
+                name,
+                Self.NODES[i].display_label_via(),
+                kind,
+                Self.NODES[i].OUT_DIM,
+            )
+            # Container nodes (Sequential & its aliases) expand into one
+            # inner step per child.
+            var steps = Self.NODES[i].display_steps_via()
+            for s in range(len(steps)):
+                visitor.node_inner(
+                    name, s, steps[s].label, steps[s].out_dim,
+                )
+            comptime for k in range(kind):
+                visitor.edge(
+                    name,
+                    String(Self.NODES[i].IN_NAMES[k]),
+                    k,
+                    Self.NODES[i].IN_DIMS[k],
+                )
+        visitor.end()
 
 
 # ──────────────────────────────────────────────────────────────────────

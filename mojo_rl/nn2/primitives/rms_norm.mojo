@@ -164,6 +164,10 @@ struct RMSNorm[DIM: Int](Module):
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
     comptime OUT_DIM = Self.DIM
 
+    @staticmethod
+    def display_label() -> String:
+        return String("RMSNorm")
+
     var gamma: Param["gamma", False, Self.DIM]
 
     var cache_norm: List[Scalar[DT]]                 # [BATCH, DIM]

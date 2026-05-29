@@ -30,6 +30,10 @@ struct MishOp(ElementOp):
     comptime owns_cache = False
 
     @staticmethod
+    def display_label() -> String:
+        return String("Mish")
+
+    @staticmethod
     def forward_scalar(x: Scalar[DT]) -> Scalar[DT]:
         var zero: Scalar[DT] = 0.0
         var one: Scalar[DT] = 1.0

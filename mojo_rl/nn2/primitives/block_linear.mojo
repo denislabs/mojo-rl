@@ -156,6 +156,10 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
     comptime W_SIZE = Self.BLOCKS * Self.IPB * Self.OPB
     comptime B_SIZE = Self.OUT
 
+    @staticmethod
+    def display_label() -> String:
+        return String("BlockLinear")
+
     var weight: Param["weight", True, Self.W_SIZE]
     var bias: Param["bias", False, Self.B_SIZE]
 
