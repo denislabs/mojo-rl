@@ -32,14 +32,18 @@ and resolve to physical indices via `(_origin + s + k) mod CAP`.
 
 from std.memory import alloc
 from std.random import random_float64
+from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
+from .sequence_replay_buffer import SequenceReplayBuffer
 
 
 @fieldwise_init
-struct SequenceReplay[OBS: Int, ACT: Int, CAP: Int](
-    Movable & ImplicitlyDestructible
-):
+struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
+    comptime OBS = Self.OBS_
+    comptime ACT = Self.ACT_
+    comptime CAP = Self.CAP_
+
     var obs: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var act: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var rew: UnsafePointer[Scalar[DT], MutAnyOrigin]
@@ -58,12 +62,27 @@ struct SequenceReplay[OBS: Int, ACT: Int, CAP: Int](
             pos=0,
         )
 
+    @staticmethod
+    def make[
+        target: StaticString
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Trait factory. CPU backend — `ctx` is ignored."""
+        comptime assert target == "cpu", (
+            "SequenceReplay is the CPU backend; use GPUSequenceReplay for"
+            " target == \"gpu\""
+        )
+        return Self.new()
+
+    def count(self) -> Int:
+        return self.size
+
     def record(
         mut self,
         s: UnsafePointer[Scalar[DT], MutAnyOrigin],
         a: UnsafePointer[Scalar[DT], MutAnyOrigin],
         r: Scalar[DT],
         d: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
     ):
         var p = self.pos
         for i in range(Self.OBS):
