@@ -43,6 +43,7 @@ goes NEGATIVE (Pendulum reward is always ≤0), `ret_sd` stays > 0.
 
 from std.memory import alloc
 from std.random import random_float64, seed
+from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.deep_agents2.dreamerv3.agent import DreamerV3Agent
@@ -121,9 +122,10 @@ def main() raises:
     print("DreamerV3 (nn2) Pendulum lighthouse [GPU/size1m] —", TOTAL_STEPS, "steps")
     print("=" * 70)
     seed(42)
+    var ctx = DeviceContext()
     var env = PendulumV2[DT]()
     var ag = Ag.make(
-        lr=Scalar[DT](4e-5), learning_starts=LEARN_START,
+        ctx=ctx, lr=Scalar[DT](4e-5), learning_starts=LEARN_START,
         action_scale=Scalar[DT](2.0),
     )
 
