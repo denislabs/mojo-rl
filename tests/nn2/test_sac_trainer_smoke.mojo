@@ -70,13 +70,17 @@ def test_cpu_uniform() raises:
         trainer.record(obs, action, reward, next_obs, done)
         if trainer.train_step(step):
             n_trained += 1
+    # Read metrics through flush_metrics — exercises the Slice 3 device
+    # critic accumulator on GPU (no per-step D2H) and the host path on CPU.
+    var m = trainer.flush_metrics()
     print("  n_trained =", n_trained)
-    print("  actor_L_accum =", Float64(trainer._actor_L_accum))
-    print("  critic_L_accum=", Float64(trainer._critic_L_accum))
+    print("  actor_loss =", m.actor_loss.to_f64())
+    print("  critic_loss=", m.critic_loss.to_f64())
     assert_true(n_trained >= 30, "expected at least 30 train steps")
     assert_true(
-        trainer._actor_L_accum == trainer._actor_L_accum, "finite actor"
+        m.actor_loss.to_f64() == m.actor_loss.to_f64(), "finite actor"
     )
+    assert_true(m.critic_loss.to_f64() > 0.0, "critic loss accumulated")
 
 
 def test_gpu_uniform() raises:
@@ -113,13 +117,17 @@ def test_gpu_uniform() raises:
         trainer.record(obs, action, reward, next_obs, done)
         if trainer.train_step(step):
             n_trained += 1
+    # Read metrics through flush_metrics — exercises the Slice 3 device
+    # critic accumulator on GPU (no per-step D2H) and the host path on CPU.
+    var m = trainer.flush_metrics()
     print("  n_trained =", n_trained)
-    print("  actor_L_accum =", Float64(trainer._actor_L_accum))
-    print("  critic_L_accum=", Float64(trainer._critic_L_accum))
+    print("  actor_loss =", m.actor_loss.to_f64())
+    print("  critic_loss=", m.critic_loss.to_f64())
     assert_true(n_trained >= 30, "expected at least 30 train steps")
     assert_true(
-        trainer._actor_L_accum == trainer._actor_L_accum, "finite actor"
+        m.actor_loss.to_f64() == m.actor_loss.to_f64(), "finite actor"
     )
+    assert_true(m.critic_loss.to_f64() > 0.0, "critic loss accumulated")
 
 
 def test_gpu_per() raises:
@@ -158,21 +166,18 @@ def test_gpu_per() raises:
         trainer.record(obs, action, reward, next_obs, done)
         if trainer.train_step(step):
             n_trained += 1
+    var tree0 = Float64(trainer.sample_blk.buf.value().tree[0])
+    var m = trainer.flush_metrics()
     print("  n_trained =", n_trained)
-    print("  actor_L_accum =", Float64(trainer._actor_L_accum))
-    print("  critic_L_accum=", Float64(trainer._critic_L_accum))
-    print(
-        "  tree[0] (total prio) =",
-        Float64(trainer.sample_blk.buf.value().tree[0]),
-    )
+    print("  actor_loss =", m.actor_loss.to_f64())
+    print("  critic_loss=", m.critic_loss.to_f64())
+    print("  tree[0] (total prio) =", tree0)
     assert_true(n_trained >= 30, "expected at least 30 train steps")
     assert_true(
-        trainer._actor_L_accum == trainer._actor_L_accum, "finite actor"
+        m.actor_loss.to_f64() == m.actor_loss.to_f64(), "finite actor"
     )
-    assert_true(
-        Float64(trainer.sample_blk.buf.value().tree[0]) > 0.0,
-        "PER sum-tree should be populated",
-    )
+    assert_true(m.critic_loss.to_f64() > 0.0, "critic loss accumulated")
+    assert_true(tree0 > 0.0, "PER sum-tree should be populated")
     trainer.set_beta(Scalar[DT](1.0))
 
 

@@ -184,6 +184,62 @@ def test_gpu_parity() raises:
     print("  test_gpu_parity PASSED")
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# GPU device-accumulate path (Slice 3 — CUDA-graph capturable, no per-step D2H)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_gpu_accumulate() raises:
+    """`forward_accumulate` + `read_accum` must match `forward` within the
+    block-reduce tolerance (~1e-5), and average correctly across steps."""
+    comptime BATCH = 8
+    comptime OUT = 3
+    comptime TOL: Scalar[DT] = 1e-5
+
+    var ctx = DeviceContext()
+    var loss = MSELoss[OUT].make["gpu"](ctx)
+
+    var l_host = ctx.enqueue_create_host_buffer[DT](BATCH * OUT)
+    var t_host = ctx.enqueue_create_host_buffer[DT](BATCH * OUT)
+    ctx.synchronize()
+    for k in range(BATCH * OUT):
+        l_host.unsafe_ptr()[k] = Scalar[DT](0.1 + 0.07 * Float64(k))
+        t_host.unsafe_ptr()[k] = Scalar[DT](0.4 - 0.03 * Float64(k))
+    var l_dev = ctx.enqueue_create_buffer[DT](BATCH * OUT)
+    var t_dev = ctx.enqueue_create_buffer[DT](BATCH * OUT)
+    ctx.enqueue_copy(l_dev, l_host)
+    ctx.enqueue_copy(t_dev, t_host)
+    var logits = TileTensor(l_dev, row_major[BATCH, OUT]())
+    var targets = TileTensor(t_dev, row_major[BATCH, OUT]())
+
+    # Reference: the legacy D2H forward.
+    var L_ref = loss.forward["gpu", BATCH](logits, targets)
+
+    # Accumulate the same batch 3 times → mean must equal L_ref.
+    loss.reset_accum["gpu"]()
+    for _ in range(3):
+        loss.forward_accumulate["gpu", BATCH](logits, targets)
+    var L_acc = loss.read_accum["gpu"]()
+    print("  L_ref =", L_ref, "  L_acc(3x same) =", L_acc)
+    assert_true(fabs(L_acc - L_ref) < TOL, "accumulate mean != forward")
+
+    # Second batch with different data; mean of the two single-step means.
+    for k in range(BATCH * OUT):
+        l_host.unsafe_ptr()[k] = Scalar[DT](0.2 + 0.05 * Float64(k))
+    ctx.enqueue_copy(l_dev, l_host)
+    var L_ref2 = loss.forward["gpu", BATCH](logits, targets)
+    loss.reset_accum["gpu"]()
+    loss.forward_accumulate["gpu", BATCH](logits, targets)  # L_ref2
+    ctx.enqueue_copy(l_dev, t_dev)  # logits == targets → loss 0
+    loss.forward_accumulate["gpu", BATCH](logits, targets)  # 0
+    var L_avg = loss.read_accum["gpu"]()
+    var expect = L_ref2 / Scalar[DT](2.0)
+    print("  L_avg(ref2, 0) =", L_avg, "  expect =", expect)
+    assert_true(fabs(L_avg - expect) < TOL, "two-step average wrong")
+
+    print("  test_gpu_accumulate PASSED")
+
+
 def main() raises:
     print("=" * 60)
     print("nn2 MSELoss unit tests (CPU + GPU, Phase 6.3)")
@@ -191,6 +247,7 @@ def main() raises:
     test_forward_backward_cpu()
     test_gradcheck_fd()
     test_gpu_parity()
+    test_gpu_accumulate()
     print("=" * 60)
     print("ALL PASSED")
     print("=" * 60)

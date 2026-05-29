@@ -43,22 +43,44 @@ from ..core.target_storage import TargetStorage, assert_tag_for
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _adam_step_prep_kernel(
+    step_ptr: UnsafePointer[UInt32, MutAnyOrigin],
+    bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    beta1: Scalar[DT],
+    beta2: Scalar[DT],
+):
+    # Single-thread on-device step bump + bias-correction update. Keeps the
+    # Adam step counter off the host so the GPU step is CUDA-graph capturable
+    # (no host scalar baked into the update kernel's args). Mirrors AdamW's
+    # `_adamw_step_prep_kernel`. `bc_ptr` layout: [beta1_pow_t, beta2_pow_t,
+    # bias_correction1, bias_correction2].
+    if Int(global_idx.x) == 0:
+        step_ptr[0] = step_ptr[0] + UInt32(1)
+        var b1_new = bc_ptr[0] * beta1
+        var b2_new = bc_ptr[1] * beta2
+        bc_ptr[0] = b1_new
+        bc_ptr[1] = b2_new
+        bc_ptr[2] = Scalar[DT](1.0) - b1_new
+        bc_ptr[3] = Scalar[DT](1.0) - b2_new
+
+
 def _adam_update_kernel(
     param: UnsafePointer[Scalar[DT], MutAnyOrigin],
     grad: UnsafePointer[Scalar[DT], MutAnyOrigin],
     m_off: UnsafePointer[Scalar[DT], MutAnyOrigin],
     v_off: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     n_elems: Int,
     lr: Scalar[DT],
     beta1: Scalar[DT],
     beta2: Scalar[DT],
     eps: Scalar[DT],
-    bc1: Scalar[DT],
-    bc2: Scalar[DT],
 ):
     var i = Int(global_idx.x)
     if i < n_elems:
         var one: Scalar[DT] = 1.0
+        var bc1 = bc_ptr[2]
+        var bc2 = bc_ptr[3]
         var g = grad[i]
         var m_new = beta1 * m_off[i] + (one - beta1) * g
         var v_new = beta2 * v_off[i] + (one - beta2) * g * g
@@ -229,14 +251,13 @@ struct _AdamGPUStepVisitor(ParamVisitor):
     var ctx: DeviceContext
     var m_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var v_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var bc_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
     var idx: Int
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
     var beta2: Scalar[DT]
     var eps: Scalar[DT]
-    var bias_correction1: Scalar[DT]
-    var bias_correction2: Scalar[DT]
 
     def visit(
         mut self,
@@ -257,9 +278,8 @@ struct _AdamGPUStepVisitor(ParamVisitor):
         var grad_w_ptr  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_adam_update_kernel](
-            param_w_ptr, grad_w_ptr, m_off, v_off, n_elems,
+            param_w_ptr, grad_w_ptr, m_off, v_off, self.bc_base, n_elems,
             self.lr, self.beta1, self.beta2, self.eps,
-            self.bias_correction1, self.bias_correction2,
             grid_dim=n_blocks, block_dim=TPB,
         )
         self.idx += 1
@@ -300,9 +320,15 @@ struct Adam(Optimizer, Saveable):
     # GPU storage
     var m_dev: Optional[DeviceBuffer[DT]]
     var v_dev: Optional[DeviceBuffer[DT]]
+    # On-device step + bias-correction state (GPU path only). Keeps the step
+    # counter off the host so the GPU `step` is CUDA-graph capturable. `bc_dev`
+    # layout: [beta1_pow_t, beta2_pow_t, bias_correction1, bias_correction2].
+    var step_dev: Optional[DeviceBuffer[DType.uint32]]
+    var bc_dev: Optional[DeviceBuffer[DT]]
     # Shared bookkeeping
     var offsets: List[Int]
     var total_size: Int
+    # Host-side step state (CPU path; GPU uses step_dev/bc_dev instead).
     var step_count: Int
 
     # Public mut hyperparams. Defaults match Kingma & Ba 2014.
@@ -338,6 +364,8 @@ struct Adam(Optimizer, Saveable):
         self.v_flat = List[Scalar[DT]]()
         self.m_dev = None
         self.v_dev = None
+        self.step_dev = None
+        self.bc_dev = None
         self.offsets = List[Int]()
         self.total_size = 0
         self.step_count = 0
@@ -390,6 +418,20 @@ struct Adam(Optimizer, Saveable):
             v_real.enqueue_fill(0.0)
             opt.m_dev = m_real^
             opt.v_dev = v_real^
+            # On-device step counter (0) + bias-correction buffer
+            # [beta1_pow_t=1, beta2_pow_t=1, bc1=0, bc2=0].
+            var step_real = ctx_v.enqueue_create_buffer[DType.uint32](1)
+            step_real.enqueue_fill(0)
+            var bc_real = ctx_v.enqueue_create_buffer[DT](4)
+            var bc_init_host = ctx_v.enqueue_create_host_buffer[DT](4)
+            ctx_v.synchronize()
+            bc_init_host.unsafe_ptr()[0] = Scalar[DT](1.0)
+            bc_init_host.unsafe_ptr()[1] = Scalar[DT](1.0)
+            bc_init_host.unsafe_ptr()[2] = Scalar[DT](0.0)
+            bc_init_host.unsafe_ptr()[3] = Scalar[DT](0.0)
+            ctx_v.enqueue_copy(bc_real, bc_init_host)
+            opt.step_dev = step_real^
+            opt.bc_dev = bc_real^
             opt.ts = TargetStorage.make_gpu(ctx_v)
         return opt^
 
@@ -410,11 +452,6 @@ struct Adam(Optimizer, Saveable):
         M: Module,
     ](mut self, mut model: M) raises:
         assert_tag_for["Adam", target](self.ts.target_tag)
-        self.step_count += 1
-        self.beta1_pow_t = self.beta1_pow_t * self.beta1
-        self.beta2_pow_t = self.beta2_pow_t * self.beta2
-        var bc1: Scalar[DT] = Scalar[DT](1.0) - self.beta1_pow_t
-        var bc2: Scalar[DT] = Scalar[DT](1.0) - self.beta2_pow_t
 
         # Phase B.3 — global grad-norm clip. No-op when `max_grad_norm == 0`
         # (the default sentinel) → bit-identical to pre-B.3 behaviour.
@@ -437,6 +474,12 @@ struct Adam(Optimizer, Saveable):
                 )
 
         comptime if target == "cpu":
+            # Host step + bias-correction (CPU path only).
+            self.step_count += 1
+            self.beta1_pow_t = self.beta1_pow_t * self.beta1
+            self.beta2_pow_t = self.beta2_pow_t * self.beta2
+            var bc1: Scalar[DT] = Scalar[DT](1.0) - self.beta1_pow_t
+            var bc2: Scalar[DT] = Scalar[DT](1.0) - self.beta2_pow_t
             var visitor = _AdamCPUStepVisitor(
                 m_flat_ptr=UnsafePointer(to=self.m_flat),
                 v_flat_ptr=UnsafePointer(to=self.v_flat),
@@ -447,14 +490,27 @@ struct Adam(Optimizer, Saveable):
             )
             model.for_each_param[target, _AdamCPUStepVisitor](String(""), visitor)
         else:
+            var ctx = self.ts.ctx.value()
+            var step_ptr: UnsafePointer[UInt32, MutAnyOrigin] = (
+                self.step_dev.value().unsafe_ptr()
+            )
+            var bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = (
+                self.bc_dev.value().unsafe_ptr()
+            )
+            # On-device step bump + bias-correction. No host scalar feeds the
+            # update kernel → CUDA-graph capturable.
+            ctx.enqueue_function[_adam_step_prep_kernel](
+                step_ptr, bc_ptr, self.beta1, self.beta2,
+                grid_dim=1, block_dim=1,
+            )
             var visitor = _AdamGPUStepVisitor(
-                ctx=self.ts.ctx.value(),
+                ctx=ctx,
                 m_base=self.m_dev.value().unsafe_ptr(),
                 v_base=self.v_dev.value().unsafe_ptr(),
+                bc_base=bc_ptr,
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 idx=0,
                 lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
-                bias_correction1=bc1, bias_correction2=bc2,
             )
             model.for_each_param[target, _AdamGPUStepVisitor](String(""), visitor)
 

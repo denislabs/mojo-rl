@@ -111,26 +111,49 @@ def _agc_scale_kernel(
         scale_buf[slot] = scale
 
 
+def _dreamer_step_prep_kernel(
+    step_ptr: UnsafePointer[UInt32, MutAnyOrigin],
+    bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    beta1: Scalar[DT],
+    beta2: Scalar[DT],
+):
+    # Single-thread on-device step bump + bias-correction update. Keeps the
+    # step counter off the host so the GPU step is CUDA-graph capturable
+    # (no host scalar baked into the update kernel's args). Mirrors AdamW's
+    # `_adamw_step_prep_kernel`. `bc_ptr` layout: [beta1_pow_t, beta2_pow_t,
+    # bias_correction1, bias_correction2].
+    if Int(global_idx.x) == 0:
+        step_ptr[0] = step_ptr[0] + UInt32(1)
+        var b1_new = bc_ptr[0] * beta1
+        var b2_new = bc_ptr[1] * beta2
+        bc_ptr[0] = b1_new
+        bc_ptr[1] = b2_new
+        bc_ptr[2] = Scalar[DT](1.0) - b1_new
+        bc_ptr[3] = Scalar[DT](1.0) - b2_new
+
+
 def _dreamer_update_kernel(
     param: UnsafePointer[Scalar[DT], MutAnyOrigin],
     grad: UnsafePointer[Scalar[DT], MutAnyOrigin],
     nu_off: UnsafePointer[Scalar[DT], MutAnyOrigin],
     mu_off: UnsafePointer[Scalar[DT], MutAnyOrigin],
     scale_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     slot: Int,
     n_elems: Int,
     lr: Scalar[DT],
     beta1: Scalar[DT],
     beta2: Scalar[DT],
     eps: Scalar[DT],
-    bc1: Scalar[DT],
-    bc2: Scalar[DT],
 ):
     """rms-then-momentum-then-lr, with the AGC scale read from
-    `scale_buf[slot]`. One thread per element."""
+    `scale_buf[slot]` and bias-correction read from `bc_ptr`. One thread
+    per element."""
     var i = Int(global_idx.x)
     if i < n_elems:
         var one: Scalar[DT] = 1.0
+        var bc1 = bc_ptr[2]
+        var bc2 = bc_ptr[3]
         var g = grad[i] * scale_buf[slot]
         var nu_new = beta2 * nu_off[i] + (one - beta2) * g * g
         nu_off[i] = nu_new
@@ -337,6 +360,7 @@ struct _DreamerGPUStepVisitor(ParamVisitor):
     var nu_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var mu_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var scale_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var bc_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
     var idx: Int
     var lr: Scalar[DT]
@@ -345,8 +369,6 @@ struct _DreamerGPUStepVisitor(ParamVisitor):
     var eps: Scalar[DT]
     var agc_clip: Scalar[DT]
     var agc_pmin: Scalar[DT]
-    var bias_correction1: Scalar[DT]
-    var bias_correction2: Scalar[DT]
 
     def visit(
         mut self,
@@ -376,9 +398,9 @@ struct _DreamerGPUStepVisitor(ParamVisitor):
         # ordered after Pass A, so scale_base[idx] is ready.
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_dreamer_update_kernel](
-            p_ptr, g_ptr, nu_off, mu_off, self.scale_base, self.idx, n_elems,
+            p_ptr, g_ptr, nu_off, mu_off, self.scale_base, self.bc_base,
+            self.idx, n_elems,
             self.lr, self.beta1, self.beta2, self.eps,
-            self.bias_correction1, self.bias_correction2,
             grid_dim=n_blocks, block_dim=TPB,
         )
         self.idx += 1
@@ -420,9 +442,15 @@ struct DreamerOpt(Optimizer, Saveable):
     var nu_dev: Optional[DeviceBuffer[DT]]
     var mu_dev: Optional[DeviceBuffer[DT]]
     var scale_dev: Optional[DeviceBuffer[DT]]   # [N_PARAMS] AGC scale scratch
+    # On-device step + bias-correction state (GPU path only). Keeps the step
+    # counter off the host so the GPU `step` is CUDA-graph capturable. `bc_dev`
+    # layout: [beta1_pow_t, beta2_pow_t, bias_correction1, bias_correction2].
+    var step_dev: Optional[DeviceBuffer[DType.uint32]]
+    var bc_dev: Optional[DeviceBuffer[DT]]
     # Shared bookkeeping
     var offsets: List[Int]
     var total_size: Int
+    # Host-side step state (CPU path; GPU uses step_dev/bc_dev instead).
     var step_count: Int
 
     # Public mut hyperparams. Defaults match the DreamerV3 reference
@@ -445,6 +473,8 @@ struct DreamerOpt(Optimizer, Saveable):
         self.nu_dev = None
         self.mu_dev = None
         self.scale_dev = None
+        self.step_dev = None
+        self.bc_dev = None
         self.offsets = List[Int]()
         self.total_size = 0
         self.step_count = 0
@@ -502,6 +532,20 @@ struct DreamerOpt(Optimizer, Saveable):
             var scale_real = ctx_v.enqueue_create_buffer[DT](len(opt.offsets))
             scale_real.enqueue_fill(1.0)
             opt.scale_dev = scale_real^
+            # On-device step counter (0) + bias-correction buffer
+            # [beta1_pow_t=1, beta2_pow_t=1, bc1=0, bc2=0].
+            var step_real = ctx_v.enqueue_create_buffer[DType.uint32](1)
+            step_real.enqueue_fill(0)
+            var bc_real = ctx_v.enqueue_create_buffer[DT](4)
+            var bc_init_host = ctx_v.enqueue_create_host_buffer[DT](4)
+            ctx_v.synchronize()
+            bc_init_host.unsafe_ptr()[0] = Scalar[DT](1.0)
+            bc_init_host.unsafe_ptr()[1] = Scalar[DT](1.0)
+            bc_init_host.unsafe_ptr()[2] = Scalar[DT](0.0)
+            bc_init_host.unsafe_ptr()[3] = Scalar[DT](0.0)
+            ctx_v.enqueue_copy(bc_real, bc_init_host)
+            opt.step_dev = step_real^
+            opt.bc_dev = bc_real^
             opt.ts = TargetStorage.make_gpu(ctx_v)
         return opt^
 
@@ -522,13 +566,14 @@ struct DreamerOpt(Optimizer, Saveable):
         M: Module,
     ](mut self, mut model: M) raises:
         assert_tag_for["DreamerOpt", target](self.ts.target_tag)
-        self.step_count += 1
-        self.beta1_pow_t = self.beta1_pow_t * self.beta1
-        self.beta2_pow_t = self.beta2_pow_t * self.beta2
-        var bc1: Scalar[DT] = Scalar[DT](1.0) - self.beta1_pow_t
-        var bc2: Scalar[DT] = Scalar[DT](1.0) - self.beta2_pow_t
 
         comptime if target == "cpu":
+            # Host step + bias-correction (CPU path only).
+            self.step_count += 1
+            self.beta1_pow_t = self.beta1_pow_t * self.beta1
+            self.beta2_pow_t = self.beta2_pow_t * self.beta2
+            var bc1: Scalar[DT] = Scalar[DT](1.0) - self.beta1_pow_t
+            var bc2: Scalar[DT] = Scalar[DT](1.0) - self.beta2_pow_t
             var visitor = _DreamerCPUStepVisitor(
                 nu_flat_ptr=UnsafePointer(to=self.nu_flat),
                 mu_flat_ptr=UnsafePointer(to=self.mu_flat),
@@ -542,16 +587,29 @@ struct DreamerOpt(Optimizer, Saveable):
                 String(""), visitor
             )
         else:
+            var ctx = self.ts.ctx.value()
+            var step_ptr: UnsafePointer[UInt32, MutAnyOrigin] = (
+                self.step_dev.value().unsafe_ptr()
+            )
+            var bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = (
+                self.bc_dev.value().unsafe_ptr()
+            )
+            # On-device step bump + bias-correction. No host scalar feeds the
+            # update kernel → CUDA-graph capturable.
+            ctx.enqueue_function[_dreamer_step_prep_kernel](
+                step_ptr, bc_ptr, self.beta1, self.beta2,
+                grid_dim=1, block_dim=1,
+            )
             var visitor = _DreamerGPUStepVisitor(
-                ctx=self.ts.ctx.value(),
+                ctx=ctx,
                 nu_base=self.nu_dev.value().unsafe_ptr(),
                 mu_base=self.mu_dev.value().unsafe_ptr(),
                 scale_base=self.scale_dev.value().unsafe_ptr(),
+                bc_base=bc_ptr,
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 idx=0,
                 lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
                 agc_clip=self.agc_clip, agc_pmin=self.agc_pmin,
-                bias_correction1=bc1, bias_correction2=bc2,
             )
             model.for_each_param[target, _DreamerGPUStepVisitor](
                 String(""), visitor
@@ -604,6 +662,20 @@ struct DreamerOpt(Optimizer, Saveable):
             var scale_real = ctx_v.enqueue_create_buffer[DT](len(opt.offsets))
             scale_real.enqueue_fill(1.0)
             opt.scale_dev = scale_real^
+            # On-device step counter (0) + bias-correction buffer
+            # [beta1_pow_t=1, beta2_pow_t=1, bc1=0, bc2=0].
+            var step_real = ctx_v.enqueue_create_buffer[DType.uint32](1)
+            step_real.enqueue_fill(0)
+            var bc_real = ctx_v.enqueue_create_buffer[DT](4)
+            var bc_init_host = ctx_v.enqueue_create_host_buffer[DT](4)
+            ctx_v.synchronize()
+            bc_init_host.unsafe_ptr()[0] = Scalar[DT](1.0)
+            bc_init_host.unsafe_ptr()[1] = Scalar[DT](1.0)
+            bc_init_host.unsafe_ptr()[2] = Scalar[DT](0.0)
+            bc_init_host.unsafe_ptr()[3] = Scalar[DT](0.0)
+            ctx_v.enqueue_copy(bc_real, bc_init_host)
+            opt.step_dev = step_real^
+            opt.bc_dev = bc_real^
             opt.ts = TargetStorage.make_gpu(ctx_v)
         return opt^
 
@@ -622,12 +694,13 @@ struct DreamerOpt(Optimizer, Saveable):
         target: StaticString, OUT: Int, *NODES: GraphNode
     ](mut self, mut g: ComputeGraph[OUT, *NODES]) raises:
         assert_tag_for["DreamerOpt", target](self.ts.target_tag)
-        self.step_count += 1
-        self.beta1_pow_t = self.beta1_pow_t * self.beta1
-        self.beta2_pow_t = self.beta2_pow_t * self.beta2
-        var bc1: Scalar[DT] = Scalar[DT](1.0) - self.beta1_pow_t
-        var bc2: Scalar[DT] = Scalar[DT](1.0) - self.beta2_pow_t
         comptime if target == "cpu":
+            # Host step + bias-correction (CPU path only).
+            self.step_count += 1
+            self.beta1_pow_t = self.beta1_pow_t * self.beta1
+            self.beta2_pow_t = self.beta2_pow_t * self.beta2
+            var bc1: Scalar[DT] = Scalar[DT](1.0) - self.beta1_pow_t
+            var bc2: Scalar[DT] = Scalar[DT](1.0) - self.beta2_pow_t
             var visitor = _DreamerCPUStepVisitor(
                 nu_flat_ptr=UnsafePointer(to=self.nu_flat),
                 mu_flat_ptr=UnsafePointer(to=self.mu_flat),
@@ -639,16 +712,29 @@ struct DreamerOpt(Optimizer, Saveable):
             )
             g.for_each_param[target, _DreamerCPUStepVisitor](String(""), visitor)
         else:
+            var ctx = self.ts.ctx.value()
+            var step_ptr: UnsafePointer[UInt32, MutAnyOrigin] = (
+                self.step_dev.value().unsafe_ptr()
+            )
+            var bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = (
+                self.bc_dev.value().unsafe_ptr()
+            )
+            # On-device step bump + bias-correction. No host scalar feeds the
+            # update kernel → CUDA-graph capturable.
+            ctx.enqueue_function[_dreamer_step_prep_kernel](
+                step_ptr, bc_ptr, self.beta1, self.beta2,
+                grid_dim=1, block_dim=1,
+            )
             var visitor = _DreamerGPUStepVisitor(
-                ctx=self.ts.ctx.value(),
+                ctx=ctx,
                 nu_base=self.nu_dev.value().unsafe_ptr(),
                 mu_base=self.mu_dev.value().unsafe_ptr(),
                 scale_base=self.scale_dev.value().unsafe_ptr(),
+                bc_base=bc_ptr,
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 idx=0,
                 lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
                 agc_clip=self.agc_clip, agc_pmin=self.agc_pmin,
-                bias_correction1=bc1, bias_correction2=bc2,
             )
             g.for_each_param[target, _DreamerGPUStepVisitor](String(""), visitor)
 

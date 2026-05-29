@@ -13,7 +13,8 @@ match the PPO critic gradient).
 AMP: POLICY accepted but ignored (loss math is fp32-only).
 """
 
-from std.gpu import global_idx
+from std.gpu import global_idx, thread_idx
+from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -40,6 +41,30 @@ def _mse_forward_kernel[BATCH: Int, DIM: Int](
             var d = rebind[Scalar[DT]](logits[b, j]) - rebind[Scalar[DT]](targets[b, j])
             s += Scalar[DT](0.5) * d * d
         partial_loss[b] = s
+
+
+def _mse_reduce_add_kernel[BATCH: Int](
+    partial_loss: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """Single-block `block.sum` reduce of `partial_loss[0..BATCH]`, then
+    thread 0 adds `total/BATCH` into `acc[0]` and `+1` into `acc[1]`. No D2H
+    — the mean loss stays device-resident for CUDA-graph capture; the host
+    reads `acc` once per `diag_every` flush. Launch with `grid_dim=1,
+    block_dim=TPB_REDUCE`. Mirrors grad_clip's `_sum_sq_partial_kernel`.
+    Reduction order differs from the CPU left-to-right sweep (~1e-5 in fp32)
+    but the loss scalar feeds only metrics, never the gradient, so training
+    stays bit-identical."""
+    var t = Int(thread_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    var k = t
+    while k < BATCH:
+        my_sum += partial_loss[k]
+        k += TPB_REDUCE
+    var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
+    if t == 0:
+        acc[0] = acc[0] + total[0] / Scalar[DT](BATCH)
+        acc[1] = acc[1] + Scalar[DT](1.0)
 
 
 def _mse_backward_kernel[BATCH: Int, DIM: Int](
@@ -78,6 +103,15 @@ struct MSELoss[DIM: Int](Loss):
     var partial_loss_host: Optional[HostBuffer[DT]]
     var partial_loss_n: Int
 
+    # Slice 3 — device-resident loss accumulator for CUDA-graph capture.
+    # `forward_accumulate` reduces on device and adds (mean_loss, +1) into
+    # this [2]-buffer ([sum_of_means, count]) with NO per-step D2H. `read_accum`
+    # D2Hs once at flush cadence; `reset_accum` zeroes it. CPU mirror:
+    # `_acc_sum`/`_acc_n` host scalars.
+    var loss_acc_dev: Optional[DeviceBuffer[DT]]
+    var _acc_sum: Scalar[DT]
+    var _acc_n: Int
+
     var ts: TargetStorage
 
     def __init__(out self):
@@ -87,6 +121,9 @@ struct MSELoss[DIM: Int](Loss):
         self.partial_loss_dev = None
         self.partial_loss_host = None
         self.partial_loss_n = 0
+        self.loss_acc_dev = None
+        self._acc_sum = Scalar[DT](0.0)
+        self._acc_n = 0
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -106,6 +143,9 @@ struct MSELoss[DIM: Int](Loss):
             loss.cache_logits_dev = ctx_v.enqueue_create_buffer[DT](1)
             loss.partial_loss_dev = ctx_v.enqueue_create_buffer[DT](1)
             loss.partial_loss_host = ctx_v.enqueue_create_host_buffer[DT](1)
+            var acc_real = ctx_v.enqueue_create_buffer[DT](2)
+            acc_real.enqueue_fill(0.0)
+            loss.loss_acc_dev = acc_real^
         return loss^
 
     def _ensure_cache_cpu(mut self, batch: Int):
@@ -201,6 +241,94 @@ struct MSELoss[DIM: Int](Loss):
             for b in range(BATCH):
                 total += hp[b]
             return total / Scalar[DT](BATCH)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Slice 3 — device-resident accumulate path (CUDA-graph capturable).
+    # `forward_accumulate` computes the same mean loss as `forward` but adds
+    # it into the on-device `loss_acc_dev` instead of returning a host scalar
+    # — NO per-step D2H. Caller reads it via `read_accum` at flush cadence.
+    # The vjp (called separately after this) re-uses the cached logits, same
+    # as after a plain `forward`.
+    # ──────────────────────────────────────────────────────────────────
+    def forward_accumulate[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        logits: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        targets: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+    ) raises:
+        comptime assert logits.flat_rank == 2, "logits rank-2"
+        comptime assert targets.flat_rank == 2, "targets rank-2"
+        assert_tag_for["MSELoss", target](self.ts.target_tag)
+
+        comptime if target == "cpu":
+            # CPU is not a capture target — reuse `forward` exactly, then
+            # accumulate the host scalar.
+            var L = self.forward[target, BATCH, POLICY](logits, targets)
+            self._acc_sum += L
+            self._acc_n += 1
+        else:
+            self._ensure_buffers_gpu(BATCH)
+            var ctx = self.ts.ctx.value()
+            comptime mat_layout = Layout.row_major(BATCH, Self.DIM)
+            comptime row_layout = Layout.row_major(BATCH)
+            var lp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
+            var tp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
+            var logits_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](lp_w)
+            var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
+            var partial_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](
+                self.partial_loss_dev.value()
+            )
+            # Cache logits for the subsequent vjp (matches `forward`).
+            ctx.enqueue_copy(self.cache_logits_dev.value(), lp_w)
+            comptime TPB = TPB_REDUCE
+            comptime n_blocks = (BATCH + TPB - 1) // TPB
+            comptime fwd_k = _mse_forward_kernel[BATCH, Self.DIM]
+            ctx.enqueue_function[fwd_k](
+                logits_lt, targets_lt, partial_lt,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
+            # Device reduce + accumulate — no D2H.
+            comptime red_k = _mse_reduce_add_kernel[BATCH]
+            ctx.enqueue_function[red_k](
+                self.partial_loss_dev.value().unsafe_ptr(),
+                self.loss_acc_dev.value().unsafe_ptr(),
+                grid_dim=1, block_dim=TPB,
+            )
+
+    def reset_accum[target: StaticString](mut self) raises:
+        """Zero the (sum, count) accumulator. Call once per `diag_every`
+        window after `read_accum`. Outside the capture region."""
+        comptime if target == "cpu":
+            self._acc_sum = Scalar[DT](0.0)
+            self._acc_n = 0
+        else:
+            self.loss_acc_dev.value().enqueue_fill(0.0)
+
+    def read_accum[target: StaticString](mut self) raises -> Scalar[DT]:
+        """Return the mean accumulated loss (sum / count) over the window.
+        GPU path D2Hs the [2]-buffer once here — flush cadence only, NOT in
+        the per-step hot loop. Returns 0 if count == 0."""
+        comptime if target == "cpu":
+            if self._acc_n == 0:
+                return Scalar[DT](0.0)
+            return self._acc_sum / Scalar[DT](self._acc_n)
+        else:
+            var ctx = self.ts.ctx.value()
+            var h = ctx.enqueue_create_host_buffer[DT](2)
+            ctx.enqueue_copy(h, self.loss_acc_dev.value())
+            ctx.synchronize()
+            var s = h.unsafe_ptr()[0]
+            var n = h.unsafe_ptr()[1]
+            if n == Scalar[DT](0.0):
+                return Scalar[DT](0.0)
+            return s / n
 
     def vjp[
         target: StaticString,

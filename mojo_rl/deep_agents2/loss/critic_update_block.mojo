@@ -147,6 +147,7 @@ struct CriticUpdateBlock[
     def step[
         target: StaticString,
         POLICY: AMPPolicy = NoAMP,
+        ACCUMULATE: Bool = False,
     ](
         mut self,
         mut critic: Self.CRITIC,
@@ -193,9 +194,22 @@ struct CriticUpdateBlock[
         var mb_q_t = TileTensor(mb_q_p, row_major[Self.BATCH, 1]())
         opt.zero_grad[target, M=Self.CRITIC](critic)
         critic.forward[target, Self.BATCH, POLICY](sa_t_rb, output=mb_q_t)
-        var loss = self.mse_loss.forward[target, Self.BATCH, POLICY](
-            mb_q_t, y_t,
-        )
+        # Slice 3 — on GPU with ACCUMULATE, the loss reduction stays on
+        # device (no per-step D2H, CUDA-graph capturable); the host reads
+        # the accumulator at `diag_every` flush via `mse_loss.read_accum`.
+        # `forward_accumulate` caches logits exactly like `forward`, so the
+        # vjp below is unaffected. Returned scalar is a 0 sentinel in that
+        # mode. Default path (CPU, or ACCUMULATE=False) is unchanged.
+        var loss: Scalar[DT]
+        comptime if target == "gpu" and ACCUMULATE:
+            self.mse_loss.forward_accumulate[target, Self.BATCH, POLICY](
+                mb_q_t, y_t,
+            )
+            loss = Scalar[DT](0.0)
+        else:
+            loss = self.mse_loss.forward[target, Self.BATCH, POLICY](
+                mb_q_t, y_t,
+            )
 
         var mb_grad_q_t = TileTensor(mb_grad_q_p, row_major[Self.BATCH, 1]())
         self.mse_loss.vjp[target, Self.BATCH, POLICY](y_t, mb_grad_q_t)
@@ -302,6 +316,7 @@ struct TwinCriticUpdateBlock[
     def step[
         target: StaticString,
         POLICY: AMPPolicy = NoAMP,
+        ACCUMULATE: Bool = False,
     ](
         mut self,
         mut critic1: Self.CRITIC,
@@ -342,12 +357,12 @@ struct TwinCriticUpdateBlock[
             )
         var sa_t = TileTensor(sa_p, row_major[Self.BATCH, Self.SA_DIM]())
 
-        var loss1 = self.c1.step[target, POLICY](
+        var loss1 = self.c1.step[target, POLICY, ACCUMULATE](
             critic1, critic1_opt, sa_t, mb_y_t,
             weights_p=weights_p,
             td_residuals_p=td_residuals_p,
         )
-        var loss2 = self.c2.step[target, POLICY](
+        var loss2 = self.c2.step[target, POLICY, ACCUMULATE](
             critic2, critic2_opt, sa_t, mb_y_t,
             weights_p=weights_p,
         )

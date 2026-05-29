@@ -502,7 +502,11 @@ struct SACTrainer[
         self.timer.accumulate(Self._T_TARGET_Y, t_ty)
 
         var t_crit = perf_counter_ns()
-        self.twin_critic_blk.step[Self.train_target, POLICY](
+        # Slice 3 — on GPU, accumulate critic loss on-device (no per-step
+        # D2H); the metric is read at flush. CPU keeps the live-scalar path.
+        self.twin_critic_blk.step[
+            Self.train_target, POLICY, ACCUMULATE = Self.train_target == "gpu"
+        ](
             self.state,
             self.pair1.online,
             self.critic1_opt,
@@ -999,9 +1003,22 @@ struct SACTrainer[
         `_total_train_steps` counter is NOT reset."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        # Slice 3 — on GPU the critic loss is accumulated on-device by the
+        # twin-critic block (no per-step D2H). Read both critics' (sum,count)
+        # accumulators here — flush cadence only — and sum them to recover the
+        # `loss1+loss2` convention. `read_accum` already divides by its own
+        # per-step count (== _update_count), so it returns the chunk mean
+        # directly. CPU keeps the host-scalar accumulator path.
+        var critic_mean: Scalar[DT]
+        comptime if Self.train_target == "gpu":
+            var cl1 = self.twin_critic_blk.inner.c1.mse_loss.read_accum["gpu"]()
+            var cl2 = self.twin_critic_blk.inner.c2.mse_loss.read_accum["gpu"]()
+            critic_mean = cl1 + cl2
+        else:
+            critic_mean = self._critic_L_accum * inv
         var bundle = SACMetrics(
             actor_loss=LogScalar[DT](self._actor_L_accum * inv),
-            critic_loss=LogScalar[DT](self._critic_L_accum * inv),
+            critic_loss=LogScalar[DT](critic_mean),
             alpha=LogScalar[DT](self._alpha_accum * inv),
             mean_q=LogScalar[DT](self._q_accum * inv),
             mean_target=LogScalar[DT](self._target_accum * inv),
@@ -1020,6 +1037,11 @@ struct SACTrainer[
         self._done_accum = Scalar[DT](0.0)
         self._abs_action_accum = Scalar[DT](0.0)
         self._update_count = 0
+        # Slice 3 — reset the on-device critic accumulators in lock-step with
+        # the host counters so the next chunk's mean uses a fresh window.
+        comptime if Self.train_target == "gpu":
+            self.twin_critic_blk.inner.c1.mse_loss.reset_accum["gpu"]()
+            self.twin_critic_blk.inner.c2.mse_loss.reset_accum["gpu"]()
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^

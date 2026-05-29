@@ -31,16 +31,42 @@ def _scale_kernel[
         output[idx] = rebind[Scalar[DT]](input[idx]) * multiplier
 
 
+def _scale_dev_kernel[
+    N: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    mptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    # Device-resident multiplier variant — reads the scale factor from
+    # `mptr[0]` instead of a baked scalar arg, so the value can be updated
+    # by another GPU kernel (SAC's on-device α) without breaking CUDA-graph
+    # capture. Every thread reads the same `mptr[0]`.
+    var idx = Int(global_idx.x)
+    if idx < N:
+        output[idx] = rebind[Scalar[DT]](input[idx]) * mptr[0]
+
+
 struct Scale[DIM: Int](Module):
     comptime ARITY: Int = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
     comptime OUT_DIM = Self.DIM
 
     var multiplier: Scalar[DT]
+    # Slice 4 — optional device-resident multiplier source. When non-null
+    # (set via `set_multiplier_ptr`), the GPU forward/vjp read the scale
+    # factor from `multiplier_ptr[0]` instead of baking `multiplier` into the
+    # kernel args — required for CUDA-graph capture when another GPU kernel
+    # (SAC's on-device α) updates the value each step. Null → baked-scalar
+    # path (bit-identical to pre-Slice-4). CPU always uses `multiplier`.
+    var multiplier_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var ts: TargetStorage
 
     def __init__(out self):
         self.multiplier = Scalar[DT](1.0)
+        self.multiplier_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=0
+        )
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -104,11 +130,18 @@ struct Scale[DIM: Int](Module):
                 DT, Layout.row_major(N), MutAnyOrigin,
             ](out_p)
             comptime n_blocks = (N + TPB - 1) // TPB
-            comptime kernel = _scale_kernel[N]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt, self.multiplier,
-                grid_dim=n_blocks, block_dim=TPB,
-            )
+            if Int(self.multiplier_ptr) != 0:
+                comptime dev_kernel = _scale_dev_kernel[N]
+                self.ts.ctx.value().enqueue_function[dev_kernel](
+                    in_lt, out_lt, self.multiplier_ptr,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
+            else:
+                comptime kernel = _scale_kernel[N]
+                self.ts.ctx.value().enqueue_function[kernel](
+                    in_lt, out_lt, self.multiplier,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
 
     def vjp[
         target: StaticString,
@@ -156,11 +189,18 @@ struct Scale[DIM: Int](Module):
                 DT, Layout.row_major(N), MutAnyOrigin,
             ](gi_p)
             comptime n_blocks = (N + TPB - 1) // TPB
-            comptime kernel = _scale_kernel[N]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, gi_lt, self.multiplier,
-                grid_dim=n_blocks, block_dim=TPB,
-            )
+            if Int(self.multiplier_ptr) != 0:
+                comptime dev_kernel = _scale_dev_kernel[N]
+                self.ts.ctx.value().enqueue_function[dev_kernel](
+                    go_lt, gi_lt, self.multiplier_ptr,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
+            else:
+                comptime kernel = _scale_kernel[N]
+                self.ts.ctx.value().enqueue_function[kernel](
+                    go_lt, gi_lt, self.multiplier,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
 
     # Override of Module.set_attr — supports ATTR="multiplier". Other
     # ATTR strings are no-ops (Mojo nightly can't error on unknown
@@ -168,3 +208,11 @@ struct Scale[DIM: Int](Module):
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         comptime if ATTR == "multiplier":
             self.multiplier = value
+
+    # Slice 4 — point the multiplier at a device buffer holding the live
+    # scale factor (e.g. SAC's on-device α). Pass a null pointer to revert
+    # to the baked-scalar `multiplier` path. GPU-only effect; CPU ignores it.
+    def set_multiplier_ptr(
+        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    ):
+        self.multiplier_ptr = p
