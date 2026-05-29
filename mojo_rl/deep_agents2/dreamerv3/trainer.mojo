@@ -231,7 +231,10 @@ struct DreamerV3Trainer[
         for i in range(Self.B * Self.T):
             rr += self.state.mb_rew[i]
         self.state.dbg_real_rew = rr / Scalar[DT](Self.B * Self.T)
-        for i in range(Self.T_IMAG * Self.B * Self.ACT):
+        # imagination sampling noise: NS = T*B starts × T_IMAG steps × ACT.
+        # Pre-filled here (both targets) so _ac_cpu and _ac_gpu read the SAME
+        # noise[(t*NS+b)*ACT+a] → CPU↔GPU bit-match.
+        for i in range(Self.T_IMAG * Self.T * Self.B * Self.ACT):
             self.state.noise[i] = Scalar[DT](random_float64() * 2.0 - 1.0)
         # WM-BPTT → fills state.cdeter / cstoch + state.last_wm_loss
         self.wm_blk.step[Self.train_target, Self.T_IMAG](

@@ -151,7 +151,7 @@ struct DreamerState[
     var cdeter: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [(T+1)*B*DETER]
     var cstoch: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [(T+1)*B*SC]
     var toks: UnsafePointer[Scalar[DT], MutAnyOrigin]     # [T*B*TOKEN]
-    var noise: UnsafePointer[Scalar[DT], MutAnyOrigin]    # [T_IMAG*B*ACT] HOST
+    var noise: UnsafePointer[Scalar[DT], MutAnyOrigin]    # [T_IMAG*T*B*ACT] HOST (NS=T*B imag starts)
     var last_wm_loss: Scalar[DT]
     var last_ac_loss: Scalar[DT]
     # ── diagnostics (filled per train_step; see docs/runbook) ──
@@ -184,7 +184,7 @@ struct DreamerState[
             cdeter=_alloc((Self.T + 1) * Self.B * Self.DETER),
             cstoch=_alloc((Self.T + 1) * Self.B * Self.SC),
             toks=_alloc(Self.T * Self.B * Self.TOKEN),
-            noise=_alloc(Self.T_IMAG * Self.B * Self.ACT),
+            noise=_alloc(Self.T_IMAG * Self.T * Self.B * Self.ACT),
             last_wm_loss=Scalar[DT](0.0),
             last_ac_loss=Scalar[DT](0.0),
             dbg_real_rew=Scalar[DT](0.0),
@@ -833,6 +833,7 @@ struct ACStep[
         # 1..T; index 0 is the zero init) flattened to NS = T·B starts —
         # not just the final carry. Matches the reference (K = T).
         comptime NS = Self.T * Self.B
+        var noise = st.noise                           # [TI*NS*ACT], shared w/ GPU
         var deter0 = st.cdeter + Self.B * D            # skip the zero-init
         var stoch0 = st.cstoch + Self.B * SCl
         var feats = _alloc(NS * TI * FEATl)
@@ -871,7 +872,7 @@ struct ACStep[
                     var sr = pb[b * 2 * ACTD + ACTD + a]
                     pmean[(b * TI + t) * ACTD + a] = mr
                     pstd[(b * TI + t) * ACTD + a] = sr
-                    var z = Scalar[DT](random_float64() * 2.0 - 1.0)
+                    var z = noise[(t * NS + b) * ACTD + a]
                     acts[(b * TI + t) * ACTD + a] = (
                         tanh(mr) + bounded_std(sr, MINSTD, MAXSTD) * z
                     )
@@ -1067,13 +1068,6 @@ struct ACStep[
         g_pstd.free(); gfeat.free(); vscr.free(); pscr.free(); polg.free()
         st.last_ac_loss = total
 
-    # ⚠️ STALE vs _ac_cpu (GPU path deferred, not exercised on the CPU
-    # lighthouse). When the GPU run is revived, port the CPU-side fixes here:
-    #   (a) imagine from ALL NS=T·B posterior carries (not final-carry B),
-    #   (b) mean-normalized imag cotangents (1/(NS·TM1)),
-    #   (c) the repval value-loss accumulation (repl_loss on real replay).
-    # Until then, test_dreamerv3_trainer_gpu_smoke's CPU↔GPU bit-match will
-    # diverge (CPU has these; GPU doesn't).
     def _ac_gpu[target: StaticString](
         mut self,
         mut st: DreamerState[Self.OBS, Self.ACT, Self.DETER, Self.SC, Self.TOKEN, Self.B, Self.T, Self.T_IMAG],
@@ -1090,134 +1084,139 @@ struct ACStep[
     ) raises:
         # GPU hybrid: net forwards/vjps run on device; the small per-step
         # connective math (tanh+std sample, twohot expectation, sigmoid) and
-        # the lambda-return imag_loss run on host via D2H/H2D of small arrays.
+        # the lambda-return imag_loss + repl_loss run on host via D2H/H2D of
+        # small arrays. Mirrors _ac_cpu exactly (NS = T·B imagination starts,
+        # mean-normalized cotangents, repval value-loss) → CPU↔GPU bit-match.
         comptime D = Self.DETER
         comptime SCl = Self.SC
         comptime FEATl = Self.FEAT
         comptime ACTD = Self.ACT
         comptime BINSl = Self.BINS
         comptime TI = Self.T_IMAG
-        comptime BV = Self.B
+        # FIX (2): imagine from ALL NS = T·B posterior carries (not the final
+        # carry B). NS is the rollout batch for every device op below.
+        comptime NS = Self.T * Self.B
         var MINSTD = self.minstd
         var MAXSTD = self.maxstd
         var ctx = st.ctx.value()
-        var noise = st.noise
+        var noise = st.noise           # [TI*NS*ACT], shared w/ _ac_cpu
 
-        comptime nbB = (BV + TPB - 1) // TPB
-        comptime nbF = (BV * FEATl + TPB - 1) // TPB
-        comptime nbD = (BV * D + TPB - 1) // TPB
-        comptime nbS = (BV * SCl + TPB - 1) // TPB
-        comptime nbBINS = (BV * BINSl + TPB - 1) // TPB
-        comptime fck = _feat_concat_k[BV, D, SCl]
-        comptime cpF = _bcopy[BV * FEATl]
-        comptime cpD = _bcopy[BV * D]
-        comptime cpS = _bcopy[BV * SCl]
-        comptime cpBINS = _bcopy[BV * BINSl]
-        comptime cpB1 = _bcopy[BV]
+        comptime nbB = (NS + TPB - 1) // TPB
+        comptime nbF = (NS * FEATl + TPB - 1) // TPB
+        comptime nbD = (NS * D + TPB - 1) // TPB
+        comptime nbS = (NS * SCl + TPB - 1) // TPB
+        comptime nbBINS = (NS * BINSl + TPB - 1) // TPB
+        comptime fck = _feat_concat_k[NS, D, SCl]
+        comptime cpF = _bcopy[NS * FEATl]
+        comptime cpD = _bcopy[NS * D]
+        comptime cpS = _bcopy[NS * SCl]
+        comptime cpBINS = _bcopy[NS * BINSl]
+        comptime cpB1 = _bcopy[NS]
 
-        # device working buffers
-        var cd = ctx.enqueue_create_buffer[DT](BV * D)
-        var cs = ctx.enqueue_create_buffer[DT](BV * SCl)
-        var fb = ctx.enqueue_create_buffer[DT](BV * FEATl)
-        var pb = ctx.enqueue_create_buffer[DT](BV * 2 * ACTD)
-        var vb = ctx.enqueue_create_buffer[DT](BV * BINSl)
-        var svb = ctx.enqueue_create_buffer[DT](BV * BINSl)
-        var at_d = ctx.enqueue_create_buffer[DT](BV * ACTD)
-        var feats_d = ctx.enqueue_create_buffer[DT](BV * TI * FEATl)
-        var dummy1 = ctx.enqueue_create_buffer[DT](BV)
-        var rl_d = ctx.enqueue_create_buffer[DT](BV * BINSl)
-        var cl_d = ctx.enqueue_create_buffer[DT](BV)
-        var gv_d = ctx.enqueue_create_buffer[DT](BV * BINSl)
-        var polg_d = ctx.enqueue_create_buffer[DT](BV * 2 * ACTD)
-        var gfeat_d = ctx.enqueue_create_buffer[DT](BV * FEATl)
-        var vscr = ctx.enqueue_create_buffer[DT](BV * BINSl)
-        var pscr = ctx.enqueue_create_buffer[DT](BV * 2 * ACTD)
+        # device working buffers (NS-wide)
+        var cd = ctx.enqueue_create_buffer[DT](NS * D)
+        var cs = ctx.enqueue_create_buffer[DT](NS * SCl)
+        var fb = ctx.enqueue_create_buffer[DT](NS * FEATl)
+        var pb = ctx.enqueue_create_buffer[DT](NS * 2 * ACTD)
+        var vb = ctx.enqueue_create_buffer[DT](NS * BINSl)
+        var svb = ctx.enqueue_create_buffer[DT](NS * BINSl)
+        var at_d = ctx.enqueue_create_buffer[DT](NS * ACTD)
+        var feats_d = ctx.enqueue_create_buffer[DT](NS * TI * FEATl)
+        var dummy1 = ctx.enqueue_create_buffer[DT](NS)
+        var rl_d = ctx.enqueue_create_buffer[DT](NS * BINSl)
+        var cl_d = ctx.enqueue_create_buffer[DT](NS)
+        var gv_d = ctx.enqueue_create_buffer[DT](NS * BINSl)
+        var polg_d = ctx.enqueue_create_buffer[DT](NS * 2 * ACTD)
+        var gfeat_d = ctx.enqueue_create_buffer[DT](NS * FEATl)
+        var vscr = ctx.enqueue_create_buffer[DT](NS * BINSl)
+        var pscr = ctx.enqueue_create_buffer[DT](NS * 2 * ACTD)
 
         # host arrays for the connective math + imag_loss
-        var acts = _alloc(BV * TI * ACTD)
-        var pmean = _alloc(BV * TI * ACTD)
-        var pstd = _alloc(BV * TI * ACTD)
-        var vlog = _alloc(BV * TI * BINSl)
-        var svlog = _alloc(BV * TI * BINSl)
-        var rewv = _alloc(BV * TI)
-        var conv = _alloc(BV * TI)
-        var hpb = _alloc(BV * 2 * ACTD)
-        var hvb = _alloc(BV * BINSl)
-        var hsvb = _alloc(BV * BINSl)
-        var hrl = _alloc(BV * BINSl)
-        var hcl = _alloc(BV)
-        var hat = _alloc(BV * ACTD)
+        var acts = _alloc(NS * TI * ACTD)
+        var pmean = _alloc(NS * TI * ACTD)
+        var pstd = _alloc(NS * TI * ACTD)
+        var vlog = _alloc(NS * TI * BINSl)
+        var svlog = _alloc(NS * TI * BINSl)
+        var rewv = _alloc(NS * TI)
+        var conv = _alloc(NS * TI)
+        var hpb = _alloc(NS * 2 * ACTD)
+        var hvb = _alloc(NS * BINSl)
+        var hsvb = _alloc(NS * BINSl)
+        var hrl = _alloc(NS * BINSl)
+        var hcl = _alloc(NS)
+        var hat = _alloc(NS * ACTD)
 
-        # init carry cd/cs from the final WM posterior (device→device copy)
+        # init carry cd/cs from ALL T posterior carries (d_cdeter indices
+        # 1..T; index 0 is the zero init) flattened to NS = T·B (device copy).
         ctx.enqueue_function[cpD](
-            _lt[BV * D](_dp(st.d_cdeter.value()) + Self.T * BV * D),
-            _lt[BV * D](_dp(cd)), grid_dim=nbD, block_dim=TPB,
+            _lt[NS * D](_dp(st.d_cdeter.value()) + Self.B * D),
+            _lt[NS * D](_dp(cd)), grid_dim=nbD, block_dim=TPB,
         )
         ctx.enqueue_function[cpS](
-            _lt[BV * SCl](_dp(st.d_cstoch.value()) + Self.T * BV * SCl),
-            _lt[BV * SCl](_dp(cs)), grid_dim=nbS, block_dim=TPB,
+            _lt[NS * SCl](_dp(st.d_cstoch.value()) + Self.B * SCl),
+            _lt[NS * SCl](_dp(cs)), grid_dim=nbS, block_dim=TPB,
         )
 
         # ── imagination rollout ──
         for t in range(TI):
             ctx.enqueue_function[fck](
-                _lt[BV * D](_dp(cd)), _lt[BV * SCl](_dp(cs)),
-                _lt[BV * FEATl](_dp(fb)), grid_dim=nbB, block_dim=TPB,
+                _lt[NS * D](_dp(cd)), _lt[NS * SCl](_dp(cs)),
+                _lt[NS * FEATl](_dp(fb)), grid_dim=nbB, block_dim=TPB,
             )
             ctx.enqueue_function[cpF](
-                _lt[BV * FEATl](_dp(fb)),
-                _lt[BV * FEATl](_dp(feats_d) + t * BV * FEATl),
+                _lt[NS * FEATl](_dp(fb)),
+                _lt[NS * FEATl](_dp(feats_d) + t * NS * FEATl),
                 grid_dim=nbF, block_dim=TPB,
             )
-            var ft = TileTensor(_dp(fb), row_major[BV, FEATl]())
-            var pt = TileTensor(_dp(pb), row_major[BV, 2 * ACTD]())
-            policy.forward[target, BV](ft, output=pt)
+            var ft = TileTensor(_dp(fb), row_major[NS, FEATl]())
+            var pt = TileTensor(_dp(pb), row_major[NS, 2 * ACTD]())
+            policy.forward[target, NS](ft, output=pt)
             ctx.synchronize(); ctx.enqueue_copy(hpb, pb); ctx.synchronize()
-            for b in range(BV):
+            for b in range(NS):
                 for a in range(ACTD):
                     var mr = hpb[b * 2 * ACTD + a]
                     var sr = hpb[b * 2 * ACTD + ACTD + a]
                     pmean[(b * TI + t) * ACTD + a] = mr
                     pstd[(b * TI + t) * ACTD + a] = sr
-                    var z = noise[(t * BV + b) * ACTD + a]
+                    var z = noise[(t * NS + b) * ACTD + a]
                     acts[(b * TI + t) * ACTD + a] = (
                         tanh(mr) + bounded_std(sr, MINSTD, MAXSTD) * z
                     )
-            var ft2 = TileTensor(_dp(fb), row_major[BV, FEATl]())
-            var vt = TileTensor(_dp(vb), row_major[BV, BINSl]())
-            value.forward[target, BV](ft2, output=vt)
-            var ft3 = TileTensor(_dp(fb), row_major[BV, FEATl]())
-            var svt = TileTensor(_dp(svb), row_major[BV, BINSl]())
-            slowvalue.forward[target, BV](ft3, output=svt)
+            var ft2 = TileTensor(_dp(fb), row_major[NS, FEATl]())
+            var vt = TileTensor(_dp(vb), row_major[NS, BINSl]())
+            value.forward[target, NS](ft2, output=vt)
+            var ft3 = TileTensor(_dp(fb), row_major[NS, FEATl]())
+            var svt = TileTensor(_dp(svb), row_major[NS, BINSl]())
+            slowvalue.forward[target, NS](ft3, output=svt)
             ctx.synchronize()
             ctx.enqueue_copy(hvb, vb); ctx.enqueue_copy(hsvb, svb)
             ctx.synchronize()
-            for b in range(BV):
+            for b in range(NS):
                 for c in range(BINSl):
                     vlog[(b * TI + t) * BINSl + c] = hvb[b * BINSl + c]
                     svlog[(b * TI + t) * BINSl + c] = hsvb[b * BINSl + c]
-            rew.set_input["nd", BV](TileTensor(_dp(cd), row_major[BV, D]()))
-            rew.set_input["stoch_new", BV](TileTensor(_dp(cs), row_major[BV, SCl]()))
-            rew.set_input["rtgt", BV](TileTensor(_dp(dummy1), row_major[BV, 1]()))
-            var rlt = TileTensor(_dp(dummy1), row_major[BV, 1]())
-            rew.forward[target, BV](rlt)
+            rew.set_input["nd", NS](TileTensor(_dp(cd), row_major[NS, D]()))
+            rew.set_input["stoch_new", NS](TileTensor(_dp(cs), row_major[NS, SCl]()))
+            rew.set_input["rtgt", NS](TileTensor(_dp(dummy1), row_major[NS, 1]()))
+            var rlt = TileTensor(_dp(dummy1), row_major[NS, 1]())
+            rew.forward[target, NS](rlt)
             ctx.enqueue_function[cpBINS](
-                _lt[BV * BINSl](rew.node_out_ptr["rew"]()),
-                _lt[BV * BINSl](_dp(rl_d)), grid_dim=nbBINS, block_dim=TPB,
+                _lt[NS * BINSl](rew.node_out_ptr["rew"]()),
+                _lt[NS * BINSl](_dp(rl_d)), grid_dim=nbBINS, block_dim=TPB,
             )
-            con.set_input["nd", BV](TileTensor(_dp(cd), row_major[BV, D]()))
-            con.set_input["stoch_new", BV](TileTensor(_dp(cs), row_major[BV, SCl]()))
-            con.set_input["ctgt", BV](TileTensor(_dp(dummy1), row_major[BV, 1]()))
-            var clt = TileTensor(_dp(dummy1), row_major[BV, 1]())
-            con.forward[target, BV](clt)
+            con.set_input["nd", NS](TileTensor(_dp(cd), row_major[NS, D]()))
+            con.set_input["stoch_new", NS](TileTensor(_dp(cs), row_major[NS, SCl]()))
+            con.set_input["ctgt", NS](TileTensor(_dp(dummy1), row_major[NS, 1]()))
+            var clt = TileTensor(_dp(dummy1), row_major[NS, 1]())
+            con.forward[target, NS](clt)
             ctx.enqueue_function[cpB1](
-                _lt[BV](con.node_out_ptr["con"]()),
-                _lt[BV](_dp(cl_d)), grid_dim=nbB, block_dim=TPB,
+                _lt[NS](con.node_out_ptr["con"]()),
+                _lt[NS](_dp(cl_d)), grid_dim=nbB, block_dim=TPB,
             )
             ctx.synchronize()
             ctx.enqueue_copy(hrl, rl_d); ctx.enqueue_copy(hcl, cl_d)
             ctx.synchronize()
-            for b in range(BV):
+            for b in range(NS):
                 rewv[b * TI + t] = twohot_pred[BINSl](hrl, b * BINSl, bins)
                 conv[b * TI + t] = Scalar[DT](1.0) / (
                     Scalar[DT](1.0) + exp(-hcl[b])
@@ -1225,44 +1224,67 @@ struct ACStep[
                 for a in range(ACTD):
                     hat[b * ACTD + a] = acts[(b * TI + t) * ACTD + a]
             ctx.enqueue_copy(at_d, hat)
-            imagine.set_input["deter", BV](TileTensor(_dp(cd), row_major[BV, D]()))
-            imagine.set_input["stoch", BV](TileTensor(_dp(cs), row_major[BV, SCl]()))
-            imagine.set_input["action", BV](TileTensor(_dp(at_d), row_major[BV, ACTD]()))
-            var fo = TileTensor(_dp(fb), row_major[BV, FEATl]())
-            imagine.forward[target, BV](fo)
+            imagine.set_input["deter", NS](TileTensor(_dp(cd), row_major[NS, D]()))
+            imagine.set_input["stoch", NS](TileTensor(_dp(cs), row_major[NS, SCl]()))
+            imagine.set_input["action", NS](TileTensor(_dp(at_d), row_major[NS, ACTD]()))
+            var fo = TileTensor(_dp(fb), row_major[NS, FEATl]())
+            imagine.forward[target, NS](fo)
             ctx.enqueue_function[cpD](
-                _lt[BV * D](imagine.node_out_ptr["nd"]()),
-                _lt[BV * D](_dp(cd)), grid_dim=nbD, block_dim=TPB,
+                _lt[NS * D](imagine.node_out_ptr["nd"]()),
+                _lt[NS * D](_dp(cd)), grid_dim=nbD, block_dim=TPB,
             )
             ctx.enqueue_function[cpS](
-                _lt[BV * SCl](imagine.node_out_ptr["stoch_new"]()),
-                _lt[BV * SCl](_dp(cs)), grid_dim=nbS, block_dim=TPB,
+                _lt[NS * SCl](imagine.node_out_ptr["stoch_new"]()),
+                _lt[NS * SCl](_dp(cs)), grid_dim=nbS, block_dim=TPB,
             )
             ctx.synchronize()
 
         # ── lambda-return AC loss (host) ──
         comptime TM1 = TI - 1
-        var pol_loss = _alloc(BV * TM1)
-        var val_loss = _alloc(BV * TM1)
-        var ret = _alloc(BV * TM1)
-        imag_loss_cpu[BV, TI, ACTD, BINSl](
+        var pol_loss = _alloc(NS * TM1)
+        var val_loss = _alloc(NS * TM1)
+        var ret = _alloc(NS * TM1)
+        imag_loss_cpu[NS, TI, ACTD, BINSl](
             acts, rewv, conv, vlog, svlog, pmean, pstd, bins,
             MINSTD, MAXSTD, self.lam, self.actent, self.slowreg,
             retnorm, pol_loss, val_loss, ret,
         )
         var total: Scalar[DT] = 0.0
-        for i in range(BV * TM1):
+        for i in range(NS * TM1):
             total += pol_loss[i] + val_loss[i]
+        total = total / Scalar[DT](NS * TM1)
+        # ── diagnostics (match _ac_cpu) ──
+        var pma: Scalar[DT] = 0.0
+        for i in range(NS * TI * ACTD):
+            pma += pmean[i] if pmean[i] >= 0 else -pmean[i]
+        st.dbg_pmean_abs = pma / Scalar[DT](NS * TI * ACTD)
+        var rp: Scalar[DT] = 0.0
+        for i in range(NS * TI):
+            rp += rewv[i]
+        st.dbg_rew_pred = rp / Scalar[DT](NS * TI)
+        var rm: Scalar[DT] = 0.0
+        for i in range(NS * TM1):
+            rm += ret[i]
+        rm = rm / Scalar[DT](NS * TM1)
+        st.dbg_ret_mean = rm
+        var rv: Scalar[DT] = 0.0
+        for i in range(NS * TM1):
+            var dd = ret[i] - rm
+            rv += dd * dd
+        st.dbg_ret_std = sqrt(rv / Scalar[DT](NS * TM1))
         var rscale = retnorm.stats()[1]
-        var d_pol = _alloc(BV * TM1)
-        var d_val = _alloc(BV * TM1)
-        for i in range(BV * TM1):
-            d_pol[i] = 1.0
-            d_val[i] = 1.0
-        var g_vlog = _alloc(BV * TI * BINSl)
-        var g_pmean = _alloc(BV * TI * ACTD)
-        var g_pstd = _alloc(BV * TI * ACTD)
-        imag_loss_backward[BV, TI, ACTD, BINSl](
+        # mean-normalized cotangents (1/(NS·TM1)) — same RATIO as the repval
+        # value-loss (0.3/(B·TM1)) so the two value-loss terms combine right.
+        var d_pol = _alloc(NS * TM1)
+        var d_val = _alloc(NS * TM1)
+        var inv_im = Scalar[DT](1.0) / Scalar[DT](NS * TM1)
+        for i in range(NS * TM1):
+            d_pol[i] = inv_im
+            d_val[i] = inv_im
+        var g_vlog = _alloc(NS * TI * BINSl)
+        var g_pmean = _alloc(NS * TI * ACTD)
+        var g_pstd = _alloc(NS * TI * ACTD)
+        imag_loss_backward[NS, TI, ACTD, BINSl](
             acts, rewv, conv, vlog, svlog, pmean, pstd, bins,
             MINSTD, MAXSTD, self.lam, self.actent, self.slowreg,
             rscale, d_pol, d_val, g_vlog, g_pmean, g_pstd,
@@ -1271,30 +1293,83 @@ struct ACStep[
         # ── value / policy backward (device) ──
         oval.zero_grad[target, Self.ValT](value)
         opol.zero_grad[target, Self.PolT](policy)
-        var hgv = _alloc(BV * BINSl)
-        var hpolg = _alloc(BV * 2 * ACTD)
+        var hgv = _alloc(NS * BINSl)
+        var hpolg = _alloc(NS * 2 * ACTD)
         for t in range(TI):
-            var fvt = TileTensor(_dp(feats_d) + t * BV * FEATl, row_major[BV, FEATl]())
-            var vot = TileTensor(_dp(vscr), row_major[BV, BINSl]())
-            value.forward[target, BV](fvt, output=vot)
-            for b in range(BV):
+            var fvt = TileTensor(_dp(feats_d) + t * NS * FEATl, row_major[NS, FEATl]())
+            var vot = TileTensor(_dp(vscr), row_major[NS, BINSl]())
+            value.forward[target, NS](fvt, output=vot)
+            for b in range(NS):
                 for c in range(BINSl):
                     hgv[b * BINSl + c] = g_vlog[(b * TI + t) * BINSl + c]
             ctx.enqueue_copy(gv_d, hgv); ctx.synchronize()
-            var gvt = TileTensor(_dp(gv_d), row_major[BV, BINSl]())
-            var gft = TileTensor(_dp(gfeat_d), row_major[BV, FEATl]())
-            value.vjp[target, BV](gvt, gft)
-            var fpt = TileTensor(_dp(feats_d) + t * BV * FEATl, row_major[BV, FEATl]())
-            var pot = TileTensor(_dp(pscr), row_major[BV, 2 * ACTD]())
-            policy.forward[target, BV](fpt, output=pot)
-            for b in range(BV):
+            var gvt = TileTensor(_dp(gv_d), row_major[NS, BINSl]())
+            var gft = TileTensor(_dp(gfeat_d), row_major[NS, FEATl]())
+            value.vjp[target, NS](gvt, gft)
+            var fpt = TileTensor(_dp(feats_d) + t * NS * FEATl, row_major[NS, FEATl]())
+            var pot = TileTensor(_dp(pscr), row_major[NS, 2 * ACTD]())
+            policy.forward[target, NS](fpt, output=pot)
+            for b in range(NS):
                 for a in range(ACTD):
                     hpolg[b * 2 * ACTD + a] = g_pmean[(b * TI + t) * ACTD + a]
                     hpolg[b * 2 * ACTD + ACTD + a] = g_pstd[(b * TI + t) * ACTD + a]
             ctx.enqueue_copy(polg_d, hpolg); ctx.synchronize()
-            var pgt = TileTensor(_dp(polg_d), row_major[BV, 2 * ACTD]())
-            var gft2 = TileTensor(_dp(gfeat_d), row_major[BV, FEATl]())
-            policy.vjp[target, BV](pgt, gft2)
+            var pgt = TileTensor(_dp(polg_d), row_major[NS, 2 * ACTD]())
+            var gft2 = TileTensor(_dp(gfeat_d), row_major[NS, FEATl]())
+            policy.vjp[target, NS](pgt, gft2)
+
+        # ── repval: ground the value head on REAL replay (device-hybrid) ──
+        # Replay window features = imagination START states (feats_d t=0 block);
+        # bootstrap = ret[:,0]. Transpose the time-major starts (s=j·B+b) to the
+        # batch-major replay window [b·T+j] (matching mb_rew/mb_dne) on host,
+        # forward value/slowvalue on device, repl_loss_backward on host, then
+        # value.vjp accumulates into the SAME value grad before oval.step.
+        comptime BT = Self.B * Self.T          # == NS
+        var d_feat_bt = ctx.enqueue_create_buffer[DT](BT * FEATl)
+        var d_vlr = ctx.enqueue_create_buffer[DT](BT * BINSl)
+        var d_svlr = ctx.enqueue_create_buffer[DT](BT * BINSl)
+        var d_g_vlr = ctx.enqueue_create_buffer[DT](BT * BINSl)
+        var d_grf = ctx.enqueue_create_buffer[DT](BT * FEATl)
+        # D2H sizes by the SOURCE DeviceBuffer → host dst must cover the WHOLE
+        # feats_d; the imagination-START (t=0) block is its first NS*FEATl elems.
+        var hfeat0 = _alloc(NS * TI * FEATl)
+        ctx.synchronize(); ctx.enqueue_copy(hfeat0, feats_d); ctx.synchronize()
+        var feat_bt = _alloc(BT * FEATl)
+        var boot_bt = _alloc(BT)
+        var term_bt = _alloc(BT)
+        for b in range(Self.B):
+            for j in range(Self.T):
+                var s = j * Self.B + b
+                boot_bt[b * Self.T + j] = ret[s * TM1 + 0]
+                term_bt[b * Self.T + j] = 0.0   # Pendulum: truncation, not term
+                for k in range(FEATl):
+                    feat_bt[(b * Self.T + j) * FEATl + k] = hfeat0[s * FEATl + k]
+        ctx.enqueue_copy(d_feat_bt, feat_bt); ctx.synchronize()
+        var fbt_t = TileTensor(_dp(d_feat_bt), row_major[BT, FEATl]())
+        var vlr_t = TileTensor(_dp(d_vlr), row_major[BT, BINSl]())
+        value.forward[target, BT](fbt_t, output=vlr_t)      # sets value cache
+        var fbt_t2 = TileTensor(_dp(d_feat_bt), row_major[BT, FEATl]())
+        var svlr_t = TileTensor(_dp(d_svlr), row_major[BT, BINSl]())
+        slowvalue.forward[target, BT](fbt_t2, output=svlr_t)
+        var vlr = _alloc(BT * BINSl)
+        var svlr = _alloc(BT * BINSl)
+        ctx.synchronize()
+        ctx.enqueue_copy(vlr, d_vlr); ctx.enqueue_copy(svlr, d_svlr)
+        ctx.synchronize()
+        var g_vlr = _alloc(BT * BINSl)
+        var d_rep = _alloc(Self.B * TM1)
+        var inv_rep = self.repval_scale / Scalar[DT](Self.B * TM1)
+        for i in range(Self.B * TM1):
+            d_rep[i] = inv_rep
+        repl_loss_backward[Self.B, Self.T, BINSl](
+            st.mb_dne, term_bt, st.mb_rew, boot_bt, vlr, svlr, bins,
+            self.horizon, self.lam, self.slowreg, d_rep, g_vlr,
+        )
+        ctx.enqueue_copy(d_g_vlr, g_vlr); ctx.synchronize()
+        var g_vlr_t = TileTensor(_dp(d_g_vlr), row_major[BT, BINSl]())
+        var grf_t = TileTensor(_dp(d_grf), row_major[BT, FEATl]())
+        value.vjp[target, BT](g_vlr_t, grf_t)   # accumulate into value.grad
+
         oval.step[target, Self.ValT](value)
         opol.step[target, Self.PolT](policy)
         polyak_module[target, Self.ValT](value, slowvalue, self.slow_rate, ctx=st.ctx)
@@ -1305,4 +1380,6 @@ struct ACStep[
         hrl.free(); hcl.free(); hat.free()
         pol_loss.free(); val_loss.free(); ret.free(); d_pol.free(); d_val.free()
         g_vlog.free(); g_pmean.free(); g_pstd.free(); hgv.free(); hpolg.free()
+        hfeat0.free(); feat_bt.free(); boot_bt.free(); term_bt.free()
+        vlr.free(); svlr.free(); g_vlr.free(); d_rep.free()
         st.last_ac_loss = total

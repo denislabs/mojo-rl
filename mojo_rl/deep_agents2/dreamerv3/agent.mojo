@@ -24,18 +24,22 @@ normalized action keeps the WM's action input consistent between real-data
 training and imagination (both [-1,1]); feeding env-scaled actions instead
 saturates the WM's `ActionSquash` and de-grounds the world model.
 
-CPU v1. `train_target` mirrors the trainer; `select_action` is `comptime
-if target=="cpu"` (GPU = PR5c Step 5). Mirrors `deep_agents2/sac/agent.py`
-facade shape (select_action / select_greedy_action / record / train_step).
+`train_target` mirrors the trainer; `select_action` has both CPU and GPU
+paths (`comptime if target=="cpu"`). The GPU path is a B=1 device-forward
+hybrid (H2D obs+belief → enc/core/policy device forward → D2H posterior +
+policy logits → host bounded_normal sample). Mirrors `deep_agents2/sac/
+agent.py` facade shape (select_action / select_greedy_action / record /
+train_step).
 """
 
 from std.memory import alloc
 from std.math import tanh
 from std.random import random_float64
-from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.deep_agents2.dreamerv3.trainer import DreamerV3Trainer
 from mojo_rl.deep_agents2.dreamerv3.dists import bounded_std
 
@@ -43,6 +47,28 @@ from mojo_rl.deep_agents2.dreamerv3.dists import bounded_std
 @always_inline
 def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return alloc[Scalar[DT]](n)
+
+
+@always_inline
+def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+
+
+@always_inline
+def _lt[N: Int](
+    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
+    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
+
+
+def _icopy[N: Int](
+    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    """Contiguous device→device copy (raw node_out_ptr → owned buffer)."""
+    var i = Int(global_idx.x)
+    if i < N:
+        dst[i] = rebind[Scalar[DT]](src[i])
 
 
 @fieldwise_init
@@ -139,57 +165,132 @@ struct DreamerV3Agent[
         out_action: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [ACT]
         explore: Bool,
     ) raises:
-        comptime assert Self.train_target == "cpu", (
-            "DreamerV3Agent.select_action: GPU lands in PR5c Step 5"
-        )
         comptime D = Self.DETER
         comptime SCl = Self.SC
         comptime FEATl = Self.FEAT
         comptime ACTD = Self.ACT
         comptime TOK = Self.TOKEN
         comptime CARRY = 2 + D + SCl
-        # 1. encode obs → token (B=1)
-        var tok = _alloc(TOK)
-        var tkt = TileTensor(tok, row_major[1, TOK]())
-        self.trainer.enc.forward[Self.train_target, 1](
-            TileTensor(obs, row_major[1, Self.OBS]()), output=tkt
-        )
-        # 2. observe via the core graph (B=1) → nd + posterior stoch sample
-        self.trainer.core.set_input["deter", 1](
-            TileTensor(self.belief_deter, row_major[1, D]())
-        )
-        self.trainer.core.set_input["stoch", 1](
-            TileTensor(self.belief_stoch, row_major[1, SCl]())
-        )
-        self.trainer.core.set_input["action", 1](
-            TileTensor(self.last_action, row_major[1, ACTD]())
-        )
-        self.trainer.core.set_input["tokens", 1](
-            TileTensor(tok, row_major[1, TOK]())
-        )
-        var cscr = _alloc(CARRY)
-        var cscrt = TileTensor(cscr, row_major[1, CARRY]())
-        self.trainer.core.forward[Self.train_target, 1](cscrt)
-        var nd = self.trainer.core.node_out_ptr["nd"]()
-        var stoch_new = self.trainer.core.node_out_ptr["stoch_new"]()
-        # 3. feat = concat([nd, stoch_new])
-        var feat = _alloc(FEATl)
-        for k in range(D):
-            feat[k] = nd[k]
-        for k in range(SCl):
-            feat[D + k] = stoch_new[k]
-        # 4. policy(feat) → [mean_raw, std_raw]
+        # feat = concat([nd, stoch_new]); both branches fill nd_h / sn_h (the
+        # posterior carry, host) then sample identically below.
+        var nd_h = _alloc(D)
+        var sn_h = _alloc(SCl)
         var pol = _alloc(2 * ACTD)
-        var polt = TileTensor(pol, row_major[1, 2 * ACTD]())
-        self.trainer.policy.forward[Self.train_target, 1](
-            TileTensor(feat, row_major[1, FEATl]()), output=polt
-        )
-        # 5. action = tanh(mean) [+ std·noise], in the NORMALIZED [-1,1]
-        #    action space. The env-range scale (`action_scale`) is applied by
-        #    the DRIVER at env.step — NOT here — so what we output/record/feed
-        #    the WM is always [-1,1]. (The reference acts in normalized space
-        #    and the env wrapper denormalizes; the WM's ActionSquash then only
-        #    clips rare |a|>1 outliers instead of saturating the whole range.)
+        comptime if Self.train_target == "cpu":
+            # 1. encode obs → token (B=1)
+            var tok = _alloc(TOK)
+            var tkt = TileTensor(tok, row_major[1, TOK]())
+            self.trainer.enc.forward[Self.train_target, 1](
+                TileTensor(obs, row_major[1, Self.OBS]()), output=tkt
+            )
+            # 2. observe via the core graph (B=1) → nd + posterior stoch sample
+            self.trainer.core.set_input["deter", 1](
+                TileTensor(self.belief_deter, row_major[1, D]())
+            )
+            self.trainer.core.set_input["stoch", 1](
+                TileTensor(self.belief_stoch, row_major[1, SCl]())
+            )
+            self.trainer.core.set_input["action", 1](
+                TileTensor(self.last_action, row_major[1, ACTD]())
+            )
+            self.trainer.core.set_input["tokens", 1](
+                TileTensor(tok, row_major[1, TOK]())
+            )
+            var cscr = _alloc(CARRY)
+            var cscrt = TileTensor(cscr, row_major[1, CARRY]())
+            self.trainer.core.forward[Self.train_target, 1](cscrt)
+            var nd = self.trainer.core.node_out_ptr["nd"]()
+            var stoch_new = self.trainer.core.node_out_ptr["stoch_new"]()
+            for k in range(D):
+                nd_h[k] = nd[k]
+            for k in range(SCl):
+                sn_h[k] = stoch_new[k]
+            # 3. feat = concat([nd, stoch_new]) → policy(feat)
+            var feat = _alloc(FEATl)
+            for k in range(D):
+                feat[k] = nd_h[k]
+            for k in range(SCl):
+                feat[D + k] = sn_h[k]
+            var polt = TileTensor(pol, row_major[1, 2 * ACTD]())
+            self.trainer.policy.forward[Self.train_target, 1](
+                TileTensor(feat, row_major[1, FEATl]()), output=polt
+            )
+            tok.free(); cscr.free(); feat.free()
+        else:
+            # GPU B=1 inference (hybrid): device enc/core/policy forwards;
+            # H2D obs+belief, D2H posterior + policy logits, host sample.
+            # Reuses the trainer's LIVE GPU modules (buffers grow-only, so
+            # B=1 shares the B=B/NS training instances — no inference copies).
+            var ctx = self.trainer.ctx.value()
+            comptime nbD = (D + TPB - 1) // TPB
+            comptime nbS = (SCl + TPB - 1) // TPB
+            comptime cpD = _icopy[D]
+            comptime cpS = _icopy[SCl]
+            var d_obs = ctx.enqueue_create_buffer[DT](Self.OBS)
+            var d_deter = ctx.enqueue_create_buffer[DT](D)
+            var d_stoch = ctx.enqueue_create_buffer[DT](SCl)
+            var d_act = ctx.enqueue_create_buffer[DT](ACTD)
+            var d_tok = ctx.enqueue_create_buffer[DT](TOK)
+            var d_carry = ctx.enqueue_create_buffer[DT](CARRY)
+            var d_feat = ctx.enqueue_create_buffer[DT](FEATl)
+            var d_pol = ctx.enqueue_create_buffer[DT](2 * ACTD)
+            var d_nd = ctx.enqueue_create_buffer[DT](D)
+            var d_sn = ctx.enqueue_create_buffer[DT](SCl)
+            ctx.enqueue_copy(d_obs, obs)
+            ctx.enqueue_copy(d_deter, self.belief_deter)
+            ctx.enqueue_copy(d_stoch, self.belief_stoch)
+            ctx.enqueue_copy(d_act, self.last_action)
+            ctx.synchronize()
+            # 1. encode obs → token
+            var tkt = TileTensor(_dp(d_tok), row_major[1, TOK]())
+            self.trainer.enc.forward[Self.train_target, 1](
+                TileTensor(_dp(d_obs), row_major[1, Self.OBS]()), output=tkt
+            )
+            # 2. observe via the core graph
+            self.trainer.core.set_input["deter", 1](
+                TileTensor(_dp(d_deter), row_major[1, D]())
+            )
+            self.trainer.core.set_input["stoch", 1](
+                TileTensor(_dp(d_stoch), row_major[1, SCl]())
+            )
+            self.trainer.core.set_input["action", 1](
+                TileTensor(_dp(d_act), row_major[1, ACTD]())
+            )
+            self.trainer.core.set_input["tokens", 1](
+                TileTensor(_dp(d_tok), row_major[1, TOK]())
+            )
+            var cscrt = TileTensor(_dp(d_carry), row_major[1, CARRY]())
+            self.trainer.core.forward[Self.train_target, 1](cscrt)
+            # 3. D2H posterior (kernel-copy raw node ptr → owned buffer → host)
+            ctx.enqueue_function[cpD](
+                _lt[D](self.trainer.core.node_out_ptr["nd"]()),
+                _lt[D](_dp(d_nd)), grid_dim=nbD, block_dim=TPB,
+            )
+            ctx.enqueue_function[cpS](
+                _lt[SCl](self.trainer.core.node_out_ptr["stoch_new"]()),
+                _lt[SCl](_dp(d_sn)), grid_dim=nbS, block_dim=TPB,
+            )
+            ctx.synchronize()
+            ctx.enqueue_copy(nd_h, d_nd); ctx.enqueue_copy(sn_h, d_sn)
+            ctx.synchronize()
+            # 4. feat = concat([nd, stoch_new]) on host → H2D → policy
+            var feat = _alloc(FEATl)
+            for k in range(D):
+                feat[k] = nd_h[k]
+            for k in range(SCl):
+                feat[D + k] = sn_h[k]
+            ctx.enqueue_copy(d_feat, feat); ctx.synchronize()
+            var polt = TileTensor(_dp(d_pol), row_major[1, 2 * ACTD]())
+            self.trainer.policy.forward[Self.train_target, 1](
+                TileTensor(_dp(d_feat), row_major[1, FEATl]()), output=polt
+            )
+            ctx.synchronize(); ctx.enqueue_copy(pol, d_pol); ctx.synchronize()
+            feat.free()
+        # ── action = tanh(mean) [+ std·noise], NORMALIZED [-1,1] (both paths) ──
+        # The env-range scale (`action_scale`) is applied by the DRIVER at
+        # env.step — NOT here — so what we output/record/feed the WM is always
+        # [-1,1]. (The WM's ActionSquash then only clips rare |a|>1 outliers
+        # instead of saturating the whole range.)
         for a in range(ACTD):
             var mean = tanh(pol[a])
             var act_a = mean
@@ -202,14 +303,14 @@ struct DreamerV3Agent[
             if act_a < Scalar[DT](-1.0):
                 act_a = Scalar[DT](-1.0)
             out_action[a] = act_a
-        # 6. update belief
+        # update belief (both paths)
         for k in range(D):
-            self.belief_deter[k] = nd[k]
+            self.belief_deter[k] = nd_h[k]
         for k in range(SCl):
-            self.belief_stoch[k] = stoch_new[k]
+            self.belief_stoch[k] = sn_h[k]
         for a in range(ACTD):
             self.last_action[a] = out_action[a]
-        tok.free(); cscr.free(); feat.free(); pol.free()
+        nd_h.free(); sn_h.free(); pol.free()
 
     def select_greedy_action(
         mut self,

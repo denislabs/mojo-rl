@@ -12,30 +12,16 @@ Run (Apple Metal — parity/smoke only, slow at this scale):
   pixi run -e apple   mojo run -I . examples/pendulum/pendulum_dreamerv3_nn2_gpu.mojo
 
 ────────────────────────────────────────────────────────────────────────────
-⚠️ THIS SCRIPT DOES NOT COMPILE YET — two deferred-GPU pieces are unbuilt
+✅ GPU path is built & validated on Apple Metal (CPU↔GPU bit-match 3.8e-6)
 ────────────────────────────────────────────────────────────────────────────
-It is a forward-looking TEMPLATE (config + driver wiring) for the GPU run.
-The GPU *trainer* is built & CPU↔GPU bit-matched, but two agent/AC pieces are
-still missing. Both are validatable on Apple Metal (no NVIDIA needed for
-parity — only for the long 1.1M run). In order:
-
-1. **`DreamerV3Agent.select_action` GPU inference path** (`agent.mojo`) — today
-   it hard-asserts `train_target == "cpu"`. The B=1 observe→policy path must be
-   ported to device forwards (H2D obs/belief → enc/core/policy device forward →
-   D2H nd/stoch_new/policy-logits → host bounded_normal sample), mirroring the
-   hybrid `_ac_gpu`. This is the COMPILE blocker — `DreamerV3Agent["gpu", …]`
-   won't instantiate until it lands.
-
-2. **`_ac_gpu`→`_ac_cpu` parity** (`blocks.mojo`) — `_ac_gpu` is STALE (compiles,
-   but algorithmically behind). It still lacks the three `_ac_cpu` convergence
-   fixes: (a) imagination from ALL NS=T·B posterior carries (uses final-carry
-   B); (b) mean-normalized imag cotangents (1/(NS·TM1)); (c) the repval
-   value-loss accumulation (repl_loss on real replay). Until parity is
-   re-confirmed via `test_dreamerv3_trainer_gpu_smoke.mojo` (it bit-matches the
-   CPU and GPU paths), a GPU run will NOT reproduce the CPU behavior.
-
-Land #1 (script compiles + runs on Metal), then #2 (GPU matches CPU), THEN the
-NVIDIA run below is meaningful. See `docs/DREAMERV3_PR5C_RUNBOOK.md`.
+Both previously-missing GPU pieces are done (2026-05-29):
+  1. `DreamerV3Agent.select_action` GPU inference path (B=1 device-forward
+     hybrid) — `tests/nn2/test_dreamerv3_agent_gpu_smoke.mojo`.
+  2. `_ac_gpu` brought to `_ac_cpu` parity (NS=T·B starts, mean cotangents,
+     repval) — `tests/nn2/test_dreamerv3_ac_parity.mojo` matches the CPU
+     train step to float32 ULP (max |ΔWM|=|ΔAC|=3.8e-6 over 12 steps).
+So `DreamerV3Agent["gpu", …]` compiles and trains; this size1m config runs on
+Metal (slow) or NVIDIA. Convergence is still the open question (below).
 
 ────────────────────────────────────────────────────────────────────────────
 ⚠️ CONVERGENCE IS NOT SOLVED — this is a scaffold, not a passing lighthouse
