@@ -515,6 +515,70 @@ struct SACTrainer[
             return False
         self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
+        # Post-sample kernel sequence (target_y → critic → actor → alpha →
+        # polyak → PER tail). Shared verbatim with the CUDA-graph capture
+        # path (`train_device_kernels`) so captured == non-captured kernels.
+        self._train_post_sample_kernels[POLICY]()
+
+        # Host bookkeeping (counters + metric accumulators). Shared with the
+        # capture path, where the driver calls it once per replayed update.
+        self.note_train_update()
+
+        # Per-batch diagnostic means — matches the GPU-SAC legacy bundle
+        # at offpolicy_agent.mojo:1958-1976. CPU-only: GPU train_target
+        # would need D2H copies of the mb_* scratches; deferred.
+        #
+        # `mean_q` reads `twin_critic_blk.inner.c1._mb_q`, the Q1(s, a)
+        # batch output populated by critic.forward inside
+        # `twin_critic_blk.step` and NOT overwritten by `actor_blk.step`
+        # (the actor loss has its own internal Q scratch).
+        #
+        # Timed under `_T_DIAG` so `flush_timer_log` reports the exact
+        # cost of the diag walk — useful for sizing the trade-off when
+        # the user disables some accumulators or raises diag_every.
+        var t_diag = perf_counter_ns()
+        comptime if Self.train_target == "cpu":
+            var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
+            var y_p = self.state.mb_y.target_ptr["cpu"]()
+            var r_p = self.state.mb_r.target_ptr["cpu"]()
+            var d_p = self.state.mb_d.target_ptr["cpu"]()
+            var a_p = self.state.mb_a.target_ptr["cpu"]()
+            var q_p = self.twin_critic_blk.inner.c1._mb_q.target_ptr["cpu"]()
+            var sum_y: Scalar[DT] = 0.0
+            var sum_r: Scalar[DT] = 0.0
+            var sum_d: Scalar[DT] = 0.0
+            var sum_q: Scalar[DT] = 0.0
+            for i in range(Self.BATCH):
+                sum_y += y_p[i]
+                sum_r += r_p[i]
+                sum_d += d_p[i]
+                sum_q += q_p[i]
+            var sum_a: Scalar[DT] = 0.0
+            for i in range(Self.BATCH * Self.ACT_DIM):
+                var av = a_p[i]
+                sum_a += av if av >= Scalar[DT](0.0) else -av
+            self._q_accum += sum_q * inv_b
+            self._target_accum += sum_y * inv_b
+            self._reward_accum += sum_r * inv_b
+            self._done_accum += sum_d * inv_b
+            self._abs_action_accum += sum_a * (
+                Scalar[DT](1.0) / Scalar[DT](Self.BATCH * Self.ACT_DIM)
+            )
+        self.timer.accumulate(Self._T_DIAG, t_diag)
+        return True
+
+    # ─── Shared post-sample kernel sequence ───────────────────────────
+    #
+    # target_y → twin-critic (ACCUMULATE on GPU) → actor → alpha → polyak →
+    # PER tail. Called by BOTH `_train_step_impl` (non-captured) and
+    # `train_device_kernels` (the CUDA-graph capture closure body), so the
+    # two paths enqueue an identical kernel sequence — bit-identity by
+    # construction. The `perf_counter_ns` timers are host-only: harmless
+    # during a capture run (not a kernel, so not recorded) and simply
+    # don't fire on replay.
+    def _train_post_sample_kernels[
+        POLICY: AMPPolicy = NoAMP,
+    ](mut self) raises:
         var t_ty = perf_counter_ns()
         self.target_y_blk.step[Self.train_target, POLICY](
             self.state,
@@ -574,58 +638,58 @@ struct SACTrainer[
         # PER tail (no-op for uniform blocks).
         self.sample_blk.update_priorities(self.state)
 
+    # ─── Host bookkeeping (counters + metric accumulators) ────────────
+    #
+    # One logical update's worth of host accounting. Called by
+    # `_train_step_impl` and — on the capture path — by the driver once per
+    # replayed update, so `_total_train_steps` / `n_updates` stay correct
+    # whether the device work ran directly or via graph replay. On GPU the
+    # loss/α accumulators are unused (flush reads device accumulators); the
+    # `+= state.actor_loss` etc. are harmless `+= 0` sentinels there.
+    def note_train_update(mut self):
         self._actor_L_accum += self.state.actor_loss
         self._critic_L_accum += self.state.critic_loss
-        # CPU accumulates α from the live host scalar; on GPU the host
-        # scalar is stale (device is source of truth), so the α metric is
-        # read instantaneously from the device buffer at flush instead.
         comptime if Self.train_target == "cpu":
             self._alpha_accum += fexp(self.alpha_opt.value)
         self._update_count += 1
         self._total_train_steps += 1
 
-        # Per-batch diagnostic means — matches the GPU-SAC legacy bundle
-        # at offpolicy_agent.mojo:1958-1976. CPU-only: GPU train_target
-        # would need D2H copies of the mb_* scratches; deferred.
-        #
-        # `mean_q` reads `twin_critic_blk.inner.c1._mb_q`, the Q1(s, a)
-        # batch output populated by critic.forward inside
-        # `twin_critic_blk.step` and NOT overwritten by `actor_blk.step`
-        # (the actor loss has its own internal Q scratch).
-        #
-        # Timed under `_T_DIAG` so `flush_timer_log` reports the exact
-        # cost of the diag walk — useful for sizing the trade-off when
-        # the user disables some accumulators or raises diag_every.
-        var t_diag = perf_counter_ns()
-        comptime if Self.train_target == "cpu":
-            var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
-            var y_p = self.state.mb_y.target_ptr["cpu"]()
-            var r_p = self.state.mb_r.target_ptr["cpu"]()
-            var d_p = self.state.mb_d.target_ptr["cpu"]()
-            var a_p = self.state.mb_a.target_ptr["cpu"]()
-            var q_p = self.twin_critic_blk.inner.c1._mb_q.target_ptr["cpu"]()
-            var sum_y: Scalar[DT] = 0.0
-            var sum_r: Scalar[DT] = 0.0
-            var sum_d: Scalar[DT] = 0.0
-            var sum_q: Scalar[DT] = 0.0
-            for i in range(Self.BATCH):
-                sum_y += y_p[i]
-                sum_r += r_p[i]
-                sum_d += d_p[i]
-                sum_q += q_p[i]
-            var sum_a: Scalar[DT] = 0.0
-            for i in range(Self.BATCH * Self.ACT_DIM):
-                var av = a_p[i]
-                sum_a += av if av >= Scalar[DT](0.0) else -av
-            self._q_accum += sum_q * inv_b
-            self._target_accum += sum_y * inv_b
-            self._reward_accum += sum_r * inv_b
-            self._done_accum += sum_d * inv_b
-            self._abs_action_accum += sum_a * (
-                Scalar[DT](1.0) / Scalar[DT](Self.BATCH * Self.ACT_DIM)
-            )
-        self.timer.accumulate(Self._T_DIAG, t_diag)
-        return True
+    # ─── CUDA-graph capture surface (Slice 7) ─────────────────────────
+    #
+    # `train_device_kernels` is the pure device-kernel train step — sampling
+    # (device RNG → fresh minibatch each replay) + the shared post-sample
+    # sequence, with NO host gate, NO counters. It is the body of the
+    # capture closure passed to `maybe_capture_replay`. GPU-only; the caller
+    # gates on `learning_starts_count()` (buffer ready) and advances host
+    # counters via `note_train_update()`.
+    def _train_device_kernels_impl[
+        POLICY: AMPPolicy = NoAMP,
+    ](mut self) raises:
+        # The caller (driver) only invokes this once past warmup, when the
+        # replay buffer is ready. Pin `state.step_idx = learning_starts` so
+        # the sample block's `step_idx < learning_starts` warmup gate passes
+        # (this method has no step_idx of its own); the buffer-size gate is
+        # satisfied because the driver requires learning_starts >= BATCH for
+        # the capture path, and by then count == cumulative_step >= BATCH.
+        self.state.step_idx = self.learning_starts
+        self.state.did_step = True
+        self.state.ctx = self.ctx
+        self.sample_blk.step(self.state)
+        self._train_post_sample_kernels[POLICY]()
+
+    def train_device_kernels(mut self) raises:
+        comptime assert Self.train_target == "gpu", (
+            "train_device_kernels is GPU-only (CUDA-graph capture path)"
+        )
+        if self._use_bf16:
+            self._train_device_kernels_impl[Bf16Compute]()
+        else:
+            self._train_device_kernels_impl[NoAMP]()
+
+    def learning_starts_count(self) -> Int:
+        """Cumulative env-step threshold after which the replay buffer is
+        warm enough to train — the driver gates the capture path on this."""
+        return self.learning_starts
 
     def _record_impl(
         mut self,

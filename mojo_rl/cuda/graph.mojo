@@ -246,3 +246,50 @@ struct CUDAGraph(Movable):
     def num_nodes(self) -> Int:
         """Number of kernel nodes in the captured graph."""
         return self._num_nodes
+
+
+# ──────────────────────────────────────────────────────────────────────
+# maybe_capture_replay — capture-lifecycle harness behind a closure.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def maybe_capture_replay[
+    STEP: def () capturing raises -> None,
+](mut graph: Optional[CUDAGraph], ctx: DeviceContext) raises:
+    """Capture `STEP` into `graph` on first call; replay it thereafter.
+
+    One generic helper owns the whole capture lifecycle (warmup → begin →
+    capture → end → replay) behind a comptime *capturing closure*, so a
+    training loop never inlines a `comptime if USE_CUDA_GRAPH` maze and the
+    caller's trainer never learns about `CUDAGraph`.
+
+    `STEP` is a comptime capturing closure that mutably captures the caller's
+    state (e.g. the trainer + ctx) and enqueues the *pure device-kernel* step
+    — NO host work. It must enqueue the SAME kernel sequence every call so the
+    captured graph stays valid on replay (sampling included, so each replay
+    draws a fresh minibatch via the device RNG counter).
+
+    `graph` is the caller-owned capture slot (None until first capture). On
+    NVIDIA: the first call runs `STEP` once to settle the stream, then
+    captures a second run; later calls replay on the Mojo stream (implicit
+    ordering with kernels enqueued before/after). On non-NVIDIA: `CUDAGraph`
+    is a compile-time no-op, so this just runs `STEP()` every call —
+    bit-identical to the non-captured path (the Apple-Silicon verification
+    path; real capture/replay needs an NVIDIA run).
+
+    Host bookkeeping (step counters, metric flush cadence) is intentionally
+    NOT here — keep it in the caller's loop, advanced once per logical update,
+    so it stays correct whether the step ran directly or via replay."""
+    comptime if has_nvidia_gpu_accelerator():
+        if not graph:
+            STEP()
+            ctx.synchronize()
+            var g = CUDAGraph(ctx)
+            g.begin_capture()
+            STEP()
+            g.end_capture()
+            graph = g^
+        else:
+            graph.value().replay_on_mojo_stream()
+    else:
+        STEP()

@@ -39,6 +39,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 from ..data.n_step_replay import GPUNStepBuffer
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from .batched_env import BatchedEnv
@@ -220,6 +221,30 @@ trait OffPolicyAgentGpu(OffPolicyAgent):
         done_dev: DeviceBuffer[DT],
     ) raises:
         ...
+
+    # ─── CUDA-graph capture surface (Slice 7) ─────────────────────────
+    #
+    # Default bodies so agents that don't support train-step capture still
+    # conform. Only invoked on the `USE_TRAIN_CUDA_GRAPH=True` driver path
+    # (SAC GPU today), so the defaults are never reached for other agents.
+
+    def train_device_kernels(mut self) raises:
+        """Pure device-kernel train step (no host work) — the body captured
+        into the CUDA graph. Default raises: capture unsupported."""
+        raise Error(
+            "train_device_kernels: CUDA-graph capture not supported by"
+            " this agent (USE_TRAIN_CUDA_GRAPH must stay False)"
+        )
+
+    def note_train_update(mut self):
+        """Advance one logical update's host bookkeeping (counters/metric
+        accumulators). Default no-op."""
+        pass
+
+    def learning_starts_count(self) -> Int:
+        """Cumulative env-step threshold after which training begins — the
+        driver gates the capture path on this. Default 0."""
+        return 0
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -464,6 +489,7 @@ def run_offpolicy_train_batched[
     N_ENVS: Int = 1,
     NS: Int = 1,
     L: Logger = NoOpLogger,
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
 ](
     ctx: Optional[DeviceContext],
     mut trainer: A,
@@ -534,6 +560,11 @@ def run_offpolicy_train_batched[
     )
     comptime assert N_ENVS > 0, "N_ENVS must be > 0"
     comptime assert NS > 0, "NS must be > 0"
+    comptime if USE_TRAIN_CUDA_GRAPH:
+        comptime assert train_target == "gpu", (
+            "USE_TRAIN_CUDA_GRAPH requires train_target == 'gpu' (CUDA-graph"
+            " capture is a GPU-only path; no-op on non-NVIDIA)"
+        )
     comptime assert (
         E.OBS_DIM == OBS and E.ACT_DIM == ACT
     ), "BatchedEnv dimensions must match trainer dimensions"
@@ -563,6 +594,13 @@ def run_offpolicy_train_batched[
                 NS, A.AGENT_OBS_DIM, A.AGENT_ACT_DIM, N_ENVS,
             ].new(ctx.value(), gamma=nstep_gamma)
         )
+
+    # Slice 7 — lazily-captured train-step graph (None until first capture
+    # past warmup). Declared at function level (Mojo `comptime if` bindings
+    # don't bleed to sibling blocks; the slot is read/written inside the
+    # loop's capture branch). Unused when USE_TRAIN_CUDA_GRAPH is False, and
+    # a no-op on non-NVIDIA where `CUDAGraph` itself is a no-op.
+    var train_graph: Optional[CUDAGraph] = None
 
     # All scratches on the single target (env_target == train_target).
     var ao = DriverScratch["ao", N_ENVS, 2 * ACT].make[train_target](ctx=ctx)
@@ -712,8 +750,28 @@ def run_offpolicy_train_batched[
         iter_idx += 1
 
         # ── 9. Trainer updates.
-        for _ in range(updates_per_step):
-            _ = trainer.train_step(base_step + step_idx)
+        comptime if USE_TRAIN_CUDA_GRAPH:
+            # Capture path: once the buffer is warm, the per-update device
+            # kernel sequence (`train_device_kernels`) is captured into
+            # `train_graph` on first call and replayed thereafter — host
+            # bookkeeping advances via `note_train_update` so counters stay
+            # correct across replays. During warmup we skip training, which
+            # matches `train_step` gating to False. On non-NVIDIA the closure
+            # simply runs each call (no-op capture) → identical to the
+            # non-captured path. Capture requires uniform replay (the
+            # caller must not enable PER with this flag).
+            if base_step + step_idx >= trainer.learning_starts_count():
+                var c = ctx.value()
+
+                def _captured_step() capturing raises -> None:
+                    trainer.train_device_kernels()
+
+                for _ in range(updates_per_step):
+                    maybe_capture_replay[_captured_step](train_graph, c)
+                    trainer.note_train_update()
+        else:
+            for _ in range(updates_per_step):
+                _ = trainer.train_step(base_step + step_idx)
 
         if verbose and print_every > 0 and step_idx >= next_print:
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
