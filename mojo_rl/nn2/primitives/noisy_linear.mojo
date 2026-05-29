@@ -41,7 +41,7 @@ Use in Noisy DQN: replace the last `Linear[H, NA]` in the Q-net with
 from std.math import sqrt as fsqrt, log as flog, cos as fcos, pi
 from std.random import random_float64
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
@@ -60,7 +60,11 @@ from ..core.module import Module, typed_view, typed_view_mut
 from ..core.scratch import Scratch
 from ..core.scratch_walkers import init_scratch_auto
 from ..core.target_storage import TargetStorage, assert_tag_for
-from ..random.box_muller import box_muller_normal_gpu
+from ..random.box_muller import (
+    box_muller_normal_gpu,
+    box_muller_normal_gpu_dev,
+    advance_rng_offset_kernel,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -245,10 +249,13 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
     var _cached_input_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
 
     # GPU Philox bookkeeping (unused on CPU path). `_noise_seed` is set
-    # at make() to a unique value per leaf; `_noise_offset` advances
-    # every forward so successive draws are independent.
+    # at make() to a unique value per leaf. Slice 5: the per-forward
+    # Philox offset is device-resident (`_noise_offset_dev`, 1-elem
+    # uint64) and advanced by `advance_rng_offset_kernel` so the forward
+    # is CUDA-graph capturable — was a host `_noise_offset += ...`.
+    # GPU-only runtime state; not serialized (None on CPU).
     var _noise_seed: UInt64
-    var _noise_offset: UInt64
+    var _noise_offset_dev: Optional[DeviceBuffer[DType.uint64]]
 
     var ts: TargetStorage
 
@@ -265,7 +272,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
             Scalar[DT], MutAnyOrigin,
         ](unsafe_from_address=0)
         self._noise_seed = UInt64(0)
-        self._noise_offset = UInt64(0)
+        self._noise_offset_dev = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -354,15 +361,19 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
         # while distinct between layers (random_float64 advances the
         # global RNG state used by other CPU draws too).
         nl._noise_seed = UInt64(random_float64() * Float64(1 << 31))
-        nl._noise_offset = UInt64(0)
+        comptime if target == "gpu":
+            var noff = ctx.value().enqueue_create_buffer[DType.uint64](1)
+            noff.enqueue_fill(UInt64(0))
+            nl._noise_offset_dev = noff^
 
         init_scratch_auto[Self, target=target](nl, ctx)
         return nl^
 
-    def set_noise_seed(mut self, seed: UInt64):
-        """Deterministic-test hook. Resets offset to 0 too."""
+    def set_noise_seed(mut self, seed: UInt64) raises:
+        """Deterministic-test hook. Resets the device offset to 0 too."""
         self._noise_seed = seed
-        self._noise_offset = UInt64(0)
+        if self._noise_offset_dev:
+            self._noise_offset_dev.value().enqueue_fill(UInt64(0))
 
     def forward[
         target: StaticString,
@@ -425,20 +436,28 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
             var w_eff_p = self._w_eff.dev_ptr()
             var b_eff_p = self._b_eff.dev_ptr()
 
-            # 1. Sample fresh N(0,1) noise via Philox/Box-Muller, then
-            #    apply f(x) = sign(x)·sqrt(|x|) in place.
-            box_muller_normal_gpu[Self.IN](
-                ctx, ni_p, self._noise_seed, self._noise_offset,
+            # 1. Sample fresh N(0,1) noise via Philox/Box-Muller, reading
+            #    the Philox offset from the device buffer and advancing it
+            #    on-device (CUDA-graph capturable) — same offset sequence
+            #    the host `_noise_offset += ...` produced. Then apply
+            #    f(x) = sign(x)·sqrt(|x|) in place.
+            var off_lt = LayoutTensor[
+                DType.uint64, Layout.row_major(1), MutAnyOrigin,
+            ](self._noise_offset_dev.value().unsafe_ptr())
+            box_muller_normal_gpu_dev[Self.IN](
+                ctx, ni_p, self._noise_seed, off_lt,
             )
-            self._noise_offset = self._noise_offset + UInt64(
+            comptime adv_in = advance_rng_offset_kernel[
                 ((Self.IN + 1) // 2) * 2
+            ]
+            ctx.enqueue_function[adv_in](off_lt, grid_dim=1, block_dim=1)
+            box_muller_normal_gpu_dev[Self.OUT](
+                ctx, no_p, self._noise_seed, off_lt,
             )
-            box_muller_normal_gpu[Self.OUT](
-                ctx, no_p, self._noise_seed, self._noise_offset,
-            )
-            self._noise_offset = self._noise_offset + UInt64(
+            comptime adv_out = advance_rng_offset_kernel[
                 ((Self.OUT + 1) // 2) * 2
-            )
+            ]
+            ctx.enqueue_function[adv_out](off_lt, grid_dim=1, block_dim=1)
             var ni_lt = LayoutTensor[
                 DT, Layout.row_major(Self.IN), MutAnyOrigin,
             ](ni_p)

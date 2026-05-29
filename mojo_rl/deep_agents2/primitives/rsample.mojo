@@ -26,7 +26,12 @@ from mojo_rl.nn2.core.save_scalar import _expect_kv_line
 from mojo_rl.nn2.core.target_storage import (
     TargetStorage, assert_tag_for, ensure_cpu_buffer, ensure_gpu_buffer,
 )
-from mojo_rl.nn2.random.box_muller import box_muller_normal, box_muller_normal_gpu
+from mojo_rl.nn2.random.box_muller import (
+    box_muller_normal,
+    box_muller_normal_gpu,
+    box_muller_normal_gpu_dev,
+    advance_rng_offset_kernel,
+)
 from ..loss.squashed_gaussian import (
     squashed_gaussian_forward,
     squashed_gaussian_backward,
@@ -114,8 +119,16 @@ struct RSample[ACT: Int](Module, Saveable):
     var grad_lp_dev_n: Int
 
     # Philox state. Caller can override `rng_seed` directly.
+    # `_rng_offset` is the host mirror — the source of truth on CPU (where
+    # the CPU path doesn't use it) and for save/load. Slice 5: on GPU the
+    # offset is device-resident in `_rng_offset_dev` (a 1-elem uint64
+    # buffer) so the per-forward advance is a device kernel, not a host
+    # `+=` — required because RSample.forward runs inside the captured SAC
+    # train step (actor-loss + target-y graphs). Offset sequence
+    # (k·2·BATCH·ACT) preserved → bit-identical samples.
     var rng_seed: UInt64
     var _rng_offset: UInt64
+    var _rng_offset_dev: Optional[DeviceBuffer[DType.uint64]]
 
     var ts: TargetStorage
 
@@ -138,6 +151,7 @@ struct RSample[ACT: Int](Module, Saveable):
         self.grad_lp_dev_n = 0
         self.rng_seed = UInt64(42)
         self._rng_offset = UInt64(0)
+        self._rng_offset_dev = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -157,6 +171,11 @@ struct RSample[ACT: Int](Module, Saveable):
             if not ctx:
                 raise Error("RSample.make[target='gpu']: ctx required")
             r.ts = TargetStorage.make_gpu(ctx.value())
+            # Slice 5 — device-resident Philox offset, seeded from the host
+            # mirror (0 on a fresh trainer). Advanced on-device per forward.
+            var off = ctx.value().enqueue_create_buffer[DType.uint64](1)
+            off.enqueue_fill(r._rng_offset)
+            r._rng_offset_dev = off^
         return r^
 
     def _ensure_cache_cpu(mut self, batch: Int):
@@ -260,12 +279,18 @@ struct RSample[ACT: Int](Module, Saveable):
             )
             # Cache input via a device-to-device copy.
             ctx.enqueue_copy(self.in_cache_dev.value(), in_p)
-            # Draw fresh z via philox+box-muller.
-            box_muller_normal_gpu[BATCH * Self.ACT](
-                ctx, z_p, self.rng_seed, self._rng_offset,
+            # Draw fresh z via philox+box-muller, reading the Philox offset
+            # from the device buffer (CUDA-graph capturable). Bump it
+            # on-device by 2·BATCH·ACT after the draw — same sequence the
+            # host `_rng_offset += ...` produced.
+            var off_lt = LayoutTensor[
+                DType.uint64, Layout.row_major(1), MutAnyOrigin,
+            ](self._rng_offset_dev.value().unsafe_ptr())
+            box_muller_normal_gpu_dev[BATCH * Self.ACT](
+                ctx, z_p, self.rng_seed, off_lt,
             )
-            # Bump RNG offset for next call (2 philox draws per element).
-            self._rng_offset += UInt64(2 * BATCH * Self.ACT)
+            comptime adv = advance_rng_offset_kernel[2 * BATCH * Self.ACT]
+            ctx.enqueue_function[adv](off_lt, grid_dim=1, block_dim=1)
             # Squashed-gaussian forward into separate action + log_prob bufs.
             squashed_gaussian_forward_gpu[Self.ACT, BATCH](
                 ctx, in_p, z_p, self.action_scale, act_p, lp_p,

@@ -95,3 +95,70 @@ def box_muller_normal_gpu[N: Int](
         noise_lt, seed, offset_base,
         grid_dim=n_blocks, block_dim=TPB,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Slice 5 — device-resident offset variant (CUDA-graph capturable).
+#
+# Identical math to `box_muller_normal_gpu`, but the Philox `offset_base`
+# is read from a 1-elem device buffer instead of a baked scalar kernel
+# arg. Callers advance the device offset with `advance_rng_offset_kernel`
+# after the draw, so the per-step host `_rng_offset += ...` (which breaks
+# capture) is gone. The (seed, offset) sequence is preserved exactly →
+# bit-identical samples to the host-counter path.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _box_muller_kernel_dev[N: Int](
+    noise: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """As `_box_muller_kernel` but reads `offset_base` from `offset_buf[0]`."""
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= N:
+        return
+    var offset_base = rebind[UInt64](offset_buf[0])
+    var pair_idx = UInt64(idx // 2)
+    var which_in_pair = idx % 2
+
+    var rng1 = PhiloxRandom(seed=seed, offset=offset_base + pair_idx * 2)
+    var rng2 = PhiloxRandom(seed=seed, offset=offset_base + pair_idx * 2 + 1)
+    var u1 = Float32(rng1.step_uniform()[0])
+    var u2 = Float32(rng2.step_uniform()[0])
+    if u1 < Float32(1e-7):
+        u1 = Float32(1e-7)
+    var r = fsqrt(Float32(-2.0) * flog(u1))
+    var two_pi_u2 = Float32(6.283185307179586) * u2
+    var z: Float32 = (
+        r * fcos(two_pi_u2) if which_in_pair == 0 else r * fsin(two_pi_u2)
+    )
+    noise[idx] = Scalar[DT](z)
+
+
+def advance_rng_offset_kernel[AMT: Int](
+    offset: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Bump a 1-elem device Philox offset by the comptime `AMT`. Launch
+    grid=(1,), block=(1,); enqueue AFTER the draw kernel so the offset
+    sequence matches the old host `offset += AMT`."""
+    if Int(thread_idx.x) == 0:
+        offset[0] = offset[0] + UInt64(AMT)
+
+
+def box_muller_normal_gpu_dev[N: Int](
+    ctx: DeviceContext,
+    out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+) raises:
+    """Device-offset variant of `box_muller_normal_gpu`. Reads the Philox
+    offset from `offset_buf`; the caller advances it with
+    `advance_rng_offset_kernel` after the draw."""
+    var noise_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](out_ptr)
+    comptime n_blocks = (N + TPB - 1) // TPB
+    comptime kernel = _box_muller_kernel_dev[N]
+    ctx.enqueue_function[kernel](
+        noise_lt, seed, offset_buf,
+        grid_dim=n_blocks, block_dim=TPB,
+    )

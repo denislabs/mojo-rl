@@ -78,24 +78,39 @@ def _store_one_kernel[OBS: Int, ACT: Int, CAP: Int](
         buf_d[s] = stage_d[0]
 
 
+def _increment_rng_offset_kernel[BATCH: Int](
+    offset: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Bump the device RNG offset by `2 * BATCH` (the same stride the host
+    used). Launch grid=(1,), block=(1,). Enqueued AFTER the sample kernel
+    so the sample reads offset N and the next call reads N + 2·BATCH —
+    bit-identical to the old host `_rng_offset += 2·BATCH`, but now the
+    counter lives on-device so it advances on every CUDA-graph replay
+    without host intervention."""
+    if Int(thread_idx.x) == 0:
+        offset[0] = offset[0] + UInt64(BATCH * 2)
+
+
 def _sample_indices_kernel[BATCH: Int](
     indices: LayoutTensor[
         DType.int32, Layout.row_major(BATCH), MutAnyOrigin
     ],
     size: Int32,
     seed: UInt64,
-    offset_base: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
 ):
     """Per-thread Philox uniform → integer index in `[0, size)`.
 
     Seeding follows the deep_agents `sample_indices_kernel` pattern —
     one Philox stream per lane, seed mixed with thread index to avoid
-    cross-lane collisions. `offset_base` is bumped on the CPU between
-    calls so back-to-back samples draw fresh streams.
+    cross-lane collisions. The Philox `offset_base` is read from the
+    device buffer `offset_buf[0]` (Slice 5 — CUDA-graph capturable) and
+    advanced by `_increment_rng_offset_kernel` after this kernel.
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH:
         return
+    var offset_base = rebind[UInt64](offset_buf[0])
     var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
     var u = Float32(philox.step_uniform()[0])
     var idx = Int(u * Float32(size))
@@ -114,7 +129,7 @@ def _sample_indices_ere_kernel[BATCH: Int, CAP: Int](
     write_pos: Int32,
     c_k: Int32,
     seed: UInt64,
-    offset_base: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
 ):
     """ERE-biased Philox uniform: index lands uniformly within the
     most recent `min(c_k, size)` slots of the circular buffer.
@@ -134,6 +149,7 @@ def _sample_indices_ere_kernel[BATCH: Int, CAP: Int](
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH:
         return
+    var offset_base = rebind[UInt64](offset_buf[0])
     var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
     var u = Float32(philox.step_uniform()[0])
     var c = Int(c_k)
@@ -284,7 +300,12 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
     var size: Int
     var pos: Int
     var rng_seed: UInt64
-    var _rng_offset: UInt64
+    # Slice 5 — device-resident Philox offset (was a host `UInt64` bumped
+    # on the CPU). A 1-elem uint64 buffer the sample kernel reads and the
+    # `_increment_rng_offset_kernel` advances on-device → CUDA-graph
+    # capturable. The offset sequence (k·2·BATCH) is unchanged, so the
+    # sampled-index stream is bit-identical to the old host-counter path.
+    var _rng_offset_dev: DeviceBuffer[DType.uint64]
 
     # Cached BATCH ceiling for `indices` buffer sizing.
     var batch_capacity: Int
@@ -327,6 +348,9 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
 
         var idx_buf = ctx.enqueue_create_buffer[DType.int32](batch_capacity)
 
+        var rng_off = ctx.enqueue_create_buffer[DType.uint64](1)
+        rng_off.enqueue_fill(UInt64(0))
+
         var hr = alloc[Scalar[DT]](1)
         var hd = alloc[Scalar[DT]](1)
         hr[0] = Scalar[DT](0.0)
@@ -340,7 +364,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             _h_rew=hr, _h_dne=hd,
             size=0, pos=0,
             rng_seed=UInt64(0xC0FFEE_DECADE_0042),
-            _rng_offset=UInt64(0),
+            _rng_offset_dev=rng_off^,
             batch_capacity=batch_capacity,
             ere_enabled=False,
             ere_eta=Scalar[DT](0.996),
@@ -632,6 +656,9 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
         var idx_lt = LayoutTensor[
             DType.int32, Layout.row_major(BATCH), MutAnyOrigin
         ](self.indices.unsafe_ptr())
+        var off_lt = LayoutTensor[
+            DType.uint64, Layout.row_major(1), MutAnyOrigin
+        ](self._rng_offset_dev.unsafe_ptr())
         comptime n_blocks = (BATCH + TPB - 1) // TPB
         if self.ere_enabled:
             # Host-side compute c_k = clamp(floor(size · η^k), c_min, size).
@@ -652,7 +679,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
                 Int32(self.size),
                 Int32(self.pos),
                 Int32(c),
-                self.rng_seed, self._rng_offset,
+                self.rng_seed, off_lt,
                 grid_dim=n_blocks, block_dim=TPB,
             )
             # Advance k, η^k; wrap at k_max.
@@ -665,11 +692,15 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             comptime indices_kernel = _sample_indices_kernel[BATCH]
             ctx.enqueue_function[indices_kernel](
                 idx_lt, Int32(self.size),
-                self.rng_seed, self._rng_offset,
+                self.rng_seed, off_lt,
                 grid_dim=n_blocks, block_dim=TPB,
             )
-        # Bump RNG offset so back-to-back calls draw disjoint streams.
-        self._rng_offset += UInt64(BATCH * 2)
+        # Bump RNG offset on-device (after the sample kernel reads it) so
+        # back-to-back calls draw disjoint streams — CUDA-graph capturable.
+        comptime inc_kernel = _increment_rng_offset_kernel[BATCH]
+        ctx.enqueue_function[inc_kernel](
+            off_lt, grid_dim=1, block_dim=1,
+        )
 
         var mb_s_lt = LayoutTensor[
             DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin

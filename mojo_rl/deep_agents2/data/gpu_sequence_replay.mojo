@@ -97,6 +97,17 @@ def _seq_store_batch_kernel[
     buf_d[slot] = src_dne[e]
 
 
+def _increment_rng_offset_kernel[B: Int](
+    offset: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Bump the device RNG offset by `2 * B` (the host stride). Launch
+    grid=(1,), block=(1,); enqueued after the sample kernel so the
+    offset sequence is bit-identical to the old host `_rng_offset += 2·B`
+    — now device-resident for CUDA-graph capture."""
+    if Int(thread_idx.x) == 0:
+        offset[0] = offset[0] + UInt64(B * 2)
+
+
 def _seq_sample_kernel[
     B: Int, T: Int, OBS: Int, ACT: Int, CAP: Int,
 ](
@@ -111,7 +122,7 @@ def _seq_sample_kernel[
     origin: Int32,
     n_valid: Int32,
     seed: UInt64,
-    offset_base: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
 ):
     """Per-thread window gather: thread `b` draws a start `s ∈ [0, n_valid)`
     via Philox, then copies the T+1 obs frames + T act/rew/dne frames from
@@ -126,6 +137,7 @@ def _seq_sample_kernel[
     var nv = Int(n_valid)
     if nv < 1:
         nv = 1
+    var offset_base = rebind[UInt64](offset_buf[0])
     var philox = PhiloxRandom(seed=seed + UInt64(b), offset=offset_base)
     var u = Float32(philox.step_uniform()[0])
     var s = Int(u * Float32(nv))
@@ -185,7 +197,11 @@ struct GPUSequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](
     var size: Int
     var pos: Int
     var rng_seed: UInt64
-    var _rng_offset: UInt64
+    # Slice 5 — device-resident Philox offset (was a host `UInt64`). The
+    # sample kernel reads `_rng_offset_dev[0]`; `_increment_rng_offset_kernel`
+    # advances it on-device → CUDA-graph capturable. Offset sequence
+    # (k·2·B) unchanged → sampled windows bit-identical to the host path.
+    var _rng_offset_dev: DeviceBuffer[DType.uint64]
 
     @staticmethod
     def new(ctx: DeviceContext) raises -> Self:
@@ -204,6 +220,9 @@ struct GPUSequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](
         var stage_r = ctx.enqueue_create_buffer[DT](1)
         var stage_d = ctx.enqueue_create_buffer[DT](1)
 
+        var rng_off = ctx.enqueue_create_buffer[DType.uint64](1)
+        rng_off.enqueue_fill(UInt64(0))
+
         var hr = alloc[Scalar[DT]](1)
         var hd = alloc[Scalar[DT]](1)
         hr[0] = Scalar[DT](0.0)
@@ -217,7 +236,7 @@ struct GPUSequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](
             ctx=ctx,
             size=0, pos=0,
             rng_seed=UInt64(0xC0FFEE_DECADE_0042),
-            _rng_offset=UInt64(0),
+            _rng_offset_dev=rng_off^,
         )
 
     # ─── SequenceReplayBuffer trait surface ──────────────────────────────
@@ -390,6 +409,9 @@ struct GPUSequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](
             DT, Layout.row_major(B, T), MutAnyOrigin
         ](dne_dev.unsafe_ptr())
 
+        var off_lt = LayoutTensor[
+            DType.uint64, Layout.row_major(1), MutAnyOrigin
+        ](self._rng_offset_dev.unsafe_ptr())
         comptime n_blocks = (B + TPB - 1) // TPB
         comptime kernel = _seq_sample_kernel[
             B, T, Self.OBS, Self.ACT, Self.CAP
@@ -398,10 +420,14 @@ struct GPUSequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](
             buf_s_lt, buf_a_lt, buf_r_lt, buf_d_lt,
             out_obs_lt, out_act_lt, out_rew_lt, out_dne_lt,
             Int32(origin), Int32(n_valid),
-            self.rng_seed, self._rng_offset,
+            self.rng_seed, off_lt,
             grid_dim=n_blocks, block_dim=TPB,
         )
-        self._rng_offset += UInt64(B * 2)
+        # Bump the offset on-device after the sample reads it.
+        comptime inc_kernel = _increment_rng_offset_kernel[B]
+        ctx.enqueue_function[inc_kernel](
+            off_lt, grid_dim=1, block_dim=1,
+        )
 
     def sample_batch[
         B: Int, T: Int,
