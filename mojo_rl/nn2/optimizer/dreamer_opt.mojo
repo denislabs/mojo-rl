@@ -55,9 +55,10 @@ from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W, TPB
-from ..core import ParamVisitor
+from ..core import ParamVisitor, GraphNode
 from ..core.module import Module
 from ..core.optimizer import Optimizer
+from ..combinators.compute_graph import ComputeGraph
 from ..core.saveable import Saveable
 from ..core.save_scalar import _expect_kv_line
 from ..core.target_storage import TargetStorage, assert_tag_for
@@ -555,6 +556,101 @@ struct DreamerOpt(Optimizer, Saveable):
             model.for_each_param[target, _DreamerGPUStepVisitor](
                 String(""), visitor
             )
+
+    # ──────────────────────────────────────────────────────────────────
+    # ComputeGraph overloads — a `ComputeGraph` exposes the same
+    # `for_each_param` walk as a `Module` but does NOT conform to the
+    # `Module` trait (it uses `set_input` instead of the variadic forward
+    # surface). DreamerV3's WM/head loss graphs own their params as graph
+    # nodes, so these overloads let one DreamerOpt size/zero/step over a
+    # whole graph's params. Bodies mirror make/zero_grad/step exactly.
+    # ──────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def make_graph[
+        target: StaticString, OUT: Int, *NODES: GraphNode
+    ](
+        mut g: ComputeGraph[OUT, *NODES],
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        comptime assert target == "cpu" or target == "gpu", (
+            "DreamerOpt.make_graph: target must be 'cpu' or 'gpu'"
+        )
+        var opt = Self()
+        comptime if target == "cpu":
+            var visitor = _DreamerCPUInitVisitor(
+                nu_flat_ptr=UnsafePointer(to=opt.nu_flat),
+                mu_flat_ptr=UnsafePointer(to=opt.mu_flat),
+                offsets_ptr=UnsafePointer(to=opt.offsets),
+            )
+            g.for_each_param[target, _DreamerCPUInitVisitor](String(""), visitor)
+            opt.total_size = len(opt.nu_flat)
+            opt.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("DreamerOpt.make_graph[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            var visitor = _DreamerGPUInitVisitor(
+                offsets_ptr=UnsafePointer(to=opt.offsets),
+                total_ptr=UnsafePointer(to=opt.total_size),
+            )
+            g.for_each_param[target, _DreamerGPUInitVisitor](String(""), visitor)
+            var nu_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
+            var mu_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
+            nu_real.enqueue_fill(0.0)
+            mu_real.enqueue_fill(0.0)
+            opt.nu_dev = nu_real^
+            opt.mu_dev = mu_real^
+            var scale_real = ctx_v.enqueue_create_buffer[DT](len(opt.offsets))
+            scale_real.enqueue_fill(1.0)
+            opt.scale_dev = scale_real^
+            opt.ts = TargetStorage.make_gpu(ctx_v)
+        return opt^
+
+    def zero_grad_graph[
+        target: StaticString, OUT: Int, *NODES: GraphNode
+    ](mut self, mut g: ComputeGraph[OUT, *NODES]) raises:
+        assert_tag_for["DreamerOpt", target](self.ts.target_tag)
+        comptime if target == "cpu":
+            var v = _ZeroGradCPUVisitor()
+            g.for_each_param[target, _ZeroGradCPUVisitor](String(""), v)
+        else:
+            var v = _ZeroGradGPUVisitor(ctx=self.ts.ctx.value())
+            g.for_each_param[target, _ZeroGradGPUVisitor](String(""), v)
+
+    def step_graph[
+        target: StaticString, OUT: Int, *NODES: GraphNode
+    ](mut self, mut g: ComputeGraph[OUT, *NODES]) raises:
+        assert_tag_for["DreamerOpt", target](self.ts.target_tag)
+        self.step_count += 1
+        self.beta1_pow_t = self.beta1_pow_t * self.beta1
+        self.beta2_pow_t = self.beta2_pow_t * self.beta2
+        var bc1: Scalar[DT] = Scalar[DT](1.0) - self.beta1_pow_t
+        var bc2: Scalar[DT] = Scalar[DT](1.0) - self.beta2_pow_t
+        comptime if target == "cpu":
+            var visitor = _DreamerCPUStepVisitor(
+                nu_flat_ptr=UnsafePointer(to=self.nu_flat),
+                mu_flat_ptr=UnsafePointer(to=self.mu_flat),
+                offsets_ptr=UnsafePointer(to=self.offsets),
+                idx=0,
+                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
+                agc_clip=self.agc_clip, agc_pmin=self.agc_pmin,
+                bias_correction1=bc1, bias_correction2=bc2,
+            )
+            g.for_each_param[target, _DreamerCPUStepVisitor](String(""), visitor)
+        else:
+            var visitor = _DreamerGPUStepVisitor(
+                ctx=self.ts.ctx.value(),
+                nu_base=self.nu_dev.value().unsafe_ptr(),
+                mu_base=self.mu_dev.value().unsafe_ptr(),
+                scale_base=self.scale_dev.value().unsafe_ptr(),
+                offsets_ptr=UnsafePointer(to=self.offsets),
+                idx=0,
+                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
+                agc_clip=self.agc_clip, agc_pmin=self.agc_pmin,
+                bias_correction1=bc1, bias_correction2=bc2,
+            )
+            g.for_each_param[target, _DreamerGPUStepVisitor](String(""), visitor)
 
     # ─────────────────────────── Saveable (CPU only) ───────────────────────────
     # Mirrors Adam's layout with the two extra AGC hyperparams. Topology-

@@ -55,3 +55,17 @@ comptime DreamerContMLP[FEAT: Int, U: Int] = Sequential[
     Linear[FEAT, U], RMSNorm[U], GELU[U],
     Linear[U, 1],
 ]
+
+# Value/slowvalue head (1 hidden): feat[FEAT] → twohot logits[BINS].
+# Same shape as the reward MLP (symexp_twohot output).
+comptime DreamerValue[FEAT: Int, U: Int, BINS: Int] = Sequential[
+    Linear[FEAT, U], RMSNorm[U], GELU[U],
+    Linear[U, BINS],
+]
+
+# Policy head (1 hidden): feat[FEAT] → [mean_raw[ACT], std_raw[ACT]] = 2·ACT.
+# `bounded_normal` (dists.mojo) maps mean_raw→tanh, std_raw→sigmoid-scaled.
+comptime DreamerPolicy[FEAT: Int, U: Int, ACT: Int] = Sequential[
+    Linear[FEAT, U], RMSNorm[U], GELU[U],
+    Linear[U, 2 * ACT],
+]
