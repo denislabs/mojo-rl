@@ -20,14 +20,25 @@ from std.random import random_float64
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Module
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn2.core.checkpoint import (
+    save_state_v2_body, load_state_v2_body,
+)
+from mojo_rl.nn2.core.log_bundle import log_bundle
+from mojo_rl.nn2.core.map_params import hard_copy_params
+from mojo_rl.nn2.core.metric import LogScalar
 from mojo_rl.nn2.core.scratch import Scratch
 from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
 from mojo_rl.nn2.initializer import Xavier
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.training.timer import Timer
+from ..core.checkpoint_helpers import (
+    save_optimizer_v2_body, load_optimizer_v2_body,
+    split_lines_v2, read_file_v2, expect_v2_header,
+)
 from ..core.online_target_pair import OnlineTargetPair
 from ..training.episode_tracker import EpisodeTracker
 from ..training.trainer_block import TrainerState
@@ -35,6 +46,7 @@ from ..training.driver_offpolicy_discrete import OffPolicyDiscreteAgent
 from ..training.blocks import SampleBlock, SinglePolyakStep
 from .blocks.target_y_step import C51TargetYStep
 from .blocks.q_update_step import C51QUpdateStep
+from .metrics import C51Metrics
 
 
 struct C51Trainer[
@@ -98,6 +110,9 @@ struct C51Trainer[
 
     var _loss_accum: Scalar[DT]
     var _update_count: Int
+    # Never reset by `flush_*` — emitted as `train_steps` so the
+    # downstream monitor can plot cumulative updates over time.
+    var _total_train_steps: Int
     var timer: Timer
 
     def __init__(out self):
@@ -141,6 +156,7 @@ struct C51Trainer[
         self._action_list = List[Scalar[DT]](length=1, fill=Scalar[DT](0.0))
         self._loss_accum = Scalar[DT](0.0)
         self._update_count = 0
+        self._total_train_steps = 0
         self.timer = Timer.new()
 
     @staticmethod
@@ -270,6 +286,7 @@ struct C51Trainer[
 
         self._loss_accum += self.state.critic_loss
         self._update_count += 1
+        self._total_train_steps += 1
         return True
 
     def train_step(mut self, step_idx: Int) raises -> Bool:
@@ -505,6 +522,82 @@ struct C51Trainer[
         self._loss_accum = Scalar[DT](0.0)
         self._update_count = 0
         return out
+
+    def total_train_steps(self) -> Int:
+        """Cumulative training updates since trainer was made. Not reset
+        by `flush_*`."""
+        return self._total_train_steps
+
+    def flush_metrics[
+        L: Logger = NoOpLogger
+    ](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        step: Int = 0,
+    ) raises -> C51Metrics:
+        """Drain accumulators into a C51Metrics bundle. If a logger
+        pointer is wired, also emit one log_scalar per metric field.
+        Resets per-chunk accumulators on every call; the cumulative
+        `_total_train_steps` counter is NOT reset."""
+        var n = self._update_count if self._update_count > 0 else 1
+        var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        var bundle = C51Metrics(
+            loss=LogScalar[DT](self._loss_accum * inv),
+            epsilon=LogScalar[DT](self.epsilon),
+            train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
+            n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
+        )
+        self._loss_accum = Scalar[DT](0.0)
+        self._update_count = 0
+        if Bool(logger):
+            log_bundle(logger.value()[], bundle, step)
+        return bundle^
+
+    # ─── Trait-uniform cadence hooks (consumed by the driver) ─────────
+
+    def flush_metrics_through_logger[L: Logger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        step: Int,
+    ) raises:
+        """Trait-uniform passthrough: drains the C51 metric accumulators
+        through `flush_metrics` and discards the typed bundle. The
+        driver calls this at the user's `diag_every` cadence so no
+        chunking is needed."""
+        _ = self.flush_metrics[L](logger, step)
+
+    def save_state(mut self, path: String) raises:
+        """One-file v2 checkpoint of the C51 module + optimizer.
+        Sections: `q_net.*`, `q_opt.*`. Overwrites `path`. CPU-only;
+        GPU save/load would need device→host sync first. Replay buffer
+        + episode tracker NOT included."""
+        comptime if Self.train_target != "cpu":
+            raise Error(
+                "C51Trainer.save_state: GPU save/load not yet supported."
+            )
+        var body = String("")
+        save_state_v2_body(self.pair.online, body, "q_net")
+        save_optimizer_v2_body(self.q_opt, body, "q_opt")
+        var content = String("nn2-ckpt v2\n") + body
+        with open(path, "w") as f:
+            f.write(content)
+
+    def load_state(mut self, path: String) raises:
+        """Inverse of `save_state`. Target net is hard-copied from the
+        online net after the online params are restored."""
+        comptime if Self.train_target != "cpu":
+            raise Error(
+                "C51Trainer.load_state: GPU save/load not yet supported."
+            )
+        var content = read_file_v2(path)
+        var lines = split_lines_v2(content)
+        expect_v2_header(lines)
+        var idx: Int = 1
+        load_state_v2_body(self.pair.online, lines, idx, "q_net")
+        load_optimizer_v2_body(self.q_opt, lines, idx, "q_opt")
+        hard_copy_params[Self.train_target, M=Self.Q_NET](
+            self.pair.online, self.pair.target_net, self.ctx,
+        )
 
     def flush_timer_log(mut self) -> String:
         var report = self.timer.format_report()

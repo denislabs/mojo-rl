@@ -12,15 +12,22 @@ actor polyak / PPO blocks / ...) live under each agent's own
 """
 
 from .sample_block          import SampleBlock
-from .uniform_sample_cpu_step import UniformSampleCpuStep
-from .uniform_sample_gpu_step import UniformSampleGpuStep
-from .per_sample_gpu_step     import PerSampleGpuStep
-from .per_sample_cpu_step     import PerSampleCpuStep
-from .n_step_per_sample_cpu_step import NStepPerSampleCpuStep
-from .n_step_per_sample_gpu_step import NStepPerSampleGpuStep
+# Backend-generic sample blocks (the canonical implementations).
+from .replay_sample_step     import ReplaySampleStep
+from .n_step_sample_step      import NStepSampleStep
+# CPU + GPU sample blocks — comptime aliases over the generic blocks
+# (steps 4 & 5). The backend `R` selects CPU/GPU and uniform/PER.
+from .block_aliases import (
+    UniformSampleCpuStep,
+    PerSampleCpuStep,
+    NStepSampleCpuStep,
+    NStepPerSampleCpuStep,
+    UniformSampleGpuStep,
+    PerSampleGpuStep,
+    NStepSampleGpuStep,
+    NStepPerSampleGpuStep,
+)
 from .twin_critic_step       import TwinCriticStep
 from .polyak_step            import PolyakStep, SinglePolyakStep
 from .single_critic_step     import SingleCriticStep
 from .dual_sample_cpu_step    import DualSampleCpuStep
-from .n_step_sample_cpu_step  import NStepSampleCpuStep
-from .n_step_sample_gpu_step  import NStepSampleGpuStep

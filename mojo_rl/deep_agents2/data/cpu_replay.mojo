@@ -9,8 +9,10 @@ the compiler can fold. `done` is stored as a Scalar[DT] (1.0 / 0.0)
 rather than Bool — matches the `nonterm` arithmetic SAC's critic-target
 computation does anyway.
 
-CPU-only (the GPU replay surface in `mojo_rl/deep_agents/core/replay/`
-is the production GPU path; nn2's data/ stays minimal for now).
+Conforms to `ReplayBuffer` (the unifying trait over CPU/GPU storage):
+the `make` / `add` / `sample_into` / `count` members are the trait
+surface; the legacy `new` / `sample` methods are retained for callers
+that pre-date the trait. `ctx` args are ignored (CPU-only).
 
 `OBS` and `ACT` are dimensions (not buffer sizes), so e.g.
 `CPUReplay[3, 1, 50000]` for Pendulum.
@@ -18,14 +20,18 @@ is the production GPU path; nn2's data/ stays minimal for now).
 
 from std.memory import alloc
 from std.random import random_float64
+from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
-
+from ..training.replay_buffer import ReplayBuffer
+from ..training.trainer_block import TrainerState
 
 @fieldwise_init
-struct CPUReplay[OBS: Int, ACT: Int, CAP: Int](
-    Movable & ImplicitlyDestructible
-):
+struct CPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
+    comptime OBS = Self.OBS_
+    comptime ACT = Self.ACT_
+    comptime CAP = Self.CAP_
+
     var obs: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var act: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var rew: UnsafePointer[Scalar[DT], MutAnyOrigin]
@@ -46,6 +52,14 @@ struct CPUReplay[OBS: Int, ACT: Int, CAP: Int](
             pos=0,
         )
 
+    @staticmethod
+    def make(
+        ctx: Optional[DeviceContext] = None,
+        batch_capacity: Int = 4096,
+    ) raises -> Self:
+        # CPU-only; ctx / batch_capacity ignored.
+        return Self.new()
+
     def add(
         mut self,
         ref s: List[Scalar[DT]],
@@ -53,7 +67,9 @@ struct CPUReplay[OBS: Int, ACT: Int, CAP: Int](
         r: Scalar[DT],
         ref sp: List[Scalar[DT]],
         d: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
     ):
+        # ctx ignored (CPU-only).
         var p = self.pos
         for i in range(Self.OBS):
             self.obs[p * Self.OBS + i] = s[i]
@@ -87,3 +103,21 @@ struct CPUReplay[OBS: Int, ACT: Int, CAP: Int](
                 a_out[k * Self.ACT + j] = self.act[idx * Self.ACT + j]
             r_out[k] = self.rew[idx]
             d_out[k] = self.dne[idx]
+
+    def sample_into[BATCH: Int](
+        mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, BATCH],
+    ) raises:
+        """Trait-surface sampling: write a uniform minibatch into the
+        host mirrors of `state.mb_*`."""
+        self.sample(
+            BATCH,
+            state.mb_s.cpu_ptr(),
+            state.mb_a.cpu_ptr(),
+            state.mb_r.cpu_ptr(),
+            state.mb_sp.cpu_ptr(),
+            state.mb_d.cpu_ptr(),
+        )
+
+    def count(self) -> Int:
+        return self.size

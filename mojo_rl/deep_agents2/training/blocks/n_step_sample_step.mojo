@@ -1,50 +1,50 @@
-"""NStepPerSampleGpuStep — n-step + PER on GPU.
+"""NStepSampleStep[N, R, BATCH] — host n-step accumulator over any
+`ReplayBuffer`-backed sample block.
 
-GPU sibling of `NStepPerSampleCpuStep`. Wraps a `PerSampleGpuStep`
-(host-emitted n-step transitions go straight into the on-device PER
-buffer via inner.add). All sample/update/IS-weight bookkeeping happens
-in the inner block; this struct only owns the host-side NStepBuffer.
+Decorates `ReplaySampleStep[R, BATCH]` with an `NStepBuffer[N]` host
+accumulator: `add` feeds each env-step transition through the ring and
+only forwards a compressed n-step transition to the inner block when N
+have accumulated (or on `done`). Everything else (setup / step /
+configure_per / set_beta / update_priorities) forwards to the inner
+block; `configure_gamma` sets the accumulator's discount.
 
-Required by Rainbow 6/6 on GPU (PER + N-step both active).
+Generic over `R`, so it subsumes BOTH n-step-over-uniform and
+n-step-over-PER: `NStepSampleStep[N, AnyReplay[target, …], BATCH]` and
+`NStepSampleStep[N, AnyPerReplay[target, …], BATCH]` (the latter is the
+replay half of Rainbow). The trainer's target-Y bakes γ^N as the
+bootstrap discount via its `nstep` param — keep `N` aligned with it.
 
-The trainer's target-Y block bakes γ^N as the bootstrap discount via
-its `nstep` param — caller's responsibility to keep `N` here aligned
-with the trainer's `nstep`.
+The host ring drives single-env `add`; the device-side multi-env n-step
+path (`GPUNStepBuffer`) is forwarded through `store_via_block_gpu` to the
+inner block — `store_into` is now generic over `ReplayBuffer`, so the
+same decorator subsumes the former GPU-only `NStepSampleGpuStep` /
+`NStepPerSampleGpuStep`.
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn2.constants import DT
 from ...data.n_step_replay import NStepBuffer, GPUNStepBuffer
+from ..replay_buffer import ReplayBuffer
 from ..trainer_block import TrainerState
 from .sample_block import SampleBlock
-from .per_sample_gpu_step import PerSampleGpuStep
+from .replay_sample_step import ReplaySampleStep
 
 
-struct NStepPerSampleGpuStep[
-    N: Int,
-    OBS_: Int, ACT_: Int, BATCH_: Int, CAP: Int,
-](SampleBlock, Defaultable):
-    comptime OBS = Self.OBS_
-    comptime ACT = Self.ACT_
+struct NStepSampleStep[N: Int, R: ReplayBuffer, BATCH_: Int](
+    SampleBlock, Defaultable
+):
+    comptime OBS = Self.R.OBS
+    comptime ACT = Self.R.ACT
     comptime BATCH = Self.BATCH_
     comptime N_STEP = Self.N
 
-    var inner: PerSampleGpuStep[Self.OBS, Self.ACT, Self.BATCH, Self.CAP]
-    var nstep: NStepBuffer[Self.N, Self.OBS, Self.ACT]
+    var inner: ReplaySampleStep[Self.R, Self.BATCH_]
+    var nstep: NStepBuffer[Self.N, Self.R.OBS, Self.R.ACT]
 
     def __init__(out self):
-        self.inner = PerSampleGpuStep[
-            Self.OBS, Self.ACT, Self.BATCH, Self.CAP,
-        ]()
-        self.nstep = NStepBuffer[Self.N, Self.OBS, Self.ACT].new()
-
-    def setup(
-        mut self,
-        learning_starts: Int,
-        ctx: Optional[DeviceContext] = None,
-    ) raises:
-        self.inner.setup(learning_starts, ctx=ctx)
+        self.inner = ReplaySampleStep[Self.R, Self.BATCH_]()
+        self.nstep = NStepBuffer[Self.N, Self.R.OBS, Self.R.ACT].new()
 
     def configure_per(
         mut self,
@@ -59,6 +59,13 @@ struct NStepPerSampleGpuStep[
 
     def set_beta(mut self, beta: Scalar[DT]):
         self.inner.set_beta(beta)
+
+    def setup(
+        mut self,
+        learning_starts: Int,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.inner.setup(learning_starts, ctx=ctx)
 
     def add(
         mut self,
@@ -96,7 +103,21 @@ struct NStepPerSampleGpuStep[
     ) raises:
         self.inner.update_priorities(state)
 
-    # ── Cross-target hooks (delegate to inner) ─────────────────────
+    # ── GPU-batch hooks — forward to the inner block. The host n-step
+    #    ring is bypassed on the device multi-env path (accumulation
+    #    happens in the driver's GPUNStepBuffer); add_batch_gpu is the
+    #    non-n-step direct device store. ────────────────────────────────
+
+    def configure_ere(
+        mut self,
+        enable: Bool = False,
+        eta: Scalar[DT] = Scalar[DT](0.996),
+        c_min: Int = 1,
+        k_max: Int = 1000,
+    ) raises:
+        self.inner.configure_ere(
+            enable=enable, eta=eta, c_min=c_min, k_max=k_max
+        )
 
     def add_batch_gpu[N_ENVS: Int](
         mut self,
@@ -107,9 +128,6 @@ struct NStepPerSampleGpuStep[
         obs_dev: DeviceBuffer[DT],
         done_dev: DeviceBuffer[DT],
     ) raises:
-        # Multi-env n-step accumulation lives in the driver's
-        # GPUNStepBuffer path (`store_via_block_gpu`). The single-env
-        # `add` above handles N_ENVS=1 record_batch_cpu callers.
         self.inner.add_batch_gpu[N_ENVS](
             ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
         )

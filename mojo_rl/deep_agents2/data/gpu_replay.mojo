@@ -36,6 +36,8 @@ from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn2.constants import DT, TPB
+from ..training.replay_buffer import ReplayBuffer
+from ..training.trainer_block import TrainerState
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -229,9 +231,7 @@ def _store_batch_kernel[
 
 
 @fieldwise_init
-struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
-    Movable & ImplicitlyDestructible
-):
+struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
     """Device-resident circular replay buffer.
 
     Stored layout:
@@ -244,9 +244,18 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
     CPU bookkeeping: `pos` (next write slot), `size` (saturates at CAP
     after first wrap), `rng_seed`, `_rng_offset`.
 
+    Conforms to `ReplayBuffer`: `make` / `add(Lists, ctx)` /
+    `sample_into` / `count` are the trait surface; the legacy
+    `new` / `add(ctx, ptrs)` / `sample` methods are retained for callers
+    that pre-date the trait.
+
     `OBS` and `ACT` are dimensions (not buffer sizes); for Pendulum,
     `GPUReplay[3, 1, 50000]`.
     """
+
+    comptime OBS = Self.OBS_
+    comptime ACT = Self.ACT_
+    comptime CAP = Self.CAP_
 
     # Device-resident circular storage.
     var obs: DeviceBuffer[DT]
@@ -340,6 +349,76 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
             _ere_eta_pow_k=Scalar[DT](1.0),
             _ere_c_min=1,
         )
+
+    # ─── ReplayBuffer trait surface ──────────────────────────────────
+
+    @staticmethod
+    def make(
+        ctx: Optional[DeviceContext] = None,
+        batch_capacity: Int = 4096,
+    ) raises -> Self:
+        """Trait factory. `ctx` is required (GPU storage); raises if
+        None. `batch_capacity` sizes the sample-side index scratch."""
+        if not ctx:
+            raise Error("GPUReplay.make: ctx required for device storage")
+        return Self.new(ctx.value(), batch_capacity=batch_capacity)
+
+    def add(
+        mut self,
+        ref s: List[Scalar[DT]],
+        ref a: List[Scalar[DT]],
+        r: Scalar[DT],
+        ref sp: List[Scalar[DT]],
+        d: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """Trait-surface add: stage the host Lists to device and reuse
+        the pointer-based `add`. `ctx` required (raises if None)."""
+        if not ctx:
+            raise Error("GPUReplay.add: ctx required for device storage")
+        var s_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            s.unsafe_ptr()
+        )
+        var a_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            a.unsafe_ptr()
+        )
+        var sp_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            sp.unsafe_ptr()
+        )
+        self.add(ctx.value(), s_p, a_p, r, sp_p, d)
+
+    def sample_into[BATCH: Int](
+        mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, BATCH],
+    ) raises:
+        """Trait-surface sampling: launch the gather into the device
+        mirrors of `state.mb_*` using `state.ctx`."""
+        self.sample[BATCH](
+            state.ctx.value(),
+            state.mb_s.dev.value(),
+            state.mb_a.dev.value(),
+            state.mb_r.dev.value(),
+            state.mb_sp.dev.value(),
+            state.mb_d.dev.value(),
+        )
+
+    def count(self) -> Int:
+        return self.size
+
+    def configure_ere(
+        mut self,
+        enable: Bool = False,
+        eta: Scalar[DT] = Scalar[DT](0.996),
+        c_min: Int = 1,
+        k_max: Int = 1000,
+    ) raises:
+        """Trait override: flip ERE state. Delegates to `enable_ere` /
+        `disable_ere` so the generic sample block can configure recency
+        bias without knowing the concrete backend."""
+        if enable:
+            self.enable_ere(eta=eta, c_min=c_min, k_max=k_max)
+        else:
+            self.disable_ere()
 
     def enable_ere(
         mut self,

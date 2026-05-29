@@ -44,8 +44,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn2.constants import DT, TPB
-from .gpu_replay import GPUReplay
-from .per_replay import GPUPrioritizedReplay
+from ..training.replay_buffer import ReplayBuffer
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -485,34 +484,27 @@ struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
             grid_dim=n_blocks, block_dim=TPB,
         )
 
-    def store_into[CAP: Int](
+    def store_into[S: ReplayBuffer](
         self,
         ctx: DeviceContext,
-        mut buf: GPUReplay[Self.OBS, Self.ACT, CAP],
+        mut buf: S,
     ) raises:
-        """Blind-store all N_ENVS slots into a base GPUReplay via
-        `add_batch[N_ENVS]`. Invalid slots (`out_valid[e] == 0`)
-        contain zero-padded data and get overwritten as the buffer
-        wraps. Matches deep_agents semantics."""
-        buf.add_batch[Self.N_ENVS](
-            ctx,
-            self.out_obs, self.out_act, self.out_rew,
-            self.out_nobs, self.out_done,
-        )
+        """Blind-store all N_ENVS slots into any device-backed
+        `ReplayBuffer` via its `add_batch[N_ENVS]`. Invalid slots
+        (`out_valid[e] == 0`) contain zero-padded data and get
+        overwritten as the buffer wraps. Matches deep_agents semantics.
 
-    def store_into[CAP: Int](
-        self,
-        ctx: DeviceContext,
-        mut buf: GPUPrioritizedReplay[Self.OBS, Self.ACT, CAP],
-    ) raises:
-        """PER overload — same blind-store semantics but routes through
-        `GPUPrioritizedReplay.add_batch[N_ENVS]`. Each of the N_ENVS
-        slots gets initialised with `max_priority^alpha` so new
-        n-step transitions are immediately eligible for prioritised
-        sampling. Zero-padded invalid slots receive that same priority
-        until they're overwritten + repriced via `update_priorities`
-        on their next sample.
+        Generic over `S: ReplayBuffer` — `add_batch` is the only
+        capability used, and it's a trait method (default-raises for CPU
+        backends), so one method covers both `GPUReplay` (uniform) and
+        `GPUPrioritizedReplay` (the PER `max_priority^alpha` slot init
+        lives inside *its* `add_batch`, not here). Breaking the former
+        `n_step_replay → gpu_replay` import edge is what lets the generic
+        sample blocks subsume the GPU-only sample blocks.
         """
+        comptime assert (
+            S.OBS == Self.OBS and S.ACT == Self.ACT
+        ), "store_into: buffer OBS/ACT must match the n-step buffer's"
         buf.add_batch[Self.N_ENVS](
             ctx,
             self.out_obs, self.out_act, self.out_rew,
