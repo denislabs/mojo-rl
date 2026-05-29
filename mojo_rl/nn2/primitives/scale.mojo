@@ -209,6 +209,17 @@ struct Scale[DIM: Int](Module):
         comptime if ATTR == "multiplier":
             self.multiplier = value
 
+    # Override of Module.set_attr_ptr — supports ATTR="multiplier". Points
+    # the GPU forward/vjp at a device buffer holding the live scale factor
+    # (SAC's on-device α). Equivalent to `set_multiplier_ptr`, reachable
+    # through the GraphNode → ComputeGraph trait surface so a graph can
+    # wire one of its Scale nodes to a device buffer by name.
+    def set_attr_ptr[ATTR: StaticString](
+        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ):
+        comptime if ATTR == "multiplier":
+            self.multiplier_ptr = p
+
     # Slice 4 — point the multiplier at a device buffer holding the live
     # scale factor (e.g. SAC's on-device α). Pass a null pointer to revert
     # to the baked-scalar `multiplier` path. GPU-only effect; CPU ignores it.

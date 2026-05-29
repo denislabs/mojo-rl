@@ -119,6 +119,17 @@ def load_scalar_adam_v2_body(
     idx += 1
     opt.eps = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".eps")))
     idx += 1
+    # Reconstruct the incremental bias-correction products β₁ᵗ / β₂ᵗ from
+    # the restored `t` by replaying the same running product the step loop
+    # builds (1·β·β·… , t times). Bit-identical to having stepped t times,
+    # so CPU save/resume stays byte-stable. (Serializing them directly
+    # would be equivalent but bloat the v2 envelope; t is the source of
+    # truth.)
+    opt.beta1_pow_t = Scalar[DT](1.0)
+    opt.beta2_pow_t = Scalar[DT](1.0)
+    for _ in range(opt.t):
+        opt.beta1_pow_t *= opt.beta1
+        opt.beta2_pow_t *= opt.beta2
 
 
 # ──────────────────────────────────────────────────────────────────────

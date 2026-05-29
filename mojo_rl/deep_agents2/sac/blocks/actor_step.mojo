@@ -66,3 +66,21 @@ struct SACActorStep[
         )
         state.actor_loss = res.loss
         state.log_prob_mean = res.log_prob_mean
+
+    # ── Slice 4 — GPU device-α + device-reduction passthroughs to the
+    # owned SACActorLoss. CPU never calls these (host scalar path).
+    def lp_mean_dev_ptr(
+        mut self,
+    ) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return self.inner.lp_mean_dev_ptr()
+
+    def set_alpha_ptr(
+        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ):
+        self.inner.set_alpha_ptr(p)
+
+    def reset_loss_accum(mut self) raises:
+        self.inner.reset_loss_accum()
+
+    def read_loss_accum(mut self) raises -> Scalar[DT]:
+        return self.inner.read_loss_accum()

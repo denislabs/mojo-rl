@@ -177,6 +177,14 @@ struct TargetYBlock[
         blk.graph.set_node_attr["gamma_softv", "multiplier"](gamma)
         return blk^
 
+    def set_alpha_ptr(
+        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ):
+        """One-time GPU wiring: point the `alpha_lp` Scale node at the
+        device α buffer so the target-y forward reads α on-device. After
+        this, `step` skips the per-step `set_node_attr` host bake."""
+        self.graph.set_node_attr_ptr["alpha_lp", "multiplier"](p)
+
     def step[
         target: StaticString,
         POLICY: AMPPolicy = NoAMP,
@@ -211,8 +219,12 @@ struct TargetYBlock[
         self.graph.set_input["sp", Self.BATCH](mb_sp_t)
         self.graph.set_input["r", Self.BATCH](mb_r_t)
 
-        # α varies per call; γ was baked in at make().
-        self.graph.set_node_attr["alpha_lp", "multiplier"](alpha)
+        # α: CPU bakes the host scalar per call; γ was baked in at make().
+        # On GPU α is read on-device via the `alpha_lp` multiplier_ptr wired
+        # once at make (`set_alpha_ptr`) so the target-y forward is
+        # CUDA-graph capturable — no per-step host work here.
+        comptime if target == "cpu":
+            self.graph.set_node_attr["alpha_lp", "multiplier"](alpha)
 
         # Forward into mb_y (graph's last node is `y`, OUT_DIM=1).
         var mb_y_t = TileTensor(mb_y_ptr, row_major[Self.BATCH, 1]())

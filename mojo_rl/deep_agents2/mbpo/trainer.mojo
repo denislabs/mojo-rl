@@ -539,7 +539,7 @@ struct MBPOTrainer[
             self.timer.accumulate(Self._T_ACTOR, t_act)
 
             var t_alp = perf_counter_ns()
-            self.alpha_blk.step(self.state, self.alpha_opt)
+            self.alpha_blk.step["cpu"](self.state, self.alpha_opt)
             self.timer.accumulate(Self._T_ALPHA, t_alp)
 
             var t_pol = perf_counter_ns()

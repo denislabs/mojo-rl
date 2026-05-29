@@ -415,7 +415,26 @@ struct SACTrainer[
         t.critic1_opt.max_grad_norm = max_grad_norm
         t.critic2_opt.lr = critic_lr
         t.critic2_opt.max_grad_norm = max_grad_norm
-        t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
+        # Slice 4b — on GPU the entropy temperature lives in a device buffer
+        # (state_dev) updated by a 1-thread kernel; on CPU it stays a host
+        # scalar (bit-identity path). `flog(init_alpha)` seeds log_α.
+        comptime if Self.train_target == "gpu":
+            t.alpha_opt = ScalarAdam.new_device(
+                ctx.value(), flog(init_alpha), alpha_lr,
+            )
+        else:
+            t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
+
+        # Slice 4d — one-time wiring of the device α buffer into both
+        # Scale nodes that consume α (target-y soft-V and actor-loss
+        # α·log_prob). After this, neither block bakes α as a per-step
+        # host scalar; both read it on-device, and the device ScalarAdam
+        # refreshes it each step. The pointer is into alpha_opt's device
+        # allocation (stable across the struct move on `return t^`).
+        comptime if Self.train_target == "gpu":
+            var alpha_p = t.alpha_opt.alpha_dev_ptr()
+            t.target_y_blk.set_alpha_ptr(alpha_p)
+            t.actor_blk.set_alpha_ptr(alpha_p)
 
         t.alpha_blk = AlphaUpdateStep[
             Self.OBS_DIM,
@@ -482,8 +501,12 @@ struct SACTrainer[
         target). All other blocks parametric on `[Self.train_target, POLICY]`."""
         self.state.step_idx = step_idx
         self.state.did_step = True
-        self.state.alpha = fexp(self.alpha_opt.value)
-        comptime if Self.train_target == "gpu":
+        # CPU bakes the host α scalar into the target-y / actor Scale nodes
+        # per step. On GPU α lives on-device (wired once at make) and is
+        # refreshed by the device ScalarAdam; `state.alpha` is unused there.
+        comptime if Self.train_target == "cpu":
+            self.state.alpha = fexp(self.alpha_opt.value)
+        else:
             self.state.ctx = self.ctx
 
         var t_sample = perf_counter_ns()
@@ -526,7 +549,18 @@ struct SACTrainer[
         self.timer.accumulate(Self._T_ACTOR, t_act)
 
         var t_alp = perf_counter_ns()
-        self.alpha_blk.step(self.state, self.alpha_opt)
+        # CPU: host-scalar grad from state.log_prob_mean. GPU: the device
+        # ScalarAdam reads the actor-loss `lp_mean` device buffer directly
+        # (no D2H) and refreshes the device α the Scale nodes read.
+        comptime if Self.train_target == "cpu":
+            self.alpha_blk.step["cpu"](self.state, self.alpha_opt)
+        else:
+            self.alpha_blk.step["gpu"](
+                self.state,
+                self.alpha_opt,
+                self.actor_blk.lp_mean_dev_ptr(),
+                self.ctx,
+            )
         self.timer.accumulate(Self._T_ALPHA, t_alp)
 
         var t_pol = perf_counter_ns()
@@ -542,7 +576,11 @@ struct SACTrainer[
 
         self._actor_L_accum += self.state.actor_loss
         self._critic_L_accum += self.state.critic_loss
-        self._alpha_accum += fexp(self.alpha_opt.value)
+        # CPU accumulates α from the live host scalar; on GPU the host
+        # scalar is stale (device is source of truth), so the α metric is
+        # read instantaneously from the device buffer at flush instead.
+        comptime if Self.train_target == "cpu":
+            self._alpha_accum += fexp(self.alpha_opt.value)
         self._update_count += 1
         self._total_train_steps += 1
 
@@ -1010,16 +1048,28 @@ struct SACTrainer[
         # per-step count (== _update_count), so it returns the chunk mean
         # directly. CPU keeps the host-scalar accumulator path.
         var critic_mean: Scalar[DT]
+        # Slice 4 — on GPU the actor loss is accumulated on-device by the
+        # actor-loss block (no per-step D2H) and α lives in the device
+        # ScalarAdam buffer; read both here at flush cadence. The α metric
+        # is the instantaneous device value (α is slowly varying, so this
+        # tracks the window mean to logging precision). CPU keeps the
+        # host-scalar accumulator paths.
+        var actor_mean: Scalar[DT]
+        var alpha_val: Scalar[DT]
         comptime if Self.train_target == "gpu":
             var cl1 = self.twin_critic_blk.inner.c1.mse_loss.read_accum["gpu"]()
             var cl2 = self.twin_critic_blk.inner.c2.mse_loss.read_accum["gpu"]()
             critic_mean = cl1 + cl2
+            actor_mean = self.actor_blk.read_loss_accum()
+            alpha_val = self.alpha_opt.read_alpha()
         else:
             critic_mean = self._critic_L_accum * inv
+            actor_mean = self._actor_L_accum * inv
+            alpha_val = self._alpha_accum * inv
         var bundle = SACMetrics(
-            actor_loss=LogScalar[DT](self._actor_L_accum * inv),
+            actor_loss=LogScalar[DT](actor_mean),
             critic_loss=LogScalar[DT](critic_mean),
-            alpha=LogScalar[DT](self._alpha_accum * inv),
+            alpha=LogScalar[DT](alpha_val),
             mean_q=LogScalar[DT](self._q_accum * inv),
             mean_target=LogScalar[DT](self._target_accum * inv),
             mean_reward=LogScalar[DT](self._reward_accum * inv),
@@ -1037,11 +1087,13 @@ struct SACTrainer[
         self._done_accum = Scalar[DT](0.0)
         self._abs_action_accum = Scalar[DT](0.0)
         self._update_count = 0
-        # Slice 3 — reset the on-device critic accumulators in lock-step with
-        # the host counters so the next chunk's mean uses a fresh window.
+        # Slices 3+4 — reset the on-device critic + actor accumulators in
+        # lock-step with the host counters so the next chunk's mean uses a
+        # fresh window. (α has no accumulator — read instantaneously above.)
         comptime if Self.train_target == "gpu":
             self.twin_critic_blk.inner.c1.mse_loss.reset_accum["gpu"]()
             self.twin_critic_blk.inner.c2.mse_loss.reset_accum["gpu"]()
+            self.actor_blk.reset_loss_accum()
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^

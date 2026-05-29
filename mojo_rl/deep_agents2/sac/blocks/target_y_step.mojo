@@ -49,6 +49,12 @@ struct TargetYStep[
             )
         return b^
 
+    def set_alpha_ptr(
+        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ):
+        """Slice 4 — passthrough to the inner TargetYBlock (GPU device α)."""
+        self.inner.set_alpha_ptr(p)
+
     def step[
         target: StaticString,
         POLICY: AMPPolicy = NoAMP,
