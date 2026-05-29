@@ -30,14 +30,130 @@ GPU stub).
 
 from std.math import exp, log
 from std.memory import alloc
-from std.gpu.host import DeviceContext
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
-from layout import TileTensor
+from layout import Layout, LayoutTensor, TileTensor
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
+
+
+@always_inline
+def _dlt[N: Int](
+    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
+    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
+
+
+# ── OneHotKLLoss GPU kernels. NG=B·STOCH groups of CLASSES lanes; NN=B·SC.
+#    fwd1 (per group): softmax+unimix(post/prior) → caches + per-group KL.
+#    fwd2 (per batch): Σ_s KL → free-nats clamp → out[B,2] + active[B].
+#    bwd (per group): asymmetric dyn→prior / rep→post grads.  ────────────
+def _kl_fwd1_kernel[NG: Int, C: Int](
+    post: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
+    prior: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
+    smpo: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
+    ppo: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
+    smpr: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
+    ppr: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
+    klpart: LayoutTensor[DT, Layout.row_major(NG), MutAnyOrigin],
+    u: Scalar[DT],
+):
+    var g = Int(global_idx.x)
+    if g < NG:
+        var base = g * C
+        var uni = u / Scalar[DT](C)
+        var omu = Scalar[DT](1.0) - u
+        # post softmax + mix
+        var zmax = rebind[Scalar[DT]](post[base])
+        for c in range(1, C):
+            var v = rebind[Scalar[DT]](post[base + c])
+            if v > zmax:
+                zmax = v
+        var ss: Scalar[DT] = 0.0
+        for c in range(C):
+            var e = exp(rebind[Scalar[DT]](post[base + c]) - zmax)
+            smpo[base + c] = e
+            ss += e
+        var inv = Scalar[DT](1.0) / ss
+        for c in range(C):
+            var sm = rebind[Scalar[DT]](smpo[base + c]) * inv
+            smpo[base + c] = sm
+            ppo[base + c] = omu * sm + uni
+        # prior softmax + mix
+        var zmx2 = rebind[Scalar[DT]](prior[base])
+        for c in range(1, C):
+            var v = rebind[Scalar[DT]](prior[base + c])
+            if v > zmx2:
+                zmx2 = v
+        var ss2: Scalar[DT] = 0.0
+        for c in range(C):
+            var e = exp(rebind[Scalar[DT]](prior[base + c]) - zmx2)
+            smpr[base + c] = e
+            ss2 += e
+        var inv2 = Scalar[DT](1.0) / ss2
+        for c in range(C):
+            var sm = rebind[Scalar[DT]](smpr[base + c]) * inv2
+            smpr[base + c] = sm
+            ppr[base + c] = omu * sm + uni
+        # group KL
+        var kl: Scalar[DT] = 0.0
+        for c in range(C):
+            var pp = rebind[Scalar[DT]](ppo[base + c])
+            kl += pp * (log(pp) - log(rebind[Scalar[DT]](ppr[base + c])))
+        klpart[g] = kl
+
+
+def _kl_fwd2_kernel[B: Int, STOCH: Int](
+    klpart: LayoutTensor[DT, Layout.row_major(B * STOCH), MutAnyOrigin],
+    outb: LayoutTensor[DT, Layout.row_major(B * 2), MutAnyOrigin],
+    active: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    free_nats: Scalar[DT],
+):
+    var b = Int(global_idx.x)
+    if b < B:
+        var ksum: Scalar[DT] = 0.0
+        for s in range(STOCH):
+            ksum += rebind[Scalar[DT]](klpart[b * STOCH + s])
+        var clamped = ksum if ksum > free_nats else free_nats
+        outb[b * 2] = clamped
+        outb[b * 2 + 1] = clamped
+        active[b] = Scalar[DT](1.0) if ksum > free_nats else Scalar[DT](0.0)
+
+
+def _kl_bwd_kernel[NG: Int, C: Int, STOCH: Int](
+    go: LayoutTensor[DT, Layout.row_major(NG // STOCH * 2), MutAnyOrigin],
+    active: LayoutTensor[DT, Layout.row_major(NG // STOCH), MutAnyOrigin],
+    smpo: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
+    ppo: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
+    smpr: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
+    ppr: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
+    g_post: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
+    g_prior: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
+    one_m_u: Scalar[DT],
+):
+    var g = Int(global_idx.x)
+    if g < NG:
+        var b = g // STOCH
+        var base = g * C
+        var act = rebind[Scalar[DT]](active[b])
+        var wd = rebind[Scalar[DT]](go[b * 2]) * act
+        var wr = rebind[Scalar[DT]](go[b * 2 + 1]) * act
+        var S: Scalar[DT] = 0.0
+        var W: Scalar[DT] = 0.0
+        for c in range(C):
+            S += (rebind[Scalar[DT]](ppo[base + c]) / rebind[Scalar[DT]](ppr[base + c])) * rebind[Scalar[DT]](smpr[base + c])
+            W += rebind[Scalar[DT]](smpo[base + c]) * (
+                log(rebind[Scalar[DT]](ppo[base + c])) - log(rebind[Scalar[DT]](ppr[base + c]))
+            )
+        for j in range(C):
+            var a_over_p = rebind[Scalar[DT]](ppo[base + j]) / rebind[Scalar[DT]](ppr[base + j])
+            g_prior[base + j] = wd * (-one_m_u * rebind[Scalar[DT]](smpr[base + j]) * (a_over_p - S))
+            var lr_diff = log(rebind[Scalar[DT]](ppo[base + j])) - log(rebind[Scalar[DT]](ppr[base + j]))
+            g_post[base + j] = wr * (one_m_u * rebind[Scalar[DT]](smpo[base + j]) * (lr_diff - W))
 
 
 struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDestructible):
@@ -222,23 +338,56 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
     comptime OUT_DIM = 2
 
     var kl: OneHotKL[Self.STOCH, Self.CLASSES]
+    # GPU caches: softmax/mixed probs [B·SC], active [B], per-group KL [B·STOCH]
+    var _smpo: Optional[DeviceBuffer[DT]]
+    var _smpr: Optional[DeviceBuffer[DT]]
+    var _ppo: Optional[DeviceBuffer[DT]]
+    var _ppr: Optional[DeviceBuffer[DT]]
+    var _act: Optional[DeviceBuffer[DT]]
+    var _klpart: Optional[DeviceBuffer[DT]]
+    var _dev_n: Int
     var ts: TargetStorage
 
     def __init__(out self):
         self.kl = OneHotKL[Self.STOCH, Self.CLASSES]()
+        self._smpo = None
+        self._smpr = None
+        self._ppo = None
+        self._ppr = None
+        self._act = None
+        self._klpart = None
+        self._dev_n = 0
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu", "OneHotKLLoss: spike CPU-only"
+        comptime assert target == "cpu" or target == "gpu", (
+            "OneHotKLLoss: target must be 'cpu' or 'gpu'"
+        )
         var m = Self()
         m.kl = OneHotKL[Self.STOCH, Self.CLASSES].make(
             Scalar[DT](0.01), Scalar[DT](1.0)
         )
-        m.ts = TargetStorage.make_cpu()
+        comptime if target == "cpu":
+            m.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("OneHotKLLoss.make[gpu]: ctx required")
+            m.ts = TargetStorage.make_gpu(ctx.value())
         return m^
+
+    def _ensure_dev(mut self, nn: Int, ng: Int, b: Int) raises:
+        if self._dev_n < nn:
+            var ctx = self.ts.ctx.value()
+            self._smpo = ctx.enqueue_create_buffer[DT](nn)
+            self._smpr = ctx.enqueue_create_buffer[DT](nn)
+            self._ppo = ctx.enqueue_create_buffer[DT](nn)
+            self._ppr = ctx.enqueue_create_buffer[DT](nn)
+            self._act = ctx.enqueue_create_buffer[DT](b)
+            self._klpart = ctx.enqueue_create_buffer[DT](ng)
+            self._dev_n = nn
 
     def forward[
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
@@ -261,13 +410,39 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
             typed_view[BATCH, Self.SC](inputs[1]).ptr
         )
         var o = typed_view_mut[BATCH, 2](output).ptr
-        var dyn: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
-        var rep: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
-        self.kl.forward[BATCH](post, prior, dyn, rep)
-        for b in range(BATCH):
-            o[b * 2] = dyn[b]
-            o[b * 2 + 1] = rep[b]
-        dyn.free(); rep.free()
+        comptime if target == "cpu":
+            var dyn: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
+            var rep: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
+            self.kl.forward[BATCH](post, prior, dyn, rep)
+            for b in range(BATCH):
+                o[b * 2] = dyn[b]
+                o[b * 2 + 1] = rep[b]
+            dyn.free(); rep.free()
+        else:
+            comptime NN = BATCH * Self.SC
+            comptime NG = BATCH * Self.STOCH
+            self._ensure_dev(NN, NG, BATCH)
+            var ctx = self.ts.ctx.value()
+            var smpo = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._smpo.value().unsafe_ptr())
+            var smpr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._smpr.value().unsafe_ptr())
+            var ppo = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._ppo.value().unsafe_ptr())
+            var ppr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._ppr.value().unsafe_ptr())
+            var actp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._act.value().unsafe_ptr())
+            var klp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._klpart.value().unsafe_ptr())
+            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
+            comptime nb1 = (NG + TPB - 1) // TPB
+            comptime k1 = _kl_fwd1_kernel[NG, Self.CLASSES]
+            ctx.enqueue_function[k1](
+                _dlt[NN](post), _dlt[NN](prior), _dlt[NN](smpo), _dlt[NN](ppo),
+                _dlt[NN](smpr), _dlt[NN](ppr), _dlt[NG](klp), self.kl.unimix,
+                grid_dim=nb1, block_dim=TPB,
+            )
+            comptime nb2 = (BATCH + TPB - 1) // TPB
+            comptime k2 = _kl_fwd2_kernel[BATCH, Self.STOCH]
+            ctx.enqueue_function[k2](
+                _dlt[NG](klp), _dlt[BATCH * 2](op), _dlt[BATCH](actp),
+                self.kl.free_nats, grid_dim=nb2, block_dim=TPB,
+            )
 
     def vjp[
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
@@ -284,16 +459,36 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
         ],
     ) raises:
         var go = typed_view[BATCH, 2](grad_output).ptr
-        var d_dyn: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
-        var d_rep: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
-        for b in range(BATCH):
-            d_dyn[b] = go[b * 2]
-            d_rep[b] = go[b * 2 + 1]
         var g_post = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             typed_view_mut[BATCH, Self.SC](grad_inputs[0]).ptr
         )
         var g_prior = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             typed_view_mut[BATCH, Self.SC](grad_inputs[1]).ptr
         )
-        self.kl.backward[BATCH](d_dyn, d_rep, g_post, g_prior)
-        d_dyn.free(); d_rep.free()
+        comptime if target == "cpu":
+            var d_dyn: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
+            var d_rep: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
+            for b in range(BATCH):
+                d_dyn[b] = go[b * 2]
+                d_rep[b] = go[b * 2 + 1]
+            self.kl.backward[BATCH](d_dyn, d_rep, g_post, g_prior)
+            d_dyn.free(); d_rep.free()
+        else:
+            comptime NN = BATCH * Self.SC
+            comptime NG = BATCH * Self.STOCH
+            var ctx = self.ts.ctx.value()
+            var smpo = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._smpo.value().unsafe_ptr())
+            var smpr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._smpr.value().unsafe_ptr())
+            var ppo = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._ppo.value().unsafe_ptr())
+            var ppr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._ppr.value().unsafe_ptr())
+            var actp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._act.value().unsafe_ptr())
+            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
+            var one_m_u = Scalar[DT](1.0) - self.kl.unimix
+            comptime nb = (NG + TPB - 1) // TPB
+            comptime kb = _kl_bwd_kernel[NG, Self.CLASSES, Self.STOCH]
+            ctx.enqueue_function[kb](
+                _dlt[BATCH * 2](gop), _dlt[BATCH](actp),
+                _dlt[NN](smpo), _dlt[NN](ppo), _dlt[NN](smpr), _dlt[NN](ppr),
+                _dlt[NN](g_post), _dlt[NN](g_prior), one_m_u,
+                grid_dim=nb, block_dim=TPB,
+            )

@@ -1,15 +1,17 @@
-"""DreamerV3Trainer smoke — synthetic replay, no env.
+"""DreamerV3Trainer GPU smoke — synthetic replay, no env, on Metal.
 
-Fills the sequence replay with pseudo-random transitions, then runs N
-`train_step`s. Gate: WM loss + AC loss finite and both decrease (no NaN).
-This validates the assembled trainer (WM-BPTT + param-sync + imagination
-AC + DreamerOpt over all modules) end-to-end on a fixed buffer.
+GPU analog of `test_dreamerv3_trainer_smoke`: instantiates the trainer with
+`train_target="gpu"`, fills the (host-resident) sequence replay with
+pseudo-random transitions, then runs N `train_step`s end-to-end on device
+(WM-BPTT scan + param-sync + imagination AC + Polyak, all GPU).
+Gate: WM loss decreases (true supervised loss) and AC loss finite (no NaN).
 
-Run: `pixi run mojo run -I . tests/nn2/test_dreamerv3_trainer_smoke.mojo`
+Run: `pixi run -e apple mojo run -I . tests/nn2/test_dreamerv3_trainer_gpu_smoke.mojo`
 """
 
 from std.memory import alloc
 from std.testing import assert_true
+from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.deep_agents2.dreamerv3.trainer import DreamerV3Trainer
@@ -33,18 +35,18 @@ comptime T_IMAG = 4
 comptime CAP = 256
 
 comptime Tr = DreamerV3Trainer[
-    "cpu", OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU,
+    "gpu", OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU,
     PU, BINS, B, T, T_IMAG, CAP,
 ]
 
 
 def main() raises:
     print("=" * 70)
-    print("DreamerV3Trainer smoke (synthetic replay)")
+    print("DreamerV3Trainer GPU smoke (synthetic replay, Metal)")
     print("=" * 70)
-    var tr = Tr.make(lr=Scalar[DT](3e-3), learning_starts=0)
+    var ctx = DeviceContext()
+    var tr = Tr.make(ctx=ctx, lr=Scalar[DT](3e-3), learning_starts=0)
 
-    # fill replay with pseudo-random transitions
     var s = UInt64(12345)
     var ob = alloc[Scalar[DT]](OBS)
     var ac = alloc[Scalar[DT]](ACT)
@@ -84,11 +86,8 @@ def main() raises:
             print("  iter", ITERS - 1, "  WM =", last_wm, " AC =", last_ac)
 
     print("  WM:", first_wm, "->", last_wm, "  AC:", first_ac, "->", last_ac)
-    # WM loss is a true supervised loss → must decrease. The AC "loss" is an
-    # RL objective (policy_loss = −(logpi·adv + ent), can be negative and
-    # non-monotonic), so we only gate it finite + no NaN.
-    assert_true(last_wm < first_wm, "WM loss must decrease")
+    assert_true(last_wm < first_wm, "GPU WM loss must decrease")
     assert_true(last_ac == last_ac, "AC loss finite")
     print("=" * 70)
-    print("SMOKE PASSED — DreamerV3Trainer trains (WM↓, AC finite), no NaN")
+    print("GPU SMOKE PASSED — DreamerV3Trainer trains on Metal (WM↓, AC finite)")
     print("=" * 70)

@@ -120,10 +120,9 @@ struct DreamerV3Trainer[
         lr: Scalar[DT] = Scalar[DT](4e-5),
         learning_starts: Int = 200,
     ) raises -> Self:
-        comptime assert Self.train_target == "cpu", (
-            "DreamerV3Trainer: GPU lands in PR5c Step 5 (custom ops CPU-only);"
-            " composition is already GPU-shaped via train_target/ctx."
-        )
+        comptime assert (
+            Self.train_target == "cpu" or Self.train_target == "gpu"
+        ), "DreamerV3Trainer: train_target must be 'cpu' or 'gpu'"
         var enc = Self.EncT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
         var core = Self.CoreT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
         var dec = Self.DecT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
@@ -161,7 +160,9 @@ struct DreamerV3Trainer[
             wm_blk=Self.WMBlk.make[Self.train_target](ctx=ctx),
             sync_blk=Self.SyncBlk.make[Self.train_target](ctx=ctx),
             ac_blk=Self.ACBlk.make[Self.train_target](ctx=ctx),
-            replay=Self.RepT.make[Self.train_target](ctx=ctx),
+            # Replay stays host-resident on both targets; the GPU WMStep
+            # uploads the sampled batch per-step (so make["cpu"] always).
+            replay=Self.RepT.make["cpu"](ctx=ctx),
             retnorm=retnorm^,
             bins=bins^,
             state=Self.StateT.make[Self.train_target](ctx=ctx),
@@ -204,7 +205,9 @@ struct DreamerV3Trainer[
             self.oe, self.ocore, self.odec, self.orew, self.ocon,
         )
         # core/prior → imagine mirror
-        self.sync_blk.step[Self.train_target](self.core, self.imagine)
+        self.sync_blk.step[Self.train_target](
+            self.core, self.imagine, ctx=self.ctx
+        )
         # imagination AC + Polyak → state.last_ac_loss
         self.ac_blk.step[Self.train_target](
             self.state, self.imagine, self.value, self.slowvalue, self.policy,

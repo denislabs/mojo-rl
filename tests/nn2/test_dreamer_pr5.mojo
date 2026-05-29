@@ -5,7 +5,9 @@ Ground truth `tests/nn2/dreamerv3/fixtures/pr5_fixture.txt` from
 `utils.Normalize`/`SlowModel`). All ≤1e-4.
 
 Covers: TwoHot pred/loss, symexp bin generation, bounded_normal logp/entropy,
-SlowModel Polyak, imag_loss (policy/value/ret), repl_loss (repval/ret).
+imag_loss (policy/value/ret), repl_loss (repval/ret). (The standalone
+`SlowModelHead` Polyak prototype was retired 2026-05-29 — the live trainer
+uses `polyak_module` from `polyak.mojo`; its `sm.*` fixture is left in place.)
 
 Run: `pixi run mojo run -I . tests/nn2/test_dreamer_pr5.mojo`
 """
@@ -20,7 +22,6 @@ from mojo_rl.deep_agents2.dreamerv3.twohot import (
 from mojo_rl.deep_agents2.dreamerv3.dists import (
     bounded_mean, bounded_std, normal_logp, normal_entropy,
 )
-from mojo_rl.deep_agents2.dreamerv3.slow_head import SlowModelHead
 from mojo_rl.deep_agents2.dreamerv3.imag_loss import imag_loss_cpu
 from mojo_rl.deep_agents2.dreamerv3.repl_loss import repl_loss_cpu
 from mojo_rl.deep_agents2.dreamerv3.normalize import PercentileNormalize
@@ -160,25 +161,6 @@ def test_normal() raises:
     print("  ok")
 
 
-def test_slow_head() raises:
-    print("test_slow_head (Polyak 50 steps) ...")
-    var content: String
-    with open(FIXTURE, "r") as f:
-        content = String(f.read())
-    var lines = _split_lines(content)
-    var rate = _get_scalar(lines, "sm.rate")
-    var src = _buf(_read_flat(lines, "sm.src"))
-    var init = _read_flat(lines, "sm.init")
-
-    var sm = SlowModelHead.make(len(init), _buf(init), rate, 1)
-    for _ in range(50):
-        sm.update(src)
-    var d = _diff(sm.values, _read_flat(lines, "sm.after50"))
-    print("  polyak after50 diff =", d)
-    assert_true(d < Scalar[DT](1e-5), "SlowModelHead Polyak parity")
-    print("  ok")
-
-
 def test_imag_loss() raises:
     print("test_imag_loss (policy / value / ret) ...")
     var content: String
@@ -257,7 +239,6 @@ def main() raises:
     print("=" * 70)
     test_twohot()
     test_normal()
-    test_slow_head()
     test_imag_loss()
     test_repl_loss()
     print("=" * 70)

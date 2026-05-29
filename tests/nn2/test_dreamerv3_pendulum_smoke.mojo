@@ -35,8 +35,8 @@ comptime T_IMAG = 6
 comptime CAP = 4096
 
 comptime Tr = DreamerV3Trainer[
-    OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU, PU,
-    BINS, B, T, T_IMAG, CAP,
+    "cpu", OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU,
+    PU, BINS, B, T, T_IMAG, CAP,
 ]
 
 
@@ -75,13 +75,14 @@ def main() raises:
         if step >= LEARN_START and step % TRAIN_EVERY == 0:
             var ok = tr.train_step()
             if ok:
-                assert_true(tr.last_wm_loss == tr.last_wm_loss, "WM finite")
-                assert_true(tr.last_ac_loss == tr.last_ac_loss, "AC finite")
+                var wm = tr.last_wm_loss()
+                var ac = tr.last_ac_loss()
+                assert_true(wm == wm, "WM finite")
+                assert_true(ac == ac, "AC finite")
                 if n_train == 0:
-                    first_wm = tr.last_wm_loss
-                    print("  first train: WM =", tr.last_wm_loss,
-                          " AC =", tr.last_ac_loss)
-                last_wm = tr.last_wm_loss
+                    first_wm = wm
+                    print("  first train: WM =", wm, " AC =", ac)
+                last_wm = wm
                 n_train += 1
 
     print("  trained", n_train, "steps; WM:", first_wm, "->", last_wm,

@@ -1,0 +1,142 @@
+"""DreamerV3 (nn2) — Pendulum lighthouse driver.
+
+PR5c Step 7. End-to-end DreamerV3 world-model + actor-critic training on
+PendulumV2 (CPU) using the block-composed `DreamerV3Agent`: on-policy
+running-carry action selection, sequence replay, WM-BPTT + imagination AC,
+periodic greedy eval.
+
+⚠️ This is the lighthouse SCAFFOLD — convergence/tuning is user-in-loop (see
+`docs/DREAMERV3_PR5C_RUNBOOK.md` §"Decision points"). Pass = mean_ret(10) ≥
+−200 @ ~1M steps; CI early signal at 30k: mean_ret > −1250 (beats random).
+
+Known v1 caveats before expecting convergence:
+  - act = GELU; the size1m/dmc config wants SiLU (PR5c Step 5). Swap
+    `GELU`→`SiLU` in `nets.mojo` + the wm graph Sequential nodes.
+  - CPU only; the full size1m config (DETER=512, B=16, T=64, BINS=255) is
+    SLOW on CPU — each train_step is a 64-step BPTT. Use GPU (Step 5) for
+    the real 1M run, or the smaller config below for a CPU CI gate.
+  - imagination starts from the final posterior carry (not every state).
+  - tune lr / warmup / free_nats / loss_scales / train_every as needed.
+
+Run (CPU):
+  pixi run mojo run -I . examples/pendulum/pendulum_dreamerv3_nn2_agent.mojo
+"""
+
+from std.memory import alloc
+from std.random import random_float64, seed
+
+from mojo_rl.nn2.constants import DT
+from mojo_rl.deep_agents2.dreamerv3.agent import DreamerV3Agent
+from mojo_rl.envs.pendulum import PendulumV2
+
+# ── config ─────────────────────────────────────────────────────────────
+# size1m target (runbook): DETER=512 H=64 CLASSES=4 STOCH=32 BLOCKS=8
+# units=64 BINS=255 B=16 T=64 T_IMAG=15. CPU-light default below; bump to
+# size1m for the real (GPU) run.
+comptime OBS = 3
+comptime ACT = 1
+comptime DETER = 256
+comptime H = 64
+comptime STOCH = 32
+comptime CLASSES = 4
+comptime BLOCKS = 8
+comptime TOKEN = 64
+comptime DEC_U = 64
+comptime HU = 64
+comptime VU = 64
+comptime PU = 64
+comptime BINS = 255
+comptime B = 16
+comptime T = 32
+comptime T_IMAG = 15
+comptime CAP = 1_000_000
+
+comptime Ag = DreamerV3Agent[
+    "cpu", OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU,
+    PU, BINS, B, T, T_IMAG, CAP,
+]
+
+comptime TOTAL_STEPS = 1_100_000
+comptime LEARN_START = 1024
+comptime TRAIN_EVERY = 16        # env steps per train_step (tunable)
+comptime EVAL_EVERY = 5000
+comptime EVAL_EPISODES = 10
+comptime EP_LEN = 200
+
+
+def _greedy_eval(mut ag: Ag, mut env: PendulumV2[DT]) raises -> Scalar[DT]:
+    var obsbuf = alloc[Scalar[DT]](OBS)
+    var actbuf = alloc[Scalar[DT]](ACT)
+    var total: Scalar[DT] = 0.0
+    for _e in range(EVAL_EPISODES):
+        ag.reset_belief()
+        var o = env.reset_obs_list()
+        for _s in range(EP_LEN):
+            for i in range(OBS):
+                obsbuf[i] = o[i]
+            ag.select_greedy_action(obsbuf, actbuf)
+            var al = List[Scalar[DT]]()
+            al.append(actbuf[0])
+            var r = env.step_continuous_vec[DT](al)
+            total += r[1]
+            o = r[0].copy()
+            if r[2]:
+                break
+    obsbuf.free(); actbuf.free()
+    return total / Scalar[DT](EVAL_EPISODES)
+
+
+def main() raises:
+    print("=" * 70)
+    print("DreamerV3 (nn2) Pendulum lighthouse —", TOTAL_STEPS, "steps")
+    print("=" * 70)
+    seed(42)
+    var env = PendulumV2[DT]()
+    var ag = Ag.make(
+        lr=Scalar[DT](4e-5), learning_starts=LEARN_START,
+        action_scale=Scalar[DT](2.0),
+    )
+
+    var obs = env.reset_obs_list()
+    var obsbuf = alloc[Scalar[DT]](OBS)
+    var actbuf = alloc[Scalar[DT]](ACT)
+
+    for step in range(TOTAL_STEPS):
+        for i in range(OBS):
+            obsbuf[i] = obs[i]
+        if step < LEARN_START:
+            actbuf[0] = Scalar[DT](random_float64() * 4.0 - 2.0)
+        else:
+            ag.select_action(obsbuf, actbuf, explore=True)
+        var al = List[Scalar[DT]]()
+        al.append(actbuf[0])
+        var res = env.step_continuous_vec[DT](al)
+        ag.record(
+            obsbuf, actbuf, res[1],
+            Scalar[DT](1.0) if res[2] else Scalar[DT](0.0),
+        )
+        obs = res[0].copy()
+        if res[2]:
+            obs = env.reset_obs_list()
+            ag.reset_belief()
+        if step >= LEARN_START and step % TRAIN_EVERY == 0:
+            _ = ag.train_step()
+
+        if step > 0 and step % EVAL_EVERY == 0:
+            # eval mutates env episode state; use a fresh env for eval
+            var eval_env = PendulumV2[DT]()
+            var mret = _greedy_eval(ag, eval_env)
+            print(
+                "  step", step, " mean_ret(", EVAL_EPISODES, ")=", mret,
+                " WM=", ag.last_wm_loss(), " AC=", ag.last_ac_loss(),
+            )
+            # restore collection env episode
+            obs = env.reset_obs_list()
+            ag.reset_belief()
+
+    var final_ret = _greedy_eval(ag, env)
+    print("=" * 70)
+    print("FINAL mean_ret(", EVAL_EPISODES, ") =", final_ret,
+          "  (lighthouse pass: >= -200)")
+    print("=" * 70)
+    obsbuf.free(); actbuf.free()

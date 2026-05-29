@@ -1,7 +1,9 @@
 """PR-2 DreamerV3 math-primitive parity vs real jax.
 
 Ground truth: `tests/nn2/dreamerv3/fixtures/pr2_fixture.txt` (extract_pr2.py).
-Covers lambda_return (CPU), OneHotKL forward+backward, PercentileNormalize.
+Covers OneHotKL forward+backward + PercentileNormalize. (The standalone
+`lambda_return` op was retired 2026-05-29 — the live AC path inlines the
+λ-return recurrence in `imag_loss`; its fixture section is left in place.)
 """
 
 from std.memory import alloc
@@ -9,7 +11,6 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.deep_agents2.dreamerv3.lambda_return import lambda_return_cpu
 from mojo_rl.deep_agents2.dreamerv3.onehot_kl import OneHotKL
 from mojo_rl.deep_agents2.dreamerv3.normalize import PercentileNormalize
 
@@ -69,43 +70,6 @@ def _buf(src: List[Scalar[DT]]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     for i in range(len(src)):
         p[i] = src[i]
     return p
-
-
-# ── lambda_return ───────────────────────────────────────────────────────
-
-
-def test_lambda_return() raises:
-    print("test_lambda_return ...")
-    var content: String
-    with open(FIXTURE, "r") as f:
-        content = String(f.read())
-    var lines = _split_lines(content)
-    comptime B = 2
-    comptime T = 6
-    var disc = Scalar[DT](_get_scalar(lines, "lr.disc"))
-    var lam = Scalar[DT](_get_scalar(lines, "lr.lam"))
-    var last = _buf(_read_flat(lines, "lr.last"))
-    var term = _buf(_read_flat(lines, "lr.term"))
-    var rew = _buf(_read_flat(lines, "lr.rew"))
-    var boot = _buf(_read_flat(lines, "lr.boot"))
-    var ret_ref = _read_flat(lines, "lr.ret")
-    var out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * (T - 1))
-
-    var last_t = TileTensor(last, row_major[B, T]())
-    var term_t = TileTensor(term, row_major[B, T]())
-    var rew_t = TileTensor(rew, row_major[B, T]())
-    var boot_t = TileTensor(boot, row_major[B, T]())
-    var out_t = TileTensor(out, row_major[B, T - 1]())
-
-    lambda_return_cpu[B, T](last_t, term_t, rew_t, boot_t, out_t, disc, lam)
-
-    var got = List[Scalar[DT]]()
-    for i in range(B * (T - 1)):
-        got.append(out[i])
-    var d = _max_abs_diff(got, ret_ref)
-    print("  lambda_return diff =", d)
-    assert_true(d < Scalar[DT](1e-5), "lambda_return parity vs jax")
-    print("  ok")
 
 
 # ── OneHotKL ──────────────────────────────────────────────────────────────
@@ -218,7 +182,6 @@ def main() raises:
     print("=" * 70)
     print("PR-2 DreamerV3 math primitives (vs jax)")
     print("=" * 70)
-    test_lambda_return()
     test_onehot_kl()
     test_percentile_normalize()
     print("=" * 70)

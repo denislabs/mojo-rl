@@ -14,11 +14,24 @@ device-to-device copy. v1 trains the WM on CPU.
 """
 
 from layout import TileTensor
+from std.gpu import global_idx
 from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import ParamVisitor, GraphNode
 from mojo_rl.nn2.combinators.compute_graph import ComputeGraph
+
+
+def _pcopy_k(
+    src: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    n: Int,
+):
+    """Runtime-length device→device copy (one param slab)."""
+    var i = Int(global_idx.x)
+    if i < n:
+        dst[i] = src[i]
 
 
 @fieldwise_init
@@ -83,6 +96,42 @@ struct _CopyByNameVisitor(ParamVisitor):
                 return
 
 
+@fieldwise_init
+struct _CopyByNameVisitorGPU(ParamVisitor):
+    """GPU mirror of `_CopyByNameVisitor` — enqueues a device copy kernel
+    for each destination param whose name matches a collected source."""
+
+    var names: UnsafePointer[List[String], MutAnyOrigin]
+    var ptrs: UnsafePointer[
+        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], MutAnyOrigin
+    ]
+    var lens: UnsafePointer[List[Int], MutAnyOrigin]
+    var ctx: DeviceContext
+
+    def visit(
+        mut self,
+        name: String,
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        n_elems: Int,
+        apply_decay: Bool,
+    ) raises:
+        var dp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        for i in range(len(self.names[])):
+            if self.names[][i] == name:
+                var sp = self.ptrs[][i]
+                var nn = self.lens[][i] if self.lens[][i] < n_elems else n_elems
+                var nb = (nn + TPB - 1) // TPB
+                self.ctx.enqueue_function[_pcopy_k](
+                    sp, dp, nn, grid_dim=nb, block_dim=TPB
+                )
+                return
+
+
 # Mojo forbids two variadic `*NODES` packs in one signature, so the sync
 # is two calls (collect from src, apply to dst) — each over one graph.
 
@@ -95,8 +144,8 @@ def collect_params[
     mut ptrs: List[UnsafePointer[Scalar[DT], MutAnyOrigin]],
     mut lens: List[Int],
 ) raises:
-    """Record (name, param-ptr, n) for every param in `src`."""
-    comptime assert target == "cpu", "collect_params: CPU-only (v1)"
+    """Record (name, param-ptr, n) for every param in `src`. Target-agnostic
+    (just stores pointers; the pointer is host on CPU, device on GPU)."""
     var cv = _CollectVisitor(
         names=UnsafePointer(to=names),
         ptrs=UnsafePointer(to=ptrs),
@@ -112,13 +161,23 @@ def apply_params[
     mut names: List[String],
     mut ptrs: List[UnsafePointer[Scalar[DT], MutAnyOrigin]],
     mut lens: List[Int],
+    ctx: Optional[DeviceContext] = None,
 ) raises:
     """Copy every shared-name param value from the collected source into
-    `dst` (skips names with no match)."""
-    comptime assert target == "cpu", "apply_params: CPU-only (v1)"
-    var cp = _CopyByNameVisitor(
-        names=UnsafePointer(to=names),
-        ptrs=UnsafePointer(to=ptrs),
-        lens=UnsafePointer(to=lens),
-    )
-    dst.for_each_param[target, _CopyByNameVisitor](String(""), cp)
+    `dst` (skips names with no match). CPU = host slab copy; GPU = enqueue a
+    device copy kernel per matched param."""
+    comptime if target == "cpu":
+        var cp = _CopyByNameVisitor(
+            names=UnsafePointer(to=names),
+            ptrs=UnsafePointer(to=ptrs),
+            lens=UnsafePointer(to=lens),
+        )
+        dst.for_each_param[target, _CopyByNameVisitor](String(""), cp)
+    else:
+        var cp = _CopyByNameVisitorGPU(
+            names=UnsafePointer(to=names),
+            ptrs=UnsafePointer(to=ptrs),
+            lens=UnsafePointer(to=lens),
+            ctx=ctx.value(),
+        )
+        dst.for_each_param[target, _CopyByNameVisitorGPU](String(""), cp)
