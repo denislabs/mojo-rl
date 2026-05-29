@@ -34,8 +34,10 @@ from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.block_linear import BlockLinear
 from mojo_rl.nn2.primitives.rms_norm import RMSNorm
-from mojo_rl.nn2.primitives.gelu import GELU
+from mojo_rl.nn2.primitives.elementwise import Elementwise
+from mojo_rl.nn2.primitives.ops.gelu_op import GELUOp
 from mojo_rl.nn2.primitives.concat import Concat
+from mojo_rl.nn2.core.element_op import ElementOp
 from .rssm_ops import (
     ActionSquash, BlockGroupAssemble, GRUGate, StraightThroughSample,
 )
@@ -53,35 +55,35 @@ from .nets import DreamerDecoder, DreamerRewardMLP, DreamerContMLP
 # ──────────────────────────────────────────────────────────────────────
 
 
-comptime DecLossGraph[SC: Int, DETER: Int, OBS: Int, DEC_U: Int] = ComputeGraph[
+comptime DecLossGraph[SC: Int, DETER: Int, OBS: Int, DEC_U: Int, A: ElementOp = GELUOp] = ComputeGraph[
     1,
     InputSlot["stoch_new", SC],
     InputSlot["nd", DETER],
     InputSlot["rtgt", OBS],
     Node["decin", Concat[SC, DETER],                   "stoch_new", "nd"],
-    Node["dec",   DreamerDecoder[SC + DETER, OBS, DEC_U], "decin"],
+    Node["dec",   DreamerDecoder[SC + DETER, OBS, DEC_U, A], "decin"],
     Node["recon", SymlogMSELoss[OBS],                  "dec", "rtgt"],
 ]
 
 
-comptime RewLossGraph[DETER: Int, SC: Int, HU: Int, BINS: Int] = ComputeGraph[
+comptime RewLossGraph[DETER: Int, SC: Int, HU: Int, BINS: Int, A: ElementOp = GELUOp] = ComputeGraph[
     1,
     InputSlot["nd", DETER],
     InputSlot["stoch_new", SC],
     InputSlot["rtgt", 1],
     Node["feat", Concat[DETER, SC],                    "nd", "stoch_new"],
-    Node["rew",  DreamerRewardMLP[DETER + SC, HU, BINS], "feat"],
+    Node["rew",  DreamerRewardMLP[DETER + SC, HU, BINS, A], "feat"],
     Node["rewl", TwoHotLoss[BINS],                     "rew", "rtgt"],
 ]
 
 
-comptime ConLossGraph[DETER: Int, SC: Int, HU: Int] = ComputeGraph[
+comptime ConLossGraph[DETER: Int, SC: Int, HU: Int, A: ElementOp = GELUOp] = ComputeGraph[
     1,
     InputSlot["nd", DETER],
     InputSlot["stoch_new", SC],
     InputSlot["ctgt", 1],
     Node["feat", Concat[DETER, SC],                    "nd", "stoch_new"],
-    Node["con",  DreamerContMLP[DETER + SC, HU],       "feat"],
+    Node["con",  DreamerContMLP[DETER + SC, HU, A],       "feat"],
     Node["conl", BinaryLoss,                           "con", "ctgt"],
 ]
 
@@ -96,21 +98,22 @@ comptime ConLossGraph[DETER: Int, SC: Int, HU: Int] = ComputeGraph[
 
 comptime WMImagineGraph[
     DETER: Int, H: Int, STOCH: Int, CLASSES: Int, BLOCKS: Int, ACT: Int,
+    A: ElementOp = GELUOp,
 ] = ComputeGraph[
     DETER + STOCH * CLASSES,
     InputSlot["deter", DETER],
     InputSlot["stoch", STOCH * CLASSES],
     InputSlot["action", ACT],
     Node["a",    ActionSquash[ACT],                                  "action"],
-    Node["x0",   Sequential[Linear[DETER, H], RMSNorm[H], GELU[H]],   "deter"],
-    Node["x1",   Sequential[Linear[STOCH * CLASSES, H], RMSNorm[H], GELU[H]], "stoch"],
-    Node["x2",   Sequential[Linear[ACT, H], RMSNorm[H], GELU[H]],     "a"],
+    Node["x0",   Sequential[Linear[DETER, H], RMSNorm[H], Elementwise[H, A]],   "deter"],
+    Node["x1",   Sequential[Linear[STOCH * CLASSES, H], RMSNorm[H], Elementwise[H, A]], "stoch"],
+    Node["x2",   Sequential[Linear[ACT, H], RMSNorm[H], Elementwise[H, A]],     "a"],
     Node["dhin", BlockGroupAssemble[DETER, H, BLOCKS], "deter", "x0", "x1", "x2"],
-    Node["h",    Sequential[BlockLinear[DETER + 3 * H * BLOCKS, DETER, BLOCKS], RMSNorm[DETER], GELU[DETER]], "dhin"],
+    Node["h",    Sequential[BlockLinear[DETER + 3 * H * BLOCKS, DETER, BLOCKS], RMSNorm[DETER], Elementwise[DETER, A]], "dhin"],
     Node["gru",  BlockLinear[DETER, 3 * DETER, BLOCKS],              "h"],
     Node["nd",   GRUGate[DETER, BLOCKS],                             "gru", "deter"],
-    Node["pr0",   Sequential[Linear[DETER, H], RMSNorm[H], GELU[H]], "nd"],
-    Node["pr1",   Sequential[Linear[H, H], RMSNorm[H], GELU[H]],     "pr0"],
+    Node["pr0",   Sequential[Linear[DETER, H], RMSNorm[H], Elementwise[H, A]], "nd"],
+    Node["pr1",   Sequential[Linear[H, H], RMSNorm[H], Elementwise[H, A]],     "pr0"],
     Node["prior", Linear[H, STOCH * CLASSES],                        "pr1"],
     Node["stoch_new", StraightThroughSample[STOCH, CLASSES],         "prior"],
     Node["feat",  Concat[DETER, STOCH * CLASSES],                    "nd", "stoch_new"],
@@ -124,7 +127,7 @@ comptime WMImagineGraph[
 
 comptime WMObserveGraph[
     DETER: Int, H: Int, STOCH: Int, CLASSES: Int, BLOCKS: Int,
-    ACT: Int, TOKEN: Int,
+    ACT: Int, TOKEN: Int, A: ElementOp = GELUOp,
 ] = ComputeGraph[
     STOCH * CLASSES,
     InputSlot["deter", DETER],
@@ -132,15 +135,15 @@ comptime WMObserveGraph[
     InputSlot["action", ACT],
     InputSlot["tokens", TOKEN],
     Node["a",    ActionSquash[ACT],                                  "action"],
-    Node["x0",   Sequential[Linear[DETER, H], RMSNorm[H], GELU[H]],   "deter"],
-    Node["x1",   Sequential[Linear[STOCH * CLASSES, H], RMSNorm[H], GELU[H]], "stoch"],
-    Node["x2",   Sequential[Linear[ACT, H], RMSNorm[H], GELU[H]],     "a"],
+    Node["x0",   Sequential[Linear[DETER, H], RMSNorm[H], Elementwise[H, A]],   "deter"],
+    Node["x1",   Sequential[Linear[STOCH * CLASSES, H], RMSNorm[H], Elementwise[H, A]], "stoch"],
+    Node["x2",   Sequential[Linear[ACT, H], RMSNorm[H], Elementwise[H, A]],     "a"],
     Node["dhin", BlockGroupAssemble[DETER, H, BLOCKS], "deter", "x0", "x1", "x2"],
-    Node["h",    Sequential[BlockLinear[DETER + 3 * H * BLOCKS, DETER, BLOCKS], RMSNorm[DETER], GELU[DETER]], "dhin"],
+    Node["h",    Sequential[BlockLinear[DETER + 3 * H * BLOCKS, DETER, BLOCKS], RMSNorm[DETER], Elementwise[DETER, A]], "dhin"],
     Node["gru",  BlockLinear[DETER, 3 * DETER, BLOCKS],              "h"],
     Node["nd",   GRUGate[DETER, BLOCKS],                             "gru", "deter"],
     Node["obsin",  Concat[DETER, TOKEN],                             "nd", "tokens"],
-    Node["obshid", Sequential[Linear[DETER + TOKEN, H], RMSNorm[H], GELU[H]], "obsin"],
+    Node["obshid", Sequential[Linear[DETER + TOKEN, H], RMSNorm[H], Elementwise[H, A]], "obsin"],
     Node["post",   Linear[H, STOCH * CLASSES],                       "obshid"],
 ]
 
@@ -161,7 +164,7 @@ comptime WMObserveGraph[
 
 comptime WMCoreGraph[
     DETER: Int, H: Int, STOCH: Int, CLASSES: Int, BLOCKS: Int,
-    ACT: Int, TOKEN: Int,
+    ACT: Int, TOKEN: Int, A: ElementOp = GELUOp,
 ] = ComputeGraph[
     2 + DETER + STOCH * CLASSES,
     InputSlot["deter", DETER],
@@ -169,18 +172,18 @@ comptime WMCoreGraph[
     InputSlot["action", ACT],
     InputSlot["tokens", TOKEN],
     Node["a",    ActionSquash[ACT],                                  "action"],
-    Node["x0",   Sequential[Linear[DETER, H], RMSNorm[H], GELU[H]],   "deter"],
-    Node["x1",   Sequential[Linear[STOCH * CLASSES, H], RMSNorm[H], GELU[H]], "stoch"],
-    Node["x2",   Sequential[Linear[ACT, H], RMSNorm[H], GELU[H]],     "a"],
+    Node["x0",   Sequential[Linear[DETER, H], RMSNorm[H], Elementwise[H, A]],   "deter"],
+    Node["x1",   Sequential[Linear[STOCH * CLASSES, H], RMSNorm[H], Elementwise[H, A]], "stoch"],
+    Node["x2",   Sequential[Linear[ACT, H], RMSNorm[H], Elementwise[H, A]],     "a"],
     Node["dhin", BlockGroupAssemble[DETER, H, BLOCKS], "deter", "x0", "x1", "x2"],
-    Node["h",    Sequential[BlockLinear[DETER + 3 * H * BLOCKS, DETER, BLOCKS], RMSNorm[DETER], GELU[DETER]], "dhin"],
+    Node["h",    Sequential[BlockLinear[DETER + 3 * H * BLOCKS, DETER, BLOCKS], RMSNorm[DETER], Elementwise[DETER, A]], "dhin"],
     Node["gru",  BlockLinear[DETER, 3 * DETER, BLOCKS],              "h"],
     Node["nd",   GRUGate[DETER, BLOCKS],                             "gru", "deter"],
     Node["obsin",  Concat[DETER, TOKEN],                             "nd", "tokens"],
-    Node["obshid", Sequential[Linear[DETER + TOKEN, H], RMSNorm[H], GELU[H]], "obsin"],
+    Node["obshid", Sequential[Linear[DETER + TOKEN, H], RMSNorm[H], Elementwise[H, A]], "obsin"],
     Node["post",   Linear[H, STOCH * CLASSES],                       "obshid"],
-    Node["pr0",   Sequential[Linear[DETER, H], RMSNorm[H], GELU[H]], "nd"],
-    Node["pr1",   Sequential[Linear[H, H], RMSNorm[H], GELU[H]],     "pr0"],
+    Node["pr0",   Sequential[Linear[DETER, H], RMSNorm[H], Elementwise[H, A]], "nd"],
+    Node["pr1",   Sequential[Linear[H, H], RMSNorm[H], Elementwise[H, A]],     "pr0"],
     Node["prior", Linear[H, STOCH * CLASSES],                        "pr1"],
     Node["kl",    OneHotKLLoss[STOCH, CLASSES],                      "post", "prior"],
     Node["stoch_new", StraightThroughSample[STOCH, CLASSES],         "post"],
@@ -197,6 +200,7 @@ comptime WMCoreGraph[
 comptime WMLossGraph[
     DETER: Int, H: Int, STOCH: Int, CLASSES: Int, BLOCKS: Int,
     ACT: Int, TOKEN: Int, OBS: Int, DEC_U: Int, HU: Int, BINS: Int,
+    A: ElementOp = GELUOp,
 ] = ComputeGraph[
     5 + DETER + STOCH * CLASSES,
     InputSlot["deter", DETER],
@@ -207,28 +211,28 @@ comptime WMLossGraph[
     InputSlot["rew_target", 1],
     InputSlot["con_target", 1],
     Node["a",    ActionSquash[ACT],                                  "action"],
-    Node["x0",   Sequential[Linear[DETER, H], RMSNorm[H], GELU[H]],   "deter"],
-    Node["x1",   Sequential[Linear[STOCH * CLASSES, H], RMSNorm[H], GELU[H]], "stoch"],
-    Node["x2",   Sequential[Linear[ACT, H], RMSNorm[H], GELU[H]],     "a"],
+    Node["x0",   Sequential[Linear[DETER, H], RMSNorm[H], Elementwise[H, A]],   "deter"],
+    Node["x1",   Sequential[Linear[STOCH * CLASSES, H], RMSNorm[H], Elementwise[H, A]], "stoch"],
+    Node["x2",   Sequential[Linear[ACT, H], RMSNorm[H], Elementwise[H, A]],     "a"],
     Node["dhin", BlockGroupAssemble[DETER, H, BLOCKS], "deter", "x0", "x1", "x2"],
-    Node["h",    Sequential[BlockLinear[DETER + 3 * H * BLOCKS, DETER, BLOCKS], RMSNorm[DETER], GELU[DETER]], "dhin"],
+    Node["h",    Sequential[BlockLinear[DETER + 3 * H * BLOCKS, DETER, BLOCKS], RMSNorm[DETER], Elementwise[DETER, A]], "dhin"],
     Node["gru",  BlockLinear[DETER, 3 * DETER, BLOCKS],              "h"],
     Node["nd",   GRUGate[DETER, BLOCKS],                             "gru", "deter"],
     Node["obsin",  Concat[DETER, TOKEN],                             "nd", "tokens"],
-    Node["obshid", Sequential[Linear[DETER + TOKEN, H], RMSNorm[H], GELU[H]], "obsin"],
+    Node["obshid", Sequential[Linear[DETER + TOKEN, H], RMSNorm[H], Elementwise[H, A]], "obsin"],
     Node["post",   Linear[H, STOCH * CLASSES],                       "obshid"],
-    Node["pr0",   Sequential[Linear[DETER, H], RMSNorm[H], GELU[H]], "nd"],
-    Node["pr1",   Sequential[Linear[H, H], RMSNorm[H], GELU[H]],     "pr0"],
+    Node["pr0",   Sequential[Linear[DETER, H], RMSNorm[H], Elementwise[H, A]], "nd"],
+    Node["pr1",   Sequential[Linear[H, H], RMSNorm[H], Elementwise[H, A]],     "pr0"],
     Node["prior", Linear[H, STOCH * CLASSES],                        "pr1"],
     Node["kl",    OneHotKLLoss[STOCH, CLASSES],                      "post", "prior"],
     Node["stoch_new", StraightThroughSample[STOCH, CLASSES],         "post"],
     Node["decin", Concat[STOCH * CLASSES, DETER],                    "stoch_new", "nd"],
-    Node["dec",   DreamerDecoder[STOCH * CLASSES + DETER, OBS, DEC_U], "decin"],
+    Node["dec",   DreamerDecoder[STOCH * CLASSES + DETER, OBS, DEC_U, A], "decin"],
     Node["recon", SymlogMSELoss[OBS],                                "dec", "recon_target"],
     Node["feat",  Concat[DETER, STOCH * CLASSES],                    "nd", "stoch_new"],
-    Node["rew",   DreamerRewardMLP[DETER + STOCH * CLASSES, HU, BINS], "feat"],
+    Node["rew",   DreamerRewardMLP[DETER + STOCH * CLASSES, HU, BINS, A], "feat"],
     Node["rewl",  TwoHotLoss[BINS],                                  "rew", "rew_target"],
-    Node["con",   DreamerContMLP[DETER + STOCH * CLASSES, HU],       "feat"],
+    Node["con",   DreamerContMLP[DETER + STOCH * CLASSES, HU, A],       "feat"],
     Node["conl",  BinaryLoss,                                        "con", "con_target"],
     # losses → [B,5]; then append carry passthrough (nd, stoch_new). Graph
     # nodes cap at ARITY=4, so the assemble is two-level (4-way + 3-way).

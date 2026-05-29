@@ -18,54 +18,61 @@ Layer counts pinned to v1 defaults (enc/dec 2 hidden, prior 2, head MLP 1);
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.rms_norm import RMSNorm
-from mojo_rl.nn2.primitives.gelu import GELU
+from mojo_rl.nn2.primitives.elementwise import Elementwise
+from mojo_rl.nn2.primitives.ops.gelu_op import GELUOp
 from mojo_rl.nn2.primitives.symlog import Symlog
+from mojo_rl.nn2.core.element_op import ElementOp
 
 
-# Encoder: symlog(obs) → [Linear, RMSNorm, GELU] × 2 → tokens[U]
-comptime DreamerEncoder[OBS: Int, U: Int] = Sequential[
+# Inter-layer activation is a comptime op `A` (default `GELUOp`, matching the
+# PR4/5b JAX fixtures so the validation spikes stay green). The production
+# trainer/agent pass `SwishOp` (size1m/dmc config `act: silu`). `Elementwise
+# [DIM, A]` == `GELU[DIM]` when A=GELUOp, `SiLU[DIM]` when A=SwishOp.
+
+
+# Encoder: symlog(obs) → [Linear, RMSNorm, act] × 2 → tokens[U]
+comptime DreamerEncoder[OBS: Int, U: Int, A: ElementOp = GELUOp] = Sequential[
     Symlog[OBS],
-    Linear[OBS, U], RMSNorm[U], GELU[U],
-    Linear[U, U], RMSNorm[U], GELU[U],
+    Linear[OBS, U], RMSNorm[U], Elementwise[U, A],
+    Linear[U, U], RMSNorm[U], Elementwise[U, A],
 ]
 
-# Decoder: concat([stoch,deter])[FEATIN] → [Linear,RMSNorm,GELU]×2 → pred[OBS]
-# (symlog_mse loss attaches separately; pred is the symlog-space output)
-comptime DreamerDecoder[FEATIN: Int, OBS: Int, U: Int] = Sequential[
-    Linear[FEATIN, U], RMSNorm[U], GELU[U],
-    Linear[U, U], RMSNorm[U], GELU[U],
+# Decoder: concat([stoch,deter])[FEATIN] → [Linear,RMSNorm,act]×2 → pred[OBS]
+comptime DreamerDecoder[FEATIN: Int, OBS: Int, U: Int, A: ElementOp = GELUOp] = Sequential[
+    Linear[FEATIN, U], RMSNorm[U], Elementwise[U, A],
+    Linear[U, U], RMSNorm[U], Elementwise[U, A],
     Linear[U, OBS],
 ]
 
-# RSSM prior: deter[DETER] → [Linear,RMSNorm,GELU]×2 → logit[SC]
-comptime DreamerPrior[DETER: Int, H: Int, SC: Int] = Sequential[
-    Linear[DETER, H], RMSNorm[H], GELU[H],
-    Linear[H, H], RMSNorm[H], GELU[H],
+# RSSM prior: deter[DETER] → [Linear,RMSNorm,act]×2 → logit[SC]
+comptime DreamerPrior[DETER: Int, H: Int, SC: Int, A: ElementOp = GELUOp] = Sequential[
+    Linear[DETER, H], RMSNorm[H], Elementwise[H, A],
+    Linear[H, H], RMSNorm[H], Elementwise[H, A],
     Linear[H, SC],
 ]
 
-# Reward head MLP (1 hidden): feat[FEAT] → [Linear,RMSNorm,GELU] → logits[BINS]
-comptime DreamerRewardMLP[FEAT: Int, U: Int, BINS: Int] = Sequential[
-    Linear[FEAT, U], RMSNorm[U], GELU[U],
+# Reward head MLP (1 hidden): feat[FEAT] → [Linear,RMSNorm,act] → logits[BINS]
+comptime DreamerRewardMLP[FEAT: Int, U: Int, BINS: Int, A: ElementOp = GELUOp] = Sequential[
+    Linear[FEAT, U], RMSNorm[U], Elementwise[U, A],
     Linear[U, BINS],
 ]
 
-# Cont head MLP (1 hidden): feat[FEAT] → [Linear,RMSNorm,GELU] → logit[1]
-comptime DreamerContMLP[FEAT: Int, U: Int] = Sequential[
-    Linear[FEAT, U], RMSNorm[U], GELU[U],
+# Cont head MLP (1 hidden): feat[FEAT] → [Linear,RMSNorm,act] → logit[1]
+comptime DreamerContMLP[FEAT: Int, U: Int, A: ElementOp = GELUOp] = Sequential[
+    Linear[FEAT, U], RMSNorm[U], Elementwise[U, A],
     Linear[U, 1],
 ]
 
 # Value/slowvalue head (1 hidden): feat[FEAT] → twohot logits[BINS].
 # Same shape as the reward MLP (symexp_twohot output).
-comptime DreamerValue[FEAT: Int, U: Int, BINS: Int] = Sequential[
-    Linear[FEAT, U], RMSNorm[U], GELU[U],
+comptime DreamerValue[FEAT: Int, U: Int, BINS: Int, A: ElementOp = GELUOp] = Sequential[
+    Linear[FEAT, U], RMSNorm[U], Elementwise[U, A],
     Linear[U, BINS],
 ]
 
 # Policy head (1 hidden): feat[FEAT] → [mean_raw[ACT], std_raw[ACT]] = 2·ACT.
 # `bounded_normal` (dists.mojo) maps mean_raw→tanh, std_raw→sigmoid-scaled.
-comptime DreamerPolicy[FEAT: Int, U: Int, ACT: Int] = Sequential[
-    Linear[FEAT, U], RMSNorm[U], GELU[U],
+comptime DreamerPolicy[FEAT: Int, U: Int, ACT: Int, A: ElementOp = GELUOp] = Sequential[
+    Linear[FEAT, U], RMSNorm[U], Elementwise[U, A],
     Linear[U, 2 * ACT],
 ]
