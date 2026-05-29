@@ -9,14 +9,21 @@ periodic greedy eval.
 `docs/DREAMERV3_PR5C_RUNBOOK.md` §"Decision points"). Pass = mean_ret(10) ≥
 −200 @ ~1M steps; CI early signal at 30k: mean_ret > −1250 (beats random).
 
+act = SiLU (SwishOp), as in the size1m/dmc config: the trainer/blocks/agent
+thread `SwishOp` through every WM + AC net (`blocks.mojo` / `trainer.mojo`).
+The `GELUOp` default on the `nets.mojo` / `wm.mojo` aliases is ONLY for the
+JAX-fixture validation spikes — it is overridden here. (Same for the GPU
+driver `pendulum_dreamerv3_nn2_gpu.mojo`.)
+
 Known v1 caveats before expecting convergence:
-  - act = GELU; the size1m/dmc config wants SiLU (PR5c Step 5). Swap
-    `GELU`→`SiLU` in `nets.mojo` + the wm graph Sequential nodes.
   - CPU only; the full size1m config (DETER=512, B=16, T=64, BINS=255) is
-    SLOW on CPU — each train_step is a 64-step BPTT. Use GPU (Step 5) for
-    the real 1M run, or the smaller config below for a CPU CI gate.
-  - imagination starts from the final posterior carry (not every state).
-  - tune lr / warmup / free_nats / loss_scales / train_every as needed.
+    SLOW on CPU — each train_step is a 64-step BPTT. Use the GPU driver
+    `pendulum_dreamerv3_nn2_gpu.mojo` for the real 1M run, or the smaller
+    config below for a CPU CI gate.
+  - imagination rolls out from ALL NS=T·B posterior carries (the reference).
+  - convergence is still open (off-distribution imagined-reward optimism —
+    a WM-quality/scale issue). Tune lr / warmup / free_nats / loss_scales /
+    train_every, and see the GPU-phase levers in the runbook.
 
 Run (CPU):
   pixi run mojo run -I . examples/pendulum/pendulum_dreamerv3_nn2_agent.mojo
