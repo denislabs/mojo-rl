@@ -247,6 +247,10 @@ struct SymlogMSELoss[OBS: Int](Module):
     comptime IN_DIMS = InlineArray[Int, 2](fill=Self.OBS)
     comptime OUT_DIM = 1
 
+    @staticmethod
+    def display_label() -> String:
+        return String("SymlogMSE")
+
     var _pred_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var _target_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var ts: TargetStorage
@@ -366,6 +370,10 @@ struct TwoHotLoss[BINS: Int](Module):
     comptime ARITY: Int = 2
     comptime IN_DIMS = Self._mk_in_dims()
     comptime OUT_DIM = 1
+
+    @staticmethod
+    def display_label() -> String:
+        return String("TwoHot")
 
     @staticmethod
     def _mk_in_dims() -> InlineArray[Int, 2]:
@@ -522,6 +530,10 @@ struct BinaryLoss(Module):
     comptime ARITY: Int = 2
     comptime IN_DIMS = InlineArray[Int, 2](fill=1)
     comptime OUT_DIM = 1
+
+    @staticmethod
+    def display_label() -> String:
+        return String("Binary")
 
     var _logit_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var _target_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]

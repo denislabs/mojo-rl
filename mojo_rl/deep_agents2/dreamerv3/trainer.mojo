@@ -28,6 +28,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn2.optimizer.dreamer_opt import DreamerOpt
+from mojo_rl.nn2.optimizer.schedules import LinearWarmupSchedule
 from mojo_rl.deep_agents2.data.sequence_replay import SequenceReplay
 from mojo_rl.deep_agents2.dreamerv3.wm import (
     WMCoreGraph, WMImagineGraph, DecLossGraph, RewLossGraph, ConLossGraph,
@@ -113,12 +114,14 @@ struct DreamerV3Trainer[
     var ctx: Optional[DeviceContext]
     var learning_starts: Int
     var train_steps: Int
+    var warmup: LinearWarmupSchedule   # reference LR ramp 0→lr over warmup_steps
 
     @staticmethod
     def make(
         ctx: Optional[DeviceContext] = None,
         lr: Scalar[DT] = Scalar[DT](4e-5),
         learning_starts: Int = 200,
+        warmup_steps: Int = 1000,
     ) raises -> Self:
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
@@ -144,8 +147,14 @@ struct DreamerV3Trainer[
         ocon.lr = lr; oval.lr = lr; opol.lr = lr
 
         var bins = List[Scalar[DT]](length=Self.BINS, fill=Scalar[DT](0.0))
+        # Narrow symexp range for Pendulum-scale rewards/returns (max bin
+        # ≈ symexp(9) ≈ 8102, vs the reference's symexp(20) ≈ 4.85e8). The
+        # wide reference bins turn small off-distribution head errors into
+        # 1e5–1e6 reward predictions (diagnosed via dbg_rew_pred). See
+        # docs/DREAMERV3_PR5C_RUNBOOK.md.
         symexp_twohot_bins[Self.BINS](
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](bins.unsafe_ptr())
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](bins.unsafe_ptr()),
+            lo=Scalar[DT](-9.0),
         )
         var retnorm = PercentileNormalize.make(
             String("perc"), Scalar[DT](0.01), Scalar[DT](5.0),
@@ -169,6 +178,7 @@ struct DreamerV3Trainer[
             ctx=ctx,
             learning_starts=learning_starts,
             train_steps=0,
+            warmup=LinearWarmupSchedule.make(lr, warmup_steps),
         )
 
     def record(
@@ -189,14 +199,38 @@ struct DreamerV3Trainer[
     def last_ac_loss(self) -> Scalar[DT]:
         return self.state.last_ac_loss
 
+    def dbg_real_rew(self) -> Scalar[DT]:
+        return self.state.dbg_real_rew
+
+    def dbg_rew_pred(self) -> Scalar[DT]:
+        return self.state.dbg_rew_pred
+
+    def dbg_ret_mean(self) -> Scalar[DT]:
+        return self.state.dbg_ret_mean
+
+    def dbg_ret_std(self) -> Scalar[DT]:
+        return self.state.dbg_ret_std
+
+    def dbg_pmean_abs(self) -> Scalar[DT]:
+        return self.state.dbg_pmean_abs
+
     def train_step(mut self) raises -> Bool:
         if not self.can_train():
             return False
+        # reference LR warmup: ramp 0→lr over warmup_steps (all modules).
+        var clr = self.warmup.lr_at(self.train_steps)
+        self.oe.lr = clr; self.ocore.lr = clr; self.odec.lr = clr
+        self.orew.lr = clr; self.ocon.lr = clr; self.oval.lr = clr
+        self.opol.lr = clr
         # sample a length-T window into the shared state batch buffers
         self.replay.sample_batch[Self.B, Self.T](
             self.state.mb_obs, self.state.mb_act, self.state.mb_rew,
             self.state.mb_dne,
         )
+        var rr: Scalar[DT] = 0.0
+        for i in range(Self.B * Self.T):
+            rr += self.state.mb_rew[i]
+        self.state.dbg_real_rew = rr / Scalar[DT](Self.B * Self.T)
         for i in range(Self.T_IMAG * Self.B * Self.ACT):
             self.state.noise[i] = Scalar[DT](random_float64() * 2.0 - 1.0)
         # WM-BPTT → fills state.cdeter / cstoch + state.last_wm_loss

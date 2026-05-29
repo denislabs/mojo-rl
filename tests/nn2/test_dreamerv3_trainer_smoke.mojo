@@ -42,7 +42,7 @@ def main() raises:
     print("=" * 70)
     print("DreamerV3Trainer smoke (synthetic replay)")
     print("=" * 70)
-    var tr = Tr.make(lr=Scalar[DT](3e-3), learning_starts=0)
+    var tr = Tr.make(lr=Scalar[DT](3e-3), learning_starts=0, warmup_steps=0)
 
     # fill replay with pseudo-random transitions
     var s = UInt64(12345)

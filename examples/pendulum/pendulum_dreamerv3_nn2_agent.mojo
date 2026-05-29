@@ -62,12 +62,21 @@ comptime TRAIN_EVERY = 16        # env steps per train_step (tunable)
 comptime EVAL_EVERY = 5000
 comptime EVAL_EPISODES = 10
 comptime EP_LEN = 200
+# Env torque range. The agent acts in normalized [-1,1]; the driver scales
+# to the env's [-ACTION_SCALE, ACTION_SCALE] at env.step. Recorded actions
+# stay normalized (WM grounding consistency — see agent.mojo).
+comptime ACTION_SCALE = Scalar[DT](2.0)
 
 
-def _greedy_eval(mut ag: Ag, mut env: PendulumV2[DT]) raises -> Scalar[DT]:
+def _greedy_eval(
+    mut ag: Ag, mut env: PendulumV2[DT]
+) raises -> Tuple[Scalar[DT], Scalar[DT]]:
+    """Returns (mean_return, mean_|greedy_action|) over EVAL_EPISODES."""
     var obsbuf = alloc[Scalar[DT]](OBS)
     var actbuf = alloc[Scalar[DT]](ACT)
     var total: Scalar[DT] = 0.0
+    var act_abs: Scalar[DT] = 0.0
+    var nsteps: Int = 0
     for _e in range(EVAL_EPISODES):
         ag.reset_belief()
         var o = env.reset_obs_list()
@@ -75,15 +84,21 @@ def _greedy_eval(mut ag: Ag, mut env: PendulumV2[DT]) raises -> Scalar[DT]:
             for i in range(OBS):
                 obsbuf[i] = o[i]
             ag.select_greedy_action(obsbuf, actbuf)
+            var aa = actbuf[0] if actbuf[0] >= 0 else -actbuf[0]
+            act_abs += aa
+            nsteps += 1
             var al = List[Scalar[DT]]()
-            al.append(actbuf[0])
+            al.append(ACTION_SCALE * actbuf[0])   # normalized → env range
             var r = env.step_continuous_vec[DT](al)
             total += r[1]
             o = r[0].copy()
             if r[2]:
                 break
     obsbuf.free(); actbuf.free()
-    return total / Scalar[DT](EVAL_EPISODES)
+    return Tuple(
+        total / Scalar[DT](EVAL_EPISODES),
+        act_abs / Scalar[DT](nsteps),
+    )
 
 
 def main() raises:
@@ -105,14 +120,15 @@ def main() raises:
         for i in range(OBS):
             obsbuf[i] = obs[i]
         if step < LEARN_START:
-            actbuf[0] = Scalar[DT](random_float64() * 4.0 - 2.0)
+            # warmup explores the NORMALIZED [-1,1] space (recorded as-is)
+            actbuf[0] = Scalar[DT](random_float64() * 2.0 - 1.0)
         else:
             ag.select_action(obsbuf, actbuf, explore=True)
         var al = List[Scalar[DT]]()
-        al.append(actbuf[0])
+        al.append(ACTION_SCALE * actbuf[0])   # normalized → env range
         var res = env.step_continuous_vec[DT](al)
         ag.record(
-            obsbuf, actbuf, res[1],
+            obsbuf, actbuf, res[1],            # record the NORMALIZED action
             Scalar[DT](1.0) if res[2] else Scalar[DT](0.0),
         )
         obs = res[0].copy()
@@ -125,18 +141,21 @@ def main() raises:
         if step > 0 and step % EVAL_EVERY == 0:
             # eval mutates env episode state; use a fresh env for eval
             var eval_env = PendulumV2[DT]()
-            var mret = _greedy_eval(ag, eval_env)
+            var ev = _greedy_eval(ag, eval_env)
             print(
-                "  step", step, " mean_ret(", EVAL_EPISODES, ")=", mret,
+                "  step", step, " ret=", ev[0], " |act|=", ev[1],
+                " real_rew=", ag.dbg_real_rew(), " rew_pred=", ag.dbg_rew_pred(),
+                " ret_m=", ag.dbg_ret_mean(), " ret_sd=", ag.dbg_ret_std(),
+                " pmean=", ag.dbg_pmean_abs(),
                 " WM=", ag.last_wm_loss(), " AC=", ag.last_ac_loss(),
             )
             # restore collection env episode
             obs = env.reset_obs_list()
             ag.reset_belief()
 
-    var final_ret = _greedy_eval(ag, env)
+    var fe = _greedy_eval(ag, env)
     print("=" * 70)
-    print("FINAL mean_ret(", EVAL_EPISODES, ") =", final_ret,
+    print("FINAL mean_ret(", EVAL_EPISODES, ") =", fe[0],
           "  (lighthouse pass: >= -200)")
     print("=" * 70)
     obsbuf.free(); actbuf.free()

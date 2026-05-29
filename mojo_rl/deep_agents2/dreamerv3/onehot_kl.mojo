@@ -337,6 +337,10 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
     comptime IN_DIMS = InlineArray[Int, 2](fill=Self.SC)
     comptime OUT_DIM = 2
 
+    @staticmethod
+    def display_label() -> String:
+        return String("OneHotKL")
+
     var kl: OneHotKL[Self.STOCH, Self.CLASSES]
     # GPU caches: softmax/mixed probs [B·SC], active [B], per-group KL [B·STOCH]
     var _smpo: Optional[DeviceBuffer[DT]]

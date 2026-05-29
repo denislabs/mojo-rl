@@ -244,6 +244,10 @@ struct ActionSquash[ACT: Int](Module):
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.ACT)
     comptime OUT_DIM = Self.ACT
 
+    @staticmethod
+    def display_label() -> String:
+        return String("ActionSquash")
+
     var _cached_input_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var ts: TargetStorage
 
@@ -349,6 +353,10 @@ struct BlockGroupAssemble[DETER: Int, H: Int, BLOCKS: Int](Module):
     comptime ARITY: Int = 4
     comptime IN_DIMS = Self._mk_in_dims()
     comptime OUT_DIM = Self.BLOCKS * Self.PER_GROUP   # = DETER + 3·H·BLOCKS
+
+    @staticmethod
+    def display_label() -> String:
+        return String("BlockGroupAssemble")
 
     @staticmethod
     def _mk_in_dims() -> InlineArray[Int, 4]:
@@ -500,6 +508,10 @@ struct GRUGate[DETER: Int, BLOCKS: Int](Module):
     comptime ARITY: Int = 2
     comptime IN_DIMS = Self._mk_in_dims()
     comptime OUT_DIM = Self.DETER
+
+    @staticmethod
+    def display_label() -> String:
+        return String("GRUGate")
 
     @staticmethod
     def _mk_in_dims() -> InlineArray[Int, 2]:
@@ -665,6 +677,10 @@ struct StraightThroughSample[STOCH: Int, CLASSES: Int](Module):
     comptime ARITY: Int = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SC)
     comptime OUT_DIM = Self.SC
+
+    @staticmethod
+    def display_label() -> String:
+        return String("STSample")
 
     var unimix: Scalar[DT]
     var _sm: List[Scalar[DT]]   # cached softmax(z), [B·S·C] (CPU)

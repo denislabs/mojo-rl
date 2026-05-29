@@ -27,19 +27,25 @@ def _symexp(x: Scalar[DT]) -> Scalar[DT]:
 
 def symexp_twohot_bins[
     BINS: Int
-](bins_out: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+](
+    bins_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    lo: Scalar[DT] = Scalar[DT](-20.0),
+):
     """Generate the `symexp_twohot` bins (assumes BINS odd, as 255).
 
-    half = symexp(linspace(-20, 0, (BINS-1)//2 + 1));
+    half = symexp(linspace(lo, 0, (BINS-1)//2 + 1));
     bins = concat([half, -half[:-1][::-1]]).
+
+    `lo` is the linspace lower bound (default −20 = reference; the max bin is
+    symexp(|lo|)). For small bounded-reward envs, a narrower `lo` keeps the
+    twohot head from amplifying off-distribution errors into huge predictions
+    (e.g. `lo=−9` → max bin ≈ 8102 vs `lo=−20` → 4.85e8).
     """
     comptime assert BINS % 2 == 1, "symexp_twohot_bins assumes odd BINS"
     comptime nhalf = (BINS - 1) // 2 + 1
-    # half[i] = symexp(-20 + 20*i/(nhalf-1)), i=0..nhalf-1  (ascending to 0)
+    # half[i] = symexp(lo + |lo|*i/(nhalf-1)), i=0..nhalf-1  (ascending to 0)
     for i in range(nhalf):
-        var lin = Scalar[DT](-20.0) + Scalar[DT](20.0) * Scalar[DT](i) / Scalar[
-            DT
-        ](nhalf - 1)
+        var lin = lo - lo * Scalar[DT](i) / Scalar[DT](nhalf - 1)
         bins_out[i] = _symexp(lin)
     # -half[:-1][::-1]: for j=0..nhalf-2, append -half[nhalf-2-j]
     for j in range(nhalf - 1):

@@ -14,8 +14,15 @@ instances safely — no separate inference copies, no param sync):
             → nd (node_out_ptr) + stoch_new (posterior ST sample)
   feat    = concat([nd, stoch_new])
   m, s    = policy(feat)                          # bounded_normal raw params
-  action  = action_scale · (tanh(m) [+ std·noise if exploring])
-  belief ← (nd, stoch_new) ; last_action ← action
+  action  = tanh(m) [+ std·noise if exploring]    # NORMALIZED [-1,1]
+  belief ← (nd, stoch_new) ; last_action ← action # belief/record stay [-1,1]
+
+The agent acts in the normalized [-1,1] action space; the env-range scale
+(`action_scale`) is applied by the DRIVER at env.step (the `action_scale`
+field is now vestigial — kept for `make` signature compat). Recording the
+normalized action keeps the WM's action input consistent between real-data
+training and imagination (both [-1,1]); feeding env-scaled actions instead
+saturates the WM's `ActionSquash` and de-grounds the world model.
 
 CPU v1. `train_target` mirrors the trainer; `select_action` is `comptime
 if target=="cpu"` (GPU = PR5c Step 5). Mirrors `deep_agents2/sac/agent.py`
@@ -67,10 +74,12 @@ struct DreamerV3Agent[
         lr: Scalar[DT] = Scalar[DT](4e-5),
         learning_starts: Int = 200,
         action_scale: Scalar[DT] = Scalar[DT](1.0),
+        warmup_steps: Int = 1000,
     ) raises -> Self:
         var a = Self(
             trainer=Self.TrainerT.make(
-                ctx=ctx, lr=lr, learning_starts=learning_starts
+                ctx=ctx, lr=lr, learning_starts=learning_starts,
+                warmup_steps=warmup_steps,
             ),
             belief_deter=_alloc(Self.DETER),
             belief_stoch=_alloc(Self.SC),
@@ -108,6 +117,21 @@ struct DreamerV3Agent[
 
     def last_ac_loss(self) -> Scalar[DT]:
         return self.trainer.last_ac_loss()
+
+    def dbg_real_rew(self) -> Scalar[DT]:
+        return self.trainer.dbg_real_rew()
+
+    def dbg_rew_pred(self) -> Scalar[DT]:
+        return self.trainer.dbg_rew_pred()
+
+    def dbg_ret_mean(self) -> Scalar[DT]:
+        return self.trainer.dbg_ret_mean()
+
+    def dbg_ret_std(self) -> Scalar[DT]:
+        return self.trainer.dbg_ret_std()
+
+    def dbg_pmean_abs(self) -> Scalar[DT]:
+        return self.trainer.dbg_pmean_abs()
 
     def select_action(
         mut self,
@@ -160,7 +184,12 @@ struct DreamerV3Agent[
         self.trainer.policy.forward[Self.train_target, 1](
             TileTensor(feat, row_major[1, FEATl]()), output=polt
         )
-        # 5. action = action_scale · (tanh(mean) [+ std·noise])
+        # 5. action = tanh(mean) [+ std·noise], in the NORMALIZED [-1,1]
+        #    action space. The env-range scale (`action_scale`) is applied by
+        #    the DRIVER at env.step — NOT here — so what we output/record/feed
+        #    the WM is always [-1,1]. (The reference acts in normalized space
+        #    and the env wrapper denormalizes; the WM's ActionSquash then only
+        #    clips rare |a|>1 outliers instead of saturating the whole range.)
         for a in range(ACTD):
             var mean = tanh(pol[a])
             var act_a = mean
@@ -172,7 +201,7 @@ struct DreamerV3Agent[
                 act_a = Scalar[DT](1.0)
             if act_a < Scalar[DT](-1.0):
                 act_a = Scalar[DT](-1.0)
-            out_action[a] = self.action_scale * act_a
+            out_action[a] = act_a
         # 6. update belief
         for k in range(D):
             self.belief_deter[k] = nd[k]

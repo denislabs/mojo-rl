@@ -46,7 +46,7 @@ def main() raises:
     print("=" * 70)
     seed(42)
     var env = PendulumV2[DT]()
-    var tr = Tr.make(lr=Scalar[DT](1e-3), learning_starts=64)
+    var tr = Tr.make(lr=Scalar[DT](1e-3), learning_starts=64, warmup_steps=0)
 
     var obs = env.reset_obs_list()
     var obsbuf = alloc[Scalar[DT]](OBS)

@@ -47,7 +47,8 @@ def main() raises:
     seed(7)
     var env = PendulumV2[DT]()
     var ag = Ag.make(
-        lr=Scalar[DT](1e-3), learning_starts=64, action_scale=Scalar[DT](2.0)
+        lr=Scalar[DT](1e-3), learning_starts=64, action_scale=Scalar[DT](2.0),
+        warmup_steps=0,
     )
 
     var obs = env.reset_obs_list()
