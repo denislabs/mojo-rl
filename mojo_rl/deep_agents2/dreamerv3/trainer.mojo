@@ -38,6 +38,9 @@ from mojo_rl.deep_agents2.dreamerv3.nets import (
 )
 from mojo_rl.deep_agents2.dreamerv3.twohot import symexp_twohot_bins
 from mojo_rl.deep_agents2.dreamerv3.normalize import PercentileNormalize
+from mojo_rl.deep_agents2.dreamerv3.zero_init import (
+    zero_output_module, zero_output_graph,
+)
 from mojo_rl.deep_agents2.dreamerv3.blocks import (
     DreamerState, WMStep, ParamSyncStep, ACStep,
 )
@@ -138,6 +141,25 @@ struct DreamerV3Trainer[
         var slowvalue = Self.ValT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
         var policy = Self.PolT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
         var imagine = Self.ImagT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
+
+        # Finding 4 (paper p.6): zero-init the reward-predictor and critic
+        # output layers so they emit ~0 at init. Otherwise large/biased initial
+        # reward+value predictions make the imagined λ-returns optimistic (even
+        # positive on negative-reward tasks like Pendulum), and the actor
+        # optimizes a reward landscape that doesn't exist. The output Linear is
+        # Sequential child 3 (`nets.mojo` pins head MLP depth to 1); inside the
+        # reward ComputeGraph the head is node `rew`. slowvalue is zeroed too —
+        # the value loss regularizes value TOWARD slowvalue (slowreg=1), so a
+        # non-neutral slowvalue would pull value back to optimism.
+        zero_output_graph[Self.train_target](
+            rew, String("rew.3.weight"), String("rew.3.bias"), ctx
+        )
+        zero_output_module[Self.train_target, Self.ValT](
+            value, String("3.weight"), String("3.bias"), ctx
+        )
+        zero_output_module[Self.train_target, Self.ValT](
+            slowvalue, String("3.weight"), String("3.bias"), ctx
+        )
 
         var oe = DreamerOpt.make[Self.train_target, Self.EncT](enc, ctx=ctx)
         var ocore = DreamerOpt.make_graph[Self.train_target](core, ctx=ctx)
