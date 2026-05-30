@@ -25,11 +25,26 @@ from std.math import tanh, exp
 from mojo_rl.nn2.constants import DT
 from .twohot import twohot_pred, twohot_loss, twohot_loss_backward
 from .dists import bounded_mean, bounded_std, normal_logp, normal_entropy
+from .dists_discrete import cat_fwd, cat_bwd, cat_softmax_mix, UNIMIX
 from .normalize import PercentileNormalize
 
 
+@always_inline
+def _argmax[ACT: Int](
+    act: UnsafePointer[Scalar[DT], MutAnyOrigin], base: Int
+) -> Int:
+    """Chosen class = argmax of the one-hot action over ACT lanes."""
+    var k = 0
+    var best = act[base]
+    for a in range(1, ACT):
+        if act[base + a] > best:
+            best = act[base + a]
+            k = a
+    return k
+
+
 def imag_loss_cpu[
-    BK: Int, T: Int, ACT: Int, BINS: Int
+    BK: Int, T: Int, ACT: Int, BINS: Int, DISCRETE: Bool = False
 ](
     act: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [BK,T,ACT]
     rew: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [BK,T]
@@ -93,15 +108,28 @@ def imag_loss_cpu[
     for b in range(BK):
         for t in range(TM1):
             var adv = (out_ret[b * TM1 + t] - val[b * T + t]) / rscale
-            # policy: Σ_a logp / entropy over the action dim
+            # policy: logp / entropy of the (b,t) action distribution
             var logpi = Scalar[DT](0.0)
             var ent = Scalar[DT](0.0)
-            for a in range(ACT):
-                var idx = (b * T + t) * ACT + a
-                var mean = bounded_mean(pmean[idx])
-                var std = bounded_std(pstd_raw[idx], minstd, maxstd)
-                logpi += normal_logp(act[idx], mean, std)
-                ent += normal_entropy(std)
+            comptime if DISCRETE:
+                # unimix categorical: `pmean` holds logits[BK,T,ACT]; `act` is
+                # the sampled one-hot. k = argmax(act). `pstd_raw` unused.
+                var base = (b * T + t) * ACT
+                var k = _argmax[ACT](act, base)
+                var sm = alloc[Scalar[DT]](ACT)
+                var pp = alloc[Scalar[DT]](ACT)
+                var r = cat_fwd[ACT](pmean, base, UNIMIX, k, sm, pp)
+                logpi = r[0]
+                ent = r[1]
+                sm.free(); pp.free()
+            else:
+                # bounded_normal: Σ_a logp / entropy over the action dim
+                for a in range(ACT):
+                    var idx = (b * T + t) * ACT + a
+                    var mean = bounded_mean(pmean[idx])
+                    var std = bounded_std(pstd_raw[idx], minstd, maxstd)
+                    logpi += normal_logp(act[idx], mean, std)
+                    ent += normal_entropy(std)
             out_policy_loss[b * TM1 + t] = weight[b * T + t] * -(
                 logpi * adv + actent * ent
             )
@@ -120,7 +148,7 @@ def imag_loss_cpu[
 
 
 def imag_loss_backward[
-    BK: Int, T: Int, ACT: Int, BINS: Int
+    BK: Int, T: Int, ACT: Int, BINS: Int, DISCRETE: Bool = False
 ](
     act: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [BK,T,ACT]
     rew: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [BK,T]
@@ -186,25 +214,39 @@ def imag_loss_backward[
             var w = weight[b * T + t]
             var adv = (ret[b * TM1 + t] - val[b * T + t]) / rscale
             # ── policy grads ─────────────────────────────────────────
+            # ∂loss/∂logpi = w·(−adv)·d_policy ; ∂loss/∂ent = w·(−actent)·d_policy
             var dpl_dlogp = d_policy[b * TM1 + t] * w * (-adv)
             var dpl_dent = d_policy[b * TM1 + t] * w * (-actent)
-            for a in range(ACT):
-                var idx = (b * T + t) * ACT + a
-                var mean = tanh(pmean[idx])
-                var s = Scalar[DT](1.0) / (
-                    Scalar[DT](1.0) + exp(-(pstd_raw[idx] + Scalar[DT](2.0)))
+            comptime if DISCRETE:
+                # unimix categorical: grads flow to `grad_pmean` (= logits);
+                # `grad_pstd_raw` stays 0 (zeroed above). k = argmax(act).
+                var base = (b * T + t) * ACT
+                var k = _argmax[ACT](act, base)
+                var sm = alloc[Scalar[DT]](ACT)
+                var pp = alloc[Scalar[DT]](ACT)
+                cat_softmax_mix[ACT](pmean, base, UNIMIX, sm, pp)
+                cat_bwd[ACT](
+                    sm, pp, UNIMIX, k, dpl_dlogp, dpl_dent, grad_pmean, base
                 )
-                var std = (maxstd - minstd) * s + minstd
-                var z = (act[idx] - mean) / std
-                var dlogp_dmean = z / std
-                var dlogp_dstd = (z * z - Scalar[DT](1.0)) / std
-                var dent_dstd = Scalar[DT](1.0) / std
-                var dmean_draw = Scalar[DT](1.0) - mean * mean
-                var dstd_draw = (maxstd - minstd) * s * (Scalar[DT](1.0) - s)
-                grad_pmean[idx] = dpl_dlogp * dlogp_dmean * dmean_draw
-                grad_pstd_raw[idx] = (
-                    dpl_dlogp * dlogp_dstd + dpl_dent * dent_dstd
-                ) * dstd_draw
+                sm.free(); pp.free()
+            else:
+                for a in range(ACT):
+                    var idx = (b * T + t) * ACT + a
+                    var mean = tanh(pmean[idx])
+                    var s = Scalar[DT](1.0) / (
+                        Scalar[DT](1.0) + exp(-(pstd_raw[idx] + Scalar[DT](2.0)))
+                    )
+                    var std = (maxstd - minstd) * s + minstd
+                    var z = (act[idx] - mean) / std
+                    var dlogp_dmean = z / std
+                    var dlogp_dstd = (z * z - Scalar[DT](1.0)) / std
+                    var dent_dstd = Scalar[DT](1.0) / std
+                    var dmean_draw = Scalar[DT](1.0) - mean * mean
+                    var dstd_draw = (maxstd - minstd) * s * (Scalar[DT](1.0) - s)
+                    grad_pmean[idx] = dpl_dlogp * dlogp_dmean * dmean_draw
+                    grad_pstd_raw[idx] = (
+                        dpl_dlogp * dlogp_dstd + dpl_dent * dent_dstd
+                    ) * dstd_draw
             # ── value grads (twohot CE vs ret and vs slowval) ────────
             var up = d_value[b * TM1 + t] * w
             twohot_loss_backward[BINS](

@@ -42,6 +42,9 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.deep_agents2.dreamerv3.trainer import DreamerV3Trainer
 from mojo_rl.deep_agents2.dreamerv3.dists import bounded_std
+from mojo_rl.deep_agents2.dreamerv3.dists_discrete import (
+    cat_sample, cat_argmax, UNIMIX,
+)
 
 
 @always_inline
@@ -76,14 +79,18 @@ struct DreamerV3Agent[
     train_target: StaticString,
     OBS: Int, ACT: Int, DETER: Int, H: Int, STOCH: Int, CLASSES: Int,
     BLOCKS: Int, TOKEN: Int, DEC_U: Int, HU: Int, VU: Int, PU: Int,
-    BINS: Int, B: Int, T: Int, T_IMAG: Int, CAP: Int,
+    BINS: Int, B: Int, T: Int, T_IMAG: Int, CAP: Int, DISCRETE: Bool = False,
 ](Movable & ImplicitlyDestructible):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
+    # discrete (categorical) actor → ACT logits; continuous → 2·ACT (mean,std).
+    # For DISCRETE the agent acts via one-hot actions (the WM's ActionSquash is
+    # a no-op on {0,1}); the driver argmaxes `out_action` to the env index.
+    comptime POUT = Self.ACT if Self.DISCRETE else 2 * Self.ACT
     comptime TrainerT = DreamerV3Trainer[
         Self.train_target, Self.OBS, Self.ACT, Self.DETER, Self.H, Self.STOCH,
         Self.CLASSES, Self.BLOCKS, Self.TOKEN, Self.DEC_U, Self.HU, Self.VU,
-        Self.PU, Self.BINS, Self.B, Self.T, Self.T_IMAG, Self.CAP,
+        Self.PU, Self.BINS, Self.B, Self.T, Self.T_IMAG, Self.CAP, Self.DISCRETE,
     ]
     comptime MINSTD = Scalar[DT](0.1)
     comptime MAXSTD = Scalar[DT](1.0)
@@ -169,13 +176,14 @@ struct DreamerV3Agent[
         comptime SCl = Self.SC
         comptime FEATl = Self.FEAT
         comptime ACTD = Self.ACT
+        comptime POUTl = Self.POUT
         comptime TOK = Self.TOKEN
         comptime CARRY = 2 + D + SCl
         # feat = concat([nd, stoch_new]); both branches fill nd_h / sn_h (the
         # posterior carry, host) then sample identically below.
         var nd_h = _alloc(D)
         var sn_h = _alloc(SCl)
-        var pol = _alloc(2 * ACTD)
+        var pol = _alloc(POUTl)
         comptime if Self.train_target == "cpu":
             # 1. encode obs → token (B=1)
             var tok = _alloc(TOK)
@@ -211,12 +219,15 @@ struct DreamerV3Agent[
                 feat[k] = nd_h[k]
             for k in range(SCl):
                 feat[D + k] = sn_h[k]
-            var polt = TileTensor(pol, row_major[1, 2 * ACTD]())
+            var polt = TileTensor(pol, row_major[1, POUTl]())
             self.trainer.policy.forward[Self.train_target, 1](
                 TileTensor(feat, row_major[1, FEATl]()), output=polt
             )
             tok.free(); cscr.free(); feat.free()
         else:
+            comptime assert not Self.DISCRETE, (
+                "discrete GPU select_action not yet ported — use 'cpu'"
+            )
             # GPU B=1 inference (hybrid): device enc/core/policy forwards;
             # H2D obs+belief, D2H posterior + policy logits, host sample.
             # Reuses the trainer's LIVE GPU modules (buffers grow-only, so
@@ -286,23 +297,38 @@ struct DreamerV3Agent[
             )
             ctx.synchronize(); ctx.enqueue_copy(pol, d_pol); ctx.synchronize()
             feat.free()
-        # ── action = tanh(mean) [+ std·noise], NORMALIZED [-1,1] (both paths) ──
-        # The env-range scale (`action_scale`) is applied by the DRIVER at
-        # env.step — NOT here — so what we output/record/feed the WM is always
-        # [-1,1]. (The WM's ActionSquash then only clips rare |a|>1 outliers
-        # instead of saturating the whole range.)
-        for a in range(ACTD):
-            var mean = tanh(pol[a])
-            var act_a = mean
+        comptime if Self.DISCRETE:
+            # ── discrete: categorical sample (explore) / argmax (greedy) →
+            # one-hot out_action[ACT]. The one-hot is what the WM conditions on
+            # (ActionSquash is a no-op on {0,1}); the driver argmaxes for env.
+            var k: Int
             if explore:
-                var std = bounded_std(pol[ACTD + a], Self.MINSTD, Self.MAXSTD)
-                var z = Scalar[DT](random_float64() * 2.0 - 1.0)
-                act_a = mean + std * z
-            if act_a > Scalar[DT](1.0):
-                act_a = Scalar[DT](1.0)
-            if act_a < Scalar[DT](-1.0):
-                act_a = Scalar[DT](-1.0)
-            out_action[a] = act_a
+                var u01 = Scalar[DT](random_float64())
+                k = cat_sample[ACTD](pol, 0, UNIMIX, u01)
+            else:
+                k = cat_argmax[ACTD](pol, 0)
+            for a in range(ACTD):
+                out_action[a] = Scalar[DT](1.0) if a == k else Scalar[DT](0.0)
+        else:
+            # ── action = tanh(mean) [+ std·noise], NORMALIZED [-1,1] ──
+            # The env-range scale (`action_scale`) is applied by the DRIVER at
+            # env.step — NOT here — so what we output/record/feed the WM is
+            # always [-1,1]. (The WM's ActionSquash then only clips rare |a|>1
+            # outliers instead of saturating the whole range.)
+            for a in range(ACTD):
+                var mean = tanh(pol[a])
+                var act_a = mean
+                if explore:
+                    var std = bounded_std(
+                        pol[ACTD + a], Self.MINSTD, Self.MAXSTD
+                    )
+                    var z = Scalar[DT](random_float64() * 2.0 - 1.0)
+                    act_a = mean + std * z
+                if act_a > Scalar[DT](1.0):
+                    act_a = Scalar[DT](1.0)
+                if act_a < Scalar[DT](-1.0):
+                    act_a = Scalar[DT](-1.0)
+                out_action[a] = act_a
         # update belief (both paths)
         for k in range(D):
             self.belief_deter[k] = nd_h[k]

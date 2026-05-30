@@ -31,6 +31,7 @@ from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents2.dreamerv3.twohot import twohot_pred
 from mojo_rl.deep_agents2.dreamerv3.dists import bounded_std
+from mojo_rl.deep_agents2.dreamerv3.dists_discrete import cat_sample, UNIMIX
 from mojo_rl.deep_agents2.dreamerv3.normalize import PercentileNormalize
 from mojo_rl.deep_agents2.dreamerv3.repl_loss import repl_loss_backward
 from mojo_rl.deep_agents2.dreamerv3.imag_loss import (
@@ -44,7 +45,7 @@ from mojo_rl.deep_agents2.dreamerv3.wm import (
     WMCoreGraph, WMImagineGraph, DecLossGraph, RewLossGraph, ConLossGraph,
 )
 from mojo_rl.deep_agents2.dreamerv3.nets import (
-    DreamerEncoder, DreamerValue, DreamerPolicy,
+    DreamerEncoder, DreamerValue, DreamerPolicyHead,
 )
 from mojo_rl.nn2.optimizer.dreamer_opt import DreamerOpt
 
@@ -753,7 +754,7 @@ struct ParamSyncStep[
 struct ACStep[
     OBS: Int, ACT: Int, DETER: Int, H: Int, STOCH: Int, CLASSES: Int,
     BLOCKS: Int, TOKEN: Int, HU: Int, VU: Int, PU: Int, BINS: Int,
-    B: Int, T: Int, T_IMAG: Int,
+    B: Int, T: Int, T_IMAG: Int, DISCRETE: Bool = False,
 ](Movable & ImplicitlyDestructible):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
@@ -761,7 +762,12 @@ struct ACStep[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT, SwishOp,
     ]
     comptime ValT = DreamerValue[Self.FEAT, Self.VU, Self.BINS, SwishOp]
-    comptime PolT = DreamerPolicy[Self.FEAT, Self.PU, Self.ACT, SwishOp]
+    # Discrete (unimix categorical) actor → ACT logits; continuous → 2·ACT
+    # (mean,std). POUT is the policy net's output width.
+    comptime PolT = DreamerPolicyHead[
+        Self.FEAT, Self.PU, Self.ACT, Self.DISCRETE, SwishOp
+    ]
+    comptime POUT = Self.ACT if Self.DISCRETE else 2 * Self.ACT
     comptime RewT = RewLossGraph[Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp]
     comptime ConT = ConLossGraph[Self.DETER, Self.SC, Self.HU, SwishOp]
     var minstd: Scalar[DT]
@@ -851,7 +857,7 @@ struct ACStep[
         for i in range(NS * SCl):
             cs[i] = stoch0[i]
         var fb = _alloc(NS * FEATl)
-        var pb = _alloc(NS * 2 * ACTD)
+        var pb = _alloc(NS * Self.POUT)
         var vb = _alloc(NS * BINSl)
         var svb = _alloc(NS * BINSl)
         var dummy1 = _alloc(NS * 1)
@@ -864,18 +870,33 @@ struct ACStep[
                 for k in range(FEATl):
                     feats[(b * TI + t) * FEATl + k] = fb[b * FEATl + k]
             var ft = TileTensor(fb, row_major[NS, FEATl]())
-            var pt = TileTensor(pb, row_major[NS, 2 * ACTD]())
+            var pt = TileTensor(pb, row_major[NS, Self.POUT]())
             policy.forward[target, NS](ft, output=pt)
-            for b in range(NS):
-                for a in range(ACTD):
-                    var mr = pb[b * 2 * ACTD + a]
-                    var sr = pb[b * 2 * ACTD + ACTD + a]
-                    pmean[(b * TI + t) * ACTD + a] = mr
-                    pstd[(b * TI + t) * ACTD + a] = sr
-                    var z = noise[(t * NS + b) * ACTD + a]
-                    acts[(b * TI + t) * ACTD + a] = (
-                        tanh(mr) + bounded_std(sr, MINSTD, MAXSTD) * z
-                    )
+            comptime if Self.DISCRETE:
+                # categorical: pb holds logits[NS,ACT]; sample a one-hot via
+                # the shared noise (z∈[-1,1] → u01) so CPU↔GPU would match.
+                for b in range(NS):
+                    for a in range(ACTD):
+                        pmean[(b * TI + t) * ACTD + a] = pb[b * ACTD + a]
+                        pstd[(b * TI + t) * ACTD + a] = 0.0
+                    var z0 = noise[(t * NS + b) * ACTD + 0]
+                    var u01 = (z0 + Scalar[DT](1.0)) * Scalar[DT](0.5)
+                    var k = cat_sample[ACTD](pb, b * ACTD, UNIMIX, u01)
+                    for a in range(ACTD):
+                        acts[(b * TI + t) * ACTD + a] = (
+                            Scalar[DT](1.0) if a == k else Scalar[DT](0.0)
+                        )
+            else:
+                for b in range(NS):
+                    for a in range(ACTD):
+                        var mr = pb[b * 2 * ACTD + a]
+                        var sr = pb[b * 2 * ACTD + ACTD + a]
+                        pmean[(b * TI + t) * ACTD + a] = mr
+                        pstd[(b * TI + t) * ACTD + a] = sr
+                        var z = noise[(t * NS + b) * ACTD + a]
+                        acts[(b * TI + t) * ACTD + a] = (
+                            tanh(mr) + bounded_std(sr, MINSTD, MAXSTD) * z
+                        )
             var ft2 = TileTensor(fb, row_major[NS, FEATl]())
             var vt = TileTensor(vb, row_major[NS, BINSl]())
             value.forward[target, NS](ft2, output=vt)
@@ -924,7 +945,7 @@ struct ACStep[
         var pol_loss = _alloc(NS * TM1)
         var val_loss = _alloc(NS * TM1)
         var ret = _alloc(NS * TM1)
-        imag_loss_cpu[NS, TI, ACTD, BINSl](
+        imag_loss_cpu[NS, TI, ACTD, BINSl, Self.DISCRETE](
             acts, rewv, conv, vlog, svlog, pmean, pstd, bins,
             MINSTD, MAXSTD, self.lam, self.actent, self.slowreg,
             retnorm, pol_loss, val_loss, ret,
@@ -970,7 +991,7 @@ struct ACStep[
         var g_vlog = _alloc(NS * TI * BINSl)
         var g_pmean = _alloc(NS * TI * ACTD)
         var g_pstd = _alloc(NS * TI * ACTD)
-        imag_loss_backward[NS, TI, ACTD, BINSl](
+        imag_loss_backward[NS, TI, ACTD, BINSl, Self.DISCRETE](
             acts, rewv, conv, vlog, svlog, pmean, pstd, bins,
             MINSTD, MAXSTD, self.lam, self.actent, self.slowreg,
             rscale, d_pol, d_val, g_vlog, g_pmean, g_pstd,
@@ -979,8 +1000,8 @@ struct ACStep[
         opol.zero_grad[target, Self.PolT](policy)
         var gfeat = _alloc(NS * FEATl)
         var vscr = _alloc(NS * BINSl)
-        var pscr = _alloc(NS * 2 * ACTD)
-        var polg = _alloc(NS * 2 * ACTD)
+        var pscr = _alloc(NS * Self.POUT)
+        var polg = _alloc(NS * Self.POUT)
         for t in range(TI):
             var ftt = _alloc(NS * FEATl)
             for b in range(NS):
@@ -997,13 +1018,19 @@ struct ACStep[
             var gft = TileTensor(gfeat, row_major[NS, FEATl]())
             value.vjp[target, NS](gvt, gft)
             var fpt = TileTensor(ftt, row_major[NS, FEATl]())
-            var pot = TileTensor(pscr, row_major[NS, 2 * ACTD]())
+            var pot = TileTensor(pscr, row_major[NS, Self.POUT]())
             policy.forward[target, NS](fpt, output=pot)
-            for b in range(NS):
-                for a in range(ACTD):
-                    polg[b * 2 * ACTD + a] = g_pmean[(b * TI + t) * ACTD + a]
-                    polg[b * 2 * ACTD + ACTD + a] = g_pstd[(b * TI + t) * ACTD + a]
-            var pgt = TileTensor(polg, row_major[NS, 2 * ACTD]())
+            comptime if Self.DISCRETE:
+                # logits grad → polg[NS,ACT] (g_pstd is 0, unused)
+                for b in range(NS):
+                    for a in range(ACTD):
+                        polg[b * ACTD + a] = g_pmean[(b * TI + t) * ACTD + a]
+            else:
+                for b in range(NS):
+                    for a in range(ACTD):
+                        polg[b * 2 * ACTD + a] = g_pmean[(b * TI + t) * ACTD + a]
+                        polg[b * 2 * ACTD + ACTD + a] = g_pstd[(b * TI + t) * ACTD + a]
+            var pgt = TileTensor(polg, row_major[NS, Self.POUT]())
             var gft2 = TileTensor(gfeat, row_major[NS, FEATl]())
             policy.vjp[target, NS](pgt, gft2)
             gv.free(); ftt.free()
@@ -1087,6 +1114,11 @@ struct ACStep[
         # the lambda-return imag_loss + repl_loss run on host via D2H/H2D of
         # small arrays. Mirrors _ac_cpu exactly (NS = T·B imagination starts,
         # mean-normalized cotangents, repval value-loss) → CPU↔GPU bit-match.
+        comptime assert not Self.DISCRETE, (
+            "discrete (categorical) GPU AC not yet ported — use train_target="
+            "'cpu' for discrete-action envs (CartPole). GPU discrete is a "
+            "follow-up parity step."
+        )
         comptime D = Self.DETER
         comptime SCl = Self.SC
         comptime FEATl = Self.FEAT
@@ -1244,7 +1276,7 @@ struct ACStep[
         var pol_loss = _alloc(NS * TM1)
         var val_loss = _alloc(NS * TM1)
         var ret = _alloc(NS * TM1)
-        imag_loss_cpu[NS, TI, ACTD, BINSl](
+        imag_loss_cpu[NS, TI, ACTD, BINSl, Self.DISCRETE](
             acts, rewv, conv, vlog, svlog, pmean, pstd, bins,
             MINSTD, MAXSTD, self.lam, self.actent, self.slowreg,
             retnorm, pol_loss, val_loss, ret,
@@ -1284,7 +1316,7 @@ struct ACStep[
         var g_vlog = _alloc(NS * TI * BINSl)
         var g_pmean = _alloc(NS * TI * ACTD)
         var g_pstd = _alloc(NS * TI * ACTD)
-        imag_loss_backward[NS, TI, ACTD, BINSl](
+        imag_loss_backward[NS, TI, ACTD, BINSl, Self.DISCRETE](
             acts, rewv, conv, vlog, svlog, pmean, pstd, bins,
             MINSTD, MAXSTD, self.lam, self.actent, self.slowreg,
             rscale, d_pol, d_val, g_vlog, g_pmean, g_pstd,

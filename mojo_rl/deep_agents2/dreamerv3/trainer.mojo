@@ -34,7 +34,7 @@ from mojo_rl.deep_agents2.dreamerv3.wm import (
     WMCoreGraph, WMImagineGraph, DecLossGraph, RewLossGraph, ConLossGraph,
 )
 from mojo_rl.deep_agents2.dreamerv3.nets import (
-    DreamerEncoder, DreamerValue, DreamerPolicy,
+    DreamerEncoder, DreamerValue, DreamerPolicyHead,
 )
 from mojo_rl.deep_agents2.dreamerv3.twohot import symexp_twohot_bins
 from mojo_rl.deep_agents2.dreamerv3.normalize import PercentileNormalize
@@ -48,7 +48,7 @@ struct DreamerV3Trainer[
     train_target: StaticString,
     OBS: Int, ACT: Int, DETER: Int, H: Int, STOCH: Int, CLASSES: Int,
     BLOCKS: Int, TOKEN: Int, DEC_U: Int, HU: Int, VU: Int, PU: Int,
-    BINS: Int, B: Int, T: Int, T_IMAG: Int, CAP: Int,
+    BINS: Int, B: Int, T: Int, T_IMAG: Int, CAP: Int, DISCRETE: Bool = False,
 ](Movable & ImplicitlyDestructible):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
@@ -62,7 +62,10 @@ struct DreamerV3Trainer[
     comptime RewT = RewLossGraph[Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp]
     comptime ConT = ConLossGraph[Self.DETER, Self.SC, Self.HU, SwishOp]
     comptime ValT = DreamerValue[Self.FEAT, Self.VU, Self.BINS, SwishOp]
-    comptime PolT = DreamerPolicy[Self.FEAT, Self.PU, Self.ACT, SwishOp]
+    # discrete (categorical) actor → ACT logits; continuous → 2·ACT (mean,std)
+    comptime PolT = DreamerPolicyHead[
+        Self.FEAT, Self.PU, Self.ACT, Self.DISCRETE, SwishOp
+    ]
     comptime ImagT = WMImagineGraph[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT, SwishOp,
     ]
@@ -82,7 +85,7 @@ struct DreamerV3Trainer[
     comptime ACBlk = ACStep[
         Self.OBS, Self.ACT, Self.DETER, Self.H, Self.STOCH, Self.CLASSES,
         Self.BLOCKS, Self.TOKEN, Self.HU, Self.VU, Self.PU, Self.BINS, Self.B,
-        Self.T, Self.T_IMAG,
+        Self.T, Self.T_IMAG, Self.DISCRETE,
     ]
 
     var enc: Self.EncT

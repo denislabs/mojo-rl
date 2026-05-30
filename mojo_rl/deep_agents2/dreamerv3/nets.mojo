@@ -76,3 +76,24 @@ comptime DreamerPolicy[FEAT: Int, U: Int, ACT: Int, A: ElementOp = GELUOp] = Seq
     Linear[FEAT, U], RMSNorm[U], Elementwise[U, A],
     Linear[U, 2 * ACT],
 ]
+
+# Discrete policy head (1 hidden): feat[FEAT] → logits[ACT] (ACT = #actions).
+# `dists_discrete.mojo`'s unimix categorical (`OneHotDist`) maps logits→probs.
+# Same MLP shape as the continuous head but a single ACT-wide logit output
+# (vs 2·ACT mean/std). Used when the agent's `DISCRETE` flag is set.
+comptime DreamerPolicyDiscrete[FEAT: Int, U: Int, ACT: Int, A: ElementOp = GELUOp] = Sequential[
+    Linear[FEAT, U], RMSNorm[U], Elementwise[U, A],
+    Linear[U, ACT],
+]
+
+# Unified policy head selected by the `DISCRETE` flag. The output WIDTH is an
+# Int comptime ternary (ACT logits if discrete, else 2·ACT mean/std), which
+# resolves to a single concrete `Sequential` type — unlike a type-level
+# ternary, which Mojo joins (breaking Movable). Use this when threading a
+# compile-time `DISCRETE` flag through the trainer / AC block / agent.
+comptime DreamerPolicyHead[
+    FEAT: Int, U: Int, ACT: Int, DISCRETE: Bool, A: ElementOp = GELUOp
+] = Sequential[
+    Linear[FEAT, U], RMSNorm[U], Elementwise[U, A],
+    Linear[U, ACT if DISCRETE else 2 * ACT],
+]
