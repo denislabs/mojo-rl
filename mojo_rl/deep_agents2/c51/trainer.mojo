@@ -15,7 +15,7 @@ Conforms to `OffPolicyDiscreteAgent` so it slots into the existing
 from the SAMPLE block + target-Y γ^n.
 """
 
-from std.math import exp as fexp
+from std.math import exp as fexp, log as flog
 from std.random import random_float64
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
@@ -74,6 +74,7 @@ struct C51Trainer[
     comptime _T_TARGET_Y = 1
     comptime _T_CRITIC = 2
     comptime _T_POLYAK = 3
+    comptime _T_DIAG = 4
 
     var pair: OnlineTargetPair[Self.Q_NET]
     var q_opt: Adam
@@ -111,6 +112,13 @@ struct C51Trainer[
     var _action_list: List[Scalar[DT]]
 
     var _loss_accum: Scalar[DT]
+    # Per-batch distributional diagnostic accumulators (CPU-only diag walk;
+    # see `_train_step_impl`). Drained + reset by `flush_metrics`.
+    var _q_accum: Scalar[DT]
+    var _target_accum: Scalar[DT]
+    var _dist_entropy_accum: Scalar[DT]
+    var _reward_accum: Scalar[DT]
+    var _done_accum: Scalar[DT]
     var _update_count: Int
     # Never reset by `flush_*` — emitted as `train_steps` so the
     # downstream monitor can plot cumulative updates over time.
@@ -157,6 +165,11 @@ struct C51Trainer[
         self.learning_starts = 1_000
         self._action_list = List[Scalar[DT]](length=1, fill=Scalar[DT](0.0))
         self._loss_accum = Scalar[DT](0.0)
+        self._q_accum = Scalar[DT](0.0)
+        self._target_accum = Scalar[DT](0.0)
+        self._dist_entropy_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
+        self._done_accum = Scalar[DT](0.0)
         self._update_count = 0
         self._total_train_steps = 0
         self.timer = Timer.new()
@@ -249,6 +262,7 @@ struct C51Trainer[
         t.timer.add_section("target_y")
         t.timer.add_section("critic")
         t.timer.add_section("polyak")
+        t.timer.add_section("diag")
         return t^
 
     # ─── Train step ──────────────────────────────────────────────────
@@ -287,6 +301,58 @@ struct C51Trainer[
         self.sample_blk.update_priorities(self.state)
 
         self._loss_accum += self.state.critic_loss
+
+        # Per-batch distributional diagnostics (CPU-only — GPU train_target
+        # would need D2H of the logits/target/reward scratches; deferred,
+        # mirroring SAC/DQN). For the taken action: softmax its N_ATOMS
+        # logit row, take expected Q (Σ p_k z_k) and entropy (−Σ p_k log p_k).
+        # `_mb_m` holds the projected target distribution (already a
+        # normalized categorical), so its expected value Σ m_k z_k is the
+        # target-Q analogue.
+        var t_diag = perf_counter_ns()
+        comptime if Self.train_target == "cpu":
+            comptime NK = Self.N_ATOMS
+            var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
+            var z_p = self.target_y_blk.z_ptr()
+            var lg_p = self.q_update_blk.inner._logits_a.target_ptr["cpu"]()
+            var m_p = self._mb_m.target_ptr["cpu"]()
+            var r_p = self.state.mb_r.target_ptr["cpu"]()
+            var d_p = self.state.mb_d.target_ptr["cpu"]()
+            var sum_q: Scalar[DT] = 0.0
+            var sum_tq: Scalar[DT] = 0.0
+            var sum_ent: Scalar[DT] = 0.0
+            var sum_r: Scalar[DT] = 0.0
+            var sum_d: Scalar[DT] = 0.0
+            for b in range(Self.BATCH):
+                var base = b * NK
+                var maxl = lg_p[base]
+                for k in range(1, NK):
+                    if lg_p[base + k] > maxl:
+                        maxl = lg_p[base + k]
+                var sum_exp: Scalar[DT] = 0.0
+                for k in range(NK):
+                    sum_exp += fexp(lg_p[base + k] - maxl)
+                var eq: Scalar[DT] = 0.0
+                var ent: Scalar[DT] = 0.0
+                var tq: Scalar[DT] = 0.0
+                for k in range(NK):
+                    var p = fexp(lg_p[base + k] - maxl) / sum_exp
+                    eq += p * z_p[k]
+                    if p > Scalar[DT](1e-12):
+                        ent -= p * flog(p)
+                    tq += m_p[base + k] * z_p[k]
+                sum_q += eq
+                sum_tq += tq
+                sum_ent += ent
+                sum_r += r_p[b]
+                sum_d += d_p[b]
+            self._q_accum += sum_q * inv_b
+            self._target_accum += sum_tq * inv_b
+            self._dist_entropy_accum += sum_ent * inv_b
+            self._reward_accum += sum_r * inv_b
+            self._done_accum += sum_d * inv_b
+        self.timer.accumulate(Self._T_DIAG, t_diag)
+
         self._update_count += 1
         self._total_train_steps += 1
         return True
@@ -522,6 +588,14 @@ struct C51Trainer[
             self._update_count,
         )
         self._loss_accum = Scalar[DT](0.0)
+        # Keep diagnostic accumulators in lock-step with the chunk counter
+        # (this legacy tuple API drops them; a later flush_metrics must not
+        # divide a multi-chunk sum by one chunk's `n`).
+        self._q_accum = Scalar[DT](0.0)
+        self._target_accum = Scalar[DT](0.0)
+        self._dist_entropy_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
+        self._done_accum = Scalar[DT](0.0)
         self._update_count = 0
         return out
 
@@ -546,10 +620,20 @@ struct C51Trainer[
         var bundle = C51Metrics(
             loss=LogScalar[DT](self._loss_accum * inv),
             epsilon=LogScalar[DT](self.epsilon),
+            mean_q=LogScalar[DT](self._q_accum * inv),
+            mean_target=LogScalar[DT](self._target_accum * inv),
+            dist_entropy=LogScalar[DT](self._dist_entropy_accum * inv),
+            mean_reward=LogScalar[DT](self._reward_accum * inv),
+            mean_done=LogScalar[DT](self._done_accum * inv),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
         self._loss_accum = Scalar[DT](0.0)
+        self._q_accum = Scalar[DT](0.0)
+        self._target_accum = Scalar[DT](0.0)
+        self._dist_entropy_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
+        self._done_accum = Scalar[DT](0.0)
         self._update_count = 0
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)

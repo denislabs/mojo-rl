@@ -15,7 +15,12 @@ from mojo_rl.nn2.core.metric import LogScalar
 
 @fieldwise_init
 struct C51Metrics(Copyable, Movable, ImplicitlyDestructible):
-    var loss:        LogScalar[DT]
-    var epsilon:     LogScalar[DT]
-    var train_steps: LogScalar[DT]
-    var n_updates:   LogScalar[DT]
+    var loss:         LogScalar[DT]
+    var epsilon:      LogScalar[DT]
+    var mean_q:       LogScalar[DT]
+    var mean_target:  LogScalar[DT]
+    var dist_entropy: LogScalar[DT]
+    var mean_reward:  LogScalar[DT]
+    var mean_done:    LogScalar[DT]
+    var train_steps:  LogScalar[DT]
+    var n_updates:    LogScalar[DT]
