@@ -96,6 +96,8 @@ def main() raises:
         print_every=0,
         verbose=False,
     )
+    # Drain in-flight device work before host reads + teardown.
+    ctx.synchronize()
 
     var n_eps = trainer.ep_count()
     var mr = trainer.mean_return()

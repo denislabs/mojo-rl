@@ -103,6 +103,12 @@ def _run[USE_GRAPH: Bool](ctx: DeviceContext) raises -> Tuple[Scalar[DT], Int]:
         print_every=0,
         verbose=False,
     )
+    # Drain any in-flight device work before the trainer/env (and their
+    # device buffers) are destroyed at scope exit — `mean_return`/`ep_count`
+    # are host reads and don't sync. Important with a shared ctx + two runs:
+    # freeing run-A's buffers while its last kernels are still pending on the
+    # stream can crash the async runtime at teardown.
+    ctx.synchronize()
     return (trainer.mean_return(), trainer.ep_count())
 
 
