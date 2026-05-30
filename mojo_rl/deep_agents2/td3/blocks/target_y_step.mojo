@@ -1,7 +1,14 @@
 """TD3TargetYStep — wraps TD3TargetYBlock (target smoothing on a').
 
-Reads state.mb_sp, state.mb_r → writes state.mb_y.
+Reads state.mb_sp, state.mb_r, state.mb_d → writes state.mb_y.
+
+CPU + GPU. The inner `TD3TargetYBlock` carries a full GPU path (FullGraph
+forward + device Philox target-policy noise + `apply_terminal_mask`); this
+wrapper routes the optional `DeviceContext` and reads the minibatch
+scratches through `target_ptr[target]()`.
 """
+
+from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
@@ -28,15 +35,24 @@ struct TD3TargetYStep[
     def make[target: StaticString](
         action_scale: Scalar[DT], gamma: Scalar[DT],
         noise_std: Scalar[DT], noise_clip: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert target == "cpu", (
-            "TD3TargetYStep.make[target='gpu'] not yet supported"
+        """Unified CPU/GPU factory. `ctx` is required for `target='gpu'`."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "TD3TargetYStep: target must be 'cpu' or 'gpu'"
         )
         var b = Self()
-        b.inner = Self.Inner.make[target](
-            action_scale=action_scale, gamma=gamma,
-            noise_std=noise_std, noise_clip=noise_clip,
-        )
+        comptime if target == "cpu":
+            b.inner = Self.Inner.make[target](
+                action_scale=action_scale, gamma=gamma,
+                noise_std=noise_std, noise_clip=noise_clip,
+            )
+        else:
+            b.inner = Self.Inner.make[target](
+                ctx.value(),
+                action_scale=action_scale, gamma=gamma,
+                noise_std=noise_std, noise_clip=noise_clip,
+            )
         return b^
 
     def step[target: StaticString](
@@ -48,7 +64,7 @@ struct TD3TargetYStep[
     ) raises:
         self.inner.step[target](
             actor_t, critic1_t, critic2_t,
-            state.mb_sp.cpu_ptr(), state.mb_r.cpu_ptr(),
-            state.mb_d.cpu_ptr(),
-            state.mb_y.cpu_ptr(),
+            state.mb_sp.target_ptr[target](), state.mb_r.target_ptr[target](),
+            state.mb_d.target_ptr[target](),
+            state.mb_y.target_ptr[target](),
         )

@@ -43,6 +43,7 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.tanh import Tanh
 from mojo_rl.deep_agents2.td3 import TD3Agent
+from mojo_rl.deep_agents2.training.blocks import UniformSampleCpuStep
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 
@@ -122,12 +123,10 @@ def main() raises:
 
     # ─── Agent + env ─────────────────────────────────────────────────────
     var agent = TD3Agent[
+        "cpu",
+        UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
         ActorNet,
         CriticNet,
-        OBS_DIM,
-        ACT_DIM,
-        BATCH,
-        REPLAY_CAPACITY,
     ](
         actor_lr=3e-4,
         critic_lr=3e-4,

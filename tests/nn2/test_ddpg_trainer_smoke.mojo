@@ -6,6 +6,7 @@ from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.deep_agents2.ddpg.trainer import DDPGTrainer
+from mojo_rl.deep_agents2.training.blocks import UniformSampleCpuStep
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
@@ -26,8 +27,8 @@ def test_ddpg_trainer_smoke() raises:
     ]
     seed(53)
     var trainer = DDPGTrainer[
-        ActorNet, CriticNet, OBS, ACT, BATCH, 4096,
-    ].make["cpu"](
+        "cpu", UniformSampleCpuStep[OBS, ACT, BATCH, 4096], ActorNet, CriticNet,
+    ].make(
         actor_lr=1e-4, critic_lr=1e-3,
         gamma=0.99, tau=0.005, action_scale=2.0, noise_scale=0.1,
         learning_starts=200,

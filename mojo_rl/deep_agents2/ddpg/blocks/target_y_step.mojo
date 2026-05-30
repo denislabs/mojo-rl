@@ -1,7 +1,14 @@
 """DDPGTargetYStep — wraps DDPGTargetYBlock (owns the inner block).
 
-Reads state.mb_sp, state.mb_r → writes state.mb_y.
+Reads state.mb_sp, state.mb_r, state.mb_d → writes state.mb_y.
+
+CPU + GPU. The inner `DDPGTargetYBlock` already carries a full GPU path
+(FullGraph forward + `apply_terminal_mask`); this wrapper just routes the
+optional `DeviceContext` and reads the minibatch scratches through
+`target_ptr[target]()`.
 """
+
+from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
@@ -27,14 +34,22 @@ struct DDPGTargetYStep[
     @staticmethod
     def make[target: StaticString](
         action_scale: Scalar[DT], gamma: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert target == "cpu", (
-            "DDPGTargetYStep.make[target='gpu'] not yet supported"
+        """Unified CPU/GPU factory. `ctx` is required for `target='gpu'`
+        (the inner block's GPU make takes a concrete `DeviceContext`)."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "DDPGTargetYStep: target must be 'cpu' or 'gpu'"
         )
         var b = Self()
-        b.inner = Self.Inner.make[target](
-            action_scale=action_scale, gamma=gamma,
-        )
+        comptime if target == "cpu":
+            b.inner = Self.Inner.make[target](
+                action_scale=action_scale, gamma=gamma,
+            )
+        else:
+            b.inner = Self.Inner.make[target](
+                ctx.value(), action_scale=action_scale, gamma=gamma,
+            )
         return b^
 
     def step[target: StaticString](
@@ -45,7 +60,7 @@ struct DDPGTargetYStep[
     ) raises:
         self.inner.step[target](
             actor_t, critic_t,
-            state.mb_sp.cpu_ptr(), state.mb_r.cpu_ptr(),
-            state.mb_d.cpu_ptr(),
-            state.mb_y.cpu_ptr(),
+            state.mb_sp.target_ptr[target](), state.mb_r.target_ptr[target](),
+            state.mb_d.target_ptr[target](),
+            state.mb_y.target_ptr[target](),
         )

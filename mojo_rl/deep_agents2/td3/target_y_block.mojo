@@ -53,9 +53,11 @@ The TD bootstrap is masked per-sample by the natural-termination flag
 `Add(r, γ·qmin)`.
 """
 
-from layout import TileTensor, row_major
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
@@ -71,9 +73,20 @@ from mojo_rl.nn2.primitives.scale import Scale
 from mojo_rl.nn2.primitives.concat import Concat
 from mojo_rl.nn2.primitives.add import Add
 from mojo_rl.nn2.primitives.binary_elem_min import BinaryElemMin
-from mojo_rl.nn2.random.box_muller import box_muller_normal
+from mojo_rl.nn2.random.box_muller import box_muller_normal, box_muller_normal_gpu
 from ..loss.loss_block import LossBlock
 from ..training.terminal_mask import apply_terminal_mask
+
+
+def _scale_inplace_kernel[N: Int](
+    buf: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    s: Scalar[DT],
+):
+    """`buf[idx] *= s` — σ-scale the device standard-normal noise buffer
+    (TD3 target-policy smoothing). One thread per element."""
+    var idx = Int(global_idx.x)
+    if idx < N:
+        buf[idx] = buf[idx] * s
 
 
 struct TD3TargetYBlock[
@@ -110,6 +123,9 @@ struct TD3TargetYBlock[
     var gamma: Scalar[DT]
     var noise_std: Scalar[DT]  # σ for target-policy smoothing
     var noise_clip: Scalar[DT]  # c — noise clamped to ±c·action_scale
+    # Philox state for the GPU target-smoothing noise (gpu path only).
+    var _noise_rng_seed: UInt64
+    var _noise_rng_offset: UInt64
     var ts: TargetStorage
 
     def __init__(out self):
@@ -119,6 +135,8 @@ struct TD3TargetYBlock[
         self.gamma = Scalar[DT](0.99)
         self.noise_std = Scalar[DT](0.2)
         self.noise_clip = Scalar[DT](0.5)
+        self._noise_rng_seed = UInt64(0x7D3_5EED_C0DE)
+        self._noise_rng_offset = UInt64(0)
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -160,6 +178,49 @@ struct TD3TargetYBlock[
         blk.graph.set_node_attr["gamma_q", "multiplier"](gamma)
         return blk^
 
+    @staticmethod
+    def make[
+        target: StaticString
+    ](
+        ctx: DeviceContext,
+        action_scale: Scalar[DT] = Scalar[DT](1.0),
+        gamma: Scalar[DT] = Scalar[DT](0.99),
+        noise_std: Scalar[DT] = Scalar[DT](0.2),
+        noise_clip: Scalar[DT] = Scalar[DT](0.5),
+    ) raises -> Self:
+        """GPU factory. Noise is sampled on-device via Philox box-muller +
+        a σ-scale kernel; the FullGraph runs on GPU unchanged."""
+        comptime assert (
+            target == "gpu"
+        ), "TD3TargetYBlock.make[target='cpu'](ctx) — drop ctx for CPU"
+        comptime assert (
+            Self.ACTOR.IN_DIMS[0] == Self.OBS
+        ), "TD3TargetYBlock: ACTOR.IN_DIM must equal OBS"
+        comptime assert (
+            Self.ACTOR.OUT_DIM == Self.ACT
+        ), "TD3TargetYBlock: ACTOR.OUT_DIM must equal ACT"
+        comptime assert (
+            Self.CRITIC.IN_DIMS[0] == Self.SA_DIM
+        ), "TD3TargetYBlock: CRITIC.IN_DIM must equal OBS+ACT"
+        comptime assert (
+            Self.CRITIC.OUT_DIM == 1
+        ), "TD3TargetYBlock: CRITIC.OUT_DIM must equal 1"
+        var blk = Self()
+        blk.graph = Self.TD3TargetYGraph.make[target="gpu", INIT=Zero](ctx)
+        blk.noise_buf = Scratch["noise", Self.BATCH * Self.ACT].make_gpu(ctx)
+        blk.ts = TargetStorage.make_gpu(ctx)
+        blk.action_scale = action_scale
+        blk.gamma = gamma
+        blk.noise_std = noise_std
+        blk.noise_clip = noise_clip
+        var clip_lim = noise_clip * action_scale
+        blk.graph.set_node_attr["noise_clip", "min_val"](-clip_lim)
+        blk.graph.set_node_attr["noise_clip", "max_val"](clip_lim)
+        blk.graph.set_node_attr["a_smoothed", "min_val"](-action_scale)
+        blk.graph.set_node_attr["a_smoothed", "max_val"](action_scale)
+        blk.graph.set_node_attr["gamma_q", "multiplier"](gamma)
+        return blk^
+
     def step[
         target: StaticString,
     ](
@@ -176,16 +237,33 @@ struct TD3TargetYBlock[
         in-place into `mb_y_ptr`. The TD bootstrap is dropped on natural
         termination, kept on truncation (`term ≡ 0` → `r + γ·min(Q1,Q2)`,
         bit-identical to the prior unmasked target)."""
-        comptime assert target == "cpu", "TD3TargetYBlock: CPU only"
         assert_tag_for["TD3TargetYBlock", target](self.ts.target_tag)
+        comptime N = Self.BATCH * Self.ACT
 
-        # Sample standard-normal noise host-side, then σ-scale in place.
-        # The graph's `noise_clip` node clamps to ±(noise_clip · action_scale).
-        var noise_p = self.noise_buf.cpu_ptr()
-        box_muller_normal(noise_p, Self.BATCH * Self.ACT)
+        # Sample standard-normal noise, then σ-scale in place. The graph's
+        # `noise_clip` node clamps to ±(noise_clip · action_scale). CPU uses
+        # std.random box-muller (bit-identity path); GPU uses Philox box-muller
+        # + a σ-scale kernel (separate baseline, same math).
+        var noise_p = self.noise_buf.target_ptr[target]()
         var sigma = self.noise_std * self.action_scale
-        for k in range(Self.BATCH * Self.ACT):
-            noise_p[k] = noise_p[k] * sigma
+        comptime if target == "cpu":
+            box_muller_normal(noise_p, N)
+            for k in range(N):
+                noise_p[k] = noise_p[k] * sigma
+        else:
+            var ctx = self.ts.ctx.value()
+            box_muller_normal_gpu[N](
+                ctx, noise_p, self._noise_rng_seed, self._noise_rng_offset,
+            )
+            self._noise_rng_offset += UInt64(((N + 1) // 2) * 2)
+            var noise_lt = LayoutTensor[
+                DT, Layout.row_major(N), MutAnyOrigin,
+            ](noise_p)
+            comptime n_blocks = (N + TPB - 1) // TPB
+            comptime scale_kernel = _scale_inplace_kernel[N]
+            ctx.enqueue_function[scale_kernel](
+                noise_lt, sigma, grid_dim=n_blocks, block_dim=TPB,
+            )
 
         # Bind externals.
         self.graph.set_external["a_sp", Self.ACTOR](actor_target)

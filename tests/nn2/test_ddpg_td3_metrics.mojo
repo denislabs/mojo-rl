@@ -30,6 +30,7 @@ from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.tanh import Tanh
 from mojo_rl.deep_agents2.ddpg.trainer import DDPGTrainer
 from mojo_rl.deep_agents2.td3.trainer import TD3Trainer
+from mojo_rl.deep_agents2.training.blocks import UniformSampleCpuStep
 from mojo_rl.deep_agents2.training.driver_offpolicy import run_offpolicy_train
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -60,8 +61,8 @@ def test_ddpg_metrics() raises:
     print("--- DDPG metrics populated ---")
     seed(42)
     var trainer = DDPGTrainer[
-        ActorNet, CriticNet, OBS, ACT, BATCH, CAP,
-    ].make["cpu"](
+        "cpu", UniformSampleCpuStep[OBS, ACT, BATCH, CAP], ActorNet, CriticNet,
+    ].make(
         actor_lr=3e-4, critic_lr=3e-4, gamma=0.99, tau=0.005,
         action_scale=2.0, learning_starts=WARMUP,
     )
@@ -92,8 +93,8 @@ def test_td3_metrics() raises:
     print("--- TD3 metrics populated ---")
     seed(42)
     var trainer = TD3Trainer[
-        ActorNet, CriticNet, OBS, ACT, BATCH, CAP,
-    ].make["cpu"](
+        "cpu", UniformSampleCpuStep[OBS, ACT, BATCH, CAP], ActorNet, CriticNet,
+    ].make(
         actor_lr=3e-4, critic_lr=3e-4, gamma=0.99, tau=0.005,
         action_scale=2.0, exploration_noise=0.1,
         target_policy_noise=0.2, target_noise_clip=0.5,
