@@ -14,8 +14,10 @@ minibatch SGD inside one `train_step`:
                     (= N_EPOCHS * N_MINIBATCHES). Cast to Float64
                     for uniform Logger surface.
 
-Entropy / KL-divergence are not yet captured — they require modifying
-`PPOActorLoss` to return them alongside the loss. Defer to a polish chunk."""
+Entropy / approx_kl / clip_fraction / explained_variance are captured by
+a CPU-only diagnostic walk in `PPOTrainer.train_step` (re-runs the actor
+on each minibatch + reads the critic's value/return scratches). They read
+0.0 on the GPU train path, where the diag walk is skipped."""
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.metric import LogScalar
@@ -27,3 +29,9 @@ struct PPOMetrics(Copyable, Movable, ImplicitlyDestructible):
     var critic_loss: LogScalar[DT]
     var train_steps: LogScalar[DT]
     var n_updates:   LogScalar[DT]
+    # Per-minibatch policy/critic diagnostics (CPU diag walk; 0.0 on GPU
+    # where the diag pass is skipped). Mirrors the DQN/C51 metrics pattern.
+    var entropy:            LogScalar[DT]  # mean Gaussian entropy
+    var approx_kl:          LogScalar[DT]  # Schulman-2020 (r-1)-log r
+    var clip_fraction:      LogScalar[DT]  # frac |r-1| > clip_eps
+    var explained_variance: LogScalar[DT]  # 1 - Var(ret-v)/Var(ret)

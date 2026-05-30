@@ -24,8 +24,10 @@ mb_* scratches before each PPOActorTrainStep / PPOCriticTrainStep.
 """
 
 from std.gpu.host import DeviceContext
+from std.math import exp as fexp
 from std.memory import alloc
 from std.time import perf_counter_ns
+from layout import TileTensor, row_major
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
@@ -55,6 +57,15 @@ from .blocks.minibatch_gather_step import PPOMinibatchGatherStep
 from .blocks.actor_train_step import PPOActorTrainStep
 from .blocks.critic_train_step import PPOCriticTrainStep
 from .metrics import PPOMetrics
+
+
+# Diagnostic constants — MUST match ppo/objective.mojo's clamps so the
+# recomputed entropy / ratio line up with the loss the kernel produced.
+comptime _DIAG_LOG_STD_MIN: Scalar[DT] = -5.0
+comptime _DIAG_LOG_STD_MAX: Scalar[DT] = 2.0
+comptime _DIAG_LOG_PROB_DIFF_MAX: Scalar[DT] = 20.0
+comptime _DIAG_EPS_STD: Scalar[DT] = 1e-6
+comptime _DIAG_LOG_2PI: Scalar[DT] = 1.8378770664093453
 
 
 struct PPOTrainer[
@@ -87,6 +98,7 @@ struct PPOTrainer[
     # `gae` section. Sample / target_y / polyak don't apply to on-policy.
     comptime _T_GAE = 0
     comptime _T_UPDATE = 1
+    comptime _T_DIAG = 2
 
     # ── Networks + optimisers ────────────────────────────────────────
     var actor: Self.ACTOR
@@ -136,6 +148,13 @@ struct PPOTrainer[
     # ── Train-step accumulators (summed across all minibatch updates) ────
     var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
+    # Per-minibatch diagnostics (CPU-only diag walk; averaged at flush).
+    var _entropy_accum: Scalar[DT]
+    var _kl_accum: Scalar[DT]
+    var _clip_accum: Scalar[DT]
+    var _ev_accum: Scalar[DT]
+    # Host scratch for the diag actor forward (MINIBATCH * 2 * ACT_DIM).
+    var _diag_ao: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var _update_count: Int
     # Never reset by `flush_*` — emitted as `train_steps` so the
     # downstream monitor can plot cumulative minibatch updates.
@@ -212,6 +231,11 @@ struct PPOTrainer[
         self._ep_returns = null_p
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
+        self._entropy_accum = Scalar[DT](0.0)
+        self._kl_accum = Scalar[DT](0.0)
+        self._clip_accum = Scalar[DT](0.0)
+        self._ev_accum = Scalar[DT](0.0)
+        self._diag_ao = null_p
         self._update_count = 0
         self._total_train_steps = 0
         self.timer = Timer.new()
@@ -295,6 +319,7 @@ struct PPOTrainer[
         t._ep_returns = alloc[Scalar[DT]](Self.N_ENVS)
         for e in range(Self.N_ENVS):
             t._ep_returns[e] = Scalar[DT](0.0)
+        t._diag_ao = alloc[Scalar[DT]](Self.MINIBATCH * 2 * Self.ACT_DIM)
         t.gamma = gamma
         t.gae_lambda = gae_lambda
         t.clip_eps = clip_eps
@@ -312,6 +337,7 @@ struct PPOTrainer[
         # constants above.
         t.timer.add_section("gae")
         t.timer.add_section("update")
+        t.timer.add_section("diag")
         return t^
 
     # ──────────────────────────────────────────────────────────────────
@@ -471,6 +497,10 @@ struct PPOTrainer[
                 self._critic_L_accum += cL
                 self._update_count += 1
                 self._total_train_steps += 1
+                comptime if Self.train_target == "cpu":
+                    var t_diag = perf_counter_ns()
+                    self._accumulate_diag()
+                    self.timer.accumulate(Self._T_DIAG, t_diag)
         self.timer.accumulate(Self._T_UPDATE, t_upd)
 
         # ── Reset rollout cursor + clear term buf.
@@ -478,6 +508,90 @@ struct PPOTrainer[
             Self.train_target, Self.MINIBATCH, Self.N_ENVS,
         ](self.state)
         return True
+
+    def _accumulate_diag(mut self) raises:
+        """CPU-only per-minibatch PPO diagnostics: entropy, Schulman-2020
+        approx_kl, clip_fraction, and explained variance. Re-runs the actor
+        on the current minibatch obs (post-update policy) and reads the
+        critic's value/return scratches written by the critic train step.
+        Accumulated once per minibatch; averaged by `_update_count` at flush
+        (same denominator as the loss accumulators)."""
+        comptime ACT = Self.ACT_DIM
+        comptime MB = Self.MINIBATCH
+        var act_p = self.state.mb_act.target_ptr["cpu"]()
+        var olp_p = self.state.mb_olp.target_ptr["cpu"]()
+        var v_p   = self.state.mb_v.target_ptr["cpu"]()
+        var ret_p = self.state.mb_ret.target_ptr["cpu"]()
+        var obs_p = self.state.mb_obs.target_ptr["cpu"]()
+
+        var obs_t = TileTensor(obs_p, row_major[MB, Self.OBS_DIM]())
+        var ao_t = TileTensor(self._diag_ao, row_major[MB, 2 * ACT]())
+        self.actor.forward["cpu", MB](obs_t, output=ao_t)
+        var ao = self._diag_ao
+
+        var ent_sum = Scalar[DT](0.0)
+        var kl_sum = Scalar[DT](0.0)
+        var clip_sum = Scalar[DT](0.0)
+        for b in range(MB):
+            var nlp = Scalar[DT](0.0)
+            var ent = Scalar[DT](0.0)
+            for j in range(ACT):
+                var mu = ao[b * 2 * ACT + j]
+                var ls = ao[b * 2 * ACT + ACT + j]
+                if ls < _DIAG_LOG_STD_MIN:
+                    ls = _DIAG_LOG_STD_MIN
+                elif ls > _DIAG_LOG_STD_MAX:
+                    ls = _DIAG_LOG_STD_MAX
+                var std = fexp(ls)
+                var a = act_p[b * ACT + j]
+                var zz = (a - mu) / (std + _DIAG_EPS_STD)
+                nlp += Scalar[DT](-0.5) * (
+                    _DIAG_LOG_2PI + Scalar[DT](2.0) * ls + zz * zz
+                )
+                ent += Scalar[DT](0.5) * (
+                    _DIAG_LOG_2PI + Scalar[DT](1.0) + Scalar[DT](2.0) * ls
+                )
+            var diff = nlp - olp_p[b]
+            if diff > _DIAG_LOG_PROB_DIFF_MAX:
+                diff = _DIAG_LOG_PROB_DIFF_MAX
+            elif diff < -_DIAG_LOG_PROB_DIFF_MAX:
+                diff = -_DIAG_LOG_PROB_DIFF_MAX
+            var ratio = fexp(diff)
+            # Schulman 2020 unbiased KL estimate: (r - 1) - log r.
+            kl_sum += (ratio - Scalar[DT](1.0)) - diff
+            var dev = ratio - Scalar[DT](1.0)
+            if dev < Scalar[DT](0.0):
+                dev = -dev
+            if dev > self.clip_eps:
+                clip_sum += Scalar[DT](1.0)
+            ent_sum += ent
+
+        var inv_mb = Scalar[DT](1.0) / Scalar[DT](MB)
+        self._entropy_accum += ent_sum * inv_mb
+        self._kl_accum += kl_sum * inv_mb
+        self._clip_accum += clip_sum * inv_mb
+
+        # Explained variance (CleanRL): 1 - Var(ret - v) / Var(ret), with
+        # mean-centred variances. v_p holds the critic's pre-update preds
+        # for this minibatch.
+        var mean_ret = Scalar[DT](0.0)
+        var mean_res = Scalar[DT](0.0)
+        for b in range(MB):
+            mean_ret += ret_p[b]
+            mean_res += ret_p[b] - v_p[b]
+        mean_ret *= inv_mb
+        mean_res *= inv_mb
+        var var_ret = Scalar[DT](0.0)
+        var var_res = Scalar[DT](0.0)
+        for b in range(MB):
+            var dr = ret_p[b] - mean_ret
+            var rr = (ret_p[b] - v_p[b]) - mean_res
+            var_ret += dr * dr
+            var_res += rr * rr
+        var ev = Scalar[DT](0.0)
+        if var_ret > Scalar[DT](1e-8):
+            ev = Scalar[DT](1.0) - var_res / var_ret
+        self._ev_accum += ev
 
     def mean_return(self) -> Scalar[DT]:
         return self.tracker.mean_return()
@@ -502,6 +616,12 @@ struct PPOTrainer[
         )
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
+        # Reset diag accumulators in lock-step (mirrors flush_metrics) so a
+        # flush_train_log call doesn't leave them to double-count.
+        self._entropy_accum = Scalar[DT](0.0)
+        self._kl_accum = Scalar[DT](0.0)
+        self._clip_accum = Scalar[DT](0.0)
+        self._ev_accum = Scalar[DT](0.0)
         self._update_count = 0
         return out
 
@@ -528,9 +648,17 @@ struct PPOTrainer[
             critic_loss=LogScalar[DT](self._critic_L_accum * inv),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
+            entropy=LogScalar[DT](self._entropy_accum * inv),
+            approx_kl=LogScalar[DT](self._kl_accum * inv),
+            clip_fraction=LogScalar[DT](self._clip_accum * inv),
+            explained_variance=LogScalar[DT](self._ev_accum * inv),
         )
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
+        self._entropy_accum = Scalar[DT](0.0)
+        self._kl_accum = Scalar[DT](0.0)
+        self._clip_accum = Scalar[DT](0.0)
+        self._ev_accum = Scalar[DT](0.0)
         self._update_count = 0
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
