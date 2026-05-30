@@ -67,6 +67,7 @@ struct DDPGTrainer[
     comptime _T_CRITIC = 2
     comptime _T_ACTOR = 3
     comptime _T_POLYAK = 4
+    comptime _T_DIAG = 5
 
     var actor_pair: OnlineTargetPair[Self.ACTOR]
     var critic_pair: OnlineTargetPair[Self.CRITIC]
@@ -124,6 +125,12 @@ struct DDPGTrainer[
     # Never reset by `flush_*` — emitted as `train_steps` so the
     # downstream monitor can plot cumulative updates over time.
     var _total_train_steps: Int
+
+    # Per-batch diagnostic accumulators (CPU-only diag walk; mirror SAC).
+    # Averaged by `_update_count` at flush.
+    var _q_accum: Scalar[DT]
+    var _target_accum: Scalar[DT]
+    var _reward_accum: Scalar[DT]
 
     var timer: Timer
 
@@ -190,6 +197,9 @@ struct DDPGTrainer[
         self._critic_L_accum = Scalar[DT](0.0)
         self._update_count = 0
         self._total_train_steps = 0
+        self._q_accum = Scalar[DT](0.0)
+        self._target_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
         self.timer = Timer.new()
 
     @staticmethod
@@ -279,6 +289,7 @@ struct DDPGTrainer[
         t.timer.add_section("critic")
         t.timer.add_section("actor")
         t.timer.add_section("polyak")
+        t.timer.add_section("diag")
         return t^
 
     # ─── Direct-callable (host-list) surface ─────────────────────────
@@ -372,6 +383,28 @@ struct DDPGTrainer[
             self.critic_pair,
         )
         self.timer.accumulate(Self._T_POLYAK, t_pol)
+
+        # Per-batch diagnostics — CPU-only walk mirroring SACTrainer.
+        # `mean_q` reads `critic_blk.inner._mb_q` (Q(s, a) from the critic
+        # forward inside `critic_blk.step`, not touched by `actor_blk`);
+        # `mean_target` reads the TD target `state.mb_y`; `mean_reward`
+        # reads the minibatch reward `state.mb_r`.
+        var t_diag = perf_counter_ns()
+        var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
+        var q_p = self.critic_blk.inner._mb_q.target_ptr["cpu"]()
+        var y_p = self.state.mb_y.target_ptr["cpu"]()
+        var r_p = self.state.mb_r.target_ptr["cpu"]()
+        var sum_q: Scalar[DT] = 0.0
+        var sum_y: Scalar[DT] = 0.0
+        var sum_r: Scalar[DT] = 0.0
+        for i in range(Self.BATCH):
+            sum_q += q_p[i]
+            sum_y += y_p[i]
+            sum_r += r_p[i]
+        self._q_accum += sum_q * inv_b
+        self._target_accum += sum_y * inv_b
+        self._reward_accum += sum_r * inv_b
+        self.timer.accumulate(Self._T_DIAG, t_diag)
 
         self._actor_L_accum += self.state.actor_loss
         self._critic_L_accum += self.state.critic_loss
@@ -515,6 +548,9 @@ struct DDPGTrainer[
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._update_count = 0
+        self._q_accum = Scalar[DT](0.0)
+        self._target_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
         return out
 
     def total_train_steps(self) -> Int:
@@ -539,12 +575,18 @@ struct DDPGTrainer[
         var bundle = DDPGMetrics(
             actor_loss=LogScalar[DT](self._actor_L_accum * inv),
             critic_loss=LogScalar[DT](self._critic_L_accum * inv),
+            mean_q=LogScalar[DT](self._q_accum * inv),
+            mean_target=LogScalar[DT](self._target_accum * inv),
+            mean_reward=LogScalar[DT](self._reward_accum * inv),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._update_count = 0
+        self._q_accum = Scalar[DT](0.0)
+        self._target_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^
@@ -595,7 +637,7 @@ struct DDPGTrainer[
 
     def flush_timer_log(mut self) -> String:
         """Per-section wall-time report (one line per sub-step:
-        sample / target_y / critic / actor / polyak) and reset the
+        sample / target_y / critic / actor / polyak / diag) and reset the
         accumulators."""
         var report = self.timer.format_report()
         self.timer.reset()
