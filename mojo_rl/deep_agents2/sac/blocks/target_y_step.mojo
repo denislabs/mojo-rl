@@ -69,6 +69,7 @@ struct TargetYStep[
             actor, tgt1, tgt2,
             state.mb_sp.target_ptr[target](),
             state.mb_r.target_ptr[target](),
+            state.mb_d.target_ptr[target](),
             state.alpha,
             state.mb_y.target_ptr[target](),
         )

@@ -585,6 +585,58 @@ struct Adam(Optimizer, Saveable):
             lines, idx, prefix + ".v_flat", self.v_flat, self.total_size,
         )
 
+    # ─── GPU checkpoint sync (Phase 2 — GPU checkpointing) ───────────────
+    # On the GPU path the host fields (`m_flat`/`v_flat`/`step_count`/
+    # `beta*_pow_t`) are NOT maintained — the live state lives in the device
+    # buffers (`m_dev`/`v_dev`/`step_dev`/`bc_dev`). These bridge device ↔
+    # host so the EXISTING CPU `save`/`load` serializer runs unchanged on a
+    # GPU optimizer, giving a byte-identical (interchangeable) checkpoint:
+    # GPU-saved files load on a CPU trainer and vice-versa.
+
+    def sync_to_host(mut self) raises:
+        """D2H device buffers → host fields. Call before `save` on GPU.
+        Sizes `m_flat`/`v_flat` if empty, copies moments, the step counter
+        (`step_dev`), and the bias-correction powers (`bc_dev[0:2]` =
+        β₁ᵗ/β₂ᵗ)."""
+        var ctx = self.ts.ctx.value()
+        if len(self.m_flat) != self.total_size:
+            self.m_flat = List[Scalar[DT]](
+                length=self.total_size, fill=Scalar[DT](0.0)
+            )
+            self.v_flat = List[Scalar[DT]](
+                length=self.total_size, fill=Scalar[DT](0.0)
+            )
+        ctx.enqueue_copy(self.m_flat.unsafe_ptr(), self.m_dev.value())
+        ctx.enqueue_copy(self.v_flat.unsafe_ptr(), self.v_dev.value())
+        var step_host = ctx.enqueue_create_host_buffer[DType.uint32](1)
+        ctx.enqueue_copy(step_host, self.step_dev.value())
+        var bc_host = ctx.enqueue_create_host_buffer[DT](4)
+        ctx.enqueue_copy(bc_host, self.bc_dev.value())
+        ctx.synchronize()
+        self.step_count = Int(step_host.unsafe_ptr()[0])
+        self.beta1_pow_t = bc_host.unsafe_ptr()[0]
+        self.beta2_pow_t = bc_host.unsafe_ptr()[1]
+
+    def upload_from_host(mut self) raises:
+        """H2D host fields → device buffers. Call after `load` on GPU.
+        Restores moments + the step counter, and recomputes `bc_dev` =
+        [β₁ᵗ, β₂ᵗ, 1−β₁ᵗ, 1−β₂ᵗ] from the loaded `beta*_pow_t` (matching
+        `_adam_step_prep_kernel`'s layout)."""
+        var ctx = self.ts.ctx.value()
+        ctx.enqueue_copy(self.m_dev.value(), self.m_flat.unsafe_ptr())
+        ctx.enqueue_copy(self.v_dev.value(), self.v_flat.unsafe_ptr())
+        var step_host = ctx.enqueue_create_host_buffer[DType.uint32](1)
+        var bc_host = ctx.enqueue_create_host_buffer[DT](4)
+        ctx.synchronize()
+        step_host.unsafe_ptr()[0] = UInt32(self.step_count)
+        bc_host.unsafe_ptr()[0] = self.beta1_pow_t
+        bc_host.unsafe_ptr()[1] = self.beta2_pow_t
+        bc_host.unsafe_ptr()[2] = Scalar[DT](1.0) - self.beta1_pow_t
+        bc_host.unsafe_ptr()[3] = Scalar[DT](1.0) - self.beta2_pow_t
+        ctx.enqueue_copy(self.step_dev.value(), step_host)
+        ctx.enqueue_copy(self.bc_dev.value(), bc_host)
+        ctx.synchronize()
+
     @staticmethod
     def _load_flat_section(
         lines: List[String],

@@ -50,13 +50,16 @@ from mojo_rl.nn2.core import Module
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP, Bf16Compute
 from mojo_rl.nn2.core.checkpoint import (
     save_state_v2_body, load_state_v2_body,
+    save_state_v2_body_gpu, load_state_v2_body_gpu,
 )
 from mojo_rl.nn2.core.log_bundle import log_bundle
 from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.metric import LogScalar
 from ..core.checkpoint_helpers import (
     save_optimizer_v2_body, load_optimizer_v2_body,
+    save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
     save_scalar_adam_v2_body, load_scalar_adam_v2_body,
+    save_scalar_adam_v2_body_gpu, load_scalar_adam_v2_body_gpu,
     split_lines_v2, read_file_v2, expect_v2_header,
 )
 from ..core.online_target_pair import OnlineTargetPair
@@ -1180,18 +1183,24 @@ struct SACTrainer[
         Sections: `actor.*`, `critic1.*`, `critic2.*`, `actor_opt.*`,
         `critic1_opt.*`, `critic2_opt.*`, `alpha_opt.*`. Overwrites
         `path`. CPU-only."""
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "SACTrainer.save_state: GPU save/load not yet supported."
-            )
         var body = String("")
-        save_state_v2_body(self.actor, body, "actor")
-        save_state_v2_body(self.pair1.online, body, "critic1")
-        save_state_v2_body(self.pair2.online, body, "critic2")
-        save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
-        save_optimizer_v2_body(self.critic1_opt, body, "critic1_opt")
-        save_optimizer_v2_body(self.critic2_opt, body, "critic2_opt")
-        save_scalar_adam_v2_body(self.alpha_opt, body, "alpha_opt")
+        comptime if Self.train_target == "cpu":
+            save_state_v2_body(self.actor, body, "actor")
+            save_state_v2_body(self.pair1.online, body, "critic1")
+            save_state_v2_body(self.pair2.online, body, "critic2")
+            save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
+            save_optimizer_v2_body(self.critic1_opt, body, "critic1_opt")
+            save_optimizer_v2_body(self.critic2_opt, body, "critic2_opt")
+            save_scalar_adam_v2_body(self.alpha_opt, body, "alpha_opt")
+        else:
+            var c = self.ctx.value()
+            save_state_v2_body_gpu(self.actor, body, "actor", c)
+            save_state_v2_body_gpu(self.pair1.online, body, "critic1", c)
+            save_state_v2_body_gpu(self.pair2.online, body, "critic2", c)
+            save_optimizer_v2_body_gpu(self.actor_opt, body, "actor_opt")
+            save_optimizer_v2_body_gpu(self.critic1_opt, body, "critic1_opt")
+            save_optimizer_v2_body_gpu(self.critic2_opt, body, "critic2_opt")
+            save_scalar_adam_v2_body_gpu(self.alpha_opt, body, "alpha_opt")
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
@@ -1199,21 +1208,31 @@ struct SACTrainer[
     def load_state(mut self, path: String) raises:
         """Inverse of `save_state`. Target critics are hard-copied from
         their online twins after the online params are restored."""
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "SACTrainer.load_state: GPU save/load not yet supported."
-            )
         var content = read_file_v2(path)
         var lines = split_lines_v2(content)
         expect_v2_header(lines)
         var idx: Int = 1
-        load_state_v2_body(self.actor, lines, idx, "actor")
-        load_state_v2_body(self.pair1.online, lines, idx, "critic1")
-        load_state_v2_body(self.pair2.online, lines, idx, "critic2")
-        load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
-        load_optimizer_v2_body(self.critic1_opt, lines, idx, "critic1_opt")
-        load_optimizer_v2_body(self.critic2_opt, lines, idx, "critic2_opt")
-        load_scalar_adam_v2_body(self.alpha_opt, lines, idx, "alpha_opt")
+        comptime if Self.train_target == "cpu":
+            load_state_v2_body(self.actor, lines, idx, "actor")
+            load_state_v2_body(self.pair1.online, lines, idx, "critic1")
+            load_state_v2_body(self.pair2.online, lines, idx, "critic2")
+            load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
+            load_optimizer_v2_body(self.critic1_opt, lines, idx, "critic1_opt")
+            load_optimizer_v2_body(self.critic2_opt, lines, idx, "critic2_opt")
+            load_scalar_adam_v2_body(self.alpha_opt, lines, idx, "alpha_opt")
+        else:
+            var c = self.ctx.value()
+            load_state_v2_body_gpu(self.actor, lines, idx, "actor", c)
+            load_state_v2_body_gpu(self.pair1.online, lines, idx, "critic1", c)
+            load_state_v2_body_gpu(self.pair2.online, lines, idx, "critic2", c)
+            load_optimizer_v2_body_gpu(self.actor_opt, lines, idx, "actor_opt")
+            load_optimizer_v2_body_gpu(
+                self.critic1_opt, lines, idx, "critic1_opt"
+            )
+            load_optimizer_v2_body_gpu(
+                self.critic2_opt, lines, idx, "critic2_opt"
+            )
+            load_scalar_adam_v2_body_gpu(self.alpha_opt, lines, idx, "alpha_opt")
         hard_copy_params[Self.train_target, M=Self.CRITIC](
             self.pair1.online, self.pair1.target_net, self.ctx,
         )

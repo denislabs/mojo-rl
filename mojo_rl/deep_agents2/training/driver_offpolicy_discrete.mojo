@@ -264,6 +264,11 @@ def run_offpolicy_discrete_train[
         var nxt = step_res[0].copy()
         var reward = step_res[1]
         var done = step_res[2]
+        # `done` (terminated OR truncated) drives reset/episode tracking; the
+        # replay buffer stores `terminated` ONLY so the DQN/C51 TD bootstrap
+        # `(1 − done)·γ·max Q'` is kept on time-limit truncation and dropped
+        # on natural termination.
+        var terminated = env.was_terminated()
         for d in range(OBS):
             next_obs_list[d] = Scalar[DT](nxt[d])
 
@@ -272,7 +277,7 @@ def run_offpolicy_discrete_train[
             action_idx,
             Scalar[DT](reward),
             next_obs_list,
-            Scalar[DT](1.0) if done else Scalar[DT](0.0),
+            Scalar[DT](1.0) if terminated else Scalar[DT](0.0),
         )
 
         if done:

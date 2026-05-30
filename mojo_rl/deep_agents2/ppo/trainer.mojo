@@ -32,6 +32,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Module
 from mojo_rl.nn2.core.checkpoint import (
     save_state_v2_body, load_state_v2_body,
+    save_state_v2_body_gpu, load_state_v2_body_gpu,
 )
 from mojo_rl.nn2.core.log_bundle import log_bundle
 from mojo_rl.nn2.core.metric import LogScalar
@@ -41,6 +42,7 @@ from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.training.timer import Timer
 from ..core.checkpoint_helpers import (
     save_optimizer_v2_body, load_optimizer_v2_body,
+    save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
     split_lines_v2, read_file_v2, expect_v2_header,
 )
 from ..training.episode_tracker import EpisodeTracker
@@ -141,6 +143,10 @@ struct PPOTrainer[
 
     var timer: Timer
 
+    # Device context (GPU only; None on CPU). Threaded from `make` so the
+    # GPU checkpoint path can stage device buffers → host.
+    var ctx: Optional[DeviceContext]
+
     def __init__(out self):
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
@@ -209,6 +215,7 @@ struct PPOTrainer[
         self._update_count = 0
         self._total_train_steps = 0
         self.timer = Timer.new()
+        self.ctx = None
 
     @staticmethod
     def make(
@@ -239,6 +246,7 @@ struct PPOTrainer[
                     "PPOTrainer.make[train_target='gpu']: ctx required"
                 )
         var t = Self()
+        t.ctx = ctx
         t.actor = Self.ACTOR.make[target=Self.train_target, INIT=Xavier](
             ctx=ctx
         )
@@ -546,34 +554,41 @@ struct PPOTrainer[
         Sections: `actor.*`, `critic.*`, `actor_opt.*`, `critic_opt.*`.
         Overwrites `path`. CPU-only; GPU save/load would need device→host
         sync first."""
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "PPOTrainer.save_state: GPU save/load not yet supported."
-            )
         var body = String("")
-        save_state_v2_body(self.actor, body, "actor")
-        save_state_v2_body(self.critic, body, "critic")
-        save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
-        save_optimizer_v2_body(self.critic_opt, body, "critic_opt")
+        comptime if Self.train_target == "cpu":
+            save_state_v2_body(self.actor, body, "actor")
+            save_state_v2_body(self.critic, body, "critic")
+            save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
+            save_optimizer_v2_body(self.critic_opt, body, "critic_opt")
+        else:
+            var c = self.ctx.value()
+            save_state_v2_body_gpu(self.actor, body, "actor", c)
+            save_state_v2_body_gpu(self.critic, body, "critic", c)
+            save_optimizer_v2_body_gpu(self.actor_opt, body, "actor_opt")
+            save_optimizer_v2_body_gpu(self.critic_opt, body, "critic_opt")
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
 
     def load_state(mut self, path: String) raises:
         """Inverse of `save_state`. PPO has no target nets, so no
-        hard-copy step is needed."""
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "PPOTrainer.load_state: GPU save/load not yet supported."
-            )
+        hard-copy step is needed. On GPU the device params + Adam moments
+        are restored via host staging (byte-identical on-disk format)."""
         var content = read_file_v2(path)
         var lines = split_lines_v2(content)
         expect_v2_header(lines)
         var idx: Int = 1
-        load_state_v2_body(self.actor, lines, idx, "actor")
-        load_state_v2_body(self.critic, lines, idx, "critic")
-        load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
-        load_optimizer_v2_body(self.critic_opt, lines, idx, "critic_opt")
+        comptime if Self.train_target == "cpu":
+            load_state_v2_body(self.actor, lines, idx, "actor")
+            load_state_v2_body(self.critic, lines, idx, "critic")
+            load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
+            load_optimizer_v2_body(self.critic_opt, lines, idx, "critic_opt")
+        else:
+            var c = self.ctx.value()
+            load_state_v2_body_gpu(self.actor, lines, idx, "actor", c)
+            load_state_v2_body_gpu(self.critic, lines, idx, "critic", c)
+            load_optimizer_v2_body_gpu(self.actor_opt, lines, idx, "actor_opt")
+            load_optimizer_v2_body_gpu(self.critic_opt, lines, idx, "critic_opt")
 
     def flush_timer_log(mut self) -> String:
         """Per-section wall-time report (one line per sub-step:

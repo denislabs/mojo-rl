@@ -200,3 +200,46 @@ struct ScalarAdam(Movable & ImplicitlyDestructible):
         ctx.enqueue_copy(h, self.state_dev.value())
         ctx.synchronize()
         return h.unsafe_ptr()[_SA_ALPHA]
+
+    # ─── GPU checkpoint sync (Phase 2 — GPU checkpointing) ───────────────
+    # The host fields (`value`/`m`/`v`/`beta*_pow_t`) are NOT maintained on
+    # the GPU path — `state_dev` is the source of truth. These bridge it to
+    # the host fields so the EXISTING CPU `save_scalar_adam_v2_body` /
+    # `load_scalar_adam_v2_body` serializer runs unchanged, giving an
+    # interchangeable checkpoint. NOTE (accepted gap): the CPU format
+    # serializes `t` and rebuilds β₁ᵗ/β₂ᵗ from it on load; the GPU step
+    # never advances `t` (it lives only as device β-powers, inside the
+    # CUDA-graph-captured region), so a GPU-origin alpha section carries
+    # t=0 and its bias-correction resets on reload. α / m / v round-trip
+    # exactly; only alpha's bias-correction is lossy across GPU save/load.
+    # Eval is unaffected (the deterministic eval action ignores α).
+
+    def sync_to_host(mut self) raises:
+        """D2H `state_dev` → host fields (`value`=log_α, `m`, `v`,
+        `beta*_pow_t`). Call before serializing on GPU."""
+        var ctx = self._ctx.value()
+        var h = ctx.enqueue_create_host_buffer[DT](_SA_STATE_N)
+        ctx.enqueue_copy(h, self.state_dev.value())
+        ctx.synchronize()
+        var hp = h.unsafe_ptr()
+        self.value = hp[_SA_LOG_ALPHA]
+        self.m = hp[_SA_M]
+        self.v = hp[_SA_V]
+        self.beta1_pow_t = hp[_SA_B1POW]
+        self.beta2_pow_t = hp[_SA_B2POW]
+
+    def upload_from_host(mut self) raises:
+        """H2D host fields → `state_dev` (recomputes α = exp(value)). Call
+        after restoring host fields from a checkpoint on GPU."""
+        var ctx = self._ctx.value()
+        var h = ctx.enqueue_create_host_buffer[DT](_SA_STATE_N)
+        ctx.synchronize()
+        var hp = h.unsafe_ptr()
+        hp[_SA_LOG_ALPHA] = self.value
+        hp[_SA_M] = self.m
+        hp[_SA_V] = self.v
+        hp[_SA_B1POW] = self.beta1_pow_t
+        hp[_SA_B2POW] = self.beta2_pow_t
+        hp[_SA_ALPHA] = fexp(self.value)
+        ctx.enqueue_copy(self.state_dev.value(), h)
+        ctx.synchronize()

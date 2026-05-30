@@ -15,6 +15,7 @@ for both formats. GPU checkpoints must download device → host before
 save and re-upload after load.
 """
 
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import TileTensor
 
@@ -314,6 +315,120 @@ def load_state_v2_body[M: Module](
     model.for_each_param[target="cpu", V=_LoadStateV2Visitor](
         prefix, v,
     )
+    _ = idx  # lifetime extender — visitor holds UnsafePointer(to=idx)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GPU param save/load (Phase 2 — GPU checkpointing).
+#
+# Self-contained device→host (save) / host→device (load) visitors. Each
+# downloads/uploads one Param's DeviceBuffer through a temp host List and
+# emits / consumes the SAME `<name>#size=<N>` + value-lines section the
+# CPU visitors produce. So a GPU-saved checkpoint is byte-identical to a
+# CPU-saved one — train-on-GPU → eval-on-CPU just calls the normal CPU
+# `load_state_v2_body`. One `synchronize` per Param keeps the staging
+# buffer valid across the copy.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@fieldwise_init
+struct _SaveStateV2GpuVisitor(ParamVisitor):
+    var out_ptr: UnsafePointer[String, MutAnyOrigin]
+    var ctx: DeviceContext
+
+    def visit(
+        mut self,
+        name: String,
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        n_elems: Int,
+        apply_decay: Bool,
+    ) raises:
+        var d_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var dev = DeviceBuffer[DT](self.ctx, d_ptr, n_elems, owning=False)
+        var host = List[Scalar[DT]](length=n_elems, fill=Scalar[DT](0.0))
+        self.ctx.enqueue_copy(host.unsafe_ptr(), dev)
+        self.ctx.synchronize()
+        var section = name + "#size=" + String(n_elems) + "\n"
+        for k in range(n_elems):
+            section += String(host[k]) + "\n"
+        self.out_ptr[] += section
+
+
+@fieldwise_init
+struct _LoadStateV2GpuVisitor(ParamVisitor):
+    var lines: List[String]
+    var idx_ptr: UnsafePointer[Int, MutAnyOrigin]
+    var ctx: DeviceContext
+
+    def visit(
+        mut self,
+        name: String,
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        n_elems: Int,
+        apply_decay: Bool,
+    ) raises:
+        var idx = self.idx_ptr[]
+        if idx >= len(self.lines):
+            raise Error(
+                "load_state_v2_gpu: out of input. Expected `"
+                + name + "#size=" + String(n_elems) + "` at line "
+                + String(idx)
+            )
+        var header = self.lines[idx]
+        var expected = name + "#size=" + String(n_elems)
+        if header != expected:
+            raise Error(
+                "load_state_v2_gpu: header mismatch at line " + String(idx)
+                + ". Expected `" + expected + "`, got `" + header + "`"
+            )
+        idx += 1
+        var host = List[Scalar[DT]](length=n_elems, fill=Scalar[DT](0.0))
+        for k in range(n_elems):
+            if idx >= len(self.lines):
+                raise Error(
+                    "load_state_v2_gpu: short read at element " + String(k)
+                    + " of " + String(n_elems) + " for `" + name + "`"
+                )
+            host[k] = Scalar[DT](atof(self.lines[idx]))
+            idx += 1
+        self.idx_ptr[] = idx
+        var d_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var dev = DeviceBuffer[DT](self.ctx, d_ptr, n_elems, owning=False)
+        self.ctx.enqueue_copy(dev, host.unsafe_ptr())
+        self.ctx.synchronize()
+
+
+def save_state_v2_body_gpu[M: Module](
+    mut model: M, mut out: String, prefix: String, ctx: DeviceContext,
+) raises:
+    """GPU counterpart of `save_state_v2_body` — byte-identical output."""
+    var v = _SaveStateV2GpuVisitor(out_ptr=UnsafePointer(to=out), ctx=ctx)
+    model.for_each_param[target="gpu", V=_SaveStateV2GpuVisitor](prefix, v)
+    _ = out  # lifetime extender — visitor holds UnsafePointer(to=out)
+
+
+def load_state_v2_body_gpu[M: Module](
+    mut model: M,
+    lines: List[String],
+    mut idx: Int,
+    prefix: String,
+    ctx: DeviceContext,
+) raises:
+    """GPU counterpart of `load_state_v2_body`."""
+    var v = _LoadStateV2GpuVisitor(
+        lines=lines.copy(), idx_ptr=UnsafePointer(to=idx), ctx=ctx,
+    )
+    model.for_each_param[target="gpu", V=_LoadStateV2GpuVisitor](prefix, v)
     _ = idx  # lifetime extender — visitor holds UnsafePointer(to=idx)
 
 

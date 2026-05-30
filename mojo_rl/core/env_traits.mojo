@@ -320,6 +320,16 @@ trait BoxDiscreteActionEnv(ContinuousStateEnv, DiscreteActionEnv):
         """
         ...
 
+    def was_terminated(self) -> Bool:
+        """True iff the previous `step_obs` ended via natural termination
+        (e.g. CartPole pole-fall, MountainCar goal), NOT time-limit
+        truncation. `step_obs` collapses both into a single `done`; off-policy
+        value learning must keep the TD bootstrap on truncation but drop it on
+        termination. Default `False` (correct for envs with no real
+        terminal); terminating envs (CartPole, MountainCar, Acrobot) override.
+        """
+        return False
+
 
 trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
     """Environment with continuous observations and continuous actions.
@@ -361,6 +371,25 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
             Tuple of (observation_list, reward, done).
         """
         ...
+
+    def was_terminated(self) -> Bool:
+        """True iff the previous `step_continuous_vec` ended via natural
+        termination (e.g. the agent became unhealthy / fell), NOT time-limit
+        truncation.
+
+        `step_continuous_vec` collapses termination and truncation into a
+        single `done` flag. Off-policy algorithms (SAC/DDPG/TD3) must keep the
+        TD bootstrap on truncation (the episode could have continued) but drop
+        it on natural termination (the state is genuinely terminal). Drivers
+        read this right after stepping to store the correct bootstrap-killing
+        flag in the replay buffer.
+
+        Default `False` — correct for truncation-only envs (Pendulum,
+        HalfCheetah with `TERMINATE_ON_UNHEALTHY=False`), where no transition
+        is ever a natural terminal so the bootstrap is always kept. Envs with
+        real termination (Hopper, Walker2d, Ant, …) override this.
+        """
+        return False
 
 
 # ============================================================================

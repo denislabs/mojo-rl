@@ -31,6 +31,7 @@ from mojo_rl.nn2.core import Module
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.checkpoint import (
     save_state_v2_body, load_state_v2_body,
+    save_state_v2_body_gpu, load_state_v2_body_gpu,
 )
 from mojo_rl.nn2.core.log_bundle import log_bundle
 from mojo_rl.nn2.core.map_params import hard_copy_params
@@ -42,6 +43,7 @@ from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.training.timer import Timer
 from ..core.checkpoint_helpers import (
     save_optimizer_v2_body, load_optimizer_v2_body,
+    save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
     split_lines_v2, read_file_v2, expect_v2_header,
 )
 from ..core.online_target_pair import OnlineTargetPair
@@ -551,32 +553,37 @@ struct DQNTrainer[
 
     def save_state(mut self, path: String) raises:
         """One-file v2 checkpoint of every DQN module + optimizer.
-        Sections: `q_net.*`, `q_opt.*`. Overwrites `path`. CPU-only;
-        GPU save/load would need device→host sync first."""
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "DQNTrainer.save_state: GPU save/load not yet supported."
-            )
+        Sections: `q_net.*`, `q_opt.*`. On GPU the device params + Adam
+        moments are downloaded to host first; the on-disk format is
+        byte-identical to the CPU path, so a GPU checkpoint loads on a
+        CPU trainer (train-on-GPU → eval-on-CPU)."""
         var body = String("")
-        save_state_v2_body(self.pair.online, body, "q_net")
-        save_optimizer_v2_body(self.q_opt, body, "q_opt")
+        comptime if Self.train_target == "cpu":
+            save_state_v2_body(self.pair.online, body, "q_net")
+            save_optimizer_v2_body(self.q_opt, body, "q_opt")
+        else:
+            var c = self.ctx.value()
+            save_state_v2_body_gpu(self.pair.online, body, "q_net", c)
+            save_optimizer_v2_body_gpu(self.q_opt, body, "q_opt")
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
 
     def load_state(mut self, path: String) raises:
         """Inverse of `save_state`. Target net is hard-copied from the
-        online net after the online params are restored."""
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "DQNTrainer.load_state: GPU save/load not yet supported."
-            )
+        online net after the online params are restored. On GPU the
+        restored host values are uploaded to the device buffers."""
         var content = read_file_v2(path)
         var lines = split_lines_v2(content)
         expect_v2_header(lines)
         var idx: Int = 1
-        load_state_v2_body(self.pair.online, lines, idx, "q_net")
-        load_optimizer_v2_body(self.q_opt, lines, idx, "q_opt")
+        comptime if Self.train_target == "cpu":
+            load_state_v2_body(self.pair.online, lines, idx, "q_net")
+            load_optimizer_v2_body(self.q_opt, lines, idx, "q_opt")
+        else:
+            var c = self.ctx.value()
+            load_state_v2_body_gpu(self.pair.online, lines, idx, "q_net", c)
+            load_optimizer_v2_body_gpu(self.q_opt, lines, idx, "q_opt")
         hard_copy_params[Self.train_target, M=Self.Q_NET](
             self.pair.online, self.pair.target_net, self.ctx,
         )

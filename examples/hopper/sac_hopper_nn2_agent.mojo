@@ -53,11 +53,11 @@ comptime OBS_DIM = HopperConfig.OBS_DIM  # 11
 comptime ACT_DIM = HopperConfig.ACTION_DIM  #  3
 comptime HIDDEN = 256
 comptime BATCH = 64
-comptime REPLAY_CAPACITY = 100_000
+comptime REPLAY_CAPACITY = 200_000
 
 # Training duration. Drop NUM_STEPS to ~20_000 for a smoke run.
-comptime NUM_STEPS = 200_000
-comptime PRINT_EVERY = 5_000  # driver-cadence verbose + `avg_reward`/`episodes` emit
+comptime NUM_STEPS = 1_000_000
+comptime PRINT_EVERY = 10_000  # driver-cadence verbose + `avg_reward`/`episodes` emit
 comptime DIAG_EVERY = 5_000  # `flush_metrics` cadence — full SACMetrics bundle
 comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
 

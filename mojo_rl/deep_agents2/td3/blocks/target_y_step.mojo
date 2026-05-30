@@ -49,5 +49,6 @@ struct TD3TargetYStep[
         self.inner.step[target](
             actor_t, critic1_t, critic2_t,
             state.mb_sp.cpu_ptr(), state.mb_r.cpu_ptr(),
+            state.mb_d.cpu_ptr(),
             state.mb_y.cpu_ptr(),
         )

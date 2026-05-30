@@ -5,10 +5,10 @@ captures the full TD3 target-value formula with target-policy smoothing;
 `step` collapses to "sample noise into scratch, set inputs, forward". No
 inline GPU kernels, no manual clamp/add loops, no `concat_sa` helper.
 
-Graph topology:
+Graph topology (computes only the BOOTSTRAP `γ·min(Q1',Q2')`; the reward
+add and terminal mask are applied in `step`):
 
     InputSlot         ["sp",          OBS]
-    InputSlot         ["r",           1]
     InputSlot         ["noise",       ACT]                                  # sigma-scaled host-side
     ExternalNode ["a_sp",        ACTOR,                          "sp"]
     Node         ["noise_clip",  Clamp[ACT],                     "noise"]
@@ -18,8 +18,10 @@ Graph topology:
     ExternalNode ["q1",          CRITIC, "sa", MODE="input_only"]
     ExternalNode ["q2",          CRITIC, "sa", MODE="input_only"]
     Node        ["min_q",       BinaryElemMin[1],               "q1", "q2"]
-    Node         ["gamma_q",     Scale[1],                       "min_q"]
-    Node        ["y",           Add[1, 2],                      "r", "gamma_q"]
+    Node         ["gamma_q",     Scale[1],                       "min_q"]   (terminal)
+
+`step` then writes `y[b] = r[b] + (1 − term[b])·gamma_q[b]` via the shared
+`apply_terminal_mask`.
 
 `MODE="input_only"` on both critics: target_y is a target, not a loss, so
 no gradient flows through these critics on this path.
@@ -29,7 +31,7 @@ TD3 target-policy smoothing (Fujimoto et al., 2018):
             with ε ~ N(0, σ_target^2)
     sa'   = concat(s', a')
     qmin  = min(critic1_target(sa'), critic2_target(sa'))
-    y[b]  = r[b] + γ·nonterm·qmin
+    y[b]  = r[b] + (1 − term[b])·γ·qmin
 
 Differences vs DDPG target-y:
   - Clipped Gaussian noise added to target action (smoothing → reduces
@@ -44,8 +46,11 @@ Forward-only — `y` is a target for critic update, not a loss. CPU only
 (noise sampling uses `box_muller_normal`; GPU enablement is future work
 and would slot in a Philox-based noise node before `noise_clip`).
 
-`nonterm=1.0` is hardcoded for Pendulum-style truncation envs (see
-`feedback_ppo_pendulum_timelimit_gae`). Phase 5 will lift this.
+The TD bootstrap is masked per-sample by the natural-termination flag
+(`term`): dropped on termination, kept on time-limit truncation (see
+`feedback_ppo_pendulum_timelimit_gae`). For truncation-only envs (`term ≡
+0`) this is exactly `r + γ·qmin` — bit-identical to the prior in-graph
+`Add(r, γ·qmin)`.
 """
 
 from layout import TileTensor, row_major
@@ -68,6 +73,7 @@ from mojo_rl.nn2.primitives.add import Add
 from mojo_rl.nn2.primitives.binary_elem_min import BinaryElemMin
 from mojo_rl.nn2.random.box_muller import box_muller_normal
 from ..loss.loss_block import LossBlock
+from ..training.terminal_mask import apply_terminal_mask
 
 
 struct TD3TargetYBlock[
@@ -79,10 +85,12 @@ struct TD3TargetYBlock[
 ](LossBlock):
     comptime SA_DIM = Self.OBS + Self.ACT
 
+    # Graph computes only the BOOTSTRAP `gamma_q = γ·min(Q1',Q2')`; the reward
+    # add and terminal mask `y = r + (1−term)·gamma_q` happen in `step`
+    # (per-sample data, not a graph parameter). `r` is no longer a graph input.
     comptime TD3TargetYGraph = ComputeGraph[
         1,
         InputSlot["sp", Self.OBS],
-        InputSlot["r", 1],
         InputSlot["noise", Self.ACT],
         ExternalNode["a_sp", Self.ACTOR, "sp"],
         Node["noise_clip", Clamp[Self.ACT], "noise"],
@@ -93,7 +101,6 @@ struct TD3TargetYBlock[
         ExternalNode["q2", Self.CRITIC, "sa", MODE="input_only"],
         Node["min_q", BinaryElemMin[1], "q1", "q2"],
         Node["gamma_q", Scale[1], "min_q"],
-        Node["y", Add[1, 2], "r", "gamma_q"],
     ]
 
     var graph: Self.TD3TargetYGraph
@@ -162,8 +169,13 @@ struct TD3TargetYBlock[
         mut critic2_target: Self.CRITIC,
         mb_sp_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_r_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mb_term_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
+        """Compute `mb_y[b] = r[b] + (1−term[b])·γ·min(Q1,Q2)(sp, smoothed a')`
+        in-place into `mb_y_ptr`. The TD bootstrap is dropped on natural
+        termination, kept on truncation (`term ≡ 0` → `r + γ·min(Q1,Q2)`,
+        bit-identical to the prior unmasked target)."""
         comptime assert target == "cpu", "TD3TargetYBlock: CPU only"
         assert_tag_for["TD3TargetYBlock", target](self.ts.target_tag)
 
@@ -182,12 +194,15 @@ struct TD3TargetYBlock[
 
         # Set inputs (rank-2 views over rank-1 caller / scratch buffers).
         var mb_sp_t = TileTensor(mb_sp_ptr, row_major[Self.BATCH, Self.OBS]())
-        var mb_r_t = TileTensor(mb_r_ptr, row_major[Self.BATCH, 1]())
         var noise_t = TileTensor(noise_p, row_major[Self.BATCH, Self.ACT]())
         self.graph.set_input["sp", Self.BATCH](mb_sp_t)
-        self.graph.set_input["r", Self.BATCH](mb_r_t)
         self.graph.set_input["noise", Self.BATCH](noise_t)
 
-        # Forward into mb_y (graph's last node is `y`, OUT_DIM=1).
+        # Forward writes the bootstrap `γ·min(Q1',Q2')` into mb_y (terminal
+        # node `gamma_q`, OUT_DIM=1); then add reward + apply the terminal mask.
         var mb_y_t = TileTensor(mb_y_ptr, row_major[Self.BATCH, 1]())
         self.graph.forward[target, Self.BATCH](mb_y_t)
+
+        apply_terminal_mask[target, Self.BATCH](
+            self.ts.ctx, mb_r_ptr, mb_term_ptr, mb_y_ptr,
+        )

@@ -4,10 +4,10 @@ Phase 3.2 FullGraph migration. The block now owns a 14-node graph that
 captures the full target-value formula; `step` collapses to "bind
 externals, set inputs, set α/γ, forward". No inline GPU kernels.
 
-Graph topology:
+Graph topology (computes only the BOOTSTRAP `γ·soft_v`; the reward add and
+terminal mask are applied in `step`):
 
     InputSlot         ["sp",          OBS]
-    InputSlot         ["r",           1]
     ExternalNode ["actor_out",   ACTOR,                          "sp"]
     ExternalNode ["alp",         RSample[ACT],                   "actor_out"]
     Node         ["action",      Slice[ALP, 0, ACT],             "alp"]
@@ -18,8 +18,12 @@ Graph topology:
     Node        ["min_q",       BinaryElemMin[1],               "q1", "q2"]
     Node         ["alpha_lp",    Scale[1],                       "log_prob"]  # multiplier=α per call
     Node        ["soft_v",      BinarySub[1],                   "min_q", "alpha_lp"]
-    Node         ["gamma_softv", Scale[1],                       "soft_v"]    # multiplier=γ, set at make()
-    Node        ["y",           Add[1, 2],                      "r", "gamma_softv"]
+    Node         ["gamma_softv", Scale[1],                       "soft_v"]    # multiplier=γ, set at make()  (terminal)
+
+`step` then writes `y[b] = r[b] + (1 − term[b])·gamma_softv[b]` (host loop
+on CPU, `_mask_bootstrap_kernel` on GPU); `term` is the per-sample
+natural-termination flag (drop bootstrap on termination, keep on
+truncation — CleanRL semantics).
 
 ACTOR, RSample, CRITIC are external. The trainer owns the actor and the
 two target critics; this block owns its own RSample instance (separate
@@ -31,15 +35,18 @@ Forward-only — `y` is a target for critic update, not a loss. Backward
 is never called on this graph. We still implement `Module.backward` on
 all the nodes (the trait requires it) but it's dead code on this path.
 
-`nonterm=1.0` is hardcoded for Pendulum-style truncation envs (see
-`feedback_ppo_pendulum_timelimit_gae`). Phase 5 will lift this.
+The TD bootstrap is masked per-sample by the natural-termination flag
+(`term`): kept on time-limit truncation, dropped on real termination (see
+`feedback_ppo_pendulum_timelimit_gae`). For truncation-only envs (`term ≡
+0`) the masked add reduces to `r + γ·soft_v` — bit-identical to the prior
+in-graph `Add(r, γ·soft_v)`.
 
-Surface (unchanged from pre-Phase-3.2):
+Surface:
     TargetYBlock[ACTOR, CRITIC, BATCH, OBS, ACT]
         - `make[target](action_scale, gamma) raises -> Self`            (CPU)
         - `make[target](ctx, action_scale, gamma) raises -> Self`       (GPU)
         - `step[target](mut actor, mut critic1_target, mut critic2_target,
-                        mb_sp_ptr, mb_r_ptr, alpha, mb_y_ptr) raises`
+                        mb_sp_ptr, mb_r_ptr, mb_term_ptr, alpha, mb_y_ptr)`
             Writes `mb_y_ptr` ([BATCH, 1] interpreted as [BATCH]) in-place.
 """
 
@@ -63,8 +70,8 @@ from mojo_rl.nn2.primitives.slice import Slice
 from mojo_rl.nn2.primitives.concat import Concat
 from mojo_rl.nn2.primitives.binary_elem_min import BinaryElemMin
 from mojo_rl.nn2.primitives.binary_sub import BinarySub
-from mojo_rl.nn2.primitives.add import Add
 from ..loss.loss_block import LossBlock
+from ..training.terminal_mask import apply_terminal_mask
 
 
 struct TargetYBlock[
@@ -77,10 +84,13 @@ struct TargetYBlock[
     comptime SA_DIM = Self.OBS + Self.ACT
     comptime ALP_DIM = Self.ACT + 1
 
+    # The graph computes the BOOTSTRAP term `gamma_softv = γ·(min_q − α·logp)`
+    # only. The reward add and the terminal mask `y = r + (1−term)·gamma_softv`
+    # happen in `step` (host loop / GPU kernel) because the mask is per-sample
+    # data, not a graph parameter. `r` is therefore no longer a graph input.
     comptime TargetYGraph = ComputeGraph[
         1,
         InputSlot["sp", Self.OBS],
-        InputSlot["r", 1],
         ExternalNode["actor_out", Self.ACTOR, "sp"],
         ExternalNode["alp", RSample[Self.ACT], "actor_out"],
         Node["action", Slice[Self.ALP_DIM, 0, Self.ACT], "alp"],
@@ -92,7 +102,6 @@ struct TargetYBlock[
         Node["alpha_lp", Scale[1], "log_prob"],
         Node["soft_v", BinarySub[1], "min_q", "alpha_lp"],
         Node["gamma_softv", Scale[1], "soft_v"],
-        Node["y", Add[1, 2], "r", "gamma_softv"],
     ]
 
     var graph: Self.TargetYGraph
@@ -195,11 +204,21 @@ struct TargetYBlock[
         mut critic2_target: Self.CRITIC,
         mb_sp_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_r_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mb_term_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         alpha: Scalar[DT],
         mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
-        """Compute `mb_y[b] = r[b] + γ·(min(Q1_t, Q2_t)(sp, a') − α·log_prob(a'|sp))`
-        in-place into `mb_y_ptr`. nonterm=1.0 baked in (Pendulum-style).
+        """Compute `mb_y[b] = r[b] + (1−term[b])·γ·(min(Q1_t, Q2_t)(sp, a')
+        − α·log_prob(a'|sp))` in-place into `mb_y_ptr`.
+
+        `mb_term_ptr` holds the per-sample natural-termination flag
+        (1.0/0.0): the TD bootstrap is dropped on real termination and kept
+        on time-limit truncation (CleanRL semantics). For envs that never
+        terminate (`term ≡ 0`) this is exactly `r + γ·soft_v` — bit-identical
+        to the previous unmasked target.
+
+        The graph forward computes only the bootstrap `γ·soft_v` into
+        `mb_y_ptr`; the reward add and mask are applied below.
 
         `POLICY` (Phase C.5) is threaded into the underlying
         `graph.forward` so the target-y compute can run with
@@ -213,11 +232,9 @@ struct TargetYBlock[
         self.graph.set_external["q1", Self.CRITIC](critic1_target)
         self.graph.set_external["q2", Self.CRITIC](critic2_target)
 
-        # Set inputs (rank-2 views over the rank-1 caller buffers).
+        # Set inputs (rank-2 view over the rank-1 caller buffer).
         var mb_sp_t = TileTensor(mb_sp_ptr, row_major[Self.BATCH, Self.OBS]())
-        var mb_r_t = TileTensor(mb_r_ptr, row_major[Self.BATCH, 1]())
         self.graph.set_input["sp", Self.BATCH](mb_sp_t)
-        self.graph.set_input["r", Self.BATCH](mb_r_t)
 
         # α: CPU bakes the host scalar per call; γ was baked in at make().
         # On GPU α is read on-device via the `alpha_lp` multiplier_ptr wired
@@ -226,6 +243,12 @@ struct TargetYBlock[
         comptime if target == "cpu":
             self.graph.set_node_attr["alpha_lp", "multiplier"](alpha)
 
-        # Forward into mb_y (graph's last node is `y`, OUT_DIM=1).
+        # Forward writes the bootstrap `γ·soft_v` into mb_y (graph's last
+        # node is `gamma_softv`, OUT_DIM=1).
         var mb_y_t = TileTensor(mb_y_ptr, row_major[Self.BATCH, 1]())
         self.graph.forward[target, Self.BATCH, POLICY](mb_y_t)
+
+        # Reward add + terminal mask: mb_y[b] = r[b] + (1−term[b])·mb_y[b].
+        apply_terminal_mask[target, Self.BATCH](
+            self.ts.ctx, mb_r_ptr, mb_term_ptr, mb_y_ptr,
+        )

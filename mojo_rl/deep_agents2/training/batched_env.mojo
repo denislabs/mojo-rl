@@ -106,7 +106,19 @@ trait BatchedEnv(Movable & ImplicitlyDestructible):
         ...
 
     def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        """Pointer to the [N_ENVS] done slab (1.0 if done else 0.0)."""
+        """Pointer to the [N_ENVS] done slab (1.0 if done else 0.0).
+
+        `done` = terminated OR truncated — drives episode tracking and
+        selective reset."""
+        ...
+
+    def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Pointer to the [N_ENVS] terminated slab (1.0 iff natural
+        termination, NOT time-limit truncation).
+
+        Stored into the replay buffer so the off-policy TD bootstrap is kept
+        on truncation but dropped on termination. For envs that never
+        terminate naturally this is all-zeros (bootstrap always kept)."""
         ...
 
 
@@ -147,6 +159,7 @@ struct BatchedCpuEnv[
     var _action: List[Scalar[DT]]
     var _reward: List[Scalar[DT]]
     var _done: List[Scalar[DT]]
+    var _terminated: List[Scalar[DT]]
 
     # Pre-allocated host scratch for the per-env action List we feed
     # into `step_continuous_vec` (avoids allocating a new List every
@@ -165,6 +178,9 @@ struct BatchedCpuEnv[
             length=Self.N_ENVS, fill=Scalar[DT](0.0),
         )
         self._done = List[Scalar[DT]](
+            length=Self.N_ENVS, fill=Scalar[DT](0.0),
+        )
+        self._terminated = List[Scalar[DT]](
             length=Self.N_ENVS, fill=Scalar[DT](0.0),
         )
         self._action_scratch = List[Scalar[Self.E.dtype]](
@@ -214,6 +230,10 @@ struct BatchedCpuEnv[
             self._done[env_idx] = (
                 Scalar[DT](1.0) if done else Scalar[DT](0.0)
             )
+            self._terminated[env_idx] = (
+                Scalar[DT](1.0) if self.envs[env_idx].was_terminated()
+                else Scalar[DT](0.0)
+            )
 
     def selective_reset_batch[BATCH: Int](
         mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
@@ -249,6 +269,11 @@ struct BatchedCpuEnv[
     def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             self._done.unsafe_ptr()
+        )
+
+    def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._terminated.unsafe_ptr()
         )
 
 
@@ -387,4 +412,11 @@ struct BatchedGpuEnv[
     def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             self._done.unsafe_ptr()
+        )
+
+    def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        # `_terminated` is written by `step_kernel_gpu` (1.0 iff natural
+        # termination, NOT truncation) — see GPUContinuousEnv.step_kernel_gpu.
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._terminated.unsafe_ptr()
         )

@@ -46,5 +46,6 @@ struct DDPGTargetYStep[
         self.inner.step[target](
             actor_t, critic_t,
             state.mb_sp.cpu_ptr(), state.mb_r.cpu_ptr(),
+            state.mb_d.cpu_ptr(),
             state.mb_y.cpu_ptr(),
         )

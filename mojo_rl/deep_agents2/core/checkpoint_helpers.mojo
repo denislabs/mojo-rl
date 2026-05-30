@@ -18,6 +18,7 @@ these.
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.save_scalar import _expect_kv_line
 from mojo_rl.nn2.core.saveable import Saveable
+from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.optimizer.scalar_adam import ScalarAdam
 
 
@@ -82,6 +83,52 @@ def load_optimizer_v2_body[O: Saveable](
     opt.load(lines, idx, prefix)
 
 
+# ──────────────────────────────────────────────────────────────────────
+# GPU Adam save/load (Phase 2 — GPU checkpointing).
+#
+# Byte-identical to the CPU optimizer section: GPU save D2Hs the device
+# buffers into the Adam's host fields (`sync_to_host`), then runs the
+# SAME CPU serializer; GPU load runs the SAME CPU parser, then H2Ds the
+# restored host fields (`upload_from_host`). A GPU checkpoint therefore
+# loads on a CPU trainer unchanged — train-on-GPU → eval-on-CPU.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def save_optimizer_v2_body_gpu(
+    mut opt: Adam, mut out: String, prefix: String,
+) raises:
+    """GPU `Adam` section. Downloads device state into the Adam's own host
+    fields, then emits the identical CPU section. (`ctx` is read from the
+    optimizer's own `TargetStorage`.)"""
+    opt.sync_to_host()
+    opt.save(out, prefix)
+
+
+def load_optimizer_v2_body_gpu(
+    mut opt: Adam,
+    lines: List[String],
+    mut idx: Int,
+    prefix: String,
+) raises:
+    """Inverse of `save_optimizer_v2_body_gpu`: CPU parse into host
+    fields, then upload to the device buffers.
+
+    A GPU-built `Adam` has EMPTY `m_flat`/`v_flat` host lists (the live
+    moments live in `m_dev`/`v_dev`). `Adam.load` writes
+    `total_size` values straight into those lists' buffers, so they MUST
+    be pre-sized or the writes corrupt the heap. Size them here before
+    parsing, then upload to device."""
+    if len(opt.m_flat) != opt.total_size:
+        opt.m_flat = List[Scalar[DT]](
+            length=opt.total_size, fill=Scalar[DT](0.0)
+        )
+        opt.v_flat = List[Scalar[DT]](
+            length=opt.total_size, fill=Scalar[DT](0.0)
+        )
+    opt.load(lines, idx, prefix)
+    opt.upload_from_host()
+
+
 def save_scalar_adam_v2_body(
     opt: ScalarAdam, mut out: String, prefix: String,
 ):
@@ -94,6 +141,29 @@ def save_scalar_adam_v2_body(
     out += prefix + ".beta1=" + String(opt.beta1) + "\n"
     out += prefix + ".beta2=" + String(opt.beta2) + "\n"
     out += prefix + ".eps=" + String(opt.eps) + "\n"
+
+
+def save_scalar_adam_v2_body_gpu(
+    mut opt: ScalarAdam, mut out: String, prefix: String,
+) raises:
+    """GPU `ScalarAdam` section. Syncs device state into the host fields,
+    then runs the SAME CPU serializer (byte-identical, interchangeable
+    format). See `ScalarAdam.sync_to_host` for the accepted bias-
+    correction gap on the GPU path."""
+    opt.sync_to_host()
+    save_scalar_adam_v2_body(opt, out, prefix)
+
+
+def load_scalar_adam_v2_body_gpu(
+    mut opt: ScalarAdam,
+    lines: List[String],
+    mut idx: Int,
+    prefix: String,
+) raises:
+    """Inverse of `save_scalar_adam_v2_body_gpu`: CPU parse into host
+    fields, then upload to `state_dev`."""
+    load_scalar_adam_v2_body(opt, lines, idx, prefix)
+    opt.upload_from_host()
 
 
 def load_scalar_adam_v2_body(

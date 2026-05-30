@@ -381,6 +381,10 @@ def run_offpolicy_train[
         var nxt = step_res[0].copy()
         var reward = step_res[1]
         var done = step_res[2]
+        # `done` (terminated OR truncated) drives reset/episode tracking; the
+        # replay buffer stores `terminated` ONLY (natural termination) so the
+        # SAC TD bootstrap is kept on truncation but dropped on termination.
+        var terminated = env.was_terminated()
         for d in range(OBS):
             next_obs_list[d] = Scalar[DT](nxt[d])
 
@@ -389,7 +393,7 @@ def run_offpolicy_train[
             action_list,
             Scalar[DT](reward),
             next_obs_list,
-            Scalar[DT](1.0) if done else Scalar[DT](0.0),
+            Scalar[DT](1.0) if terminated else Scalar[DT](0.0),
         )
 
         if done:
@@ -663,12 +667,16 @@ def run_offpolicy_train_batched[
 
         # ── 4. Replay push (env-target-specific).
         comptime if env_target == "cpu":
+            # Replay stores `terminated` (natural termination only) so the TD
+            # bootstrap is kept on truncation, dropped on termination. `done`
+            # (terminated OR truncated) is still used below for episode
+            # tracking and selective reset.
             trainer.record_batch_cpu[N_ENVS](
                 prev_obs.host_ptr(),
                 env.action_ptr(),
                 env.reward_ptr(),
                 env.obs_ptr(),
-                env.done_ptr(),
+                env.terminated_ptr(),
             )
         else:
             # GPU env. Reconstruct non-owning DeviceBuffer views over
@@ -684,8 +692,12 @@ def run_offpolicy_train_batched[
             var obs_buf = DeviceBuffer[DT](
                 c, env.obs_ptr(), N_ENVS * OBS, owning=False,
             )
-            var done_buf = DeviceBuffer[DT](
-                c, env.done_ptr(), N_ENVS, owning=False,
+            # Replay stores `terminated` (natural termination only), NOT the
+            # combined `done`, so the TD bootstrap is kept on time-limit
+            # truncation and dropped on real termination. Episode tracking and
+            # selective reset below still use `done_ptr()`.
+            var term_buf = DeviceBuffer[DT](
+                c, env.terminated_ptr(), N_ENVS, owning=False,
             )
             comptime if NS > 1:
                 trainer.record_batch_gpu_nstep[N_ENVS, NS](
@@ -695,7 +707,7 @@ def run_offpolicy_train_batched[
                     action_buf,
                     reward_buf,
                     obs_buf,
-                    done_buf,
+                    term_buf,
                 )
             else:
                 trainer.record_batch_gpu[N_ENVS](
@@ -704,7 +716,7 @@ def run_offpolicy_train_batched[
                     action_buf,
                     reward_buf,
                     obs_buf,
-                    done_buf,
+                    term_buf,
                 )
 
         # ── 5. Per-env episode tracking. Needs host-side reward+done.

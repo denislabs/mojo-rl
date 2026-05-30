@@ -130,6 +130,27 @@ def _feat_concat_k[B_: Int, D_: Int, SC_: Int](
             feat[b * F + D_ + k] = rebind[Scalar[DT]](stoch[b * SC_ + k])
 
 
+# ── Finding 3 reset-mask kernels: row-scale a [B_, W_] buffer by a per-row
+#    keep-mask m[B_] (1.0 keep / 0.0 zero at an episode boundary). ──────────
+def _rowscale_k[B_: Int, W_: Int](
+    src: LayoutTensor[DT, Layout.row_major(B_ * W_), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(B_ * W_), MutAnyOrigin],
+    m: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+):
+    var i = Int(global_idx.x)
+    if i < B_ * W_:
+        dst[i] = rebind[Scalar[DT]](m[i // W_]) * rebind[Scalar[DT]](src[i])
+
+
+def _rowscale_inplace_k[B_: Int, W_: Int](
+    buf: LayoutTensor[DT, Layout.row_major(B_ * W_), MutAnyOrigin],
+    m: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+):
+    var i = Int(global_idx.x)
+    if i < B_ * W_:
+        buf[i] = rebind[Scalar[DT]](m[i // W_]) * rebind[Scalar[DT]](buf[i])
+
+
 # ──────────────────────────────────────────────────────────────────────
 # DreamerState — cross-block shared buffers + ctx + inter-block scalars.
 # v1 CPU allocs (sized once); GPU upgrade → Scratch device buffers.
@@ -246,8 +267,11 @@ struct WMStep[
 
     @staticmethod
     def make[target: StaticString](ctx: Optional[DeviceContext] = None) raises -> Self:
+        # Finding 2: reference loss_scales are dyn=0.5, rep=0.1 (paper Eq. 2:
+        # β_dyn=0.5, β_rep=0.1). Was 1.0 here, over-weighting the dynamics-KL
+        # gradient 2×.
         return Self(
-            dyn_scale=Scalar[DT](1.0), rep_scale=Scalar[DT](0.1),
+            dyn_scale=Scalar[DT](0.5), rep_scale=Scalar[DT](0.1),
             horizon=Scalar[DT](333.0),
         )
 
@@ -307,12 +331,17 @@ struct WMStep[
         var cdeter = st.cdeter
         var cstoch = st.cstoch
         var toks = st.toks
-        # encode tokens
+        # encode tokens. Finding 1 (action/reward alignment): observe-step t
+        # produces the belief for obs_{t+1} using prev-action a_t — so the
+        # token (and the reconstruction target below) is obs frame t+1, not t.
+        # This matches the reference RSSM (`_core(deter,stoch,action)` where
+        # `action` is the prev-action that LED to the observed frame) and the
+        # agent's inference/imagination convention.
         for t in range(Self.T):
             var ob = _alloc(Self.B * OBSD)
             for b in range(Self.B):
                 for k in range(OBSD):
-                    ob[b * OBSD + k] = obs[(b * (Self.T + 1) + t) * OBSD + k]
+                    ob[b * OBSD + k] = obs[(b * (Self.T + 1) + t + 1) * OBSD + k]
             var tk = toks + t * Self.B * TOK
             var tkt = TileTensor(tk, row_major[Self.B, TOK]())
             enc.forward[target, Self.B](
@@ -326,15 +355,32 @@ struct WMStep[
         var total: Scalar[DT] = 0.0
         var outbuf = _alloc(Self.B * CARRYl)
         var dl = _alloc(Self.B)
+        # Finding 3: masked carry-input scratch. At an episode boundary
+        # (dne[t]==1: the obs_t→obs_{t+1} transition crossed a reset) the
+        # incoming carry (belief at obs_t) and the prev-action a_t carry no
+        # valid history for the fresh obs_{t+1}, so we zero them for that row.
+        # The pristine cdeter/cstoch carry is left intact (it still seeds
+        # imagination + is the output of the previous step); only this
+        # per-step core input is masked.
+        var cin_d = _alloc(Self.B * D)
+        var cin_s = _alloc(Self.B * SCl)
         for t in range(Self.T):
             var dtp = cdeter + t * Self.B * D
             var stp = cstoch + t * Self.B * SCl
             var at = _alloc(Self.B * ACTD)
             for b in range(Self.B):
+                var keep = (
+                    Scalar[DT](0.0) if dne[b * Self.T + t] >= Scalar[DT](0.5)
+                    else Scalar[DT](1.0)
+                )
+                for k in range(D):
+                    cin_d[b * D + k] = keep * dtp[b * D + k]
+                for k in range(SCl):
+                    cin_s[b * SCl + k] = keep * stp[b * SCl + k]
                 for k in range(ACTD):
-                    at[b * ACTD + k] = act[(b * Self.T + t) * ACTD + k]
-            core.set_input["deter", Self.B](TileTensor(dtp, row_major[Self.B, D]()))
-            core.set_input["stoch", Self.B](TileTensor(stp, row_major[Self.B, SCl]()))
+                    at[b * ACTD + k] = keep * act[(b * Self.T + t) * ACTD + k]
+            core.set_input["deter", Self.B](TileTensor(cin_d, row_major[Self.B, D]()))
+            core.set_input["stoch", Self.B](TileTensor(cin_s, row_major[Self.B, SCl]()))
             core.set_input["action", Self.B](TileTensor(at, row_major[Self.B, ACTD]()))
             core.set_input["tokens", Self.B](TileTensor(toks + t * Self.B * TOK, row_major[Self.B, TOK]()))
             var ot = TileTensor(outbuf, row_major[Self.B, CARRYl]())
@@ -350,7 +396,9 @@ struct WMStep[
             var rtg = _alloc(Self.B * OBSD)
             for b in range(Self.B):
                 for k in range(OBSD):
-                    rtg[b * OBSD + k] = obs[(b * (Self.T + 1) + t) * OBSD + k]
+                    # Finding 1: reconstruct obs frame t+1 (the frame this
+                    # observe-step's belief corresponds to).
+                    rtg[b * OBSD + k] = obs[(b * (Self.T + 1) + t + 1) * OBSD + k]
             var rwt = _alloc(Self.B)
             var cnt = _alloc(Self.B)
             for b in range(Self.B):
@@ -407,14 +455,27 @@ struct WMStep[
             var stp = cstoch + t * Self.B * SCl
             var ndn = cdeter + (t + 1) * Self.B * D
             var snn = cstoch + (t + 1) * Self.B * SCl
+            # Finding 3: rebuild the masked carry/action core inputs exactly as
+            # the forward scan did (so the recomputed forward + vjp are
+            # consistent). cin_d/cin_s reused from the forward allocation.
             var at = _alloc(Self.B * ACTD)
             for b in range(Self.B):
+                var keep = (
+                    Scalar[DT](0.0) if dne[b * Self.T + t] >= Scalar[DT](0.5)
+                    else Scalar[DT](1.0)
+                )
+                for k in range(D):
+                    cin_d[b * D + k] = keep * dtp[b * D + k]
+                for k in range(SCl):
+                    cin_s[b * SCl + k] = keep * stp[b * SCl + k]
                 for k in range(ACTD):
-                    at[b * ACTD + k] = act[(b * Self.T + t) * ACTD + k]
+                    at[b * ACTD + k] = keep * act[(b * Self.T + t) * ACTD + k]
             var rtg = _alloc(Self.B * OBSD)
             for b in range(Self.B):
                 for k in range(OBSD):
-                    rtg[b * OBSD + k] = obs[(b * (Self.T + 1) + t) * OBSD + k]
+                    # Finding 1: reconstruct obs frame t+1 (the frame this
+                    # observe-step's belief corresponds to).
+                    rtg[b * OBSD + k] = obs[(b * (Self.T + 1) + t + 1) * OBSD + k]
             var rwt = _alloc(Self.B)
             var cnt = _alloc(Self.B)
             for b in range(Self.B):
@@ -465,8 +526,8 @@ struct WMStep[
                         gcs[b * SCl + k] + dsn[b * SCl + k] + rsn[b * SCl + k]
                         + csn[b * SCl + k]
                     )
-            core.set_input["deter", Self.B](TileTensor(dtp, row_major[Self.B, D]()))
-            core.set_input["stoch", Self.B](TileTensor(stp, row_major[Self.B, SCl]()))
+            core.set_input["deter", Self.B](TileTensor(cin_d, row_major[Self.B, D]()))
+            core.set_input["stoch", Self.B](TileTensor(cin_s, row_major[Self.B, SCl]()))
             core.set_input["action", Self.B](TileTensor(at, row_major[Self.B, ACTD]()))
             core.set_input["tokens", Self.B](TileTensor(toks + t * Self.B * TOK, row_major[Self.B, TOK]()))
             var sct = TileTensor(scratch, row_major[Self.B, CARRYl]())
@@ -475,15 +536,24 @@ struct WMStep[
             core.vjp[target, Self.B](seedt)
             var gdt = core.grad_input_ptr["deter"]()
             var gst = core.grad_input_ptr["stoch"]()
-            for i in range(Self.B * D):
-                gcd[i] = gdt[i]
-            for i in range(Self.B * SCl):
-                gcs[i] = gst[i]
+            # Finding 3: cut the BPTT carry gradient at an episode boundary —
+            # the masked (zeroed) carry input did not come from step t-1, so no
+            # gradient should flow across the reset.
+            for b in range(Self.B):
+                var keep = (
+                    Scalar[DT](0.0) if dne[b * Self.T + t] >= Scalar[DT](0.5)
+                    else Scalar[DT](1.0)
+                )
+                for k in range(D):
+                    gcd[b * D + k] = keep * gdt[b * D + k]
+                for k in range(SCl):
+                    gcs[b * SCl + k] = keep * gst[b * SCl + k]
             var gtok = core.grad_input_ptr["tokens"]()
             var ob = _alloc(Self.B * OBSD)
             for b in range(Self.B):
                 for k in range(OBSD):
-                    ob[b * OBSD + k] = obs[(b * (Self.T + 1) + t) * OBSD + k]
+                    # Finding 1: re-encode obs frame t+1 (matches forward).
+                    ob[b * OBSD + k] = obs[(b * (Self.T + 1) + t + 1) * OBSD + k]
             var tkscr = _alloc(Self.B * TOK)
             var tkt = TileTensor(tkscr, row_major[Self.B, TOK]())
             enc.forward[target, Self.B](TileTensor(ob, row_major[Self.B, OBSD]()), output=tkt)
@@ -498,7 +568,7 @@ struct WMStep[
         orew.step_graph[target](rew)
         ocon.step_graph[target](con)
         outbuf.free(); dl.free(); gcd.free(); gcs.free(); ones1.free()
-        seed.free(); scratch.free(); dl1.free()
+        seed.free(); scratch.free(); dl1.free(); cin_d.free(); cin_s.free()
         st.last_wm_loss = total
 
     def _wm_gpu[
@@ -532,19 +602,29 @@ struct WMStep[
         var REP = self.rep_scale
         var ctx = st.ctx.value()
 
-        # transpose host minibatch (batch-major) → time-major host staging
+        # transpose host minibatch (batch-major) → time-major host staging.
+        # Finding 1: obs frame t+1 is the reconstruction/token target for
+        # observe-step t (action/reward/cont stay at t = the prev-action /
+        # arriving-reward for that frame). Mirrors the CPU path.
         var mb_obs = st.mb_obs; var mb_act = st.mb_act
         var mb_rew = st.mb_rew; var mb_dne = st.mb_dne
+        # Finding 3: per-step reset keep-mask (time-major) — 0.0 at a boundary
+        # (dne_t==1), else 1.0.
+        var hmask = _alloc(TV * BV)
         for t in range(TV):
             for b in range(BV):
                 for k in range(OBSD):
-                    st.tm_obs[(t * BV + b) * OBSD + k] = mb_obs[(b * (TV + 1) + t) * OBSD + k]
+                    st.tm_obs[(t * BV + b) * OBSD + k] = mb_obs[(b * (TV + 1) + t + 1) * OBSD + k]
                 for k in range(ACTD):
                     st.tm_act[(t * BV + b) * ACTD + k] = mb_act[(b * TV + t) * ACTD + k]
                 st.tm_rew[t * BV + b] = mb_rew[b * TV + t]
                 st.tm_cont[t * BV + b] = (Scalar[DT](1.0) - mb_dne[b * TV + t]) * (
                 Scalar[DT](1.0) - Scalar[DT](1.0) / self.horizon
             )
+                hmask[t * BV + b] = (
+                    Scalar[DT](0.0) if mb_dne[b * TV + t] >= Scalar[DT](0.5)
+                    else Scalar[DT](1.0)
+                )
         ctx.enqueue_copy(st.d_obs.value(), st.tm_obs)
         ctx.enqueue_copy(st.d_act.value(), st.tm_act)
         ctx.enqueue_copy(st.d_rew.value(), st.tm_rew)
@@ -577,6 +657,11 @@ struct WMStep[
         var ones1 = ctx.enqueue_create_buffer[DT](BV)
         var gobs = ctx.enqueue_create_buffer[DT](BV * OBSD)
         var tokscr = ctx.enqueue_create_buffer[DT](BV * TOK)
+        # Finding 3: masked carry-input scratch + device keep-mask.
+        var cin_d = ctx.enqueue_create_buffer[DT](BV * D)
+        var cin_s = ctx.enqueue_create_buffer[DT](BV * SCl)
+        var dmask = ctx.enqueue_create_buffer[DT](TV * BV)
+        ctx.enqueue_copy(dmask, hmask)
         var ho = _alloc(BV)                 # head-loss readback
         var hcarry = _alloc(BV * CARRYl)    # dyn/rep readback
         var hones = _alloc(BV)
@@ -598,6 +683,10 @@ struct WMStep[
         comptime ckND = _bcopy[CD]
         comptime ckSC = _bcopy[CS]
         comptime ksa = _seed_asm_k[BV, CARRYl, D, SCl]
+        comptime nbA = (BV * ACTD + TPB - 1) // TPB
+        comptime rsD = _rowscale_k[BV, D]
+        comptime rsS = _rowscale_k[BV, SCl]
+        comptime rsA = _rowscale_inplace_k[BV, ACTD]
 
         var out_t = TileTensor(_dp(outbuf), row_major[BV, CARRYl]())
         var dl_t = TileTensor(_dp(dl), row_major[BV, 1]())
@@ -615,8 +704,13 @@ struct WMStep[
             enc.forward[target, BV](TileTensor(obt, row_major[BV, OBSD]()), output=tkt_t)
             var dtp = cdeter + t * BV * D
             var stp = cstoch + t * BV * SCl
-            core.set_input["deter", BV](TileTensor(dtp, row_major[BV, D]()))
-            core.set_input["stoch", BV](TileTensor(stp, row_major[BV, SCl]()))
+            # Finding 3: mask carry → cin_d/cin_s, mask the prev-action in place.
+            var mt = _dp(dmask) + t * BV
+            ctx.enqueue_function[rsD](_lt[CD](dtp), _lt[CD](_dp(cin_d)), _lt[BV](mt), grid_dim=nbD, block_dim=TPB)
+            ctx.enqueue_function[rsS](_lt[CS](stp), _lt[CS](_dp(cin_s)), _lt[BV](mt), grid_dim=nbS, block_dim=TPB)
+            ctx.enqueue_function[rsA](_lt[BV * ACTD](act + t * BV * ACTD), _lt[BV](mt), grid_dim=nbA, block_dim=TPB)
+            core.set_input["deter", BV](TileTensor(_dp(cin_d), row_major[BV, D]()))
+            core.set_input["stoch", BV](TileTensor(_dp(cin_s), row_major[BV, SCl]()))
             core.set_input["action", BV](TileTensor(act + t * BV * ACTD, row_major[BV, ACTD]()))
             core.set_input["tokens", BV](TileTensor(tkt, row_major[BV, TOK]()))
             core.forward[target, BV](out_t)
@@ -688,14 +782,22 @@ struct WMStep[
                 _lt[CS](dec.grad_input_ptr["stoch_new"]()), _lt[CS](rew.grad_input_ptr["stoch_new"]()), _lt[CS](con.grad_input_ptr["stoch_new"]()),
                 DYN, REP, grid_dim=nbB, block_dim=TPB,
             )
-            core.set_input["deter", BV](TileTensor(dtp, row_major[BV, D]()))
-            core.set_input["stoch", BV](TileTensor(stp, row_major[BV, SCl]()))
+            # Finding 3: rebuild the masked carry/action core inputs (mirrors
+            # the forward scan); action re-mask is idempotent (keep ∈ {0,1}).
+            var mt = _dp(dmask) + t * BV
+            ctx.enqueue_function[rsD](_lt[CD](dtp), _lt[CD](_dp(cin_d)), _lt[BV](mt), grid_dim=nbD, block_dim=TPB)
+            ctx.enqueue_function[rsS](_lt[CS](stp), _lt[CS](_dp(cin_s)), _lt[BV](mt), grid_dim=nbS, block_dim=TPB)
+            ctx.enqueue_function[rsA](_lt[BV * ACTD](act + t * BV * ACTD), _lt[BV](mt), grid_dim=nbA, block_dim=TPB)
+            core.set_input["deter", BV](TileTensor(_dp(cin_d), row_major[BV, D]()))
+            core.set_input["stoch", BV](TileTensor(_dp(cin_s), row_major[BV, SCl]()))
             core.set_input["action", BV](TileTensor(act + t * BV * ACTD, row_major[BV, ACTD]()))
             core.set_input["tokens", BV](TileTensor(toks + t * BV * TOK, row_major[BV, TOK]()))
             core.forward[target, BV](out_t)
             core.vjp[target, BV](seed_t)
-            ctx.enqueue_function[ckND](_lt[CD](core.grad_input_ptr["deter"]()), _lt[CD](_dp(gcd)), grid_dim=nbD, block_dim=TPB)
-            ctx.enqueue_function[ckSC](_lt[CS](core.grad_input_ptr["stoch"]()), _lt[CS](_dp(gcs)), grid_dim=nbS, block_dim=TPB)
+            # Finding 3: row-scale (not plain copy) so the carry gradient is cut
+            # at an episode boundary instead of flowing across the reset.
+            ctx.enqueue_function[rsD](_lt[CD](core.grad_input_ptr["deter"]()), _lt[CD](_dp(gcd)), _lt[BV](mt), grid_dim=nbD, block_dim=TPB)
+            ctx.enqueue_function[rsS](_lt[CS](core.grad_input_ptr["stoch"]()), _lt[CS](_dp(gcs)), _lt[BV](mt), grid_dim=nbS, block_dim=TPB)
             enc.forward[target, BV](TileTensor(obt, row_major[BV, OBSD]()), output=tokscr_t)
             var gtok_t = TileTensor(core.grad_input_ptr["tokens"](), row_major[BV, TOK]())
             enc.vjp[target, BV](gtok_t, gobs_t)
@@ -706,7 +808,7 @@ struct WMStep[
         ocon.step_graph[target](con)
         ctx.synchronize()
         zc.free(); zs.free(); ho.free(); hcarry.free(); hones.free()
-        zgd.free(); zgs.free()
+        zgd.free(); zgs.free(); hmask.free()
         st.last_wm_loss = total
 
 
