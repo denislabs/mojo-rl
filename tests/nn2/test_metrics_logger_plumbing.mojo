@@ -89,19 +89,33 @@ def test_log_bundle_walks_sac_metrics() raises:
         actor_loss=LogScalar[DT](Scalar[DT](0.42)),
         critic_loss=LogScalar[DT](Scalar[DT](-1.7)),
         alpha=LogScalar[DT](Scalar[DT](0.2)),
+        mean_q=LogScalar[DT](Scalar[DT](1.0)),
+        mean_target=LogScalar[DT](Scalar[DT](1.1)),
+        mean_reward=LogScalar[DT](Scalar[DT](-0.5)),
+        mean_next_q=LogScalar[DT](Scalar[DT](0.9)),
+        mean_done=LogScalar[DT](Scalar[DT](0.0)),
+        mean_abs_action=LogScalar[DT](Scalar[DT](0.3)),
+        train_steps=LogScalar[DT](Scalar[DT](1024.0)),
         n_updates=LogScalar[DT](Scalar[DT](256.0)),
     )
     var logger = ListLogger()
     log_bundle(logger, m, 7)
 
-    assert_equal(len(logger.names), 4, "SACMetrics has 4 Metric fields")
+    assert_equal(len(logger.names), 11, "SACMetrics has 11 Metric fields")
     assert_equal(logger.names[0], String("actor_loss"))
     assert_equal(logger.names[1], String("critic_loss"))
     assert_equal(logger.names[2], String("alpha"))
-    assert_equal(logger.names[3], String("n_updates"))
-    for i in range(4):
+    assert_equal(logger.names[3], String("mean_q"))
+    assert_equal(logger.names[4], String("mean_target"))
+    assert_equal(logger.names[5], String("mean_reward"))
+    assert_equal(logger.names[6], String("mean_next_q"))
+    assert_equal(logger.names[7], String("mean_done"))
+    assert_equal(logger.names[8], String("mean_abs_action"))
+    assert_equal(logger.names[9], String("train_steps"))
+    assert_equal(logger.names[10], String("n_updates"))
+    for i in range(11):
         assert_equal(logger.steps[i], 7)
-    print("  ok (4 log_scalar calls)")
+    print("  ok (11 log_scalar calls)")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -119,6 +133,13 @@ def test_noop_logger_short_circuits() raises:
         actor_loss=LogScalar[DT](Scalar[DT](0.0)),
         critic_loss=LogScalar[DT](Scalar[DT](0.0)),
         alpha=LogScalar[DT](Scalar[DT](0.0)),
+        mean_q=LogScalar[DT](Scalar[DT](0.0)),
+        mean_target=LogScalar[DT](Scalar[DT](0.0)),
+        mean_reward=LogScalar[DT](Scalar[DT](0.0)),
+        mean_next_q=LogScalar[DT](Scalar[DT](0.0)),
+        mean_done=LogScalar[DT](Scalar[DT](0.0)),
+        mean_abs_action=LogScalar[DT](Scalar[DT](0.0)),
+        train_steps=LogScalar[DT](Scalar[DT](0.0)),
         n_updates=LogScalar[DT](Scalar[DT](0.0)),
     )
     var logger = NoOpLogger()
@@ -181,21 +202,23 @@ def test_trainer_flush_metrics_emits() raises:
     )
     _ = logger  # lifetime extender — trainer holds raw pointer.
 
-    # 4 SACMetrics fields → 4 log_scalar calls.
-    assert_equal(len(logger.names), 4)
+    # 11 SACMetrics fields → 11 log_scalar calls.
+    assert_equal(len(logger.names), 11)
     assert_equal(logger.names[0], String("actor_loss"))
     assert_equal(logger.names[1], String("critic_loss"))
     assert_equal(logger.names[2], String("alpha"))
-    assert_equal(logger.names[3], String("n_updates"))
+    assert_equal(logger.names[10], String("n_updates"))
 
-    # Values match the means.
+    # Values match the means. The diag-walk fields (mean_q ... train_steps)
+    # are 0 here because no train_step ran — only loss accumulators were
+    # hand-injected.
     assert_true((logger.values[0] - 2.0).__abs__() < 1e-5, "actor_loss=2.0")
     assert_true((logger.values[1] - 1.0).__abs__() < 1e-5, "critic_loss=1.0")
     assert_true((logger.values[2] - 0.2).__abs__() < 1e-5, "alpha=0.2")
-    assert_true((logger.values[3] - 3.0).__abs__() < 1e-9, "n_updates=3")
+    assert_true((logger.values[10] - 3.0).__abs__() < 1e-9, "n_updates=3")
 
     # Step plumbed through.
-    for i in range(4):
+    for i in range(11):
         assert_equal(logger.steps[i], 500)
 
     # Returned bundle matches the emitted values.
@@ -214,12 +237,12 @@ def test_trainer_flush_metrics_emits() raises:
     assert_true(trainer._critic_L_accum == Scalar[DT](0.0))
     assert_true(trainer._alpha_accum == Scalar[DT](0.0))
 
-    print("  ok (4 log_scalar calls, accumulators reset)")
+    print("  ok (11 log_scalar calls, accumulators reset)")
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Test 4: Multiple flushes accumulate logger entries.
-# K=5 flushes × 4 fields = 20 log_scalar calls, monotonically
+# K=5 flushes × 11 fields = 55 log_scalar calls, monotonically
 # increasing steps.
 # ──────────────────────────────────────────────────────────────────────
 
@@ -242,12 +265,12 @@ def test_multiple_flushes_accumulate() raises:
         _ = trainer.flush_metrics(logger=logger_ptr, step=100 * (i + 1))
     _ = logger  # lifetime extender
 
-    assert_equal(len(logger.names), K * 4)
-    # Check that step values cycle 100, 100, 100, 100, 200, 200, ...
+    assert_equal(len(logger.names), K * 11)
+    # Check that step values cycle 100×11, 200×11, ...
     for i in range(K):
-        for f in range(4):
-            assert_equal(logger.steps[i * 4 + f], 100 * (i + 1))
-    print("  ok (", K * 4, "log_scalar calls across", K, "flushes)")
+        for f in range(11):
+            assert_equal(logger.steps[i * 11 + f], 100 * (i + 1))
+    print("  ok (", K * 11, "log_scalar calls across", K, "flushes)")
 
 
 def main() raises:

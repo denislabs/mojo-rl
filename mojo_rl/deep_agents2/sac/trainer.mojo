@@ -233,6 +233,7 @@ struct SACTrainer[
     var _q_accum: Scalar[DT]
     var _target_accum: Scalar[DT]
     var _reward_accum: Scalar[DT]
+    var _next_q_accum: Scalar[DT]
     var _done_accum: Scalar[DT]
     var _abs_action_accum: Scalar[DT]
     var _update_count: Int
@@ -318,6 +319,7 @@ struct SACTrainer[
         self._q_accum = Scalar[DT](0.0)
         self._target_accum = Scalar[DT](0.0)
         self._reward_accum = Scalar[DT](0.0)
+        self._next_q_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
         self._abs_action_accum = Scalar[DT](0.0)
         self._update_count = 0
@@ -547,15 +549,24 @@ struct SACTrainer[
             var d_p = self.state.mb_d.target_ptr["cpu"]()
             var a_p = self.state.mb_a.target_ptr["cpu"]()
             var q_p = self.twin_critic_blk.inner.c1._mb_q.target_ptr["cpu"]()
+            # `mean_next_q` reads the `min_q` intermediate of the target-y
+            # ComputeGraph — min(Q1_t, Q2_t)(s', a') over the batch, the
+            # value the TD bootstrap is built from (matches the legacy
+            # GPU-SAC bundle: min of the two target-critic next-Q's). The
+            # node output is stable after `target_y_blk.step`'s forward,
+            # which ran earlier this train_step.
+            var nq_p = self.target_y_blk.inner.graph.node_out_ptr["min_q"]()
             var sum_y: Scalar[DT] = 0.0
             var sum_r: Scalar[DT] = 0.0
             var sum_d: Scalar[DT] = 0.0
             var sum_q: Scalar[DT] = 0.0
+            var sum_nq: Scalar[DT] = 0.0
             for i in range(Self.BATCH):
                 sum_y += y_p[i]
                 sum_r += r_p[i]
                 sum_d += d_p[i]
                 sum_q += q_p[i]
+                sum_nq += nq_p[i]
             var sum_a: Scalar[DT] = 0.0
             for i in range(Self.BATCH * Self.ACT_DIM):
                 var av = a_p[i]
@@ -563,6 +574,7 @@ struct SACTrainer[
             self._q_accum += sum_q * inv_b
             self._target_accum += sum_y * inv_b
             self._reward_accum += sum_r * inv_b
+            self._next_q_accum += sum_nq * inv_b
             self._done_accum += sum_d * inv_b
             self._abs_action_accum += sum_a * (
                 Scalar[DT](1.0) / Scalar[DT](Self.BATCH * Self.ACT_DIM)
@@ -1140,6 +1152,7 @@ struct SACTrainer[
             mean_q=LogScalar[DT](self._q_accum * inv),
             mean_target=LogScalar[DT](self._target_accum * inv),
             mean_reward=LogScalar[DT](self._reward_accum * inv),
+            mean_next_q=LogScalar[DT](self._next_q_accum * inv),
             mean_done=LogScalar[DT](self._done_accum * inv),
             mean_abs_action=LogScalar[DT](self._abs_action_accum * inv),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
@@ -1151,6 +1164,7 @@ struct SACTrainer[
         self._q_accum = Scalar[DT](0.0)
         self._target_accum = Scalar[DT](0.0)
         self._reward_accum = Scalar[DT](0.0)
+        self._next_q_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
         self._abs_action_accum = Scalar[DT](0.0)
         self._update_count = 0

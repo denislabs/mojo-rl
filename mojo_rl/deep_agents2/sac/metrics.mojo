@@ -15,15 +15,18 @@ Naming convention (one-to-one with legacy):
   mean_q          — mean of online Q1(s, a) over the batch
   mean_target     — mean of target_y (Bellman target) across the chunk
   mean_reward     — mean of batch reward across the chunk
+  mean_next_q     — mean of min(Q1_t, Q2_t)(s', a') over the batch
+                    (the target-critic next-Q the TD bootstrap is built
+                    from; reads the `min_q` ComputeGraph node)
   mean_done       — mean of batch done across the chunk
   mean_abs_action — mean |action| across the chunk
   train_steps     — cumulative training updates so far (NOT reset on flush)
   n_updates       — training updates THIS chunk (reset on flush)
 
-`mean_next_q` from the legacy bundle is deferred — it requires
-exposing the `min_q` intermediate from `TargetYBlock`'s ComputeGraph
-(no node-output accessor yet) or duplicating the target-critic
-forward pass. Track post-Track-1."""
+`mean_next_q` reads the `min_q` intermediate of `TargetYBlock`'s
+ComputeGraph via `node_out_ptr` (CPU diag walk; the GPU path leaves it
+0.0, same convention as the other diagnostics). Wired 2026-05-30 once
+the ComputeGraph node-output accessor landed."""
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.metric import LogScalar
@@ -37,6 +40,7 @@ struct SACMetrics(Copyable, Movable, ImplicitlyDestructible):
     var mean_q:          LogScalar[DT]
     var mean_target:     LogScalar[DT]
     var mean_reward:     LogScalar[DT]
+    var mean_next_q:     LogScalar[DT]
     var mean_done:       LogScalar[DT]
     var mean_abs_action: LogScalar[DT]
     var train_steps:     LogScalar[DT]
