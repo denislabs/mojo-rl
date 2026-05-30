@@ -79,6 +79,7 @@ struct DQNTrainer[
     comptime _T_TARGET_Y = 1
     comptime _T_CRITIC = 2
     comptime _T_POLYAK = 3
+    comptime _T_DIAG = 4
 
     var pair: OnlineTargetPair[Self.Q_NET]
     var q_opt: Adam
@@ -111,6 +112,13 @@ struct DQNTrainer[
     var _action_list: List[Scalar[DT]]
 
     var _loss_accum: Scalar[DT]
+    # Per-batch diagnostic accumulators (CPU-only diag walk; see
+    # `_train_step_impl`). Drained + reset by `flush_metrics`.
+    var _q_accum: Scalar[DT]
+    var _target_accum: Scalar[DT]
+    var _td_error_accum: Scalar[DT]
+    var _reward_accum: Scalar[DT]
+    var _done_accum: Scalar[DT]
     var _update_count: Int
     # Never reset by `flush_*` — emitted as `train_steps` so the
     # downstream monitor can plot cumulative updates over time.
@@ -151,6 +159,11 @@ struct DQNTrainer[
         self.learning_starts = 1_000
         self._action_list = List[Scalar[DT]](length=1, fill=Scalar[DT](0.0))
         self._loss_accum = Scalar[DT](0.0)
+        self._q_accum = Scalar[DT](0.0)
+        self._target_accum = Scalar[DT](0.0)
+        self._td_error_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
+        self._done_accum = Scalar[DT](0.0)
         self._update_count = 0
         self._total_train_steps = 0
         self.timer = Timer.new()
@@ -240,6 +253,7 @@ struct DQNTrainer[
         t.timer.add_section("target_y")
         t.timer.add_section("critic")
         t.timer.add_section("polyak")
+        t.timer.add_section("diag")
         return t^
 
     # ─── Train step ──────────────────────────────────────────────────
@@ -284,6 +298,40 @@ struct DQNTrainer[
         self.sample_blk.update_priorities(self.state)
 
         self._loss_accum += self.state.critic_loss
+
+        # Per-batch diagnostic means (CPU-only — GPU train_target would need
+        # D2H copies of the mb_* scratches; deferred, mirroring SAC). Q(s,a)
+        # is the gathered Q at the taken action, populated by `q_update_blk`;
+        # target/reward/done live in the shared TrainerState scratches.
+        # `mean_td_error` = mean |Q − y|, the Bellman residual magnitude.
+        var t_diag = perf_counter_ns()
+        comptime if Self.train_target == "cpu":
+            var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
+            var q_p = self.q_update_blk.inner._mb_q_gath.target_ptr["cpu"]()
+            var y_p = self.state.mb_y.target_ptr["cpu"]()
+            var r_p = self.state.mb_r.target_ptr["cpu"]()
+            var d_p = self.state.mb_d.target_ptr["cpu"]()
+            var sum_q: Scalar[DT] = 0.0
+            var sum_y: Scalar[DT] = 0.0
+            var sum_te: Scalar[DT] = 0.0
+            var sum_r: Scalar[DT] = 0.0
+            var sum_d: Scalar[DT] = 0.0
+            for i in range(Self.BATCH):
+                var qi = q_p[i]
+                var yi = y_p[i]
+                var te = qi - yi
+                sum_q += qi
+                sum_y += yi
+                sum_te += te if te >= Scalar[DT](0.0) else -te
+                sum_r += r_p[i]
+                sum_d += d_p[i]
+            self._q_accum += sum_q * inv_b
+            self._target_accum += sum_y * inv_b
+            self._td_error_accum += sum_te * inv_b
+            self._reward_accum += sum_r * inv_b
+            self._done_accum += sum_d * inv_b
+        self.timer.accumulate(Self._T_DIAG, t_diag)
+
         self._update_count += 1
         self._total_train_steps += 1
         return True
@@ -505,6 +553,14 @@ struct DQNTrainer[
             self._update_count,
         )
         self._loss_accum = Scalar[DT](0.0)
+        # Keep the diagnostic accumulators in lock-step with the chunk
+        # counter so a later `flush_metrics` doesn't average a multi-chunk
+        # sum by a single-chunk `n`. (This legacy tuple API drops them.)
+        self._q_accum = Scalar[DT](0.0)
+        self._target_accum = Scalar[DT](0.0)
+        self._td_error_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
+        self._done_accum = Scalar[DT](0.0)
         self._update_count = 0
         return out
 
@@ -529,10 +585,20 @@ struct DQNTrainer[
         var bundle = DQNMetrics(
             loss=LogScalar[DT](self._loss_accum * inv),
             epsilon=LogScalar[DT](self.epsilon),
+            mean_q=LogScalar[DT](self._q_accum * inv),
+            mean_target=LogScalar[DT](self._target_accum * inv),
+            mean_td_error=LogScalar[DT](self._td_error_accum * inv),
+            mean_reward=LogScalar[DT](self._reward_accum * inv),
+            mean_done=LogScalar[DT](self._done_accum * inv),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
         self._loss_accum = Scalar[DT](0.0)
+        self._q_accum = Scalar[DT](0.0)
+        self._target_accum = Scalar[DT](0.0)
+        self._td_error_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
+        self._done_accum = Scalar[DT](0.0)
         self._update_count = 0
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
