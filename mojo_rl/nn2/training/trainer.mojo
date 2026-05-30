@@ -31,10 +31,16 @@ from std.memory import alloc
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT
+from ..constants import DT, TPB
 from ..core import Module, Optimizer, Loss, Initializer, AMPPolicy, NoAMP
+from .shuffle_kernels import (
+    init_identity_indices_kernel,
+    fisher_yates_shuffle_kernel,
+    increment_seed_kernel,
+    gather_rows_kernel,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -437,6 +443,8 @@ struct Trainer[
         ],
         epochs: Int = 1,
         print_progress: Bool = True,
+        shuffle: Bool = False,
+        rng_seed: UInt64 = 42,
     ) raises -> TrainResult:
         comptime assert (
             Self.target == "gpu"
@@ -445,25 +453,139 @@ struct Trainer[
             N_TRAIN % Self.BATCH == 0
         ), "Trainer.train_gpu: N_TRAIN must be divisible by BATCH"
         comptime N_BATCHES = N_TRAIN // Self.BATCH
+        comptime BLOCKS_INIT = (N_TRAIN + TPB - 1) // TPB
+        comptime BLOCKS_GATHER_X = (
+            Self.BATCH * Self.IN_DIM + TPB - 1
+        ) // TPB
+        comptime BLOCKS_GATHER_Y = (
+            Self.BATCH * Self.OUT_DIM + TPB - 1
+        ) // TPB
 
         var result = TrainResult.empty()
         var ctx = self.ctx.value()
-        var x_base = train_x.ptr
-        var y_base = train_y.ptr
+        var x_base = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            train_x.ptr
+        )
+        var y_base = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            train_y.ptr
+        )
+
+        # Shuffle scratch (device-only; allocated once, reused across epochs).
+        var indices_dev: Optional[DeviceBuffer[DType.int32]] = None
+        var seed_dev: Optional[DeviceBuffer[DType.uint64]] = None
+        var shuf_x_dev: Optional[DeviceBuffer[DT]] = None
+        var shuf_y_dev: Optional[DeviceBuffer[DT]] = None
+        if shuffle:
+            var idx = ctx.enqueue_create_buffer[DType.int32](N_TRAIN)
+            var seed = ctx.enqueue_create_buffer[DType.uint64](1)
+            var sx = ctx.enqueue_create_buffer[DT](
+                Self.BATCH * Self.IN_DIM
+            )
+            var sy = ctx.enqueue_create_buffer[DT](
+                Self.BATCH * Self.OUT_DIM
+            )
+            var seed_host = ctx.enqueue_create_host_buffer[DType.uint64](1)
+            seed_host.unsafe_ptr()[0] = rng_seed
+            ctx.enqueue_copy(seed, seed_host)
+            ctx.synchronize()
+            var idx_t = LayoutTensor[
+                DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+            ](idx.unsafe_ptr())
+            ctx.enqueue_function[init_identity_indices_kernel[N_TRAIN]](
+                idx_t,
+                grid_dim=(BLOCKS_INIT,),
+                block_dim=(TPB,),
+            )
+            indices_dev = idx^
+            seed_dev = seed^
+            shuf_x_dev = sx^
+            shuf_y_dev = sy^
 
         for epoch in range(epochs):
             var t0 = perf_counter_ns()
             var epoch_loss: Scalar[DT] = 0.0
+            if shuffle:
+                var idx_t = LayoutTensor[
+                    DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+                ](indices_dev.value().unsafe_ptr())
+                var seed_t = LayoutTensor[
+                    DType.uint64, Layout.row_major(1), MutAnyOrigin
+                ](seed_dev.value().unsafe_ptr())
+                ctx.enqueue_function[fisher_yates_shuffle_kernel[N_TRAIN]](
+                    idx_t, seed_t, grid_dim=(1,), block_dim=(1,)
+                )
+                ctx.enqueue_function[increment_seed_kernel](
+                    seed_t, grid_dim=(1,), block_dim=(1,)
+                )
             for b in range(N_BATCHES):
-                var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
-                var y_ptr = y_base + b * Self.BATCH * Self.OUT_DIM
-                var input = TileTensor(
-                    x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
-                )
-                var targets = TileTensor(
-                    y_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
-                )
-                epoch_loss += self._train_step_views(input, targets)
+                if shuffle:
+                    var full_x_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(N_TRAIN, Self.IN_DIM),
+                        MutAnyOrigin,
+                    ](x_base)
+                    var full_y_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(N_TRAIN, Self.OUT_DIM),
+                        MutAnyOrigin,
+                    ](y_base)
+                    var idx_t = LayoutTensor[
+                        DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+                    ](indices_dev.value().unsafe_ptr())
+                    var sx_p = shuf_x_dev.value().unsafe_ptr()
+                    var sy_p = shuf_y_dev.value().unsafe_ptr()
+                    var shuf_x_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(Self.BATCH, Self.IN_DIM),
+                        MutAnyOrigin,
+                    ](sx_p)
+                    var shuf_y_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(Self.BATCH, Self.OUT_DIM),
+                        MutAnyOrigin,
+                    ](sy_p)
+                    var offset = b * Self.BATCH
+                    ctx.enqueue_function[
+                        gather_rows_kernel[
+                            N_TRAIN, Self.BATCH, Self.IN_DIM, DT
+                        ]
+                    ](
+                        shuf_x_t,
+                        full_x_t,
+                        idx_t,
+                        offset,
+                        grid_dim=(BLOCKS_GATHER_X,),
+                        block_dim=(TPB,),
+                    )
+                    ctx.enqueue_function[
+                        gather_rows_kernel[
+                            N_TRAIN, Self.BATCH, Self.OUT_DIM, DT
+                        ]
+                    ](
+                        shuf_y_t,
+                        full_y_t,
+                        idx_t,
+                        offset,
+                        grid_dim=(BLOCKS_GATHER_Y,),
+                        block_dim=(TPB,),
+                    )
+                    var input = TileTensor(
+                        sx_p, row_major[Self.BATCH, Self.IN_DIM]()
+                    )
+                    var targets = TileTensor(
+                        sy_p, row_major[Self.BATCH, Self.OUT_DIM]()
+                    )
+                    epoch_loss += self._train_step_views(input, targets)
+                else:
+                    var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
+                    var y_ptr = y_base + b * Self.BATCH * Self.OUT_DIM
+                    var input = TileTensor(
+                        x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
+                    )
+                    var targets = TileTensor(
+                        y_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
+                    )
+                    epoch_loss += self._train_step_views(input, targets)
             ctx.synchronize()
             var t1 = perf_counter_ns()
             var train_s = Float64(t1 - t0) / 1e9
@@ -500,6 +622,8 @@ struct Trainer[
         test_y_labels: UnsafePointer[Int32, MutAnyOrigin],
         epochs: Int = 1,
         print_progress: Bool = True,
+        shuffle: Bool = False,
+        rng_seed: UInt64 = 42,
     ) raises -> TrainResult:
         comptime assert (
             Self.target == "gpu"
@@ -511,25 +635,139 @@ struct Trainer[
             N_TEST % Self.BATCH == 0
         ), "Trainer.train_gpu: N_TEST must be divisible by BATCH"
         comptime N_BATCHES_TRAIN = N_TRAIN // Self.BATCH
+        comptime BLOCKS_INIT = (N_TRAIN + TPB - 1) // TPB
+        comptime BLOCKS_GATHER_X = (
+            Self.BATCH * Self.IN_DIM + TPB - 1
+        ) // TPB
+        comptime BLOCKS_GATHER_Y = (
+            Self.BATCH * Self.OUT_DIM + TPB - 1
+        ) // TPB
 
         var result = TrainResult.empty()
         var ctx = self.ctx.value()
-        var x_base = train_x.ptr
-        var y_base = train_y.ptr
+        var x_base = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            train_x.ptr
+        )
+        var y_base = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            train_y.ptr
+        )
+
+        # Shuffle scratch (device-only; allocated once, reused across epochs).
+        var indices_dev: Optional[DeviceBuffer[DType.int32]] = None
+        var seed_dev: Optional[DeviceBuffer[DType.uint64]] = None
+        var shuf_x_dev: Optional[DeviceBuffer[DT]] = None
+        var shuf_y_dev: Optional[DeviceBuffer[DT]] = None
+        if shuffle:
+            var idx = ctx.enqueue_create_buffer[DType.int32](N_TRAIN)
+            var seed = ctx.enqueue_create_buffer[DType.uint64](1)
+            var sx = ctx.enqueue_create_buffer[DT](
+                Self.BATCH * Self.IN_DIM
+            )
+            var sy = ctx.enqueue_create_buffer[DT](
+                Self.BATCH * Self.OUT_DIM
+            )
+            var seed_host = ctx.enqueue_create_host_buffer[DType.uint64](1)
+            seed_host.unsafe_ptr()[0] = rng_seed
+            ctx.enqueue_copy(seed, seed_host)
+            ctx.synchronize()
+            var idx_t = LayoutTensor[
+                DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+            ](idx.unsafe_ptr())
+            ctx.enqueue_function[init_identity_indices_kernel[N_TRAIN]](
+                idx_t,
+                grid_dim=(BLOCKS_INIT,),
+                block_dim=(TPB,),
+            )
+            indices_dev = idx^
+            seed_dev = seed^
+            shuf_x_dev = sx^
+            shuf_y_dev = sy^
 
         for epoch in range(epochs):
             var t0 = perf_counter_ns()
             var epoch_loss: Scalar[DT] = 0.0
+            if shuffle:
+                var idx_t = LayoutTensor[
+                    DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+                ](indices_dev.value().unsafe_ptr())
+                var seed_t = LayoutTensor[
+                    DType.uint64, Layout.row_major(1), MutAnyOrigin
+                ](seed_dev.value().unsafe_ptr())
+                ctx.enqueue_function[fisher_yates_shuffle_kernel[N_TRAIN]](
+                    idx_t, seed_t, grid_dim=(1,), block_dim=(1,)
+                )
+                ctx.enqueue_function[increment_seed_kernel](
+                    seed_t, grid_dim=(1,), block_dim=(1,)
+                )
             for b in range(N_BATCHES_TRAIN):
-                var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
-                var y_ptr = y_base + b * Self.BATCH * Self.OUT_DIM
-                var input = TileTensor(
-                    x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
-                )
-                var targets = TileTensor(
-                    y_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
-                )
-                epoch_loss += self._train_step_views(input, targets)
+                if shuffle:
+                    var full_x_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(N_TRAIN, Self.IN_DIM),
+                        MutAnyOrigin,
+                    ](x_base)
+                    var full_y_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(N_TRAIN, Self.OUT_DIM),
+                        MutAnyOrigin,
+                    ](y_base)
+                    var idx_t = LayoutTensor[
+                        DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+                    ](indices_dev.value().unsafe_ptr())
+                    var sx_p = shuf_x_dev.value().unsafe_ptr()
+                    var sy_p = shuf_y_dev.value().unsafe_ptr()
+                    var shuf_x_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(Self.BATCH, Self.IN_DIM),
+                        MutAnyOrigin,
+                    ](sx_p)
+                    var shuf_y_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(Self.BATCH, Self.OUT_DIM),
+                        MutAnyOrigin,
+                    ](sy_p)
+                    var offset = b * Self.BATCH
+                    ctx.enqueue_function[
+                        gather_rows_kernel[
+                            N_TRAIN, Self.BATCH, Self.IN_DIM, DT
+                        ]
+                    ](
+                        shuf_x_t,
+                        full_x_t,
+                        idx_t,
+                        offset,
+                        grid_dim=(BLOCKS_GATHER_X,),
+                        block_dim=(TPB,),
+                    )
+                    ctx.enqueue_function[
+                        gather_rows_kernel[
+                            N_TRAIN, Self.BATCH, Self.OUT_DIM, DT
+                        ]
+                    ](
+                        shuf_y_t,
+                        full_y_t,
+                        idx_t,
+                        offset,
+                        grid_dim=(BLOCKS_GATHER_Y,),
+                        block_dim=(TPB,),
+                    )
+                    var input = TileTensor(
+                        sx_p, row_major[Self.BATCH, Self.IN_DIM]()
+                    )
+                    var targets = TileTensor(
+                        sy_p, row_major[Self.BATCH, Self.OUT_DIM]()
+                    )
+                    epoch_loss += self._train_step_views(input, targets)
+                else:
+                    var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
+                    var y_ptr = y_base + b * Self.BATCH * Self.OUT_DIM
+                    var input = TileTensor(
+                        x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
+                    )
+                    var targets = TileTensor(
+                        y_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
+                    )
+                    epoch_loss += self._train_step_views(input, targets)
             ctx.synchronize()
             var t1 = perf_counter_ns()
             var train_s = Float64(t1 - t0) / 1e9
