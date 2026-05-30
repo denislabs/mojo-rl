@@ -33,3 +33,19 @@ trait Env:
     def close(mut self):
         """Clean up resources."""
         ...
+
+    def was_terminated(self) -> Bool:
+        """True iff the previous `step` ended via natural termination (a real
+        terminal state — pole fell, agent unhealthy, goal reached), NOT
+        time-limit truncation.
+
+        `step` collapses termination and truncation into a single `done`
+        flag. Value-based RL must keep the TD/GAE bootstrap on truncation (the
+        episode could have continued) but drop it on natural termination (the
+        state is genuinely terminal). Drivers read this right after stepping.
+
+        Declared on the base `Env` so it has a single home shared by every env
+        trait (continuous/discrete) — avoids ambiguity for envs that conform
+        to more than one. Default `False` (correct for truncation-only envs
+        like Pendulum); terminating envs override it."""
+        return False

@@ -126,6 +126,9 @@ struct MountainCarEnv[DTYPE: DType](
     var steps: Int
     var max_steps: Int
     var done: Bool
+    # Natural-termination flag (goal reached), NOT time-limit truncation.
+    # Read by off-policy/on-policy drivers via `was_terminated()`.
+    var _last_terminated: Bool
     var total_reward: Scalar[Self.dtype]
 
     # Discretization settings (for DiscreteEnv)
@@ -154,6 +157,7 @@ struct MountainCarEnv[DTYPE: DType](
         self.steps = 0
         self.max_steps = 200
         self.done = False
+        self._last_terminated = False
         self.total_reward = 0.0
 
         # Discretization settings
@@ -181,6 +185,7 @@ struct MountainCarEnv[DTYPE: DType](
 
         self.steps = 0
         self.done = False
+        self._last_terminated = False
         self.total_reward = 0.0
 
         return MountainCarState(index=self._discretize_obs())
@@ -236,6 +241,7 @@ struct MountainCarEnv[DTYPE: DType](
         var truncated = self.steps >= self.max_steps
 
         self.done = goal_reached or truncated
+        self._last_terminated = goal_reached
 
         # Reward: -1 for each step until goal
         var reward: Scalar[Self.dtype] = -1.0
@@ -318,6 +324,11 @@ struct MountainCarEnv[DTYPE: DType](
         """
         var result = self.step(MountainCarAction(direction=action))
         return (self.get_obs_list(), result[1], result[2])
+
+    def was_terminated(self) -> Bool:
+        """True iff the previous step reached the goal (natural termination),
+        NOT the time-limit truncation at max_steps."""
+        return self._last_terminated
 
     # ========================================================================
     # DiscreteEnv trait methods
