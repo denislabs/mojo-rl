@@ -11,8 +11,8 @@ interceptor (`cuda_intercept.c`) latches `g_mojo_stream` to the first stream
 it sees, once, for the whole process — so a test that creates two contexts
 (e.g. a flag-off vs flag-on comparison) would capture on the stale first
 stream and fail with "Captured 0 nodes". Keep capture tests single-context;
-the flag-off-vs-on parity check lives in `test_sac_cuda_graph_parity.mojo`
-(Apple-only, where two contexts is harmless).
+the flag-off-vs-on parity check (`test_sac_cuda_graph_parity.mojo`) is also
+single-context (shares one ctx across both runs) so it works on NVIDIA too.
 """
 
 from std.gpu.host import DeviceContext

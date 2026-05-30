@@ -1,23 +1,30 @@
-"""Slice 7 — USE_TRAIN_CUDA_GRAPH parity (Apple no-op path).
+"""Slice 7 — USE_TRAIN_CUDA_GRAPH parity (single context, both platforms).
 
-Runs the GPU-env batched SAC driver twice at the same seed: once with
-USE_TRAIN_CUDA_GRAPH=False (the normal `train_step` path) and once with
-USE_TRAIN_CUDA_GRAPH=True. On Apple Silicon `CUDAGraph` is a compile-time
-no-op, so the capture path runs the `train_device_kernels` closure each
-iteration — which must enqueue the SAME kernel sequence as `train_step`.
-The two runs must therefore produce BIT-IDENTICAL results (mean_return +
-ep_count). This proves the refactor (pure-kernel step + host bookkeeping
-split + closure harness) is transparent.
+Runs the GPU-env batched SAC driver twice at the same seed on ONE shared
+DeviceContext: once with USE_TRAIN_CUDA_GRAPH=False (the normal `train_step`
+path) and once with USE_TRAIN_CUDA_GRAPH=True. The two runs must produce
+BIT-IDENTICAL results (mean_return + ep_count).
 
-Real capture/replay correctness (NVIDIA) is out of scope here — `CUDAGraph`
-is a no-op on this platform — so this is the refactor-transparency gate,
-not a capture-correctness gate.
+Why single-context matters: the CUDA interceptor (`cuda_intercept.c`) latches
+`g_mojo_stream` to the FIRST stream it sees, once per process. Two separate
+contexts → the flag-on run's `begin_capture` targets the stale first stream →
+"Captured 0 nodes". Sharing one ctx (multiple trainers/envs can allocate on
+it) keeps capture on the right stream, so this test is valid on NVIDIA too.
 
-Note: the capture path requires `learning_starts >= BATCH` (so the warmup
-gate subsumes buffer-readiness) — satisfied here (500 >= 256).
+Why it's bit-identical even with REAL capture (NVIDIA): on the capture
+iteration the warmup `STEP()` executes one real gradient step (consuming RNG
+offset O0), while the captured `STEP()` only records (executes nothing,
+consumes no offset); replays then read the LIVE device offset (O1, O2, …).
+So flag-on's executed steps consume the exact offset sequence flag-off's
+`train_step` does — same minibatches, same kernels. This run thus also
+validates that Slice 5's device RNG counter makes replay correct (a
+baked-scalar offset would reuse one minibatch and diverge). On Apple
+`CUDAGraph` is a no-op, so the closure just runs each iteration — same result.
+
+Requires `learning_starts >= BATCH` (the warmup gate subsumes
+buffer-readiness) — satisfied here (500 >= 256).
 """
 
-from std.sys import has_nvidia_gpu_accelerator
 from std.gpu.host import DeviceContext
 from std.random import seed
 from std.testing import assert_true
@@ -65,9 +72,10 @@ comptime Trainer = SACTrainer[
 comptime Env = BatchedGpuEnv[PendulumV2[DT], N_ENVS, OBS_DIM, ACT_DIM]
 
 
-def _run[USE_GRAPH: Bool]() raises -> Tuple[Scalar[DT], Int]:
+def _run[USE_GRAPH: Bool](ctx: DeviceContext) raises -> Tuple[Scalar[DT], Int]:
+    # Shared ctx across both runs (one stream → interceptor-compatible). Fresh
+    # trainer/env each run; seed before make so param init + RNG match.
     seed(42)
-    var ctx = DeviceContext()
     var trainer = Trainer.make(
         ctx=ctx,
         actor_lr=Scalar[DT](3e-4),
@@ -100,28 +108,18 @@ def _run[USE_GRAPH: Bool]() raises -> Tuple[Scalar[DT], Int]:
 
 def main() raises:
     print("=" * 64)
-    print("SAC USE_TRAIN_CUDA_GRAPH parity (Apple no-op path)")
+    print("SAC USE_TRAIN_CUDA_GRAPH parity (single context)")
     print("=" * 64)
 
-    # This test runs TWO DeviceContexts in one process (flag-off vs flag-on).
-    # That is incompatible with the CUDA interceptor, which latches
-    # `g_mojo_stream` to the FIRST stream it sees for the whole process — so on
-    # NVIDIA the second (flag-on) run would capture on the stale first stream
-    # and fail with "Captured 0 nodes". The two-context comparison is only
-    # meaningful on the no-op path anyway (real capture isn't bit-identical to
-    # the non-captured path — it does an extra warmup+capture step). So skip on
-    # NVIDIA; the single-context capture smoke (test_sac_cuda_graph_capture)
-    # covers real capture there.
-    comptime if has_nvidia_gpu_accelerator():
-        print("  SKIPPED on NVIDIA (two-context interceptor incompatibility);")
-        print("  run test_sac_cuda_graph_capture.mojo for real capture.")
-        print("ALL PASSED")
-        return
+    # ONE shared context for both runs (interceptor-compatible — see module
+    # docstring). flag-off establishes the baseline; flag-on must match it
+    # bit-for-bit (no-op on Apple, real capture+replay on NVIDIA).
+    var ctx = DeviceContext()
 
-    var off = _run[False]()
+    var off = _run[False](ctx)
     print("  flag OFF: mean_ret(10) =", off[0], " ep_count =", off[1])
 
-    var on = _run[True]()
+    var on = _run[True](ctx)
     print("  flag ON : mean_ret(10) =", on[0], " ep_count =", on[1])
 
     assert_true(
@@ -133,7 +131,7 @@ def main() raises:
         "mean_return differs (capture path not transparent): off="
         + String(off[0]) + " on=" + String(on[0]),
     )
-    print("  PARITY OK — capture-flag path is bit-identical on Apple no-op")
+    print("  PARITY OK — flag-on is bit-identical to flag-off (capture transparent)")
     print("=" * 64)
     print("ALL PASSED")
     print("=" * 64)
