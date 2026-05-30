@@ -103,6 +103,7 @@ struct MBPOTrainer[
     comptime _T_ACTOR     = 5
     comptime _T_ALPHA     = 6
     comptime _T_POLYAK    = 7
+    comptime _T_DIAG      = 8
 
     var actor: Self.ACTOR
     var pair1: OnlineTargetPair[Self.CRITIC]
@@ -184,6 +185,15 @@ struct MBPOTrainer[
     # Never reset by `flush_*` — emitted as `train_steps` so the
     # downstream monitor can plot cumulative inner SAC updates.
     var _total_train_steps: Int
+
+    # Per-batch diagnostic accumulators (CPU-only diag walk; mirror SAC).
+    # `_q_accum` / `_reward_accum` are averaged by `_update_count`; the
+    # dynamics NLL has its own member-step denominator since the ensemble
+    # trains on the `model_train_freq` cadence, not the SAC sub-update one.
+    var _q_accum: Scalar[DT]
+    var _reward_accum: Scalar[DT]
+    var _dyn_loss_accum: Scalar[DT]
+    var _dyn_step_count: Int
 
     var timer: Timer
 
@@ -292,6 +302,10 @@ struct MBPOTrainer[
         self._critic_L_accum = Scalar[DT](0.0)
         self._update_count = 0
         self._total_train_steps = 0
+        self._q_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
+        self._dyn_loss_accum = Scalar[DT](0.0)
+        self._dyn_step_count = 0
         self.timer = Timer.new()
 
     @staticmethod
@@ -400,6 +414,7 @@ struct MBPOTrainer[
         t.timer.add_section("actor")
         t.timer.add_section("alpha")
         t.timer.add_section("polyak")
+        t.timer.add_section("diag")
         return t^
 
     # ─── Direct-callable (host-list) surface ─────────────────────────
@@ -550,6 +565,24 @@ struct MBPOTrainer[
             )
             self.timer.accumulate(Self._T_POLYAK, t_pol)
 
+            # Per-batch diagnostics — mirror SACTrainer's CPU-only walk.
+            # `mean_q` reads `twin_critic_blk.inner.c1._mb_q` (Q1(s, a)
+            # populated by the critic forward inside `twin_critic_blk.step`
+            # and NOT overwritten by `actor_blk.step`); `mean_reward` reads
+            # the mixed real+synthetic minibatch reward `state.mb_r`.
+            var t_diag = perf_counter_ns()
+            var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
+            var q_p = self.twin_critic_blk.inner.c1._mb_q.target_ptr["cpu"]()
+            var r_p = self.state.mb_r.target_ptr["cpu"]()
+            var sum_q: Scalar[DT] = 0.0
+            var sum_r: Scalar[DT] = 0.0
+            for i in range(Self.BATCH):
+                sum_q += q_p[i]
+                sum_r += r_p[i]
+            self._q_accum += sum_q * inv_b
+            self._reward_accum += sum_r * inv_b
+            self.timer.accumulate(Self._T_DIAG, t_diag)
+
             self._actor_L_accum += self.state.actor_loss
             self._critic_L_accum += self.state.critic_loss
             self._update_count += 1
@@ -583,6 +616,10 @@ struct MBPOTrainer[
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._update_count = 0
+        self._q_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
+        self._dyn_loss_accum = Scalar[DT](0.0)
+        self._dyn_step_count = 0
         return out
 
     def total_train_steps(self) -> Int:
@@ -603,16 +640,25 @@ struct MBPOTrainer[
         `_total_train_steps` counter is NOT reset."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        var dn = self._dyn_step_count if self._dyn_step_count > 0 else 1
+        var dyn_inv = Scalar[DT](1.0) / Scalar[DT](dn)
         var bundle = MBPOMetrics(
             actor_loss=LogScalar[DT](self._actor_L_accum * inv),
             critic_loss=LogScalar[DT](self._critic_L_accum * inv),
             alpha=LogScalar[DT](fexp(self.alpha_opt.value)),
+            mean_q=LogScalar[DT](self._q_accum * inv),
+            mean_reward=LogScalar[DT](self._reward_accum * inv),
+            dyn_loss=LogScalar[DT](self._dyn_loss_accum * dyn_inv),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._update_count = 0
+        self._q_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
+        self._dyn_loss_accum = Scalar[DT](0.0)
+        self._dyn_step_count = 0
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^
@@ -676,7 +722,7 @@ struct MBPOTrainer[
     def flush_timer_log(mut self) -> String:
         """Per-section wall-time report (one line per sub-step:
         dyn_train / rollout / sample / target_y / critic / actor / alpha
-        / polyak) and reset the accumulators."""
+        / polyak / diag) and reset the accumulators."""
         var report = self.timer.format_report()
         self.timer.reset()
         return report
@@ -844,11 +890,13 @@ struct MBPOTrainer[
                 var dyn_tgt_t = TileTensor(
                     dyn_tgt_p, row_major[Self.BATCH, Self.DYN_PRED]()
                 )
-                _ = self.ensemble.train_member_step["cpu"](
+                var dyn_loss = self.ensemble.train_member_step["cpu"](
                     m,
                     dyn_in_t,
                     dyn_tgt_t,
                 )
+                self._dyn_loss_accum += dyn_loss
+                self._dyn_step_count += 1
 
     def _generate_synthetic_rollouts(mut self) raises:
         var real_buf_size = self.sample_blk.real_buf.size
