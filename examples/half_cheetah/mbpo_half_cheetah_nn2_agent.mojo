@@ -158,6 +158,7 @@ def main() raises:
 
     # ─── Agent + env ─────────────────────────────────────────────────────
     var agent = MBPOAgent[
+        "cpu",
         ActorNet,
         CriticNet,
         DynNet,

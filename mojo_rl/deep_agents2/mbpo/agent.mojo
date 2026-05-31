@@ -4,16 +4,18 @@ Model-Based Policy Optimization: SAC actor/critic trained against a
 mixture of real and synthetic transitions, where the synthetic ones come
 from a learned dynamics ensemble (`DynNet`).
 
-CPU-only — MBPOTrainer.make is comptime-asserted on `target="cpu"`.
+CPU + GPU — `train_target` is the first comptime param (Phase 4.3).
 
 Usage:
 
     var agent = MBPOAgent[
-        ACTOR, CRITIC, DynNet,
+        "cpu", ACTOR, CRITIC, DynNet,
         OBS, ACT, BATCH, REPLAY_CAP, SYNTH_CAP, N_ENSEMBLE, NUM_ELITES,
-    ](actor_lr=3e-4, model_lr=1e-3, real_ratio_pct=50)
+    ](actor_lr=3e-4, model_lr=1e-3)
 
     var ep_returns = agent.train(env, total_timesteps=30_000)
+
+For GPU: `MBPOAgent["gpu", ...](ctx=ctx, ...)`.
 """
 
 from std.gpu.host import DeviceContext
@@ -35,6 +37,7 @@ from .trainer import MBPOTrainer
 
 
 struct MBPOAgent[
+    train_target: StaticString,
     ACTOR: Module,
     CRITIC: Module,
     DynNet: Module,
@@ -49,18 +52,21 @@ struct MBPOAgent[
     LOGVAR_MIN: Float64 = -10.0,
     LOGVAR_MAX: Float64 = -2.0,
 ](Movable & ImplicitlyDestructible):
-    """Thin facade over `MBPOTrainer` (CPU-only) + off-policy drivers."""
+    """Thin facade over `MBPOTrainer` + off-policy drivers."""
 
-    var trainer: MBPOTrainer[
-        Self.ACTOR, Self.CRITIC, Self.DynNet,
+    comptime TrainerT = MBPOTrainer[
+        Self.train_target, Self.ACTOR, Self.CRITIC, Self.DynNet,
         Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
         Self.REPLAY_CAPACITY, Self.SYNTH_CAPACITY,
         Self.N_ENSEMBLE, Self.NUM_ELITES,
         Self.REAL_RATIO_PCT, Self.LOGVAR_MIN, Self.LOGVAR_MAX,
     ]
 
+    var trainer: Self.TrainerT
+
     def __init__(
         out self,
+        ctx: Optional[DeviceContext] = None,
         actor_lr: Scalar[DT] = 3e-4,
         critic_lr: Scalar[DT] = 3e-4,
         alpha_lr: Scalar[DT] = 3e-4,
@@ -80,14 +86,10 @@ struct MBPOAgent[
         sac_updates_per_step: Int = 20,
         dyn_batch_size: Int = 256,
     ) raises:
-        """Construct an MBPOAgent. Forwards every kwarg to `MBPOTrainer.make`."""
-        self.trainer = MBPOTrainer[
-            Self.ACTOR, Self.CRITIC, Self.DynNet,
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-            Self.REPLAY_CAPACITY, Self.SYNTH_CAPACITY,
-            Self.N_ENSEMBLE, Self.NUM_ELITES,
-            Self.REAL_RATIO_PCT, Self.LOGVAR_MIN, Self.LOGVAR_MAX,
-        ].make["cpu"](
+        """Construct an MBPOAgent. Forwards every kwarg to `MBPOTrainer.make`.
+        `ctx` is required for `train_target='gpu'`."""
+        self.trainer = Self.TrainerT.make(
+            ctx=ctx,
             actor_lr=actor_lr,
             critic_lr=critic_lr,
             alpha_lr=alpha_lr,
@@ -127,27 +129,14 @@ struct MBPOAgent[
         nstep_gamma: Scalar[DT] = 0.99,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     ) raises -> List[Scalar[DT]]:
-        """Off-policy training via `run_offpolicy_train_batched` (CPU).
+        """Off-policy training via `run_offpolicy_train_batched`.
 
-        Note: `updates_per_step` here is the per-env-step driver knob (how
-        many SAC-style train_step calls per env step). MBPO's internal
-        `sac_updates_per_step` controls how many SAC mini-updates run
-        *inside* one train_step against the synthetic buffer.
-        """
-        return run_offpolicy_train_batched[
-            MBPOTrainer[
-                Self.ACTOR, Self.CRITIC, Self.DynNet,
-                Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-                Self.REPLAY_CAPACITY, Self.SYNTH_CAPACITY,
-                Self.N_ENSEMBLE, Self.NUM_ELITES,
-                Self.REAL_RATIO_PCT, Self.LOGVAR_MIN, Self.LOGVAR_MAX,
-            ],
-            E,
-            N_ENVS,
-            NS,
-            L,
-        ](
-            None,
+        Note: `updates_per_step` is the per-env-step driver knob; MBPO's
+        internal `sac_updates_per_step` controls how many SAC mini-updates
+        run inside one train_step against the synthetic buffer."""
+        var ctx = self.trainer.ctx
+        return run_offpolicy_train_batched[Self.TrainerT, E, N_ENVS, NS, L](
+            ctx,
             self.trainer,
             env,
             total_timesteps,
@@ -174,23 +163,13 @@ struct MBPOAgent[
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
-        """Single-env off-policy training via `run_offpolicy_train`.
-        See `SACAgent.train_single` for `diag_every` / `checkpoint_*`
-        semantics."""
-        return run_offpolicy_train[
-            MBPOTrainer[
-                Self.ACTOR, Self.CRITIC, Self.DynNet,
-                Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-                Self.REPLAY_CAPACITY, Self.SYNTH_CAPACITY,
-                Self.N_ENSEMBLE, Self.NUM_ELITES,
-                Self.REAL_RATIO_PCT, Self.LOGVAR_MIN, Self.LOGVAR_MAX,
-            ],
-            E,
-            L,
-        ](
+        """Single-env off-policy training via `run_offpolicy_train`."""
+        var ctx = self.trainer.ctx
+        return run_offpolicy_train[Self.TrainerT, E, L](
             self.trainer,
             env,
             total_timesteps,
+            ctx=ctx,
             print_every=print_every,
             verbose=verbose,
             logger=logger,
@@ -212,16 +191,7 @@ struct MBPOAgent[
         verbose: Bool = False,
     ) raises -> Scalar[DT]:
         """Greedy eval — actor mean action, no sampling."""
-        return run_offpolicy_eval[
-            MBPOTrainer[
-                Self.ACTOR, Self.CRITIC, Self.DynNet,
-                Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-                Self.REPLAY_CAPACITY, Self.SYNTH_CAPACITY,
-                Self.N_ENSEMBLE, Self.NUM_ELITES,
-                Self.REAL_RATIO_PCT, Self.LOGVAR_MIN, Self.LOGVAR_MAX,
-            ],
-            E,
-        ](
+        return run_offpolicy_eval[Self.TrainerT, E](
             self.trainer,
             env,
             num_episodes,
@@ -269,16 +239,14 @@ struct MBPOAgent[
     def flush_timer_log(mut self) -> String:
         return self.trainer.flush_timer_log()
 
-    # ─── Checkpointing (CPU only — MBPO is CPU-only by construction) ──
-    # Note: dynamics ensemble nets / dyn optimizers are NOT included.
-    # Resume restarts dynamics from scratch (it re-trains rapidly in the
-    # first `model_train_freq` env steps). Tracked in the plan doc.
+    # ─── Checkpointing ──────────────────────────────────────────────────
+    # Dynamics ensemble nets / dyn optimizers are NOT included; resume
+    # restarts dynamics from scratch (re-trains in the first
+    # `model_train_freq` env steps).
 
     def save(mut self, path: String) raises:
-        """Thin passthrough to `trainer.save_state(path)`. Writes ONE
-        file (`nn2-ckpt v2` envelope) with prefixed sections for actor,
-        critic1, critic2, actor_opt, critic1_opt, critic2_opt,
-        alpha_opt. Dynamics ensemble + replay buffer NOT included."""
+        """Passthrough to `trainer.save_state(path)` — actor, critic1/2,
+        their opts, alpha_opt. Dynamics ensemble + replay NOT included."""
         self.trainer.save_state(path)
 
     def load(mut self, path: String) raises:

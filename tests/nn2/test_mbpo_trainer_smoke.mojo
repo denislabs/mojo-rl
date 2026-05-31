@@ -40,7 +40,7 @@ comptime DynNet = Sequential[
     Linear[DYN_HIDDEN, 2 * (1 + OBS)],
 ]
 comptime Trainer = MBPOTrainer[
-    ActorNet, CriticNet, DynNet,
+    "cpu", ActorNet, CriticNet, DynNet,
     OBS, ACT, BATCH, REPLAY_CAP, SYNTH_CAP, N_ENS, N_ELITES, 5,
 ]
 
@@ -48,7 +48,7 @@ comptime Trainer = MBPOTrainer[
 def test_end_to_end_few_steps() raises:
     print("test_end_to_end_few_steps ...")
     seed(42)
-    var t = Trainer.make["cpu"](
+    var t = Trainer.make(
         action_scale=Scalar[DT](2.0),
         learning_starts=200,
         model_train_freq=200,
@@ -86,11 +86,11 @@ def test_end_to_end_few_steps() raises:
             stepped_count += 1
 
     print("  total train steps executed:", stepped_count)
-    print("  synth buf size:", t.sample_blk.synth_buf.size)
-    print("  real buf size:", t.sample_blk.real_buf.size)
+    print("  synth buf size:", t.sample_blk.synth_count["cpu"]())
+    print("  real buf size:", t.sample_blk.real_count["cpu"]())
     print("  mean_return:", t.mean_return())
     assert_true(
-        t.sample_blk.synth_buf.size > 0,
+        t.sample_blk.synth_count["cpu"]() > 0,
         "synth buffer should be populated",
     )
     assert_true(

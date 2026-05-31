@@ -31,3 +31,4 @@ from .twin_critic_step       import TwinCriticStep
 from .polyak_step            import PolyakStep, SinglePolyakStep
 from .single_critic_step     import SingleCriticStep
 from .dual_sample_cpu_step    import DualSampleCpuStep
+from .dual_sample_step        import DualSampleStep

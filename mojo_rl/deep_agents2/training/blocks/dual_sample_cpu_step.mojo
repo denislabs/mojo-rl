@@ -72,6 +72,15 @@ struct DualSampleCpuStep[
     ):
         self.synth_buf.add(obs, action, reward, next_obs, done)
 
+    # Uniform readiness accessors (mirror DualSampleGpuStep) so the
+    # trainer can gate on `real_count()`/`synth_count()` regardless of
+    # the backend.
+    def real_count(self) -> Int:
+        return self.real_buf.size
+
+    def synth_count(self) -> Int:
+        return self.synth_buf.size
+
     def step(
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],

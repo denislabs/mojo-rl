@@ -17,9 +17,12 @@ Why a single block (not 7 free-standing nets in the trainer)?
     Each `train_member_step` reads/writes through `_mb_pred` then
     `_mb_grad` before returning, so members never race on the slab.
 
-Scope (I.1.a/b):
-  - CPU only.  GPU `make`/`step` paths raise.  Phase G's audit puts GPU
-    on the rollout-after-CPU-validates track.
+Scope (I.1.a/b; GPU added Phase 4.3a 2026-05-30):
+  - CPU + GPU.  `make[gpu](ctx)` builds members/opts/loss/scratch on
+    device; `predict_member`/`train_member_step`/`eval_member_loss` have
+    GPU branches (member.forward/vjp + GaussianNLL kernels + a split/clamp-
+    logvar kernel). `train_member_step[gpu]` D2Hs the scalar loss once per
+    call — fine on the periodic `model_train_freq` cadence.
   - Fixed logvar bounds `[LOGVAR_MIN, LOGVAR_MAX]`. Reference MBPO
     learns the bounds via L2 regularisation; deferred (it's GPU-tied
     in the production agent and not on the I.1 critical path).
@@ -43,11 +46,12 @@ Trait conventions:
     refresh `elite_indices` (lowest NUM_ELITES losses are elite).
 """
 
+from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
@@ -55,6 +59,33 @@ from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 from mojo_rl.nn2.loss.gaussian_nll_loss import GaussianNLLLoss
 from mojo_rl.nn2.optimizer.adam import Adam
+
+
+def _split_clamp_logvar_kernel[
+    BATCH: Int, OUT_DIM: Int, PRED_DIM: Int
+](
+    pred: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+    out_mu: LayoutTensor[DT, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin],
+    out_lv: LayoutTensor[DT, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin],
+    lv_min: Scalar[DT],
+    lv_max: Scalar[DT],
+):
+    """GPU mirror of the CPU split+clamp loop in `predict_member`:
+    `out_mu[b,j] = pred[b,j]`, `out_lv[b,j] = clamp(pred[b,PRED+j], lv_min,
+    lv_max)`. One thread per (b, j) over BATCH × PRED_DIM."""
+    var idx = Int(global_idx.x)
+    var total = BATCH * PRED_DIM
+    if idx >= total:
+        return
+    var b = idx // PRED_DIM
+    var j = idx % PRED_DIM
+    out_mu[b, j] = rebind[Scalar[DT]](pred[b, j])
+    var v = rebind[Scalar[DT]](pred[b, PRED_DIM + j])
+    if v > lv_max:
+        v = lv_max
+    elif v < lv_min:
+        v = lv_min
+    out_lv[b, j] = v
 
 
 struct DynamicsEnsembleBlock[
@@ -142,13 +173,32 @@ struct DynamicsEnsembleBlock[
     def make[
         target: StaticString, INIT: Initializer,
     ](ctx: DeviceContext) raises -> Self:
+        """GPU factory. Each member + Adam + the shared GaussianNLLLoss and
+        member-indexed scratch live in device memory; the train/predict
+        paths run member.forward/vjp + the NLL loss kernels on-device."""
         comptime assert target == "gpu", (
             "DynamicsEnsembleBlock.make[target='cpu', INIT](ctx) — drop ctx for CPU"
         )
-        # GPU path deferred — see module docstring.
-        raise Error(
-            "DynamicsEnsembleBlock GPU not yet implemented (I.1 is CPU-first)"
+        comptime assert Self.DynNet.IN_DIMS[0] == Self.IN_DIM, (
+            "DynNet.IN_DIM must equal IN_DIM"
         )
+        comptime assert Self.DynNet.OUT_DIM == Self.OUT_DIM, (
+            "DynNet.OUT_DIM must equal OUT_DIM"
+        )
+        var blk = Self()
+        for _ in range(Self.N):
+            var net = Self.DynNet.make[target, INIT](ctx=ctx)
+            var opt = Adam.make[target, M=Self.DynNet](net, ctx=ctx)
+            blk.members.append(net^)
+            blk.opts.append(opt^)
+        for i in range(Self.NUM_ELITES):
+            blk.elite_indices.append(i)
+        blk.loss = GaussianNLLLoss[
+            Self.PRED_DIM, Self.LOGVAR_MIN, Self.LOGVAR_MAX
+        ].make[target](ctx=ctx)
+        blk.ts = TargetStorage.make_gpu(ctx)
+        init_scratch_auto[Self, target="gpu"](blk, ctx)
+        return blk^
 
     # ------------------------------------------------------------------
     # Public knobs.
@@ -220,8 +270,34 @@ struct DynamicsEnsembleBlock[
                         v = lv_min
                     lv_p[dst + j] = v
         else:
-            raise Error(
-                "DynamicsEnsembleBlock.predict_member['gpu'] not implemented"
+            var ctx = self.ts.ctx.value()
+            var pred_p = self._mb_pred.dev_ptr()
+            var pred_t = TileTensor(
+                pred_p, row_major[Self.BATCH, Self.OUT_DIM]()
+            )
+            self.members[member_idx].forward[target, Self.BATCH, POLICY](
+                in_t, output=pred_t,
+            )
+            var pred_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH, Self.OUT_DIM), MutAnyOrigin,
+            ](pred_p)
+            var mu_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out_mu_t.ptr)
+            var lv_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out_lv_t.ptr)
+            var mu_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH, Self.PRED_DIM), MutAnyOrigin,
+            ](mu_p)
+            var lv_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH, Self.PRED_DIM), MutAnyOrigin,
+            ](lv_p)
+            comptime total = Self.BATCH * Self.PRED_DIM
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime split_kernel = _split_clamp_logvar_kernel[
+                Self.BATCH, Self.OUT_DIM, Self.PRED_DIM
+            ]
+            ctx.enqueue_function[split_kernel](
+                pred_lt, mu_lt, lv_lt,
+                Scalar[DT](Self.LOGVAR_MIN), Scalar[DT](Self.LOGVAR_MAX),
+                grid_dim=n_blocks, block_dim=TPB,
             )
 
     # ------------------------------------------------------------------
@@ -281,9 +357,37 @@ struct DynamicsEnsembleBlock[
             )
             return loss
         else:
-            raise Error(
-                "DynamicsEnsembleBlock.train_member_step['gpu'] not implemented"
+            var pred_p = self._mb_pred.dev_ptr()
+            var grad_p = self._mb_grad.dev_ptr()
+            var pred_t = TileTensor(
+                pred_p, row_major[Self.BATCH, Self.OUT_DIM]()
             )
+            var grad_t = TileTensor(
+                grad_p, row_major[Self.BATCH, Self.OUT_DIM]()
+            )
+            self.opts[member_idx].zero_grad[target, M=Self.DynNet](
+                self.members[member_idx]
+            )
+            self.members[member_idx].forward[target, Self.BATCH, POLICY](
+                mb_in_t, output=pred_t,
+            )
+            var loss = self.loss.forward[target, Self.BATCH, POLICY](
+                pred_t, mb_target_t,
+            )
+            self.loss.vjp[target, Self.BATCH, POLICY](mb_target_t, grad_t)
+            # Reuse pred buffer as a discard sink for member grad-inputs
+            # (OUT_DIM >= IN_DIM asserted in __init__).
+            var gi_p = self._mb_pred.dev_ptr()
+            var gi_t = TileTensor(
+                gi_p, row_major[Self.BATCH, Self.IN_DIM]()
+            )
+            self.members[member_idx].vjp[target, Self.BATCH, POLICY](
+                grad_t, gi_t,
+            )
+            self.opts[member_idx].step[target, M=Self.DynNet](
+                self.members[member_idx]
+            )
+            return loss
 
     # ------------------------------------------------------------------
     # Eval member loss — for holdout-set scoring.
@@ -322,8 +426,15 @@ struct DynamicsEnsembleBlock[
                 pred_t, mb_target_t,
             )
         else:
-            raise Error(
-                "DynamicsEnsembleBlock.eval_member_loss['gpu'] not implemented"
+            var pred_p = self._mb_pred.dev_ptr()
+            var pred_t = TileTensor(
+                pred_p, row_major[Self.BATCH, Self.OUT_DIM]()
+            )
+            self.members[member_idx].forward[target, Self.BATCH, POLICY](
+                mb_in_t, output=pred_t,
+            )
+            return self.loss.forward[target, Self.BATCH, POLICY](
+                pred_t, mb_target_t,
             )
 
     # ------------------------------------------------------------------

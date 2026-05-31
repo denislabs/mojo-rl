@@ -1,36 +1,51 @@
-"""MBPOTrainer — J.1.g-redesign-v2 Step 4 — MBPO via ref-based blocks.
+"""MBPOTrainer — CPU/GPU model-based policy optimization.
 
 Pipeline (6 blocks):
   DualSample → TargetY → TwinCritic → SACActor → AlphaUpdate → Polyak
-(5 of 6 blocks reused unchanged from SAC.)
+(5 of 6 blocks reused unchanged from SAC; all carry GPU paths.)
 
-Dynamics ensemble training + synthetic rollouts are NOT in the pipeline —
+Dynamics ensemble training + synthetic rollouts are NOT pipeline blocks —
 they're trainer methods invoked from train_step on a `model_train_freq`
 cadence (block decomposition isn't the right fit for multi-epoch /
 multi-step orchestration).
 
-CPU only. Conforms to `OffPolicyAgentGpu` (Tier-3 driver
-surface); GPU record stubs raise — unreachable on the CPU env branch.
+Phase 4.3 added the GPU train path: `train_target` is the first comptime
+param, the dual-sample block type is comptime-selected (CPU vs GPU), and
+the dynamics-train + rollout phases have device implementations. The SAC
+sub-update reuses the already-GPU SAC blocks (twin-critic / actor / alpha
+on-device accumulation, no per-step D2H). The synthetic rollout runs fully
+on-device: real-buffer start-state draw → batched actor forward + rsample
+→ elite dynamics forward → posterior Gaussian sampling (device box-muller
+noise) → device batch store into the GPU synth replay.
+
+CPU is bit-identical to the prior CPU-only MBPOTrainer. Conforms to
+`OffPolicyAgentGpu`.
 """
 
 from std.math import exp as fexp, sqrt as fsqrt, log as flog
 from std.random import random_float64, randn_float64
 from std.time import perf_counter_ns
+from std.gpu import block_dim, block_idx, thread_idx, global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import TileTensor, row_major
+from std.random.philox import Random as PhiloxRandom
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.core.logger import Logger, NoOpLogger
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Module
+from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.checkpoint import (
     save_state_v2_body, load_state_v2_body,
+    save_state_v2_body_gpu, load_state_v2_body_gpu,
 )
 from mojo_rl.nn2.core.log_bundle import log_bundle
 from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.metric import LogScalar
 from ..core.checkpoint_helpers import (
     save_optimizer_v2_body, load_optimizer_v2_body,
+    save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
     save_scalar_adam_v2_body, load_scalar_adam_v2_body,
+    save_scalar_adam_v2_body_gpu, load_scalar_adam_v2_body_gpu,
     split_lines_v2, read_file_v2, expect_v2_header,
 )
 from ..core.online_target_pair import OnlineTargetPair
@@ -40,19 +55,120 @@ from ..data.n_step_replay import GPUNStepBuffer
 from mojo_rl.nn2.initializer import Xavier, Kaiming
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.optimizer.scalar_adam import ScalarAdam
+from mojo_rl.nn2.random.box_muller import box_muller_normal_gpu
 from mojo_rl.nn2.training.timer import Timer
 from .dynamics_ensemble_block import DynamicsEnsembleBlock
 from ..training.episode_tracker import EpisodeTracker
 from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy import OffPolicyAgentGpu
-from ..training.blocks import DualSampleCpuStep, TwinCriticStep, PolyakStep
+from ..training.off_policy_critic import concat_sa_gpu
+from ..training.blocks import DualSampleStep, TwinCriticStep, PolyakStep
 from ..sac.blocks.target_y_step import TargetYStep
 from ..sac.blocks.actor_step import SACActorStep
 from ..sac.blocks.alpha_update_step import AlphaUpdateStep
 from .metrics import MBPOMetrics
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Batched GPU action kernels (mirror SAC) + MBPO rollout/dynamics kernels.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _mbpo_warmup_uniform_kernel[
+    N_ENVS: Int, ACT: Int
+](
+    action_dest: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
+    action_scale: Scalar[DT],
+    seed: UInt64,
+    offset_base: UInt64,
+):
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = N_ENVS * ACT
+    if i >= total:
+        return
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var u = Float32(philox.step_uniform()[0])
+    var s = Scalar[DT](2.0) * Scalar[DT](u) - Scalar[DT](1.0)
+    var env = i // ACT
+    var j = i % ACT
+    action_dest[env, j] = s * action_scale
+
+
+def _mbpo_action_clamp_kernel[
+    N: Int, ACT: Int
+](
+    alp: LayoutTensor[DT, Layout.row_major(N, ACT + 1), MutAnyOrigin],
+    action_out: LayoutTensor[DT, Layout.row_major(N, ACT), MutAnyOrigin],
+    action_scale: Scalar[DT],
+):
+    """Extract the first ACT lanes of the rsample output (drop log_prob),
+    clamp into action_out. Used for both env-step batched action and the
+    rollout policy action on imagined obs."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = N * ACT
+    if i >= total:
+        return
+    var env = i // ACT
+    var j = i % ACT
+    var a = alp[env, j]
+    if a > action_scale:
+        a = action_scale
+    elif a < -action_scale:
+        a = -action_scale
+    action_out[env, j] = a
+
+
+def _rollout_posterior_kernel[
+    BATCH: Int, OBS: Int, PRED: Int
+](
+    obs: LayoutTensor[DT, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+    mu: LayoutTensor[DT, Layout.row_major(BATCH, PRED), MutAnyOrigin],
+    lv: LayoutTensor[DT, Layout.row_major(BATCH, PRED), MutAnyOrigin],
+    noise: LayoutTensor[DT, Layout.row_major(BATCH, PRED), MutAnyOrigin],
+    out_nxt: LayoutTensor[DT, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+    out_rew: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+):
+    """Posterior sample one rollout step: PRED = 1 + OBS (reward + Δobs).
+    `rew = μ_r + exp(0.5·lv_r)·z_r`; `nxt[d] = obs[d] + μ_δ[d] +
+    exp(0.5·lv_δ[d])·z_δ[d]`. Standard-normal `z` is the pre-sampled
+    device box-muller `noise`. One thread per lane."""
+    var k = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if k >= BATCH:
+        return
+    var mu_r = rebind[Scalar[DT]](mu[k, 0])
+    var lv_r = rebind[Scalar[DT]](lv[k, 0])
+    var z_r = rebind[Scalar[DT]](noise[k, 0])
+    out_rew[k] = mu_r + fexp(Scalar[DT](0.5) * lv_r) * z_r
+    for d in range(OBS):
+        var mu_d = rebind[Scalar[DT]](mu[k, 1 + d])
+        var lv_d = rebind[Scalar[DT]](lv[k, 1 + d])
+        var z_d = rebind[Scalar[DT]](noise[k, 1 + d])
+        var delta = mu_d + fexp(Scalar[DT](0.5) * lv_d) * z_d
+        out_nxt[k, d] = rebind[Scalar[DT]](obs[k, d]) + delta
+
+
+def _build_dyn_target_kernel[
+    BATCH: Int, OBS: Int, PRED: Int
+](
+    rew: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    s: LayoutTensor[DT, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+    sp: LayoutTensor[DT, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+    out_tgt: LayoutTensor[DT, Layout.row_major(BATCH, PRED), MutAnyOrigin],
+):
+    """Dynamics target = [reward, Δobs = s' − s]. PRED = 1 + OBS. One
+    thread per lane."""
+    var k = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if k >= BATCH:
+        return
+    out_tgt[k, 0] = rebind[Scalar[DT]](rew[k])
+    for d in range(OBS):
+        out_tgt[k, 1 + d] = (
+            rebind[Scalar[DT]](sp[k, d]) - rebind[Scalar[DT]](s[k, d])
+        )
+
+
 struct MBPOTrainer[
+    train_target: StaticString,
     ACTOR: Module,
     CRITIC: Module,
     DynNet: Module,
@@ -84,17 +200,19 @@ struct MBPOTrainer[
         Self.LOGVAR_MAX,
     ]
 
+    # Dual-sample block — one concrete dual-storage type for both targets
+    # (CPU + GPU storage carried together; only the matching one is built
+    # in setup[target]). Avoids the ternary-over-two-struct-types issue.
+    comptime SampleBlk = DualSampleStep[
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        Self.REPLAY_CAPACITY, Self.SYNTH_CAPACITY,
+        Self.REAL_BS, Self.SYNTH_BS,
+    ]
+
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
-    # MBPO is CPU-only; the OffPolicyAgentGpu GPU stubs raise.
-    comptime AGENT_TRAIN_TARGET: StaticString = "cpu"
+    comptime AGENT_TRAIN_TARGET: StaticString = Self.train_target
 
-    # Timer section indices — order matches `add_section` calls in `make`.
-    # MBPO's outer train_step bundles (a) a periodic dynamics-ensemble
-    # train (every model_train_freq steps), (b) a periodic synthetic
-    # rollout phase, and (c) `sac_updates_per_step` SAC inner updates.
-    # The SAC sub-blocks are timed individually because the inner loop
-    # dominates wall time.
     comptime _T_DYN_TRAIN = 0
     comptime _T_ROLLOUT   = 1
     comptime _T_SAMPLE    = 2
@@ -113,48 +231,27 @@ struct MBPOTrainer[
     var critic2_opt: Adam
     var alpha_opt: ScalarAdam
 
-    var sample_blk: DualSampleCpuStep[
-        Self.OBS_DIM,
-        Self.ACT_DIM,
-        Self.BATCH,
-        Self.REPLAY_CAPACITY,
-        Self.SYNTH_CAPACITY,
-        Self.REAL_BS,
-        Self.SYNTH_BS,
-    ]
+    var sample_blk: Self.SampleBlk
     var target_y_blk: TargetYStep[
-        Self.OBS_DIM,
-        Self.ACT_DIM,
-        Self.BATCH,
-        Self.ACTOR,
-        Self.CRITIC,
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
     ]
     var twin_critic_blk: TwinCriticStep[
-        Self.OBS_DIM,
-        Self.ACT_DIM,
-        Self.BATCH,
-        Self.CRITIC,
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
     ]
     var actor_blk: SACActorStep[
-        Self.OBS_DIM,
-        Self.ACT_DIM,
-        Self.BATCH,
-        Self.ACTOR,
-        Self.CRITIC,
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
     ]
     var alpha_blk: AlphaUpdateStep[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
     var polyak_blk: PolyakStep[
-        Self.OBS_DIM,
-        Self.ACT_DIM,
-        Self.BATCH,
-        Self.CRITIC,
+        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
     ]
 
     var ensemble: Self.ENSEMBLE
     var state: TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
     var tracker: EpisodeTracker
+    var ctx: Optional[DeviceContext]
 
-    # select_action scratches (mirror SACTrainer).
+    # select_action scratches (staging — host mirror + device).
     var _ob1: Scratch["ob1", Self.OBS_DIM, True]
     var _ao1: Scratch["ao1", 2 * Self.ACT_DIM, True]
     var _alp1: Scratch["alp1", Self.ACT_DIM + 1, True]
@@ -167,6 +264,12 @@ struct MBPOTrainer[
     var _ro_nxt: Scratch["ro_nxt", Self.BATCH * Self.OBS_DIM]
     var _ro_mu: Scratch["ro_mu", Self.BATCH * Self.DYN_PRED]
     var _ro_lv: Scratch["ro_lv", Self.BATCH * Self.DYN_PRED]
+    # GPU-only rollout extras (allocated on both targets; unused on CPU).
+    var _ro_rew: Scratch["ro_rew", Self.BATCH]
+    var _ro_done: Scratch["ro_done", Self.BATCH]
+    var _ro_noise: Scratch["ro_noise", Self.BATCH * Self.DYN_PRED]
+    var _ro_ao: Scratch["ro_ao", Self.BATCH * 2 * Self.ACT_DIM]
+    var _ro_alp: Scratch["ro_alp", Self.BATCH * (Self.ACT_DIM + 1)]
 
     var action_scale: Scalar[DT]
     var learning_starts: Int
@@ -179,17 +282,17 @@ struct MBPOTrainer[
     var dyn_batch_size: Int
     var last_dyn_step: Int
 
+    # Philox state for GPU warmup actions + rollout noise.
+    var _warmup_rng_seed: UInt64
+    var _warmup_rng_offset: UInt64
+    var _roll_rng_seed: UInt64
+    var _roll_rng_offset: UInt64
+
     var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
     var _update_count: Int
-    # Never reset by `flush_*` — emitted as `train_steps` so the
-    # downstream monitor can plot cumulative inner SAC updates.
     var _total_train_steps: Int
 
-    # Per-batch diagnostic accumulators (CPU-only diag walk; mirror SAC).
-    # `_q_accum` / `_reward_accum` are averaged by `_update_count`; the
-    # dynamics NLL has its own member-step denominator since the ensemble
-    # trains on the `model_train_freq` cadence, not the SAC sub-update one.
     var _q_accum: Scalar[DT]
     var _reward_accum: Scalar[DT]
     var _dyn_loss_accum: Scalar[DT]
@@ -217,60 +320,28 @@ struct MBPOTrainer[
         self.critic1_opt = Adam()
         self.critic2_opt = Adam()
         self.alpha_opt = ScalarAdam(
-            value=0.0,
-            m=0.0,
-            v=0.0,
-            t=0,
-            lr=0.0003,
-            beta1=0.9,
-            beta2=0.999,
-            eps=1e-8,
+            value=0.0, m=0.0, v=0.0, t=0,
+            lr=0.0003, beta1=0.9, beta2=0.999, eps=1e-8,
         )
-        self.sample_blk = DualSampleCpuStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
-            Self.REPLAY_CAPACITY,
-            Self.SYNTH_CAPACITY,
-            Self.REAL_BS,
-            Self.SYNTH_BS,
-        ]()
+        self.sample_blk = Self.SampleBlk()
         self.target_y_blk = TargetYStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
-            Self.ACTOR,
-            Self.CRITIC,
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
         ]()
         self.twin_critic_blk = TwinCriticStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
-            Self.CRITIC,
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
         ]()
         self.actor_blk = SACActorStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
-            Self.ACTOR,
-            Self.CRITIC,
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
         ]()
         self.alpha_blk = AlphaUpdateStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
         ]()
         self.polyak_blk = PolyakStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
-            Self.CRITIC,
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
         ]()
         self.ensemble = Self.ENSEMBLE()
         self.state = TrainerState[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
         ]()
         self.tracker = EpisodeTracker(
             window=List[Scalar[DT]](),
@@ -279,6 +350,7 @@ struct MBPOTrainer[
             current_return=Scalar[DT](0.0),
             ep_count=0,
         )
+        self.ctx = None
         self._ob1 = Scratch["ob1", Self.OBS_DIM, True]()
         self._ao1 = Scratch["ao1", 2 * Self.ACT_DIM, True]()
         self._alp1 = Scratch["alp1", Self.ACT_DIM + 1, True]()
@@ -289,6 +361,11 @@ struct MBPOTrainer[
         self._ro_nxt = Scratch["ro_nxt", Self.BATCH * Self.OBS_DIM]()
         self._ro_mu = Scratch["ro_mu", Self.BATCH * Self.DYN_PRED]()
         self._ro_lv = Scratch["ro_lv", Self.BATCH * Self.DYN_PRED]()
+        self._ro_rew = Scratch["ro_rew", Self.BATCH]()
+        self._ro_done = Scratch["ro_done", Self.BATCH]()
+        self._ro_noise = Scratch["ro_noise", Self.BATCH * Self.DYN_PRED]()
+        self._ro_ao = Scratch["ro_ao", Self.BATCH * 2 * Self.ACT_DIM]()
+        self._ro_alp = Scratch["ro_alp", Self.BATCH * (Self.ACT_DIM + 1)]()
         self.action_scale = Scalar[DT](1.0)
         self.learning_starts = 1_000
         self.model_train_freq = 250
@@ -298,6 +375,10 @@ struct MBPOTrainer[
         self.sac_updates_per_step = 20
         self.dyn_batch_size = 256
         self.last_dyn_step = -1
+        self._warmup_rng_seed = UInt64(0xC0FFEE_C0DE)
+        self._warmup_rng_offset = UInt64(0)
+        self._roll_rng_seed = UInt64(0xB0A75E_D00D)
+        self._roll_rng_offset = UInt64(0)
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._update_count = 0
@@ -309,9 +390,8 @@ struct MBPOTrainer[
         self.timer = Timer.new()
 
     @staticmethod
-    def make[
-        target: StaticString
-    ](
+    def make(
+        ctx: Optional[DeviceContext] = None,
         actor_lr: Scalar[DT] = Scalar[DT](3e-4),
         critic_lr: Scalar[DT] = Scalar[DT](3e-4),
         alpha_lr: Scalar[DT] = Scalar[DT](3e-4),
@@ -331,67 +411,83 @@ struct MBPOTrainer[
         sac_updates_per_step: Int = 20,
         dyn_batch_size: Int = 256,
     ) raises -> Self:
-        comptime assert target == "cpu", "MBPOTrainer: CPU only"
+        comptime assert (
+            Self.train_target == "cpu" or Self.train_target == "gpu"
+        ), "MBPOTrainer: target must be 'cpu' or 'gpu'"
+        comptime if Self.train_target == "gpu":
+            if not ctx:
+                raise Error("MBPOTrainer.make[target='gpu']: ctx required")
+
         var t = Self()
-        t.actor = Self.ACTOR.make[target="cpu", INIT=Xavier]()
+        t.ctx = ctx
+
+        t.actor = Self.ACTOR.make[target=Self.train_target, INIT=Xavier](ctx=ctx)
         t.pair1 = OnlineTargetPair[Self.CRITIC].make[
-            target="cpu", INIT=Xavier
-        ]()
+            target=Self.train_target, INIT=Xavier
+        ](ctx=ctx)
         t.pair2 = OnlineTargetPair[Self.CRITIC].make[
-            target="cpu", INIT=Xavier
-        ]()
-        t.actor_opt = Adam.make[target="cpu", M=Self.ACTOR](t.actor)
+            target=Self.train_target, INIT=Xavier
+        ](ctx=ctx)
+        t.actor_opt = Adam.make[target=Self.train_target, M=Self.ACTOR](
+            t.actor, ctx=ctx,
+        )
         t.actor_opt.lr = actor_lr
-        t.critic1_opt = Adam.make[target="cpu", M=Self.CRITIC](t.pair1.online)
+        t.critic1_opt = Adam.make[target=Self.train_target, M=Self.CRITIC](
+            t.pair1.online, ctx=ctx,
+        )
         t.critic1_opt.lr = critic_lr
-        t.critic2_opt = Adam.make[target="cpu", M=Self.CRITIC](t.pair2.online)
+        t.critic2_opt = Adam.make[target=Self.train_target, M=Self.CRITIC](
+            t.pair2.online, ctx=ctx,
+        )
         t.critic2_opt.lr = critic_lr
-        t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
+
+        comptime if Self.train_target == "gpu":
+            t.alpha_opt = ScalarAdam.new_device(
+                ctx.value(), flog(init_alpha), alpha_lr,
+            )
+        else:
+            t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
 
         t.target_y_blk = TargetYStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
-            Self.ACTOR,
-            Self.CRITIC,
-        ].make["cpu"](action_scale=action_scale, gamma=gamma)
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        ].make[Self.train_target](
+            action_scale=action_scale, gamma=gamma, ctx=ctx,
+        )
         t.twin_critic_blk = TwinCriticStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
-            Self.CRITIC,
-        ].make["cpu"]()
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        ].make[Self.train_target](ctx=ctx)
         t.actor_blk = SACActorStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
-            Self.ACTOR,
-            Self.CRITIC,
-        ].make["cpu"](action_scale=action_scale)
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        ].make[Self.train_target](action_scale=action_scale, ctx=ctx)
+
+        comptime if Self.train_target == "gpu":
+            var alpha_p = t.alpha_opt.alpha_dev_ptr()
+            t.target_y_blk.set_alpha_ptr(alpha_p)
+            t.actor_blk.set_alpha_ptr(alpha_p)
+
         t.alpha_blk = AlphaUpdateStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
         ].make(target_entropy=target_entropy)
         t.polyak_blk = PolyakStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
-            Self.CRITIC,
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
         ].make(tau=tau)
 
-        t.ensemble = Self.ENSEMBLE.make[target, INIT=Kaiming]()
+        comptime if Self.train_target == "gpu":
+            t.ensemble = Self.ENSEMBLE.make[Self.train_target, INIT=Kaiming](
+                ctx.value()
+            )
+        else:
+            t.ensemble = Self.ENSEMBLE.make[Self.train_target, INIT=Kaiming]()
         t.ensemble.set_lr(model_lr)
+
         t.tracker = EpisodeTracker.new(
             window_size=window_size, initial_fill=initial_episode_fill
         )
         t.state = TrainerState[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
-        ].make["cpu"]()
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        ].make[Self.train_target](ctx=ctx)
 
-        init_scratch_auto[Self, target="cpu"](t)
+        init_scratch_auto[Self, target=Self.train_target](t, ctx)
 
         t.action_scale = action_scale
         t.learning_starts = learning_starts
@@ -402,10 +498,8 @@ struct MBPOTrainer[
         t.sac_updates_per_step = sac_updates_per_step
         t.dyn_batch_size = dyn_batch_size
 
-        t.sample_blk.setup(learning_starts)
+        t.sample_blk.setup[Self.train_target](learning_starts, ctx=ctx)
 
-        # Timer sections — index order MUST match the `_T_*` comptime
-        # constants above.
         t.timer.add_section("dyn_train")
         t.timer.add_section("rollout")
         t.timer.add_section("sample")
@@ -418,10 +512,38 @@ struct MBPOTrainer[
         return t^
 
     # ─── Direct-callable (host-list) surface ─────────────────────────
-    # Used by smoke tests that call the trainer directly without a
-    # driver, and by the off-policy driver via the OffPolicyAgent trait.
 
     def select_action(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
+        step_idx: Int,
+    ) raises:
+        comptime if Self.train_target == "cpu":
+            self._select_action_cpu(obs, action_out, step_idx)
+        else:
+            # GPU: stage obs H2D into _ob1, delegate to the batched device
+            # path (writes the clamped action into the first ACT scalars of
+            # _alp1), D2H the action back.
+            var ob1_cpu_p = self._ob1.cpu_ptr()
+            for d in range(Self.OBS_DIM):
+                ob1_cpu_p[d] = obs[d]
+            self.ctx.value().enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
+            self.select_action_batched[1](
+                self._ob1.target_ptr["gpu"](),
+                self._alp1.target_ptr["gpu"](),
+                self._ao1.target_ptr["gpu"](),
+                self._alp1.target_ptr["gpu"](),
+                step_idx,
+            )
+            var ctx = self.ctx.value()
+            ctx.enqueue_copy(self._alp1.cpu_ptr(), self._alp1.dev.value())
+            ctx.synchronize()
+            var alp1_cpu_p = self._alp1.cpu_ptr()
+            for j in range(Self.ACT_DIM):
+                action_out[j] = alp1_cpu_p[j]
+
+    def _select_action_cpu(
         mut self,
         ref obs: List[Scalar[DT]],
         mut action_out: List[Scalar[DT]],
@@ -461,9 +583,20 @@ struct MBPOTrainer[
         var ao1_cpu_p = self._ao1.cpu_ptr()
         for d in range(Self.OBS_DIM):
             ob1_cpu_p[d] = obs[d]
-        var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
-        var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM]())
-        self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
+        comptime if Self.train_target == "cpu":
+            var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS_DIM]())
+            var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM]())
+            self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
+        else:
+            var ctx = self.ctx.value()
+            ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
+            var ob1_t = TileTensor(self._ob1.dev_ptr(), row_major[1, Self.OBS_DIM]())
+            var ao1_t = TileTensor(
+                self._ao1.dev_ptr(), row_major[1, 2 * Self.ACT_DIM]()
+            )
+            self.actor.forward["gpu", 1](ob1_t, output=ao1_t)
+            ctx.enqueue_copy(ao1_cpu_p, self._ao1.dev.value())
+            ctx.synchronize()
         for j in range(Self.ACT_DIM):
             var mean = ao1_cpu_p[j]
             var a = ftanh(mean) * self.action_scale
@@ -482,7 +615,9 @@ struct MBPOTrainer[
         done: Scalar[DT],
     ) raises:
         self.tracker.add_reward(reward)
-        self.sample_blk.real_add(obs, action, reward, next_obs, done)
+        self.sample_blk.real_add[Self.train_target](
+            obs, action, reward, next_obs, done, ctx=self.ctx,
+        )
 
     def end_episode(mut self):
         self.tracker.end_episode()
@@ -491,41 +626,48 @@ struct MBPOTrainer[
         if step_idx < self.learning_starts:
             return False
 
-        # Periodic dynamics + rollout phase (orchestration outside pipeline).
         var should_train_dyn = (
             self.last_dyn_step < 0
             or step_idx - self.last_dyn_step >= self.model_train_freq
         )
         if should_train_dyn:
             var t_dyn = perf_counter_ns()
-            self._train_dynamics_ensemble()
+            comptime if Self.train_target == "gpu":
+                self._train_dynamics_ensemble_gpu()
+            else:
+                self._train_dynamics_ensemble()
             self.timer.accumulate(Self._T_DYN_TRAIN, t_dyn)
 
             var t_ro = perf_counter_ns()
-            self._generate_synthetic_rollouts()
+            comptime if Self.train_target == "gpu":
+                self._generate_synthetic_rollouts_gpu()
+            else:
+                self._generate_synthetic_rollouts()
             self.timer.accumulate(Self._T_ROLLOUT, t_ro)
             self.last_dyn_step = step_idx
 
-        # Need both buffers populated enough for the dual sample.
-        if self.sample_blk.real_buf.size < Self.REAL_BS:
+        if self.sample_blk.real_count[Self.train_target]() < Self.REAL_BS:
             return False
-        if self.sample_blk.synth_buf.size < Self.SYNTH_BS:
+        if self.sample_blk.synth_count[Self.train_target]() < Self.SYNTH_BS:
             return False
 
         var any = False
         for _ in range(self.sac_updates_per_step):
             self.state.step_idx = step_idx
             self.state.did_step = True
-            self.state.alpha = fexp(self.alpha_opt.value)
+            comptime if Self.train_target == "cpu":
+                self.state.alpha = fexp(self.alpha_opt.value)
+            else:
+                self.state.ctx = self.ctx
 
             var t_sample = perf_counter_ns()
-            self.sample_blk.step(self.state)
+            self.sample_blk.step[Self.train_target](self.state)
             if not self.state.did_step:
                 continue
             self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
             var t_ty = perf_counter_ns()
-            self.target_y_blk.step["cpu"](
+            self.target_y_blk.step[Self.train_target](
                 self.state,
                 self.actor,
                 self.pair1.target_net,
@@ -534,7 +676,10 @@ struct MBPOTrainer[
             self.timer.accumulate(Self._T_TARGET_Y, t_ty)
 
             var t_crit = perf_counter_ns()
-            self.twin_critic_blk.step["cpu"](
+            self.twin_critic_blk.step[
+                Self.train_target, NoAMP,
+                ACCUMULATE = Self.train_target == "gpu",
+            ](
                 self.state,
                 self.pair1.online,
                 self.critic1_opt,
@@ -544,7 +689,7 @@ struct MBPOTrainer[
             self.timer.accumulate(Self._T_CRITIC, t_crit)
 
             var t_act = perf_counter_ns()
-            self.actor_blk.step["cpu"](
+            self.actor_blk.step[Self.train_target](
                 self.state,
                 self.actor,
                 self.actor_opt,
@@ -554,33 +699,38 @@ struct MBPOTrainer[
             self.timer.accumulate(Self._T_ACTOR, t_act)
 
             var t_alp = perf_counter_ns()
-            self.alpha_blk.step["cpu"](self.state, self.alpha_opt)
+            comptime if Self.train_target == "cpu":
+                self.alpha_blk.step["cpu"](self.state, self.alpha_opt)
+            else:
+                self.alpha_blk.step["gpu"](
+                    self.state,
+                    self.alpha_opt,
+                    self.actor_blk.lp_mean_dev_ptr(),
+                    self.ctx,
+                )
             self.timer.accumulate(Self._T_ALPHA, t_alp)
 
             var t_pol = perf_counter_ns()
-            self.polyak_blk.step["cpu"](
+            self.polyak_blk.step[Self.train_target](
                 self.state,
                 self.pair1,
                 self.pair2,
             )
             self.timer.accumulate(Self._T_POLYAK, t_pol)
 
-            # Per-batch diagnostics — mirror SACTrainer's CPU-only walk.
-            # `mean_q` reads `twin_critic_blk.inner.c1._mb_q` (Q1(s, a)
-            # populated by the critic forward inside `twin_critic_blk.step`
-            # and NOT overwritten by `actor_blk.step`); `mean_reward` reads
-            # the mixed real+synthetic minibatch reward `state.mb_r`.
+            # Per-batch diagnostics — CPU-only (GPU leaves 0; SAC convention).
             var t_diag = perf_counter_ns()
-            var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
-            var q_p = self.twin_critic_blk.inner.c1._mb_q.target_ptr["cpu"]()
-            var r_p = self.state.mb_r.target_ptr["cpu"]()
-            var sum_q: Scalar[DT] = 0.0
-            var sum_r: Scalar[DT] = 0.0
-            for i in range(Self.BATCH):
-                sum_q += q_p[i]
-                sum_r += r_p[i]
-            self._q_accum += sum_q * inv_b
-            self._reward_accum += sum_r * inv_b
+            comptime if Self.train_target == "cpu":
+                var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
+                var q_p = self.twin_critic_blk.inner.c1._mb_q.target_ptr["cpu"]()
+                var r_p = self.state.mb_r.target_ptr["cpu"]()
+                var sum_q: Scalar[DT] = 0.0
+                var sum_r: Scalar[DT] = 0.0
+                for i in range(Self.BATCH):
+                    sum_q += q_p[i]
+                    sum_r += r_p[i]
+                self._q_accum += sum_q * inv_b
+                self._reward_accum += sum_r * inv_b
             self.timer.accumulate(Self._T_DIAG, t_diag)
 
             self._actor_L_accum += self.state.actor_loss
@@ -601,9 +751,6 @@ struct MBPOTrainer[
     def flush_train_log(
         mut self,
     ) -> Tuple[Scalar[DT], Scalar[DT], Scalar[DT], Int]:
-        """Return (mean_actor_loss, mean_critic_loss, alpha, n_updates)
-        since last flush. `alpha` is point-in-time (= exp(log_alpha)),
-        not averaged. Resets accumulators."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
         var alpha_now = fexp(self.alpha_opt.value)
@@ -623,8 +770,6 @@ struct MBPOTrainer[
         return out
 
     def total_train_steps(self) -> Int:
-        """Cumulative SAC inner updates since trainer was made. Not reset
-        by `flush_*`."""
         return self._total_train_steps
 
     def flush_metrics[
@@ -634,18 +779,32 @@ struct MBPOTrainer[
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> MBPOMetrics:
-        """Drain accumulators into an MBPOMetrics bundle. If a logger
-        pointer is wired, also emit one log_scalar per metric field.
-        Resets per-chunk accumulators on every call; the cumulative
-        `_total_train_steps` counter is NOT reset."""
+        """Drain accumulators into an MBPOMetrics bundle. On GPU the SAC
+        actor/critic losses + alpha are read from the on-device accumulators;
+        the dynamics NLL is host-accumulated on both targets (D2H'd per
+        member-step on the periodic cadence). Per-batch diag means are
+        CPU-only (0 on GPU)."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
         var dn = self._dyn_step_count if self._dyn_step_count > 0 else 1
         var dyn_inv = Scalar[DT](1.0) / Scalar[DT](dn)
+        var actor_mean: Scalar[DT]
+        var critic_mean: Scalar[DT]
+        var alpha_val: Scalar[DT]
+        comptime if Self.train_target == "gpu":
+            actor_mean = self.actor_blk.read_loss_accum()
+            var cl1 = self.twin_critic_blk.inner.c1.mse_loss.read_accum["gpu"]()
+            var cl2 = self.twin_critic_blk.inner.c2.mse_loss.read_accum["gpu"]()
+            critic_mean = cl1 + cl2
+            alpha_val = self.alpha_opt.read_alpha()
+        else:
+            actor_mean = self._actor_L_accum * inv
+            critic_mean = self._critic_L_accum * inv
+            alpha_val = fexp(self.alpha_opt.value)
         var bundle = MBPOMetrics(
-            actor_loss=LogScalar[DT](self._actor_L_accum * inv),
-            critic_loss=LogScalar[DT](self._critic_L_accum * inv),
-            alpha=LogScalar[DT](fexp(self.alpha_opt.value)),
+            actor_loss=LogScalar[DT](actor_mean),
+            critic_loss=LogScalar[DT](critic_mean),
+            alpha=LogScalar[DT](alpha_val),
             mean_q=LogScalar[DT](self._q_accum * inv),
             mean_reward=LogScalar[DT](self._reward_accum * inv),
             dyn_loss=LogScalar[DT](self._dyn_loss_accum * dyn_inv),
@@ -659,79 +818,87 @@ struct MBPOTrainer[
         self._reward_accum = Scalar[DT](0.0)
         self._dyn_loss_accum = Scalar[DT](0.0)
         self._dyn_step_count = 0
+        comptime if Self.train_target == "gpu":
+            self.twin_critic_blk.inner.c1.mse_loss.reset_accum["gpu"]()
+            self.twin_critic_blk.inner.c2.mse_loss.reset_accum["gpu"]()
+            self.actor_blk.reset_loss_accum()
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^
-
-    # ─── Trait-uniform cadence hooks (consumed by the driver) ─────────
 
     def flush_metrics_through_logger[L: Logger](
         mut self,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
-        """Trait-uniform passthrough: drains the MBPO metric accumulators
-        through `flush_metrics` and discards the typed bundle. The
-        driver calls this at the user's `diag_every` cadence so no
-        chunking is needed."""
         _ = self.flush_metrics[L](logger, step)
 
     def save_state(mut self, path: String) raises:
-        """One-file v2 checkpoint of every MBPO SAC module + optimizer.
-        Sections: `actor.*`, `critic1.*`, `critic2.*`, `actor_opt.*`,
-        `critic1_opt.*`, `critic2_opt.*`, `alpha_opt.*`. Overwrites
-        `path`. CPU-only.
-
-        NOT saved: dynamics ensemble nets + optimizers (`ensemble.members`,
-        `ensemble.opts`). Resume re-trains dynamics from scratch in the
-        first `model_train_freq` env steps after load. Tracked in the
-        deep_agents2 plan as a follow-up."""
+        """One-file v2 checkpoint of the MBPO SAC modules + optimizers.
+        NOT saved: dynamics ensemble (resume re-trains it)."""
         var body = String("")
-        save_state_v2_body(self.actor, body, "actor")
-        save_state_v2_body(self.pair1.online, body, "critic1")
-        save_state_v2_body(self.pair2.online, body, "critic2")
-        save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
-        save_optimizer_v2_body(self.critic1_opt, body, "critic1_opt")
-        save_optimizer_v2_body(self.critic2_opt, body, "critic2_opt")
-        save_scalar_adam_v2_body(self.alpha_opt, body, "alpha_opt")
+        comptime if Self.train_target == "gpu":
+            var c = self.ctx.value()
+            save_state_v2_body_gpu(self.actor, body, "actor", c)
+            save_state_v2_body_gpu(self.pair1.online, body, "critic1", c)
+            save_state_v2_body_gpu(self.pair2.online, body, "critic2", c)
+            save_optimizer_v2_body_gpu(self.actor_opt, body, "actor_opt")
+            save_optimizer_v2_body_gpu(self.critic1_opt, body, "critic1_opt")
+            save_optimizer_v2_body_gpu(self.critic2_opt, body, "critic2_opt")
+            save_scalar_adam_v2_body_gpu(self.alpha_opt, body, "alpha_opt")
+        else:
+            save_state_v2_body(self.actor, body, "actor")
+            save_state_v2_body(self.pair1.online, body, "critic1")
+            save_state_v2_body(self.pair2.online, body, "critic2")
+            save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
+            save_optimizer_v2_body(self.critic1_opt, body, "critic1_opt")
+            save_optimizer_v2_body(self.critic2_opt, body, "critic2_opt")
+            save_scalar_adam_v2_body(self.alpha_opt, body, "alpha_opt")
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
 
     def load_state(mut self, path: String) raises:
-        """Inverse of `save_state`. Target critics are hard-copied from
-        their online twins after the online params are restored."""
         var content = read_file_v2(path)
         var lines = split_lines_v2(content)
         expect_v2_header(lines)
         var idx: Int = 1
-        load_state_v2_body(self.actor, lines, idx, "actor")
-        load_state_v2_body(self.pair1.online, lines, idx, "critic1")
-        load_state_v2_body(self.pair2.online, lines, idx, "critic2")
-        load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
-        load_optimizer_v2_body(self.critic1_opt, lines, idx, "critic1_opt")
-        load_optimizer_v2_body(self.critic2_opt, lines, idx, "critic2_opt")
-        load_scalar_adam_v2_body(self.alpha_opt, lines, idx, "alpha_opt")
-        hard_copy_params["cpu", M=Self.CRITIC](
-            self.pair1.online, self.pair1.target_net, None,
-        )
-        hard_copy_params["cpu", M=Self.CRITIC](
-            self.pair2.online, self.pair2.target_net, None,
-        )
+        comptime if Self.train_target == "gpu":
+            var c = self.ctx.value()
+            load_state_v2_body_gpu(self.actor, lines, idx, "actor", c)
+            load_state_v2_body_gpu(self.pair1.online, lines, idx, "critic1", c)
+            load_state_v2_body_gpu(self.pair2.online, lines, idx, "critic2", c)
+            load_optimizer_v2_body_gpu(self.actor_opt, lines, idx, "actor_opt")
+            load_optimizer_v2_body_gpu(self.critic1_opt, lines, idx, "critic1_opt")
+            load_optimizer_v2_body_gpu(self.critic2_opt, lines, idx, "critic2_opt")
+            load_scalar_adam_v2_body_gpu(self.alpha_opt, lines, idx, "alpha_opt")
+            hard_copy_params["gpu", M=Self.CRITIC](
+                self.pair1.online, self.pair1.target_net, self.ctx,
+            )
+            hard_copy_params["gpu", M=Self.CRITIC](
+                self.pair2.online, self.pair2.target_net, self.ctx,
+            )
+        else:
+            load_state_v2_body(self.actor, lines, idx, "actor")
+            load_state_v2_body(self.pair1.online, lines, idx, "critic1")
+            load_state_v2_body(self.pair2.online, lines, idx, "critic2")
+            load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
+            load_optimizer_v2_body(self.critic1_opt, lines, idx, "critic1_opt")
+            load_optimizer_v2_body(self.critic2_opt, lines, idx, "critic2_opt")
+            load_scalar_adam_v2_body(self.alpha_opt, lines, idx, "alpha_opt")
+            hard_copy_params["cpu", M=Self.CRITIC](
+                self.pair1.online, self.pair1.target_net, None,
+            )
+            hard_copy_params["cpu", M=Self.CRITIC](
+                self.pair2.online, self.pair2.target_net, None,
+            )
 
     def flush_timer_log(mut self) -> String:
-        """Per-section wall-time report (one line per sub-step:
-        dyn_train / rollout / sample / target_y / critic / actor / alpha
-        / polyak / diag) and reset the accumulators."""
         var report = self.timer.format_report()
         self.timer.reset()
         return report
 
-    # ─── OffPolicyAgentGpu surface (Tier-3 driver) ────────────
-    #
-    # MBPO is CPU-only — the GPU record stubs raise. The Tier-3 driver
-    # comptime-elides those branches when env_target == "cpu", so the
-    # stubs are never invoked from a correctly-built driver.
+    # ─── OffPolicyAgentGpu surface ────────────────────────────────────
 
     def select_action_batched[
         N_ENVS: Int
@@ -748,32 +915,59 @@ struct MBPOTrainer[
         comptime ACT = Self.ACT_DIM
 
         if step_idx < self.learning_starts:
-            # Per-lane random_float64 — at N_ENVS=1 consumes RNG in the
-            # same order as the legacy `select_action` warmup path.
-            for i in range(N_ENVS * ACT):
-                var u = Scalar[DT](2.0 * random_float64() - 1.0)
-                action_ptr[i] = u * self.action_scale
+            comptime if Self.train_target == "cpu":
+                for i in range(N_ENVS * ACT):
+                    var u = Scalar[DT](2.0 * random_float64() - 1.0)
+                    action_ptr[i] = u * self.action_scale
+            else:
+                var action_lt = LayoutTensor[
+                    DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+                ](action_ptr)
+                comptime total = N_ENVS * ACT
+                comptime n_blocks = (total + TPB - 1) // TPB
+                comptime warmup_kernel = _mbpo_warmup_uniform_kernel[N_ENVS, ACT]
+                var ctx = self.ctx.value()
+                ctx.enqueue_function[warmup_kernel](
+                    action_lt, self.action_scale,
+                    self._warmup_rng_seed, self._warmup_rng_offset,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
+                self._warmup_rng_offset += UInt64(N_ENVS * ACT * 2)
             return
 
         var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
         var ao_t = TileTensor(ao_scratch_ptr, row_major[N_ENVS, 2 * ACT]())
-        var alp_t = TileTensor(
-            alp_scratch_ptr, row_major[N_ENVS, ACT + 1]()
-        )
-        self.actor.forward["cpu", N_ENVS](obs_t, output=ao_t)
-        self.actor_blk.inner.rsample.forward["cpu", N_ENVS](
+        var alp_t = TileTensor(alp_scratch_ptr, row_major[N_ENVS, ACT + 1]())
+        self.actor.forward[Self.train_target, N_ENVS](obs_t, output=ao_t)
+        self.actor_blk.inner.rsample.forward[Self.train_target, N_ENVS](
             ao_t, output=alp_t
         )
-        for env in range(N_ENVS):
-            var src = alp_scratch_ptr + env * (ACT + 1)
-            var dst = action_ptr + env * ACT
-            for j in range(ACT):
-                var a = src[j]
-                if a > self.action_scale:
-                    a = self.action_scale
-                elif a < -self.action_scale:
-                    a = -self.action_scale
-                dst[j] = a
+        comptime if Self.train_target == "cpu":
+            for env in range(N_ENVS):
+                var src = alp_scratch_ptr + env * (ACT + 1)
+                var dst = action_ptr + env * ACT
+                for j in range(ACT):
+                    var a = src[j]
+                    if a > self.action_scale:
+                        a = self.action_scale
+                    elif a < -self.action_scale:
+                        a = -self.action_scale
+                    dst[j] = a
+        else:
+            var alp_lt = LayoutTensor[
+                DT, Layout.row_major(N_ENVS, ACT + 1), MutAnyOrigin,
+            ](alp_scratch_ptr)
+            var action_lt = LayoutTensor[
+                DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+            ](action_ptr)
+            comptime total = N_ENVS * ACT
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime clamp_kernel = _mbpo_action_clamp_kernel[N_ENVS, ACT]
+            var ctx = self.ctx.value()
+            ctx.enqueue_function[clamp_kernel](
+                alp_lt, action_lt, self.action_scale,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
 
     def add_complete_return(mut self, ret: Scalar[DT]):
         self.tracker.add_complete_return(ret)
@@ -799,12 +993,9 @@ struct MBPOTrainer[
                 nxt_lane[d] = next_obs_ptr[env_idx * OBS + d]
             for j in range(ACT):
                 act_lane[j] = action_ptr[env_idx * ACT + j]
-            self.sample_blk.real_add(
-                obs_lane,
-                act_lane,
-                reward_ptr[env_idx],
-                nxt_lane,
-                done_ptr[env_idx],
+            self.sample_blk.real_add[Self.train_target](
+                obs_lane, act_lane, reward_ptr[env_idx],
+                nxt_lane, done_ptr[env_idx], ctx=self.ctx,
             )
 
     def record_batch_gpu[
@@ -819,8 +1010,8 @@ struct MBPOTrainer[
         done_dev: DeviceBuffer[DT],
     ) raises:
         raise Error(
-            "MBPOTrainer is CPU-only; record_batch_gpu unreachable"
-            " via the Tier-3 cpu env path"
+            "MBPOTrainer.record_batch_gpu: GPU-env batched record not"
+            " supported (MBPO uses the cpu-env single-env driver path)"
         )
 
     def record_batch_gpu_nstep[
@@ -838,14 +1029,13 @@ struct MBPOTrainer[
         done_dev: DeviceBuffer[DT],
     ) raises:
         raise Error(
-            "MBPOTrainer is CPU-only; record_batch_gpu_nstep unreachable"
-            " via the Tier-3 cpu env path"
+            "MBPOTrainer.record_batch_gpu_nstep: not supported"
         )
 
-    # ─── Dynamics training + synthetic rollouts (orchestration) ──────
+    # ─── Dynamics training + synthetic rollouts (CPU) ─────────────────
 
     def _train_dynamics_ensemble(mut self) raises:
-        var n_data = self.sample_blk.real_buf.size
+        var n_data = self.sample_blk.real_count["cpu"]()
         if n_data < self.dyn_batch_size:
             return
         var bs = self.dyn_batch_size
@@ -857,12 +1047,10 @@ struct MBPOTrainer[
         var dyn_in_p = self._dyn_in.cpu_ptr()
         var dyn_tgt_p = self._dyn_tgt.cpu_ptr()
 
-        # Snapshot raw buffer pointers (stable; CPUReplay's circular
-        # storage is fixed-size).
-        var rb_obs = self.sample_blk.real_buf.obs
-        var rb_act = self.sample_blk.real_buf.act
-        var rb_rew = self.sample_blk.real_buf.rew
-        var rb_nxt = self.sample_blk.real_buf.nxt
+        var rb_obs = self.sample_blk.real_cpu.obs
+        var rb_act = self.sample_blk.real_cpu.act
+        var rb_rew = self.sample_blk.real_cpu.rew
+        var rb_nxt = self.sample_blk.real_cpu.nxt
 
         for m in range(Self.N_ENSEMBLE):
             for _ in range(total_steps):
@@ -891,15 +1079,13 @@ struct MBPOTrainer[
                     dyn_tgt_p, row_major[Self.BATCH, Self.DYN_PRED]()
                 )
                 var dyn_loss = self.ensemble.train_member_step["cpu"](
-                    m,
-                    dyn_in_t,
-                    dyn_tgt_t,
+                    m, dyn_in_t, dyn_tgt_t,
                 )
                 self._dyn_loss_accum += dyn_loss
                 self._dyn_step_count += 1
 
     def _generate_synthetic_rollouts(mut self) raises:
-        var real_buf_size = self.sample_blk.real_buf.size
+        var real_buf_size = self.sample_blk.real_count["cpu"]()
         if real_buf_size < 1:
             return
 
@@ -917,7 +1103,7 @@ struct MBPOTrainer[
             var ro_lv_p = self._ro_lv.cpu_ptr()
             var dyn_in_p = self._dyn_in.cpu_ptr()
 
-            var rb_obs = self.sample_blk.real_buf.obs
+            var rb_obs = self.sample_blk.real_cpu.obs
             for k in range(this_batch):
                 var idx = Int(random_float64() * Float64(real_buf_size))
                 if idx >= real_buf_size:
@@ -935,10 +1121,8 @@ struct MBPOTrainer[
                     var act_list = List[Scalar[DT]](capacity=Self.ACT_DIM)
                     for _ in range(Self.ACT_DIM):
                         act_list.append(Scalar[DT](0.0))
-                    self.select_action(
-                        obs_list,
-                        act_list,
-                        self.learning_starts + 1,
+                    self._select_action_cpu(
+                        obs_list, act_list, self.learning_starts + 1,
                     )
                     for j in range(Self.ACT_DIM):
                         roll_act_p[k * Self.ACT_DIM + j] = act_list[j]
@@ -967,10 +1151,7 @@ struct MBPOTrainer[
                     elite_pick = n_elites - 1
                 var member_idx = self.ensemble.elite_indices[elite_pick]
                 self.ensemble.predict_member["cpu"](
-                    member_idx,
-                    dyn_in_t,
-                    ro_mu_t,
-                    ro_lv_t,
+                    member_idx, dyn_in_t, ro_mu_t, ro_lv_t,
                 )
 
                 var s_list = List[Scalar[DT]](capacity=Self.OBS_DIM)
@@ -1000,14 +1181,212 @@ struct MBPOTrainer[
                     for j in range(Self.ACT_DIM):
                         a_list[j] = roll_act_p[k * Self.ACT_DIM + j]
                     self.sample_blk.synth_add(
-                        s_list,
-                        a_list,
-                        rew,
-                        sp_list,
-                        Scalar[DT](0.0),
+                        s_list, a_list, rew, sp_list, Scalar[DT](0.0),
                     )
 
                 for k in range(this_batch * Self.OBS_DIM):
                     roll_obs_p[k] = roll_nxt_p[k]
 
             rollouts_done += this_batch
+
+    # ─── Dynamics training + synthetic rollouts (GPU) ─────────────────
+
+    def _train_dynamics_ensemble_gpu(mut self) raises:
+        var n_data = self.sample_blk.real_count["gpu"]()
+        if n_data < self.dyn_batch_size:
+            return
+        var bs = self.dyn_batch_size
+        var steps_per_epoch = n_data // bs
+        if steps_per_epoch < 1:
+            steps_per_epoch = 1
+        var total_steps = steps_per_epoch * self.dyn_epochs_per_round
+        var ctx = self.ctx.value()
+
+        comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
+        comptime tgt_kernel = _build_dyn_target_kernel[
+            Self.BATCH, Self.OBS_DIM, Self.DYN_PRED
+        ]
+
+        for m in range(Self.N_ENSEMBLE):
+            for _ in range(total_steps):
+                # Bootstrap batch: draw BATCH transitions from real_buf into
+                # the rollout device scratches (s=ro_obs, a=ro_act, r=ro_rew,
+                # sp=ro_nxt, d=ro_done).
+                self.sample_blk.real_sample[Self.BATCH](
+                    ctx,
+                    self._ro_obs.dev.value(),
+                    self._ro_act.dev.value(),
+                    self._ro_rew.dev.value(),
+                    self._ro_nxt.dev.value(),
+                    self._ro_done.dev.value(),
+                )
+                # dyn_in = concat(s, a).
+                concat_sa_gpu[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH](
+                    ctx,
+                    self._ro_obs.dev_ptr(),
+                    self._ro_act.dev_ptr(),
+                    self._dyn_in.dev_ptr(),
+                )
+                # dyn_tgt = [r, sp - s].
+                var rew_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+                ](self._ro_rew.dev_ptr())
+                var s_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.OBS_DIM), MutAnyOrigin,
+                ](self._ro_obs.dev_ptr())
+                var sp_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.OBS_DIM), MutAnyOrigin,
+                ](self._ro_nxt.dev_ptr())
+                var tgt_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.DYN_PRED), MutAnyOrigin,
+                ](self._dyn_tgt.dev_ptr())
+                ctx.enqueue_function[tgt_kernel](
+                    rew_lt, s_lt, sp_lt, tgt_lt,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
+                var dyn_in_t = TileTensor(
+                    self._dyn_in.dev_ptr(),
+                    row_major[Self.BATCH, Self.DYN_IN](),
+                )
+                var dyn_tgt_t = TileTensor(
+                    self._dyn_tgt.dev_ptr(),
+                    row_major[Self.BATCH, Self.DYN_PRED](),
+                )
+                var dyn_loss = self.ensemble.train_member_step["gpu"](
+                    m, dyn_in_t, dyn_tgt_t,
+                )
+                self._dyn_loss_accum += dyn_loss
+                self._dyn_step_count += 1
+
+    def _generate_synthetic_rollouts_gpu(mut self) raises:
+        if self.sample_blk.real_count["gpu"]() < 1:
+            return
+        var ctx = self.ctx.value()
+
+        # Synthetic transitions never terminate.
+        self._ro_done.dev.value().enqueue_fill(Scalar[DT](0.0))
+
+        comptime n_lane_blocks = (Self.BATCH + TPB - 1) // TPB
+        comptime clamp_kernel = _mbpo_action_clamp_kernel[Self.BATCH, Self.ACT_DIM]
+        comptime post_kernel = _rollout_posterior_kernel[
+            Self.BATCH, Self.OBS_DIM, Self.DYN_PRED
+        ]
+        comptime n_noise = Self.BATCH * Self.DYN_PRED
+
+        # Process in fixed BATCH chunks; rounds num_rollouts up to a
+        # multiple of BATCH (extra synthetic data is harmless).
+        var chunks = (self.num_rollouts_per_step + Self.BATCH - 1) // Self.BATCH
+        for _ in range(chunks):
+            # Start states: draw BATCH transitions, keep s (= ro_obs); the
+            # a/r/sp/d destinations are throwaway here.
+            self.sample_blk.real_sample[Self.BATCH](
+                ctx,
+                self._ro_obs.dev.value(),
+                self._ro_act.dev.value(),
+                self._ro_rew.dev.value(),
+                self._ro_nxt.dev.value(),
+                self._ro_done.dev.value(),
+            )
+            self._ro_done.dev.value().enqueue_fill(Scalar[DT](0.0))
+
+            for _ in range(self.rollout_length):
+                # Policy action on imagined obs: actor → rsample → clamp.
+                var obs_t = TileTensor(
+                    self._ro_obs.dev_ptr(), row_major[Self.BATCH, Self.OBS_DIM]()
+                )
+                var ao_t = TileTensor(
+                    self._ro_ao.dev_ptr(),
+                    row_major[Self.BATCH, 2 * Self.ACT_DIM](),
+                )
+                self.actor.forward["gpu", Self.BATCH](obs_t, output=ao_t)
+                var alp_t = TileTensor(
+                    self._ro_alp.dev_ptr(),
+                    row_major[Self.BATCH, Self.ACT_DIM + 1](),
+                )
+                self.actor_blk.inner.rsample.forward["gpu", Self.BATCH](
+                    ao_t, output=alp_t
+                )
+                var alp_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.ACT_DIM + 1),
+                    MutAnyOrigin,
+                ](self._ro_alp.dev_ptr())
+                var act_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.ACT_DIM), MutAnyOrigin,
+                ](self._ro_act.dev_ptr())
+                ctx.enqueue_function[clamp_kernel](
+                    alp_lt, act_lt, self.action_scale,
+                    grid_dim=n_lane_blocks, block_dim=TPB,
+                )
+
+                # dyn_in = concat(obs, action).
+                concat_sa_gpu[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH](
+                    ctx,
+                    self._ro_obs.dev_ptr(),
+                    self._ro_act.dev_ptr(),
+                    self._dyn_in.dev_ptr(),
+                )
+
+                # Elite dynamics forward → (mu, lv).
+                var dyn_in_t = TileTensor(
+                    self._dyn_in.dev_ptr(),
+                    row_major[Self.BATCH, Self.DYN_IN](),
+                )
+                var ro_mu_t = TileTensor(
+                    self._ro_mu.dev_ptr(),
+                    row_major[Self.BATCH, Self.DYN_PRED](),
+                )
+                var ro_lv_t = TileTensor(
+                    self._ro_lv.dev_ptr(),
+                    row_major[Self.BATCH, Self.DYN_PRED](),
+                )
+                var n_elites = len(self.ensemble.elite_indices)
+                var elite_pick = Int(random_float64() * Float64(n_elites))
+                if elite_pick >= n_elites:
+                    elite_pick = n_elites - 1
+                var member_idx = self.ensemble.elite_indices[elite_pick]
+                self.ensemble.predict_member["gpu"](
+                    member_idx, dyn_in_t, ro_mu_t, ro_lv_t,
+                )
+
+                # Posterior sample: device box-muller noise → (rew, nxt).
+                box_muller_normal_gpu[n_noise](
+                    ctx, self._ro_noise.dev_ptr(),
+                    self._roll_rng_seed, self._roll_rng_offset,
+                )
+                self._roll_rng_offset += UInt64(((n_noise + 1) // 2) * 2)
+                var obs_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.OBS_DIM), MutAnyOrigin,
+                ](self._ro_obs.dev_ptr())
+                var mu_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.DYN_PRED), MutAnyOrigin,
+                ](self._ro_mu.dev_ptr())
+                var lv_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.DYN_PRED), MutAnyOrigin,
+                ](self._ro_lv.dev_ptr())
+                var noise_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.DYN_PRED), MutAnyOrigin,
+                ](self._ro_noise.dev_ptr())
+                var nxt_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.OBS_DIM), MutAnyOrigin,
+                ](self._ro_nxt.dev_ptr())
+                var rew_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+                ](self._ro_rew.dev_ptr())
+                ctx.enqueue_function[post_kernel](
+                    obs_lt, mu_lt, lv_lt, noise_lt, nxt_lt, rew_lt,
+                    grid_dim=n_lane_blocks, block_dim=TPB,
+                )
+
+                # Store BATCH synthetic transitions (s=obs, a=act, r=rew,
+                # sp=nxt, d=0) in one device batch.
+                self.sample_blk.synth_add_batch[Self.BATCH](
+                    ctx,
+                    self._ro_obs.dev.value(),
+                    self._ro_act.dev.value(),
+                    self._ro_rew.dev.value(),
+                    self._ro_nxt.dev.value(),
+                    self._ro_done.dev.value(),
+                )
+
+                # Roll forward: obs ← nxt.
+                ctx.enqueue_copy(self._ro_obs.dev.value(), self._ro_nxt.dev.value())

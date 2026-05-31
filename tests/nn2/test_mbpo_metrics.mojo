@@ -58,7 +58,7 @@ comptime DynNet = Sequential[
     Linear[DYN_HIDDEN, 2 * (1 + OBS)],
 ]
 comptime Trainer = MBPOTrainer[
-    ActorNet, CriticNet, DynNet,
+    "cpu", ActorNet, CriticNet, DynNet,
     OBS, ACT, BATCH, REPLAY_CAP, SYNTH_CAP, N_ENS, N_ELITES, 5,
 ]
 
@@ -71,7 +71,7 @@ def _finite(v: Scalar[DT], tag: String) raises:
 def test_mbpo_metrics_populated() raises:
     print("--- MBPO metrics populated ---")
     seed(42)
-    var t = Trainer.make["cpu"](
+    var t = Trainer.make(
         action_scale=Scalar[DT](2.0),
         learning_starts=200,
         model_train_freq=200,
