@@ -43,7 +43,7 @@ comptime ACT = 2          # one-hot action dim = #actions (left/right)
 comptime DETER = 128
 comptime H = 32
 comptime STOCH = 16
-comptime CLASSES = 4
+comptime CLASSES = 4      # tried 16 (SC 64→256) + H=64: DESTABILIZED value est (ret_m went negative, ret_sd~160, ret stuck at 8). Finer latent fed the SAME small heads (HU/VU=32) → value-noise. Reverted; capacity bump needs balanced (latent+heads) growth, which explodes CPU cost. CartPole instability is the model-exploitation gap, not latent resolution.
 comptime BLOCKS = 4
 comptime TOKEN = 32
 comptime DEC_U = 32
@@ -108,8 +108,29 @@ def main() raises:
     print("=" * 70)
     seed(42)
     var env = CartPoleEnv[DT]()
+    # out_init_scale: scale of the (Kaiming) reward/critic OUTPUT init.
+    #   0.0 = paper zero-init (best for negative-reward tasks; Pendulum uses it).
+    #   small nonzero keeps some Kaiming optimism — empirically helps this
+    #   POSITIVE-reward task explore / hold the solve (zero-init regressed it to
+    #   an unstable oscillation). Try 0.1 → up toward 1.0 (full Kaiming = the
+    #   original fast-solve behavior) if it still collapses; down toward 0 if it
+    #   over-explores.
+    # CartPole (discrete, POSITIVE reward) wants the opposite of Pendulum:
+    #   * out_init_scale=1.0 → full Kaiming reward/critic init = the original
+    #     optimistic init that solved at 20k. The optimism drives early
+    #     exploration; zero-init (0.0) regressed it, 0.1 reached 441 but didn't
+    #     hold. (Finding-4 zero-init is only needed for NEGATIVE-reward tasks.)
+    #   * actent=3e-4 (default) → discrete already explores via the unimix
+    #     categorical; extra entropy only added noise and made it WORSE (1e-3
+    #     → FINAL 56). Keep entropy low.
+    # NOTE: CartPole's deeper failure is a model-exploitation gap — the WM
+    # imagines the pole never falls (ret_m≈332≈1/(1-γ)) while real ret≈50, so
+    # the actor gets no improvement signal. Optimistic init is the best lever
+    # for the solve; if it still won't hold, the open-loop diagnostic on the
+    # cont/termination path is the next investigation.
     var ag = Ag.make(
         lr=Scalar[DT](3e-4), learning_starts=LEARN_START, warmup_steps=500,
+        out_init_scale=Scalar[DT](1.0),
     )
 
     var obs = env.reset_obs_list()

@@ -124,9 +124,14 @@ def main() raises:
     seed(42)
     var ctx = DeviceContext()
     var env = PendulumV2[DT]()
+    # actent: actor entropy scale (default 3e-4). Pendulum plateaued ~−850 with
+    # the policy mean saturating (pmean→2.4, near-max torque) — too little
+    # exploration to find the swing-up. Bumped to 1e-3 to keep the policy
+    # stochastic; try 3e-3 if it still saturates, or back to 3e-4 if it gets
+    # noisy. (Reward/WM are already calibrated; this is the remaining lever.)
     var ag = Ag.make(
         ctx=ctx, lr=Scalar[DT](4e-5), learning_starts=LEARN_START,
-        action_scale=Scalar[DT](2.0),
+        action_scale=Scalar[DT](2.0), actent=Scalar[DT](1e-3),
     )
 
     var obs = env.reset_obs_list()
@@ -163,6 +168,10 @@ def main() raises:
                 " real_rew=", ag.dbg_real_rew(), " rew_pred=", ag.dbg_rew_pred(),
                 " ret_m=", ag.dbg_ret_mean(), " ret_sd=", ag.dbg_ret_std(),
                 " pmean=", ag.dbg_pmean_abs(),
+                # divergence probes: val_m vs ret_m (critic fit/divergence),
+                # pstd (exploration collapse → minstd 0.1), rscale (adv denom)
+                " val_m=", ag.dbg_val_mean(), " pstd=", ag.dbg_pstd(),
+                " rscale=", ag.dbg_rscale(),
                 " WM=", ag.last_wm_loss(), " AC=", ag.last_ac_loss(),
             )
             obs = env.reset_obs_list()

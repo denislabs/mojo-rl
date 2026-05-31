@@ -407,10 +407,18 @@ struct TwoHotLoss[BINS: Int](Module):
         )
         var m = Self()
         m.bins = List[Scalar[DT]](length=Self.BINS, fill=Scalar[DT](0.0))
+        # lo=-9 MUST match DreamerV3Trainer.self.bins (the grid the reward is
+        # read back on in imagination / imag_loss). A mismatch (e.g. the old
+        # default lo=-20 here vs -9 there) makes the reward head learn the right
+        # bin INDEX but be decoded on the wrong value grid → predictions ~5×
+        # off, poisoning imagined returns. The narrow grid also keeps bin values
+        # bounded (≈8102) so `Σ softmax·bins` stays CPU↔GPU bit-stable. If a
+        # future consumer needs a different scale, thread `lo` from the trainer.
         symexp_twohot_bins[Self.BINS](
             rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 m.bins.unsafe_ptr()
-            )
+            ),
+            lo=Scalar[DT](-9.0),
         )
         comptime if target == "cpu":
             m.ts = TargetStorage.make_cpu()

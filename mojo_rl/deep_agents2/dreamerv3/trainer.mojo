@@ -22,7 +22,10 @@ action lives on `DreamerV3Agent`); imagination from the final posterior carry.
 """
 
 from std.random import random_float64
+from std.memory import alloc
+from std.math import exp
 from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.initializer import Kaiming
@@ -36,14 +39,28 @@ from mojo_rl.deep_agents2.dreamerv3.wm import (
 from mojo_rl.deep_agents2.dreamerv3.nets import (
     DreamerEncoder, DreamerValue, DreamerPolicyHead,
 )
-from mojo_rl.deep_agents2.dreamerv3.twohot import symexp_twohot_bins
+from mojo_rl.deep_agents2.dreamerv3.twohot import symexp_twohot_bins, twohot_pred
 from mojo_rl.deep_agents2.dreamerv3.normalize import PercentileNormalize
 from mojo_rl.deep_agents2.dreamerv3.zero_init import (
-    zero_output_module, zero_output_graph,
+    scale_output_module, scale_output_graph,
 )
 from mojo_rl.deep_agents2.dreamerv3.blocks import (
     DreamerState, WMStep, ParamSyncStep, ACStep,
 )
+
+
+@always_inline
+def _ol_alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    return alloc[Scalar[DT]](n)
+
+
+@always_inline
+def _symexp(x: Scalar[DT]) -> Scalar[DT]:
+    """Inverse of symlog: sign(x)·(exp(|x|)−1). Decoder targets are symlog(obs),
+    so symexp maps a decoder output back to raw observation space."""
+    var s = Scalar[DT](1.0) if x >= Scalar[DT](0.0) else Scalar[DT](-1.0)
+    var a = x if x >= Scalar[DT](0.0) else -x
+    return s * (exp(a) - Scalar[DT](1.0))
 
 
 @fieldwise_init
@@ -128,6 +145,9 @@ struct DreamerV3Trainer[
         lr: Scalar[DT] = Scalar[DT](4e-5),
         learning_starts: Int = 200,
         warmup_steps: Int = 1000,
+        out_init_scale: Scalar[DT] = Scalar[DT](0.0),
+        actent: Scalar[DT] = Scalar[DT](3e-4),
+        slowtar: Bool = False,
     ) raises -> Self:
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
@@ -142,23 +162,26 @@ struct DreamerV3Trainer[
         var policy = Self.PolT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
         var imagine = Self.ImagT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
 
-        # Finding 4 (paper p.6): zero-init the reward-predictor and critic
-        # output layers so they emit ~0 at init. Otherwise large/biased initial
-        # reward+value predictions make the imagined λ-returns optimistic (even
-        # positive on negative-reward tasks like Pendulum), and the actor
-        # optimizes a reward landscape that doesn't exist. The output Linear is
-        # Sequential child 3 (`nets.mojo` pins head MLP depth to 1); inside the
-        # reward ComputeGraph the head is node `rew`. slowvalue is zeroed too —
-        # the value loss regularizes value TOWARD slowvalue (slowreg=1), so a
-        # non-neutral slowvalue would pull value back to optimism.
-        zero_output_graph[Self.train_target](
-            rew, String("rew.3.weight"), String("rew.3.bias"), ctx
+        # Finding 4 (paper p.6): scale the reward-predictor and critic OUTPUT
+        # layers toward ~0 at init. Otherwise large/biased initial reward+value
+        # predictions make the imagined λ-returns optimistic (even positive on
+        # negative-reward tasks like Pendulum), and the actor optimizes a reward
+        # landscape that doesn't exist. `out_init_scale=0.0` == the paper's hard
+        # zero-init (best for negative rewards). A small nonzero scale keeps a
+        # little Kaiming optimism, which empirically helps POSITIVE-reward tasks
+        # (CartPole) explore / solve faster without the full-Kaiming blow-up.
+        # The output Linear is Sequential child 3 (`nets.mojo` pins head MLP
+        # depth to 1); inside the reward ComputeGraph the head is node `rew`.
+        # slowvalue is scaled too — the value loss regularizes value TOWARD
+        # slowvalue (slowreg=1), so a non-neutral slowvalue would pull it back.
+        scale_output_graph[Self.train_target](
+            rew, String("rew.3.weight"), String("rew.3.bias"), out_init_scale, ctx
         )
-        zero_output_module[Self.train_target, Self.ValT](
-            value, String("3.weight"), String("3.bias"), ctx
+        scale_output_module[Self.train_target, Self.ValT](
+            value, String("3.weight"), String("3.bias"), out_init_scale, ctx
         )
-        zero_output_module[Self.train_target, Self.ValT](
-            slowvalue, String("3.weight"), String("3.bias"), ctx
+        scale_output_module[Self.train_target, Self.ValT](
+            slowvalue, String("3.weight"), String("3.bias"), out_init_scale, ctx
         )
 
         var oe = DreamerOpt.make[Self.train_target, Self.EncT](enc, ctx=ctx)
@@ -172,11 +195,17 @@ struct DreamerV3Trainer[
         ocon.lr = lr; oval.lr = lr; opol.lr = lr
 
         var bins = List[Scalar[DT]](length=Self.BINS, fill=Scalar[DT](0.0))
-        # Narrow symexp range for Pendulum-scale rewards/returns (max bin
-        # ≈ symexp(9) ≈ 8102, vs the reference's symexp(20) ≈ 4.85e8). The
-        # wide reference bins turn small off-distribution head errors into
-        # 1e5–1e6 reward predictions (diagnosed via dbg_rew_pred). See
-        # docs/DREAMERV3_PR5C_RUNBOOK.md.
+        # Reward/value twohot bins, narrowed to lo=-9 (max bin ≈ 8102 vs the
+        # reference's symexp(20) ≈ 4.85e8). Two reasons for the narrow grid:
+        #   (1) huge bins amplify float noise in `Σ softmax·bins` (the e-tail
+        #       over a 4.85e8 bin), which breaks CPU↔GPU AC parity;
+        #   (2) they turn off-distribution head errors into 1e5–1e6 predictions.
+        # CRITICAL: this grid MUST equal the grid the reward head is TRAINED on
+        # — `TwoHotLoss.make` (inside RewLossGraph) is hard-set to the same
+        # lo=-9 (see wm_loss_ops.mojo). They previously diverged (-9 here vs the
+        # -20 default there): the head learned mass at the bin index meaning −6.5
+        # on the −20 grid but it was read back as ≈−1.5 on the −9 grid → reward
+        # stuck ~5× small, starving imagined returns. Keep both at -9.
         symexp_twohot_bins[Self.BINS](
             rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](bins.unsafe_ptr()),
             lo=Scalar[DT](-9.0),
@@ -193,7 +222,9 @@ struct DreamerV3Trainer[
             oval=oval^, opol=opol^,
             wm_blk=Self.WMBlk.make[Self.train_target](ctx=ctx),
             sync_blk=Self.SyncBlk.make[Self.train_target](ctx=ctx),
-            ac_blk=Self.ACBlk.make[Self.train_target](ctx=ctx),
+            ac_blk=Self.ACBlk.make[Self.train_target](
+                ctx=ctx, actent=actent, slowtar=slowtar
+            ),
             # Replay stays host-resident on both targets; the GPU WMStep
             # uploads the sampled batch per-step (so make["cpu"] always).
             replay=Self.RepT.make["cpu"](ctx=ctx),
@@ -239,6 +270,15 @@ struct DreamerV3Trainer[
     def dbg_pmean_abs(self) -> Scalar[DT]:
         return self.state.dbg_pmean_abs
 
+    def dbg_val_mean(self) -> Scalar[DT]:
+        return self.state.dbg_val_mean
+
+    def dbg_pstd(self) -> Scalar[DT]:
+        return self.state.dbg_pstd
+
+    def dbg_rscale(self) -> Scalar[DT]:
+        return self.state.dbg_rscale
+
     def train_step(mut self) raises -> Bool:
         if not self.can_train():
             return False
@@ -280,3 +320,170 @@ struct DreamerV3Trainer[
         )
         self.train_steps += 1
         return True
+
+    def openloop_report(
+        mut self,
+        real_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
+        real_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT] NORMALIZED [-1,1]
+        real_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [ctx+hor]
+        ctx_len: Int,
+        hor: Int,
+        out_ol_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor] open-loop obs MSE (raw space)
+        out_tf_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor] teacher-forced obs MSE
+        out_ol_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor] open-loop |reward err|
+        out_tf_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor] teacher-forced |reward err|
+    ) raises:
+        """Open-loop WM-accuracy probe (Finding-4 follow-up diagnostic).
+
+        Builds the posterior belief by OBSERVING `ctx_len` real steps, then rolls
+        `hor` steps forward TWO ways and compares decoded predictions to reality:
+          * open-loop  — `imagine` (PRIOR dynamics, no obs) fed the real recorded
+            actions. Tests whether multi-step dynamics stay accurate.
+          * teacher-forced — `core` re-observes each real obs (POSTERIOR). The 1-step
+            recon floor (decoder + posterior quality).
+        If `out_ol_obs` grows steeply with horizon while `out_tf_obs` stays small,
+        the world model's *dynamics* are the bottleneck (capacity / latent
+        resolution) — not a code bug, not the decoder. Reward `out_ol_rew` shows
+        whether the predicted reward tracks reality along the rollout.
+
+        Uses `imagine` (synced from `core` every train_step) for the prior path, so
+        call AFTER training. CPU-only — run with a CPU agent; the WM forward is
+        bit-identical CPU↔GPU (parity test), so the diagnosis transfers to GPU runs.
+        """
+        comptime assert Self.train_target == "cpu", (
+            "openloop_report is CPU-only — run the diagnostic with a CPU agent"
+        )
+        comptime D = Self.DETER
+        comptime SCl = Self.SC
+        comptime TOK = Self.TOKEN
+        comptime OBSD = Self.OBS
+        comptime ACTD = Self.ACT
+        comptime FEATl = Self.FEAT
+        comptime BINSl = Self.BINS
+        comptime CARRY = 2 + D + SCl
+        var bins = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.bins.unsafe_ptr()
+        )
+
+        var bd = _ol_alloc(D)
+        var bs = _ol_alloc(SCl)
+        for i in range(D):
+            bd[i] = 0.0
+        for i in range(SCl):
+            bs[i] = 0.0
+        var tok = _ol_alloc(TOK)
+        var pa = _ol_alloc(ACTD)
+        var cscr = _ol_alloc(CARRY)
+        var dummyO = _ol_alloc(OBSD)
+        var dummy1 = _ol_alloc(1)
+        var featbuf = _ol_alloc(FEATl)
+        # reusable mutable output tiles (forward's `output` must be mutable).
+        var tok_t = TileTensor(tok, row_major[1, TOK]())
+        var carry_t = TileTensor(cscr, row_major[1, CARRY]())
+        var feat_t = TileTensor(featbuf, row_major[1, FEATl]())
+        var loss_t = TileTensor(dummy1, row_major[1, 1]())
+
+        # ── context: observe ctx_len real steps (prev-action convention) ──
+        for t in range(ctx_len):
+            if t == 0:
+                for k in range(ACTD):
+                    pa[k] = 0.0
+            else:
+                for k in range(ACTD):
+                    pa[k] = real_act[(t - 1) * ACTD + k]
+            self.enc.forward["cpu", 1](
+                TileTensor(real_obs + t * OBSD, row_major[1, OBSD]()),
+                output=tok_t,
+            )
+            self.core.set_input["deter", 1](TileTensor(bd, row_major[1, D]()))
+            self.core.set_input["stoch", 1](TileTensor(bs, row_major[1, SCl]()))
+            self.core.set_input["action", 1](TileTensor(pa, row_major[1, ACTD]()))
+            self.core.set_input["tokens", 1](TileTensor(tok, row_major[1, TOK]()))
+            self.core.forward["cpu", 1](carry_t)
+            var nd = self.core.node_out_ptr["nd"]()
+            var sn = self.core.node_out_ptr["stoch_new"]()
+            for k in range(D):
+                bd[k] = nd[k]
+            for k in range(SCl):
+                bs[k] = sn[k]
+
+        # open-loop + teacher-forced belief chains, both seeded from `bd/bs`.
+        var old = _ol_alloc(D); var ols = _ol_alloc(SCl)
+        var tfd = _ol_alloc(D); var tfs = _ol_alloc(SCl)
+        for k in range(D):
+            old[k] = bd[k]; tfd[k] = bd[k]
+        for k in range(SCl):
+            ols[k] = bs[k]; tfs[k] = bs[k]
+
+        for h in range(hor):
+            var idx = ctx_len - 1 + h
+            for k in range(ACTD):
+                pa[k] = real_act[idx * ACTD + k]
+            # ── open-loop: prior dynamics (imagine), no observation ──
+            self.imagine.set_input["deter", 1](TileTensor(old, row_major[1, D]()))
+            self.imagine.set_input["stoch", 1](TileTensor(ols, row_major[1, SCl]()))
+            self.imagine.set_input["action", 1](TileTensor(pa, row_major[1, ACTD]()))
+            self.imagine.forward["cpu", 1](feat_t)
+            var ond = self.imagine.node_out_ptr["nd"]()
+            var osn = self.imagine.node_out_ptr["stoch_new"]()
+            self.dec.set_input["stoch_new", 1](TileTensor(osn, row_major[1, SCl]()))
+            self.dec.set_input["nd", 1](TileTensor(ond, row_major[1, D]()))
+            self.dec.set_input["rtgt", 1](TileTensor(dummyO, row_major[1, OBSD]()))
+            self.dec.forward["cpu", 1](loss_t)
+            var pred = self.dec.node_out_ptr["dec"]()
+            var ms: Scalar[DT] = 0.0
+            for k in range(OBSD):
+                var dv = _symexp(pred[k]) - real_obs[(idx + 1) * OBSD + k]
+                ms += dv * dv
+            out_ol_obs[h] = ms / Scalar[DT](OBSD)
+            self.rew.set_input["nd", 1](TileTensor(ond, row_major[1, D]()))
+            self.rew.set_input["stoch_new", 1](TileTensor(osn, row_major[1, SCl]()))
+            self.rew.set_input["rtgt", 1](TileTensor(dummy1, row_major[1, 1]()))
+            self.rew.forward["cpu", 1](loss_t)
+            var rl = self.rew.node_out_ptr["rew"]()
+            var re = twohot_pred[BINSl](rl, 0, bins) - real_rew[idx]
+            out_ol_rew[h] = re if re >= Scalar[DT](0.0) else -re
+            for k in range(D):
+                old[k] = ond[k]
+            for k in range(SCl):
+                ols[k] = osn[k]
+
+            # ── teacher-forced: re-observe the real obs (posterior path) ──
+            self.enc.forward["cpu", 1](
+                TileTensor(real_obs + (idx + 1) * OBSD, row_major[1, OBSD]()),
+                output=tok_t,
+            )
+            self.core.set_input["deter", 1](TileTensor(tfd, row_major[1, D]()))
+            self.core.set_input["stoch", 1](TileTensor(tfs, row_major[1, SCl]()))
+            self.core.set_input["action", 1](TileTensor(pa, row_major[1, ACTD]()))
+            self.core.set_input["tokens", 1](TileTensor(tok, row_major[1, TOK]()))
+            self.core.forward["cpu", 1](carry_t)
+            var tnd = self.core.node_out_ptr["nd"]()
+            var tsn = self.core.node_out_ptr["stoch_new"]()
+            self.dec.set_input["stoch_new", 1](TileTensor(tsn, row_major[1, SCl]()))
+            self.dec.set_input["nd", 1](TileTensor(tnd, row_major[1, D]()))
+            self.dec.set_input["rtgt", 1](TileTensor(dummyO, row_major[1, OBSD]()))
+            self.dec.forward["cpu", 1](loss_t)
+            var tpred = self.dec.node_out_ptr["dec"]()
+            var tms: Scalar[DT] = 0.0
+            for k in range(OBSD):
+                var dv = _symexp(tpred[k]) - real_obs[(idx + 1) * OBSD + k]
+                tms += dv * dv
+            out_tf_obs[h] = tms / Scalar[DT](OBSD)
+            # teacher-forced reward: head prediction on the REAL posterior state
+            # vs real reward — isolates head calibration from dynamics drift.
+            self.rew.set_input["nd", 1](TileTensor(tnd, row_major[1, D]()))
+            self.rew.set_input["stoch_new", 1](TileTensor(tsn, row_major[1, SCl]()))
+            self.rew.set_input["rtgt", 1](TileTensor(dummy1, row_major[1, 1]()))
+            self.rew.forward["cpu", 1](loss_t)
+            var trl = self.rew.node_out_ptr["rew"]()
+            var tre = twohot_pred[BINSl](trl, 0, bins) - real_rew[idx]
+            out_tf_rew[h] = tre if tre >= Scalar[DT](0.0) else -tre
+            for k in range(D):
+                tfd[k] = tnd[k]
+            for k in range(SCl):
+                tfs[k] = tsn[k]
+
+        bd.free(); bs.free(); tok.free(); pa.free(); cscr.free()
+        dummyO.free(); dummy1.free(); featbuf.free()
+        old.free(); ols.free(); tfd.free(); tfs.free()

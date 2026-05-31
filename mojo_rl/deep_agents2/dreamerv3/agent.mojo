@@ -108,11 +108,15 @@ struct DreamerV3Agent[
         learning_starts: Int = 200,
         action_scale: Scalar[DT] = Scalar[DT](1.0),
         warmup_steps: Int = 1000,
+        out_init_scale: Scalar[DT] = Scalar[DT](0.0),
+        actent: Scalar[DT] = Scalar[DT](3e-4),
+        slowtar: Bool = False,
     ) raises -> Self:
         var a = Self(
             trainer=Self.TrainerT.make(
                 ctx=ctx, lr=lr, learning_starts=learning_starts,
-                warmup_steps=warmup_steps,
+                warmup_steps=warmup_steps, out_init_scale=out_init_scale,
+                actent=actent, slowtar=slowtar,
             ),
             belief_deter=_alloc(Self.DETER),
             belief_stoch=_alloc(Self.SC),
@@ -165,6 +169,15 @@ struct DreamerV3Agent[
 
     def dbg_pmean_abs(self) -> Scalar[DT]:
         return self.trainer.dbg_pmean_abs()
+
+    def dbg_val_mean(self) -> Scalar[DT]:
+        return self.trainer.dbg_val_mean()
+
+    def dbg_pstd(self) -> Scalar[DT]:
+        return self.trainer.dbg_pstd()
+
+    def dbg_rscale(self) -> Scalar[DT]:
+        return self.trainer.dbg_rscale()
 
     def select_action(
         mut self,

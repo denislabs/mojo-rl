@@ -1,4 +1,4 @@
-"""repl_loss — DreamerV3 replay value loss (forward).
+"""DreamerV3 replay value loss (forward).
 
 Ports `dreamerv3/agent.py:repl_loss` for the v1 config (`slowtar=False`,
 `valnorm=none`). Bootstraps the value head on REAL replay transitions
@@ -23,18 +23,18 @@ from .twohot import twohot_pred, twohot_loss, twohot_loss_backward
 def repl_loss_cpu[
     BK: Int, T: Int, BINS: Int
 ](
-    last: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [BK,T] (0/1)
-    term: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [BK,T] (0/1)
-    rew: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [BK,T]
-    boot: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [BK,T]
-    vlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [BK,T,BINS]
+    last: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T] (0/1)
+    term: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T] (0/1)
+    rew: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T]
+    boot: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T]
+    vlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,BINS]
     svlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,BINS]
-    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [BINS]
+    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BINS]
     horizon: Scalar[DT],
     lam: Scalar[DT],
     slowreg: Scalar[DT],
     out_repval: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T-1]
-    out_ret: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [BK,T-1]
+    out_ret: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T-1]
 ) raises:
     comptime assert T >= 2, "repl_loss needs T >= 2"
     comptime TM1 = T - 1
@@ -47,9 +47,10 @@ def repl_loss_cpu[
         while t >= 0:
             var live = (Scalar[DT](1.0) - term[b * T + t + 1]) * disc
             var cont = (Scalar[DT](1.0) - last[b * T + t + 1]) * lam
-            var interm = rew[b * T + t + 1] + (
-                Scalar[DT](1.0) - cont
-            ) * live * boot[b * T + t + 1]
+            var interm = (
+                rew[b * T + t + 1]
+                + (Scalar[DT](1.0) - cont) * live * boot[b * T + t + 1]
+            )
             var cur = interm + live * cont * ret_next
             out_ret[b * TM1 + t] = cur
             ret_next = cur
@@ -64,7 +65,7 @@ def repl_loss_cpu[
 
     for b in range(BK):
         for t in range(TM1):
-            var w = Scalar[DT](1.0) - last[b * T + t]   # f32(~last)
+            var w = Scalar[DT](1.0) - last[b * T + t]  # f32(~last)
             var l1 = twohot_loss[BINS](
                 vlogits, (b * T + t) * BINS, bins, out_ret[b * TM1 + t]
             )
@@ -79,17 +80,17 @@ def repl_loss_cpu[
 def repl_loss_backward[
     BK: Int, T: Int, BINS: Int
 ](
-    last: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [BK,T]
-    term: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [BK,T]
-    rew: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [BK,T]
-    boot: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [BK,T]
-    vlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [BK,T,BINS]
+    last: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T]
+    term: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T]
+    rew: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T]
+    boot: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T]
+    vlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,BINS]
     svlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,BINS]
-    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [BINS]
+    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BINS]
     horizon: Scalar[DT],
     lam: Scalar[DT],
     slowreg: Scalar[DT],
-    d_repval: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [BK,T-1] cotangent
+    d_repval: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T-1] cotangent
     grad_vlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,BINS]
 ) raises:
     """Backward of `repl_loss_cpu` w.r.t. the value logits (targets sg'd).
@@ -108,9 +109,10 @@ def repl_loss_backward[
         while t >= 0:
             var live = (Scalar[DT](1.0) - term[b * T + t + 1]) * disc
             var cont = (Scalar[DT](1.0) - last[b * T + t + 1]) * lam
-            var interm = rew[b * T + t + 1] + (
-                Scalar[DT](1.0) - cont
-            ) * live * boot[b * T + t + 1]
+            var interm = (
+                rew[b * T + t + 1]
+                + (Scalar[DT](1.0) - cont) * live * boot[b * T + t + 1]
+            )
             ret[b * TM1 + t] = interm + live * cont * ret_next
             ret_next = ret[b * TM1 + t]
             t -= 1
@@ -123,12 +125,20 @@ def repl_loss_backward[
         for t in range(TM1):
             var up = d_repval[b * TM1 + t] * (Scalar[DT](1.0) - last[b * T + t])
             twohot_loss_backward[BINS](
-                vlogits, (b * T + t) * BINS, bins, ret[b * TM1 + t], up,
+                vlogits,
+                (b * T + t) * BINS,
+                bins,
+                ret[b * TM1 + t],
+                up,
                 grad_vlogits,
             )
             twohot_loss_backward[BINS](
-                vlogits, (b * T + t) * BINS, bins, slowval[b * T + t],
-                up * slowreg, grad_vlogits,
+                vlogits,
+                (b * T + t) * BINS,
+                bins,
+                slowval[b * T + t],
+                up * slowreg,
+                grad_vlogits,
             )
 
     ret.free()

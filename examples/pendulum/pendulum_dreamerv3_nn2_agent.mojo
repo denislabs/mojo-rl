@@ -65,7 +65,13 @@ comptime Ag = DreamerV3Agent[
 
 comptime TOTAL_STEPS = 1_100_000
 comptime LEARN_START = 1024
-comptime TRAIN_EVERY = 16        # env steps per train_step (tunable)
+comptime TRAIN_EVERY = 4         # env steps per train_step. 16→4 = 4× more
+                                 # gradient (replay ratio ~32→~128), to fix the
+                                 # value undertracking (val_m lagging ret_m).
+                                 # Reference ratio is ~512 (TRAIN_EVERY=1) but
+                                 # that's ~16× the CPU cost; 4 + lr=1e-4 together
+                                 # ≈ 10× more effective learning. Costs ~4× CPU
+                                 # per env-step — dial back to 8 if too slow.
 comptime EVAL_EVERY = 5000
 comptime EVAL_EPISODES = 10
 comptime EP_LEN = 200
@@ -114,9 +120,18 @@ def main() raises:
     print("=" * 70)
     seed(42)
     var env = PendulumV2[DT]()
+    # slowtar=True: λ-return bootstraps from the EMA slowvalue (target network)
+    # instead of the online value — this breaks the value→return→value
+    # self-feedback loop that made lr=1e-4 diverge (val_m shot to +46). With the
+    # critic now damped, we re-enable lr=1e-4 + TRAIN_EVERY=4 (~10× more
+    # learning) to actually close the value-undertracking gap the probes found.
+    # Watch: val_m should track ret_m NEGATIVE and STABLE (no positive runaway),
+    # and pstd should drop below 1.0 as the advantage firms up. If val_m still
+    # diverges positive, drop lr→4e-5 (slowtar alone, slower but stable).
     var ag = Ag.make(
-        lr=Scalar[DT](4e-5), learning_starts=LEARN_START,
-        action_scale=Scalar[DT](2.0),
+        lr=Scalar[DT](1e-4), learning_starts=LEARN_START,
+        action_scale=Scalar[DT](2.0), actent=Scalar[DT](3e-4),
+        slowtar=True,
     )
 
     var obs = env.reset_obs_list()
@@ -154,6 +169,10 @@ def main() raises:
                 " real_rew=", ag.dbg_real_rew(), " rew_pred=", ag.dbg_rew_pred(),
                 " ret_m=", ag.dbg_ret_mean(), " ret_sd=", ag.dbg_ret_std(),
                 " pmean=", ag.dbg_pmean_abs(),
+                # divergence probes: val_m vs ret_m (critic fit/divergence),
+                # pstd (exploration collapse → minstd 0.1), rscale (adv denom)
+                " val_m=", ag.dbg_val_mean(), " pstd=", ag.dbg_pstd(),
+                " rscale=", ag.dbg_rscale(),
                 " WM=", ag.last_wm_loss(), " AC=", ag.last_ac_loss(),
             )
             # restore collection env episode

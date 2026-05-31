@@ -182,6 +182,15 @@ struct DreamerState[
     var dbg_ret_mean: Scalar[DT]    # mean λ-return in imagination
     var dbg_ret_std: Scalar[DT]     # std of λ-return (degenerate ⇒ no signal)
     var dbg_pmean_abs: Scalar[DT]   # mean |policy mean output| (policy moving?)
+    # ── divergence probes (Pendulum collapse: ret_m runaway + policy degrade) ──
+    var dbg_val_mean: Scalar[DT]    # mean value-head pred at imag-start states;
+                                    #   compare to dbg_ret_mean: ≈ ⇒ critic fits
+                                    #   the return; runs away together ⇒ critic
+                                    #   bootstrap divergence.
+    var dbg_pstd: Scalar[DT]        # mean actor Gaussian std; →minstd(0.1) ⇒
+                                    #   exploration collapsed (saturation).
+    var dbg_rscale: Scalar[DT]      # retnorm advantage denominator (adv =
+                                    #   (ret−val)/rscale); blow-up/→0 ⇒ bad signal.
     # ── GPU set (None on CPU). Time-major device minibatch + carries. ──
     var tm_obs: UnsafePointer[Scalar[DT], MutAnyOrigin]   # host staging [T,B,OBS]
     var tm_act: UnsafePointer[Scalar[DT], MutAnyOrigin]   # host staging [T,B,ACT]
@@ -214,6 +223,9 @@ struct DreamerState[
             dbg_ret_mean=Scalar[DT](0.0),
             dbg_ret_std=Scalar[DT](0.0),
             dbg_pmean_abs=Scalar[DT](0.0),
+            dbg_val_mean=Scalar[DT](0.0),
+            dbg_pstd=Scalar[DT](0.0),
+            dbg_rscale=Scalar[DT](0.0),
             tm_obs=UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
             tm_act=UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
             tm_rew=UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
@@ -880,14 +892,26 @@ struct ACStep[
     var slow_rate: Scalar[DT]
     var horizon: Scalar[DT]        # repval λ-return disc = 1 - 1/horizon
     var repval_scale: Scalar[DT]   # loss_scales.repval (reference 0.3)
+    var slowtar: Bool              # λ-return bootstrap from slowvalue (EMA)?
 
     @staticmethod
-    def make[target: StaticString](ctx: Optional[DeviceContext] = None) raises -> Self:
+    def make[target: StaticString](
+        ctx: Optional[DeviceContext] = None,
+        actent: Scalar[DT] = Scalar[DT](3e-4),
+        slowtar: Bool = False,
+    ) raises -> Self:
+        # actent: actor entropy scale (paper η=3e-4). For CONTINUOUS control,
+        # exploration comes from the policy Gaussian's std.
+        # slowtar: when True the λ-return bootstraps from the EMA slowvalue
+        # (target network) instead of the online value — breaks the
+        # value→return→value self-feedback loop that diverges at higher lr
+        # (probed on Pendulum: online bootstrap ran val_m away). Default False
+        # keeps the JAX PR5a fixture convention.
         return Self(
             minstd=Scalar[DT](0.1), maxstd=Scalar[DT](1.0), lam=Scalar[DT](0.95),
-            actent=Scalar[DT](3e-4), slowreg=Scalar[DT](1.0),
+            actent=actent, slowreg=Scalar[DT](1.0),
             slow_rate=Scalar[DT](0.02), horizon=Scalar[DT](333.0),
-            repval_scale=Scalar[DT](0.3),
+            repval_scale=Scalar[DT](0.3), slowtar=slowtar,
         )
 
     def step[target: StaticString](
@@ -1050,7 +1074,7 @@ struct ACStep[
         imag_loss_cpu[NS, TI, ACTD, BINSl, Self.DISCRETE](
             acts, rewv, conv, vlog, svlog, pmean, pstd, bins,
             MINSTD, MAXSTD, self.lam, self.actent, self.slowreg,
-            retnorm, pol_loss, val_loss, ret,
+            retnorm, pol_loss, val_loss, ret, self.slowtar,
         )
         var total: Scalar[DT] = 0.0
         for i in range(NS * TM1):
@@ -1080,6 +1104,18 @@ struct ACStep[
             rv += dd * dd
         st.dbg_ret_std = sqrt(rv / Scalar[DT](NS * TM1))
         var rscale = retnorm.stats()[1]
+        # ── divergence probes ──
+        st.dbg_rscale = rscale
+        var ps_acc: Scalar[DT] = 0.0
+        comptime if not Self.DISCRETE:
+            for i in range(NS * TI * ACTD):
+                ps_acc += bounded_std(pstd[i], MINSTD, MAXSTD)
+        st.dbg_pstd = ps_acc / Scalar[DT](NS * TI * ACTD)
+        var vm_acc: Scalar[DT] = 0.0
+        for b in range(NS):
+            for t in range(TI):
+                vm_acc += twohot_pred[BINSl](vlog, (b * TI + t) * BINSl, bins)
+        st.dbg_val_mean = vm_acc / Scalar[DT](NS * TI)
         var d_pol = _alloc(NS * TM1)
         var d_val = _alloc(NS * TM1)
         # mean-normalized cotangents (reference loss_scales: policy=1, value=1,
@@ -1096,7 +1132,7 @@ struct ACStep[
         imag_loss_backward[NS, TI, ACTD, BINSl, Self.DISCRETE](
             acts, rewv, conv, vlog, svlog, pmean, pstd, bins,
             MINSTD, MAXSTD, self.lam, self.actent, self.slowreg,
-            rscale, d_pol, d_val, g_vlog, g_pmean, g_pstd,
+            rscale, d_pol, d_val, g_vlog, g_pmean, g_pstd, self.slowtar,
         )
         oval.zero_grad[target, Self.ValT](value)
         opol.zero_grad[target, Self.PolT](policy)
@@ -1381,7 +1417,7 @@ struct ACStep[
         imag_loss_cpu[NS, TI, ACTD, BINSl, Self.DISCRETE](
             acts, rewv, conv, vlog, svlog, pmean, pstd, bins,
             MINSTD, MAXSTD, self.lam, self.actent, self.slowreg,
-            retnorm, pol_loss, val_loss, ret,
+            retnorm, pol_loss, val_loss, ret, self.slowtar,
         )
         var total: Scalar[DT] = 0.0
         for i in range(NS * TM1):
@@ -1407,6 +1443,18 @@ struct ACStep[
             rv += dd * dd
         st.dbg_ret_std = sqrt(rv / Scalar[DT](NS * TM1))
         var rscale = retnorm.stats()[1]
+        # ── divergence probes (mirror _ac_cpu) ──
+        st.dbg_rscale = rscale
+        var ps_acc: Scalar[DT] = 0.0
+        comptime if not Self.DISCRETE:
+            for i in range(NS * TI * ACTD):
+                ps_acc += bounded_std(pstd[i], MINSTD, MAXSTD)
+        st.dbg_pstd = ps_acc / Scalar[DT](NS * TI * ACTD)
+        var vm_acc: Scalar[DT] = 0.0
+        for b in range(NS):
+            for t in range(TI):
+                vm_acc += twohot_pred[BINSl](vlog, (b * TI + t) * BINSl, bins)
+        st.dbg_val_mean = vm_acc / Scalar[DT](NS * TI)
         # mean-normalized cotangents (1/(NS·TM1)) — same RATIO as the repval
         # value-loss (0.3/(B·TM1)) so the two value-loss terms combine right.
         var d_pol = _alloc(NS * TM1)
@@ -1421,7 +1469,7 @@ struct ACStep[
         imag_loss_backward[NS, TI, ACTD, BINSl, Self.DISCRETE](
             acts, rewv, conv, vlog, svlog, pmean, pstd, bins,
             MINSTD, MAXSTD, self.lam, self.actent, self.slowreg,
-            rscale, d_pol, d_val, g_vlog, g_pmean, g_pstd,
+            rscale, d_pol, d_val, g_vlog, g_pmean, g_pstd, self.slowtar,
         )
 
         # ── value / policy backward (device) ──

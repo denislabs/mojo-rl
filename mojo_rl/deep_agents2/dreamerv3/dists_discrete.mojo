@@ -36,9 +36,9 @@ def cat_softmax_mix[
     base: Int,
     u: Scalar[DT],
     out_sm: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [C] pre-mix softmax
-    out_p: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [C] unimix-mixed probs
+    out_p: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [C] unimix-mixed probs
 ):
-    """softmax(logits[base:base+C]) → out_sm, then unimix → out_p."""
+    """Softmax(logits[base:base+C]) → out_sm, then unimix → out_p."""
     var mx = logits[base]
     for c in range(1, C):
         if logits[base + c] > mx:
@@ -62,7 +62,7 @@ def cat_sample[
     logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
     base: Int,
     u: Scalar[DT],
-    u01: Scalar[DT],                                   # uniform in [0,1)
+    u01: Scalar[DT],  # uniform in [0,1)
 ) -> Int:
     """Inverse-CDF categorical sample from unimix(softmax(logits))."""
     var sm = alloc[Scalar[DT]](C)
@@ -75,7 +75,8 @@ def cat_sample[
         if u01 < acc:
             k = c
             break
-    sm.free(); pp.free()
+    sm.free()
+    pp.free()
     return k
 
 
@@ -100,9 +101,9 @@ def cat_fwd[
     logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
     base: Int,
     u: Scalar[DT],
-    k: Int,                                            # sampled class index
-    out_sm: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [C] scratch (pre-mix)
-    out_p: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [C] scratch (mixed)
+    k: Int,  # sampled class index
+    out_sm: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [C] scratch (pre-mix)
+    out_p: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [C] scratch (mixed)
 ) -> Tuple[Scalar[DT], Scalar[DT]]:
     """Returns (logp(k), entropy). Fills out_sm/out_p for the backward."""
     cat_softmax_mix[C](logits, base, u, out_sm, out_p)
@@ -117,12 +118,14 @@ def cat_fwd[
 def cat_bwd[
     C: Int
 ](
-    sm: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [C] pre-mix softmax (from fwd)
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [C] mixed probs (from fwd)
+    sm: UnsafePointer[
+        Scalar[DT], MutAnyOrigin
+    ],  # [C] pre-mix softmax (from fwd)
+    p: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [C] mixed probs (from fwd)
     u: Scalar[DT],
-    k: Int,                                        # sampled class index
-    d_logp: Scalar[DT],                            # upstream ∂L/∂logp
-    d_ent: Scalar[DT],                             # upstream ∂L/∂entropy
+    k: Int,  # sampled class index
+    d_logp: Scalar[DT],  # upstream ∂L/∂logp
+    d_ent: Scalar[DT],  # upstream ∂L/∂entropy
     grad_logits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # accumulate [.,C]
     base: Int,
 ):
@@ -138,7 +141,5 @@ def cat_bwd[
         # d logp(k)/d logits_j = (1/p_k)·(1-u)·sm_k·(δ_kj − sm_j)
         var dlogp = inv_pk * one_m_u * sm[k] * (delta_kj - sm[j])
         # d ent/d logits_j = -(1-u)·sm_j·[ (log p_j+1) − ent_dot ]
-        var dent = -one_m_u * sm[j] * (
-            (log(p[j]) + Scalar[DT](1.0)) - ent_dot
-        )
+        var dent = -one_m_u * sm[j] * ((log(p[j]) + Scalar[DT](1.0)) - ent_dot)
         grad_logits[base + j] += d_logp * dlogp + d_ent * dent
