@@ -8,6 +8,7 @@ train_target, N_ENVS) combinations:
   cpu        | cpu          | >=1    | run_offpolicy_train_batched
   gpu        | gpu          | >=1    | run_offpolicy_train_batched
   cpu        | gpu          | 1      | run_offpolicy_train
+  cpu        | gpu          | >=1    | run_offpolicy_train_cpu_env_gpu_agent
 
 Plus one eval driver `run_offpolicy_eval` that replaces the
 legacy `run_offpolicy_eval_cpu` / `run_offpolicy_eval_gpu` split — the
@@ -16,9 +17,15 @@ trainer dispatches CPU vs GPU internally inside
 
 The (env=gpu, train=cpu) combination is omitted as degenerate
 (D2H every obs back to CPU for training — never useful in practice).
-Batched cross-target (cpu env, gpu train, N>1) is reachable in
-principle by extending `run_offpolicy_train_batched` with H2D/D2H
-boundary plumbing; deferred until a consumer needs it.
+Batched cross-target (cpu env, gpu train, N>=1) — the GPU-agent /
+CPU-env hybrid, ported from legacy `gpu_agent_cpu_env_train.mojo`
+(Phase 6.1) — is covered by `run_offpolicy_train_cpu_env_gpu_agent`,
+which wraps the same `BatchedCpuEnv` adapter and inserts per-step H2D
+obs / D2H action / H2D transition-slab boundary copies around the GPU
+trainer's `select_action_batched` + `record_batch_gpu`. Lets a GPU
+SAC/TD3/DDPG agent train against any CPU-stepped env (e.g. a Python
+Gymnasium MuJoCo env) so training failures can be attributed to the
+env vs the algorithm.
 
 Trait surface
   - `OffPolicyAgent` — minimal: select_action_batched[N_ENVS],
@@ -520,11 +527,10 @@ def run_offpolicy_train_batched[
 
     Cross-target combinations are NOT covered here:
       - (cpu env, gpu train) reachable via `run_offpolicy_train`
-        (Tier-1 Phase 3) at N_ENVS=1. Batched cross-target requires
-        H2D-ing prev_obs/action/reward/obs/done before record_batch_gpu;
-        the boundary plumbing is straightforward but the use case is
-        rare (people with a GPU usually also have a GPU env), so it's
-        deferred until a consumer needs it.
+        (Tier-1 Phase 3) at N_ENVS=1, or — for N_ENVS>=1 batched —
+        via `run_offpolicy_train_cpu_env_gpu_agent` (Phase 6.1), which
+        adds the H2D prev_obs/action/reward/obs/terminated boundary
+        plumbing before `record_batch_gpu`.
       - (gpu env, cpu train) rejected as degenerate (D2H every obs).
 
     Bounded on `OffPolicyAgentGpu` because the gpu-env branch
@@ -820,6 +826,256 @@ def run_offpolicy_train_batched[
                 )
                 # No forced flush — see note in run_offpolicy_train.
                 next_log += print_every
+
+    return ep_returns^
+
+
+# ──────────────────────────────────────────────────────────────────────
+# run_offpolicy_train_cpu_env_gpu_agent — Phase 6.1: batched
+#   (cpu env, gpu train, N_ENVS>=1) GPU-agent / CPU-env hybrid.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def run_offpolicy_train_cpu_env_gpu_agent[
+    A: OffPolicyAgentGpu,
+    E: BatchedEnv,
+    N_ENVS: Int = 1,
+    L: Logger = NoOpLogger,
+](
+    ctx: DeviceContext,
+    mut trainer: A,
+    mut env: E,
+    total_env_steps: Int,
+    *,
+    rng_seed: UInt64 = UInt64(42),
+    updates_per_step: Int = 1,
+    print_every: Int = 5_000,
+    verbose: Bool = True,
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    diag_every: Int = 0,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
+    base_step: Int = 0,
+) raises -> List[Scalar[DT]]:
+    """GPU-agent / CPU-env hybrid off-policy driver (Phase 6.1).
+
+    Covers the one cross-target combination the other off-policy drivers
+    deferred: `env_target == "cpu"` with `train_target == "gpu"` at any
+    `N_ENVS >= 1`. Ported from the legacy
+    `gpu_agent_cpu_env_train.mojo` (`run_offpolicy_continuous_train_cpu_env_gpu_agent`).
+
+    Lets a GPU SAC/TD3/DDPG agent train against a CPU-stepped env (e.g. a
+    Python Gymnasium MuJoCo env wrapped in `BatchedCpuEnv`) so a training
+    failure can be attributed to "the env" or "the algorithm". The env
+    steps on the host; obs/action/reward/terminated cross the H↔D
+    boundary every iteration.
+
+    Per-iteration loop:
+      1. H2D current obs (env.obs_ptr → obs_dev) and D→D snapshot into
+         prev_obs_dev (the `s_t` of the transition).
+      2. `trainer.select_action_batched[N_ENVS]` on device (reads
+         obs_dev, writes action_dev). GPU warmup uses the trainer's own
+         Philox kernel, gated on `base_step + step_idx` vs
+         `learning_starts`.
+      3. D2H action (action_dev → env.action_ptr), then `synchronize()`
+         so the host action slab is valid before the CPU env steps.
+      4. `env.step_batch[N_ENVS]` on the host (writes host
+         obs/reward/done/terminated).
+      5. H2D next-obs / reward / terminated, then
+         `trainer.record_batch_gpu[N_ENVS]`. The replay stores
+         `terminated` (natural termination only) so the TD bootstrap is
+         kept on time-limit truncation, dropped on real termination —
+         the truncation-correct bootstrap Phase 6.1 calls for.
+      6. `synchronize()` so all device reads of the env host buffers
+         complete before the host mutates them in selective_reset.
+      7. Per-env return accumulation; `add_complete_return` on `done`.
+      8. `env.selective_reset_batch[N_ENVS]` on the host.
+      9. `updates_per_step` × `trainer.train_step` (GPU).
+
+    `ctx` MUST be the same `DeviceContext` the trainer was built with
+    (Apple Metal's queue pool exhausts if a fresh context is constructed
+    per call). The env's `reset_batch` / `step_batch` /
+    `selective_reset_batch` receive `ctx=None` (CPU env ignores it).
+    """
+    comptime env_target: StaticString = E.ENV_TARGET
+    comptime train_target: StaticString = A.AGENT_TRAIN_TARGET
+    comptime OBS = A.AGENT_OBS_DIM
+    comptime ACT = A.AGENT_ACT_DIM
+
+    comptime assert env_target == "cpu", (
+        "run_offpolicy_train_cpu_env_gpu_agent: env_target must be 'cpu'"
+        " (this is the CPU-env / GPU-agent hybrid; for a GPU env use"
+        " run_offpolicy_train_batched)"
+    )
+    comptime assert train_target == "gpu", (
+        "run_offpolicy_train_cpu_env_gpu_agent: train_target must be 'gpu'"
+        " (for a CPU trainer use run_offpolicy_train_batched, which"
+        " covers same-target cpu/cpu at any N_ENVS)"
+    )
+    comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+    comptime assert (
+        E.OBS_DIM == OBS and E.ACT_DIM == ACT
+    ), "BatchedEnv dimensions must match trainer dimensions"
+
+    # All scratches live on the device (train_target == "gpu"). obs_dev
+    # holds `s_t` then is overwritten with `s_{t+1}`; prev_obs_dev keeps
+    # the pre-step `s_t` for the stored transition. reward_dev /
+    # term_dev are H2D mirrors of the env's host reward / terminated
+    # slabs. ao / alp are the actor-output + action-log-prob scratch the
+    # trainer's select_action_batched writes through.
+    var obs_dev = DriverScratch["he_obs", N_ENVS, OBS].make["gpu"](ctx=ctx)
+    var prev_obs_dev = DriverScratch["he_prev_obs", N_ENVS, OBS].make["gpu"](
+        ctx=ctx
+    )
+    var action_dev = DriverScratch["he_action", N_ENVS, ACT].make["gpu"](
+        ctx=ctx
+    )
+    var reward_dev = DriverScratch["he_reward", N_ENVS, 1].make["gpu"](ctx=ctx)
+    var term_dev = DriverScratch["he_term", N_ENVS, 1].make["gpu"](ctx=ctx)
+    var ao = DriverScratch["he_ao", N_ENVS, 2 * ACT].make["gpu"](ctx=ctx)
+    var alp = DriverScratch["he_alp", N_ENVS, ACT + 1].make["gpu"](ctx=ctx)
+
+    var per_env_returns = List[Scalar[DT]](
+        length=N_ENVS, fill=Scalar[DT](0.0),
+    )
+
+    # CPU env: ctx ignored. Wrap in Optional(None) for the trait sig.
+    env.reset_batch[N_ENVS](ctx=None, rng_seed=rng_seed)
+
+    var ep_returns = List[Scalar[DT]]()
+    var t_start = perf_counter_ns()
+    var step_idx: Int = 0
+    var iter_idx: Int = 0
+    var next_print: Int = print_every
+    var next_log: Int = print_every
+
+    while step_idx < total_env_steps:
+        var abs_step = base_step + step_idx
+
+        # ── 1. H2D current obs (s_t) + D→D snapshot into prev_obs.
+        ctx.enqueue_copy(obs_dev.dev.value(), env.obs_ptr())
+        ctx.enqueue_copy(prev_obs_dev.dev.value(), obs_dev.dev.value())
+
+        # ── 2. Action selection on device (warmup gated inside trainer).
+        trainer.select_action_batched[N_ENVS](
+            obs_dev.dev_ptr(),
+            action_dev.dev_ptr(),
+            ao.dev_ptr(),
+            alp.dev_ptr(),
+            abs_step,
+        )
+
+        # ── 3. D2H action → env host slab; sync before CPU steps.
+        ctx.enqueue_copy(env.action_ptr(), action_dev.dev.value())
+        ctx.synchronize()
+
+        # ── 4. Step CPU envs (writes host obs/reward/done/terminated).
+        env.step_batch[N_ENVS](
+            ctx=None, rng_seed=rng_seed + UInt64(iter_idx + 1),
+        )
+
+        # ── 5. H2D next-obs / reward / terminated, then GPU replay push.
+        # `terminated` (natural termination only) is stored so the TD
+        # bootstrap is kept on truncation, dropped on termination.
+        ctx.enqueue_copy(obs_dev.dev.value(), env.obs_ptr())
+        ctx.enqueue_copy(reward_dev.dev.value(), env.reward_ptr())
+        ctx.enqueue_copy(term_dev.dev.value(), env.terminated_ptr())
+        trainer.record_batch_gpu[N_ENVS](
+            ctx,
+            prev_obs_dev.dev.value(),
+            action_dev.dev.value(),
+            reward_dev.dev.value(),
+            obs_dev.dev.value(),
+            term_dev.dev.value(),
+        )
+
+        # ── 6. Sync so all device reads of the env host slabs finish
+        # before selective_reset (host) mutates env.obs in place.
+        ctx.synchronize()
+
+        # ── 7. Per-env episode tracking (host reward + done, already
+        # CPU-written by step_batch).
+        var rewards_h = env.reward_ptr()
+        var dones_h = env.done_ptr()
+        for e in range(N_ENVS):
+            per_env_returns[e] = per_env_returns[e] + rewards_h[e]
+            if dones_h[e] > Scalar[DT](0.5):
+                trainer.add_complete_return(per_env_returns[e])
+                per_env_returns[e] = Scalar[DT](0.0)
+                ep_returns.append(trainer.mean_return())
+
+        # ── 8. Selective env reset (host).
+        env.selective_reset_batch[N_ENVS](
+            ctx=None, rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
+        )
+
+        step_idx += N_ENVS
+        iter_idx += 1
+
+        # ── 9. Trainer updates (GPU).
+        for _ in range(updates_per_step):
+            _ = trainer.train_step(base_step + step_idx)
+
+        if verbose and print_every > 0 and step_idx >= next_print:
+            var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
+            print(
+                "[step ",
+                base_step + step_idx,
+                "] mean_ret(10)=",
+                trainer.mean_return(),
+                " ep=",
+                trainer.ep_count(),
+                " elapsed=",
+                elapsed,
+                "s",
+            )
+            next_print += print_every
+
+        # Logger emit at the print cadence (comptime-elided for NoOpLogger).
+        comptime if L.ENABLED:
+            if (
+                print_every > 0
+                and step_idx >= next_log
+                and Bool(logger)
+            ):
+                logger.value()[].log_scalar(
+                    "avg_reward",
+                    Float64(trainer.mean_return()),
+                    base_step + step_idx,
+                )
+                logger.value()[].log_scalar(
+                    "episodes",
+                    Float64(trainer.ep_count()),
+                    base_step + step_idx,
+                )
+                next_log += print_every
+
+        # `diag_every` — drain the trainer's metric bundle through the
+        # logger. Default trait impl is a no-op for trainers that haven't
+        # wired this up yet.
+        comptime if L.ENABLED:
+            if (
+                diag_every > 0
+                and (base_step + step_idx) % diag_every == 0
+                and Bool(logger)
+            ):
+                trainer.flush_metrics_through_logger[L](
+                    logger, base_step + step_idx
+                )
+
+        # `checkpoint_every` — overwrite `checkpoint_path` with the
+        # trainer's one-file v2 envelope. Default trait impl is a no-op.
+        if (
+            checkpoint_every > 0
+            and (base_step + step_idx) % checkpoint_every == 0
+            and checkpoint_path.byte_length() > 0
+        ):
+            trainer.save_state(checkpoint_path)
+
+    # Always overwrite the final checkpoint at end so resume gets the
+    # freshest weights regardless of cadence alignment.
+    if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
+        trainer.save_state(checkpoint_path)
 
     return ep_returns^
 

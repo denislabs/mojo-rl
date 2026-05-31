@@ -18,6 +18,7 @@ from .action_sampling_block import ActionSamplingBlock
 from .driver_offpolicy import (
     run_offpolicy_train,
     run_offpolicy_train_batched,
+    run_offpolicy_train_cpu_env_gpu_agent,
     run_offpolicy_eval,
 )
 from .driver_offpolicy_discrete import (
