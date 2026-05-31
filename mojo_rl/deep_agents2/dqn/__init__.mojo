@@ -11,10 +11,12 @@ from .config import (
     NoisyDQNConfig,
     DQNPERConfig,
     RainbowDQNConfig,
+    DQNCNNConfig,
     DQNNet,
     DuelingDQNNet,
     NoisyDQNNet,
     RainbowDQNNet,
+    NatureDQNNet,
     agent_from_config,
     DQN,
     DoubleDQN,
@@ -22,4 +24,5 @@ from .config import (
     NoisyDQN,
     DQNPER,
     RainbowDQN,
+    DQNCNN,
 )

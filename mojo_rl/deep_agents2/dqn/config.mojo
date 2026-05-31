@@ -29,13 +29,16 @@ Three pieces:
          var agent = DoubleDQN["cpu", OBS, ACT, BATCH, CAP](lr=1e-3)
          var agent = RainbowDQN["gpu", OBS, ACT, BATCH, CAP](ctx=ctx)
 
-Coverage (Phase 1): the full single-env DQN family — plain, Double,
-Dueling, Noisy, PER, and scalar-Q Rainbow (Double+Dueling+Noisy+PER+
-N-step). Each is a ~30-line conformer over the SAME `DQNTrainer` /
-`DQNAgent` primitive; no new trainer code (exactly how `RainbowConfig`
-rides `C51Trainer`). CNN / pixel-obs configs (`DQNCNNConfig`) are the
-remaining gap — nn2 `Conv2D` exists but image-shaped obs need to flow
-through the discrete driver first (deferred).
+Coverage: the full single-env DQN family — plain, Double, Dueling,
+Noisy, PER, scalar-Q Rainbow (Double+Dueling+Noisy+PER+N-step), and
+(Phase 1.6) the Nature-CNN pixel config `DQNCNNConfig` / `DQNCNN`. Each
+is a ~30-line conformer over the SAME `DQNTrainer` / `DQNAgent`
+primitive; no new trainer code (exactly how `RainbowConfig` rides
+`C51Trainer`). The CNN config needed no obs-pipeline change either: nn2
+`Conv2D`/`Flatten` expose flat `IN_DIMS`/`OUT_DIM`, so a
+`Sequential[Conv2D, …, Flatten, Linear, …]` Q-net flows through the
+discrete driver with the obs treated as a flat `FRAMES·84·84` vector
+(the same insight Phase 5.2 used for on-policy CNN PPO).
 """
 
 from std.gpu.host import DeviceContext
@@ -46,6 +49,8 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.noisy_linear import NoisyLinear
 from mojo_rl.nn2.primitives.dueling_head import DuelingHead
+from mojo_rl.nn2.primitives.conv2d import Conv2D
+from mojo_rl.nn2.primitives.flatten import Flatten
 from mojo_rl.nn2.combinators.sequential import Sequential
 
 from ..training.blocks import (
@@ -105,6 +110,26 @@ comptime RainbowDQNNet[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
 `c51/config.mojo`'s `RainbowNet`. The wide NoisyLinear projection emits
 (1 + ACT), split inside `DuelingHead` into V + A streams. Used by
 `RainbowDQNConfig`."""
+
+comptime NatureDQNNet[FRAMES: Int, ACT: Int, HIDDEN: Int = 512] = Sequential[
+    Conv2D[FRAMES, 32, 8, 4, 0, 84, 84], ReLU[32 * 20 * 20],
+    Conv2D[32, 64, 4, 2, 0, 20, 20], ReLU[64 * 9 * 9],
+    Conv2D[64, 64, 3, 1, 0, 9, 9], ReLU[64 * 7 * 7],
+    Flatten[64 * 7 * 7],
+    Linear[64 * 7 * 7, HIDDEN], ReLU[HIDDEN],
+    Linear[HIDDEN, ACT],
+]
+"""Canonical Nature-DQN CNN (Mnih et al. 2015 / CleanRL DQN-Atari) for
+`FRAMES`×84×84 stacked-frame pixel obs. Fixed conv geometry:
+  conv1 FRAMES→32 (8×8 s4 p0): 84→20   (32·20·20)
+  conv2 32→64    (4×4 s2 p0): 20→9    (64·9·9)
+  conv3 64→64    (3×3 s1 p0): 9→7     (64·7·7 = 3136)
+  Flatten → Linear(3136→HIDDEN) → ReLU → Linear(HIDDEN→ACT).
+nn2 `Conv2D`/`Flatten` expose FLAT `IN_DIMS`/`OUT_DIM` (Conv2D's
+`IN_DIM_FLAT = FRAMES·84·84`), so this `Sequential` plugs into the
+discrete off-policy trainer/driver with the obs treated as a flat
+`FRAMES·84·84` vector — ZERO plumbing changes, exactly as Phase 5.2's CNN
+PPO did on the on-policy side. Used by `DQNCNNConfig`."""
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -342,6 +367,47 @@ struct RainbowDQNConfig[
     comptime DEF_PER_BETA = Scalar[DT](0.4)
     comptime DEF_PER_EPSILON = Scalar[DT](1e-6)
     comptime DEF_NSTEP = Self.NSTEP
+
+
+@fieldwise_init
+struct DQNCNNConfig[
+    target: StaticString,
+    ACT: Int, BATCH: Int, CAP: Int,
+    FRAMES: Int = 4, HIDDEN: Int = 512,
+](DQNConfigT):
+    """DQN with the canonical Nature CNN for `FRAMES`×84×84 pixel obs
+    (Double DQN, matching Mnih et al. 2015 / CleanRL DQN-Atari). The
+    image is carried as a flat `FRAMES·84·84` obs through the SAME
+    `DQNTrainer` / `DQNAgent` / discrete off-policy driver — nn2 `Conv2D`/
+    `Flatten` expose flat `IN_DIMS`/`OUT_DIM`, so no obs-pipeline change is
+    needed (the deferral reason behind Phase 1.6 is dispelled exactly as
+    Phase 5.2 dispelled it for on-policy CNN PPO).
+
+    `OBS = FRAMES·84·84`. Uniform replay; `DOUBLE=True` (Nature/CleanRL
+    canonically pair DQN-Atari with Double + reward/grad clipping). Tuned
+    Atari defaults: `lr=2.5e-4`, `max_grad_norm=10`."""
+
+    comptime OBS = Self.FRAMES * 84 * 84
+    comptime TARGET = Self.target
+    comptime SAMPLE = ReplaySampleStep[
+        AnyReplay[Self.target, Self.OBS, 1, Self.CAP], Self.BATCH
+    ]
+    comptime Q_NET = NatureDQNNet[Self.FRAMES, Self.ACT, Self.HIDDEN]
+    comptime DOUBLE = True
+
+    comptime DEF_LR = Scalar[DT](2.5e-4)
+    comptime DEF_GAMMA = Scalar[DT](0.99)
+    comptime DEF_TAU = Scalar[DT](0.005)
+    comptime DEF_EPS = Scalar[DT](1.0)
+    comptime DEF_EPS_DECAY = Scalar[DT](0.995)
+    comptime DEF_EPS_MIN = Scalar[DT](0.01)
+    comptime DEF_LEARNING_STARTS = 1_000
+    comptime DEF_TARGET_UPDATE_FREQ = 0
+    comptime DEF_MAX_GRAD_NORM = Scalar[DT](10.0)
+    comptime DEF_PER_ALPHA = Scalar[DT](0.6)
+    comptime DEF_PER_BETA = Scalar[DT](0.4)
+    comptime DEF_PER_EPSILON = Scalar[DT](1e-6)
+    comptime DEF_NSTEP = 1
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -599,4 +665,39 @@ def RainbowDQN[
         window_size=window_size, max_grad_norm=max_grad_norm,
         per_alpha=per_alpha, per_beta=per_beta, per_epsilon=per_epsilon,
         nstep=NSTEP,
+    )
+
+
+def DQNCNN[
+    target: StaticString,
+    ACT: Int, BATCH: Int, CAP: Int,
+    FRAMES: Int = 4, HIDDEN: Int = 512,
+](
+    ctx: Optional[DeviceContext] = None,
+    lr: Scalar[DT] = DQNCNNConfig[target, ACT, BATCH, CAP, FRAMES, HIDDEN].DEF_LR,
+    gamma: Scalar[DT] = DQNCNNConfig[target, ACT, BATCH, CAP, FRAMES, HIDDEN].DEF_GAMMA,
+    tau: Scalar[DT] = DQNCNNConfig[target, ACT, BATCH, CAP, FRAMES, HIDDEN].DEF_TAU,
+    epsilon: Scalar[DT] = DQNCNNConfig[target, ACT, BATCH, CAP, FRAMES, HIDDEN].DEF_EPS,
+    epsilon_decay: Scalar[DT] = DQNCNNConfig[target, ACT, BATCH, CAP, FRAMES, HIDDEN].DEF_EPS_DECAY,
+    epsilon_min: Scalar[DT] = DQNCNNConfig[target, ACT, BATCH, CAP, FRAMES, HIDDEN].DEF_EPS_MIN,
+    learning_starts: Int = DQNCNNConfig[target, ACT, BATCH, CAP, FRAMES, HIDDEN].DEF_LEARNING_STARTS,
+    target_update_freq: Int = DQNCNNConfig[target, ACT, BATCH, CAP, FRAMES, HIDDEN].DEF_TARGET_UPDATE_FREQ,
+    window_size: Int = 10,
+    max_grad_norm: Scalar[DT] = DQNCNNConfig[target, ACT, BATCH, CAP, FRAMES, HIDDEN].DEF_MAX_GRAD_NORM,
+) raises -> DQNAgent[
+    target,
+    ReplaySampleStep[AnyReplay[target, FRAMES * 84 * 84, 1, CAP], BATCH],
+    NatureDQNNet[FRAMES, ACT, HIDDEN],
+    True,
+]:
+    """DQN with the canonical Nature CNN for `FRAMES`×84×84 pixel obs
+    (Double DQN). The image flows as a flat `FRAMES·84·84` obs through the
+    unchanged discrete off-policy path — no obs-pipeline plumbing change."""
+    return agent_from_config[
+        DQNCNNConfig[target, ACT, BATCH, CAP, FRAMES, HIDDEN]
+    ](
+        ctx=ctx, lr=lr, gamma=gamma, tau=tau, epsilon=epsilon,
+        epsilon_decay=epsilon_decay, epsilon_min=epsilon_min,
+        learning_starts=learning_starts, target_update_freq=target_update_freq,
+        window_size=window_size, max_grad_norm=max_grad_norm,
     )
