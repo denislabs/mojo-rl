@@ -51,6 +51,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
+from mojo_rl.nn2.primitives.layer_norm import LayerNorm
 from mojo_rl.nn2.primitives.elementwise import Elementwise
 from mojo_rl.nn2.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents2.primitives.stochastic_actor import StochasticActor
@@ -71,7 +72,12 @@ comptime REPLAY_CAPACITY = 100_000
 comptime SYNTH_CAPACITY = 400_000
 comptime N_ENSEMBLE = 7
 comptime NUM_ELITES = 5
-comptime REAL_RATIO_PCT = 50  # tuned (see pendulum_mbpo_nn2_agent.mojo)
+# Kept at 50% (NOT the legacy GPU's 5%): the legacy's aggressive synthetic
+# reliance only works with 100k FRESH rollouts/round, which is GPU-scale.
+# At our CPU rollout budget, leaning harder on a thin/stale synth pool
+# measurably HURT (a real_ratio=35 / UTD=15 sweep degraded faster). So the
+# conservative CPU regime + the LayerNorm critic is the sweet spot here.
+comptime REAL_RATIO_PCT = 50
 comptime LOGVAR_MIN_F = -10.0
 comptime LOGVAR_MAX_F = -5.0  # tuned
 
@@ -91,10 +97,20 @@ comptime ActorNet = StochasticActor[
     Linear[HIDDEN, HIDDEN],
     ReLU[HIDDEN],
 ]
+# Critic with pre-activation LayerNorm (REDQ/SR-SAC stability fix; mirrors
+# the legacy MBPO critic). Pattern: Linear → LayerNorm → ReLU, repeated.
+# Bounds the critic's feature magnitudes so Q can't drift to ±∞ under the
+# high-UTD / stale-synthetic-batch pressure of this CPU regime. Without it
+# the critic loss explodes (~1e8) and Q diverges (→ −13k), dragging the
+# actor + entropy temperature with it. Not paper-faithful (vanilla MBPO
+# uses plain Linear+ReLU and avoids the blow-up via a huge fresh synthetic
+# buffer at real_ratio=0.05), but it fixes the mechanism directly.
 comptime CriticNet = Sequential[
     Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    LayerNorm[HIDDEN],
     ReLU[HIDDEN],
     Linear[HIDDEN, HIDDEN],
+    LayerNorm[HIDDEN],
     ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
@@ -185,7 +201,12 @@ def main() raises:
         learning_starts=1_000,
         window_size=100,
         initial_episode_fill=0.0,
-        # CPU-friendly cadences (vs. GPU defaults of 400 rollouts / 4 epochs):
+        # CPU-friendly cadences (vs. GPU defaults of 400 rollouts / 4 epochs).
+        # A sweep toward the legacy GPU recipe (num_rollouts 1000 / UTD 15 /
+        # target_entropy -3 / real_ratio 35) degraded FASTER on CPU: those
+        # values assume 100k fresh synthetic transitions/round to stay
+        # in-distribution. With the LayerNorm critic stabilizing things, the
+        # conservative regime below is the best CPU operating point.
         model_train_freq=250,
         dyn_epochs_per_round=2,
         rollout_length=1,

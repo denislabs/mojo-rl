@@ -471,6 +471,22 @@ def run_offpolicy_train[
             ):
                 trainer.flush_metrics_through_logger[L](logger, abs_step)
 
+        # Live flush: push whatever was just buffered to the monitoring
+        # server at the print/diag cadence so the dashboard updates DURING
+        # training (otherwise points only auto-flush once the buffer hits
+        # `buffer_size`, leaving long runs blind until `logger.close()`).
+        # `flush()` early-returns when the buffer is empty, so this is a
+        # no-op on the vast majority of steps.
+        comptime if L.ENABLED:
+            if (
+                Bool(logger)
+                and (
+                    (print_every > 0 and abs_step % print_every == 0)
+                    or (diag_every > 0 and abs_step % diag_every == 0)
+                )
+            ):
+                logger.value()[].flush()
+
         # `checkpoint_every` — overwrite `checkpoint_path` with the
         # trainer's one-file v2 envelope. Default trait impl is no-op.
         if (

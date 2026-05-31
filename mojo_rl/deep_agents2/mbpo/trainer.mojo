@@ -23,6 +23,7 @@ CPU is bit-identical to the prior CPU-only MBPOTrainer. Conforms to
 """
 
 from std.math import exp as fexp, sqrt as fsqrt, log as flog
+from std.memory import alloc
 from std.random import random_float64, randn_float64
 from std.time import perf_counter_ns
 from std.gpu import block_dim, block_idx, thread_idx, global_idx
@@ -168,6 +169,28 @@ def _build_dyn_target_kernel[
         )
 
 
+def _normalize_input_kernel[
+    BATCH: Int, D: Int
+](
+    data: LayoutTensor[DT, Layout.row_major(BATCH, D), MutAnyOrigin],
+    mean: LayoutTensor[DT, Layout.row_major(D), MutAnyOrigin],
+    std: LayoutTensor[DT, Layout.row_major(D), MutAnyOrigin],
+):
+    """In-place per-column z-score of the dynamics input: data[b, c] =
+    (data[b, c] − mean[c]) / std[c]. One thread per element. Matches the
+    legacy MBPO `normalize_input_kernel` so unbounded obs (HalfCheetah-
+    style) are whitened before the ensemble forward."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH * D:
+        return
+    var b = i // D
+    var c = i % D
+    var v = rebind[Scalar[DT]](data[b, c])
+    var m = rebind[Scalar[DT]](mean[c])
+    var s = rebind[Scalar[DT]](std[c])
+    data[b, c] = (v - m) / s
+
+
 struct MBPOTrainer[
     train_target: StaticString,
     ACTOR: Module,
@@ -272,6 +295,15 @@ struct MBPOTrainer[
     var _ro_ao: Scratch["ro_ao", Self.BATCH * 2 * Self.ACT_DIM]
     var _ro_alp: Scratch["ro_alp", Self.BATCH * (Self.ACT_DIM + 1)]
 
+    # Dynamics input scaler — per-DYN_IN-dim z-score (mean/std), staging
+    # (host mirror + device). Re-fit from the real buffer at the start of
+    # every dynamics-train round and applied to `dyn_in` in BOTH training
+    # and rollout so the world model always sees whitened inputs. Identity
+    # (mean=0, std=1) until the first fit. Runtime-only — not checkpointed
+    # (the ensemble is refit each round, so the scaler is too).
+    var _in_mean: Scratch["in_mean", Self.DYN_IN, True]
+    var _in_std: Scratch["in_std", Self.DYN_IN, True]
+
     var action_scale: Scalar[DT]
     var learning_starts: Int
 
@@ -368,6 +400,8 @@ struct MBPOTrainer[
         self._ro_noise = Scratch["ro_noise", Self.BATCH * Self.DYN_PRED]()
         self._ro_ao = Scratch["ro_ao", Self.BATCH * 2 * Self.ACT_DIM]()
         self._ro_alp = Scratch["ro_alp", Self.BATCH * (Self.ACT_DIM + 1)]()
+        self._in_mean = Scratch["in_mean", Self.DYN_IN, True]()
+        self._in_std = Scratch["in_std", Self.DYN_IN, True]()
         self.action_scale = Scalar[DT](1.0)
         self.learning_starts = 1_000
         self.model_train_freq = 250
@@ -492,6 +526,7 @@ struct MBPOTrainer[
         ].make[Self.train_target](ctx=ctx)
 
         init_scratch_auto[Self, target=Self.train_target](t, ctx)
+        t._set_scaler_identity[Self.train_target]()
 
         t.action_scale = action_scale
         t.learning_starts = learning_starts
@@ -636,6 +671,13 @@ struct MBPOTrainer[
             or step_idx - self.last_dyn_step >= self.model_train_freq
         )
         if should_train_dyn:
+            # Re-fit the input scaler on the latest real buffer BEFORE both
+            # the dynamics train and the rollout so they share one whitening.
+            comptime if Self.train_target == "gpu":
+                self._fit_input_scaler_gpu()
+            else:
+                self._fit_input_scaler_cpu()
+
             var t_dyn = perf_counter_ns()
             comptime if Self.train_target == "gpu":
                 self._train_dynamics_ensemble_gpu()
@@ -1104,6 +1146,124 @@ struct MBPOTrainer[
             "MBPOTrainer.record_batch_gpu_nstep: not supported"
         )
 
+    # ─── Dynamics input scaler (per-DYN_IN-dim z-score) ───────────────
+
+    def _set_scaler_identity[target: StaticString](mut self) raises:
+        """Reset the input scaler to identity (mean=0, std=1) so it is a
+        no-op until the first fit. Called once at construction."""
+        var mean_p = self._in_mean.cpu_ptr()
+        var std_p = self._in_std.cpu_ptr()
+        for c in range(Self.DYN_IN):
+            mean_p[c] = Scalar[DT](0.0)
+            std_p[c] = Scalar[DT](1.0)
+        comptime if target == "gpu":
+            var ctx = self.ctx.value()
+            ctx.enqueue_copy(self._in_mean.dev.value(), mean_p)
+            ctx.enqueue_copy(self._in_std.dev.value(), std_p)
+
+    def _compute_scaler_host(
+        mut self,
+        obs_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        act_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        n_data: Int,
+    ):
+        """Fit per-DYN_IN-dim mean/std from `n_data` real transitions laid
+        out as `obs_p[i*OBS + d]` / `act_p[i*ACT + j]`. Writes the result
+        into the host mirror of `_in_mean` / `_in_std`. A near-zero std is
+        floored to 1.0 so (near-)constant dims pass through unscaled
+        instead of exploding."""
+        var mean_p = self._in_mean.cpu_ptr()
+        var std_p = self._in_std.cpu_ptr()
+        for c in range(Self.DYN_IN):
+            mean_p[c] = Scalar[DT](0.0)
+            std_p[c] = Scalar[DT](0.0)
+        var inv_n = Scalar[DT](1.0) / Scalar[DT](n_data)
+        for i in range(n_data):
+            for d in range(Self.OBS_DIM):
+                mean_p[d] += obs_p[i * Self.OBS_DIM + d]
+            for j in range(Self.ACT_DIM):
+                mean_p[Self.OBS_DIM + j] += act_p[i * Self.ACT_DIM + j]
+        for c in range(Self.DYN_IN):
+            mean_p[c] *= inv_n
+        for i in range(n_data):
+            for d in range(Self.OBS_DIM):
+                var diff = obs_p[i * Self.OBS_DIM + d] - mean_p[d]
+                std_p[d] += diff * diff
+            for j in range(Self.ACT_DIM):
+                var diff = (
+                    act_p[i * Self.ACT_DIM + j] - mean_p[Self.OBS_DIM + j]
+                )
+                std_p[Self.OBS_DIM + j] += diff * diff
+        for c in range(Self.DYN_IN):
+            var v = fsqrt(std_p[c] * inv_n)
+            if v < Scalar[DT](1e-12):
+                v = Scalar[DT](1.0)
+            std_p[c] = v
+
+    def _fit_input_scaler_cpu(mut self):
+        var n_data = self.sample_blk.real_count["cpu"]()
+        if n_data < 2:
+            return
+        self._compute_scaler_host(
+            self.sample_blk.real_cpu.obs,
+            self.sample_blk.real_cpu.act,
+            n_data,
+        )
+
+    def _fit_input_scaler_gpu(mut self) raises:
+        """Fit the scaler on GPU: D2H the real-buffer obs/act, reuse the
+        host arithmetic (bit-identical to the CPU path), then H2D the
+        mean/std to device for the normalize kernel."""
+        var n_data = self.sample_blk.real_count["gpu"]()
+        if n_data < 2:
+            return
+        var ctx = self.ctx.value()
+        comptime cap_obs = Self.REPLAY_CAPACITY * Self.OBS_DIM
+        comptime cap_act = Self.REPLAY_CAPACITY * Self.ACT_DIM
+        var host_obs = alloc[Scalar[DT]](cap_obs)
+        var host_act = alloc[Scalar[DT]](cap_act)
+        ctx.enqueue_copy(host_obs, self.sample_blk.real_gpu.value().obs)
+        ctx.enqueue_copy(host_act, self.sample_blk.real_gpu.value().act)
+        ctx.synchronize()
+        self._compute_scaler_host(host_obs, host_act, n_data)
+        ctx.enqueue_copy(self._in_mean.dev.value(), self._in_mean.cpu_ptr())
+        ctx.enqueue_copy(self._in_std.dev.value(), self._in_std.cpu_ptr())
+        ctx.synchronize()
+        host_obs.free()
+        host_act.free()
+
+    def _normalize_dyn_in_cpu(mut self):
+        """In-place z-score the BATCH×DYN_IN host `dyn_in` scratch."""
+        var dyn_in_p = self._dyn_in.cpu_ptr()
+        var mean_p = self._in_mean.cpu_ptr()
+        var std_p = self._in_std.cpu_ptr()
+        for k in range(Self.BATCH):
+            var base = k * Self.DYN_IN
+            for c in range(Self.DYN_IN):
+                dyn_in_p[base + c] = (
+                    dyn_in_p[base + c] - mean_p[c]
+                ) / std_p[c]
+
+    def _normalize_dyn_in_gpu(mut self) raises:
+        """In-place z-score the BATCH×DYN_IN device `dyn_in` scratch."""
+        var ctx = self.ctx.value()
+        var data_lt = LayoutTensor[
+            DT, Layout.row_major(Self.BATCH, Self.DYN_IN), MutAnyOrigin,
+        ](self._dyn_in.dev_ptr())
+        var mean_lt = LayoutTensor[
+            DT, Layout.row_major(Self.DYN_IN), MutAnyOrigin,
+        ](self._in_mean.dev_ptr())
+        var std_lt = LayoutTensor[
+            DT, Layout.row_major(Self.DYN_IN), MutAnyOrigin,
+        ](self._in_std.dev_ptr())
+        comptime total = Self.BATCH * Self.DYN_IN
+        comptime n_blocks = (total + TPB - 1) // TPB
+        comptime norm_kernel = _normalize_input_kernel[Self.BATCH, Self.DYN_IN]
+        ctx.enqueue_function[norm_kernel](
+            data_lt, mean_lt, std_lt,
+            grid_dim=n_blocks, block_dim=TPB,
+        )
+
     # ─── Dynamics training + synthetic rollouts (CPU) ─────────────────
 
     def _train_dynamics_ensemble(mut self) raises:
@@ -1144,6 +1304,8 @@ struct MBPOTrainer[
                             rb_nxt[idx * Self.OBS_DIM + d]
                             - rb_obs[idx * Self.OBS_DIM + d]
                         )
+                # Whiten inputs (targets stay in raw reward/Δobs space).
+                self._normalize_dyn_in_cpu()
                 var dyn_in_t = TileTensor(
                     dyn_in_p, row_major[Self.BATCH, Self.DYN_IN]()
                 )
@@ -1155,6 +1317,42 @@ struct MBPOTrainer[
                 )
                 self._dyn_loss_accum += dyn_loss
                 self._dyn_step_count += 1
+
+        # ── Elite ranking ────────────────────────────────────────────────
+        # Score every member on ONE shared held-out validation batch and
+        # keep the NUM_ELITES with the lowest NLL. Without this the elite
+        # set stays frozen at [0..NUM_ELITES) and rollouts sample from
+        # un-vetted members. (Members are bootstrap-trained on independent
+        # random draws, so a fresh random batch is a fair relative score.)
+        for k in range(Self.BATCH):
+            var idx = Int(random_float64() * Float64(n_data))
+            if idx >= n_data:
+                idx = n_data - 1
+            for d in range(Self.OBS_DIM):
+                dyn_in_p[k * Self.DYN_IN + d] = rb_obs[idx * Self.OBS_DIM + d]
+            for j in range(Self.ACT_DIM):
+                dyn_in_p[k * Self.DYN_IN + Self.OBS_DIM + j] = rb_act[
+                    idx * Self.ACT_DIM + j
+                ]
+            dyn_tgt_p[k * Self.DYN_PRED + 0] = rb_rew[idx]
+            for d in range(Self.OBS_DIM):
+                dyn_tgt_p[k * Self.DYN_PRED + 1 + d] = (
+                    rb_nxt[idx * Self.OBS_DIM + d]
+                    - rb_obs[idx * Self.OBS_DIM + d]
+                )
+        self._normalize_dyn_in_cpu()
+        var val_in_t = TileTensor(
+            dyn_in_p, row_major[Self.BATCH, Self.DYN_IN]()
+        )
+        var val_tgt_t = TileTensor(
+            dyn_tgt_p, row_major[Self.BATCH, Self.DYN_PRED]()
+        )
+        var holdout = List[Scalar[DT]]()
+        for m in range(Self.N_ENSEMBLE):
+            holdout.append(
+                self.ensemble.eval_member_loss["cpu"](m, val_in_t, val_tgt_t)
+            )
+        self.ensemble.update_elites(holdout)
 
     def _generate_synthetic_rollouts(mut self) raises:
         var real_buf_size = self.sample_blk.real_count["cpu"]()
@@ -1208,6 +1406,8 @@ struct MBPOTrainer[
                         dyn_in_p[
                             k * Self.DYN_IN + Self.OBS_DIM + j
                         ] = roll_act_p[k * Self.ACT_DIM + j]
+                # Whiten inputs to match the dynamics-train convention.
+                self._normalize_dyn_in_cpu()
                 var dyn_in_t = TileTensor(
                     dyn_in_p, row_major[Self.BATCH, Self.DYN_IN]()
                 )
@@ -1299,6 +1499,8 @@ struct MBPOTrainer[
                     self._ro_act.dev_ptr(),
                     self._dyn_in.dev_ptr(),
                 )
+                # Whiten inputs (targets below stay in raw reward/Δobs space).
+                self._normalize_dyn_in_gpu()
                 # dyn_tgt = [r, sp - s].
                 var rew_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
@@ -1329,6 +1531,51 @@ struct MBPOTrainer[
                 )
                 self._dyn_loss_accum += dyn_loss
                 self._dyn_step_count += 1
+
+        # ── Elite ranking on a shared held-out device batch ──────────────
+        self.sample_blk.real_sample[Self.BATCH](
+            ctx,
+            self._ro_obs.dev.value(),
+            self._ro_act.dev.value(),
+            self._ro_rew.dev.value(),
+            self._ro_nxt.dev.value(),
+            self._ro_done.dev.value(),
+        )
+        concat_sa_gpu[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH](
+            ctx,
+            self._ro_obs.dev_ptr(),
+            self._ro_act.dev_ptr(),
+            self._dyn_in.dev_ptr(),
+        )
+        self._normalize_dyn_in_gpu()
+        var v_rew_lt = LayoutTensor[
+            DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+        ](self._ro_rew.dev_ptr())
+        var v_s_lt = LayoutTensor[
+            DT, Layout.row_major(Self.BATCH, Self.OBS_DIM), MutAnyOrigin,
+        ](self._ro_obs.dev_ptr())
+        var v_sp_lt = LayoutTensor[
+            DT, Layout.row_major(Self.BATCH, Self.OBS_DIM), MutAnyOrigin,
+        ](self._ro_nxt.dev_ptr())
+        var v_tgt_lt = LayoutTensor[
+            DT, Layout.row_major(Self.BATCH, Self.DYN_PRED), MutAnyOrigin,
+        ](self._dyn_tgt.dev_ptr())
+        ctx.enqueue_function[tgt_kernel](
+            v_rew_lt, v_s_lt, v_sp_lt, v_tgt_lt,
+            grid_dim=n_blocks, block_dim=TPB,
+        )
+        var val_in_t = TileTensor(
+            self._dyn_in.dev_ptr(), row_major[Self.BATCH, Self.DYN_IN]()
+        )
+        var val_tgt_t = TileTensor(
+            self._dyn_tgt.dev_ptr(), row_major[Self.BATCH, Self.DYN_PRED]()
+        )
+        var holdout = List[Scalar[DT]]()
+        for m in range(Self.N_ENSEMBLE):
+            holdout.append(
+                self.ensemble.eval_member_loss["gpu"](m, val_in_t, val_tgt_t)
+            )
+        self.ensemble.update_elites(holdout)
 
     def _generate_synthetic_rollouts_gpu(mut self) raises:
         if self.sample_blk.real_count["gpu"]() < 1:
@@ -1397,6 +1644,8 @@ struct MBPOTrainer[
                     self._ro_act.dev_ptr(),
                     self._dyn_in.dev_ptr(),
                 )
+                # Whiten inputs to match the dynamics-train convention.
+                self._normalize_dyn_in_gpu()
 
                 # Elite dynamics forward → (mu, lv).
                 var dyn_in_t = TileTensor(
