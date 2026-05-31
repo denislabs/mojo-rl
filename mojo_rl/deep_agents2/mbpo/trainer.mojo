@@ -33,7 +33,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Module
-from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP, Bf16Compute
 from mojo_rl.nn2.core.checkpoint import (
     save_state_v2_body, load_state_v2_body,
     save_state_v2_body_gpu, load_state_v2_body_gpu,
@@ -281,6 +281,7 @@ struct MBPOTrainer[
     var sac_updates_per_step: Int
     var dyn_batch_size: Int
     var last_dyn_step: Int
+    var _use_bf16: Bool
 
     # Philox state for GPU warmup actions + rollout noise.
     var _warmup_rng_seed: UInt64
@@ -375,6 +376,7 @@ struct MBPOTrainer[
         self.sac_updates_per_step = 20
         self.dyn_batch_size = 256
         self.last_dyn_step = -1
+        self._use_bf16 = False
         self._warmup_rng_seed = UInt64(0xC0FFEE_C0DE)
         self._warmup_rng_offset = UInt64(0)
         self._roll_rng_seed = UInt64(0xB0A75E_D00D)
@@ -410,6 +412,7 @@ struct MBPOTrainer[
         num_rollouts_per_step: Int = 400,
         sac_updates_per_step: Int = 20,
         dyn_batch_size: Int = 256,
+        use_bf16: Bool = False,
     ) raises -> Self:
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
@@ -497,6 +500,7 @@ struct MBPOTrainer[
         t.num_rollouts_per_step = num_rollouts_per_step
         t.sac_updates_per_step = sac_updates_per_step
         t.dyn_batch_size = dyn_batch_size
+        t._use_bf16 = use_bf16
 
         t.sample_blk.setup[Self.train_target](learning_starts, ctx=ctx)
 
@@ -651,6 +655,20 @@ struct MBPOTrainer[
         if self.sample_blk.synth_count[Self.train_target]() < Self.SYNTH_BS:
             return False
 
+        comptime if Self.train_target == "cpu":
+            return self._run_sac_updates[NoAMP](step_idx)
+        else:
+            if self._use_bf16:
+                return self._run_sac_updates[Bf16Compute](step_idx)
+            return self._run_sac_updates[NoAMP](step_idx)
+
+    def _run_sac_updates[
+        POLICY: AMPPolicy = NoAMP,
+    ](mut self, step_idx: Int) raises -> Bool:
+        """The `sac_updates_per_step` inner SAC mini-updates against the
+        mixed real+synth buffer. `POLICY` (NoAMP / Bf16Compute) threads
+        through the SAC sub-blocks; the dynamics ensemble + rollout phase
+        stay fp32 (they ran in the caller before the readiness gate)."""
         var any = False
         for _ in range(self.sac_updates_per_step):
             self.state.step_idx = step_idx
@@ -667,7 +685,7 @@ struct MBPOTrainer[
             self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
             var t_ty = perf_counter_ns()
-            self.target_y_blk.step[Self.train_target](
+            self.target_y_blk.step[Self.train_target, POLICY](
                 self.state,
                 self.actor,
                 self.pair1.target_net,
@@ -677,7 +695,7 @@ struct MBPOTrainer[
 
             var t_crit = perf_counter_ns()
             self.twin_critic_blk.step[
-                Self.train_target, NoAMP,
+                Self.train_target, POLICY,
                 ACCUMULATE = Self.train_target == "gpu",
             ](
                 self.state,
@@ -689,7 +707,7 @@ struct MBPOTrainer[
             self.timer.accumulate(Self._T_CRITIC, t_crit)
 
             var t_act = perf_counter_ns()
-            self.actor_blk.step[Self.train_target](
+            self.actor_blk.step[Self.train_target, POLICY](
                 self.state,
                 self.actor,
                 self.actor_opt,

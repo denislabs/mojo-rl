@@ -39,7 +39,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Module
-from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP, Bf16Compute
+from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP, Bf16Compute  # bf16 (4.4)
 from mojo_rl.nn2.core.checkpoint import (
     save_state_v2_body, load_state_v2_body,
     save_state_v2_body_gpu, load_state_v2_body_gpu,
@@ -185,6 +185,7 @@ struct DDPGTrainer[
     var action_scale: Scalar[DT]
     var noise_scale: Scalar[DT]
     var learning_starts: Int
+    var _use_bf16: Bool
     # Philox state for batched warmup + exploration noise (gpu path only).
     var _warmup_rng_seed: UInt64
     var _warmup_rng_offset: UInt64
@@ -243,6 +244,7 @@ struct DDPGTrainer[
         self.action_scale = Scalar[DT](1.0)
         self.noise_scale = Scalar[DT](0.1)
         self.learning_starts = 1_000
+        self._use_bf16 = False
         self._warmup_rng_seed = UInt64(0xC0FFEE_C0DE)
         self._warmup_rng_offset = UInt64(0)
         self._noise_rng_seed = UInt64(0xD15EA5E_D00D)
@@ -269,8 +271,11 @@ struct DDPGTrainer[
         window_size: Int = 10,
         initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
         max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
+        use_bf16: Bool = False,
     ) raises -> Self:
-        """Unified factory. `ctx` is required for `train_target='gpu'`."""
+        """Unified factory. `ctx` is required for `train_target='gpu'`.
+        `use_bf16=True` (GPU only) runs the train step under the
+        `Bf16Compute` AMP policy (mixed precision)."""
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
         ), "DDPGTrainer: target must be 'cpu' or 'gpu'"
@@ -328,6 +333,7 @@ struct DDPGTrainer[
         t.action_scale = action_scale
         t.noise_scale = noise_scale
         t.learning_starts = learning_starts
+        t._use_bf16 = use_bf16
 
         t.sample_blk.setup(learning_starts, ctx=ctx)
 
@@ -396,6 +402,8 @@ struct DDPGTrainer[
         comptime if Self.train_target == "cpu":
             return self._train_step_impl[NoAMP](step_idx)
         else:
+            if self._use_bf16:
+                return self._train_step_impl[Bf16Compute](step_idx)
             return self._train_step_impl[NoAMP](step_idx)
 
     def _train_step_impl[
@@ -412,41 +420,7 @@ struct DDPGTrainer[
             return False
         self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
-        var t_ty = perf_counter_ns()
-        self.target_y_blk.step[Self.train_target](
-            self.state,
-            self.actor_pair.target_net,
-            self.critic_pair.target_net,
-        )
-        self.timer.accumulate(Self._T_TARGET_Y, t_ty)
-
-        var t_crit = perf_counter_ns()
-        # GPU: accumulate critic loss on-device (no per-step D2H).
-        self.critic_blk.step[
-            Self.train_target, POLICY, ACCUMULATE = Self.train_target == "gpu"
-        ](
-            self.state,
-            self.critic_pair.online,
-            self.critic_opt,
-        )
-        self.timer.accumulate(Self._T_CRITIC, t_crit)
-
-        var t_act = perf_counter_ns()
-        self.actor_blk.step[Self.train_target](
-            self.state,
-            self.actor_pair.online,
-            self.actor_opt,
-            self.critic_pair.online,
-        )
-        self.timer.accumulate(Self._T_ACTOR, t_act)
-
-        var t_pol = perf_counter_ns()
-        self.polyak_blk.step[Self.train_target](
-            self.state,
-            self.actor_pair,
-            self.critic_pair,
-        )
-        self.timer.accumulate(Self._T_POLYAK, t_pol)
+        self._train_post_sample_kernels[POLICY]()
 
         # Per-batch diagnostics — CPU-only walk (matches SAC; GPU would
         # need D2H of the mb_* scratches, deferred). `mean_q` reads the
@@ -473,6 +447,48 @@ struct DDPGTrainer[
         self.note_train_update()
         return True
 
+    def _train_post_sample_kernels[
+        POLICY: AMPPolicy = NoAMP,
+    ](mut self) raises:
+        """Shared post-sample kernel sequence (target_y → critic → actor →
+        polyak), used by both `_train_step_impl` and the CUDA-graph capture
+        body `_train_device_kernels_impl` so captured == non-captured."""
+        var t_ty = perf_counter_ns()
+        self.target_y_blk.step[Self.train_target, POLICY](
+            self.state,
+            self.actor_pair.target_net,
+            self.critic_pair.target_net,
+        )
+        self.timer.accumulate(Self._T_TARGET_Y, t_ty)
+
+        var t_crit = perf_counter_ns()
+        # GPU: accumulate critic loss on-device (no per-step D2H).
+        self.critic_blk.step[
+            Self.train_target, POLICY, ACCUMULATE = Self.train_target == "gpu"
+        ](
+            self.state,
+            self.critic_pair.online,
+            self.critic_opt,
+        )
+        self.timer.accumulate(Self._T_CRITIC, t_crit)
+
+        var t_act = perf_counter_ns()
+        self.actor_blk.step[Self.train_target, POLICY](
+            self.state,
+            self.actor_pair.online,
+            self.actor_opt,
+            self.critic_pair.online,
+        )
+        self.timer.accumulate(Self._T_ACTOR, t_act)
+
+        var t_pol = perf_counter_ns()
+        self.polyak_blk.step[Self.train_target](
+            self.state,
+            self.actor_pair,
+            self.critic_pair,
+        )
+        self.timer.accumulate(Self._T_POLYAK, t_pol)
+
     def note_train_update(mut self):
         """One logical update's host bookkeeping. On GPU the loss
         accumulators are `+= 0` sentinels (flush reads device buffers)."""
@@ -480,6 +496,35 @@ struct DDPGTrainer[
         self._critic_L_accum += self.state.critic_loss
         self._update_count += 1
         self._total_train_steps += 1
+
+    # ─── CUDA-graph capture surface (Phase 4.4) ──────────────────────
+    #
+    # `train_device_kernels` is the pure device-kernel train step (sample +
+    # post-sample sequence, no host gate / counters) captured into the graph
+    # by the USE_TRAIN_CUDA_GRAPH driver path. GPU-only; the caller gates on
+    # `learning_starts_count()` and advances host counters via
+    # `note_train_update`. On non-NVIDIA the closure runs each call (no-op
+    # capture) → identical to the non-captured path.
+    def _train_device_kernels_impl[
+        POLICY: AMPPolicy = NoAMP,
+    ](mut self) raises:
+        self.state.step_idx = self.learning_starts
+        self.state.did_step = True
+        self.state.ctx = self.ctx
+        self.sample_blk.step(self.state)
+        self._train_post_sample_kernels[POLICY]()
+
+    def train_device_kernels(mut self) raises:
+        comptime assert Self.train_target == "gpu", (
+            "train_device_kernels is GPU-only (CUDA-graph capture path)"
+        )
+        if self._use_bf16:
+            self._train_device_kernels_impl[Bf16Compute]()
+        else:
+            self._train_device_kernels_impl[NoAMP]()
+
+    def learning_starts_count(self) -> Int:
+        return self.learning_starts
 
     def mean_return(self) -> Scalar[DT]:
         return self.tracker.mean_return()
@@ -559,6 +604,9 @@ struct DDPGTrainer[
                 self._noise_rng_seed, self._noise_rng_offset,
             )
             self._noise_rng_offset += UInt64(((total + 1) // 2) * 2)
+            var ao_lt = LayoutTensor[
+                DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+            ](ao_scratch_ptr)
             var noise_lt = LayoutTensor[
                 DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
             ](alp_scratch_ptr)
@@ -568,7 +616,7 @@ struct DDPGTrainer[
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime nc_kernel = _ddpg_noise_clamp_kernel[N_ENVS, ACT]
             ctx.enqueue_function[nc_kernel](
-                ao_t, noise_lt, action_lt, sigma, self.action_scale,
+                ao_lt, noise_lt, action_lt, sigma, self.action_scale,
                 grid_dim=n_blocks, block_dim=TPB,
             )
 

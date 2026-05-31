@@ -12,6 +12,7 @@ Owns the inner DDPGActorLoss (TD3 uses DPG on critic1 for the actor).
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from ...core.online_target_pair import OnlineTargetPair
 from mojo_rl.nn2.optimizer.adam import Adam
@@ -64,7 +65,7 @@ struct TD3DelayedActorPolyakStep[
     def read_loss_accum(mut self) raises -> Scalar[DT]:
         return self.inner.read_loss_accum()
 
-    def step[target: StaticString](
+    def step[target: StaticString, POLICY: AMPPolicy = NoAMP](
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut actor_opt: Adam,
@@ -81,7 +82,7 @@ struct TD3DelayedActorPolyakStep[
         self._counter = 0
 
         # Actor update against critic1 (DDPG-style DPG on pair1.online).
-        var loss = self.inner.forward_backward[target, OPT=Adam](
+        var loss = self.inner.forward_backward[target, OPT=Adam, POLICY=POLICY](
             actor_pair.online, actor_opt, pair1.online,
             state.mb_s.target_ptr[target](),
         )

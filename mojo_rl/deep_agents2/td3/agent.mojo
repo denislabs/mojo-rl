@@ -74,9 +74,11 @@ struct TD3Agent[
         window_size: Int = 10,
         initial_episode_fill: Scalar[DT] = -1250.0,
         max_grad_norm: Scalar[DT] = 0.0,
+        use_bf16: Bool = False,
     ) raises:
         """Construct a TD3Agent. Forwards every kwarg to `TD3Trainer.make`.
-        `ctx` is required for `train_target='gpu'`."""
+        `ctx` is required for `train_target='gpu'`; `use_bf16` (GPU) enables
+        mixed-precision training."""
         self.trainer = TD3Trainer[
             Self.train_target,
             Self.SAMPLE,
@@ -97,6 +99,7 @@ struct TD3Agent[
             window_size=window_size,
             initial_episode_fill=initial_episode_fill,
             max_grad_norm=max_grad_norm,
+            use_bf16=use_bf16,
         )
 
     # ─── Training entry points ─────────────────────────────────────────

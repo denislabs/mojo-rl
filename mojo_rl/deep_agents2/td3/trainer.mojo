@@ -34,7 +34,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Module
-from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP, Bf16Compute
 from mojo_rl.nn2.core.checkpoint import (
     save_state_v2_body, load_state_v2_body,
     save_state_v2_body_gpu, load_state_v2_body_gpu,
@@ -168,6 +168,7 @@ struct TD3Trainer[
     var action_scale: Scalar[DT]
     var exploration_noise: Scalar[DT]
     var learning_starts: Int
+    var _use_bf16: Bool
     # Philox state for batched warmup + exploration noise (gpu path only).
     var _warmup_rng_seed: UInt64
     var _warmup_rng_offset: UInt64
@@ -224,6 +225,7 @@ struct TD3Trainer[
         self.action_scale = Scalar[DT](1.0)
         self.exploration_noise = Scalar[DT](0.1)
         self.learning_starts = 1_000
+        self._use_bf16 = False
         self._warmup_rng_seed = UInt64(0xC0FFEE_C0DE)
         self._warmup_rng_offset = UInt64(0)
         self._noise_rng_seed = UInt64(0xD15EA5E_D00D)
@@ -255,8 +257,10 @@ struct TD3Trainer[
         window_size: Int = 10,
         initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
         max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
+        use_bf16: Bool = False,
     ) raises -> Self:
-        """Unified factory. `ctx` is required for `train_target='gpu'`."""
+        """Unified factory. `ctx` is required for `train_target='gpu'`.
+        `use_bf16=True` (GPU only) runs the train step under `Bf16Compute`."""
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
         ), "TD3Trainer: target must be 'cpu' or 'gpu'"
@@ -323,6 +327,7 @@ struct TD3Trainer[
         t.action_scale = action_scale
         t.exploration_noise = exploration_noise
         t.learning_starts = learning_starts
+        t._use_bf16 = use_bf16
 
         t.sample_blk.setup(learning_starts, ctx=ctx)
 
@@ -384,7 +389,12 @@ struct TD3Trainer[
     # ─── train_step ───────────────────────────────────────────────────
 
     def train_step(mut self, step_idx: Int) raises -> Bool:
-        return self._train_step_impl[NoAMP](step_idx)
+        comptime if Self.train_target == "cpu":
+            return self._train_step_impl[NoAMP](step_idx)
+        else:
+            if self._use_bf16:
+                return self._train_step_impl[Bf16Compute](step_idx)
+            return self._train_step_impl[NoAMP](step_idx)
 
     def _train_step_impl[
         POLICY: AMPPolicy = NoAMP,
@@ -401,7 +411,7 @@ struct TD3Trainer[
         self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
         var t_ty = perf_counter_ns()
-        self.target_y_blk.step[Self.train_target](
+        self.target_y_blk.step[Self.train_target, POLICY](
             self.state,
             self.actor_pair.target_net,
             self.pair1.target_net,
@@ -452,7 +462,7 @@ struct TD3Trainer[
         # TD3 actor + 3-pair polyak (gated by internal counter). Block reads
         # actor via actor_pair.online + critic1 via pair1.online internally.
         var t_act = perf_counter_ns()
-        self.actor_polyak_blk.step[Self.train_target](
+        self.actor_polyak_blk.step[Self.train_target, POLICY](
             self.state,
             self.actor_opt,
             self.actor_pair,
@@ -538,6 +548,9 @@ struct TD3Trainer[
                 self._noise_rng_seed, self._noise_rng_offset,
             )
             self._noise_rng_offset += UInt64(((total + 1) // 2) * 2)
+            var ao_lt = LayoutTensor[
+                DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+            ](ao_scratch_ptr)
             var noise_lt = LayoutTensor[
                 DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
             ](alp_scratch_ptr)
@@ -547,7 +560,7 @@ struct TD3Trainer[
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime nc_kernel = _td3_noise_clamp_kernel[N_ENVS, ACT]
             ctx.enqueue_function[nc_kernel](
-                ao_t, noise_lt, action_lt, sigma, self.action_scale,
+                ao_lt, noise_lt, action_lt, sigma, self.action_scale,
                 grid_dim=n_blocks, block_dim=TPB,
             )
 

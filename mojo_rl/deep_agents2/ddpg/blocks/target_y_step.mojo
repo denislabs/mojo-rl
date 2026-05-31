@@ -11,6 +11,7 @@ optional `DeviceContext` and reads the minibatch scratches through
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from ..target_y_block import DDPGTargetYBlock
 from ...training.trainer_block import TrainerState
@@ -52,13 +53,13 @@ struct DDPGTargetYStep[
             )
         return b^
 
-    def step[target: StaticString](
+    def step[target: StaticString, POLICY: AMPPolicy = NoAMP](
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut actor_t: Self.ACTOR,
         mut critic_t: Self.CRITIC,
     ) raises:
-        self.inner.step[target](
+        self.inner.step[target, POLICY](
             actor_t, critic_t,
             state.mb_sp.target_ptr[target](), state.mb_r.target_ptr[target](),
             state.mb_d.target_ptr[target](),

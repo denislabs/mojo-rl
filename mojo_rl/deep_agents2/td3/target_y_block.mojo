@@ -58,6 +58,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
@@ -223,6 +224,7 @@ struct TD3TargetYBlock[
 
     def step[
         target: StaticString,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         mut actor_target: Self.ACTOR,
@@ -279,7 +281,7 @@ struct TD3TargetYBlock[
         # Forward writes the bootstrap `γ·min(Q1',Q2')` into mb_y (terminal
         # node `gamma_q`, OUT_DIM=1); then add reward + apply the terminal mask.
         var mb_y_t = TileTensor(mb_y_ptr, row_major[Self.BATCH, 1]())
-        self.graph.forward[target, Self.BATCH](mb_y_t)
+        self.graph.forward[target, Self.BATCH, POLICY](mb_y_t)
 
         apply_terminal_mask[target, Self.BATCH](
             self.ts.ctx, mb_r_ptr, mb_term_ptr, mb_y_ptr,

@@ -74,9 +74,11 @@ struct DDPGAgent[
         window_size: Int = 10,
         initial_episode_fill: Scalar[DT] = -1250.0,
         max_grad_norm: Scalar[DT] = 0.0,
+        use_bf16: Bool = False,
     ) raises:
         """Construct a DDPGAgent. Forwards every kwarg to `DDPGTrainer.make`.
-        `ctx` is required for `train_target='gpu'`."""
+        `ctx` is required for `train_target='gpu'`; `use_bf16` (GPU) enables
+        mixed-precision training."""
         self.trainer = DDPGTrainer[
             Self.train_target,
             Self.SAMPLE,
@@ -94,6 +96,7 @@ struct DDPGAgent[
             window_size=window_size,
             initial_episode_fill=initial_episode_fill,
             max_grad_norm=max_grad_norm,
+            use_bf16=use_bf16,
         )
 
     # ─── Training entry points ─────────────────────────────────────────

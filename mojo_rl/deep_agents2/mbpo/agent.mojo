@@ -85,9 +85,11 @@ struct MBPOAgent[
         num_rollouts_per_step: Int = 400,
         sac_updates_per_step: Int = 20,
         dyn_batch_size: Int = 256,
+        use_bf16: Bool = False,
     ) raises:
         """Construct an MBPOAgent. Forwards every kwarg to `MBPOTrainer.make`.
-        `ctx` is required for `train_target='gpu'`."""
+        `ctx` is required for `train_target='gpu'`; `use_bf16` (GPU) enables
+        mixed-precision on the SAC sub-update."""
         self.trainer = Self.TrainerT.make(
             ctx=ctx,
             actor_lr=actor_lr,
@@ -108,6 +110,7 @@ struct MBPOAgent[
             num_rollouts_per_step=num_rollouts_per_step,
             sac_updates_per_step=sac_updates_per_step,
             dyn_batch_size=dyn_batch_size,
+            use_bf16=use_bf16,
         )
 
     # ─── Training entry points ─────────────────────────────────────────
