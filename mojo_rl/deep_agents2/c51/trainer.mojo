@@ -30,6 +30,7 @@ from mojo_rl.nn2.core.checkpoint import (
 )
 from mojo_rl.nn2.core.log_bundle import log_bundle
 from mojo_rl.nn2.core.map_params import hard_copy_params
+from mojo_rl.nn2.core.save_scalar import SaveScalar
 from mojo_rl.nn2.core.metric import LogScalar
 from mojo_rl.nn2.core.scratch import Scratch
 from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
@@ -653,10 +654,13 @@ struct C51Trainer[
         _ = self.flush_metrics[L](logger, step)
 
     def save_state(mut self, path: String) raises:
-        """One-file v2 checkpoint of the C51 module + optimizer.
-        Sections: `q_net.*`, `q_opt.*`. Overwrites `path`. CPU-only;
-        GPU save/load would need device→host sync first. Replay buffer
-        + episode tracker NOT included."""
+        """One-file v2 checkpoint of the C51 module + optimizer + the
+        ε-greedy exploration state. Sections: `q_net.*`, `q_opt.*`, then
+        `eps.{epsilon,epsilon_decay,epsilon_min}`. Overwrites `path`. The
+        on-disk format is byte-identical CPU vs GPU (device params synced
+        to host on save); the ε state is a host scalar in both targets, so
+        resume continues the decay schedule instead of restarting at ε=1.
+        Replay buffer + episode tracker NOT included."""
         var body = String("")
         comptime if Self.train_target == "cpu":
             save_state_v2_body(self.pair.online, body, "q_net")
@@ -665,6 +669,9 @@ struct C51Trainer[
             var c = self.ctx.value()
             save_state_v2_body_gpu(self.pair.online, body, "q_net", c)
             save_optimizer_v2_body_gpu(self.q_opt, body, "q_opt")
+        SaveScalar[DT](self.epsilon).save(body, "eps.epsilon")
+        SaveScalar[DT](self.epsilon_decay).save(body, "eps.epsilon_decay")
+        SaveScalar[DT](self.epsilon_min).save(body, "eps.epsilon_min")
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
@@ -685,6 +692,16 @@ struct C51Trainer[
             var c = self.ctx.value()
             load_state_v2_body_gpu(self.pair.online, lines, idx, "q_net", c)
             load_optimizer_v2_body_gpu(self.q_opt, lines, idx, "q_opt")
+        # ε-greedy exploration state (host scalar in both targets).
+        var eps_w = SaveScalar[DT](self.epsilon)
+        eps_w.load(lines, idx, "eps.epsilon")
+        self.epsilon = eps_w.v
+        var eps_decay_w = SaveScalar[DT](self.epsilon_decay)
+        eps_decay_w.load(lines, idx, "eps.epsilon_decay")
+        self.epsilon_decay = eps_decay_w.v
+        var eps_min_w = SaveScalar[DT](self.epsilon_min)
+        eps_min_w.load(lines, idx, "eps.epsilon_min")
+        self.epsilon_min = eps_min_w.v
         hard_copy_params[Self.train_target, M=Self.Q_NET](
             self.pair.online, self.pair.target_net, self.ctx,
         )

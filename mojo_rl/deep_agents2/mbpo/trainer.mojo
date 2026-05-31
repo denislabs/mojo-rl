@@ -41,6 +41,7 @@ from mojo_rl.nn2.core.checkpoint import (
 from mojo_rl.nn2.core.log_bundle import log_bundle
 from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.metric import LogScalar
+from mojo_rl.nn2.core.save_scalar import SaveI
 from ..core.checkpoint_helpers import (
     save_optimizer_v2_body, load_optimizer_v2_body,
     save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
@@ -852,8 +853,14 @@ struct MBPOTrainer[
         _ = self.flush_metrics[L](logger, step)
 
     def save_state(mut self, path: String) raises:
-        """One-file v2 checkpoint of the MBPO SAC modules + optimizers.
-        NOT saved: dynamics ensemble (resume re-trains it)."""
+        """One-file v2 checkpoint of the full MBPO trainer state: the SAC
+        modules + optimizers AND the dynamics ensemble (every member net +
+        its Adam moments), the elite-member indices, and the rollout
+        length. So a resumed run continues from the learned world model
+        instead of re-training it from scratch. The on-disk format is
+        byte-identical CPU vs GPU (device state synced to host on save).
+        NOT saved: replay buffers + episode tracker (matches every other
+        trainer)."""
         var body = String("")
         comptime if Self.train_target == "gpu":
             var c = self.ctx.value()
@@ -864,6 +871,13 @@ struct MBPOTrainer[
             save_optimizer_v2_body_gpu(self.critic1_opt, body, "critic1_opt")
             save_optimizer_v2_body_gpu(self.critic2_opt, body, "critic2_opt")
             save_scalar_adam_v2_body_gpu(self.alpha_opt, body, "alpha_opt")
+            for i in range(Self.N_ENSEMBLE):
+                save_state_v2_body_gpu(
+                    self.ensemble.members[i], body, "dyn_member" + String(i), c
+                )
+                save_optimizer_v2_body_gpu(
+                    self.ensemble.opts[i], body, "dyn_opt" + String(i)
+                )
         else:
             save_state_v2_body(self.actor, body, "actor")
             save_state_v2_body(self.pair1.online, body, "critic1")
@@ -872,6 +886,20 @@ struct MBPOTrainer[
             save_optimizer_v2_body(self.critic1_opt, body, "critic1_opt")
             save_optimizer_v2_body(self.critic2_opt, body, "critic2_opt")
             save_scalar_adam_v2_body(self.alpha_opt, body, "alpha_opt")
+            for i in range(Self.N_ENSEMBLE):
+                save_state_v2_body(
+                    self.ensemble.members[i], body, "dyn_member" + String(i)
+                )
+                save_optimizer_v2_body(
+                    self.ensemble.opts[i], body, "dyn_opt" + String(i)
+                )
+        # Elite indices + rollout length: host ints, identical both targets.
+        SaveI(len(self.ensemble.elite_indices)).save(body, "dyn_n_elites")
+        for i in range(len(self.ensemble.elite_indices)):
+            SaveI(self.ensemble.elite_indices[i]).save(
+                body, "dyn_elite" + String(i)
+            )
+        SaveI(self.rollout_length).save(body, "dyn_rollout_length")
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
@@ -890,6 +918,14 @@ struct MBPOTrainer[
             load_optimizer_v2_body_gpu(self.critic1_opt, lines, idx, "critic1_opt")
             load_optimizer_v2_body_gpu(self.critic2_opt, lines, idx, "critic2_opt")
             load_scalar_adam_v2_body_gpu(self.alpha_opt, lines, idx, "alpha_opt")
+            for i in range(Self.N_ENSEMBLE):
+                load_state_v2_body_gpu(
+                    self.ensemble.members[i], lines, idx,
+                    "dyn_member" + String(i), c,
+                )
+                load_optimizer_v2_body_gpu(
+                    self.ensemble.opts[i], lines, idx, "dyn_opt" + String(i)
+                )
             hard_copy_params["gpu", M=Self.CRITIC](
                 self.pair1.online, self.pair1.target_net, self.ctx,
             )
@@ -904,12 +940,30 @@ struct MBPOTrainer[
             load_optimizer_v2_body(self.critic1_opt, lines, idx, "critic1_opt")
             load_optimizer_v2_body(self.critic2_opt, lines, idx, "critic2_opt")
             load_scalar_adam_v2_body(self.alpha_opt, lines, idx, "alpha_opt")
+            for i in range(Self.N_ENSEMBLE):
+                load_state_v2_body(
+                    self.ensemble.members[i], lines, idx,
+                    "dyn_member" + String(i),
+                )
+                load_optimizer_v2_body(
+                    self.ensemble.opts[i], lines, idx, "dyn_opt" + String(i)
+                )
             hard_copy_params["cpu", M=Self.CRITIC](
                 self.pair1.online, self.pair1.target_net, None,
             )
             hard_copy_params["cpu", M=Self.CRITIC](
                 self.pair2.online, self.pair2.target_net, None,
             )
+        # Elite indices + rollout length (host ints, identical both targets).
+        var n_elites_w = SaveI(0)
+        n_elites_w.load(lines, idx, "dyn_n_elites")
+        for i in range(n_elites_w.v):
+            var elite_w = SaveI(0)
+            elite_w.load(lines, idx, "dyn_elite" + String(i))
+            self.ensemble.elite_indices[i] = elite_w.v
+        var rl_w = SaveI(0)
+        rl_w.load(lines, idx, "dyn_rollout_length")
+        self.rollout_length = rl_w.v
 
     def flush_timer_log(mut self) -> String:
         var report = self.timer.format_report()
