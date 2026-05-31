@@ -17,6 +17,14 @@ from .ensemble_target_y_block import EnsembleTargetYBlock
 from .ensemble_actor_loss import EnsembleActorLoss, EnsembleActorLossResult
 from .metrics import REDQMetrics
 from .trainer import REDQTrainer
+from .agent import REDQAgent
+from .config import (
+    REDQConfigT,
+    REDQConfig, SmallREDQConfig,
+    REDQActor, REDQCritic,
+    agent_from_config,
+    REDQ, SmallREDQ,
+)
 from .blocks.ensemble_critic_step import EnsembleCriticStep
 from .blocks.ensemble_actor_step import EnsembleActorStep
 from .blocks.ensemble_polyak_step import EnsemblePolyakStep

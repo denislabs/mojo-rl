@@ -37,7 +37,7 @@ from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 
 from ...loss.critic_update_block import CriticUpdateBlock
-from ...training.off_policy_critic import concat_sa
+from ...training.off_policy_critic import concat_sa, concat_sa_gpu
 from ...training.trainer_block import TrainerState
 from ..ensemble import CriticEnsemble
 
@@ -69,12 +69,11 @@ struct EnsembleCriticStep[
     def make[target: StaticString](
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        """CPU-only factory for R.1. GPU path will land in a follow-up
-        commit alongside the full GPU REDQ trainer."""
-        comptime assert target == "cpu", (
-            "EnsembleCriticStep: R.1 supports CPU only — GPU coming in"
-            " a follow-up (the surface stays unchanged, only the inner"
-            " `concat_sa` + member_step branches add a GPU arm)."
+        """CPU + GPU factory. R.1 was CPU-only; R.5 adds the GPU branch
+        (concat_sa_gpu + inner CriticUpdateBlock.step["gpu"], which is
+        already GPU-capable from the SAC port)."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "EnsembleCriticStep: target must be 'cpu' or 'gpu'"
         )
         var blk = Self()
         blk.member_step = CriticUpdateBlock[
@@ -104,7 +103,13 @@ struct EnsembleCriticStep[
                 state.mb_a.target_ptr[target](),
                 sa_p,
             )
-        # GPU branch lands in the follow-up.
+        else:
+            concat_sa_gpu[Self.OBS, Self.ACT, Self.BATCH](
+                self.ts.ctx.value(),
+                state.mb_s.target_ptr[target](),
+                state.mb_a.target_ptr[target](),
+                sa_p,
+            )
         var sa_t = TileTensor(sa_p, row_major[Self.BATCH, Self.SA_DIM]())
         var mb_y_t = TileTensor(
             state.mb_y.target_ptr[target](),

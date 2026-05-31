@@ -30,13 +30,26 @@ R.5 / a separate slice.
 
 from std.math import exp as fexp, tanh as ftanh
 from std.random import random_float64
+from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
+from std.gpu import block_dim, block_idx, thread_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.core.logger import Logger, NoOpLogger
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn2.core.checkpoint import (
+    save_state_v2_body, load_state_v2_body,
+    save_state_v2_body_gpu, load_state_v2_body_gpu,
+)
+from mojo_rl.nn2.core.map_params import hard_copy_params
+from ..core.checkpoint_helpers import (
+    save_optimizer_v2_body, load_optimizer_v2_body,
+    save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
+    save_scalar_adam_v2_body, load_scalar_adam_v2_body,
+    split_lines_v2, read_file_v2, expect_v2_header,
+)
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
 from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
@@ -49,7 +62,8 @@ from mojo_rl.nn2.training.timer import Timer
 
 from ..training.episode_tracker import EpisodeTracker
 from ..training.trainer_block import TrainerState
-from ..training.driver_offpolicy import OffPolicyAgent
+from ..training.driver_offpolicy import OffPolicyAgent, OffPolicyAgentGpu
+from ..data.n_step_replay import GPUNStepBuffer
 from ..training.blocks import SampleBlock
 from ..sac.blocks.alpha_update_step import AlphaUpdateStep
 
@@ -59,6 +73,56 @@ from .blocks.ensemble_critic_step import EnsembleCriticStep
 from .blocks.ensemble_actor_step import EnsembleActorStep
 from .blocks.ensemble_polyak_step import EnsemblePolyakStep
 from .metrics import REDQMetrics
+
+
+# ────────────────────────────────────────────────────────────────────
+# GPU select_action_batched kernels (mirror SAC's `_warmup_uniform_kernel`
+# + `_action_clamp_kernel` so the batched action surface is shape-equivalent
+# on CPU and GPU).
+# ────────────────────────────────────────────────────────────────────
+
+
+def _redq_warmup_uniform_kernel[N_ENVS: Int, ACT: Int](
+    action_dest: LayoutTensor[
+        DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+    ],
+    action_scale: Scalar[DT],
+    seed: UInt64,
+    offset_base: UInt64,
+):
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = N_ENVS * ACT
+    if i >= total:
+        return
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var u = Float32(philox.step_uniform()[0])
+    var s = Scalar[DT](2.0) * Scalar[DT](u) - Scalar[DT](1.0)
+    var env = i // ACT
+    var j = i % ACT
+    action_dest[env, j] = s * action_scale
+
+
+def _redq_action_clamp_kernel[N_ENVS: Int, ACT: Int](
+    alp: LayoutTensor[
+        DT, Layout.row_major(N_ENVS, ACT + 1), MutAnyOrigin,
+    ],
+    action_out: LayoutTensor[
+        DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+    ],
+    action_scale: Scalar[DT],
+):
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = N_ENVS * ACT
+    if i >= total:
+        return
+    var env = i // ACT
+    var j = i % ACT
+    var a = alp[env, j]
+    if a > action_scale:
+        a = action_scale
+    elif a < -action_scale:
+        a = -action_scale
+    action_out[env, j] = a
 
 
 struct REDQTrainer[
@@ -71,7 +135,7 @@ struct REDQTrainer[
     UTD: Int,
     POLICY_DELAY: Int,
     Q_MODE: Int,
-](OffPolicyAgent):
+](OffPolicyAgentGpu):
     """REDQ Trainer. Dims (OBS / ACT / BATCH) derived from SAMPLE,
     so the user specifies them ONCE on the sample block type.
 
@@ -136,6 +200,10 @@ struct REDQTrainer[
     var action_scale: Scalar[DT]
     var learning_starts: Int
 
+    # GPU Philox warmup state (host counter advanced per warmup batch).
+    var _warmup_rng_seed: UInt64
+    var _warmup_rng_offset: UInt64
+
     # UTD bookkeeping. `_inner_count` is the cumulative inner critic
     # update counter modulo POLICY_DELAY drives the actor cadence.
     var _inner_count: Int
@@ -197,6 +265,8 @@ struct REDQTrainer[
         self._alp1 = Scratch["alp1", Self.ACT_DIM + 1, True]()
         self.action_scale = Scalar[DT](1.0)
         self.learning_starts = 1_000
+        self._warmup_rng_seed = UInt64(0xC0FFEE_C0DE)
+        self._warmup_rng_offset = UInt64(0)
         self._inner_count = 0
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
@@ -227,9 +297,14 @@ struct REDQTrainer[
         initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
         max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises -> Self:
-        comptime assert Self.train_target == "cpu", (
-            "REDQTrainer: R.3 supports CPU only — GPU follow-up."
-        )
+        comptime assert (
+            Self.train_target == "cpu" or Self.train_target == "gpu"
+        ), "REDQTrainer: train_target must be 'cpu' or 'gpu'"
+        comptime if Self.train_target == "gpu":
+            if not ctx:
+                raise Error(
+                    "REDQTrainer.make[train_target='gpu']: ctx required"
+                )
         comptime assert Self.N >= 2, "REDQ: N must be ≥ 2"
         comptime assert Self.N_MIN >= 1, "REDQ: N_MIN must be ≥ 1"
         comptime assert Self.N_MIN <= Self.N, "REDQ: N_MIN must be ≤ N"
@@ -316,33 +391,41 @@ struct REDQTrainer[
         self._inner_count += 1
 
         # Subset resample (Fisher-Yates over {0..N-1}, length N_MIN).
-        # MODE=AVE ignores it but the call is harmless.
+        # MODE=AVE ignores it but the call is harmless. CPU-side
+        # random_float64; the GPU target_y kernel reads the device
+        # uploaded mirror set by `target_y_blk.step["gpu"]`.
         self.target_y_blk.resample_subset_idxs()
 
-        # Target Y. CPU bakes α as a host scalar; GPU would wire a
-        # device buffer once at make-time (R.5).
+        # α: host scalar on both CPU and GPU (REDQ doesn't capture under
+        # CUDA graphs — host control flow with subset sampling +
+        # policy-delay gating — so the SAC device-α plumbing isn't
+        # needed). The target-y kernel reads α as a launch argument.
         var t_ty = perf_counter_ns()
         var alpha_val = fexp(self.alpha_opt.value)
         self.state.alpha = alpha_val
-        self.target_y_blk.step["cpu", POLICY](
+        self.target_y_blk.step[Self.train_target, POLICY](
             self.actor,
             self.ensemble,
-            self.state.mb_sp.cpu_ptr(),
-            self.state.mb_r.cpu_ptr(),
-            self.state.mb_d.cpu_ptr(),
+            self.state.mb_sp.target_ptr[Self.train_target](),
+            self.state.mb_r.target_ptr[Self.train_target](),
+            self.state.mb_d.target_ptr[Self.train_target](),
             alpha_val,
-            self.state.mb_y.cpu_ptr(),
+            self.state.mb_y.target_ptr[Self.train_target](),
         )
         self.timer.accumulate(Self._T_TARGET_Y, t_ty)
 
         # Critic update (N forward+vjp+Adam.step against shared y).
         var t_crit = perf_counter_ns()
-        self.critic_blk.step["cpu", POLICY](self.state, self.ensemble)
+        self.critic_blk.step[Self.train_target, POLICY](
+            self.state, self.ensemble,
+        )
         self.timer.accumulate(Self._T_CRITIC, t_crit)
 
         # Polyak ALL N targets every inner step (paper-faithful).
         var t_pol = perf_counter_ns()
-        self.polyak_blk.step["cpu"](self.state, self.ensemble)
+        self.polyak_blk.step[Self.train_target](
+            self.state, self.ensemble,
+        )
         self.timer.accumulate(Self._T_POLYAK, t_pol)
 
         # Actor + α every POLICY_DELAY inner critic updates. First fire
@@ -350,11 +433,16 @@ struct REDQTrainer[
         # Matches legacy `(critic_update_count % POL_DELAY == 0)`.
         if self._inner_count % Self.POLICY_DELAY == 0:
             var t_act = perf_counter_ns()
-            self.actor_blk.step["cpu", POLICY](
+            self.actor_blk.step[Self.train_target, POLICY](
                 self.state, self.actor, self.actor_opt, self.ensemble,
             )
             self.timer.accumulate(Self._T_ACTOR, t_act)
 
+            # α: ScalarAdam stays a host scalar (state.log_prob_mean is
+            # already a host Scalar — populated on both CPU and GPU by
+            # EnsembleActorLoss.forward_backward which D2Hs the lp mean
+            # at the end of its scalar reduction). So the same CPU
+            # AlphaUpdateStep code path drives α on both targets.
             var t_alp = perf_counter_ns()
             self.alpha_blk.step["cpu"](self.state, self.alpha_opt)
             self.timer.accumulate(Self._T_ALPHA, t_alp)
@@ -363,8 +451,13 @@ struct REDQTrainer[
             self._alpha_accum += fexp(self.alpha_opt.value)
             self._actor_update_count += 1
 
-        # Per-batch diagnostic accumulators (cheap; CPU-only).
-        self._accumulate_diag()
+        # Per-batch diagnostic accumulators. CPU walks the host
+        # scratches directly; GPU skips (matches SAC convention —
+        # `mean_q` / `mean_target` / `mean_reward` / `mean_done` /
+        # `mean_abs_action` stay 0.0 on GPU until a device-side diag
+        # walker is added).
+        comptime if Self.train_target == "cpu":
+            self._accumulate_diag()
 
         self._critic_L_accum += self.state.critic_loss
         self._update_count += 1
@@ -416,6 +509,9 @@ struct REDQTrainer[
         `_total_train_steps` increments by UTD when this returns True."""
         self.state.step_idx = step_idx
         self.state.did_step = True
+        # state.ctx routes through into blocks (polyak / target_y / etc.)
+        # that need it on GPU. None on CPU is fine.
+        self.state.ctx = self.ctx
 
         # Sample #1 — gates warmup and buffer-readiness.
         var t_s0 = perf_counter_ns()
@@ -452,37 +548,77 @@ struct REDQTrainer[
         alp_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         step_idx: Int,
     ) raises:
-        """Single batched entry. CPU only for R.3."""
+        """Single batched entry — CPU + GPU. CPU uses host
+        `random_float64` for warmup; GPU launches a Philox kernel."""
         comptime assert N_ENVS > 0, "N_ENVS must be > 0"
         comptime ACT = Self.ACT_DIM
         comptime OBS = Self.OBS_DIM
 
         if step_idx < self.learning_starts:
-            # Uniform random in [-scale, scale].
-            for i in range(N_ENVS * ACT):
-                var u = Scalar[DT](2.0 * random_float64() - 1.0)
-                action_ptr[i] = u * self.action_scale
+            comptime if Self.train_target == "cpu":
+                # CPU warmup: uniform random in [-scale, +scale].
+                for i in range(N_ENVS * ACT):
+                    var u = Scalar[DT](2.0 * random_float64() - 1.0)
+                    action_ptr[i] = u * self.action_scale
+            else:
+                # GPU warmup: Philox kernel; advance offset by 2·N·A
+                # (each step_uniform consumes 2 raw uint32s per lane).
+                var action_lt = LayoutTensor[
+                    DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+                ](action_ptr)
+                comptime total = N_ENVS * ACT
+                comptime n_blocks = (total + TPB - 1) // TPB
+                comptime warmup_kernel = _redq_warmup_uniform_kernel[
+                    N_ENVS, ACT,
+                ]
+                var ctx = self.ctx.value()
+                ctx.enqueue_function[warmup_kernel](
+                    action_lt,
+                    self.action_scale,
+                    self._warmup_rng_seed,
+                    self._warmup_rng_offset,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
+                self._warmup_rng_offset += UInt64(N_ENVS * ACT * 2)
             return
 
-        # actor.forward(s) → ao [N_ENVS, 2*ACT]
+        # Policy forward — actor + rsample. Both target-parametric;
+        # N_ENVS rolls through transparently.
         var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
         var ao_t = TileTensor(ao_scratch_ptr, row_major[N_ENVS, 2 * ACT]())
         var alp_t = TileTensor(alp_scratch_ptr, row_major[N_ENVS, ACT + 1]())
-        self.actor.forward["cpu", N_ENVS](obs_t, output=ao_t)
-        self.actor_blk.inner.rsample.forward["cpu", N_ENVS](
+        self.actor.forward[Self.train_target, N_ENVS](obs_t, output=ao_t)
+        self.actor_blk.inner.rsample.forward[Self.train_target, N_ENVS](
             ao_t, output=alp_t,
         )
+
         # Clamp action.
-        for env in range(N_ENVS):
-            var src = alp_scratch_ptr + env * (ACT + 1)
-            var dst = action_ptr + env * ACT
-            for j in range(ACT):
-                var a = src[j]
-                if a > self.action_scale:
-                    a = self.action_scale
-                elif a < -self.action_scale:
-                    a = -self.action_scale
-                dst[j] = a
+        comptime if Self.train_target == "cpu":
+            for env in range(N_ENVS):
+                var src = alp_scratch_ptr + env * (ACT + 1)
+                var dst = action_ptr + env * ACT
+                for j in range(ACT):
+                    var a = src[j]
+                    if a > self.action_scale:
+                        a = self.action_scale
+                    elif a < -self.action_scale:
+                        a = -self.action_scale
+                    dst[j] = a
+        else:
+            var alp_lt = LayoutTensor[
+                DT, Layout.row_major(N_ENVS, ACT + 1), MutAnyOrigin,
+            ](alp_scratch_ptr)
+            var action_lt = LayoutTensor[
+                DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+            ](action_ptr)
+            comptime total = N_ENVS * ACT
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime clamp_kernel = _redq_action_clamp_kernel[N_ENVS, ACT]
+            var ctx = self.ctx.value()
+            ctx.enqueue_function[clamp_kernel](
+                alp_lt, action_lt, self.action_scale,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
 
     def select_action(
         mut self,
@@ -490,20 +626,29 @@ struct REDQTrainer[
         mut action_out: List[Scalar[DT]],
         step_idx: Int,
     ) raises:
-        """Host-list single-env wrapper (smoke-test/eval-loop callers)."""
-        var ob1_p = self._ob1.cpu_ptr()
+        """Host-list single-env wrapper (smoke-test/eval-loop callers).
+        On GPU: H2D obs → select_action_batched[1] writes through
+        device scratches → D2H action."""
+        var ob1_cpu_p = self._ob1.cpu_ptr()
         for d in range(Self.OBS_DIM):
-            ob1_p[d] = obs[d]
+            ob1_cpu_p[d] = obs[d]
+        comptime if Self.train_target == "gpu":
+            var ctx = self.ctx.value()
+            ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
         self.select_action_batched[1](
-            ob1_p,
-            self._alp1.cpu_ptr(),  # action_ptr — alias safe at N_ENVS=1
-            self._ao1.cpu_ptr(),
-            self._alp1.cpu_ptr(),
+            self._ob1.target_ptr[Self.train_target](),
+            self._alp1.target_ptr[Self.train_target](),  # action_ptr aliasing
+            self._ao1.target_ptr[Self.train_target](),
+            self._alp1.target_ptr[Self.train_target](),
             step_idx,
         )
-        var alp_p = self._alp1.cpu_ptr()
+        comptime if Self.train_target == "gpu":
+            var ctx = self.ctx.value()
+            ctx.enqueue_copy(self._alp1.cpu_ptr(), self._alp1.dev.value())
+            ctx.synchronize()
+        var alp_cpu_p = self._alp1.cpu_ptr()
         for j in range(Self.ACT_DIM):
-            action_out[j] = alp_p[j]
+            action_out[j] = alp_cpu_p[j]
 
     def select_greedy_action(
         mut self,
@@ -511,16 +656,35 @@ struct REDQTrainer[
         mut action_out: List[Scalar[DT]],
     ) raises:
         """Deterministic eval: `action = tanh(actor.forward(s).mean) ·
-        action_scale`, clamped."""
-        var ob1_p = self._ob1.cpu_ptr()
-        var ao1_p = self._ao1.cpu_ptr()
+        action_scale`, clamped. CPU runs natively; GPU H2Ds obs,
+        forwards on device, D2Hs the mean, and clamps on host
+        (matches SAC's `select_greedy_action` shape)."""
+        var ob1_cpu_p = self._ob1.cpu_ptr()
+        var ao1_cpu_p = self._ao1.cpu_ptr()
         for d in range(Self.OBS_DIM):
-            ob1_p[d] = obs[d]
-        var ob1_t = TileTensor(ob1_p, row_major[1, Self.OBS_DIM]())
-        var ao1_t = TileTensor(ao1_p, row_major[1, 2 * Self.ACT_DIM]())
-        self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
+            ob1_cpu_p[d] = obs[d]
+        comptime if Self.train_target == "cpu":
+            var ob1_t = TileTensor(
+                ob1_cpu_p, row_major[1, Self.OBS_DIM](),
+            )
+            var ao1_t = TileTensor(
+                ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM](),
+            )
+            self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
+        else:
+            var ctx = self.ctx.value()
+            ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
+            var ob1_t = TileTensor(
+                self._ob1.dev_ptr(), row_major[1, Self.OBS_DIM](),
+            )
+            var ao1_t = TileTensor(
+                self._ao1.dev_ptr(), row_major[1, 2 * Self.ACT_DIM](),
+            )
+            self.actor.forward["gpu", 1](ob1_t, output=ao1_t)
+            ctx.enqueue_copy(ao1_cpu_p, self._ao1.dev.value())
+            ctx.synchronize()
         for j in range(Self.ACT_DIM):
-            var mean = ao1_p[j]
+            var mean = ao1_cpu_p[j]
             var a = ftanh(mean) * self.action_scale
             if a > self.action_scale:
                 a = self.action_scale
@@ -544,6 +708,54 @@ struct REDQTrainer[
         self.sample_blk.add(
             obs, action, reward, next_obs, done, ctx=self.ctx,
         )
+
+    def record_batch_gpu[
+        N_ENVS: Int,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        """GPU-batched replay push. Forwards to `sample_blk.add_batch_gpu`
+        which the ReplayBuffer trait routes through `R`'s `add_batch`
+        (no-op/raise on CPU backends; real H2D-free path on GPU
+        backends). The trait gate is the only thing exercising this on
+        the (env=cpu, train=gpu) hybrid driver path."""
+        self.sample_blk.add_batch_gpu[N_ENVS](
+            ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
+        )
+
+    def record_batch_gpu_nstep[
+        N_ENVS: Int, NS: Int,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut nstep_buf: GPUNStepBuffer[
+            NS, Self.AGENT_OBS_DIM, Self.AGENT_ACT_DIM, N_ENVS,
+        ],
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        """N-step batched record — not on R.5's REDQ surface. The
+        single-step GPU-batched path (`record_batch_gpu` + uniform
+        replay) covers Pendulum-shape envs."""
+        raise Error(
+            "REDQTrainer.record_batch_gpu_nstep: n-step replay not"
+            " supported (R.5 ships uniform 1-step replay only)"
+        )
+
+    def learning_starts_count(self) -> Int:
+        """OffPolicyAgentGpu trait hook — env-step threshold past which
+        training is unlocked. Used by the GPU-env driver to gate the
+        capture path (N/A for REDQ — `train_device_kernels` raises)."""
+        return self.learning_starts
 
     def record_batch_cpu[
         N_ENVS: Int,
@@ -656,6 +868,129 @@ struct REDQTrainer[
         var report = self.timer.format_report()
         self.timer.reset()
         return report
+
+    # ────────────────────────────────────────────────────────────────
+    # Checkpointing — one-file v2 envelope.
+    # ────────────────────────────────────────────────────────────────
+    #
+    # Section layout:
+    #   actor.*
+    #   critic0.* … critic{N-1}.*           (online twins; targets reconstructed)
+    #   actor_opt.*
+    #   critic0_opt.* … critic{N-1}_opt.*
+    #   alpha_opt.*
+    #
+    # Target nets are NOT serialized: they're hard-copied from the just-
+    # restored online twins inside `load_state`. The replay buffer and
+    # episode tracker are NOT serialized either (same convention as SAC).
+    # CPU + GPU produce byte-identical files (GPU first D2Hs through the
+    # CPU serializer); GPU→CPU interchange therefore works without any
+    # format negotiation.
+
+    def save_state(mut self, path: String) raises:
+        var body = String("")
+        comptime if Self.train_target == "cpu":
+            save_state_v2_body(self.actor, body, "actor")
+            for i in range(Self.N):
+                save_state_v2_body(
+                    self.ensemble.pairs[i].online,
+                    body,
+                    "critic" + String(i),
+                )
+            save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
+            for i in range(Self.N):
+                save_optimizer_v2_body(
+                    self.ensemble.opts[i],
+                    body,
+                    "critic" + String(i) + "_opt",
+                )
+            save_scalar_adam_v2_body(self.alpha_opt, body, "alpha_opt")
+        else:
+            var c = self.ctx.value()
+            save_state_v2_body_gpu(self.actor, body, "actor", c)
+            for i in range(Self.N):
+                save_state_v2_body_gpu(
+                    self.ensemble.pairs[i].online,
+                    body,
+                    "critic" + String(i),
+                    c,
+                )
+            save_optimizer_v2_body_gpu(self.actor_opt, body, "actor_opt")
+            for i in range(Self.N):
+                save_optimizer_v2_body_gpu(
+                    self.ensemble.opts[i],
+                    body,
+                    "critic" + String(i) + "_opt",
+                )
+            # ScalarAdam: REDQ uses the host-only constructor (`.new`)
+            # on both CPU and GPU because the actor-loss block D2Hs
+            # `log_prob_mean` already (no CUDA-graph capture goal),
+            # so `step_device` and `state_dev` are never wired. Use
+            # the CPU serializer here — the GPU variants would try
+            # to `sync_to_host()` an unallocated `state_dev`.
+            save_scalar_adam_v2_body(self.alpha_opt, body, "alpha_opt")
+        var content = String("nn2-ckpt v2\n") + body
+        with open(path, "w") as f:
+            f.write(content)
+
+    def load_state(mut self, path: String) raises:
+        var content = read_file_v2(path)
+        var lines = split_lines_v2(content)
+        expect_v2_header(lines)
+        var idx: Int = 1
+        comptime if Self.train_target == "cpu":
+            load_state_v2_body(self.actor, lines, idx, "actor")
+            for i in range(Self.N):
+                load_state_v2_body(
+                    self.ensemble.pairs[i].online,
+                    lines, idx,
+                    "critic" + String(i),
+                )
+            load_optimizer_v2_body(
+                self.actor_opt, lines, idx, "actor_opt",
+            )
+            for i in range(Self.N):
+                load_optimizer_v2_body(
+                    self.ensemble.opts[i],
+                    lines, idx,
+                    "critic" + String(i) + "_opt",
+                )
+            load_scalar_adam_v2_body(
+                self.alpha_opt, lines, idx, "alpha_opt",
+            )
+        else:
+            var c = self.ctx.value()
+            load_state_v2_body_gpu(
+                self.actor, lines, idx, "actor", c,
+            )
+            for i in range(Self.N):
+                load_state_v2_body_gpu(
+                    self.ensemble.pairs[i].online,
+                    lines, idx,
+                    "critic" + String(i),
+                    c,
+                )
+            load_optimizer_v2_body_gpu(
+                self.actor_opt, lines, idx, "actor_opt",
+            )
+            for i in range(Self.N):
+                load_optimizer_v2_body_gpu(
+                    self.ensemble.opts[i],
+                    lines, idx,
+                    "critic" + String(i) + "_opt",
+                )
+            # See save_state above for the rationale — REDQ uses the
+            # CPU ScalarAdam path regardless of train_target.
+            load_scalar_adam_v2_body(
+                self.alpha_opt, lines, idx, "alpha_opt",
+            )
+        # Re-sync every target net from its just-restored online twin.
+        for i in range(Self.N):
+            hard_copy_params[Self.train_target, M=Self.CRITIC](
+                self.ensemble.pairs[i].online,
+                self.ensemble.pairs[i].target_net,
+                self.ctx,
+            )
 
 
 # ────────────────────────────────────────────────────────────────────

@@ -35,11 +35,12 @@ Forward-only — this block computes a target the critic update reads;
 no gradient flows through actor or target critics here.
 """
 
-from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
+from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.random import random_float64
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
@@ -51,9 +52,44 @@ from ..primitives.rsample import RSample
 from .ensemble import CriticEnsemble
 from .kernels import (
     redq_ensemble_target_cpu,
+    redq_ensemble_target_gpu,
     REDQ_TARGET_MIN,
     REDQ_TARGET_AVE,
 )
+
+
+# ────────────────────────────────────────────────────────────────────
+# GPU helper kernel — concat(sp, action) + extract log_prob from alp.
+# `alp` is the packed RSample output [BATCH, ACT+1] = (action | log_prob).
+# Splits in one pass:
+#   sa[b, :OBS]   = sp[b, :]
+#   sa[b, OBS:]   = alp[b, :ACT]      (action portion)
+#   lp[b]         = alp[b, ACT]       (log_prob column)
+# One thread per output element in `sa`; the lp[] write is gated on d==0
+# so each batch index writes lp[b] exactly once.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _redq_concat_sa_extract_lp_kernel[
+    OBS: Int, ACT: Int, BATCH: Int, SA_DIM: Int, ALP_DIM: Int,
+](
+    sp: LayoutTensor[DT, Layout.row_major(BATCH, OBS), MutAnyOrigin],
+    alp: LayoutTensor[DT, Layout.row_major(BATCH, ALP_DIM), MutAnyOrigin],
+    sa: LayoutTensor[DT, Layout.row_major(BATCH, SA_DIM), MutAnyOrigin],
+    lp: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    var total = BATCH * SA_DIM
+    if idx >= total:
+        return
+    var b = idx // SA_DIM
+    var d = idx % SA_DIM
+    if d < OBS:
+        sa[b, d] = rebind[Scalar[DT]](sp[b, d])
+    else:
+        sa[b, d] = rebind[Scalar[DT]](alp[b, d - OBS])
+    if d == 0:
+        lp[b] = rebind[Scalar[DT]](alp[b, ACT])
 
 
 struct EnsembleTargetYBlock[
@@ -85,6 +121,9 @@ struct EnsembleTargetYBlock[
     var _mb_lp: Scratch["ens_mb_lp", Self.BATCH]
 
     var subset_idxs: List[Int]
+    # GPU mirror of `subset_idxs` — uploaded once per `step[target="gpu"]`
+    # call. None on CPU.
+    var _subset_dev: Optional[DeviceBuffer[DType.uint32]]
 
     var action_scale: Scalar[DT]
     var gamma: Scalar[DT]
@@ -105,6 +144,7 @@ struct EnsembleTargetYBlock[
         self.subset_idxs = List[Int](length=Self.N_MIN, fill=0)
         for k in range(Self.N_MIN):
             self.subset_idxs[k] = k
+        self._subset_dev = None
         self.action_scale = Scalar[DT](1.0)
         self.gamma = Scalar[DT](0.99)
         self.ts = TargetStorage.make_uninit()
@@ -115,14 +155,19 @@ struct EnsembleTargetYBlock[
         gamma: Scalar[DT] = Scalar[DT](0.99),
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert target == "cpu", (
-            "EnsembleTargetYBlock: R.1 supports CPU only — GPU follow-up."
+        comptime assert target == "cpu" or target == "gpu", (
+            "EnsembleTargetYBlock: target must be 'cpu' or 'gpu'"
         )
+        comptime if target == "gpu":
+            if not ctx:
+                raise Error(
+                    "EnsembleTargetYBlock.make[target='gpu']: ctx required"
+                )
         comptime assert (
             Self.MODE == REDQ_TARGET_MIN or Self.MODE == REDQ_TARGET_AVE
         ), (
-            "EnsembleTargetYBlock: MODE must be MIN (0) or AVE (1) on"
-            " CPU; REM is GPU-only (Philox per-sample draws)."
+            "EnsembleTargetYBlock: MODE must be MIN (0) or AVE (1)."
+            " REM (random ensemble mixture) is not on R.5's surface."
         )
         comptime assert Self.ACTOR.IN_DIMS[0] == Self.OBS, (
             "EnsembleTargetYBlock: ACTOR.IN_DIM must equal OBS"
@@ -143,6 +188,10 @@ struct EnsembleTargetYBlock[
         blk.gamma = gamma
         blk.ts = TargetStorage.make[target](ctx=ctx)
         init_scratch_auto[Self, target](blk, ctx)
+        comptime if target == "gpu":
+            blk._subset_dev = ctx.value().enqueue_create_buffer[
+                DType.uint32
+            ](Self.N_MIN)
         return blk^
 
     def set_subset_idxs(mut self, idxs: List[Int]) raises:
@@ -216,10 +265,7 @@ struct EnsembleTargetYBlock[
             ao_t, output=alp_t,
         )
 
-        # 3. sa = concat(s', action). CPU: walk + copy; the action lives
-        # at alp[:, :ACT] but its stride differs from a contiguous
-        # [BATCH, ACT] buffer (alp is [BATCH, ACT+1]) so we extract it
-        # explicitly rather than passing alp_p to `concat_sa`.
+        # 3. sa = concat(s', action) + extract log_prob.
         var sa_p = self._mb_sa.target_ptr[target]()
         var lp_p = self._mb_lp.target_ptr[target]()
         comptime if target == "cpu":
@@ -231,24 +277,48 @@ struct EnsembleTargetYBlock[
                         b * Self.ALP_DIM + j
                     ]
                 lp_p[b] = alp_p[b * Self.ALP_DIM + Self.ACT]
+        else:
+            # GPU: one kernel concats sp into the [:, :OBS] half of sa,
+            # alp into the [:, OBS:] half, and writes lp[b] = alp[b, ACT].
+            var ctx = self.ts.ctx.value()
+            var sp_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin,
+            ](mb_sp_ptr)
+            var alp_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH, Self.ALP_DIM), MutAnyOrigin,
+            ](alp_p)
+            var sa_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH, Self.SA_DIM), MutAnyOrigin,
+            ](sa_p)
+            var lp_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+            ](lp_p)
+            comptime total_sa = Self.BATCH * Self.SA_DIM
+            comptime n_blocks = (total_sa + TPB - 1) // TPB
+            comptime kernel = _redq_concat_sa_extract_lp_kernel[
+                Self.OBS, Self.ACT, Self.BATCH, Self.SA_DIM, Self.ALP_DIM,
+            ]
+            ctx.enqueue_function[kernel](
+                sp_lt, alp_lt, sa_lt, lp_lt,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
 
-        # 4. Loop N target critic forwards, stacking [BATCH, 1] outputs
-        # into `_mb_stacked_q` [N, BATCH] (row-major: index n*BATCH+b).
+        # 4. Loop N target critic forwards. Each writes its [BATCH, 1]
+        # output directly into row i of `_mb_stacked_q` [N, BATCH] —
+        # `q_i_t` is a TileTensor over `stacked + i * BATCH` so no
+        # per-iter copy is needed on CPU or GPU.
         var sa_t = TileTensor(
             sa_p, row_major[Self.BATCH, Self.SA_DIM](),
         )
         var stacked_p = self._mb_stacked_q.target_ptr[target]()
         for i in range(Self.N):
-            var q_i_p = self._mb_q_i.target_ptr[target]()
-            var q_i_t = TileTensor(q_i_p, row_major[Self.BATCH, 1]())
+            var row_p = stacked_p + i * Self.BATCH
+            var q_i_t = TileTensor(row_p, row_major[Self.BATCH, 1]())
             ensemble.pairs[i].target_net.forward[
                 target, Self.BATCH, POLICY,
             ](sa_t, output=q_i_t)
-            comptime if target == "cpu":
-                for b in range(Self.BATCH):
-                    stacked_p[i * Self.BATCH + b] = q_i_p[b]
 
-        # 5. Combine + α·lp + γ + terminal mask in one host loop.
+        # 5. Combine + α·lp + γ + terminal mask.
         comptime if target == "cpu":
             redq_ensemble_target_cpu[
                 Self.N, Self.N_MIN, Self.MODE, Self.BATCH,
@@ -261,4 +331,29 @@ struct EnsembleTargetYBlock[
                 self.gamma,
                 alpha,
                 mb_y_ptr,
+            )
+        else:
+            # Upload subset_idxs (host List[Int] → device uint32 buffer)
+            # once per step. N_MIN is small (paper-default 2); the copy
+            # cost is negligible vs the N critic forwards above.
+            var ctx = self.ts.ctx.value()
+            var subset_host = ctx.enqueue_create_host_buffer[
+                DType.uint32
+            ](Self.N_MIN)
+            var subset_host_p = subset_host.unsafe_ptr()
+            for k in range(Self.N_MIN):
+                subset_host_p[k] = UInt32(self.subset_idxs[k])
+            ctx.enqueue_copy(self._subset_dev.value(), subset_host_p)
+            redq_ensemble_target_gpu[
+                Self.N, Self.N_MIN, Self.MODE, Self.BATCH,
+            ](
+                ctx,
+                mb_y_ptr,
+                mb_r_ptr,
+                stacked_p,
+                mb_term_ptr,
+                lp_p,
+                self._subset_dev.value().unsafe_ptr(),
+                self.gamma,
+                alpha,
             )
