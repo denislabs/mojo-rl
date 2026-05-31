@@ -52,10 +52,14 @@ struct A2CDiscreteAgent[
     """Discrete A2C = PPODiscreteAgent[N_EPOCHS=1, MINIBATCH=ROLLOUT_LEN]."""
 
     comptime Inner = PPODiscreteAgent[
-        Self.train_target, Self.ACTOR, Self.CRITIC,
-        Self.OBS_DIM, Self.N_ACTIONS, Self.ROLLOUT_LEN,
+        Self.train_target,
+        Self.ACTOR,
+        Self.CRITIC,
+        Self.OBS_DIM,
+        Self.N_ACTIONS,
+        Self.ROLLOUT_LEN,
         Self.ROLLOUT_LEN,  # MINIBATCH = full rollout
-        1,                 # N_EPOCHS = 1
+        1,  # N_EPOCHS = 1
     ]
 
     var inner: Self.Inner
@@ -104,13 +108,19 @@ struct A2CDiscreteAgent[
         checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         return self.inner.train[E, L](
-            env, total_timesteps,
-            print_every=print_every, verbose=verbose, logger=logger,
-            diag_every=diag_every, checkpoint_path=checkpoint_path,
+            env,
+            total_timesteps,
+            print_every=print_every,
+            verbose=verbose,
+            logger=logger,
+            diag_every=diag_every,
+            checkpoint_path=checkpoint_path,
             checkpoint_every=checkpoint_every,
         )
 
-    def eval[E: BoxDiscreteActionEnv](
+    def eval[
+        E: BoxDiscreteActionEnv
+    ](
         mut self,
         mut env: E,
         num_episodes: Int = 10,
@@ -119,12 +129,16 @@ struct A2CDiscreteAgent[
         verbose: Bool = False,
     ) raises -> Scalar[DT]:
         return self.inner.eval[E](
-            env, num_episodes,
-            max_steps_per_episode=max_steps_per_episode, verbose=verbose,
+            env,
+            num_episodes,
+            max_steps_per_episode=max_steps_per_episode,
+            verbose=verbose,
         )
 
     def select_action(
-        mut self, ref obs: List[Scalar[DT]], step_idx: Int,
+        mut self,
+        ref obs: List[Scalar[DT]],
+        step_idx: Int,
     ) raises -> Int:
         return self.inner.select_action(obs, step_idx)
 
@@ -137,7 +151,9 @@ struct A2CDiscreteAgent[
     def ep_count(self) -> Int:
         return self.inner.ep_count()
 
-    def flush_metrics[L: Logger = NoOpLogger](
+    def flush_metrics[
+        L: Logger = NoOpLogger
+    ](
         mut self,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
@@ -168,10 +184,14 @@ struct A2CAgent[
     """Continuous A2C = PPOAgent[N_EPOCHS=1, MINIBATCH=ROLLOUT_LEN·N_ENVS]."""
 
     comptime Inner = PPOAgent[
-        Self.train_target, Self.ACTOR, Self.CRITIC,
-        Self.OBS_DIM, Self.ACT_DIM, Self.ROLLOUT_LEN,
+        Self.train_target,
+        Self.ACTOR,
+        Self.CRITIC,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.ROLLOUT_LEN,
         Self.ROLLOUT_LEN * Self.N_ENVS,  # MINIBATCH = full rollout
-        1,                               # N_EPOCHS = 1
+        1,  # N_EPOCHS = 1
         Self.N_ENVS,
     ]
 
@@ -222,9 +242,13 @@ struct A2CAgent[
         checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         return self.inner.train_single[E, L](
-            env, total_timesteps,
-            print_every=print_every, verbose=verbose, logger=logger,
-            diag_every=diag_every, checkpoint_path=checkpoint_path,
+            env,
+            total_timesteps,
+            print_every=print_every,
+            verbose=verbose,
+            logger=logger,
+            diag_every=diag_every,
+            checkpoint_path=checkpoint_path,
             checkpoint_every=checkpoint_every,
         )
 
@@ -245,24 +269,33 @@ struct A2CAgent[
         checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         return self.inner.train[E, L](
-            env, total_timesteps,
-            rng_seed=rng_seed, print_every=print_every, verbose=verbose,
-            logger=logger, diag_every=diag_every,
-            checkpoint_path=checkpoint_path, checkpoint_every=checkpoint_every,
+            env,
+            total_timesteps,
+            rng_seed=rng_seed,
+            print_every=print_every,
+            verbose=verbose,
+            logger=logger,
+            diag_every=diag_every,
+            checkpoint_path=checkpoint_path,
+            checkpoint_every=checkpoint_every,
         )
 
-    def eval[E: BoxContinuousActionEnv](
-        mut self,
-        mut env: E,
-        num_episodes: Int = 10,
-        *,
-        max_steps_per_episode: Int = 1_000,
-        verbose: Bool = False,
-    ) raises -> Scalar[DT]:
-        return self.inner.eval[E](
-            env, num_episodes,
-            max_steps_per_episode=max_steps_per_episode, verbose=verbose,
-        )
+    # def eval[
+    #     E: BoxContinuousActionEnv
+    # ](
+    #     mut self,
+    #     mut env: E,
+    #     num_episodes: Int = 10,
+    #     *,
+    #     max_steps_per_episode: Int = 1_000,
+    #     verbose: Bool = False,
+    # ) raises -> Scalar[DT]:
+    #     return self.inner.eval[E](
+    #         env,
+    #         num_episodes,
+    #         max_steps_per_episode=max_steps_per_episode,
+    #         verbose=verbose,
+    #     )
 
     def select_action(
         mut self,
@@ -278,7 +311,9 @@ struct A2CAgent[
     def ep_count(self) -> Int:
         return self.inner.ep_count()
 
-    def flush_metrics[L: Logger = NoOpLogger](
+    def flush_metrics[
+        L: Logger = NoOpLogger
+    ](
         mut self,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         step: Int = 0,

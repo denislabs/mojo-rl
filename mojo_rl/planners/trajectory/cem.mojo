@@ -55,7 +55,8 @@ from .score_callback import ScorePlanCallback, BatchedScorePlanCallback
 
 
 struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
-    Movable, ImplicitlyDestructible,
+    ImplicitlyDestructible,
+    Movable,
 ):
     """Per-step categorical CEM optimizer.
 
@@ -110,9 +111,7 @@ struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
                 "CategoricalCEMOptimizer: cem_topk must be in [1, cem_samples]"
             )
         if cem_smoothing < 0.0:
-            raise Error(
-                "CategoricalCEMOptimizer: cem_smoothing must be >= 0"
-            )
+            raise Error("CategoricalCEMOptimizer: cem_smoothing must be >= 0")
 
         self.horizon = horizon
         self.cem_iters = cem_iters
@@ -137,9 +136,7 @@ struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
         var inv_act = Scalar[dtype](1.0 / Float64(Self.ACT_DIM))
         var dist = TileTensor(
             self.action_dist,
-            row_major(
-                (Idx[Self.BATCH](), Idx(self.horizon), Idx[Self.ACT_DIM]())
-            ),
+            row_major((Idx[Self.BATCH], self.horizon, Idx[Self.ACT_DIM])),
         )
         for b in range(Self.BATCH):
             for t in range(self.horizon):
@@ -148,32 +145,28 @@ struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
 
     def _sample_plan(mut self, sample_idx: Int):
         """Sample one-hot plan from `action_dist`. Writes:
-          - `sample_actions[sample_idx, :, :, :]` for later elite recall.
-          - `sample_plan[:, :, :]` so the caller can hand it to the
-            score callback verbatim.
+        - `sample_actions[sample_idx, :, :, :]` for later elite recall.
+        - `sample_plan[:, :, :]` so the caller can hand it to the
+          score callback verbatim.
         """
         var dist = TileTensor(
             self.action_dist,
-            row_major(
-                (Idx[Self.BATCH](), Idx(self.horizon), Idx[Self.ACT_DIM]())
-            ),
+            row_major((Idx[Self.BATCH], self.horizon, Idx[Self.ACT_DIM])),
         )
         var all_samples = TileTensor(
             self.sample_actions,
             row_major(
                 (
-                    Idx(self.cem_samples),
-                    Idx[Self.BATCH](),
-                    Idx(self.horizon),
-                    Idx[Self.ACT_DIM](),
+                    self.cem_samples,
+                    Idx[Self.BATCH],
+                    self.horizon,
+                    Idx[Self.ACT_DIM],
                 )
             ),
         )
         var plan = TileTensor(
             self.sample_plan,
-            row_major(
-                (Idx[Self.BATCH](), Idx(self.horizon), Idx[Self.ACT_DIM]())
-            ),
+            row_major((Idx[Self.BATCH], self.horizon, Idx[Self.ACT_DIM])),
         )
         for b in range(Self.BATCH):
             for t in range(self.horizon):
@@ -186,11 +179,9 @@ struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
                         picked = a
                         break
                 for a in range(Self.ACT_DIM):
-                    var v = (
-                        Scalar[dtype](1.0)
-                        if a == picked
-                        else Scalar[dtype](0.0)
-                    )
+                    var v = Scalar[dtype](1.0) if a == picked else Scalar[
+                        dtype
+                    ](0.0)
                     all_samples[sample_idx, b, t, a] = v
                     plan[b, t, a] = v
 
@@ -209,10 +200,7 @@ struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
                     if self.elite_indices[kk] == s:
                         already_picked = True
                         break
-                if (
-                    not already_picked
-                    and self.sample_scores[s] < best_score
-                ):
+                if not already_picked and self.sample_scores[s] < best_score:
                     best_score = self.sample_scores[s]
                     best_idx = s
             self.elite_indices[k] = best_idx
@@ -225,23 +213,20 @@ struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
         Effectively a Dirichlet-conjugate posterior with uniform prior.
         """
         var denom = (
-            Float64(self.cem_topk)
-            + Float64(Self.ACT_DIM) * self.cem_smoothing
+            Float64(self.cem_topk) + Float64(Self.ACT_DIM) * self.cem_smoothing
         )
         var dist = TileTensor(
             self.action_dist,
-            row_major(
-                (Idx[Self.BATCH](), Idx(self.horizon), Idx[Self.ACT_DIM]())
-            ),
+            row_major((Idx[Self.BATCH], self.horizon, Idx[Self.ACT_DIM])),
         )
         var all_samples = TileTensor(
             self.sample_actions,
             row_major(
                 (
-                    Idx(self.cem_samples),
-                    Idx[Self.BATCH](),
-                    Idx(self.horizon),
-                    Idx[Self.ACT_DIM](),
+                    self.cem_samples,
+                    Idx[Self.BATCH],
+                    self.horizon,
+                    Idx[Self.ACT_DIM],
                 )
             ),
         )
@@ -260,7 +245,9 @@ struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
                             dist[b, t, a] += vote
                             break
 
-    def optimize[CB: ScorePlanCallback](
+    def optimize[
+        CB: ScorePlanCallback
+    ](
         mut self,
         mut callback: CB,
         best_plan_out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -295,9 +282,9 @@ struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
                     self.sample_plan,
                     row_major(
                         (
-                            Idx[Self.BATCH](),
-                            Idx(self.horizon),
-                            Idx[Self.ACT_DIM](),
+                            Idx[Self.BATCH],
+                            self.horizon,
+                            Idx[Self.ACT_DIM],
                         )
                     ),
                 )
@@ -326,29 +313,27 @@ struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
                 self.sample_actions,
                 row_major(
                     (
-                        Idx(self.cem_samples),
-                        Idx[Self.BATCH](),
-                        Idx(self.horizon),
-                        Idx[Self.ACT_DIM](),
+                        self.cem_samples,
+                        Idx[Self.BATCH],
+                        self.horizon,
+                        Idx[Self.ACT_DIM],
                     )
                 ),
             )
             var dst = TileTensor(
                 best_plan_out,
-                row_major(
-                    (Idx[Self.BATCH](), Idx(self.horizon), Idx[Self.ACT_DIM]())
-                ),
+                row_major((Idx[Self.BATCH], self.horizon, Idx[Self.ACT_DIM])),
             )
             for b in range(Self.BATCH):
                 for t in range(self.horizon):
                     for a in range(Self.ACT_DIM):
-                        dst[b, t, a] = all_samples[
-                            best_overall_sample, b, t, a
-                        ]
+                        dst[b, t, a] = all_samples[best_overall_sample, b, t, a]
 
         return best_overall
 
-    def optimize_batched[CB: BatchedScorePlanCallback](
+    def optimize_batched[
+        CB: BatchedScorePlanCallback
+    ](
         mut self,
         mut callback: CB,
         best_plan_out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -383,10 +368,10 @@ struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
                 self.sample_actions,
                 row_major(
                     (
-                        Idx(self.cem_samples),
-                        Idx[Self.BATCH](),
-                        Idx(self.horizon),
-                        Idx[Self.ACT_DIM](),
+                        self.cem_samples,
+                        Idx[Self.BATCH],
+                        self.horizon,
+                        Idx[Self.ACT_DIM],
                     )
                 ),
             )
@@ -414,24 +399,20 @@ struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
                 self.sample_actions,
                 row_major(
                     (
-                        Idx(self.cem_samples),
-                        Idx[Self.BATCH](),
-                        Idx(self.horizon),
-                        Idx[Self.ACT_DIM](),
+                        self.cem_samples,
+                        Idx[Self.BATCH],
+                        self.horizon,
+                        Idx[Self.ACT_DIM],
                     )
                 ),
             )
             var dst = TileTensor(
                 best_plan_out,
-                row_major(
-                    (Idx[Self.BATCH](), Idx(self.horizon), Idx[Self.ACT_DIM]())
-                ),
+                row_major((Idx[Self.BATCH], self.horizon, Idx[Self.ACT_DIM])),
             )
             for b in range(Self.BATCH):
                 for t in range(self.horizon):
                     for a in range(Self.ACT_DIM):
-                        dst[b, t, a] = all_samples[
-                            best_overall_sample, b, t, a
-                        ]
+                        dst[b, t, a] = all_samples[best_overall_sample, b, t, a]
 
         return best_overall

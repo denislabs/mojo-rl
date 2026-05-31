@@ -40,15 +40,22 @@ from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.checkpoint import (
-    save_state_v2_body, load_state_v2_body,
-    save_state_v2_body_gpu, load_state_v2_body_gpu,
+    save_state_v2_body,
+    load_state_v2_body,
+    save_state_v2_body_gpu,
+    load_state_v2_body_gpu,
 )
 from mojo_rl.nn2.core.map_params import hard_copy_params
 from ..core.checkpoint_helpers import (
-    save_optimizer_v2_body, load_optimizer_v2_body,
-    save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
-    save_scalar_adam_v2_body, load_scalar_adam_v2_body,
-    split_lines_v2, read_file_v2, expect_v2_header,
+    save_optimizer_v2_body,
+    load_optimizer_v2_body,
+    save_optimizer_v2_body_gpu,
+    load_optimizer_v2_body_gpu,
+    save_scalar_adam_v2_body,
+    load_scalar_adam_v2_body,
+    split_lines_v2,
+    read_file_v2,
+    expect_v2_header,
 )
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
@@ -82,9 +89,13 @@ from .metrics import REDQMetrics
 # ────────────────────────────────────────────────────────────────────
 
 
-def _redq_warmup_uniform_kernel[N_ENVS: Int, ACT: Int](
+def _redq_warmup_uniform_kernel[
+    N_ENVS: Int, ACT: Int
+](
     action_dest: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, ACT),
+        MutAnyOrigin,
     ],
     action_scale: Scalar[DT],
     seed: UInt64,
@@ -102,12 +113,18 @@ def _redq_warmup_uniform_kernel[N_ENVS: Int, ACT: Int](
     action_dest[env, j] = s * action_scale
 
 
-def _redq_action_clamp_kernel[N_ENVS: Int, ACT: Int](
+def _redq_action_clamp_kernel[
+    N_ENVS: Int, ACT: Int
+](
     alp: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, ACT + 1), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, ACT + 1),
+        MutAnyOrigin,
     ],
     action_out: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, ACT),
+        MutAnyOrigin,
     ],
     action_scale: Scalar[DT],
 ):
@@ -171,21 +188,41 @@ struct REDQTrainer[
 
     var sample_blk: Self.SAMPLE
     var target_y_blk: EnsembleTargetYBlock[
-        Self.ACTOR, Self.CRITIC, Self.N, Self.BATCH,
-        Self.OBS_DIM, Self.ACT_DIM, Self.N_MIN, Self.Q_MODE,
+        Self.ACTOR,
+        Self.CRITIC,
+        Self.N,
+        Self.BATCH,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.N_MIN,
+        Self.Q_MODE,
     ]
     var critic_blk: EnsembleCriticStep[
-        Self.CRITIC, Self.N, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        Self.CRITIC,
+        Self.N,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
     ]
     var actor_blk: EnsembleActorStep[
-        Self.ACTOR, Self.CRITIC, Self.N,
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        Self.ACTOR,
+        Self.CRITIC,
+        Self.N,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
     ]
     var alpha_blk: AlphaUpdateStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
     ]
     var polyak_blk: EnsemblePolyakStep[
-        Self.CRITIC, Self.N, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+        Self.CRITIC,
+        Self.N,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
+        Self.BATCH,
     ]
 
     var state: TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
@@ -217,9 +254,9 @@ struct REDQTrainer[
     var _reward_accum: Scalar[DT]
     var _done_accum: Scalar[DT]
     var _abs_action_accum: Scalar[DT]
-    var _update_count: Int          # inner steps this chunk
-    var _actor_update_count: Int    # actor steps this chunk
-    var _total_train_steps: Int     # cumulative inner steps (never reset)
+    var _update_count: Int  # inner steps this chunk
+    var _actor_update_count: Int  # actor steps this chunk
+    var _total_train_steps: Int  # cumulative inner steps (never reset)
 
     var timer: Timer
 
@@ -228,29 +265,57 @@ struct REDQTrainer[
         self.ensemble = CriticEnsemble[Self.CRITIC, Self.N]()
         self.actor_opt = Adam()
         self.alpha_opt = ScalarAdam(
-            value=0.0, m=0.0, v=0.0, t=0,
-            lr=0.0003, beta1=0.9, beta2=0.999, eps=1e-8,
+            value=0.0,
+            m=0.0,
+            v=0.0,
+            t=0,
+            lr=0.0003,
+            beta1=0.9,
+            beta2=0.999,
+            eps=1e-8,
         )
         self.sample_blk = Self.SAMPLE()
         self.target_y_blk = EnsembleTargetYBlock[
-            Self.ACTOR, Self.CRITIC, Self.N, Self.BATCH,
-            Self.OBS_DIM, Self.ACT_DIM, Self.N_MIN, Self.Q_MODE,
+            Self.ACTOR,
+            Self.CRITIC,
+            Self.N,
+            Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.N_MIN,
+            Self.Q_MODE,
         ]()
         self.critic_blk = EnsembleCriticStep[
-            Self.CRITIC, Self.N, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.CRITIC,
+            Self.N,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ]()
         self.actor_blk = EnsembleActorStep[
-            Self.ACTOR, Self.CRITIC, Self.N,
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
+            Self.N,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ]()
         self.alpha_blk = AlphaUpdateStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ]()
         self.polyak_blk = EnsemblePolyakStep[
-            Self.CRITIC, Self.N, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.CRITIC,
+            Self.N,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ]()
         self.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ]()
         self.tracker = EpisodeTracker(
             window=List[Scalar[DT]](),
@@ -309,19 +374,19 @@ struct REDQTrainer[
         comptime assert Self.N_MIN >= 1, "REDQ: N_MIN must be ≥ 1"
         comptime assert Self.N_MIN <= Self.N, "REDQ: N_MIN must be ≤ N"
         comptime assert Self.UTD >= 1, "REDQ: UTD must be ≥ 1"
-        comptime assert Self.POLICY_DELAY >= 1, (
-            "REDQ: POLICY_DELAY must be ≥ 1"
-        )
+        comptime assert Self.POLICY_DELAY >= 1, "REDQ: POLICY_DELAY must be ≥ 1"
 
         var t = Self()
         t.ctx = ctx
 
         t.actor = Self.ACTOR.make[Self.train_target, Xavier](ctx=ctx)
         t.ensemble = CriticEnsemble[Self.CRITIC, Self.N].make[
-            Self.train_target, Xavier,
+            Self.train_target,
+            Xavier,
         ](ctx=ctx)
         t.actor_opt = Adam.make[Self.train_target, M=Self.ACTOR](
-            t.actor, ctx=ctx,
+            t.actor,
+            ctx=ctx,
         )
         t.alpha_opt = ScalarAdam.new(fexp_to_log(init_alpha), alpha_lr)
         # Apply LR to all N critic Adams (defaults already set inside
@@ -334,33 +399,61 @@ struct REDQTrainer[
         t.actor_opt.max_grad_norm = max_grad_norm
 
         t.target_y_blk = EnsembleTargetYBlock[
-            Self.ACTOR, Self.CRITIC, Self.N, Self.BATCH,
-            Self.OBS_DIM, Self.ACT_DIM, Self.N_MIN, Self.Q_MODE,
+            Self.ACTOR,
+            Self.CRITIC,
+            Self.N,
+            Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.N_MIN,
+            Self.Q_MODE,
         ].make[Self.train_target](
-            action_scale=action_scale, gamma=gamma, ctx=ctx,
+            action_scale=action_scale,
+            gamma=gamma,
+            ctx=ctx,
         )
         t.critic_blk = EnsembleCriticStep[
-            Self.CRITIC, Self.N, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.CRITIC,
+            Self.N,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ].make[Self.train_target](ctx=ctx)
         t.actor_blk = EnsembleActorStep[
-            Self.ACTOR, Self.CRITIC, Self.N,
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.ACTOR,
+            Self.CRITIC,
+            Self.N,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ].make[Self.train_target](
-            action_scale=action_scale, ctx=ctx,
+            action_scale=action_scale,
+            ctx=ctx,
         )
         t.alpha_blk = AlphaUpdateStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ].make(target_entropy=target_entropy)
         t.polyak_blk = EnsemblePolyakStep[
-            Self.CRITIC, Self.N, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
+            Self.CRITIC,
+            Self.N,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
         ].make(tau=tau)
 
         t.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-        ].make[Self.train_target](ctx=ctx)
+            Self.OBS_DIM,
+            Self.ACT_DIM,
+            Self.BATCH,
+        ].make[
+            Self.train_target
+        ](ctx=ctx)
 
         t.tracker = EpisodeTracker.new(
-            window_size=window_size, initial_fill=initial_episode_fill,
+            window_size=window_size,
+            initial_fill=initial_episode_fill,
         )
 
         init_scratch_auto[Self, target=Self.train_target](t, ctx)
@@ -417,14 +510,16 @@ struct REDQTrainer[
         # Critic update (N forward+vjp+Adam.step against shared y).
         var t_crit = perf_counter_ns()
         self.critic_blk.step[Self.train_target, POLICY](
-            self.state, self.ensemble,
+            self.state,
+            self.ensemble,
         )
         self.timer.accumulate(Self._T_CRITIC, t_crit)
 
         # Polyak ALL N targets every inner step (paper-faithful).
         var t_pol = perf_counter_ns()
         self.polyak_blk.step[Self.train_target](
-            self.state, self.ensemble,
+            self.state,
+            self.ensemble,
         )
         self.timer.accumulate(Self._T_POLYAK, t_pol)
 
@@ -434,7 +529,10 @@ struct REDQTrainer[
         if self._inner_count % Self.POLICY_DELAY == 0:
             var t_act = perf_counter_ns()
             self.actor_blk.step[Self.train_target, POLICY](
-                self.state, self.actor, self.actor_opt, self.ensemble,
+                self.state,
+                self.actor,
+                self.actor_opt,
+                self.ensemble,
             )
             self.timer.accumulate(Self._T_ACTOR, t_act)
 
@@ -564,12 +662,15 @@ struct REDQTrainer[
                 # GPU warmup: Philox kernel; advance offset by 2·N·A
                 # (each step_uniform consumes 2 raw uint32s per lane).
                 var action_lt = LayoutTensor[
-                    DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+                    DT,
+                    Layout.row_major(N_ENVS, ACT),
+                    MutAnyOrigin,
                 ](action_ptr)
                 comptime total = N_ENVS * ACT
                 comptime n_blocks = (total + TPB - 1) // TPB
                 comptime warmup_kernel = _redq_warmup_uniform_kernel[
-                    N_ENVS, ACT,
+                    N_ENVS,
+                    ACT,
                 ]
                 var ctx = self.ctx.value()
                 ctx.enqueue_function[warmup_kernel](
@@ -577,7 +678,8 @@ struct REDQTrainer[
                     self.action_scale,
                     self._warmup_rng_seed,
                     self._warmup_rng_offset,
-                    grid_dim=n_blocks, block_dim=TPB,
+                    grid_dim=n_blocks,
+                    block_dim=TPB,
                 )
                 self._warmup_rng_offset += UInt64(N_ENVS * ACT * 2)
             return
@@ -589,7 +691,8 @@ struct REDQTrainer[
         var alp_t = TileTensor(alp_scratch_ptr, row_major[N_ENVS, ACT + 1]())
         self.actor.forward[Self.train_target, N_ENVS](obs_t, output=ao_t)
         self.actor_blk.inner.rsample.forward[Self.train_target, N_ENVS](
-            ao_t, output=alp_t,
+            ao_t,
+            output=alp_t,
         )
 
         # Clamp action.
@@ -606,18 +709,25 @@ struct REDQTrainer[
                     dst[j] = a
         else:
             var alp_lt = LayoutTensor[
-                DT, Layout.row_major(N_ENVS, ACT + 1), MutAnyOrigin,
+                DT,
+                Layout.row_major(N_ENVS, ACT + 1),
+                MutAnyOrigin,
             ](alp_scratch_ptr)
             var action_lt = LayoutTensor[
-                DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+                DT,
+                Layout.row_major(N_ENVS, ACT),
+                MutAnyOrigin,
             ](action_ptr)
             comptime total = N_ENVS * ACT
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime clamp_kernel = _redq_action_clamp_kernel[N_ENVS, ACT]
             var ctx = self.ctx.value()
             ctx.enqueue_function[clamp_kernel](
-                alp_lt, action_lt, self.action_scale,
-                grid_dim=n_blocks, block_dim=TPB,
+                alp_lt,
+                action_lt,
+                self.action_scale,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def select_action(
@@ -665,20 +775,24 @@ struct REDQTrainer[
             ob1_cpu_p[d] = obs[d]
         comptime if Self.train_target == "cpu":
             var ob1_t = TileTensor(
-                ob1_cpu_p, row_major[1, Self.OBS_DIM](),
+                ob1_cpu_p,
+                row_major[1, Self.OBS_DIM](),
             )
             var ao1_t = TileTensor(
-                ao1_cpu_p, row_major[1, 2 * Self.ACT_DIM](),
+                ao1_cpu_p,
+                row_major[1, 2 * Self.ACT_DIM](),
             )
             self.actor.forward["cpu", 1](ob1_t, output=ao1_t)
         else:
             var ctx = self.ctx.value()
             ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
             var ob1_t = TileTensor(
-                self._ob1.dev_ptr(), row_major[1, Self.OBS_DIM](),
+                self._ob1.dev_ptr(),
+                row_major[1, Self.OBS_DIM](),
             )
             var ao1_t = TileTensor(
-                self._ao1.dev_ptr(), row_major[1, 2 * Self.ACT_DIM](),
+                self._ao1.dev_ptr(),
+                row_major[1, 2 * Self.ACT_DIM](),
             )
             self.actor.forward["gpu", 1](ob1_t, output=ao1_t)
             ctx.enqueue_copy(ao1_cpu_p, self._ao1.dev.value())
@@ -706,7 +820,12 @@ struct REDQTrainer[
     ) raises:
         self.tracker.add_reward(reward)
         self.sample_blk.add(
-            obs, action, reward, next_obs, done, ctx=self.ctx,
+            obs,
+            action,
+            reward,
+            next_obs,
+            done,
+            ctx=self.ctx,
         )
 
     def record_batch_gpu[
@@ -726,16 +845,25 @@ struct REDQTrainer[
         backends). The trait gate is the only thing exercising this on
         the (env=cpu, train=gpu) hybrid driver path."""
         self.sample_blk.add_batch_gpu[N_ENVS](
-            ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
+            ctx,
+            prev_obs_dev,
+            action_dev,
+            reward_dev,
+            obs_dev,
+            done_dev,
         )
 
     def record_batch_gpu_nstep[
-        N_ENVS: Int, NS: Int,
+        N_ENVS: Int,
+        NS: Int,
     ](
         mut self,
         ctx: DeviceContext,
         mut nstep_buf: GPUNStepBuffer[
-            NS, Self.AGENT_OBS_DIM, Self.AGENT_ACT_DIM, N_ENVS,
+            NS,
+            Self.AGENT_OBS_DIM,
+            Self.AGENT_ACT_DIM,
+            N_ENVS,
         ],
         prev_obs_dev: DeviceBuffer[DT],
         action_dev: DeviceBuffer[DT],
@@ -781,8 +909,12 @@ struct REDQTrainer[
             for j in range(ACT):
                 act_lane[j] = action_ptr[env_idx * ACT + j]
             self.sample_blk.add(
-                obs_lane, act_lane, reward_ptr[env_idx], nxt_lane,
-                done_ptr[env_idx], ctx=self.ctx,
+                obs_lane,
+                act_lane,
+                reward_ptr[env_idx],
+                nxt_lane,
+                done_ptr[env_idx],
+                ctx=self.ctx,
             )
 
     # ────────────────────────────────────────────────────────────────
@@ -854,7 +986,9 @@ struct REDQTrainer[
             log_bundle(logger.value()[], bundle, step)
         return bundle^
 
-    def flush_metrics_through_logger[L: Logger](
+    def flush_metrics_through_logger[
+        L: Logger
+    ](
         mut self,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]],
         step: Int,
@@ -943,46 +1077,66 @@ struct REDQTrainer[
             for i in range(Self.N):
                 load_state_v2_body(
                     self.ensemble.pairs[i].online,
-                    lines, idx,
+                    lines,
+                    idx,
                     "critic" + String(i),
                 )
             load_optimizer_v2_body(
-                self.actor_opt, lines, idx, "actor_opt",
+                self.actor_opt,
+                lines,
+                idx,
+                "actor_opt",
             )
             for i in range(Self.N):
                 load_optimizer_v2_body(
                     self.ensemble.opts[i],
-                    lines, idx,
+                    lines,
+                    idx,
                     "critic" + String(i) + "_opt",
                 )
             load_scalar_adam_v2_body(
-                self.alpha_opt, lines, idx, "alpha_opt",
+                self.alpha_opt,
+                lines,
+                idx,
+                "alpha_opt",
             )
         else:
             var c = self.ctx.value()
             load_state_v2_body_gpu(
-                self.actor, lines, idx, "actor", c,
+                self.actor,
+                lines,
+                idx,
+                "actor",
+                c,
             )
             for i in range(Self.N):
                 load_state_v2_body_gpu(
                     self.ensemble.pairs[i].online,
-                    lines, idx,
+                    lines,
+                    idx,
                     "critic" + String(i),
                     c,
                 )
             load_optimizer_v2_body_gpu(
-                self.actor_opt, lines, idx, "actor_opt",
+                self.actor_opt,
+                lines,
+                idx,
+                "actor_opt",
             )
             for i in range(Self.N):
                 load_optimizer_v2_body_gpu(
                     self.ensemble.opts[i],
-                    lines, idx,
+                    lines,
+                    idx,
                     "critic" + String(i) + "_opt",
                 )
             # See save_state above for the rationale — REDQ uses the
             # CPU ScalarAdam path regardless of train_target.
             load_scalar_adam_v2_body(
-                self.alpha_opt, lines, idx, "alpha_opt",
+                self.alpha_opt,
+                lines,
+                idx,
+                "alpha_opt",
             )
         # Re-sync every target net from its just-restored online twin.
         for i in range(Self.N):
@@ -999,8 +1153,9 @@ struct REDQTrainer[
 
 
 def fexp_to_log(alpha: Scalar[DT]) -> Scalar[DT]:
-    """log(α) — for seeding ScalarAdam.value (which holds log_α). Wrapper
+    """Log(α) — for seeding ScalarAdam.value (which holds log_α). Wrapper
     around std.math.log; named to avoid clashing with the `flog` import
     used elsewhere in the module."""
     from std.math import log as _flog
+
     return _flog(alpha)

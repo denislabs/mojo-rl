@@ -59,9 +59,7 @@ def ilqr_copy_z0_kernel[
     N_ENVS: Int,
     LATENT_DIM: Int,
 ](
-    z0: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, LATENT_DIM), MutAnyOrigin
-    ],
+    z0: LayoutTensor[dtype, Layout.row_major(N_ENVS, LATENT_DIM), MutAnyOrigin],
     z_seq: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * LATENT_DIM), MutAnyOrigin
     ],
@@ -87,12 +85,8 @@ def ilqr_reduce_cost_kernel[
     step_cost: LayoutTensor[
         dtype, Layout.row_major(HORIZON * N_ENVS), MutAnyOrigin
     ],
-    term_cost: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ],
-    total_out: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ],
+    term_cost: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    total_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
 ):
     """Per-env reduce: sum step_cost over horizon + terminal cost."""
     var e = Int(thread_idx.x)
@@ -168,9 +162,7 @@ def ilqr_apply_control_update_kernel[
         var zs = rebind[Scalar[dtype]](z_seq[z_base + j])
         fb += k_val * (zt - zs)
     var u_old = rebind[Scalar[dtype]](U[u_base + i])
-    U_trial[u_base + i] = rebind[U_trial.element_type](
-        u_old + alpha * ff + fb
-    )
+    U_trial[u_base + i] = rebind[U_trial.element_type](u_old + alpha * ff + fb)
 
 
 # =============================================================================
@@ -239,9 +231,7 @@ def ilqr_backward_pass_kernel[
         MutAnyOrigin,
     ],
     mu: Scalar[dtype],
-    bw_ok: LayoutTensor[
-        DType.int32, Layout.row_major(N_ENVS), MutAnyOrigin
-    ],
+    bw_ok: LayoutTensor[DType.int32, Layout.row_major(N_ENVS), MutAnyOrigin],
 ):
     """Single-thread-per-env Riccati backward pass with LM
     regularization. Sequential ``t = T-1 .. 0`` per block.
@@ -255,9 +245,7 @@ def ilqr_backward_pass_kernel[
     comptime _LA = LATENT_DIM * ACTION_DIM
     comptime _RHS_W = 1 + LATENT_DIM
 
-    var V_z = InlineArray[Scalar[dtype], LATENT_DIM](
-        fill=Scalar[dtype](0.0)
-    )
+    var V_z = InlineArray[Scalar[dtype], LATENT_DIM](fill=Scalar[dtype](0.0))
     var V_zz = InlineArray[Scalar[dtype], _LL](fill=Scalar[dtype](0.0))
     for i in range(LATENT_DIM):
         V_z[i] = rebind[Scalar[dtype]](V_z_term[e * LATENT_DIM + i])
@@ -266,30 +254,18 @@ def ilqr_backward_pass_kernel[
                 V_zz_term[(e * LATENT_DIM + i) * LATENT_DIM + j]
             )
 
-    var Q_z = InlineArray[Scalar[dtype], LATENT_DIM](
-        fill=Scalar[dtype](0.0)
-    )
-    var Q_u = InlineArray[Scalar[dtype], ACTION_DIM](
-        fill=Scalar[dtype](0.0)
-    )
+    var Q_z = InlineArray[Scalar[dtype], LATENT_DIM](fill=Scalar[dtype](0.0))
+    var Q_u = InlineArray[Scalar[dtype], ACTION_DIM](fill=Scalar[dtype](0.0))
     var Q_zz = InlineArray[Scalar[dtype], _LL](fill=Scalar[dtype](0.0))
     var Q_uu = InlineArray[Scalar[dtype], _AA](fill=Scalar[dtype](0.0))
     var Q_zu = InlineArray[Scalar[dtype], _LA](fill=Scalar[dtype](0.0))
-    var tmp_LL = InlineArray[Scalar[dtype], _LL](
+    var tmp_LL = InlineArray[Scalar[dtype], _LL](fill=Scalar[dtype](0.0))
+    var tmp_LA = InlineArray[Scalar[dtype], _LA](fill=Scalar[dtype](0.0))
+    var tmp_AL = InlineArray[Scalar[dtype], _LA](fill=Scalar[dtype](0.0))
+    var quu_solve = InlineArray[Scalar[dtype], _AA](fill=Scalar[dtype](0.0))
+    var rhs_solve = InlineArray[Scalar[dtype], ACTION_DIM * _RHS_W](
         fill=Scalar[dtype](0.0)
     )
-    var tmp_LA = InlineArray[Scalar[dtype], _LA](
-        fill=Scalar[dtype](0.0)
-    )
-    var tmp_AL = InlineArray[Scalar[dtype], _LA](
-        fill=Scalar[dtype](0.0)
-    )
-    var quu_solve = InlineArray[Scalar[dtype], _AA](
-        fill=Scalar[dtype](0.0)
-    )
-    var rhs_solve = InlineArray[
-        Scalar[dtype], ACTION_DIM * _RHS_W
-    ](fill=Scalar[dtype](0.0))
 
     var diag_eps = Scalar[dtype](1.0e-12)
 
@@ -310,9 +286,7 @@ def ilqr_backward_pass_kernel[
         for i in range(LATENT_DIM):
             var s = rebind[Scalar[dtype]](l_z_seq[lz_off + i])
             for r in range(LATENT_DIM):
-                var a = rebind[Scalar[dtype]](
-                    A_seq[A_off + r * LATENT_DIM + i]
-                )
+                var a = rebind[Scalar[dtype]](A_seq[A_off + r * LATENT_DIM + i])
                 s += a * V_z[r]
             Q_z[i] = s
 
@@ -320,9 +294,7 @@ def ilqr_backward_pass_kernel[
         for i in range(ACTION_DIM):
             var s = rebind[Scalar[dtype]](l_u_seq[lu_off + i])
             for r in range(LATENT_DIM):
-                var b = rebind[Scalar[dtype]](
-                    B_seq[B_off + r * ACTION_DIM + i]
-                )
+                var b = rebind[Scalar[dtype]](B_seq[B_off + r * ACTION_DIM + i])
                 s += b * V_z[r]
             Q_u[i] = s
 
@@ -450,9 +422,9 @@ def ilqr_backward_pass_kernel[
                 rhs_solve[i * _RHS_W + 0]
             )
             for j in range(LATENT_DIM):
-                K_seq[K_off + i * LATENT_DIM + j] = rebind[
-                    K_seq.element_type
-                ](rhs_solve[i * _RHS_W + 1 + j])
+                K_seq[K_off + i * LATENT_DIM + j] = rebind[K_seq.element_type](
+                    rhs_solve[i * _RHS_W + 1 + j]
+                )
 
         # ---- Update V_z, V_zz (Tassa Eqs. 11–12) ----
         # tmp_AL = Q_uu @ K  (A,L). K row-major (A,L) ⇒ reads via offset.
@@ -543,9 +515,7 @@ def ilqr_accept_kernel[
         Layout.row_major((HORIZON + 1) * N_ENVS * LATENT_DIM),
         MutAnyOrigin,
     ],
-    trial_cost: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ],
+    trial_cost: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     U: LayoutTensor[
         dtype,
         Layout.row_major(HORIZON * N_ENVS * ACTION_DIM),
@@ -556,9 +526,7 @@ def ilqr_accept_kernel[
         Layout.row_major((HORIZON + 1) * N_ENVS * LATENT_DIM),
         MutAnyOrigin,
     ],
-    total_cost: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ],
+    total_cost: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
 ):
     """Per-env unconditional copy of trial → current."""
     var e = Int(block_idx.x)

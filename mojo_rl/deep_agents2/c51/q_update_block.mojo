@@ -51,9 +51,13 @@ from mojo_rl.nn2.primitives.gather_action_slice import GatherActionSlice
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _c51_per_residual_kernel[BATCH: Int, N_ATOMS: Int](
+def _c51_per_residual_kernel[
+    BATCH: Int, N_ATOMS: Int
+](
     logits_a: LayoutTensor[
-        DT, Layout.row_major(BATCH, N_ATOMS), MutAnyOrigin,
+        DT,
+        Layout.row_major(BATCH, N_ATOMS),
+        MutAnyOrigin,
     ],
     m: LayoutTensor[DT, Layout.row_major(BATCH, N_ATOMS), MutAnyOrigin],
     td_out: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
@@ -79,9 +83,13 @@ def _c51_per_residual_kernel[BATCH: Int, N_ATOMS: Int](
         td_out[b] = ce
 
 
-def _c51_per_scale_kernel[BATCH: Int, N_ATOMS: Int](
+def _c51_per_scale_kernel[
+    BATCH: Int, N_ATOMS: Int
+](
     grad_logits_a: LayoutTensor[
-        DT, Layout.row_major(BATCH, N_ATOMS), MutAnyOrigin,
+        DT,
+        Layout.row_major(BATCH, N_ATOMS),
+        MutAnyOrigin,
     ],
     weights: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
 ):
@@ -91,19 +99,24 @@ def _c51_per_scale_kernel[BATCH: Int, N_ATOMS: Int](
     if idx < total:
         var b = idx // N_ATOMS
         var i = idx % N_ATOMS
-        grad_logits_a[b, i] = (
-            rebind[Scalar[DT]](grad_logits_a[b, i])
-            * rebind[Scalar[DT]](weights[b])
-        )
+        grad_logits_a[b, i] = rebind[Scalar[DT]](grad_logits_a[b, i]) * rebind[
+            Scalar[DT]
+        ](weights[b])
 
 
-def _c51_scatter_grad_kernel[BATCH: Int, NA: Int, N_ATOMS: Int](
+def _c51_scatter_grad_kernel[
+    BATCH: Int, NA: Int, N_ATOMS: Int
+](
     grad_logits_a: LayoutTensor[
-        DT, Layout.row_major(BATCH, N_ATOMS), MutAnyOrigin,
+        DT,
+        Layout.row_major(BATCH, N_ATOMS),
+        MutAnyOrigin,
     ],
     mb_a: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
     grad_logits_all: LayoutTensor[
-        DT, Layout.row_major(BATCH, NA * N_ATOMS), MutAnyOrigin,
+        DT,
+        Layout.row_major(BATCH, NA * N_ATOMS),
+        MutAnyOrigin,
     ],
 ):
     """`grad_logits_all[b, c] = 0`, then `grad_logits_all[b, a·N + i] =
@@ -118,9 +131,7 @@ def _c51_scatter_grad_kernel[BATCH: Int, NA: Int, N_ATOMS: Int](
         var lo = a * N_ATOMS
         var hi = lo + N_ATOMS
         if c >= lo and c < hi:
-            grad_logits_all[b, c] = rebind[Scalar[DT]](
-                grad_logits_a[b, c - lo]
-            )
+            grad_logits_all[b, c] = rebind[Scalar[DT]](grad_logits_a[b, c - lo])
         else:
             grad_logits_all[b, c] = Scalar[DT](0.0)
 
@@ -139,7 +150,8 @@ struct C51QUpdateBlock[
     var _logits_a: Scratch["logits_a", Self.BATCH * Self.N_ATOMS]
     var _grad_logits_a: Scratch["grad_logits_a", Self.BATCH * Self.N_ATOMS]
     var _grad_logits_all: Scratch[
-        "grad_logits_all", Self.BATCH * Self.NA * Self.N_ATOMS,
+        "grad_logits_all",
+        Self.BATCH * Self.NA * Self.N_ATOMS,
     ]
     var _grad_obs: Scratch["grad_obs", Self.BATCH * Self.OBS]
 
@@ -149,24 +161,28 @@ struct C51QUpdateBlock[
         self.ce_loss = CrossEntropyLoss[Self.N_ATOMS]()
         self.gather_slice = GatherActionSlice[Self.NA, Self.N_ATOMS]()
         self._logits_all = Scratch[
-            "logits_all", Self.BATCH * Self.NA * Self.N_ATOMS,
+            "logits_all",
+            Self.BATCH * Self.NA * Self.N_ATOMS,
         ]()
         self._logits_a = Scratch[
-            "logits_a", Self.BATCH * Self.N_ATOMS,
+            "logits_a",
+            Self.BATCH * Self.N_ATOMS,
         ]()
         self._grad_logits_a = Scratch[
-            "grad_logits_a", Self.BATCH * Self.N_ATOMS,
+            "grad_logits_a",
+            Self.BATCH * Self.N_ATOMS,
         ]()
         self._grad_logits_all = Scratch[
-            "grad_logits_all", Self.BATCH * Self.NA * Self.N_ATOMS,
+            "grad_logits_all",
+            Self.BATCH * Self.NA * Self.N_ATOMS,
         ]()
         self._grad_obs = Scratch["grad_obs", Self.BATCH * Self.OBS]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    def make[
+        target: StaticString
+    ](ctx: Optional[DeviceContext] = None,) raises -> Self:
         comptime assert (
             target == "cpu" or target == "gpu"
         ), "C51QUpdateBlock: target must be 'cpu' or 'gpu'"
@@ -179,7 +195,8 @@ struct C51QUpdateBlock[
         var b = Self()
         b.ce_loss = CrossEntropyLoss[Self.N_ATOMS].make[target](ctx=ctx)
         b.gather_slice = GatherActionSlice[Self.NA, Self.N_ATOMS].make[
-            target, INIT=Zero,
+            target,
+            INIT=Zero,
         ](ctx=ctx)
         b.ts = TargetStorage.make[target](ctx=ctx)
         init_scratch_auto[Self, target=target](b, ctx)
@@ -196,13 +213,17 @@ struct C51QUpdateBlock[
         mb_a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_m_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         weights_p: UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
+            Scalar[DT],
+            MutAnyOrigin,
+        ] = UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ](unsafe_from_address=0),
         td_residuals_p: UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
+            Scalar[DT],
+            MutAnyOrigin,
         ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
     ) raises -> Scalar[DT]:
-        """zero_grad → Q.forward → gather slice → CE forward+vjp →
+        """Zero_grad → Q.forward → gather slice → CE forward+vjp →
         (PER hooks) → scatter → Q.vjp → opt.step. Returns scalar loss."""
         assert_tag_for["C51QUpdateBlock", target](self.ts.target_tag)
         comptime ROW = Self.NA * Self.N_ATOMS
@@ -224,27 +245,34 @@ struct C51QUpdateBlock[
         # 3. Gather slice at a_taken → logits_a [B, N_ATOMS].
         # Hetero-variadic: both carriers use row_major[BATCH, NA*N_ATOMS].
         var la_carrier = TileTensor(
-            logits_all_p, row_major[Self.BATCH, ROW](),
+            logits_all_p,
+            row_major[Self.BATCH, ROW](),
         )
         var mb_a_carrier = TileTensor(
-            mb_a_ptr, row_major[Self.BATCH, ROW](),
+            mb_a_ptr,
+            row_major[Self.BATCH, ROW](),
         )
         var la_slice_t = TileTensor(
-            logits_a_p, row_major[Self.BATCH, Self.N_ATOMS](),
+            logits_a_p,
+            row_major[Self.BATCH, Self.N_ATOMS](),
         )
         self.gather_slice.forward[target, Self.BATCH, POLICY](
-            la_carrier, mb_a_carrier, output=la_slice_t,
+            la_carrier,
+            mb_a_carrier,
+            output=la_slice_t,
         )
 
         # 4. CE(logits_a, m) → scalar loss.
         var m_t = TileTensor(mb_m_ptr, row_major[Self.BATCH, Self.N_ATOMS]())
         var loss = self.ce_loss.forward[target, Self.BATCH, POLICY](
-            la_slice_t, m_t,
+            la_slice_t,
+            m_t,
         )
 
         # 5. CE.vjp → grad_logits_a = (softmax(logits_a) − m) / BATCH.
         var grad_la_t = TileTensor(
-            grad_logits_a_p, row_major[Self.BATCH, Self.N_ATOMS](),
+            grad_logits_a_p,
+            row_major[Self.BATCH, Self.N_ATOMS](),
         )
         self.ce_loss.vjp[target, Self.BATCH, POLICY](m_t, grad_la_t)
 
@@ -296,71 +324,97 @@ struct C51QUpdateBlock[
             # 5a. PER residual capture on device.
             if Int(td_residuals_p) != 0:
                 var logits_a_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH, Self.N_ATOMS),
+                    DT,
+                    Layout.row_major(Self.BATCH, Self.N_ATOMS),
                     MutAnyOrigin,
                 ](logits_a_p)
                 var m_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH, Self.N_ATOMS),
+                    DT,
+                    Layout.row_major(Self.BATCH, Self.N_ATOMS),
                     MutAnyOrigin,
                 ](mb_m_ptr)
                 var td_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+                    DT,
+                    Layout.row_major(Self.BATCH),
+                    MutAnyOrigin,
                 ](td_residuals_p)
                 comptime per_res_kernel = _c51_per_residual_kernel[
-                    Self.BATCH, Self.N_ATOMS,
+                    Self.BATCH,
+                    Self.N_ATOMS,
                 ]
                 comptime n_blocks_pr = (Self.BATCH + TPB - 1) // TPB
                 ctx.enqueue_function[per_res_kernel](
-                    logits_a_lt, m_lt, td_lt,
-                    grid_dim=n_blocks_pr, block_dim=TPB,
+                    logits_a_lt,
+                    m_lt,
+                    td_lt,
+                    grid_dim=n_blocks_pr,
+                    block_dim=TPB,
                 )
 
             # 5b. PER IS-weight scaling on device.
             if Int(weights_p) != 0:
                 var grad_la_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH, Self.N_ATOMS),
+                    DT,
+                    Layout.row_major(Self.BATCH, Self.N_ATOMS),
                     MutAnyOrigin,
                 ](grad_logits_a_p)
                 var w_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+                    DT,
+                    Layout.row_major(Self.BATCH),
+                    MutAnyOrigin,
                 ](weights_p)
                 comptime per_scl_kernel = _c51_per_scale_kernel[
-                    Self.BATCH, Self.N_ATOMS,
+                    Self.BATCH,
+                    Self.N_ATOMS,
                 ]
                 comptime total_scl = Self.BATCH * Self.N_ATOMS
                 comptime n_blocks_ps = (total_scl + TPB - 1) // TPB
                 ctx.enqueue_function[per_scl_kernel](
-                    grad_la_lt, w_lt,
-                    grid_dim=n_blocks_ps, block_dim=TPB,
+                    grad_la_lt,
+                    w_lt,
+                    grid_dim=n_blocks_ps,
+                    block_dim=TPB,
                 )
 
             # 6. Scatter grad_logits_a → grad_logits_all at a_taken slot.
             var grad_la_lt2 = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, Self.N_ATOMS),
+                DT,
+                Layout.row_major(Self.BATCH, Self.N_ATOMS),
                 MutAnyOrigin,
             ](grad_logits_a_p)
             var mb_a_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+                DT,
+                Layout.row_major(Self.BATCH),
+                MutAnyOrigin,
             ](mb_a_ptr)
             var grad_la_all_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, ROW), MutAnyOrigin,
+                DT,
+                Layout.row_major(Self.BATCH, ROW),
+                MutAnyOrigin,
             ](grad_logits_all_p)
             comptime sc_kernel = _c51_scatter_grad_kernel[
-                Self.BATCH, Self.NA, Self.N_ATOMS,
+                Self.BATCH,
+                Self.NA,
+                Self.N_ATOMS,
             ]
             comptime total_sc = Self.BATCH * ROW
             comptime n_blocks_sc = (total_sc + TPB - 1) // TPB
             ctx.enqueue_function[sc_kernel](
-                grad_la_lt2, mb_a_lt, grad_la_all_lt,
-                grid_dim=n_blocks_sc, block_dim=TPB,
+                grad_la_lt2,
+                mb_a_lt,
+                grad_la_all_lt,
+                grid_dim=n_blocks_sc,
+                block_dim=TPB,
             )
 
         # 7. Q_online.vjp(grad_logits_all) → grad_obs (discarded).
         var grad_la_all_t = TileTensor(
-            grad_logits_all_p, row_major[Self.BATCH, ROW](),
+            grad_logits_all_p,
+            row_major[Self.BATCH, ROW](),
         )
         var grad_obs_t = TileTensor(
-            grad_obs_p, row_major[Self.BATCH, Self.OBS](),
+            grad_obs_p,
+            row_major[Self.BATCH, Self.OBS](),
         )
         q_online.vjp[target, Self.BATCH, POLICY](grad_la_all_t, grad_obs_t)
 

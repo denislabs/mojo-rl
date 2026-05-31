@@ -45,7 +45,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.nn2.constants import DT
 
 
-trait SequenceReplayBuffer(Movable, ImplicitlyDestructible):
+trait SequenceReplayBuffer(ImplicitlyDestructible, Movable):
     """Uniform surface over a sequence (window) replay buffer. `count` is
     named so as not to collide with conformers' `size` *field*."""
 
@@ -85,7 +85,8 @@ trait SequenceReplayBuffer(Movable, ImplicitlyDestructible):
         ...
 
     def sample_batch[
-        B: Int, T: Int,
+        B: Int,
+        T: Int,
     ](
         mut self,
         obs_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -95,12 +96,10 @@ trait SequenceReplayBuffer(Movable, ImplicitlyDestructible):
     ) raises:
         """Draw `B` random length-`T` windows into the four **host** output
         regions:
-
           obs_out  [B, T+1, OBS] flat
           act_out  [B, T, ACT]   flat
           rew_out  [B, T]
           dne_out  [B, T]
-
         CPU writes these directly; GPU samples on-device then copies out."""
         ...
 
@@ -111,7 +110,9 @@ trait SequenceReplayBuffer(Movable, ImplicitlyDestructible):
     # `ReplayBuffer.add_batch` — a generic `S`-typed buffer can only call
     # *trait* methods, and CPU backends never see the device path.
 
-    def record_batch[N_ENVS: Int](
+    def record_batch[
+        N_ENVS: Int
+    ](
         mut self,
         ctx: DeviceContext,
         src_obs: DeviceBuffer[DT],
@@ -128,7 +129,8 @@ trait SequenceReplayBuffer(Movable, ImplicitlyDestructible):
         )
 
     def sample_batch_dev[
-        B: Int, T: Int,
+        B: Int,
+        T: Int,
     ](
         mut self,
         ctx: DeviceContext,

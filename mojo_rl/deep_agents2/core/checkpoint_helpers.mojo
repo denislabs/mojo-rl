@@ -54,7 +54,8 @@ def expect_v2_header(lines: List[String]) raises:
         var got = String("<empty>") if len(lines) == 0 else lines[0]
         raise Error(
             "checkpoint_helpers: expected `nn2-ckpt v2` header, got `"
-            + got + "`"
+            + got
+            + "`"
         )
 
 
@@ -63,21 +64,18 @@ def expect_v2_header(lines: List[String]) raises:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def save_optimizer_v2_body[O: Saveable](
-    mut opt: O, mut out: String, prefix: String,
-) raises:
+def save_optimizer_v2_body[
+    O: Saveable
+](mut opt: O, mut out: String, prefix: String,) raises:
     """Append the Saveable optimizer's serialized section to `out` under
     `prefix`. No v2 header is written — the caller assembles the envelope
     once it has appended every section."""
     opt.save(out, prefix)
 
 
-def load_optimizer_v2_body[O: Saveable](
-    mut opt: O,
-    lines: List[String],
-    mut idx: Int,
-    prefix: String,
-) raises:
+def load_optimizer_v2_body[
+    O: Saveable
+](mut opt: O, lines: List[String], mut idx: Int, prefix: String,) raises:
     """Consume the Saveable optimizer's section from `lines[idx:]` under
     `prefix`. Advances `idx` past the consumed section."""
     opt.load(lines, idx, prefix)
@@ -95,11 +93,13 @@ def load_optimizer_v2_body[O: Saveable](
 
 
 def save_optimizer_v2_body_gpu(
-    mut opt: Adam, mut out: String, prefix: String,
+    mut opt: Adam,
+    mut out: String,
+    prefix: String,
 ) raises:
     """GPU `Adam` section. Downloads device state into the Adam's own host
     fields, then emits the identical CPU section. (`ctx` is read from the
-    optimizer's own `TargetStorage`.)"""
+    optimizer's own `TargetStorage`.)."""
     opt.sync_to_host()
     opt.save(out, prefix)
 
@@ -130,7 +130,9 @@ def load_optimizer_v2_body_gpu(
 
 
 def save_scalar_adam_v2_body(
-    opt: ScalarAdam, mut out: String, prefix: String,
+    opt: ScalarAdam,
+    mut out: String,
+    prefix: String,
 ):
     """Append a ScalarAdam's serialized section to `out` under `prefix`."""
     out += prefix + ".value=" + String(opt.value) + "\n"
@@ -144,7 +146,9 @@ def save_scalar_adam_v2_body(
 
 
 def save_scalar_adam_v2_body_gpu(
-    mut opt: ScalarAdam, mut out: String, prefix: String,
+    mut opt: ScalarAdam,
+    mut out: String,
+    prefix: String,
 ) raises:
     """GPU `ScalarAdam` section. Syncs device state into the host fields,
     then runs the SAME CPU serializer (byte-identical, interchangeable

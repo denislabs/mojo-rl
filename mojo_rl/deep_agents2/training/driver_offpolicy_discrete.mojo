@@ -42,7 +42,7 @@ from .driver_scratch import DriverScratch
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait OffPolicyDiscreteAgent(Movable, ImplicitlyDestructible):
+trait OffPolicyDiscreteAgent(ImplicitlyDestructible, Movable):
     """Single-trait surface for the discrete off-policy drivers.
 
     Mirrors `OffPolicyAgent` (continuous) but adapted for discrete
@@ -144,7 +144,9 @@ trait OffPolicyDiscreteAgent(Movable, ImplicitlyDestructible):
     # real bodies that drain its `DQNMetrics` bundle and write a one-file
     # v2 checkpoint envelope.
 
-    def flush_metrics_through_logger[L: Logger](
+    def flush_metrics_through_logger[
+        L: Logger
+    ](
         mut self,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]],
         step: Int,
@@ -195,6 +197,11 @@ def run_offpolicy_discrete_train[
         ctx: Required for train_target="gpu"; ignored for "cpu".
         print_every: Verbose status-line cadence (env steps). 0 disables.
         verbose: Print a per-cadence status line.
+        logger: Optional logger instance.
+        diag_every: Diagnostic logging cadence (env-steps). 0 disables.
+        checkpoint_every: Checkpoint writing cadence (env-steps). 0 disables.
+        checkpoint_path: Path to write checkpoints to.
+        base_step: Base step counter for the training loop.
 
     Returns:
         List of `trainer.mean_return()` snapshots at each completed
@@ -216,10 +223,12 @@ def run_offpolicy_discrete_train[
 
     comptime needs_boundary_copy: Bool = env_target != train_target
     var obs_scratch = DriverScratch["obs", 1, OBS].make[train_target](
-        ctx=ctx, with_host_mirror=needs_boundary_copy,
+        ctx=ctx,
+        with_host_mirror=needs_boundary_copy,
     )
     var action_scratch = DriverScratch["action", 1, 1].make[train_target](
-        ctx=ctx, with_host_mirror=needs_boundary_copy,
+        ctx=ctx,
+        with_host_mirror=needs_boundary_copy,
     )
 
     var obs_list = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
@@ -312,11 +321,7 @@ def run_offpolicy_discrete_train[
         # Logger emit at the same cadence. Comptime-elided when
         # L=NoOpLogger (default).
         comptime if L.ENABLED:
-            if (
-                print_every > 0
-                and abs_step % print_every == 0
-                and Bool(logger)
-            ):
+            if print_every > 0 and abs_step % print_every == 0 and Bool(logger):
                 logger.value()[].log_scalar(
                     "avg_reward",
                     Float64(trainer.mean_return()),
@@ -335,11 +340,7 @@ def run_offpolicy_discrete_train[
         # logger at its own cadence. Default trait impl is no-op for
         # trainers that haven't wired this up yet.
         comptime if L.ENABLED:
-            if (
-                diag_every > 0
-                and abs_step % diag_every == 0
-                and Bool(logger)
-            ):
+            if diag_every > 0 and abs_step % diag_every == 0 and Bool(logger):
                 trainer.flush_metrics_through_logger[L](logger, abs_step)
 
         # `checkpoint_every` — overwrite `checkpoint_path` with the

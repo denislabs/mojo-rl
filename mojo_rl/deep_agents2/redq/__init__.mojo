@@ -1,4 +1,4 @@
-"""deep_agents2 REDQ package.
+"""REDQ package.
 
 Phase R.0 — `CriticEnsemble[CRITIC, N]` container.
 Phase R.1 — `redq_ensemble_target_cpu` kernel +
@@ -20,10 +20,13 @@ from .trainer import REDQTrainer
 from .agent import REDQAgent
 from .config import (
     REDQConfigT,
-    REDQConfig, SmallREDQConfig,
-    REDQActor, REDQCritic,
+    REDQConfig,
+    SmallREDQConfig,
+    REDQActor,
+    REDQCritic,
     agent_from_config,
-    REDQ, SmallREDQ,
+    REDQ,
+    SmallREDQ,
 )
 from .blocks.ensemble_critic_step import EnsembleCriticStep
 from .blocks.ensemble_actor_step import EnsembleActorStep

@@ -58,7 +58,9 @@ trait ScorePlanCallback(ImplicitlyDestructible):
     the K plans with the smallest score values.
     """
 
-    def score_plan[L: TensorLayout](
+    def score_plan[
+        L: TensorLayout
+    ](
         mut self,
         action_plan: TileTensor[dtype, L, MutAnyOrigin],
     ) raises -> Float64:
@@ -87,7 +89,9 @@ trait BatchedScorePlanCallback(ImplicitlyDestructible):
     flat rank == 4).
     """
 
-    def score_plans_batched[L: TensorLayout](
+    def score_plans_batched[
+        L: TensorLayout
+    ](
         mut self,
         action_plans: TileTensor[dtype, L, MutAnyOrigin],
         mut scores_out: List[Float64],

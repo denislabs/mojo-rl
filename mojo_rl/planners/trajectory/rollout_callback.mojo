@@ -130,7 +130,9 @@ trait RolloutCallbackGPU(ImplicitlyDestructible):
     comptime LATENT_DIM: Int
     comptime ACTION_DIM: Int
 
-    def policy_action_gpu[B: Int](
+    def policy_action_gpu[
+        B: Int
+    ](
         mut self,
         ctx: DeviceContext,
         z: LayoutTensor[
@@ -146,7 +148,9 @@ trait RolloutCallbackGPU(ImplicitlyDestructible):
         """
         ...
 
-    def rollout_step_gpu[B: Int](
+    def rollout_step_gpu[
+        B: Int
+    ](
         mut self,
         ctx: DeviceContext,
         z: LayoutTensor[
@@ -168,7 +172,9 @@ trait RolloutCallbackGPU(ImplicitlyDestructible):
         """
         ...
 
-    def terminal_value_gpu[B: Int](
+    def terminal_value_gpu[
+        B: Int
+    ](
         mut self,
         ctx: DeviceContext,
         z: LayoutTensor[

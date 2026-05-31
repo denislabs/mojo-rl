@@ -75,7 +75,7 @@ def gather_rows_kernel[
     indices: LayoutTensor[DType.int32, Layout.row_major(N_TOTAL), MutAnyOrigin],
     offset: Int,
 ):
-    """batch_out[b, d] = full[indices[offset + b], d].
+    """Batch-out[b, d] = Full[indices[offset + b], d].
 
     Parallel over BATCH * DIM threads.
     """
