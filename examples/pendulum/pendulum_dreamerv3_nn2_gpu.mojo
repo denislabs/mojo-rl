@@ -53,15 +53,15 @@ from mojo_rl.envs.pendulum import PendulumV2
 comptime OBS = 3
 comptime ACT = 1
 comptime DETER = 512
-comptime H = 64
+comptime H = 256          # RSSM hidden 64→256 (BALANCED bump — grow latent + heads together)
 comptime STOCH = 32
-comptime CLASSES = 4
+comptime CLASSES = 32     # latent resolution 4→32 (SC 128→1024, reference 32×32) for WM fidelity
 comptime BLOCKS = 8
-comptime TOKEN = 64
-comptime DEC_U = 64
-comptime HU = 64
-comptime VU = 64
-comptime PU = 64
+comptime TOKEN = 256      # encoder width 64→256
+comptime DEC_U = 256      # decoder hidden 64→256
+comptime HU = 256         # reward/cont head hidden 64→256
+comptime VU = 256         # value head hidden 64→256
+comptime PU = 256         # policy head hidden 64→256
 comptime BINS = 255
 comptime B = 16
 comptime T = 64
@@ -124,14 +124,19 @@ def main() raises:
     seed(42)
     var ctx = DeviceContext()
     var env = PendulumV2[DT]()
-    # actent: actor entropy scale (default 3e-4). Pendulum plateaued ~−850 with
-    # the policy mean saturating (pmean→2.4, near-max torque) — too little
-    # exploration to find the swing-up. Bumped to 1e-3 to keep the policy
-    # stochastic; try 3e-3 if it still saturates, or back to 3e-4 if it gets
-    # noisy. (Reward/WM are already calibrated; this is the remaining lever.)
+    # Reference-faithful recipe + all our fixes, at GPU-affordable capacity:
+    #   - slowtar=True: slow-value bootstrap (the critic-divergence fix — proved
+    #     on CPU: val_m tracks ret_m stably, no runaway).
+    #   - lr=4e-5: correct here — TRAIN_EVERY=1 gives replay ratio ~1024
+    #     (reference), so NO lr bump (unlike the CPU agent.mojo low-ratio case).
+    #   - actent=3e-4: reference η. With the balanced capacity bump (CLASSES=32,
+    #     units=256) the WM should give a clean advantage, so default entropy.
+    #     If the actor commits to a bad attractor (ret degrades, pmean→max like
+    #     the under-capacity CPU run), raise to 1e-3.
+    #   - out_init_scale=0.0 (default) = paper zero-init (negative rewards).
     var ag = Ag.make(
         ctx=ctx, lr=Scalar[DT](4e-5), learning_starts=LEARN_START,
-        action_scale=Scalar[DT](2.0), actent=Scalar[DT](1e-3),
+        action_scale=Scalar[DT](2.0), actent=Scalar[DT](3e-4), slowtar=True,
     )
 
     var obs = env.reset_obs_list()

@@ -128,9 +128,17 @@ def main() raises:
     # Watch: val_m should track ret_m NEGATIVE and STABLE (no positive runaway),
     # and pstd should drop below 1.0 as the advantage firms up. If val_m still
     # diverges positive, drop lr→4e-5 (slowtar alone, slower but stable).
+    # actent 3e-4→1e-3: slowtar FIXED the critic (val_m now tracks ret_m
+    # stably, no runaway) and the actor finally commits (pstd dropped 1.0→0.53)
+    # — but it commits to a BAD attractor (near-max constant torque, pmean→3.1),
+    # ret degrades −865→−1600 and the value descends toward the bad-policy
+    # asymptote. Regime flipped vs before: earlier pstd was pinned at 1.0 (under-
+    # trained value, raising entropy = more random = worse); NOW the actor
+    # commits too fast to a local optimum, so MORE entropy keeps it exploring
+    # long enough to find the swing-up. Try 3e-3 if 1e-3 still locks in.
     var ag = Ag.make(
         lr=Scalar[DT](1e-4), learning_starts=LEARN_START,
-        action_scale=Scalar[DT](2.0), actent=Scalar[DT](3e-4),
+        action_scale=Scalar[DT](2.0), actent=Scalar[DT](1e-3),
         slowtar=True,
     )
 
