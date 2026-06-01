@@ -159,14 +159,15 @@ def main() raises:
             BatchedEnvT,
             N_ENVS=N_ENVS,
             L=RemoteLogger,
-            # CUDA-graph capture of the train step is DISABLED: enabling it on
-            # NVIDIA caused critic/Q divergence (the integrated capture path is
-            # not yet validated on real hardware — it is a no-op on Apple, so it
-            # can't be exercised locally). The other optimizations (LinearReLU
-            # fusion, deferred episode sync, flush-cadence diag) are proven
-            # training-neutral and stay on. Re-enable only once capture is
-            # validated end-to-end on NVIDIA.
-            USE_TRAIN_CUDA_GRAPH=False,
+            # CUDA-graph capture of the train step. The earlier capture
+            # divergence was a replay-buffer bug — the uniform sample kernel
+            # took the buffer fill count as a HOST scalar, which capture baked
+            # at capture time, freezing sampling to the warmup-era transitions.
+            # Fixed in gpu_replay.mojo (device-resident `size`); the sample
+            # range now tracks the live count on every replay. Uniform replay
+            # only — do NOT combine with ERE (still host-scalar / not capture
+            # safe). NVIDIA only; no-op on Apple/Metal.
+            USE_TRAIN_CUDA_GRAPH=True,
         ](
             env,
             NUM_STEPS,

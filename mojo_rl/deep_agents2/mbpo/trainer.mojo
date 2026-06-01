@@ -332,6 +332,13 @@ struct MBPOTrainer[
     var _reward_accum: Scalar[DT]
     var _dyn_loss_accum: Scalar[DT]
     var _dyn_step_count: Int
+    # Last computed dynamics-NLL mean. The ensemble only trains on the
+    # `model_train_freq` cadence, so most diag flushes (now keyed on
+    # TRAIN steps, far finer than the dyn-train cadence) see zero new dyn
+    # member-steps. Reporting `accum/count`=0 on those flushes produced a
+    # 0↔value sawtooth. We instead HOLD the last real round's mean between
+    # rounds (piecewise-constant, like legacy's per-round `dyn_holdout_loss`).
+    var _dyn_loss_last: Scalar[DT]
 
     # GPU-only device-resident mean accumulators for `mean_q` / `mean_reward`
     # (CPU uses the `_q_accum` / `_reward_accum` host scalars above).
@@ -430,6 +437,7 @@ struct MBPOTrainer[
         self._reward_accum = Scalar[DT](0.0)
         self._dyn_loss_accum = Scalar[DT](0.0)
         self._dyn_step_count = 0
+        self._dyn_loss_last = Scalar[DT](0.0)
         self._q_mean_dev = DeviceMeanAccum()
         self._reward_mean_dev = DeviceMeanAccum()
         self.timer = Timer.new()
@@ -868,8 +876,15 @@ struct MBPOTrainer[
         `_run_sac_updates`)."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
-        var dn = self._dyn_step_count if self._dyn_step_count > 0 else 1
-        var dyn_inv = Scalar[DT](1.0) / Scalar[DT](dn)
+        # Refresh the held dynamics-NLL ONLY when this flush window actually
+        # contained dyn member-steps; otherwise keep the last real value so
+        # the curve is piecewise-constant between model-train rounds instead
+        # of dropping to 0 (the diag cadence is far finer than the dyn-train
+        # cadence — see `_dyn_loss_last`).
+        if self._dyn_step_count > 0:
+            self._dyn_loss_last = (
+                self._dyn_loss_accum / Scalar[DT](self._dyn_step_count)
+            )
         var actor_mean: Scalar[DT]
         var critic_mean: Scalar[DT]
         var alpha_val: Scalar[DT]
@@ -895,7 +910,7 @@ struct MBPOTrainer[
             alpha=LogScalar[DT](alpha_val),
             mean_q=LogScalar[DT](q_mean),
             mean_reward=LogScalar[DT](reward_mean),
-            dyn_loss=LogScalar[DT](self._dyn_loss_accum * dyn_inv),
+            dyn_loss=LogScalar[DT](self._dyn_loss_last),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
