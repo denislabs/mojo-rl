@@ -58,7 +58,10 @@ comptime HIDDEN = 256
 # Off-policy GPU training parameters (mirror the legacy GPU script).
 comptime BATCH = 256
 comptime REPLAY_CAPACITY = 1_000_000
-comptime N_ENVS = 32
+# Ant physics (NV=14) allocates a large per-env RK4 workspace (mass matrix
+# ∝ NV² + contacts), replicated across all N_ENVS. 32 envs OOM the GPU; the
+# legacy `sac_ant_training_gpu.mojo` used 4. Bump this up if you have headroom.
+comptime N_ENVS = 4
 
 # Training duration. Drop NUM_STEPS to ~50_000 for a smoke run.
 comptime NUM_STEPS = 3_000_000

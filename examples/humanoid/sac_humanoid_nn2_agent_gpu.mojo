@@ -59,7 +59,11 @@ comptime HIDDEN = 256
 # Off-policy GPU training parameters (mirror the legacy GPU script).
 comptime BATCH = 256
 comptime REPLAY_CAPACITY = 1_000_000
-comptime N_ENVS = 32
+# Humanoid physics (NV=23) is the heaviest model here — its per-env RK4
+# workspace (mass matrix ∝ NV² + contacts) is replicated across all N_ENVS.
+# Kept small to avoid OOM (Ant at NV=14 already OOMs at 32). Bump up if you
+# have GPU headroom.
+comptime N_ENVS = 4
 
 # Training duration. Drop NUM_STEPS to ~50_000 for a smoke run.
 comptime NUM_STEPS = 3_000_000

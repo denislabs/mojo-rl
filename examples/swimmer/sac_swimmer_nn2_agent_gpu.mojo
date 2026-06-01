@@ -58,7 +58,9 @@ comptime HIDDEN = 256
 # Off-policy GPU training parameters (mirror the legacy GPU script).
 comptime BATCH = 256
 comptime REPLAY_CAPACITY = 1_000_000
-comptime N_ENVS = 32
+# Sized to the legacy `sac_swimmer_training_gpu.mojo` parallel-env count.
+# Per-env physics workspace scales with NV²+contacts; bump up with GPU headroom.
+comptime N_ENVS = 16
 
 # Training duration. Drop NUM_STEPS to ~50_000 for a smoke run.
 comptime NUM_STEPS = 1_500_000

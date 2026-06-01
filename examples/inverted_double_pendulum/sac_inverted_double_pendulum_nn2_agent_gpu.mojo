@@ -57,7 +57,8 @@ comptime HIDDEN = 128
 # Off-policy GPU training parameters (mirror the legacy GPU script).
 comptime BATCH = 256
 comptime REPLAY_CAPACITY = 1_000_000
-comptime N_ENVS = 32
+# Sized to the legacy `sac_inverted_double_pendulum_training_gpu.mojo` env count.
+comptime N_ENVS = 4
 
 # Training duration. Drop NUM_STEPS to ~50_000 for a smoke run.
 comptime NUM_STEPS = 500_000
