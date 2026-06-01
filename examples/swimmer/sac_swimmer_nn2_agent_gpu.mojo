@@ -66,6 +66,7 @@ comptime N_ENVS = 16
 comptime NUM_STEPS = 1_500_000
 comptime WARMUP_STEPS = 5_000
 comptime PRINT_EVERY = 50_000
+comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 
 
 comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
@@ -163,6 +164,7 @@ def main() raises:
             print_every=PRINT_EVERY,
             verbose=True,
             logger=logger_ptr,
+            diag_every=DIAG_EVERY,
         )
         var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
         logger.close()

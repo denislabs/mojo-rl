@@ -71,6 +71,7 @@ comptime N_ENVS = 4
 comptime NUM_STEPS = 2_000_000
 comptime WARMUP_STEPS = 25_000
 comptime PRINT_EVERY = 50_000  # driver-cadence verbose + env/mean_ret emit
+comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 
 
 comptime EnvT = Hopper[DT, TERMINATE_ON_UNHEALTHY=True]
@@ -177,6 +178,7 @@ def main() raises:
             print_every=PRINT_EVERY,
             verbose=True,
             logger=logger_ptr,
+            diag_every=DIAG_EVERY,
         )
         var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
         logger.close()

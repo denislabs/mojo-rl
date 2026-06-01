@@ -9,7 +9,9 @@ GPU successor of `sac_walker2d_nn2_agent.mojo` and counterpart of the legacy
     train-step pipeline run on-device.
   * `BatchedGpuEnv[Walker2d[DT], N_ENVS, OBS, ACT]` — wraps the physics3d env
     (`GPUContinuousEnv`) into a `BatchedEnv`.
-  * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count`.
+  * `RemoteLogger` — streams `avg_reward` + `episodes` at `print_every`, AND
+    (via `diag_every`) the full SAC metric bundle (`actor_loss`,
+    `critic_loss`, `alpha`, `mean_q`, `mean_reward`, `train_steps`, …).
 
 `updates_per_step=N_ENVS` keeps the effective UTD = 1 per collected transition.
 
@@ -67,6 +69,7 @@ comptime N_ENVS = 4
 comptime NUM_STEPS = 1_000_000
 comptime WARMUP_STEPS = 10_000
 comptime PRINT_EVERY = 50_000
+comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 
 
 comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
@@ -164,6 +167,7 @@ def main() raises:
             print_every=PRINT_EVERY,
             verbose=True,
             logger=logger_ptr,
+            diag_every=DIAG_EVERY,
         )
         var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
         logger.close()

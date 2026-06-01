@@ -844,7 +844,14 @@ def run_offpolicy_train_batched[
                     Float64(trainer.ep_count()),
                     base_step + step_idx,
                 )
-                # No forced flush — see note in run_offpolicy_train.
+                # Live flush so the dashboard updates DURING training. The
+                # always-on stream is only 2 points per `print_every` — far
+                # below `buffer_size` — so without this it would sit unsent
+                # in the buffer until `logger.close()` (the symptom: a run
+                # with no `diag_every` shows no remote logs until it ends).
+                # `flush()` early-returns on an empty buffer, so pairing it
+                # with the diag flush below is cheap (one POST per cadence).
+                logger.value()[].flush()
                 next_log += print_every
 
         # `diag_every` — drain the trainer's full metric bundle (mean_q,
