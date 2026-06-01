@@ -563,10 +563,11 @@ struct GenericOnPolicyContinuousAgent[
                             MutAnyOrigin,
                         ](loss_params_arr.unsafe_ptr())
 
-                        # Zero-length model state slice (LossGraph is stateless)
+                        # Zero-length model state slice (LossGraph is stateless).
+                        # Pointer is never read; reuse params buffer as placeholder.
                         var loss_state_t = LayoutTensor[
                             dtype, Layout.row_major(LossGraph.STATE_SIZE), MutAnyOrigin
-                        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+                        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](loss_params_arr.unsafe_ptr()))
 
                         LossGraph.forward[1](
                             loss_in_t,
@@ -1196,10 +1197,11 @@ struct GenericOnPolicyContinuousAgent[
                 Layout.row_major(Self.ActorModel.PARAM_SIZE),
                 MutAnyOrigin,
             ](actor_params_buf.unsafe_ptr())
-            # Zero-length model state slice (stateless actor; no GPUNetworkState in scope)
+            # Zero-length model state slice (stateless actor; no GPUNetworkState in scope).
+            # Pointer is never read; reuse params buffer as placeholder.
             var eval_state_t = LayoutTensor[
                 dtype, Layout.row_major(Self.ActorModel.STATE_SIZE), MutAnyOrigin
-            ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+            ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](actor_params_buf.unsafe_ptr()))
             Self.ActorModel.forward_gpu_no_cache[N_EVAL_ENVS](
                 ctx,
                 eval_actor_out_t,
@@ -1947,10 +1949,11 @@ struct GenericOnPolicyContinuousAgent[
                         MutAnyOrigin,
                     ](loss_params_ptr)
 
-                    # Zero-length model state slice (LossGraph is stateless)
+                    # Zero-length model state slice (LossGraph is stateless).
+                    # Pointer is never read; reuse params buffer as placeholder.
                     var loss_state_t = LayoutTensor[
                         dtype, Layout.row_major(LossGraph.STATE_SIZE), MutAnyOrigin
-                    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+                    ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](loss_params_ptr))
 
                     LossGraph.forward_gpu[MINIBATCH](
                         ctx,

@@ -9,16 +9,21 @@ from std.memory import UnsafePointer
 struct SDLHandle(ImplicitlyCopyable, Movable):
     """Generic opaque handle for SDL objects."""
 
-    var ptr: UnsafePointer[UInt8, MutAnyOrigin]
+    var ptr: Optional[UnsafePointer[UInt8, MutAnyOrigin]]
 
     def __init__(out self):
-        self.ptr = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=0)
+        self.ptr = None
 
     def __init__(out self, ptr: UnsafePointer[UInt8, MutAnyOrigin]):
         self.ptr = ptr
 
+    def __init__(
+        out self, ptr: Optional[UnsafePointer[UInt8, MutAnyOrigin]]
+    ):
+        self.ptr = ptr
+
     def __bool__(self) -> Bool:
-        return Int(self.ptr) != 0
+        return Bool(self.ptr)
 
     def copy(self) -> Self:
         return Self(self.ptr)

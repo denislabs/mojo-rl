@@ -246,7 +246,7 @@ def main() raises:
                     c_int(SPRITE_SHEET_WIDTH * SPRITE_BPP),
                 )
                 sprite_texture = create_texture_from_surface(
-                    renderer.sdl_renderer, surface
+                    renderer.sdl_renderer.value(), surface
                 )
                 set_texture_blend_mode(
                     sprite_texture, BlendMode.BLENDMODE_BLEND
@@ -440,7 +440,7 @@ def main() raises:
                         )
                         try:
                             render_texture(
-                                renderer.sdl_renderer,
+                                renderer.sdl_renderer.value(),
                                 sprite_texture,
                                 rebind[UnsafePointer[FRect, ImmutAnyOrigin]](
                                     src_rect

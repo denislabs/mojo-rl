@@ -2199,10 +2199,11 @@ struct MBPOAgent[
         var next_ci_t = ws.next_ci()
 
         # Forward all target critics
-        # Zero-length model state slice (critic is stateless; CriticGroup has no model_state_view)
+        # Zero-length model state slice (critic is stateless; CriticGroup has no model_state_view).
+        # Pointer is never read; reuse ws scratch buffer as placeholder.
         var critic_state = LayoutTensor[
             dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](cpu_state.ws_data.unsafe_ptr()))
         for i in range(Self.Config.NUM_CRITICS):
             var next_qi_t = ws.next_q(i)
             var p_ct = cpu_state.critics.target_params_view(i)
@@ -3143,10 +3144,11 @@ struct MBPOAgent[
         var s_actor = gpu_state.actor.online.model_state_view()
         var p_critic = gpu_state.critics.online_params_view(0)
         var p_critic_t = gpu_state.critics.target_params_view(0)
-        # Zero-length model state for critics (GPUCriticGroup has no model_state_view)
+        # Zero-length model state for critics (GPUCriticGroup has no model_state_view).
+        # Pointer is never read; reuse a valid existing param tensor pointer.
         var s_critic = LayoutTensor[
             dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](p_critic.ptr))
 
         # Phase 2: Target actions (SAC: use online actor, no target)
         # Increment RNG counter before target action

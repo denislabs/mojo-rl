@@ -969,7 +969,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
                     c_int(SPRITE_SHEET_WIDTH * SPRITE_BPP),
                 )
                 texture = create_texture_from_surface(
-                    renderer.sdl_renderer, surface
+                    renderer.sdl_renderer.value(), surface
                 )
                 set_texture_blend_mode(texture.value(), BlendMode.BLENDMODE_BLEND)
                 try:
@@ -1003,7 +1003,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
             )
             try:
                 render_texture(
-                    renderer.sdl_renderer,
+                    renderer.sdl_renderer.value(),
                     texture.value(),
                     rebind[UnsafePointer[FRect, ImmutAnyOrigin]](src),
                     rebind[UnsafePointer[FRect, ImmutAnyOrigin]](dst),

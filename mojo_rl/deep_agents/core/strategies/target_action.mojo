@@ -135,7 +135,7 @@ struct DeterministicTarget(TargetAction):
         # Zero-length model state slice (stateless model)
         var actor_state = LayoutTensor[
             dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](out_actions.ptr))
         Network[ActorModel, ActorOpt].forward[BATCH](
             next_obs, out_act, actor_params, actor_state
         )
@@ -172,7 +172,7 @@ struct DeterministicTarget(TargetAction):
         # Zero-length model state slice (stateless model)
         var actor_state = LayoutTensor[
             dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](out_actions.ptr))
         Network[ActorModel, ActorOpt].forward_gpu[BATCH](
             ctx, next_obs, out_act, actor_params, actor_state, actor_ws
         )
@@ -233,7 +233,7 @@ struct SmoothedTarget[
         # Zero-length model state slice (stateless model)
         var actor_state = LayoutTensor[
             dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](out_actions.ptr))
         Network[ActorModel, ActorOpt].forward[BATCH](
             next_obs, out_act, actor_params, actor_state
         )
@@ -292,7 +292,7 @@ struct SmoothedTarget[
         # Zero-length model state slice (stateless model)
         var actor_state = LayoutTensor[
             dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](out_actions.ptr))
         Network[ActorModel, ActorOpt].forward_gpu[BATCH](
             ctx, next_obs, clean_act, actor_params, actor_state, actor_ws
         )
@@ -406,7 +406,7 @@ struct ReparamTarget(TargetAction):
         # Zero-length model state slice (stateless model)
         var actor_state = LayoutTensor[
             dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](out_actions.ptr))
         Network[ActorModel, ActorOpt].forward[BATCH](
             next_obs, raw_out, actor_params, actor_state
         )
@@ -505,7 +505,7 @@ struct ReparamTarget(TargetAction):
         # Zero-length model state slice (stateless model)
         var actor_state = LayoutTensor[
             dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](out_actions.ptr))
         Network[ActorModel, ActorOpt].forward_gpu[BATCH](
             ctx, next_obs, raw_out, actor_params, actor_state, actor_ws
         )

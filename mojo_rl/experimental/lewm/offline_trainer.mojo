@@ -39,7 +39,18 @@ post-training eval block of `run`.
 """
 
 from std.math import abs, sqrt, ceildiv
-from std.memory import alloc
+from std.memory import alloc, UnsafePointer
+
+
+@always_inline
+def _null_ptr[T: AnyType, O: Origin]() -> UnsafePointer[T, O]:
+    """NULL UnsafePointer for zero-length LayoutTensor placeholders.
+
+    Mojo nightly's comptime `unsafe_from_address=0` literal is rejected;
+    the runtime-Int overload still accepts 0.
+    """
+    var addr: Int = 0
+    return UnsafePointer[T, O](unsafe_from_address=addr)
 from std.random import seed as _set_seed, random_float64
 from std.time import perf_counter_ns
 from std.gpu import global_idx, thread_idx
@@ -922,12 +933,16 @@ struct LeWMTrainer[
         var sigreg_grad_emb_t = LayoutTensor[
             dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.EMB), MutAnyOrigin
         ](state.sigreg_grad_emb_buf)
+        # SIGReg has zero parameters; the row_major(0) LayoutTensor never
+        # dereferences its base. Mojo nightly rejects the comptime
+        # `unsafe_from_address=0` literal — _null_ptr uses the runtime-Int
+        # overload to construct a true zero-address Scalar[dtype] pointer.
         var empty_params = LayoutTensor[
             dtype, Layout.row_major(SIG.PARAM_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](_null_ptr[Scalar[dtype], MutAnyOrigin]())
         var empty_grad_params = LayoutTensor[
             dtype, Layout.row_major(SIG.PARAM_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](_null_ptr[Scalar[dtype], MutAnyOrigin]())
 
         # Sample uint8 pixels into pinned host buffer, upload + convert on GPU.
         var ts_sample_start = perf_counter_ns()

@@ -24,6 +24,7 @@ from std.ffi import c_float, c_int
 from std.memory import alloc
 
 from mojo_rl.render.sdl import (
+    _null_ptr,
     init,
     quit as sdl_quit,
     InitFlags,
@@ -394,17 +395,14 @@ struct AtariRenderer(Movable):
             set_render_draw_color(self.sdl_renderer.value(), 0, 0, 0, 255)
             render_clear(self.sdl_renderer.value())
 
-            # Upload pixels to texture (full-texture rect = NULL semantics)
-            var full_rect = alloc[Rect](1)
-            full_rect[] = Rect(c_int(0), c_int(0), c_int(FRAME_WIDTH), c_int(FRAME_HEIGHT))
+            # Upload pixels to texture (NULL rect = entire texture).
             update_texture(self.texture.value(),
-                rebind[Ptr[Rect, ImmutAnyOrigin]](full_rect),
+                _null_ptr[Rect, ImmutAnyOrigin](),
                 rebind[Ptr[NoneType, ImmutAnyOrigin]](
                     Ptr[UInt8, ImmutAnyOrigin](self.pixel_buf)
                 ),
                 c_int(FRAME_WIDTH * 4),  # pitch in bytes
             )
-            full_rect.free()
 
             # Render texture scaled to window (leaving room for HUD)
             var dst = FRect(
@@ -413,18 +411,12 @@ struct AtariRenderer(Movable):
                 c_float(self.screen_width),
                 c_float(self.screen_height - HUD_HEIGHT),
             )
-            # Full-source FRect substitutes for NULL semantics.
-            var full_src = alloc[FRect](1)
-            full_src[] = FRect(
-                c_float(0), c_float(0),
-                c_float(FRAME_WIDTH), c_float(FRAME_HEIGHT),
-            )
+            # NULL src rect = use entire source texture.
             render_texture(self.sdl_renderer.value(),
                 self.texture.value(),
-                rebind[Ptr[FRect, ImmutAnyOrigin]](full_src),
+                _null_ptr[FRect, ImmutAnyOrigin](),
                 rebind[Ptr[FRect, ImmutAnyOrigin]](Ptr(to=dst)),
             )
-            full_src.free()
         except:
             pass
 
@@ -480,19 +472,13 @@ struct AtariRenderer(Movable):
     def flip(mut self):
         """Present the frame and cap framerate. Also captures for recording."""
         try:
-            # Capture frame for recording before present
+            # Capture frame for recording before present.
             if self.recorder.is_recording:
-                # Full-window Rect substitutes for NULL semantics.
-                var read_rect = alloc[Rect](1)
-                read_rect[] = Rect(
-                    c_int(0), c_int(0),
-                    c_int(self.screen_width), c_int(self.screen_height),
-                )
+                # NULL rect = entire viewport.
                 var surf = render_read_pixels(
                     self.sdl_renderer.value(),
-                    rebind[Ptr[Rect, ImmutAnyOrigin]](read_rect),
+                    _null_ptr[Rect, ImmutAnyOrigin](),
                 )
-                read_rect.free()
                 var pixels = surf[].pixels
                 self.recorder.add_frame_bgra(
                     Int(pixels), self.screen_width, self.screen_height

@@ -85,6 +85,20 @@ def _uninit[T: AnyType](out value: T):
     __mlir_op.`lit.ownership.mark_initialized`(__get_mvalue_as_litref(value))
 
 
+@always_inline
+def _null_ptr[T: AnyType, O: Origin]() -> UnsafePointer[T, O]:
+    """Construct a NULL UnsafePointer for C-ABI FFI calls.
+
+    Mojo nightly made the literal-zero `unsafe_from_address=0` constructor
+    a comptime constraint failure, so it cannot be used directly. The
+    runtime-`Int` overload of the same constructor still accepts 0 and
+    yields the desired zero-address pointer — that's what we need at C
+    FFI boundaries (SDL3 calls that document NULL as "use default").
+    """
+    var addr: Int = 0
+    return UnsafePointer[T, O](unsafe_from_address=addr)
+
+
 comptime ArrayHelper[
     type: ImplicitlyCopyable & Movable, size: Int, origin: Origin
 ] = Ptr[InlineArray[type, size], origin]

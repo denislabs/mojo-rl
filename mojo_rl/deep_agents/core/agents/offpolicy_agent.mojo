@@ -1061,11 +1061,12 @@ struct GenericOffPolicyAgent[
 
         # Forward all target critics
         # Zero-length model state slice (critic is stateless; CriticGroup has no model_state_view)
+        # Pointer is never read; reuse ws scratch buffer as placeholder.
         var critic_state = LayoutTensor[
             dtype,
             Layout.row_major(Self.Config.CriticModel.STATE_SIZE),
             MutAnyOrigin,
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](cpu_state.ws_data.unsafe_ptr()))
         for i in range(Self.Config.NUM_CRITICS):
             var next_qi_t = ws.next_q(i)
             var p_ct = cpu_state.critics.target_params_view(i)
@@ -1571,12 +1572,13 @@ struct GenericOffPolicyAgent[
         var p_actor = gpu_state.actor.online.params_view()
         var s_actor = gpu_state.actor.online.model_state_view()
         var p_critic = gpu_state.critics.online_params_view(0)
-        # Zero-length model state for critics (GPUCriticGroup has no model_state_view)
+        # Zero-length model state for critics (GPUCriticGroup has no model_state_view).
+        # Pointer is never read; reuse a valid existing param tensor pointer.
         var s_critic = LayoutTensor[
             dtype,
             Layout.row_major(Self.Config.CriticModel.STATE_SIZE),
             MutAnyOrigin,
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](p_actor_t.ptr))
 
         # Phase 2: Target actions — delegate to Config.TargetAction
         # Increment RNG counter before target action (separate seed from sample)
@@ -2367,11 +2369,12 @@ struct GenericOffPolicyAgent[
                 MutAnyOrigin,
             ](actor_params_buf.unsafe_ptr())
             # Zero-length state slice (eval-only path; no GPUNetworkState available here).
+            # Pointer is never read; reuse the obs buffer as placeholder.
             var eval_state_t = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.Config.ActorModel.STATE_SIZE),
                 MutAnyOrigin,
-            ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+            ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](obs_buf.unsafe_ptr()))
             Self.Config.ActorModel.forward_gpu_no_cache[N_EVAL_ENVS](
                 ctx,
                 eval_actor_out_t,
@@ -2651,9 +2654,7 @@ struct GenericOffPolicyAgent[
         logger: Optional[UnsafePointer[Self.L, MutAnyOrigin]] = None,
         gradient_steps: Int = 0,
         reward_scale: Float64 = 1.0,
-        eval_env: UnsafePointer[E, MutAnyOrigin] = UnsafePointer[
-            E, MutAnyOrigin
-        ](unsafe_from_address=0),
+        eval_env: Optional[UnsafePointer[E, MutAnyOrigin]] = None,
         eval_every: Int = 0,
         eval_episodes: Int = 5,
         eval_max_steps: Int = 1000,
