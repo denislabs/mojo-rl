@@ -920,13 +920,15 @@ def run_offpolicy_train_batched[
                     Float64(trainer.ep_count()),
                     base_step + step_idx,
                 )
-                # Live flush so the dashboard updates DURING training. The
-                # always-on stream is only 2 points per `print_every` — far
-                # below `buffer_size` — so without this it would sit unsent
-                # in the buffer until `logger.close()` (the symptom: a run
-                # with no `diag_every` shows no remote logs until it ends).
-                # `flush()` early-returns on an empty buffer, so pairing it
-                # with the diag flush below is cheap (one POST per cadence).
+                # Live flush at the (rare) print cadence so the always-on
+                # avg_reward/episodes stream (2 points per `print_every`, far
+                # below `buffer_size`) reaches the dashboard even when
+                # `diag_every == 0` — otherwise those points sit unsent until
+                # `logger.close()`. At print_every scale this is ~tens of POSTs
+                # over a full run (negligible). The far more frequent per-diag
+                # flush was removed (see the diag block below) — diag metrics
+                # now batch via `log_scalar`'s `buffer_size` auto-flush.
+                # `flush()` early-returns on an empty buffer.
                 logger.value()[].flush()
                 next_log += print_every
 
@@ -934,9 +936,16 @@ def run_offpolicy_train_batched[
         # critic_loss, alpha, train_steps, …) through the logger at its own
         # cadence, mirroring the single-env `run_offpolicy_train` driver.
         # Default trait impl is a no-op for trainers that haven't wired this
-        # up; SACTrainer overrides it. A live `flush()` follows so the
-        # dashboard updates DURING training (otherwise points only auto-flush
-        # once the buffer hits `buffer_size`).
+        # up; SACTrainer overrides it.
+        #
+        # NO forced `flush()` here. `log_scalar` already auto-flushes when the
+        # buffer hits `buffer_size`, so the metrics batch into one HTTP POST per
+        # ~`buffer_size` points (e.g. ~every 6 diags for an ~11-metric bundle at
+        # buffer_size=64). The previous per-diag `flush()` fired a BLOCKING HTTP
+        # POST every `diag_every` steps — at diag_every=1000 over a 1M-step run
+        # that's ~1000 synchronous POSTs serializing the training loop on HTTP
+        # latency. The print-cadence flush above (rare) + `logger.close()` drain
+        # the remainder, so nothing is lost.
         comptime if L.ENABLED:
             if (
                 diag_every > 0
@@ -946,7 +955,6 @@ def run_offpolicy_train_batched[
                 trainer.flush_metrics_through_logger[L](
                     logger, base_step + step_idx
                 )
-                logger.value()[].flush()
                 next_diag += diag_every
 
     # Defensive final drain of any buffered episode readbacks. With
