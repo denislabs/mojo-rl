@@ -40,9 +40,10 @@ Use in Noisy DQN: replace the last `Linear[H, NA]` in the Q-net with
 
 from std.math import sqrt as fsqrt, log as flog, cos as fcos, pi
 from std.random import random_float64
-from std.gpu import global_idx
+from std.gpu import global_idx, thread_idx, block_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
+from std.gpu.primitives import block
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 
@@ -59,7 +60,12 @@ from ..core import (
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.scratch import Scratch
 from ..core.scratch_walkers import init_scratch_auto
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import (
+    TargetStorage,
+    assert_tag_for,
+    ensure_gpu_buffer,
+)
+from .linear import _transpose_kernel, _accum_kernel
 from ..random.box_muller import (
     box_muller_normal_gpu,
     box_muller_normal_gpu_dev,
@@ -179,50 +185,54 @@ def _noisy_bias_add_kernel[BATCH: Int, OUT: Int](
         ](b_eff[j])
 
 
-def _grad_b_pair_kernel[BATCH: Int, OUT: Int](
+def _grad_b_pair_reduce_kernel[BATCH: Int, OUT: Int](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
     n_out: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
     grad_mu_b: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
     grad_sigma_b: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
 ):
-    """`grad_mu_b[j] += Σ_b grad_out[b, j]`, `grad_sigma_b[j] += that · n_out[j]`.
-    Both accumulate (Adam zero_grad clears them at start of step)."""
-    var j = Int(global_idx.x)
-    if j < OUT:
-        var s: Scalar[DT] = 0.0
-        for b in range(BATCH):
-            s += rebind[Scalar[DT]](grad_output[b, j])
-        grad_mu_b[j] = rebind[Scalar[DT]](grad_mu_b[j]) + s
-        grad_sigma_b[j] = rebind[Scalar[DT]](grad_sigma_b[j]) + s * rebind[
-            Scalar[DT]
-        ](n_out[j])
+    """`s = Σ_b grad_out[b, col]`; `grad_mu_b[col] += s`,
+    `grad_sigma_b[col] += s · n_out[col]`. ONE BLOCK per output column +
+    `block.sum` reduction → full occupancy (vs the old one-thread-per-column
+    serial-BATCH-loop). Both accumulate (Adam zero_grad clears at step start).
+    Launch: grid_dim=OUT, block_dim=TPB."""
+    var col = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if col >= OUT:
+        return
+    var my_s: Scalar[DT] = 0.0
+    var bi = t
+    while bi < BATCH:
+        my_s += rebind[Scalar[DT]](grad_output[bi, col])
+        bi += TPB
+    var total = block.sum[block_size=TPB, broadcast=False](val=my_s)
+    if t == 0:
+        var s = total[0]
+        grad_mu_b[col] = rebind[Scalar[DT]](grad_mu_b[col]) + s
+        grad_sigma_b[col] = (
+            rebind[Scalar[DT]](grad_sigma_b[col])
+            + s * rebind[Scalar[DT]](n_out[col])
+        )
 
 
-def _grad_w_pair_kernel[BATCH: Int, IN: Int, OUT: Int](
-    cache: LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin],
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
+def _scaled_accum_factorized_kernel[IN: Int, OUT: Int](
+    dst: LayoutTensor[DT, Layout.row_major(IN, OUT), MutAnyOrigin],
+    src: LayoutTensor[DT, Layout.row_major(IN, OUT), MutAnyOrigin],
     n_in: LayoutTensor[DT, Layout.row_major(IN), MutAnyOrigin],
     n_out: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
-    grad_mu_w: LayoutTensor[DT, Layout.row_major(IN, OUT), MutAnyOrigin],
-    grad_sigma_w: LayoutTensor[DT, Layout.row_major(IN, OUT), MutAnyOrigin],
 ):
-    """One thread per (i, j). Computes per-step
-    `s = Σ_b cache[b, i] · grad_out[b, j]` once, then accumulates
-    `grad_mu_w  += s` and `grad_sigma_w += s · n_in[i] · n_out[j]`."""
+    """`dst[i,j] += src[i,j] · n_in[i] · n_out[j]` (factorized-noise scale).
+    Accumulates grad_sigma_w from the shared dW = cacheᵀ @ grad_output (which
+    is grad_mu_w). One thread per (i, j) — full occupancy."""
     var idx = Int(global_idx.x)
-    var total = IN * OUT
-    if idx < total:
+    if idx < IN * OUT:
         var i = idx // OUT
         var j = idx % OUT
-        var s: Scalar[DT] = 0.0
-        for b in range(BATCH):
-            s += rebind[Scalar[DT]](cache[b, i]) * rebind[Scalar[DT]](
-                grad_output[b, j]
-            )
-        grad_mu_w[i, j] = rebind[Scalar[DT]](grad_mu_w[i, j]) + s
-        grad_sigma_w[i, j] = (
-            rebind[Scalar[DT]](grad_sigma_w[i, j])
-            + s * rebind[Scalar[DT]](n_in[i]) * rebind[Scalar[DT]](n_out[j])
+        dst[i, j] = (
+            rebind[Scalar[DT]](dst[i, j])
+            + rebind[Scalar[DT]](src[i, j])
+            * rebind[Scalar[DT]](n_in[i])
+            * rebind[Scalar[DT]](n_out[j])
         )
 
 
@@ -257,6 +267,14 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
     var _noise_seed: UInt64
     var _noise_offset_dev: Optional[DeviceBuffer[DType.uint64]]
 
+    # Backward grad_w temporaries (GPU) — see Linear. cacheᵀ[IN, BATCH] (lazy,
+    # BATCH-sized) + dW_tmp[IN, OUT] (W_SIZE, fixed). dW = cacheᵀ @ grad_output
+    # (one tensor-core max_matmul) is grad_mu_w; grad_sigma_w is the same dW
+    # scaled by the factorized noise. Replaces the naive serial pair kernel.
+    var cacheT_dev: Optional[DeviceBuffer[DT]]
+    var cacheT_n: Int
+    var dW_tmp_dev: Optional[DeviceBuffer[DT]]
+
     var ts: TargetStorage
 
     def __init__(out self):
@@ -271,6 +289,9 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
         self._cached_input_ptr = None
         self._noise_seed = UInt64(0)
         self._noise_offset_dev = None
+        self.cacheT_dev = None
+        self.cacheT_n = 0
+        self.dW_tmp_dev = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -363,6 +384,9 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
             var noff = ctx.value().enqueue_create_buffer[DType.uint64](1)
             noff.enqueue_fill(UInt64(0))
             nl._noise_offset_dev = noff^
+            # Fixed [IN, OUT] dW scratch for the max_matmul grad_w path; cacheT
+            # stays None (lazily sized to BATCH on first backward).
+            nl.dW_tmp_dev = ctx.value().enqueue_create_buffer[DT](Self.W_SIZE)
 
         init_scratch_auto[Self, target=target](nl, ctx)
         return nl^
@@ -627,29 +651,71 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
                 var g_sg_b_lt = LayoutTensor[
                     DT, Layout.row_major(Self.OUT), MutAnyOrigin,
                 ](self.sigma_b.grad_dev.value().unsafe_ptr())
-                comptime n_blocks_gb = (Self.OUT + TPB - 1) // TPB
-                comptime gb_kernel = _grad_b_pair_kernel[BATCH, Self.OUT]
+                # grad_b pair — block-per-column reduction (full occupancy).
+                comptime gb_kernel = _grad_b_pair_reduce_kernel[
+                    BATCH, Self.OUT
+                ]
                 ctx.enqueue_function[gb_kernel](
                     go_lt, no_lt, g_mu_b_lt, g_sg_b_lt,
-                    grid_dim=n_blocks_gb, block_dim=TPB,
+                    grid_dim=Self.OUT, block_dim=TPB,
                 )
 
+                # grad_w pair via transpose + max_matmul (tensor cores):
+                #   dW = cacheᵀ @ grad_output     → grad_mu_w increment
+                #   grad_mu_w    += dW
+                #   grad_sigma_w += dW · n_in[i] · n_out[j]
+                # Replaces the naive serial per-(i,j) pair kernel.
+                ensure_gpu_buffer(
+                    self.cacheT_dev, self.cacheT_n, BATCH * Self.IN, ctx,
+                )
                 var cache_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin,
                 ](self._cached_input_ptr.value())
-                var g_mu_w_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.IN, Self.OUT), MutAnyOrigin,
-                ](self.mu_w.grad_dev.value().unsafe_ptr())
+                var cacheT_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.IN, BATCH), MutAnyOrigin,
+                ](self.cacheT_dev.value())
+                comptime n_blocks_t = (BATCH * Self.IN + TPB - 1) // TPB
+                comptime t_kernel = _transpose_kernel[BATCH, Self.IN]
+                ctx.enqueue_function[t_kernel](
+                    cache_lt, cacheT_lt,
+                    grid_dim=n_blocks_t, block_dim=TPB,
+                )
+                var cacheT_tt = TileTensor(
+                    self.cacheT_dev.value(), row_major[Self.IN, BATCH](),
+                )
+                var dW_tmp_tt = TileTensor(
+                    self.dW_tmp_dev.value(), row_major[Self.IN, Self.OUT](),
+                )
+                max_matmul[target="gpu"](
+                    dW_tmp_tt, cacheT_tt, grad_out_v, ctx,
+                )
+                # grad_mu_w += dW_tmp  (flat accumulate)
+                comptime gw_flat = Layout.row_major(Self.W_SIZE)
+                var g_mu_w_flat = LayoutTensor[DT, gw_flat, MutAnyOrigin](
+                    self.mu_w.grad_dev.value().unsafe_ptr()
+                )
+                var dW_tmp_flat = LayoutTensor[DT, gw_flat, MutAnyOrigin](
+                    self.dW_tmp_dev.value()
+                )
+                comptime n_blocks_acc = (Self.W_SIZE + TPB - 1) // TPB
+                comptime acc_kernel = _accum_kernel[Self.W_SIZE]
+                ctx.enqueue_function[acc_kernel](
+                    g_mu_w_flat, dW_tmp_flat,
+                    grid_dim=n_blocks_acc, block_dim=TPB,
+                )
+                # grad_sigma_w += dW_tmp · n_in[i] · n_out[j]
                 var g_sg_w_lt = LayoutTensor[
                     DT, Layout.row_major(Self.IN, Self.OUT), MutAnyOrigin,
                 ](self.sigma_w.grad_dev.value().unsafe_ptr())
-                comptime n_blocks_gw = (Self.W_SIZE + TPB - 1) // TPB
-                comptime gw_kernel = _grad_w_pair_kernel[
-                    BATCH, Self.IN, Self.OUT
+                var dW_tmp_2d = LayoutTensor[
+                    DT, Layout.row_major(Self.IN, Self.OUT), MutAnyOrigin,
+                ](self.dW_tmp_dev.value())
+                comptime sf_kernel = _scaled_accum_factorized_kernel[
+                    Self.IN, Self.OUT
                 ]
-                ctx.enqueue_function[gw_kernel](
-                    cache_lt, go_lt, ni_lt, no_lt, g_mu_w_lt, g_sg_w_lt,
-                    grid_dim=n_blocks_gw, block_dim=TPB,
+                ctx.enqueue_function[sf_kernel](
+                    g_sg_w_lt, dW_tmp_2d, ni_lt, no_lt,
+                    grid_dim=n_blocks_acc, block_dim=TPB,
                 )
 
             # 2. grad_x = grad_output @ W_eff^T (may alias cache).

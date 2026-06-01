@@ -31,9 +31,10 @@ backward walks children in the matching reverse-order.
 from std.math import ceildiv
 from std.memory import alloc
 from std.sys import CompilationTarget
-from std.gpu import global_idx
+from std.gpu import global_idx, thread_idx, block_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
+from std.gpu.primitives import block
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 from linalg.matmul.cpu.apple_accelerate import (
@@ -56,7 +57,11 @@ from ..core import (
     ParamVisitor,
 )
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import (
+    TargetStorage,
+    assert_tag_for,
+    ensure_gpu_buffer,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -80,39 +85,56 @@ def _bias_add_kernel[
         output[b, j] = rebind[Scalar[DT]](output[b, j]) + rebind[Scalar[DT]](bias[j])
 
 
-def _grad_w_accum_kernel[
-    BATCH: Int,
-    IN: Int,
-    OUT: Int,
-](
-    cache: LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin],
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
-    grad_w: LayoutTensor[DT, Layout.row_major(IN, OUT), MutAnyOrigin],
-):
-    var idx = Int(global_idx.x)
-    var total = IN * OUT
-    if idx < total:
-        var i = idx // OUT
-        var j = idx % OUT
-        var s: Scalar[DT] = 0.0
-        for b in range(BATCH):
-            s += rebind[Scalar[DT]](cache[b, i]) * rebind[Scalar[DT]](grad_output[b, j])
-        grad_w[i, j] = rebind[Scalar[DT]](grad_w[i, j]) + s
-
-
-def _grad_bias_kernel[
+def _grad_bias_reduce_kernel[
     BATCH: Int,
     OUT: Int,
 ](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
     grad_b: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
 ):
-    var j = Int(global_idx.x)
-    if j < OUT:
-        var s: Scalar[DT] = 0.0
-        for b in range(BATCH):
-            s += rebind[Scalar[DT]](grad_output[b, j])
-        grad_b[j] = rebind[Scalar[DT]](grad_b[j]) + s
+    """grad_b[col] += Σ_b grad_output[b, col]. ONE BLOCK per output column,
+    `TPB` threads striding over BATCH + a `block.sum` reduction → full
+    occupancy (OUT·TPB thread-slots) vs the old one-thread-per-column
+    serial-BATCH-loop kernel (only OUT threads). Mirrors LayerNorm's
+    grad_beta reduction. Launch: grid_dim=OUT, block_dim=TPB."""
+    var col = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if col >= OUT:
+        return
+    var my_s: Scalar[DT] = 0.0
+    var bi = t
+    while bi < BATCH:
+        my_s += rebind[Scalar[DT]](grad_output[bi, col])
+        bi += TPB
+    var total = block.sum[block_size=TPB, broadcast=False](val=my_s)
+    if t == 0:
+        grad_b[col] = rebind[Scalar[DT]](grad_b[col]) + total[0]
+
+
+def _transpose_kernel[ROWS: Int, COLS: Int](
+    src: LayoutTensor[DT, Layout.row_major(ROWS, COLS), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(COLS, ROWS), MutAnyOrigin],
+):
+    """dst[c,r] = src[r,c]. One thread per source element. Used to materialize
+    cacheᵀ[IN,BATCH] so grad_w = cacheᵀ @ grad_output runs through `max_matmul`
+    (tensor cores) — `max_matmul` rejects `transpose_a`. Shared by Linear,
+    LinearAct, and NoisyLinear."""
+    var idx = Int(global_idx.x)
+    if idx < ROWS * COLS:
+        var r = idx // COLS
+        var c = idx % COLS
+        dst[c, r] = rebind[Scalar[DT]](src[r, c])
+
+
+def _accum_kernel[N: Int](
+    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    """dst[i] += src[i]. Accumulates a `max_matmul` dW result into grad_w,
+    preserving the `vjp` accumulate contract."""
+    var idx = Int(global_idx.x)
+    if idx < N:
+        dst[idx] = rebind[Scalar[DT]](dst[idx]) + rebind[Scalar[DT]](src[idx])
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -142,6 +164,15 @@ struct Linear[IN: Int, OUT: Int](Module):
     # AMP scratch (lazy-allocated on first bf16 call).
     var amp: LinearAMPState[Self.IN, Self.OUT]
 
+    # Backward grad_w temporaries (GPU) — mirror LinearAct. `cacheT_dev` holds
+    # cacheᵀ[IN, BATCH] (lazy, BATCH-sized); `dW_tmp_dev` holds [IN, OUT] = W_SIZE
+    # (fixed). Let grad_w run via transpose + max_matmul (tensor cores) instead
+    # of the old naive serial kernel. Lazy alloc is CUDA-graph-capture-safe
+    # (allocated on the pre-capture settle call, reused on every replay).
+    var cacheT_dev: Optional[DeviceBuffer[DT]]
+    var cacheT_n: Int
+    var dW_tmp_dev: Optional[DeviceBuffer[DT]]
+
     var ts: TargetStorage
 
     # ----- Defaultable -----------------------------------------------------
@@ -151,6 +182,9 @@ struct Linear[IN: Int, OUT: Int](Module):
         self.bias   = Param["bias",   False, Self.B_SIZE]()
         self._cached_input_ptr = None
         self.amp = LinearAMPState[Self.IN, Self.OUT].make()
+        self.cacheT_dev = None
+        self.cacheT_n = 0
+        self.dW_tmp_dev = None
         self.ts = TargetStorage.make_uninit()
 
     # ----- Factories -------------------------------------------------------
@@ -190,6 +224,9 @@ struct Linear[IN: Int, OUT: Int](Module):
             ctx_v.enqueue_copy(lin.weight.value_dev.value(), w_host)
             ctx_v.enqueue_copy(lin.bias.value_dev.value(),   b_host)
             ctx_v.synchronize()
+            # Fixed [IN, OUT] dW scratch for the max_matmul grad_w path; cacheT
+            # stays None (lazily sized to BATCH on first backward).
+            lin.dW_tmp_dev = ctx_v.enqueue_create_buffer[DT](Self.W_SIZE)
             lin.ts = TargetStorage.make_gpu(ctx_v)
         return lin^
 
@@ -501,40 +538,63 @@ struct Linear[IN: Int, OUT: Int](Module):
         else:
             var ctx = self.ts.ctx.value()
 
-            # ── (1) grad_b ─────────────────────────────────────────────
+            # ── (1) grad_b += column-sum(grad_output) — block-per-column
+            #        reduction (full occupancy), replaces the serial kernel.
             comptime if mode == "all":
-                comptime go_layout = Layout.row_major(BATCH, Self.OUT)
                 comptime gb_layout = Layout.row_major(Self.OUT)
-                var go_lt = LayoutTensor[DT, go_layout, MutAnyOrigin](go_p)
+                var go_lt = LayoutTensor[
+                    DT, Layout.row_major(BATCH, Self.OUT), MutAnyOrigin
+                ](go_p)
                 var gb_lt = LayoutTensor[DT, gb_layout, MutAnyOrigin](
                     self.bias.grad_dev.value()
                 )
-                comptime n_blocks_gb = (Self.OUT + TPB - 1) // TPB
-                comptime gb_kernel = _grad_bias_kernel[BATCH, Self.OUT]
+                comptime gb_kernel = _grad_bias_reduce_kernel[BATCH, Self.OUT]
                 ctx.enqueue_function[gb_kernel](
                     go_lt, gb_lt,
-                    grid_dim=n_blocks_gb, block_dim=TPB,
+                    grid_dim=Self.OUT, block_dim=TPB,
                 )
 
-            # ── (2) grad_w ─────────────────────────────────────────────
+            # ── (2) grad_w += cacheᵀ @ grad_output — transpose + max_matmul
+            #        (tensor cores) + accumulate, replaces the naive serial
+            #        kernel. Reads cache; must precede the grad_input matmul
+            #        (which may alias the cache slab).
             comptime if mode == "all":
-                comptime cache_layout = Layout.row_major(BATCH, Self.IN)
-                comptime go_layout2 = Layout.row_major(BATCH, Self.OUT)
-                comptime gw_layout = Layout.row_major(Self.IN, Self.OUT)
-                var cache_lt = LayoutTensor[DT, cache_layout, MutAnyOrigin](
-                    self._cached_input_ptr.value()
+                ensure_gpu_buffer(
+                    self.cacheT_dev, self.cacheT_n, BATCH * Self.IN, ctx,
                 )
-                var go_lt2 = LayoutTensor[DT, go_layout2, MutAnyOrigin](go_p)
+                var cache_lt = LayoutTensor[
+                    DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin
+                ](self._cached_input_ptr.value())
+                var cacheT_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.IN, BATCH), MutAnyOrigin
+                ](self.cacheT_dev.value())
+                comptime n_blocks_t = (BATCH * Self.IN + TPB - 1) // TPB
+                comptime t_kernel = _transpose_kernel[BATCH, Self.IN]
+                ctx.enqueue_function[t_kernel](
+                    cache_lt, cacheT_lt,
+                    grid_dim=n_blocks_t, block_dim=TPB,
+                )
+                var cacheT_tt = TileTensor(
+                    self.cacheT_dev.value(), row_major[Self.IN, BATCH](),
+                )
+                var dW_tmp_tt = TileTensor(
+                    self.dW_tmp_dev.value(), row_major[Self.IN, Self.OUT](),
+                )
+                max_matmul[target="gpu"](
+                    dW_tmp_tt, cacheT_tt, grad_output_v, ctx,
+                )
+                comptime gw_layout = Layout.row_major(Self.W_SIZE)
                 var gw_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
                     self.weight.grad_dev.value()
                 )
-                comptime n_blocks_gw = (Self.W_SIZE + TPB - 1) // TPB
-                comptime gw_kernel = _grad_w_accum_kernel[
-                    BATCH, Self.IN, Self.OUT
-                ]
-                ctx.enqueue_function[gw_kernel](
-                    cache_lt, go_lt2, gw_lt,
-                    grid_dim=n_blocks_gw, block_dim=TPB,
+                var dW_tmp_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
+                    self.dW_tmp_dev.value()
+                )
+                comptime n_blocks_acc = (Self.W_SIZE + TPB - 1) // TPB
+                comptime acc_kernel = _accum_kernel[Self.W_SIZE]
+                ctx.enqueue_function[acc_kernel](
+                    gw_lt, dW_tmp_lt,
+                    grid_dim=n_blocks_acc, block_dim=TPB,
                 )
 
             # ── (3) grad_input = grad_output @ W^T ─────────────────────
