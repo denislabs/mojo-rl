@@ -175,7 +175,25 @@ struct ConvPCBlock[
     ):
         # a_below = ACT(x_below) (cached for weight_grad)
         Self.ACT.apply[BATCH, Self.IN_DIM, dtype](x_below, a_below)
+        Self._conv_forward[BATCH, dtype](a_below, params, mu)
 
+    @staticmethod
+    def _conv_forward[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        a_below: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut mu: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+    ):
+        """Conv-only forward (no activation): μ = Conv(a_below) + bias. Caller
+        supplies the already-activated/normalized conv input. Reused by
+        NormConvPCBlock to convolve a pre-normalized input."""
         comptime W_SIZE = Self.out_channels * Self.col_size
         comptime use_apple = CompilationTarget.is_macos() and (
             dtype == DType.float32
