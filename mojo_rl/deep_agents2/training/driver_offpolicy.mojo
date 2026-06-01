@@ -530,6 +530,7 @@ def run_offpolicy_train_batched[
     nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     base_step: Int = 0,
+    diag_every: Int = 0,
 ) raises -> List[Scalar[DT]]:
     """Tier-3 off-policy driver covering same-target combinations.
 
@@ -652,6 +653,9 @@ def run_offpolicy_train_batched[
     # `comptime if L.ENABLED` block so the default (NoOpLogger) path
     # never reads or writes it after this initialization.
     var next_log: Int = print_every
+    # Independent counter for the diag-bundle flush cadence (mean_q /
+    # critic_loss / alpha / train_steps / …). Disabled when diag_every == 0.
+    var next_diag: Int = diag_every if diag_every > 0 else total_env_steps + 1
 
     while step_idx < total_env_steps:
         # ── 1. Snapshot prev_obs from env.obs_ptr().
@@ -842,6 +846,25 @@ def run_offpolicy_train_batched[
                 )
                 # No forced flush — see note in run_offpolicy_train.
                 next_log += print_every
+
+        # `diag_every` — drain the trainer's full metric bundle (mean_q,
+        # critic_loss, alpha, train_steps, …) through the logger at its own
+        # cadence, mirroring the single-env `run_offpolicy_train` driver.
+        # Default trait impl is a no-op for trainers that haven't wired this
+        # up; SACTrainer overrides it. A live `flush()` follows so the
+        # dashboard updates DURING training (otherwise points only auto-flush
+        # once the buffer hits `buffer_size`).
+        comptime if L.ENABLED:
+            if (
+                diag_every > 0
+                and step_idx >= next_diag
+                and Bool(logger)
+            ):
+                trainer.flush_metrics_through_logger[L](
+                    logger, base_step + step_idx
+                )
+                logger.value()[].flush()
+                next_diag += diag_every
 
     return ep_returns^
 

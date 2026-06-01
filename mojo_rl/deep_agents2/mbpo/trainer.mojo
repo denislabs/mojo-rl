@@ -61,6 +61,7 @@ from mojo_rl.nn2.random.box_muller import box_muller_normal_gpu
 from mojo_rl.nn2.training.timer import Timer
 from .dynamics_ensemble_block import DynamicsEnsembleBlock
 from ..training.episode_tracker import EpisodeTracker
+from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.off_policy_critic import concat_sa_gpu
@@ -332,6 +333,11 @@ struct MBPOTrainer[
     var _dyn_loss_accum: Scalar[DT]
     var _dyn_step_count: Int
 
+    # GPU-only device-resident mean accumulators for `mean_q` / `mean_reward`
+    # (CPU uses the `_q_accum` / `_reward_accum` host scalars above).
+    var _q_mean_dev: DeviceMeanAccum
+    var _reward_mean_dev: DeviceMeanAccum
+
     var timer: Timer
 
     def __init__(out self):
@@ -424,6 +430,8 @@ struct MBPOTrainer[
         self._reward_accum = Scalar[DT](0.0)
         self._dyn_loss_accum = Scalar[DT](0.0)
         self._dyn_step_count = 0
+        self._q_mean_dev = DeviceMeanAccum()
+        self._reward_mean_dev = DeviceMeanAccum()
         self.timer = Timer.new()
 
     @staticmethod
@@ -502,6 +510,9 @@ struct MBPOTrainer[
             var alpha_p = t.alpha_opt.alpha_dev_ptr()
             t.target_y_blk.set_alpha_ptr(alpha_p)
             t.actor_blk.set_alpha_ptr(alpha_p)
+            # Device-resident mean accumulators for the GPU diag path.
+            t._q_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._reward_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
 
         t.alpha_blk = AlphaUpdateStep[
             Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
@@ -779,7 +790,9 @@ struct MBPOTrainer[
             )
             self.timer.accumulate(Self._T_POLYAK, t_pol)
 
-            # Per-batch diagnostics — CPU-only (GPU leaves 0; SAC convention).
+            # Per-batch diagnostics — mean Q1(s, a) + mean reward. CPU sums the
+            # host scratches; GPU folds the same `[BATCH]` device buffers into
+            # device-resident running means (no per-step D2H) read at flush.
             var t_diag = perf_counter_ns()
             comptime if Self.train_target == "cpu":
                 var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
@@ -792,6 +805,13 @@ struct MBPOTrainer[
                     sum_r += r_p[i]
                 self._q_accum += sum_q * inv_b
                 self._reward_accum += sum_r * inv_b
+            else:
+                var q_ptr = self.twin_critic_blk.inner.c1._mb_q.target_ptr[
+                    "gpu"
+                ]()
+                var r_ptr = self.state.mb_r.target_ptr["gpu"]()
+                self._q_mean_dev.accumulate_gpu[Self.BATCH](q_ptr)
+                self._reward_mean_dev.accumulate_gpu[Self.BATCH](r_ptr)
             self.timer.accumulate(Self._T_DIAG, t_diag)
 
             self._actor_L_accum += self.state.actor_loss
@@ -843,8 +863,9 @@ struct MBPOTrainer[
         """Drain accumulators into an MBPOMetrics bundle. On GPU the SAC
         actor/critic losses + alpha are read from the on-device accumulators;
         the dynamics NLL is host-accumulated on both targets (D2H'd per
-        member-step on the periodic cadence). Per-batch diag means are
-        CPU-only (0 on GPU)."""
+        member-step on the periodic cadence). `mean_q` / `mean_reward` are
+        device-resident on GPU (Q1 + reward reductions folded in by
+        `_run_sac_updates`)."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
         var dn = self._dyn_step_count if self._dyn_step_count > 0 else 1
@@ -852,22 +873,28 @@ struct MBPOTrainer[
         var actor_mean: Scalar[DT]
         var critic_mean: Scalar[DT]
         var alpha_val: Scalar[DT]
+        var q_mean: Scalar[DT]
+        var reward_mean: Scalar[DT]
         comptime if Self.train_target == "gpu":
             actor_mean = self.actor_blk.read_loss_accum()
             var cl1 = self.twin_critic_blk.inner.c1.mse_loss.read_accum["gpu"]()
             var cl2 = self.twin_critic_blk.inner.c2.mse_loss.read_accum["gpu"]()
             critic_mean = cl1 + cl2
             alpha_val = self.alpha_opt.read_alpha()
+            q_mean = self._q_mean_dev.read["gpu"]()
+            reward_mean = self._reward_mean_dev.read["gpu"]()
         else:
             actor_mean = self._actor_L_accum * inv
             critic_mean = self._critic_L_accum * inv
             alpha_val = fexp(self.alpha_opt.value)
+            q_mean = self._q_accum * inv
+            reward_mean = self._reward_accum * inv
         var bundle = MBPOMetrics(
             actor_loss=LogScalar[DT](actor_mean),
             critic_loss=LogScalar[DT](critic_mean),
             alpha=LogScalar[DT](alpha_val),
-            mean_q=LogScalar[DT](self._q_accum * inv),
-            mean_reward=LogScalar[DT](self._reward_accum * inv),
+            mean_q=LogScalar[DT](q_mean),
+            mean_reward=LogScalar[DT](reward_mean),
             dyn_loss=LogScalar[DT](self._dyn_loss_accum * dyn_inv),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
@@ -883,6 +910,8 @@ struct MBPOTrainer[
             self.twin_critic_blk.inner.c1.mse_loss.reset_accum["gpu"]()
             self.twin_critic_blk.inner.c2.mse_loss.reset_accum["gpu"]()
             self.actor_blk.reset_loss_accum()
+            self._q_mean_dev.reset["gpu"]()
+            self._reward_mean_dev.reset["gpu"]()
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^

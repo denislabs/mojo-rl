@@ -150,6 +150,7 @@ struct SACAgent[
         verbose: Bool = True,
         nstep_gamma: Scalar[DT] = 0.99,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        diag_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         """Off-policy training via `run_offpolicy_train_batched`.
 
@@ -160,7 +161,14 @@ struct SACAgent[
         Pass `logger=Optional[UnsafePointer[L, MutAnyOrigin]](
         UnsafePointer(to=my_logger))` to stream `env/mean_ret` and
         `env/ep_count` at `print_every` cadence. Default `L=NoOpLogger`
-        comptime-elides the emit path entirely (bit-identical no-op)."""
+        comptime-elides the emit path entirely (bit-identical no-op).
+
+        Set `diag_every > 0` to also drain the full SAC metric bundle
+        (`actor_loss` / `critic_loss` / `alpha` / `mean_q` / `mean_reward`
+        / `train_steps` / …) through the logger every `diag_every`
+        env-steps — the GPU multi-env counterpart of `train_single`'s
+        diag cadence. Default 0 keeps only the `avg_reward` / `episodes`
+        stream."""
         var ctx = self.trainer.ctx
         return run_offpolicy_train_batched[
             SACTrainer[
@@ -184,6 +192,7 @@ struct SACAgent[
             verbose=verbose,
             nstep_gamma=nstep_gamma,
             logger=logger,
+            diag_every=diag_every,
         )
 
     def train_single[

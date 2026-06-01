@@ -126,22 +126,35 @@ def test_mbpo_gpu_smoke() raises:
     var alpha = m.alpha.to_f64()
     var dl = m.dyn_loss.to_f64()
     var nup = m.n_updates.to_f64()
+    var mq = m.mean_q.to_f64()
+    var mr = m.mean_reward.to_f64()
     var mret = Float64(trainer.mean_return())
     print("  actor_loss  =", al)
     print("  critic_loss =", cl)
     print("  alpha       =", alpha)
     print("  dyn_loss    =", dl)
     print("  n_updates   =", nup)
+    print("  mean_q      =", mq)
+    print("  mean_reward =", mr)
     print("  mean_ret(10)=", mret)
 
     _finite(al, "actor_loss")
     _finite(cl, "critic_loss")
     _finite(alpha, "alpha")
     _finite(dl, "dyn_loss")
+    _finite(mq, "mean_q")
+    _finite(mr, "mean_reward")
     _finite(mret, "mean_return")
     assert_true(nup > 0.0, "no SAC sub-updates ran")
     assert_true(cl >= 0.0, "twin-critic MSE loss should be >= 0")
     assert_true(alpha > 0.0, "alpha should be positive (= exp(log_alpha))")
+    # Device-side diag reductions (the fix): before wiring, both read a
+    # hard 0.0 on GPU. mean_reward over a Pendulum minibatch is strictly
+    # negative (the reward is a cost), and mean_q is essentially never
+    # exactly 0 once the critic has trained — so a non-zero pair proves the
+    # device accumulators are folding the mb_q / mb_r buffers in.
+    assert_true(mr < 0.0, "mean_reward should be < 0 on Pendulum (device diag)")
+    assert_true(mq != 0.0, "mean_q should be non-zero on GPU (device diag)")
     print("PASS")
 
 

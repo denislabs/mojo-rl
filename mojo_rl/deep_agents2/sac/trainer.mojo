@@ -69,6 +69,7 @@ from mojo_rl.nn2.initializer import Xavier
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.optimizer.scalar_adam import ScalarAdam
 from ..training.episode_tracker import EpisodeTracker
+from ..training.device_mean_accum import DeviceMeanAccum
 from .metrics import SACMetrics
 from mojo_rl.nn2.training.timer import Timer
 from ..training.trainer_block import TrainerState
@@ -241,6 +242,12 @@ struct SACTrainer[
     # downstream monitor can plot cumulative updates over time.
     var _total_train_steps: Int
 
+    # GPU-only device-resident mean accumulators for `mean_q` / `mean_reward`
+    # (the CPU path uses the `_q_accum` / `_reward_accum` host scalars above).
+    # Default-constructed on CPU (no device buffer); made on GPU in `make`.
+    var _q_mean_dev: DeviceMeanAccum
+    var _reward_mean_dev: DeviceMeanAccum
+
     var timer: Timer
 
     def __init__(out self):
@@ -324,6 +331,8 @@ struct SACTrainer[
         self._abs_action_accum = Scalar[DT](0.0)
         self._update_count = 0
         self._total_train_steps = 0
+        self._q_mean_dev = DeviceMeanAccum()
+        self._reward_mean_dev = DeviceMeanAccum()
         self.timer = Timer.new()
 
     @staticmethod
@@ -427,6 +436,9 @@ struct SACTrainer[
             t.alpha_opt = ScalarAdam.new_device(
                 ctx.value(), flog(init_alpha), alpha_lr,
             )
+            # Device-resident mean accumulators for the GPU diag path.
+            t._q_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._reward_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
         else:
             t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
 
@@ -616,6 +628,20 @@ struct SACTrainer[
             self.critic2_opt,
         )
         self.timer.accumulate(Self._T_CRITIC, t_crit)
+
+        # GPU diag — device-resident running means of Q1(s, a) and the batch
+        # reward (the CPU path sums the host scratches in `_train_step_impl`).
+        # `_mb_q` was just populated by `twin_critic_blk.step`'s critic.forward
+        # and is not overwritten by the actor step below; `mb_r` is the sampled
+        # reward minibatch. Both reductions stay on-device (capture-safe) and
+        # are read once at `diag_every` flush in `flush_metrics`.
+        comptime if Self.train_target == "gpu":
+            var t_diag_gpu = perf_counter_ns()
+            var q_ptr = self.twin_critic_blk.inner.c1._mb_q.target_ptr["gpu"]()
+            var r_ptr = self.state.mb_r.target_ptr["gpu"]()
+            self._q_mean_dev.accumulate_gpu[Self.BATCH](q_ptr)
+            self._reward_mean_dev.accumulate_gpu[Self.BATCH](r_ptr)
+            self.timer.accumulate(Self._T_DIAG, t_diag_gpu)
 
         var t_act = perf_counter_ns()
         self.actor_blk.step[Self.train_target, POLICY](
@@ -1135,23 +1161,33 @@ struct SACTrainer[
         # host-scalar accumulator paths.
         var actor_mean: Scalar[DT]
         var alpha_val: Scalar[DT]
+        # `mean_q` / `mean_reward` are device-resident on GPU (Q1 + reward
+        # reductions folded in by `_train_post_sample_kernels`); the other
+        # per-batch diags (`mean_target` / `mean_next_q` / `mean_done` /
+        # `mean_abs_action`) remain CPU-only and read 0 on GPU.
+        var q_mean: Scalar[DT]
+        var reward_mean: Scalar[DT]
         comptime if Self.train_target == "gpu":
             var cl1 = self.twin_critic_blk.inner.c1.mse_loss.read_accum["gpu"]()
             var cl2 = self.twin_critic_blk.inner.c2.mse_loss.read_accum["gpu"]()
             critic_mean = cl1 + cl2
             actor_mean = self.actor_blk.read_loss_accum()
             alpha_val = self.alpha_opt.read_alpha()
+            q_mean = self._q_mean_dev.read["gpu"]()
+            reward_mean = self._reward_mean_dev.read["gpu"]()
         else:
             critic_mean = self._critic_L_accum * inv
             actor_mean = self._actor_L_accum * inv
             alpha_val = self._alpha_accum * inv
+            q_mean = self._q_accum * inv
+            reward_mean = self._reward_accum * inv
         var bundle = SACMetrics(
             actor_loss=LogScalar[DT](actor_mean),
             critic_loss=LogScalar[DT](critic_mean),
             alpha=LogScalar[DT](alpha_val),
-            mean_q=LogScalar[DT](self._q_accum * inv),
+            mean_q=LogScalar[DT](q_mean),
             mean_target=LogScalar[DT](self._target_accum * inv),
-            mean_reward=LogScalar[DT](self._reward_accum * inv),
+            mean_reward=LogScalar[DT](reward_mean),
             mean_next_q=LogScalar[DT](self._next_q_accum * inv),
             mean_done=LogScalar[DT](self._done_accum * inv),
             mean_abs_action=LogScalar[DT](self._abs_action_accum * inv),
@@ -1175,6 +1211,8 @@ struct SACTrainer[
             self.twin_critic_blk.inner.c1.mse_loss.reset_accum["gpu"]()
             self.twin_critic_blk.inner.c2.mse_loss.reset_accum["gpu"]()
             self.actor_blk.reset_loss_accum()
+            self._q_mean_dev.reset["gpu"]()
+            self._reward_mean_dev.reset["gpu"]()
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^

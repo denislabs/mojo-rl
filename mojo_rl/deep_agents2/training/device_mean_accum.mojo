@@ -1,0 +1,143 @@
+"""DeviceMeanAccum — device-resident running mean of a `[N]` buffer.
+
+The off-policy trainers (SAC, MBPO) emit per-batch diagnostic means like
+`mean_q` and `mean_reward`. On CPU those are summed straight off the host
+`mb_*` scratches in the trainer's diag block. On GPU the same scratches live
+in device memory, so summing them on the host would force a per-update D2H of
+every `[BATCH]` buffer — exactly the overhead the Slice-3 critic-loss
+accumulator was built to avoid.
+
+This mirrors the `MSELoss` device-accumulator pattern (see
+`mojo_rl/nn2/loss/mse.mojo`): `accumulate_gpu[N]` reduces the `[N]` buffer on
+device and adds `(sum/N, +1)` into a `[2]` accumulator (`[sum_of_means,
+count]`) with NO per-step D2H — so it is CUDA-graph capturable. The host reads
+the running mean once per `diag_every` flush via `read`, then `reset`s the
+window. The reduction order differs from the CPU left-to-right sweep (~1e-5 in
+fp32), but these scalars feed only metrics — never a gradient — so training
+stays bit-identical.
+
+CPU is supported as a host-scalar mirror (`accumulate_cpu`) so the type can be
+used uniformly, but the existing trainers keep their own CPU diag path and use
+this only on GPU.
+"""
+
+from std.gpu import thread_idx
+from std.gpu.primitives import block
+from std.gpu.host import DeviceContext, DeviceBuffer
+
+from mojo_rl.nn2.constants import DT, TPB_REDUCE
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GPU kernel — single-block reduce of `data[0..N]`, then thread 0 adds
+# `total/N` into `acc[0]` and `+1` into `acc[1]`. Launch grid_dim=1,
+# block_dim=TPB_REDUCE. Mirrors `_mse_reduce_add_kernel`.
+# ──────────────────────────────────────────────────────────────────────────
+def _mean_reduce_add_kernel[N: Int](
+    data: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    var t = Int(thread_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    var k = t
+    while k < N:
+        my_sum += data[k]
+        k += TPB_REDUCE
+    var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
+    if t == 0:
+        acc[0] = acc[0] + total[0] / Scalar[DT](N)
+        acc[1] = acc[1] + Scalar[DT](1.0)
+
+
+struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDestructible):
+    """Running mean of a `[N]` buffer over a flush window.
+
+    GPU: a `[2]` device buffer `[sum_of_batch_means, count]`. CPU mirror:
+    `_acc_sum` / `_acc_n` host scalars. Default-constructed instances hold no
+    device buffer (used on CPU trainers, or before `make`)."""
+
+    var acc_dev: Optional[DeviceBuffer[DT]]
+    var _acc_sum: Scalar[DT]
+    var _acc_n: Int
+    var ctx: Optional[DeviceContext]
+
+    def __init__(out self):
+        self.acc_dev = None
+        self._acc_sum = Scalar[DT](0.0)
+        self._acc_n = 0
+        self.ctx = None
+
+    @staticmethod
+    def make[target: StaticString](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "DeviceMeanAccum: target must be 'cpu' or 'gpu'"
+        )
+        var a = Self()
+        comptime if target == "gpu":
+            if not ctx:
+                raise Error("DeviceMeanAccum.make[target='gpu']: ctx required")
+            var c = ctx.value()
+            var b = c.enqueue_create_buffer[DT](2)
+            b.enqueue_fill(0.0)
+            a.acc_dev = b^
+            a.ctx = ctx
+        return a^
+
+    def accumulate_gpu[N: Int](
+        mut self,
+        data_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """Reduce `data_ptr[0..N]` on device and fold `(mean, +1)` into the
+        accumulator. No D2H — capture-safe. `data_ptr` must be a device
+        pointer to an `[N]` buffer."""
+        var ctx = self.ctx.value()
+        comptime red_k = _mean_reduce_add_kernel[N]
+        ctx.enqueue_function[red_k](
+            data_ptr,
+            self.acc_dev.value().unsafe_ptr(),
+            grid_dim=1,
+            block_dim=TPB_REDUCE,
+        )
+
+    def accumulate_cpu[N: Int](
+        mut self,
+        data_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ):
+        """Host-scalar mirror of `accumulate_gpu` (sum/N into the running
+        host accumulators)."""
+        var s: Scalar[DT] = 0.0
+        for i in range(N):
+            s += data_ptr[i]
+        self._acc_sum += s / Scalar[DT](N)
+        self._acc_n += 1
+
+    def read[target: StaticString](mut self) raises -> Scalar[DT]:
+        """Mean of the accumulated per-batch means over the window
+        (`sum / count`); 0 if no updates. GPU path D2Hs the `[2]` buffer once
+        — flush cadence only, NOT in the per-step hot loop."""
+        comptime if target == "cpu":
+            if self._acc_n == 0:
+                return Scalar[DT](0.0)
+            return self._acc_sum / Scalar[DT](self._acc_n)
+        else:
+            var ctx = self.ctx.value()
+            var h = ctx.enqueue_create_host_buffer[DT](2)
+            ctx.enqueue_copy(h, self.acc_dev.value())
+            ctx.synchronize()
+            var s = h.unsafe_ptr()[0]
+            var n = h.unsafe_ptr()[1]
+            if n == Scalar[DT](0.0):
+                return Scalar[DT](0.0)
+            return s / n
+
+    def reset[target: StaticString](mut self) raises:
+        """Zero the accumulator. Call once per `diag_every` window after
+        `read`, outside any capture region."""
+        comptime if target == "cpu":
+            self._acc_sum = Scalar[DT](0.0)
+            self._acc_n = 0
+        else:
+            self.acc_dev.value().enqueue_fill(0.0)
