@@ -14,9 +14,12 @@ uses `deep_agents.core.agents.DeepSACAgent.train_gpu`). Uses the new
     native GPU physics kernels — the exact same kernels the legacy
     `train_gpu[HalfCheetah[...]]` path drives, just behind the deep_agents2
     wrapper.
-  * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count` at the
-    driver's `print_every` cadence. Config (server URL + API key) read from
-    a `.env` via `mojo_rl.core.dotenv`.
+  * `RemoteLogger` — streams `avg_reward` + `episodes` at the driver's
+    `print_every` cadence, AND (via `diag_every`) the full SAC metric bundle
+    — `actor_loss`, `critic_loss`, `alpha`, `mean_q`, `mean_reward`,
+    `train_steps`, … — so the dashboard shows the same panels as the
+    single-env path. Config (server URL + API key) read from a `.env` via
+    `mojo_rl.core.dotenv`.
 
 `updates_per_step=N_ENVS` keeps the effective UTD = 1 per collected
 transition: each driver iteration steps all `N_ENVS` envs once and runs
