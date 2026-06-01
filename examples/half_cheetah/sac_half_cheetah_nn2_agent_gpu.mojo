@@ -77,7 +77,7 @@ comptime N_ENVS = 32
 comptime NUM_STEPS = 600_000
 comptime WARMUP_STEPS = 10_000
 comptime PRINT_EVERY = 50_000  # driver-cadence verbose + env/mean_ret emit
-comptime DIAG_EVERY = 10_000  # full metric-bundle flush cadence (mean_q, …)
+comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 
 
 comptime EnvT = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]
