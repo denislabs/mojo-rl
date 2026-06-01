@@ -921,7 +921,17 @@ struct MBPOTrainer[
         logger: Optional[UnsafePointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
-        _ = self.flush_metrics[L](logger, step)
+        # Key the SAC/dynamics diagnostics (mean_q, critic_loss, alpha,
+        # dyn_loss, train_steps, ...) on the cumulative SAC train-step count
+        # rather than the driver's env-step `step`. At UTD=40 these differ by
+        # ~40x; the legacy MBPO run logged the same diagnostics against
+        # train-steps, so this makes the dashboards overlay directly (and
+        # removes the "looks like UTD=1" artifact — the diag panels were
+        # capped at the env-step horizon while the updates ran 40x faster).
+        # Episode reward / episode count stay on the env-step axis; the driver
+        # emits those separately, matching legacy.
+        _ = step
+        _ = self.flush_metrics[L](logger, self._total_train_steps)
 
     def save_state(mut self, path: String) raises:
         """One-file v2 checkpoint of the full MBPO trainer state: the SAC
