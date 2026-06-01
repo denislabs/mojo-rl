@@ -159,11 +159,14 @@ def main() raises:
             BatchedEnvT,
             N_ENVS=N_ENVS,
             L=RemoteLogger,
-            # Capture the per-update device kernel sequence into a CUDA graph
-            # (NVIDIA only; no-op on Apple/Metal). Eliminates per-kernel launch
-            # overhead on the train step — the dominant cost on the eager path.
-            # Safe here: gpu train_target + uniform replay (no PER).
-            USE_TRAIN_CUDA_GRAPH=True,
+            # CUDA-graph capture of the train step is DISABLED: enabling it on
+            # NVIDIA caused critic/Q divergence (the integrated capture path is
+            # not yet validated on real hardware — it is a no-op on Apple, so it
+            # can't be exercised locally). The other optimizations (LinearReLU
+            # fusion, deferred episode sync, flush-cadence diag) are proven
+            # training-neutral and stay on. Re-enable only once capture is
+            # validated end-to-end on NVIDIA.
+            USE_TRAIN_CUDA_GRAPH=False,
         ](
             env,
             NUM_STEPS,
