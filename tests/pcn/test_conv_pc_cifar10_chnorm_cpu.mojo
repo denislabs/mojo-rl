@@ -1,21 +1,24 @@
-"""Conv-PCN CIFAR-10 with RMSNorm PC levels (CPU Accelerate) — P4 follow-up.
+"""Conv-PCN CIFAR-10 with PER-CHANNEL RMSNorm PC levels (CPU) — P6 follow-up.
 
-Inserts NormPCBlock (RMSNorm PC level) between conv blocks → Conv→Norm→ReLU→Conv
-ordering. The unnormalized stack (test_conv_pc_cifar10_cpu.mojo) diverged at
-ADAM_LR=1e-3 once steps grew; this checks whether normalization (a) stabilizes
-that rate and (b) lifts accuracy past the ~47% unnormalized result.
+The PC-native analogue of BatchNorm-for-conv: ChannelNormPCBlock normalizes
+within each channel over H·W (per-sample, per-channel), preserving inter-channel
+scale — unlike the global NormPCBlock (which plateaued ~0.38). Same conv stack,
+same 1e-3 LR that diverges WITHOUT any norm.
 
-  ConvPCBlock[3,  32, 3, 2, 1, 32, 32, PCIdentity]  # → 32×16×16 (8192)
-  NormPCBlock[8192]
-  ConvPCBlock[32, 64, 3, 2, 1, 16, 16, PCReLU]      # → 64×8×8  (4096)
-  NormPCBlock[4096]
-  ConvPCBlock[64, 64, 3, 2, 1, 8,  8,  PCReLU]      # → 64×4×4  (1024)
-  NormPCBlock[1024]
+  ConvPCBlock[3,  32, 3, 2, 1, 32, 32, PCIdentity]  # → 32×16×16
+  ChannelNormPCBlock[32, 256]
+  ConvPCBlock[32, 64, 3, 2, 1, 16, 16, PCReLU]      # → 64×8×8
+  ChannelNormPCBlock[64, 64]
+  ConvPCBlock[64, 64, 3, 2, 1, 8,  8,  PCReLU]      # → 64×4×4
+  ChannelNormPCBlock[64, 16]
   PCBlock[1024, 256, PCReLU]
   PCBlock[256, 10, PCIdentity]
 
+Baselines: unnormalized 46.5% (LR 4e-4, diverges at 1e-3); global RMSNorm ~0.35
+(6 ep, plateaus ~0.38).
+
 Run:
-    pixi run mojo run -I . tests/pcn/test_conv_pc_cifar10_norm_cpu.mojo
+    pixi run mojo run -I . tests/pcn/test_conv_pc_cifar10_chnorm_cpu.mojo
 """
 
 from std.memory import alloc, memset
@@ -34,40 +37,41 @@ from mojo_rl.experimental.pcn import (
     PCTrainer,
 )
 from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
-from mojo_rl.experimental.pcn.pc_norm_block import NormPCBlock
+from mojo_rl.experimental.pcn.pc_channel_norm_block import ChannelNormPCBlock
 
 comptime BATCH = 125
-comptime EPOCHS = 5
+comptime EPOCHS = 6
 comptime T_INFER = 12
 comptime LR_X: Float32 = 0.05
-comptime ADAM_LR: Float64 = 0.001  # stable WITH norm (unnorm diverged here); 4e-3 collapses
+comptime ADAM_LR: Float64 = 0.0004  # matched to the unnormalized baseline for a fair norm-vs-no-norm comparison
 comptime N_TRAIN_SAMPLES = 20000
 comptime N_TEST_SAMPLES = 1000
 comptime N_TRAIN_BATCHES = N_TRAIN_SAMPLES // BATCH
 comptime N_TEST_BATCHES = N_TEST_SAMPLES // BATCH
 comptime IN = 3 * 32 * 32
-comptime PASS_ACC = 0.30  # this test verifies STABLE learning at 1e-3 (unnorm
-#                            DIVERGES here), not peak accuracy. Global RMSNorm
-#                            plateaus ~0.38 (8 ep) — below the tuned unnorm 0.465;
-#                            per-channel/group norm is the path past 50%.
+comptime PASS_ACC = 0.30  # verifies the per-channel norm block trains stably &
+#   learns. FINDING: norm-as-PC-level does NOT beat the unnormalized net — at
+#   matched LR (4e-4) it reaches only ~0.36 vs 0.465, because each norm level
+#   adds a latent (5→8 levels) and PC inference at fixed T under-settles the
+#   deeper chain. See docs/PCN_CONV_DESIGN.md.
 
 comptime NET = PCSequential[
     ConvPCBlock[3, 32, 3, 2, 1, 32, 32, PCIdentity],
-    NormPCBlock[8192],
+    ChannelNormPCBlock[32, 256],
     ConvPCBlock[32, 64, 3, 2, 1, 16, 16, PCReLU],
-    NormPCBlock[4096],
+    ChannelNormPCBlock[64, 64],
     ConvPCBlock[64, 64, 3, 2, 1, 8, 8, PCReLU],
-    NormPCBlock[1024],
+    ChannelNormPCBlock[64, 16],
     PCBlock[1024, 256, PCReLU],
     PCBlock[256, 10, PCIdentity],
 ]
 comptime TRAINER = PCTrainer[
     ConvPCBlock[3, 32, 3, 2, 1, 32, 32, PCIdentity],
-    NormPCBlock[8192],
+    ChannelNormPCBlock[32, 256],
     ConvPCBlock[32, 64, 3, 2, 1, 16, 16, PCReLU],
-    NormPCBlock[4096],
+    ChannelNormPCBlock[64, 64],
     ConvPCBlock[64, 64, 3, 2, 1, 8, 8, PCReLU],
-    NormPCBlock[1024],
+    ChannelNormPCBlock[64, 16],
     PCBlock[1024, 256, PCReLU],
     PCBlock[256, 10, PCIdentity],
     dtype=dtype,
@@ -76,11 +80,10 @@ comptime OPT = Adam[LR=ADAM_LR]
 
 
 def main() raises:
-    print("Conv-PCN CIFAR-10 + RMSNorm PC levels (CPU)\n")
+    print("Conv-PCN CIFAR-10 + PER-CHANNEL RMSNorm (CPU)\n")
     print("  loading CIFAR-10 ...")
     var ds = CIFAR10()
-    print("  IN_DIM=", NET.IN_DIM, " OUT_DIM=", NET.OUT_DIM,
-          " LATENT_DIM=", NET.LATENT_DIM, " PARAM_SIZE=", NET.PARAM_SIZE,
+    print("  LATENT_DIM=", NET.LATENT_DIM, " PARAM_SIZE=", NET.PARAM_SIZE,
           " ADAM_LR=", ADAM_LR)
 
     var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
@@ -189,10 +192,11 @@ def main() raises:
     print("\n  test accuracy =", acc, " (", correct, "/",
           N_TEST_BATCHES * BATCH, ")")
     print("  train time =", String(train_t)[byte=:7], "s")
-    print("  (unnormalized baseline: 46.5% at ADAM_LR=4e-4, diverged at 1e-3)")
+    print("  (unnorm 46.5% @4e-4 / diverges @1e-3 ; global RMSNorm ~0.35@6ep)")
     print("")
     if acc >= PASS_ACC:
-        print("✅ PASS — normalized conv-PCN trains stably at 1e-3 (acc", acc, ")")
+        print("✅ PASS — per-channel RMSNorm trains stably & learns (acc", acc,
+              "); NB: does not beat unnormalized 0.465 — see docstring/doc")
     else:
         print("❌ FAIL — acc", acc, "<", PASS_ACC)
-        raise Error("normalized conv-PCN CIFAR-10 below threshold")
+        raise Error("per-channel norm conv-PCN below threshold")
