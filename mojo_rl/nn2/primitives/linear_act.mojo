@@ -27,8 +27,13 @@ BACKWARD-ORDER INVARIANT (inherited from Linear): the in-place rewrite of
 `_cached_input_ptr` (must run before grad_input clobbers that slab), then
 grad_input via `max_matmul[transpose_b=True]`.
 
-POLICY: fp32 only for v1 — bf16/AMP path is rejected at compile time
-inside forward/vjp. Add AMP later if a benchmark calls for it.
+POLICY: fp32 compute only. A bf16/AMP `POLICY` is accepted but treated as a
+no-op (forward/vjp always compute in `DT`) so fused layers can compose into
+AMP-compiled trainers (e.g. the SAC trainer instantiates a bf16 branch
+unconditionally). Outputs are fp32 regardless — same as `Linear` — so mixing
+with bf16-compute `Linear`s in one Sequential is safe. For a real bf16 compute
+path use Sequential[Linear, Elementwise[OP]]. Add true AMP later if a
+benchmark calls for it.
 """
 
 from std.memory import alloc
@@ -231,10 +236,14 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        comptime assert POLICY.compute_dtype == DT, (
-            "LinearAct: bf16/AMP not yet supported; use Sequential[Linear, "
-            "Elementwise[OP]] for the bf16 path"
-        )
+        # AMP no-op: this fused layer always computes in `DT` (fp32). A bf16
+        # `POLICY` is accepted but IGNORED — the matmul + activation epilogue
+        # below run in fp32 — so fused layers can compose into AMP-compiled
+        # trainers (the SAC trainer instantiates a bf16 branch unconditionally,
+        # even when bf16 is disabled at runtime). Outputs are fp32 regardless,
+        # matching `Linear` (whose bias-add is fp32 under any policy), so mixing
+        # this layer with bf16-compute `Linear`s in one Sequential is safe. For
+        # an actual bf16 compute path use Sequential[Linear, Elementwise[OP]].
         assert_tag_for["LinearAct", target](self.ts.target_tag)
         var input_v = typed_view[BATCH, Self.IN](inputs[0])
         var output_v = typed_view_mut[BATCH, Self.OUT](output)
@@ -334,9 +343,9 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
-        comptime assert POLICY.compute_dtype == DT, (
-            "LinearAct.vjp: bf16/AMP not yet supported"
-        )
+        # AMP no-op (see `forward`): a bf16 `POLICY` is accepted but ignored;
+        # the backward matmuls run in fp32. Lets fused layers live inside an
+        # AMP-compiled trainer; fp32 at runtime when bf16 is off.
         assert_tag_for["LinearAct", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
         var grad_input_v = typed_view_mut[BATCH, Self.IN](grad_inputs[0])

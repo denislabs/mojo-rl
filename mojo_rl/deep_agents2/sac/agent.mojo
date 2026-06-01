@@ -139,6 +139,7 @@ struct SACAgent[
         N_ENVS: Int = 1,
         NS: Int = 1,
         L: Logger = NoOpLogger,
+        USE_TRAIN_CUDA_GRAPH: Bool = False,
     ](
         mut self,
         mut env: E,
@@ -151,6 +152,7 @@ struct SACAgent[
         nstep_gamma: Scalar[DT] = 0.99,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
+        episode_sync_every: Int = 1,
     ) raises -> List[Scalar[DT]]:
         """Off-policy training via `run_offpolicy_train_batched`.
 
@@ -168,7 +170,15 @@ struct SACAgent[
         / `train_steps` / …) through the logger every `diag_every`
         env-steps — the GPU multi-env counterpart of `train_single`'s
         diag cadence. Default 0 keeps only the `avg_reward` / `episodes`
-        stream."""
+        stream.
+
+        Set `USE_TRAIN_CUDA_GRAPH=True` (GPU + uniform replay only; no-op on
+        non-NVIDIA) to capture the per-update device kernel sequence into a
+        CUDA graph and replay it — removing per-kernel launch overhead from
+        the train step. Pair it with `episode_sync_every > 1` to also batch
+        the per-iteration reward/done readback, so the host stops serializing
+        the GPU pipeline every iteration (otherwise that sync negates the
+        capture win). Returns stay exact at every print/diag boundary."""
         var ctx = self.trainer.ctx
         return run_offpolicy_train_batched[
             SACTrainer[
@@ -181,6 +191,7 @@ struct SACAgent[
             N_ENVS,
             NS,
             L,
+            USE_TRAIN_CUDA_GRAPH,
         ](
             ctx,
             self.trainer,
@@ -193,6 +204,7 @@ struct SACAgent[
             nstep_gamma=nstep_gamma,
             logger=logger,
             diag_every=diag_every,
+            episode_sync_every=episode_sync_every,
         )
 
     def train_single[

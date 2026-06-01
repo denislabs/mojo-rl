@@ -641,32 +641,16 @@ struct SACTrainer[
         )
         self.timer.accumulate(Self._T_CRITIC, t_crit)
 
-        # GPU diag — device-resident running means of Q1(s, a) and the batch
-        # reward (the CPU path sums the host scratches in `_train_step_impl`).
-        # `_mb_q` was just populated by `twin_critic_blk.step`'s critic.forward
-        # and is not overwritten by the actor step below; `mb_r` is the sampled
-        # reward minibatch. Both reductions stay on-device (capture-safe) and
-        # are read once at `diag_every` flush in `flush_metrics`.
-        comptime if Self.train_target == "gpu":
-            var t_diag_gpu = perf_counter_ns()
-            var q_ptr = self.twin_critic_blk.inner.c1._mb_q.target_ptr["gpu"]()
-            var r_ptr = self.state.mb_r.target_ptr["gpu"]()
-            var y_ptr = self.state.mb_y.target_ptr["gpu"]()
-            var d_ptr = self.state.mb_d.target_ptr["gpu"]()
-            var a_ptr = self.state.mb_a.target_ptr["gpu"]()
-            # `min_q` is the target-y ComputeGraph's min(Q1_t, Q2_t)(s', a')
-            # node; on a GPU graph its out_ptr is a device buffer, fresh from
-            # the `target_y_blk.step` forward earlier this update.
-            var nq_ptr = self.target_y_blk.inner.graph.node_out_ptr["min_q"]()
-            self._q_mean_dev.accumulate_gpu[Self.BATCH](q_ptr)
-            self._reward_mean_dev.accumulate_gpu[Self.BATCH](r_ptr)
-            self._target_mean_dev.accumulate_gpu[Self.BATCH](y_ptr)
-            self._next_q_mean_dev.accumulate_gpu[Self.BATCH](nq_ptr)
-            self._done_mean_dev.accumulate_gpu[Self.BATCH](d_ptr)
-            self._abs_action_mean_dev.accumulate_gpu_abs[
-                Self.BATCH * Self.ACT_DIM
-            ](a_ptr)
-            self.timer.accumulate(Self._T_DIAG, t_diag_gpu)
+        # GPU per-batch diag (Q1 / reward / target / min_q / done / |action|)
+        # is NOT folded in here. Those six device reductions used to run every
+        # update — pure launch overhead on the eager path, and six extra nodes
+        # baked into the CUDA-graph capture. They are now taken as a single
+        # snapshot of the last update's device buffers inside `flush_metrics`
+        # (`_accumulate_diag_snapshot_gpu`), at the `diag_every` cadence only.
+        # The CPU path still sums the host scratches per step in
+        # `_train_step_impl` (cheap, no launch overhead). Critic/actor loss
+        # accumulators are untouched — they fold into the existing loss kernels
+        # (ACCUMULATE=True), so they cost no extra launch.
 
         var t_act = perf_counter_ns()
         self.actor_blk.step[Self.train_target, POLICY](
@@ -1158,6 +1142,40 @@ struct SACTrainer[
         schedulers."""
         return self._total_train_steps
 
+    # ─── Per-batch diag snapshot (GPU) ────────────────────────────────
+    #
+    # Fold the LAST completed update's device minibatch into the six per-batch
+    # diag accumulators (Q1 / reward / target / min_q / done / |action|).
+    # Relocated out of `_train_post_sample_kernels` so these six reductions
+    # neither launch every eager update nor get captured into the CUDA graph —
+    # they run once per `diag_every` flush instead. Reading the post-update
+    # device buffers yields a single-batch snapshot (the legacy GPU-SAC bundle
+    # was likewise a single-batch readback). The accumulators are reset
+    # alongside the others at the end of `flush_metrics`, so each flush reports
+    # exactly this snapshot.
+    def _accumulate_diag_snapshot_gpu(mut self) raises:
+        comptime assert Self.train_target == "gpu", (
+            "_accumulate_diag_snapshot_gpu is GPU-only"
+        )
+        var t_diag_gpu = perf_counter_ns()
+        var q_ptr = self.twin_critic_blk.inner.c1._mb_q.target_ptr["gpu"]()
+        var r_ptr = self.state.mb_r.target_ptr["gpu"]()
+        var y_ptr = self.state.mb_y.target_ptr["gpu"]()
+        var d_ptr = self.state.mb_d.target_ptr["gpu"]()
+        var a_ptr = self.state.mb_a.target_ptr["gpu"]()
+        # `min_q` is the target-y ComputeGraph's min(Q1_t, Q2_t)(s', a') node;
+        # its device out_ptr is fresh from the last update's target_y forward.
+        var nq_ptr = self.target_y_blk.inner.graph.node_out_ptr["min_q"]()
+        self._q_mean_dev.accumulate_gpu[Self.BATCH](q_ptr)
+        self._reward_mean_dev.accumulate_gpu[Self.BATCH](r_ptr)
+        self._target_mean_dev.accumulate_gpu[Self.BATCH](y_ptr)
+        self._next_q_mean_dev.accumulate_gpu[Self.BATCH](nq_ptr)
+        self._done_mean_dev.accumulate_gpu[Self.BATCH](d_ptr)
+        self._abs_action_mean_dev.accumulate_gpu_abs[
+            Self.BATCH * Self.ACT_DIM
+        ](a_ptr)
+        self.timer.accumulate(Self._T_DIAG, t_diag_gpu)
+
     def flush_metrics[
         L: Logger = NoOpLogger
     ](
@@ -1196,6 +1214,11 @@ struct SACTrainer[
         var done_mean: Scalar[DT]
         var abs_action_mean: Scalar[DT]
         comptime if Self.train_target == "gpu":
+            # Take the per-batch diag snapshot now (relocated out of the hot
+            # loop). Gated on having trained ≥1 update so pre-warmup flushes
+            # read empty accumulators (→ 0), matching the prior behavior.
+            if self._total_train_steps > 0:
+                self._accumulate_diag_snapshot_gpu()
             var cl1 = self.twin_critic_blk.inner.c1.mse_loss.read_accum["gpu"]()
             var cl2 = self.twin_critic_blk.inner.c2.mse_loss.read_accum["gpu"]()
             critic_mean = cl1 + cl2

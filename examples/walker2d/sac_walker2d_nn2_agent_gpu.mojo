@@ -40,7 +40,7 @@ from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
-from mojo_rl.nn2.primitives.relu import ReLU
+from mojo_rl.nn2.primitives.linear_relu import LinearReLU
 from mojo_rl.deep_agents2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents2.sac import SACAgent
 from mojo_rl.deep_agents2.training.blocks import UniformSampleGpuStep
@@ -74,19 +74,19 @@ comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 
 comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
 
+# Fused matmul+bias+ReLU (`LinearReLU` = `LinearAct[IN, OUT, ReLUOp]`, same
+# param layout as `Linear` — drop-in). Halves the kernel-launch count per
+# hidden layer vs the unfused `Linear → ReLU` pair, which dominates wall-time
+# on the eager (non-CUDA-graph) GPU path.
 comptime ActorNet = StochasticActor[
     OBS_DIM,
     ACT_DIM,
-    Linear[OBS_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS_DIM + ACT_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
@@ -159,6 +159,11 @@ def main() raises:
             BatchedEnvT,
             N_ENVS=N_ENVS,
             L=RemoteLogger,
+            # Capture the per-update device kernel sequence into a CUDA graph
+            # (NVIDIA only; no-op on Apple/Metal). Eliminates per-kernel launch
+            # overhead on the train step — the dominant cost on the eager path.
+            # Safe here: gpu train_target + uniform replay (no PER).
+            USE_TRAIN_CUDA_GRAPH=True,
         ](
             env,
             NUM_STEPS,
@@ -168,6 +173,11 @@ def main() raises:
             verbose=True,
             logger=logger_ptr,
             diag_every=DIAG_EVERY,
+            # Defer the per-iteration episode-tracking D2H+synchronize: batch
+            # the reward/done readback over this many iterations so the host
+            # only stalls the GPU pipeline ~1/32 as often (returns are drained
+            # exactly at every print/diag boundary, so logged values are fresh).
+            episode_sync_every=32,
         )
         var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
         logger.close()

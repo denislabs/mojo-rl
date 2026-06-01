@@ -42,7 +42,7 @@ through the `BatchedEnv` trait.
 """
 
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
@@ -531,8 +531,19 @@ def run_offpolicy_train_batched[
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     base_step: Int = 0,
     diag_every: Int = 0,
+    episode_sync_every: Int = 1,
 ) raises -> List[Scalar[DT]]:
     """Tier-3 off-policy driver covering same-target combinations.
+
+    `episode_sync_every` (GPU-env path only): batch the per-iteration
+    reward/done D2H readback used for episode-return bookkeeping over this many
+    iterations, draining (one `synchronize`) only when the ring fills OR a
+    print/diag boundary is reached OR the loop ends. The default `1` reproduces
+    the original per-iteration sync exactly; higher values trade logging
+    granularity for far fewer host↔device stalls — important once the train
+    step is a captured CUDA graph (the sync would otherwise serialize every
+    iteration and negate the capture win). Returns are still drained in order,
+    so `mean_return` / `ep_count` are exact at every emit boundary.
 
     Same-target means `env_target == train_target`. Routed through the
     `BatchedEnv` trait:
@@ -641,6 +652,25 @@ def run_offpolicy_train_batched[
     var per_env_returns = List[Scalar[DT]](
         length=N_ENVS, fill=Scalar[DT](0.0),
     )
+
+    # Deferred episode-tracking readback (GPU env only). A ring of pinned host
+    # buffers — one (reward, done) pair per slot — lets us enqueue the small
+    # per-iteration D2H copies WITHOUT synchronizing, then drain `pending_eps`
+    # buffered iterations with a single `synchronize` when the ring fills or an
+    # emit boundary arrives. Declared at function level because Mojo nightly's
+    # `comptime if` bindings don't bleed to sibling blocks; populated only for
+    # the GPU-env branch. `sync_every == 1` reproduces the original
+    # per-iteration sync exactly.
+    var sync_every: Int = episode_sync_every if episode_sync_every >= 1 else 1
+    var ring_reward = List[HostBuffer[DT]]()
+    var ring_done = List[HostBuffer[DT]]()
+    var pending_eps: Int = 0
+    comptime if env_target == "gpu":
+        if ctx:
+            var c0 = ctx.value()
+            for _ in range(sync_every):
+                ring_reward.append(c0.enqueue_create_host_buffer[DT](N_ENVS))
+                ring_done.append(c0.enqueue_create_host_buffer[DT](N_ENVS))
 
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed)
 
@@ -756,27 +786,40 @@ def run_offpolicy_train_batched[
                     per_env_returns[e] = Scalar[DT](0.0)
                     ep_returns.append(trainer.mean_return())
         else:
-            # GPU env: D2H of reward + done (small, N_ENVS*2 scalars).
+            # GPU env: enqueue the small reward+done D2H into the next ring
+            # slot WITHOUT synchronizing; drain (one sync) only when the ring
+            # fills or an emit boundary is imminent. `step_idx` is still
+            # pre-increment here, so the upcoming post-increment value is
+            # `step_idx + N_ENVS` — the same value the print/diag blocks test.
             var c = ctx.value()
-            var host_rewards = c.enqueue_create_host_buffer[DT](N_ENVS)
-            var host_dones = c.enqueue_create_host_buffer[DT](N_ENVS)
             var reward_view = DeviceBuffer[DT](
                 c, env.reward_ptr(), N_ENVS, owning=False,
             )
             var done_view = DeviceBuffer[DT](
                 c, env.done_ptr(), N_ENVS, owning=False,
             )
-            c.enqueue_copy(host_rewards, reward_view)
-            c.enqueue_copy(host_dones, done_view)
-            c.synchronize()
-            var rewards_h = host_rewards.unsafe_ptr()
-            var dones_h = host_dones.unsafe_ptr()
-            for e in range(N_ENVS):
-                per_env_returns[e] = per_env_returns[e] + rewards_h[e]
-                if dones_h[e] > Scalar[DT](0.5):
-                    trainer.add_complete_return(per_env_returns[e])
-                    per_env_returns[e] = Scalar[DT](0.0)
-                    ep_returns.append(trainer.mean_return())
+            c.enqueue_copy(ring_reward[pending_eps], reward_view)
+            c.enqueue_copy(ring_done[pending_eps], done_view)
+            pending_eps += 1
+
+            var post_step = step_idx + N_ENVS
+            var emit_now = print_every > 0 and post_step >= next_print
+            if diag_every > 0 and post_step >= next_diag:
+                emit_now = True
+            if post_step >= total_env_steps:
+                emit_now = True
+            if pending_eps >= sync_every or emit_now:
+                c.synchronize()
+                for s in range(pending_eps):
+                    var rewards_h = ring_reward[s].unsafe_ptr()
+                    var dones_h = ring_done[s].unsafe_ptr()
+                    for e in range(N_ENVS):
+                        per_env_returns[e] = per_env_returns[e] + rewards_h[e]
+                        if dones_h[e] > Scalar[DT](0.5):
+                            trainer.add_complete_return(per_env_returns[e])
+                            per_env_returns[e] = Scalar[DT](0.0)
+                            ep_returns.append(trainer.mean_return())
+                pending_eps = 0
 
         # ── 8. Selective env reset.
         env.selective_reset_batch[N_ENVS](
@@ -872,6 +915,23 @@ def run_offpolicy_train_batched[
                 )
                 logger.value()[].flush()
                 next_diag += diag_every
+
+    # Defensive final drain of any buffered episode readbacks. With
+    # `sync_every == 1` (or the last iteration hitting an emit boundary)
+    # `pending_eps` is already 0; this only fires if the loop exited mid-ring.
+    comptime if env_target == "gpu":
+        if ctx and pending_eps > 0:
+            var c = ctx.value()
+            c.synchronize()
+            for s in range(pending_eps):
+                var rewards_h = ring_reward[s].unsafe_ptr()
+                var dones_h = ring_done[s].unsafe_ptr()
+                for e in range(N_ENVS):
+                    per_env_returns[e] = per_env_returns[e] + rewards_h[e]
+                    if dones_h[e] > Scalar[DT](0.5):
+                        trainer.add_complete_return(per_env_returns[e])
+                        per_env_returns[e] = Scalar[DT](0.0)
+                        ep_returns.append(trainer.mean_return())
 
     return ep_returns^
 
