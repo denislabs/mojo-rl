@@ -330,6 +330,11 @@ struct MBPOTrainer[
 
     var _q_accum: Scalar[DT]
     var _reward_accum: Scalar[DT]
+    # Per-update batch diagnostics (legacy parity): mean TD target `mb_y` and
+    # done-ratio `mean(mb_d)`. Same CPU-host-scalar / GPU-device-accum split
+    # as `_q_accum` / `_q_mean_dev`.
+    var _td_accum: Scalar[DT]
+    var _done_accum: Scalar[DT]
     var _dyn_loss_accum: Scalar[DT]
     var _dyn_step_count: Int
     # Last computed dynamics-NLL mean. The ensemble only trains on the
@@ -339,11 +344,20 @@ struct MBPOTrainer[
     # 0↔value sawtooth. We instead HOLD the last real round's mean between
     # rounds (piecewise-constant, like legacy's per-round `dyn_holdout_loss`).
     var _dyn_loss_last: Scalar[DT]
+    # Dynamics holdout suite — refreshed each model-train round (from the dyn
+    # eval that already feeds `update_elites`), held between rounds. Surfaced
+    # via MBPOMetrics for clean overlay with legacy MBPO.
+    var _dyn_holdout_loss: Scalar[DT]
+    var _dyn_holdout_min: Scalar[DT]
+    var _dyn_holdout_max: Scalar[DT]
+    var _dyn_input_std_mean: Scalar[DT]
 
     # GPU-only device-resident mean accumulators for `mean_q` / `mean_reward`
     # (CPU uses the `_q_accum` / `_reward_accum` host scalars above).
     var _q_mean_dev: DeviceMeanAccum
     var _reward_mean_dev: DeviceMeanAccum
+    var _td_mean_dev: DeviceMeanAccum
+    var _done_mean_dev: DeviceMeanAccum
 
     var timer: Timer
 
@@ -435,11 +449,19 @@ struct MBPOTrainer[
         self._total_train_steps = 0
         self._q_accum = Scalar[DT](0.0)
         self._reward_accum = Scalar[DT](0.0)
+        self._td_accum = Scalar[DT](0.0)
+        self._done_accum = Scalar[DT](0.0)
         self._dyn_loss_accum = Scalar[DT](0.0)
         self._dyn_step_count = 0
         self._dyn_loss_last = Scalar[DT](0.0)
+        self._dyn_holdout_loss = Scalar[DT](0.0)
+        self._dyn_holdout_min = Scalar[DT](0.0)
+        self._dyn_holdout_max = Scalar[DT](0.0)
+        self._dyn_input_std_mean = Scalar[DT](0.0)
         self._q_mean_dev = DeviceMeanAccum()
         self._reward_mean_dev = DeviceMeanAccum()
+        self._td_mean_dev = DeviceMeanAccum()
+        self._done_mean_dev = DeviceMeanAccum()
         self.timer = Timer.new()
 
     @staticmethod
@@ -521,6 +543,8 @@ struct MBPOTrainer[
             # Device-resident mean accumulators for the GPU diag path.
             t._q_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
             t._reward_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._td_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._done_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
 
         t.alpha_blk = AlphaUpdateStep[
             Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
@@ -806,20 +830,32 @@ struct MBPOTrainer[
                 var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
                 var q_p = self.twin_critic_blk.inner.c1._mb_q.target_ptr["cpu"]()
                 var r_p = self.state.mb_r.target_ptr["cpu"]()
+                var y_p = self.state.mb_y.target_ptr["cpu"]()
+                var d_p = self.state.mb_d.target_ptr["cpu"]()
                 var sum_q: Scalar[DT] = 0.0
                 var sum_r: Scalar[DT] = 0.0
+                var sum_y: Scalar[DT] = 0.0
+                var sum_d: Scalar[DT] = 0.0
                 for i in range(Self.BATCH):
                     sum_q += q_p[i]
                     sum_r += r_p[i]
+                    sum_y += y_p[i]
+                    sum_d += d_p[i]
                 self._q_accum += sum_q * inv_b
                 self._reward_accum += sum_r * inv_b
+                self._td_accum += sum_y * inv_b
+                self._done_accum += sum_d * inv_b
             else:
                 var q_ptr = self.twin_critic_blk.inner.c1._mb_q.target_ptr[
                     "gpu"
                 ]()
                 var r_ptr = self.state.mb_r.target_ptr["gpu"]()
+                var y_ptr = self.state.mb_y.target_ptr["gpu"]()
+                var d_ptr = self.state.mb_d.target_ptr["gpu"]()
                 self._q_mean_dev.accumulate_gpu[Self.BATCH](q_ptr)
                 self._reward_mean_dev.accumulate_gpu[Self.BATCH](r_ptr)
+                self._td_mean_dev.accumulate_gpu[Self.BATCH](y_ptr)
+                self._done_mean_dev.accumulate_gpu[Self.BATCH](d_ptr)
             self.timer.accumulate(Self._T_DIAG, t_diag)
 
             self._actor_L_accum += self.state.actor_loss
@@ -854,6 +890,8 @@ struct MBPOTrainer[
         self._update_count = 0
         self._q_accum = Scalar[DT](0.0)
         self._reward_accum = Scalar[DT](0.0)
+        self._td_accum = Scalar[DT](0.0)
+        self._done_accum = Scalar[DT](0.0)
         self._dyn_loss_accum = Scalar[DT](0.0)
         self._dyn_step_count = 0
         return out
@@ -890,6 +928,8 @@ struct MBPOTrainer[
         var alpha_val: Scalar[DT]
         var q_mean: Scalar[DT]
         var reward_mean: Scalar[DT]
+        var td_mean: Scalar[DT]
+        var done_mean: Scalar[DT]
         comptime if Self.train_target == "gpu":
             actor_mean = self.actor_blk.read_loss_accum()
             var cl1 = self.twin_critic_blk.inner.c1.mse_loss.read_accum["gpu"]()
@@ -898,19 +938,32 @@ struct MBPOTrainer[
             alpha_val = self.alpha_opt.read_alpha()
             q_mean = self._q_mean_dev.read["gpu"]()
             reward_mean = self._reward_mean_dev.read["gpu"]()
+            td_mean = self._td_mean_dev.read["gpu"]()
+            done_mean = self._done_mean_dev.read["gpu"]()
         else:
             actor_mean = self._actor_L_accum * inv
             critic_mean = self._critic_L_accum * inv
             alpha_val = fexp(self.alpha_opt.value)
             q_mean = self._q_accum * inv
             reward_mean = self._reward_accum * inv
+            td_mean = self._td_accum * inv
+            done_mean = self._done_accum * inv
         var bundle = MBPOMetrics(
             actor_loss=LogScalar[DT](actor_mean),
             critic_loss=LogScalar[DT](critic_mean),
             alpha=LogScalar[DT](alpha_val),
             mean_q=LogScalar[DT](q_mean),
             mean_reward=LogScalar[DT](reward_mean),
+            td_target=LogScalar[DT](td_mean),
+            done_ratio=LogScalar[DT](done_mean),
             dyn_loss=LogScalar[DT](self._dyn_loss_last),
+            dyn_holdout_loss=LogScalar[DT](self._dyn_holdout_loss),
+            dyn_holdout_min=LogScalar[DT](self._dyn_holdout_min),
+            dyn_holdout_max=LogScalar[DT](self._dyn_holdout_max),
+            dyn_holdout_spread=LogScalar[DT](
+                self._dyn_holdout_max - self._dyn_holdout_min
+            ),
+            dyn_input_std_mean=LogScalar[DT](self._dyn_input_std_mean),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
@@ -919,6 +972,8 @@ struct MBPOTrainer[
         self._update_count = 0
         self._q_accum = Scalar[DT](0.0)
         self._reward_accum = Scalar[DT](0.0)
+        self._td_accum = Scalar[DT](0.0)
+        self._done_accum = Scalar[DT](0.0)
         self._dyn_loss_accum = Scalar[DT](0.0)
         self._dyn_step_count = 0
         comptime if Self.train_target == "gpu":
@@ -927,6 +982,8 @@ struct MBPOTrainer[
             self.actor_blk.reset_loss_accum()
             self._q_mean_dev.reset["gpu"]()
             self._reward_mean_dev.reset["gpu"]()
+            self._td_mean_dev.reset["gpu"]()
+            self._done_mean_dev.reset["gpu"]()
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^
@@ -1248,11 +1305,35 @@ struct MBPOTrainer[
                     act_p[i * Self.ACT_DIM + j] - mean_p[Self.OBS_DIM + j]
                 )
                 std_p[Self.OBS_DIM + j] += diff * diff
+        var std_sum = Scalar[DT](0.0)
         for c in range(Self.DYN_IN):
             var v = fsqrt(std_p[c] * inv_n)
             if v < Scalar[DT](1e-12):
                 v = Scalar[DT](1.0)
             std_p[c] = v
+            std_sum += v
+        # Diagnostic: mean input-scaler std (legacy `dyn_input_std_mean`).
+        self._dyn_input_std_mean = std_sum / Scalar[DT](Self.DYN_IN)
+
+    def _record_holdout_stats(mut self, ref holdout: List[Scalar[DT]]):
+        """Capture per-member holdout-NLL mean / min / max into the diag
+        fields (held between model-train rounds). Called by both dyn-train
+        paths right after they build the `holdout` list for `update_elites`."""
+        if len(holdout) == 0:
+            return
+        var s = holdout[0]
+        var mn = holdout[0]
+        var mx = holdout[0]
+        for i in range(1, len(holdout)):
+            var v = holdout[i]
+            s += v
+            if v < mn:
+                mn = v
+            if v > mx:
+                mx = v
+        self._dyn_holdout_loss = s / Scalar[DT](len(holdout))
+        self._dyn_holdout_min = mn
+        self._dyn_holdout_max = mx
 
     def _fit_input_scaler_cpu(mut self):
         var n_data = self.sample_blk.real_count["cpu"]()
@@ -1406,6 +1487,7 @@ struct MBPOTrainer[
             holdout.append(
                 self.ensemble.eval_member_loss["cpu"](m, val_in_t, val_tgt_t)
             )
+        self._record_holdout_stats(holdout)
         self.ensemble.update_elites(holdout)
 
     def _generate_synthetic_rollouts(mut self) raises:
@@ -1629,6 +1711,7 @@ struct MBPOTrainer[
             holdout.append(
                 self.ensemble.eval_member_loss["gpu"](m, val_in_t, val_tgt_t)
             )
+        self._record_holdout_stats(holdout)
         self.ensemble.update_elites(holdout)
 
     def _generate_synthetic_rollouts_gpu(mut self) raises:

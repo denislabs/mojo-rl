@@ -36,6 +36,26 @@ struct MBPOMetrics(Copyable, Movable, ImplicitlyDestructible):
     var alpha:       LogScalar[DT]
     var mean_q:      LogScalar[DT]
     var mean_reward: LogScalar[DT]
+    # Per-update batch stats (legacy parity): mean TD target y = r +
+    # γ(1−d)(min Q' − α·logπ'), and the fraction of terminal transitions in
+    # the mixed real+synth batch. `td_target` going strongly negative is the
+    # prime tell for synthetic-data Q-degradation.
+    var td_target:   LogScalar[DT]
+    var done_ratio:  LogScalar[DT]
     var dyn_loss:    LogScalar[DT]
+    # Dynamics holdout suite (refreshed each model-train round, held between
+    # rounds) — mirrors the legacy MBPO logging so the two versions overlay:
+    #   * `dyn_holdout_loss`   — mean per-member Gaussian-NLL on a held-out
+    #     real batch (same name/units as legacy `dyn_holdout_loss`).
+    #   * `dyn_holdout_min/max/spread` — per-member NLL min / max / (max-min)
+    #     = ensemble disagreement (legacy's spread was MSE-based; this is NLL,
+    #     so it overlays in trend not absolute value).
+    #   * `dyn_input_std_mean` — mean over DYN_IN of the input scaler std
+    #     (same name/units as legacy `dyn_input_std_mean`).
+    var dyn_holdout_loss:   LogScalar[DT]
+    var dyn_holdout_min:    LogScalar[DT]
+    var dyn_holdout_max:    LogScalar[DT]
+    var dyn_holdout_spread: LogScalar[DT]
+    var dyn_input_std_mean: LogScalar[DT]
     var train_steps: LogScalar[DT]
     var n_updates:   LogScalar[DT]
