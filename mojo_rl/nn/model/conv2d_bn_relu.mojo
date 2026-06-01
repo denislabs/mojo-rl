@@ -687,18 +687,22 @@ struct Conv2DBatchNormReLU[
         ](dcol_buf)
 
         # dW_tmp scratch only used on the non-Apple fallback path.
-        var dW_tmp_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = (
-            alloc[Scalar[dtype]](Self.out_channels * Self.col_size)
-            if not use_apple_sgemm
-            else UnsafePointer[Scalar[dtype], MutAnyOrigin](
-                unsafe_from_address=0
+        var dW_tmp_buf: Optional[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+        ] = None
+        comptime if not use_apple_sgemm:
+            dW_tmp_buf = alloc[Scalar[dtype]](
+                Self.out_channels * Self.col_size
             )
-        )
         var dW_tmp = LayoutTensor[
             dtype,
             Layout.row_major(Self.out_channels, Self.col_size),
             MutAnyOrigin,
-        ](dW_tmp_buf)
+        ](dW_tmp_buf.value()) if not use_apple_sgemm else LayoutTensor[
+            dtype,
+            Layout.row_major(Self.out_channels, Self.col_size),
+            MutAnyOrigin,
+        ](W_T_buf)  # Apple: placeholder view; dW_tmp never read on Apple path
 
         # Physically transpose W (OC, col_size) → W_T (col_size, OC) once.
         for oc in range(Self.out_channels):
@@ -1056,7 +1060,7 @@ struct Conv2DBatchNormReLU[
                                         )
 
         comptime if not use_apple_sgemm:
-            dW_tmp_buf.free()
+            dW_tmp_buf.value().free()
         W_T_buf.free()
         dcol_buf.free()
         grad_pre_bn_buf.free()

@@ -394,14 +394,17 @@ struct AtariRenderer(Movable):
             set_render_draw_color(self.sdl_renderer.value(), 0, 0, 0, 255)
             render_clear(self.sdl_renderer.value())
 
-            # Upload pixels to texture
+            # Upload pixels to texture (full-texture rect = NULL semantics)
+            var full_rect = alloc[Rect](1)
+            full_rect[] = Rect(c_int(0), c_int(0), c_int(FRAME_WIDTH), c_int(FRAME_HEIGHT))
             update_texture(self.texture.value(),
-                Ptr[Rect, ImmutAnyOrigin](unsafe_from_address=0),  # NULL = entire texture
+                rebind[Ptr[Rect, ImmutAnyOrigin]](full_rect),
                 rebind[Ptr[NoneType, ImmutAnyOrigin]](
                     Ptr[UInt8, ImmutAnyOrigin](self.pixel_buf)
                 ),
                 c_int(FRAME_WIDTH * 4),  # pitch in bytes
             )
+            full_rect.free()
 
             # Render texture scaled to window (leaving room for HUD)
             var dst = FRect(
@@ -410,11 +413,18 @@ struct AtariRenderer(Movable):
                 c_float(self.screen_width),
                 c_float(self.screen_height - HUD_HEIGHT),
             )
+            # Full-source FRect substitutes for NULL semantics.
+            var full_src = alloc[FRect](1)
+            full_src[] = FRect(
+                c_float(0), c_float(0),
+                c_float(FRAME_WIDTH), c_float(FRAME_HEIGHT),
+            )
             render_texture(self.sdl_renderer.value(),
                 self.texture.value(),
-                Ptr[FRect, ImmutAnyOrigin](unsafe_from_address=0),  # NULL = full source
+                rebind[Ptr[FRect, ImmutAnyOrigin]](full_src),
                 rebind[Ptr[FRect, ImmutAnyOrigin]](Ptr(to=dst)),
             )
+            full_src.free()
         except:
             pass
 
@@ -472,8 +482,17 @@ struct AtariRenderer(Movable):
         try:
             # Capture frame for recording before present
             if self.recorder.is_recording:
-                var surf = render_read_pixels(self.sdl_renderer.value(), Ptr[Rect, ImmutAnyOrigin](unsafe_from_address=0)
+                # Full-window Rect substitutes for NULL semantics.
+                var read_rect = alloc[Rect](1)
+                read_rect[] = Rect(
+                    c_int(0), c_int(0),
+                    c_int(self.screen_width), c_int(self.screen_height),
                 )
+                var surf = render_read_pixels(
+                    self.sdl_renderer.value(),
+                    rebind[Ptr[Rect, ImmutAnyOrigin]](read_rect),
+                )
+                read_rect.free()
                 var pixels = surf[].pixels
                 self.recorder.add_frame_bgra(
                     Int(pixels), self.screen_width, self.screen_height

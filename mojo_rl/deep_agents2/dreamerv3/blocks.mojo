@@ -192,10 +192,10 @@ struct DreamerState[
     var dbg_rscale: Scalar[DT]      # retnorm advantage denominator (adv =
                                     #   (ret−val)/rscale); blow-up/→0 ⇒ bad signal.
     # ── GPU set (None on CPU). Time-major device minibatch + carries. ──
-    var tm_obs: UnsafePointer[Scalar[DT], MutAnyOrigin]   # host staging [T,B,OBS]
-    var tm_act: UnsafePointer[Scalar[DT], MutAnyOrigin]   # host staging [T,B,ACT]
-    var tm_rew: UnsafePointer[Scalar[DT], MutAnyOrigin]   # host staging [T,B]
-    var tm_cont: UnsafePointer[Scalar[DT], MutAnyOrigin]  # host staging [T,B]
+    var tm_obs: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]   # host staging [T,B,OBS]
+    var tm_act: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]   # host staging [T,B,ACT]
+    var tm_rew: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]   # host staging [T,B]
+    var tm_cont: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]  # host staging [T,B]
     var d_obs: Optional[DeviceBuffer[DT]]                 # [T*B*OBS]
     var d_act: Optional[DeviceBuffer[DT]]                 # [T*B*ACT]
     var d_rew: Optional[DeviceBuffer[DT]]                 # [T*B]
@@ -226,10 +226,10 @@ struct DreamerState[
             dbg_val_mean=Scalar[DT](0.0),
             dbg_pstd=Scalar[DT](0.0),
             dbg_rscale=Scalar[DT](0.0),
-            tm_obs=UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
-            tm_act=UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
-            tm_rew=UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
-            tm_cont=UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
+            tm_obs=None,
+            tm_act=None,
+            tm_rew=None,
+            tm_cont=None,
             d_obs=None, d_act=None, d_rew=None, d_cont=None,
             d_cdeter=None, d_cstoch=None, d_toks=None,
         )
@@ -623,24 +623,28 @@ struct WMStep[
         # Finding 3: per-step reset keep-mask (time-major) — 0.0 at a boundary
         # (dne_t==1), else 1.0.
         var hmask = _alloc(TV * BV)
+        var tm_obs_p = st.tm_obs.value()
+        var tm_act_p = st.tm_act.value()
+        var tm_rew_p = st.tm_rew.value()
+        var tm_cont_p = st.tm_cont.value()
         for t in range(TV):
             for b in range(BV):
                 for k in range(OBSD):
-                    st.tm_obs[(t * BV + b) * OBSD + k] = mb_obs[(b * (TV + 1) + t + 1) * OBSD + k]
+                    tm_obs_p[(t * BV + b) * OBSD + k] = mb_obs[(b * (TV + 1) + t + 1) * OBSD + k]
                 for k in range(ACTD):
-                    st.tm_act[(t * BV + b) * ACTD + k] = mb_act[(b * TV + t) * ACTD + k]
-                st.tm_rew[t * BV + b] = mb_rew[b * TV + t]
-                st.tm_cont[t * BV + b] = (Scalar[DT](1.0) - mb_dne[b * TV + t]) * (
+                    tm_act_p[(t * BV + b) * ACTD + k] = mb_act[(b * TV + t) * ACTD + k]
+                tm_rew_p[t * BV + b] = mb_rew[b * TV + t]
+                tm_cont_p[t * BV + b] = (Scalar[DT](1.0) - mb_dne[b * TV + t]) * (
                 Scalar[DT](1.0) - Scalar[DT](1.0) / self.horizon
             )
                 hmask[t * BV + b] = (
                     Scalar[DT](0.0) if mb_dne[b * TV + t] >= Scalar[DT](0.5)
                     else Scalar[DT](1.0)
                 )
-        ctx.enqueue_copy(st.d_obs.value(), st.tm_obs)
-        ctx.enqueue_copy(st.d_act.value(), st.tm_act)
-        ctx.enqueue_copy(st.d_rew.value(), st.tm_rew)
-        ctx.enqueue_copy(st.d_cont.value(), st.tm_cont)
+        ctx.enqueue_copy(st.d_obs.value(), tm_obs_p)
+        ctx.enqueue_copy(st.d_act.value(), tm_act_p)
+        ctx.enqueue_copy(st.d_rew.value(), tm_rew_p)
+        ctx.enqueue_copy(st.d_cont.value(), tm_cont_p)
 
         var obs = _dp(st.d_obs.value())
         var act = _dp(st.d_act.value())

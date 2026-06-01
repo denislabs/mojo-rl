@@ -159,8 +159,10 @@ def cond_block_forward[
         dtype, Layout.row_major(BATCH * T, 3 * D), MutAnyOrigin
     ],
 ) raises:
+    # Empty (zero-size) LayoutTensor slot; the pointer is never read.
+    # Reuse `silu_buf_t`'s base ptr as a valid non-null placeholder.
     var empty_p = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](silu_buf_t.ptr)
     )
 
     SwishOp[D].eval[BATCH * T](c_t, silu_buf_t, empty_p, silu_cache_t)
@@ -296,11 +298,13 @@ def cond_block_backward[
         dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin
     ],
 ) raises:
+    # Zero-size LayoutTensor slots; pointers are never read.
+    # Reuse sgg_t's base ptr as a valid non-null placeholder.
     var empty_p = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](sgg_t.ptr)
     )
     var empty_gp = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](sgg_t.ptr)
     )
 
     GateOp[D].vjp[BATCH * T](

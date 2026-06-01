@@ -954,7 +954,9 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
 
         # Upload the sprite sheet as one SDL3 texture for this frame.
         var has_texture = False
-        var texture = UnsafePointer[Texture, MutAnyOrigin](unsafe_from_address=0)
+        var texture: Optional[
+            UnsafePointer[Texture, MutAnyOrigin]
+        ] = None
         if self._has_sprites:
             try:
                 var surface = create_surface_from(
@@ -969,10 +971,10 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
                 texture = create_texture_from_surface(
                     renderer.sdl_renderer, surface
                 )
-                set_texture_blend_mode(texture, BlendMode.BLENDMODE_BLEND)
+                set_texture_blend_mode(texture.value(), BlendMode.BLENDMODE_BLEND)
                 try:
                     set_texture_scale_mode(
-                        texture, ScaleMode.SCALEMODE_NEAREST
+                        texture.value(), ScaleMode.SCALEMODE_NEAREST
                     )
                 except:
                     pass
@@ -1002,7 +1004,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
             try:
                 render_texture(
                     renderer.sdl_renderer,
-                    texture,
+                    texture.value(),
                     rebind[UnsafePointer[FRect, ImmutAnyOrigin]](src),
                     rebind[UnsafePointer[FRect, ImmutAnyOrigin]](dst),
                 )
@@ -1317,7 +1319,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
 
         if has_texture:
             try:
-                destroy_texture(texture)
+                destroy_texture(texture.value())
             except:
                 pass
 

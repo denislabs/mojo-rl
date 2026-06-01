@@ -251,17 +251,13 @@ struct SymlogMSELoss[OBS: Int](Module):
     def display_label() -> String:
         return String("SymlogMSE")
 
-    var _pred_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _target_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _pred_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _target_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
     var ts: TargetStorage
 
     def __init__(out self):
-        self._pred_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self._target_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
+        self._pred_ptr = None
+        self._target_ptr = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -336,8 +332,8 @@ struct SymlogMSELoss[OBS: Int](Module):
         var go = typed_view[BATCH, 1](grad_output).ptr
         var g_pred = typed_view_mut[BATCH, Self.OBS](grad_inputs[0]).ptr
         var g_tgt = typed_view_mut[BATCH, Self.OBS](grad_inputs[1]).ptr
-        var pred = self._pred_ptr
-        var tgt = self._target_ptr
+        var pred = self._pred_ptr.value()
+        var tgt = self._target_ptr.value()
         comptime if target == "cpu":
             for b in range(BATCH):
                 var up = go[b]
@@ -383,19 +379,15 @@ struct TwoHotLoss[BINS: Int](Module):
 
     var bins: List[Scalar[DT]]
     var _bins_dev: Optional[DeviceBuffer[DT]]
-    var _logits_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _target_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _logits_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _target_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
     var ts: TargetStorage
 
     def __init__(out self):
         self.bins = List[Scalar[DT]]()
         self._bins_dev = None
-        self._logits_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self._target_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
+        self._logits_ptr = None
+        self._target_ptr = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -501,8 +493,8 @@ struct TwoHotLoss[BINS: Int](Module):
         var go = typed_view[BATCH, 1](grad_output).ptr
         var g_lg = typed_view_mut[BATCH, Self.BINS](grad_inputs[0]).ptr
         var g_tgt = typed_view_mut[BATCH, 1](grad_inputs[1]).ptr
-        var lg = self._logits_ptr
-        var tgt = self._target_ptr
+        var lg = self._logits_ptr.value()
+        var tgt = self._target_ptr.value()
         comptime if target == "cpu":
             var bins = self.bins_unsafe_ptr()
             for i in range(BATCH * Self.BINS):
@@ -543,17 +535,13 @@ struct BinaryLoss(Module):
     def display_label() -> String:
         return String("Binary")
 
-    var _logit_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _target_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _logit_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _target_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
     var ts: TargetStorage
 
     def __init__(out self):
-        self._logit_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self._target_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
+        self._logit_ptr = None
+        self._target_ptr = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -630,8 +618,8 @@ struct BinaryLoss(Module):
         var go = typed_view[BATCH, 1](grad_output).ptr
         var g_lo = typed_view_mut[BATCH, 1](grad_inputs[0]).ptr
         var g_tgt = typed_view_mut[BATCH, 1](grad_inputs[1]).ptr
-        var lo = self._logit_ptr
-        var tgt = self._target_ptr
+        var lo = self._logit_ptr.value()
+        var tgt = self._target_ptr.value()
         comptime if target == "cpu":
             for b in range(BATCH):
                 g_lo[b] = go[b] * (_sigmoid(lo[b]) - tgt[b])

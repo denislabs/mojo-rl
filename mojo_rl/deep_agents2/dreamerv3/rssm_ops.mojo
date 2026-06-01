@@ -248,13 +248,11 @@ struct ActionSquash[ACT: Int](Module):
     def display_label() -> String:
         return String("ActionSquash")
 
-    var _cached_input_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
     var ts: TargetStorage
 
     def __init__(out self):
-        self._cached_input_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
+        self._cached_input_ptr = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -322,7 +320,7 @@ struct ActionSquash[ACT: Int](Module):
     ) raises:
         var gov = typed_view[BATCH, Self.ACT](grad_output)
         var giv = typed_view_mut[BATCH, Self.ACT](grad_inputs[0])
-        var xp = self._cached_input_ptr
+        var xp = self._cached_input_ptr.value()
         comptime if target == "cpu":
             for i in range(BATCH * Self.ACT):
                 var v = xp[i]
@@ -519,17 +517,13 @@ struct GRUGate[DETER: Int, BLOCKS: Int](Module):
         d[0] = Self.GRU_DIM
         return d
 
-    var _gru_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _deter_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _gru_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _deter_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
     var ts: TargetStorage
 
     def __init__(out self):
-        self._gru_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self._deter_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
+        self._gru_ptr = None
+        self._deter_ptr = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -618,8 +612,8 @@ struct GRUGate[DETER: Int, BLOCKS: Int](Module):
         var go = typed_view[BATCH, D](grad_output).ptr
         var g_gru = typed_view_mut[BATCH, Self.GRU_DIM](grad_inputs[0]).ptr
         var g_deter = typed_view_mut[BATCH, D](grad_inputs[1]).ptr
-        var gru = self._gru_ptr
-        var deter = self._deter_ptr
+        var gru = self._gru_ptr.value()
+        var deter = self._deter_ptr.value()
         comptime if target == "cpu":
             for i in range(BATCH * Self.GRU_DIM):
                 g_gru[i] = 0.0

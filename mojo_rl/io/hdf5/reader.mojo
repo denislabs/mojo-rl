@@ -94,13 +94,16 @@ struct H5Dataset(Movable):
         var ndims = Int(ndims_c)
 
         var dims_buf = alloc[hsize_t](ndims)
+        var maxdims_dummy = alloc[hsize_t](ndims)
         for i in range(ndims):
             dims_buf[i] = 0
+            maxdims_dummy[i] = 0
         _ = h5s_get_simple_extent_dims(
             space_id,
             dims_buf,
-            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
+            maxdims_dummy,
         )
+        maxdims_dummy.free()
         _ = h5s_close(space_id)
 
         var dims = List[hsize_t](capacity=ndims)
@@ -213,14 +216,21 @@ struct H5Dataset(Movable):
             count_arr.free()
             raise Error("H5Dget_space failed")
 
+        var stride_unit = alloc[hsize_t](ndims)
+        var block_unit = alloc[hsize_t](ndims)
+        for i in range(ndims):
+            stride_unit[i] = hsize_t(1)  # contiguous
+            block_unit[i] = hsize_t(1)   # unit blocks
         var sel_ret = h5s_select_hyperslab(
             file_space,
             H5S_SELECT_SET,
             start_arr,
-            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
+            stride_unit,
             count_arr,
-            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
+            block_unit,
         )
+        stride_unit.free()
+        block_unit.free()
         if sel_ret < 0:
             _ = h5s_close(file_space)
             start_arr.free()
@@ -230,7 +240,7 @@ struct H5Dataset(Movable):
         var mem_space = h5s_create_simple(
             c_int(ndims),
             count_arr,
-            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
+            count_arr,  # maxdims = dims (semantic: same as dims)
         )
         if mem_space < 0:
             _ = h5s_close(file_space)
@@ -336,7 +346,7 @@ struct H5Dataset(Movable):
         var mem_space = h5s_create_simple(
             c_int(ndims),
             mem_dims,
-            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
+            mem_dims,  # maxdims = dims (semantic: same as dims)
         )
         if mem_space < 0:
             _ = h5s_close(file_space)

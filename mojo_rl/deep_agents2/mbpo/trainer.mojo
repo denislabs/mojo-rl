@@ -1204,10 +1204,9 @@ struct MBPOTrainer[
         var n_data = self.sample_blk.real_count["cpu"]()
         if n_data < 2:
             return
-        var real_buf = self.sample_blk.real_cpu.value()
         self._compute_scaler_host(
-            real_buf.obs,
-            real_buf.act,
+            self.sample_blk.real_cpu.value().obs,
+            self.sample_blk.real_cpu.value().act,
             n_data,
         )
 
@@ -1280,11 +1279,10 @@ struct MBPOTrainer[
         var dyn_in_p = self._dyn_in.cpu_ptr()
         var dyn_tgt_p = self._dyn_tgt.cpu_ptr()
 
-        var real_buf = self.sample_blk.real_cpu.value()
-        var rb_obs = real_buf.obs
-        var rb_act = real_buf.act
-        var rb_rew = real_buf.rew
-        var rb_nxt = real_buf.nxt
+        var rb_obs = self.sample_blk.real_cpu.value().obs
+        var rb_act = self.sample_blk.real_cpu.value().act
+        var rb_rew = self.sample_blk.real_cpu.value().rew
+        var rb_nxt = self.sample_blk.real_cpu.value().nxt
 
         for m in range(Self.N_ENSEMBLE):
             for _ in range(total_steps):
