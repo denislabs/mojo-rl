@@ -120,6 +120,16 @@ trait OffPolicyAgent(Movable, ImplicitlyDestructible):
     def train_step(mut self, step_idx: Int) raises -> Bool:
         ...
 
+    def total_train_steps(self) -> Int:
+        """Cumulative gradient-update count (UTD-aware), monotonic, not
+        reset by flushes. The single-env driver keys the `diag_every`
+        cadence on THIS rather than env-steps, so one diag point spans
+        `diag_every` updates regardless of UTD. (At UTD=40 an env-step
+        cadence makes each point span 40×diag_every updates — the
+        Q/critic curves collapse to a handful of points.) Default 0 means
+        a conformer doesn't track it; every real trainer overrides."""
+        return 0
+
     def mean_return(self) -> Scalar[DT]:
         ...
 
@@ -338,6 +348,10 @@ def run_offpolicy_train[
 
     var t_start = perf_counter_ns()
     var step: Int = 0
+    # Diag cadence is keyed on TRAIN steps (gradient updates) via
+    # `trainer.total_train_steps()`, not env-steps — see the trait method.
+    # `last_diag_bucket` tracks the last emitted `train_steps // diag_every`.
+    var last_diag_bucket: Int = 0
     while step < total_timesteps:
         # Copy env obs (E.dtype) into obs_list (DT) for record + into
         # the driver scratch (DT) for the select_action_batched call.
@@ -461,14 +475,22 @@ def run_offpolicy_train[
                 )
 
         # `diag_every` — drain the trainer's metric bundle through the
-        # logger at its own cadence. Default trait impl is no-op for
-        # trainers that haven't wired this up yet.
+        # logger every `diag_every` TRAIN steps (gradient updates), not
+        # env-steps. At UTD>1 the env-step cadence makes each diag point
+        # span UTD×diag_every updates (e.g. 200k) → the Q/critic/dyn curves
+        # collapse to a few points. Keying on `total_train_steps()` keeps
+        # one point per `diag_every` updates at any UTD. Default trait impl
+        # of `flush_metrics_through_logger` is a no-op for trainers that
+        # haven't wired metrics up yet.
+        var diag_due = False
+        if diag_every > 0:
+            var bucket = trainer.total_train_steps() // diag_every
+            if bucket > last_diag_bucket:
+                last_diag_bucket = bucket
+                diag_due = True
+
         comptime if L.ENABLED:
-            if (
-                diag_every > 0
-                and abs_step % diag_every == 0
-                and Bool(logger)
-            ):
+            if diag_due and Bool(logger):
                 trainer.flush_metrics_through_logger[L](logger, abs_step)
 
         # Live flush: push whatever was just buffered to the monitoring
@@ -482,7 +504,7 @@ def run_offpolicy_train[
                 Bool(logger)
                 and (
                     (print_every > 0 and abs_step % print_every == 0)
-                    or (diag_every > 0 and abs_step % diag_every == 0)
+                    or diag_due
                 )
             ):
                 logger.value()[].flush()
