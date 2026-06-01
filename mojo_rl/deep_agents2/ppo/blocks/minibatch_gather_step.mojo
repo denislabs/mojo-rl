@@ -56,8 +56,9 @@ struct PPOMinibatchGatherStep[
         Subsequent epoch shuffles operate on whatever state the
         previous epoch left behind — bit-identity-critical (legacy
         resets once per rollout, not once per epoch)."""
+        var idx_p = state.indices.value()
         for k in range(Self.ROLLOUT_LEN * N_ENVS):
-            state.indices[k] = Int32(k)
+            idx_p[k] = Int32(k)
 
     def shuffle_epoch[target: StaticString, N_ENVS: Int](
         mut self,
@@ -69,13 +70,14 @@ struct PPOMinibatchGatherStep[
         ROLLOUT_LEN*N_ENVS). Caller invokes this once at the top of
         each K-epoch (after `reset_indices` on the first epoch)."""
         var n_total = Self.ROLLOUT_LEN * N_ENVS
+        var idx_p = state.indices.value()
         for t in range(n_total - 1, 0, -1):
             var j = Int(random_float64() * Float64(t + 1))
             if j > t:
                 j = t
-            var tmp = state.indices[t]
-            state.indices[t] = state.indices[j]
-            state.indices[j] = tmp
+            var tmp = idx_p[t]
+            idx_p[t] = idx_p[j]
+            idx_p[j] = tmp
 
     def gather[target: StaticString, N_ENVS: Int](
         mut self,
@@ -101,8 +103,9 @@ struct PPOMinibatchGatherStep[
         var mb_olp_p = state.mb_olp.cpu_ptr()
         var mb_adv_p = state.mb_adv.cpu_ptr()
         var mb_ret_p = state.mb_ret.cpu_ptr()
+        var idx_p = state.indices.value()
         for k in range(Self.MINIBATCH):
-            var src = Int(state.indices[mb_idx * Self.MINIBATCH + k])
+            var src = Int(idx_p[mb_idx * Self.MINIBATCH + k])
             for d in range(Self.OBS):
                 mb_obs_p[k * Self.OBS + d] = obs_p[src * Self.OBS + d]
             for j in range(Self.ACT):

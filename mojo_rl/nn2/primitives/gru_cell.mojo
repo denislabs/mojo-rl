@@ -110,8 +110,8 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
     var _z_cache: List[Scalar[DT]]   # [BATCH, H]
     var _n_cache: List[Scalar[DT]]   # [BATCH, H]
     var _hn_pre:  List[Scalar[DT]]   # [BATCH, H]  W_hn·h + b_hn
-    var _x_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _h_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _x_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _h_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
     var _cache_batch: Int
 
     # ------------------------------------------------------------------
@@ -128,8 +128,8 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         self._z_cache = List[Scalar[DT]]()
         self._n_cache = List[Scalar[DT]]()
         self._hn_pre  = List[Scalar[DT]]()
-        self._x_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
-        self._h_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
+        self._x_ptr = None
+        self._h_ptr = None
         self._cache_batch = 0
 
     @staticmethod
@@ -319,8 +319,8 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         comptime THREE_H = 3 * Self.HIDDEN
         comptime IN_ = Self.IN_
 
-        var x_p = self._x_ptr
-        var h_p = self._h_ptr
+        var x_p = self._x_ptr.value()
+        var h_p = self._h_ptr.value()
         var W_ih_p = self.W_ih.value_unsafe_ptr_cpu()
         var W_hh_p = self.W_hh.value_unsafe_ptr_cpu()
         var dW_ih_p = self.W_ih.grad_unsafe_ptr_cpu()

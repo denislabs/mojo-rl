@@ -57,10 +57,12 @@ struct CUDAGraph(Movable):
         """
         self._state = 0
         self._num_nodes = 0
-        self._graph = _CUptr(unsafe_from_address=0)
-        self._exec = _CUptr(unsafe_from_address=0)
-        self._mojo_stream = _CUptr(unsafe_from_address=0)
-        self._replay_stream = _CUptr(unsafe_from_address=0)
+        # Raw _CUptr fields: NVIDIA path overwrites via interceptor calls
+        # below; non-NVIDIA paths never read these (compile-time guarded).
+        self._graph = _uninit[_CUptr]()
+        self._exec = _uninit[_CUptr]()
+        self._mojo_stream = _uninit[_CUptr]()
+        self._replay_stream = _uninit[_CUptr]()
 
         comptime if has_nvidia_gpu_accelerator():
             ctx.synchronize()
@@ -83,7 +85,7 @@ struct CUDAGraph(Movable):
                     def(UnsafePointer[_CUptr, MutAnyOrigin]) thin -> c_int
                 ]("intercept_stream_create")
                 var stream_buf = alloc[_CUptr](1)
-                stream_buf[] = _CUptr(unsafe_from_address=0)
+                stream_buf[] = _uninit[_CUptr]()
                 _ = stream_create(stream_buf)
                 self._replay_stream = stream_buf[]
                 stream_buf.free()
@@ -111,8 +113,8 @@ struct CUDAGraph(Movable):
             _ = self._lib.get_function[def(_CUptr) thin -> c_int](
                 "intercept_graph_destroy"
             )(self._graph)
-            self._exec = _CUptr(unsafe_from_address=0)
-            self._graph = _CUptr(unsafe_from_address=0)
+            self._exec = _uninit[_CUptr]()
+            self._graph = _uninit[_CUptr]()
 
         var r = self._lib.get_function[def(_CUptr) thin -> c_int](
             "intercept_stream_begin_capture"
@@ -131,7 +133,7 @@ struct CUDAGraph(Movable):
 
         # End capture
         var graph_buf = alloc[_CUptr](1)
-        graph_buf[] = _CUptr(unsafe_from_address=0)
+        graph_buf[] = _uninit[_CUptr]()
         var r_end = self._lib.get_function[
             def(_CUptr, UnsafePointer[_CUptr, MutAnyOrigin]) thin -> c_int
         ]("intercept_stream_end_capture")(self._mojo_stream, graph_buf)
@@ -162,7 +164,7 @@ struct CUDAGraph(Movable):
 
         # Instantiate
         var exec_buf = alloc[_CUptr](1)
-        exec_buf[] = _CUptr(unsafe_from_address=0)
+        exec_buf[] = _uninit[_CUptr]()
         var r_inst = self._lib.get_function[
             def(UnsafePointer[_CUptr, MutAnyOrigin], _CUptr) thin -> c_int
         ]("intercept_graph_instantiate")(exec_buf, self._graph)

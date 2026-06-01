@@ -59,14 +59,12 @@ struct Scale[DIM: Int](Module):
     # kernel args — required for CUDA-graph capture when another GPU kernel
     # (SAC's on-device α) updates the value each step. Null → baked-scalar
     # path (bit-identical to pre-Slice-4). CPU always uses `multiplier`.
-    var multiplier_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var multiplier_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
     var ts: TargetStorage
 
     def __init__(out self):
         self.multiplier = Scalar[DT](1.0)
-        self.multiplier_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
+        self.multiplier_ptr = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -130,10 +128,10 @@ struct Scale[DIM: Int](Module):
                 DT, Layout.row_major(N), MutAnyOrigin,
             ](out_p)
             comptime n_blocks = (N + TPB - 1) // TPB
-            if Int(self.multiplier_ptr) != 0:
+            if self.multiplier_ptr:
                 comptime dev_kernel = _scale_dev_kernel[N]
                 self.ts.ctx.value().enqueue_function[dev_kernel](
-                    in_lt, out_lt, self.multiplier_ptr,
+                    in_lt, out_lt, self.multiplier_ptr.value(),
                     grid_dim=n_blocks, block_dim=TPB,
                 )
             else:
@@ -189,10 +187,10 @@ struct Scale[DIM: Int](Module):
                 DT, Layout.row_major(N), MutAnyOrigin,
             ](gi_p)
             comptime n_blocks = (N + TPB - 1) // TPB
-            if Int(self.multiplier_ptr) != 0:
+            if self.multiplier_ptr:
                 comptime dev_kernel = _scale_dev_kernel[N]
                 self.ts.ctx.value().enqueue_function[dev_kernel](
-                    go_lt, gi_lt, self.multiplier_ptr,
+                    go_lt, gi_lt, self.multiplier_ptr.value(),
                     grid_dim=n_blocks, block_dim=TPB,
                 )
             else:

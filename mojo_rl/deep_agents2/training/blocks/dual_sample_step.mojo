@@ -41,24 +41,15 @@ struct DualSampleStep[
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
 
-    var real_cpu: CPUReplay[Self.OBS, Self.ACT, Self.REAL_CAP]
-    var synth_cpu: CPUReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP]
+    var real_cpu: Optional[CPUReplay[Self.OBS, Self.ACT, Self.REAL_CAP]]
+    var synth_cpu: Optional[CPUReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP]]
     var real_gpu: Optional[GPUReplay[Self.OBS, Self.ACT, Self.REAL_CAP]]
     var synth_gpu: Optional[GPUReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP]]
     var learning_starts: Int
 
     def __init__(out self):
-        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self.real_cpu = CPUReplay[Self.OBS, Self.ACT, Self.REAL_CAP](
-            obs=null_p, act=null_p, rew=null_p, nxt=null_p, dne=null_p,
-            size=0, pos=0,
-        )
-        self.synth_cpu = CPUReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP](
-            obs=null_p, act=null_p, rew=null_p, nxt=null_p, dne=null_p,
-            size=0, pos=0,
-        )
+        self.real_cpu = None
+        self.synth_cpu = None
         self.real_gpu = None
         self.synth_gpu = None
         self.learning_starts = 0
@@ -89,7 +80,7 @@ struct DualSampleStep[
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime if target == "cpu":
-            self.real_cpu.add(obs, action, reward, next_obs, done)
+            self.real_cpu.value().add(obs, action, reward, next_obs, done)
         else:
             self.real_gpu.value().add(
                 obs, action, reward, next_obs, done, ctx=ctx,
@@ -104,7 +95,7 @@ struct DualSampleStep[
         done: Scalar[DT],
     ):
         """CPU rollout synthetic store (host list)."""
-        self.synth_cpu.add(obs, action, reward, next_obs, done)
+        self.synth_cpu.value().add(obs, action, reward, next_obs, done)
 
     def synth_add_batch[
         N: Int
@@ -139,7 +130,9 @@ struct DualSampleStep[
 
     def real_count[target: StaticString](self) -> Int:
         comptime if target == "cpu":
-            return self.real_cpu.size
+            if not self.real_cpu:
+                return 0
+            return self.real_cpu.value().size
         else:
             if not self.real_gpu:
                 return 0
@@ -147,7 +140,9 @@ struct DualSampleStep[
 
     def synth_count[target: StaticString](self) -> Int:
         comptime if target == "cpu":
-            return self.synth_cpu.size
+            if not self.synth_cpu:
+                return 0
+            return self.synth_cpu.value().size
         else:
             if not self.synth_gpu:
                 return 0
@@ -165,10 +160,10 @@ struct DualSampleStep[
             return
 
         comptime if target == "cpu":
-            if self.real_cpu.size < Self.REAL_BS:
+            if self.real_cpu.value().size < Self.REAL_BS:
                 state.did_step = False
                 return
-            if self.synth_cpu.size < Self.SYNTH_BS:
+            if self.synth_cpu.value().size < Self.SYNTH_BS:
                 state.did_step = False
                 return
             var mb_s_p = state.mb_s.cpu_ptr()
@@ -176,10 +171,10 @@ struct DualSampleStep[
             var mb_r_p = state.mb_r.cpu_ptr()
             var mb_sp_p = state.mb_sp.cpu_ptr()
             var mb_d_p = state.mb_d.cpu_ptr()
-            self.real_cpu.sample(
+            self.real_cpu.value().sample(
                 Self.REAL_BS, mb_s_p, mb_a_p, mb_r_p, mb_sp_p, mb_d_p,
             )
-            self.synth_cpu.sample(
+            self.synth_cpu.value().sample(
                 Self.SYNTH_BS,
                 mb_s_p + Self.REAL_BS * Self.OBS,
                 mb_a_p + Self.REAL_BS * Self.ACT,

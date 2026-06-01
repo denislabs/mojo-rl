@@ -246,7 +246,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
     var _w_eff:     Scratch["w_eff",     Self.W_SIZE]
     var _b_eff:     Scratch["b_eff",     Self.B_SIZE]
 
-    var _cached_input_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     # GPU Philox bookkeeping (unused on CPU path). `_noise_seed` is set
     # at make() to a unique value per leaf. Slice 5: the per-forward
@@ -268,9 +268,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
         self._noise_out = Scratch["noise_out", Self.OUT]()
         self._w_eff     = Scratch["w_eff",     Self.W_SIZE]()
         self._b_eff     = Scratch["b_eff",     Self.B_SIZE]()
-        self._cached_input_ptr = UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ](unsafe_from_address=0)
+        self._cached_input_ptr = None
         self._noise_seed = UInt64(0)
         self._noise_offset_dev = None
         self.ts = TargetStorage.make_uninit()
@@ -563,7 +561,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
             var ni_p = self._noise_in.cpu_ptr()
             var no_p = self._noise_out.cpu_ptr()
             var w_eff_p = self._w_eff.cpu_ptr()
-            var x_p = self._cached_input_ptr
+            var x_p = self._cached_input_ptr.value()
 
             # 1. Param grads (mode="all" only) — reads x_p before grad_x writes.
             #    grad_mu_b[j]    = Σ_b grad_out[b, j]
@@ -638,7 +636,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
 
                 var cache_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin,
-                ](self._cached_input_ptr)
+                ](self._cached_input_ptr.value())
                 var g_mu_w_lt = LayoutTensor[
                     DT, Layout.row_major(Self.IN, Self.OUT), MutAnyOrigin,
                 ](self.mu_w.grad_dev.value().unsafe_ptr())

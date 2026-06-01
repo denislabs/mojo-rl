@@ -183,13 +183,11 @@ struct MaxPool2D[
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_DIM_FLAT)
     comptime OUT_DIM = Self.OUT_DIM_FLAT
 
-    var _cached_input_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
     var ts: TargetStorage
 
     def __init__(out self):
-        self._cached_input_ptr = UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ](unsafe_from_address=0)
+        self._cached_input_ptr = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -315,7 +313,7 @@ struct MaxPool2D[
             var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 grad_input_v.ptr
             )
-            var x_p = self._cached_input_ptr
+            var x_p = self._cached_input_ptr.value()
             # Zero-fill grad_input — we scatter argmax-only.
             for k in range(BATCH * Self.IN_DIM_FLAT):
                 gi_p[k] = Scalar[DT](0.0)
@@ -353,7 +351,7 @@ struct MaxPool2D[
             var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 grad_input_v.ptr
             )
-            var x_p = self._cached_input_ptr
+            var x_p = self._cached_input_ptr.value()
             comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
             comptime out_layout = Layout.row_major(BATCH, Self.OUT_DIM_FLAT)
             var go_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](go_p)

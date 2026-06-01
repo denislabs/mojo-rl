@@ -131,21 +131,29 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
     def grad_out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         ...
 
-    def grad_in0_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def grad_in0_ptr_via(
+        ref self,
+    ) -> Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]:
         ...
 
-    def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def grad_in1_ptr_via(
+        ref self,
+    ) -> Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]:
         ...
 
-    def grad_in2_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        """Default: null. Ternary+ nodes override to return their
+    def grad_in2_ptr_via(
+        ref self,
+    ) -> Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]:
+        """Default: None. Ternary+ nodes override to return their
         grad_in2_buf pointer."""
-        return UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
+        return None
 
-    def grad_in3_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        """Default: null. Quaternary nodes override to return their
+    def grad_in3_ptr_via(
+        ref self,
+    ) -> Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]:
+        """Default: None. Quaternary nodes override to return their
         grad_in3_buf pointer."""
-        return UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
+        return None
 
     def forward_via[
         target: StaticString,

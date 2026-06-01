@@ -163,16 +163,14 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
     var weight: Param["weight", True, Self.W_SIZE]
     var bias: Param["bias", False, Self.B_SIZE]
 
-    var _cached_input_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     var ts: TargetStorage
 
     def __init__(out self):
         self.weight = Param["weight", True, Self.W_SIZE]()
         self.bias = Param["bias", False, Self.B_SIZE]()
-        self._cached_input_ptr = UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ](unsafe_from_address=0)
+        self._cached_input_ptr = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -307,7 +305,7 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
             comptime if mode == "all":
                 var gw_p = self.weight.grad_unsafe_ptr_cpu()
                 var gb_p = self.bias.grad_unsafe_ptr_cpu()
-                var x_p = self._cached_input_ptr
+                var x_p = self._cached_input_ptr.value()
                 for k in range(Self.BLOCKS):
                     var w_blk = k * Self.IPB * Self.OPB
                     for i in range(Self.IPB):
@@ -349,7 +347,7 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                 var gb_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                     self.bias.grad_dev.value().unsafe_ptr()
                 )
-                var x_p = self._cached_input_ptr
+                var x_p = self._cached_input_ptr.value()
                 comptime n_w = (Self.W_SIZE + TPB - 1) // TPB
                 comptime k_dw = _bl_dweight_kernel[
                     BATCH, Self.IN, Self.OUT, Self.BLOCKS

@@ -219,23 +219,20 @@ struct PPODiscreteObjective[N_: Int](Module):
     var entropy_coef: Scalar[DT]
 
     # Input-pointer cache populated by forward, consumed by vjp.
-    var _cache_ao_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _cache_act_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _cache_olp_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _cache_adv_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cache_ao_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _cache_act_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _cache_olp_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _cache_adv_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     var ts: TargetStorage
 
     def __init__(out self):
         self.clip_eps = Scalar[DT](0.2)
         self.entropy_coef = Scalar[DT](0.0)
-        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self._cache_ao_ptr = null_p
-        self._cache_act_ptr = null_p
-        self._cache_olp_ptr = null_p
-        self._cache_adv_ptr = null_p
+        self._cache_ao_ptr = None
+        self._cache_act_ptr = None
+        self._cache_olp_ptr = None
+        self._cache_adv_ptr = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -397,10 +394,10 @@ struct PPODiscreteObjective[N_: Int](Module):
         var gi3 = typed_view_mut[BATCH, Self.IN_DIMS[3]](grad_inputs[3])  # grad adv
 
         comptime if target == "cpu":
-            var ao_p = self._cache_ao_ptr
-            var act_p = self._cache_act_ptr
-            var olp_p = self._cache_olp_ptr
-            var adv_p = self._cache_adv_ptr
+            var ao_p = self._cache_ao_ptr.value()
+            var act_p = self._cache_act_ptr.value()
+            var olp_p = self._cache_olp_ptr.value()
+            var adv_p = self._cache_adv_ptr.value()
             for b in range(BATCH):
                 # Zero non-differentiable rollout grad slots.
                 gi1[b, 0] = Scalar[DT](0.0)
@@ -458,16 +455,16 @@ struct PPODiscreteObjective[N_: Int](Module):
         else:
             var ao_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, N), MutAnyOrigin,
-            ](self._cache_ao_ptr)
+            ](self._cache_ao_ptr.value())
             var act_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](self._cache_act_ptr)
+            ](self._cache_act_ptr.value())
             var olp_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](self._cache_olp_ptr)
+            ](self._cache_olp_ptr.value())
             var adv_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](self._cache_adv_ptr)
+            ](self._cache_adv_ptr.value())
             var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go.ptr)
             var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi0.ptr)
             var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi1.ptr)

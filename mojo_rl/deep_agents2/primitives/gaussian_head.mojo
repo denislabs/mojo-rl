@@ -153,7 +153,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
     var bias:    Param["bias",    False, Self.B_SIZE]
     var log_std: Param["log_std", False, Self.LS_SIZE]
 
-    var _cached_input_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     var ts: TargetStorage
 
@@ -161,9 +161,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
         self.weight  = Param["weight",  True,  Self.W_SIZE]()
         self.bias    = Param["bias",    False, Self.B_SIZE]()
         self.log_std = Param["log_std", False, Self.LS_SIZE]()
-        self._cached_input_ptr = UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ](unsafe_from_address=0)
+        self._cached_input_ptr = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -334,7 +332,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
             # ── (2) grad_w (mode=all). Reads cache via _cached_input_ptr ─
             comptime if mode == "all":
                 var gw = TileTensor(self.weight.grad, row_major[Self.IN, Self.ACT]())
-                var c_ptr = self._cached_input_ptr
+                var c_ptr = self._cached_input_ptr.value()
                 for i in range(Self.IN):
                     for j in range(Self.ACT):
                         var acc: Scalar[DT] = 0.0
@@ -389,7 +387,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
             # (2) grad_w
             comptime if mode == "all":
                 var cache_lt = LayoutTensor[DT, cache_layout, MutAnyOrigin](
-                    self._cached_input_ptr
+                    self._cached_input_ptr.value()
                 )
                 var gw_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
                     self.weight.grad_dev.value()

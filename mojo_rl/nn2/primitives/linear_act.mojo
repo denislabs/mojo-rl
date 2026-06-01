@@ -150,7 +150,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
     var bias:   Param["bias",   False, Self.B_SIZE]
 
     # Aliased input slab — used by grad_W on backward (same as Linear).
-    var _cached_input_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     # Owned activation cache — stores z (if !owns_cache) or y (if owns_cache).
     # Lazy-grown to [BATCH * OUT] on first forward.
@@ -165,9 +165,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
     def __init__(out self):
         self.weight = Param["weight", True,  Self.W_SIZE]()
         self.bias   = Param["bias",   False, Self.B_SIZE]()
-        self._cached_input_ptr = UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ](unsafe_from_address=0)
+        self._cached_input_ptr = None
         self.act_cache_cpu = List[Scalar[DT]]()
         self.act_cache_dev = None
         self.act_cache_n = 0
@@ -381,7 +379,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
             comptime if mode == "all":
                 comptime gw_n = Self.IN * Self.OUT
                 var gw_ptr = self.weight.grad_unsafe_ptr_cpu()
-                var cache_in_p = self._cached_input_ptr
+                var cache_in_p = self._cached_input_ptr.value()
                 var cT_buf: UnsafePointer[
                     Scalar[DT], MutAnyOrigin
                 ] = alloc[Scalar[DT]](BATCH * Self.IN)
@@ -452,7 +450,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
                 comptime go_layout2 = Layout.row_major(BATCH, Self.OUT)
                 comptime gw_layout = Layout.row_major(Self.IN, Self.OUT)
                 var cache_in_lt = LayoutTensor[DT, cache_layout, MutAnyOrigin](
-                    self._cached_input_ptr
+                    self._cached_input_ptr.value()
                 )
                 var go_lt2 = LayoutTensor[DT, go_layout2, MutAnyOrigin](go_p)
                 var gw_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](

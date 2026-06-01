@@ -212,16 +212,10 @@ struct C51QUpdateBlock[
         mb_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_m_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        weights_p: UnsafePointer[
-            Scalar[DT],
-            MutAnyOrigin,
-        ] = UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0),
-        td_residuals_p: UnsafePointer[
-            Scalar[DT],
-            MutAnyOrigin,
-        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
+        weights_p: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+        td_residuals_p: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None,
     ) raises -> Scalar[DT]:
         """Zero_grad → Q.forward → gather slice → CE forward+vjp →
         (PER hooks) → scatter → Q.vjp → opt.step. Returns scalar loss."""
@@ -278,7 +272,8 @@ struct C51QUpdateBlock[
 
         comptime if target == "cpu":
             # 5a. PER residual capture — per-sample cross-entropy.
-            if Int(td_residuals_p) != 0:
+            if td_residuals_p:
+                var td_p = td_residuals_p.value()
                 for b in range(Self.BATCH):
                     var off = b * Self.N_ATOMS
                     var mx = logits_a_p[off]
@@ -295,12 +290,13 @@ struct C51QUpdateBlock[
                         if log_p < Scalar[DT](-20.0):
                             log_p = Scalar[DT](-20.0)
                         ce = ce - mb_m_ptr[off + i] * log_p
-                    td_residuals_p[b] = ce
+                    td_p[b] = ce
 
             # 5b. PER IS-weight scaling on grad_logits_a (per-row scale).
-            if Int(weights_p) != 0:
+            if weights_p:
+                var w_p = weights_p.value()
                 for b in range(Self.BATCH):
-                    var w = weights_p[b]
+                    var w = w_p[b]
                     for i in range(Self.N_ATOMS):
                         grad_logits_a_p[b * Self.N_ATOMS + i] = (
                             grad_logits_a_p[b * Self.N_ATOMS + i] * w
@@ -322,7 +318,7 @@ struct C51QUpdateBlock[
             var ctx = self.ts.ctx.value()
 
             # 5a. PER residual capture on device.
-            if Int(td_residuals_p) != 0:
+            if td_residuals_p:
                 var logits_a_lt = LayoutTensor[
                     DT,
                     Layout.row_major(Self.BATCH, Self.N_ATOMS),
@@ -337,7 +333,7 @@ struct C51QUpdateBlock[
                     DT,
                     Layout.row_major(Self.BATCH),
                     MutAnyOrigin,
-                ](td_residuals_p)
+                ](td_residuals_p.value())
                 comptime per_res_kernel = _c51_per_residual_kernel[
                     Self.BATCH,
                     Self.N_ATOMS,
@@ -352,7 +348,7 @@ struct C51QUpdateBlock[
                 )
 
             # 5b. PER IS-weight scaling on device.
-            if Int(weights_p) != 0:
+            if weights_p:
                 var grad_la_lt = LayoutTensor[
                     DT,
                     Layout.row_major(Self.BATCH, Self.N_ATOMS),
@@ -362,7 +358,7 @@ struct C51QUpdateBlock[
                     DT,
                     Layout.row_major(Self.BATCH),
                     MutAnyOrigin,
-                ](weights_p)
+                ](weights_p.value())
                 comptime per_scl_kernel = _c51_per_scale_kernel[
                     Self.BATCH,
                     Self.N_ATOMS,

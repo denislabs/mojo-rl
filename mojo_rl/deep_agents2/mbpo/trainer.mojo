@@ -1204,9 +1204,10 @@ struct MBPOTrainer[
         var n_data = self.sample_blk.real_count["cpu"]()
         if n_data < 2:
             return
+        var real_buf = self.sample_blk.real_cpu.value()
         self._compute_scaler_host(
-            self.sample_blk.real_cpu.obs,
-            self.sample_blk.real_cpu.act,
+            real_buf.obs,
+            real_buf.act,
             n_data,
         )
 
@@ -1279,10 +1280,11 @@ struct MBPOTrainer[
         var dyn_in_p = self._dyn_in.cpu_ptr()
         var dyn_tgt_p = self._dyn_tgt.cpu_ptr()
 
-        var rb_obs = self.sample_blk.real_cpu.obs
-        var rb_act = self.sample_blk.real_cpu.act
-        var rb_rew = self.sample_blk.real_cpu.rew
-        var rb_nxt = self.sample_blk.real_cpu.nxt
+        var real_buf = self.sample_blk.real_cpu.value()
+        var rb_obs = real_buf.obs
+        var rb_act = real_buf.act
+        var rb_rew = real_buf.rew
+        var rb_nxt = real_buf.nxt
 
         for m in range(Self.N_ENSEMBLE):
             for _ in range(total_steps):
@@ -1373,7 +1375,7 @@ struct MBPOTrainer[
             var ro_lv_p = self._ro_lv.cpu_ptr()
             var dyn_in_p = self._dyn_in.cpu_ptr()
 
-            var rb_obs = self.sample_blk.real_cpu.obs
+            var rb_obs = self.sample_blk.real_cpu.value().obs
             for k in range(this_batch):
                 var idx = Int(random_float64() * Float64(real_buf_size))
                 if idx >= real_buf_size:

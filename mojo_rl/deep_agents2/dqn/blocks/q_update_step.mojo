@@ -51,14 +51,14 @@ struct DQNQUpdateStep[
         """PER hook: when `state.has_per`, forward IS weights into the
         update + capture per-sample signed TD residuals so the sample
         block can refresh sum-tree priorities. When unset, both
-        pointers stay null and the inner block falls back to the
+        pointers stay None and the inner block falls back to the
         uniform path (bit-identical to pre-PER)."""
-        var weights_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0,
-        )
-        var td_res_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0,
-        )
+        var weights_p: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None
+        var td_res_p: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None
         if state.has_per:
             weights_p = state.mb_w.target_ptr[target]()
             td_res_p = state.td_residuals.target_ptr[target]()

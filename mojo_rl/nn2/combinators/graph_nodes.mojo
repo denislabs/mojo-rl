@@ -97,10 +97,10 @@ struct InputSlot[
     var _grad_out_buf_dev: Optional[DeviceBuffer[DT]]
     var _grad_out_buf_dev_n: Int
 
-    var _out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_in0_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_in1_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _out_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _grad_out_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _grad_in0_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _grad_in1_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     var _n_batch_buf: Int
     var ts: TargetStorage
@@ -109,13 +109,10 @@ struct InputSlot[
         self._grad_out_buf = List[Scalar[DT]]()
         self._grad_out_buf_dev = None
         self._grad_out_buf_dev_n = 0
-        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self._out_ptr = null_p
-        self._grad_out_ptr = null_p
-        self._grad_in0_ptr = null_p
-        self._grad_in1_ptr = null_p
+        self._out_ptr = None
+        self._grad_out_ptr = None
+        self._grad_in0_ptr = None
+        self._grad_in1_ptr = None
         self._n_batch_buf = 0
         self.ts = TargetStorage.make_uninit()
 
@@ -165,16 +162,20 @@ struct InputSlot[
         self._out_ptr = ptr
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._out_ptr
+        return self._out_ptr.value()
 
     def grad_out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_out_ptr
+        return self._grad_out_ptr.value()
 
-    def grad_in0_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in0_ptr  # null — InputSlot has no inputs
+    def grad_in0_ptr_via(
+        ref self,
+    ) -> Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]:
+        return self._grad_in0_ptr  # None — InputSlot has no inputs
 
-    def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_in1_ptr  # null — InputSlot has no inputs
+    def grad_in1_ptr_via(
+        ref self,
+    ) -> Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]:
+        return self._grad_in1_ptr  # None — InputSlot has no inputs
 
     def forward_via[
         target: StaticString,
@@ -260,9 +261,9 @@ struct Node[
     var _grad_ins_buf_dev_n: List[Int]
 
     # Cached pointers resolved by ensure_buffers_via — stable thereafter.
-    var _out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_ins_ptr: List[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _out_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _grad_out_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _grad_ins_ptr: List[Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]]
 
     var _n_batch_buf: Int
     var ts: TargetStorage
@@ -281,12 +282,11 @@ struct Node[
         self._out_buf_dev_n = 0
         self._grad_out_buf_dev_n = 0
         self._grad_ins_buf_dev_n = List[Int]()
-        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self._out_ptr = null_p
-        self._grad_out_ptr = null_p
-        self._grad_ins_ptr = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
+        self._out_ptr = None
+        self._grad_out_ptr = None
+        self._grad_ins_ptr = List[
+            Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+        ]()
         # Pre-populate the List-of-List slots with ARITY entries (one
         # per input slot). Unary leaves still get 1 entry; ARITY≥5
         # nodes get the right count, no cap. ARITY=0 (impossible for
@@ -295,7 +295,7 @@ struct Node[
             self._grad_ins_buf.append(List[Scalar[DT]]())
             self._grad_ins_buf_dev.append(None)
             self._grad_ins_buf_dev_n.append(0)
-            self._grad_ins_ptr.append(null_p)
+            self._grad_ins_ptr.append(None)
         self._n_batch_buf = 0
         self.ts = TargetStorage.make_uninit()
 
@@ -368,33 +368,33 @@ struct Node[
                 self._n_batch_buf = BATCH
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._out_ptr
+        return self._out_ptr.value()
 
     def grad_out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_out_ptr
+        return self._grad_out_ptr.value()
 
     # The grad_inK_ptr_via accessors read from the consolidated List
-    # at slot K. They return a null pointer when ARITY ≤ K (which
-    # callers must not dereference; ComputeGraph guards via kind >= K).
-    def grad_in0_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_ins_ptr[0] if Self.Op.ARITY >= 1 else UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0)
+    # at slot K. They return None when ARITY ≤ K (which callers must
+    # not dereference; ComputeGraph guards via kind >= K).
+    def grad_in0_ptr_via(
+        ref self,
+    ) -> Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]:
+        return self._grad_ins_ptr[0] if Self.Op.ARITY >= 1 else None
 
-    def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_ins_ptr[1] if Self.Op.ARITY >= 2 else UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0)
+    def grad_in1_ptr_via(
+        ref self,
+    ) -> Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]:
+        return self._grad_ins_ptr[1] if Self.Op.ARITY >= 2 else None
 
-    def grad_in2_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_ins_ptr[2] if Self.Op.ARITY >= 3 else UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0)
+    def grad_in2_ptr_via(
+        ref self,
+    ) -> Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]:
+        return self._grad_ins_ptr[2] if Self.Op.ARITY >= 3 else None
 
-    def grad_in3_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_ins_ptr[3] if Self.Op.ARITY >= 4 else UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0)
+    def grad_in3_ptr_via(
+        ref self,
+    ) -> Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]:
+        return self._grad_ins_ptr[3] if Self.Op.ARITY >= 4 else None
 
     def forward_via[
         target: StaticString,
@@ -439,28 +439,28 @@ struct Node[
         POLICY: AMPPolicy = NoAMP,
     ](mut self) raises:
         var go_p = self.grad_out_ptr_via()
-        var gi0_p = self.grad_in0_ptr_via()
+        var gi0_p = self.grad_in0_ptr_via().value()
         var go_t = TileTensor(go_p, row_major[BATCH, Self.OUT_DIM]())
         var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
         comptime if Self.Op.ARITY == 1:
             self.op.vjp[target, BATCH, POLICY=POLICY](go_t, gi0_t)
         elif Self.Op.ARITY == 2:
             # Hetero-binary variadic workaround (see forward_via).
-            var gi1_p = self.grad_in1_ptr_via()
+            var gi1_p = self.grad_in1_ptr_via().value()
             var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
             self.op.vjp[target, BATCH, POLICY=POLICY](go_t, gi0_t, gi1_t)
         elif Self.Op.ARITY == 3:
-            var gi1_p = self.grad_in1_ptr_via()
-            var gi2_p = self.grad_in2_ptr_via()
+            var gi1_p = self.grad_in1_ptr_via().value()
+            var gi2_p = self.grad_in2_ptr_via().value()
             var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
             var gi2_t = TileTensor(gi2_p, row_major[BATCH, Self.IN0_DIM]())
             self.op.vjp[target, BATCH, POLICY=POLICY](
                 go_t, gi0_t, gi1_t, gi2_t,
             )
         else:  # ARITY == 4
-            var gi1_p = self.grad_in1_ptr_via()
-            var gi2_p = self.grad_in2_ptr_via()
-            var gi3_p = self.grad_in3_ptr_via()
+            var gi1_p = self.grad_in1_ptr_via().value()
+            var gi2_p = self.grad_in2_ptr_via().value()
+            var gi3_p = self.grad_in3_ptr_via().value()
             var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
             var gi2_t = TileTensor(gi2_p, row_major[BATCH, Self.IN0_DIM]())
             var gi3_t = TileTensor(gi3_p, row_major[BATCH, Self.IN0_DIM]())
@@ -529,7 +529,7 @@ struct ExternalNode[
 
     # Type-erased so GraphNode.set_external_via carries a uniform
     # signature. Rebound to UnsafePointer[Self.M] at every dispatch site.
-    var _module_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _module_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     var _out_buf: List[Scalar[DT]]
     var _grad_out_buf: List[Scalar[DT]]
@@ -545,9 +545,9 @@ struct ExternalNode[
     var _grad_out_buf_dev_n: Int
     var _grad_ins_buf_dev_n: List[Int]
 
-    var _out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _grad_ins_ptr: List[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _out_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _grad_out_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _grad_ins_ptr: List[Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]]
 
     var _n_batch_buf: Int
     var ts: TargetStorage
@@ -556,9 +556,7 @@ struct ExternalNode[
         comptime assert Self.in_names.size == Self.M.ARITY, (
             "ExternalNode: number of in_names must match M.ARITY"
         )
-        self._module_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
+        self._module_ptr = None
         self._out_buf = List[Scalar[DT]]()
         self._grad_out_buf = List[Scalar[DT]]()
         self._grad_ins_buf = List[List[Scalar[DT]]]()
@@ -568,17 +566,16 @@ struct ExternalNode[
         self._out_buf_dev_n = 0
         self._grad_out_buf_dev_n = 0
         self._grad_ins_buf_dev_n = List[Int]()
-        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self._out_ptr = null_p
-        self._grad_out_ptr = null_p
-        self._grad_ins_ptr = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
+        self._out_ptr = None
+        self._grad_out_ptr = None
+        self._grad_ins_ptr = List[
+            Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+        ]()
         comptime for _ in range(Self.M.ARITY):
             self._grad_ins_buf.append(List[Scalar[DT]]())
             self._grad_ins_buf_dev.append(None)
             self._grad_ins_buf_dev_n.append(0)
-            self._grad_ins_ptr.append(null_p)
+            self._grad_ins_ptr.append(None)
         self._n_batch_buf = 0
         self.ts = TargetStorage.make_uninit()
 
@@ -658,30 +655,30 @@ struct ExternalNode[
                 self._n_batch_buf = BATCH
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._out_ptr
+        return self._out_ptr.value()
 
     def grad_out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_out_ptr
+        return self._grad_out_ptr.value()
 
-    def grad_in0_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_ins_ptr[0] if Self.M.ARITY >= 1 else UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0)
+    def grad_in0_ptr_via(
+        ref self,
+    ) -> Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]:
+        return self._grad_ins_ptr[0] if Self.M.ARITY >= 1 else None
 
-    def grad_in1_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_ins_ptr[1] if Self.M.ARITY >= 2 else UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0)
+    def grad_in1_ptr_via(
+        ref self,
+    ) -> Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]:
+        return self._grad_ins_ptr[1] if Self.M.ARITY >= 2 else None
 
-    def grad_in2_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_ins_ptr[2] if Self.M.ARITY >= 3 else UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0)
+    def grad_in2_ptr_via(
+        ref self,
+    ) -> Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]:
+        return self._grad_ins_ptr[2] if Self.M.ARITY >= 3 else None
 
-    def grad_in3_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self._grad_ins_ptr[3] if Self.M.ARITY >= 4 else UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0)
+    def grad_in3_ptr_via(
+        ref self,
+    ) -> Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]:
+        return self._grad_ins_ptr[3] if Self.M.ARITY >= 4 else None
 
     def forward_via[
         target: StaticString,
@@ -697,7 +694,7 @@ struct ExternalNode[
         var out_p = self.out_ptr_via()
         var out_t = TileTensor(out_p, row_major[BATCH, Self.OUT_DIM]())
         var typed_ptr = rebind[UnsafePointer[Self.M, MutAnyOrigin]](
-            self._module_ptr
+            self._module_ptr.value()
         )
         comptime if Self.M.ARITY == 1:
             typed_ptr[].forward[target, BATCH, POLICY=POLICY](
@@ -728,34 +725,34 @@ struct ExternalNode[
         POLICY: AMPPolicy = NoAMP,
     ](mut self) raises:
         var go_p = self.grad_out_ptr_via()
-        var gi0_p = self.grad_in0_ptr_via()
+        var gi0_p = self.grad_in0_ptr_via().value()
         var go_t = TileTensor(go_p, row_major[BATCH, Self.OUT_DIM]())
         var gi0_t = TileTensor(gi0_p, row_major[BATCH, Self.IN0_DIM]())
         var typed_ptr = rebind[UnsafePointer[Self.M, MutAnyOrigin]](
-            self._module_ptr
+            self._module_ptr.value()
         )
         comptime if Self.M.ARITY == 1:
             typed_ptr[].vjp[
                 target, BATCH, POLICY=POLICY, mode=Self.MODE,
             ](go_t, gi0_t)
         elif Self.M.ARITY == 2:
-            var gi1_p = self.grad_in1_ptr_via()
+            var gi1_p = self.grad_in1_ptr_via().value()
             var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
             typed_ptr[].vjp[
                 target, BATCH, POLICY=POLICY, mode=Self.MODE,
             ](go_t, gi0_t, gi1_t)
         elif Self.M.ARITY == 3:
-            var gi1_p = self.grad_in1_ptr_via()
-            var gi2_p = self.grad_in2_ptr_via()
+            var gi1_p = self.grad_in1_ptr_via().value()
+            var gi2_p = self.grad_in2_ptr_via().value()
             var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
             var gi2_t = TileTensor(gi2_p, row_major[BATCH, Self.IN0_DIM]())
             typed_ptr[].vjp[
                 target, BATCH, POLICY=POLICY, mode=Self.MODE,
             ](go_t, gi0_t, gi1_t, gi2_t)
         else:  # ARITY == 4
-            var gi1_p = self.grad_in1_ptr_via()
-            var gi2_p = self.grad_in2_ptr_via()
-            var gi3_p = self.grad_in3_ptr_via()
+            var gi1_p = self.grad_in1_ptr_via().value()
+            var gi2_p = self.grad_in2_ptr_via().value()
+            var gi3_p = self.grad_in3_ptr_via().value()
             var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
             var gi2_t = TileTensor(gi2_p, row_major[BATCH, Self.IN0_DIM]())
             var gi3_t = TileTensor(gi3_p, row_major[BATCH, Self.IN0_DIM]())

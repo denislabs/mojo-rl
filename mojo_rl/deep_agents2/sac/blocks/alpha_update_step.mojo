@@ -38,9 +38,7 @@ struct AlphaUpdateStep[
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut alpha_opt: ScalarAdam,
-        lp_mean_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0),
+        lp_mean_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime if target == "cpu":
@@ -51,5 +49,5 @@ struct AlphaUpdateStep[
             # forms `-(lp_mean + H_target)`, and writes the device α in
             # place. No host work, no D2H.
             alpha_opt.step_device(
-                ctx.value(), lp_mean_ptr, self.target_entropy,
+                ctx.value(), lp_mean_ptr.value(), self.target_entropy,
             )

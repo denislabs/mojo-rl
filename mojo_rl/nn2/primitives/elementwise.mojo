@@ -116,16 +116,14 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
     var cache_dev_n: Int
 
     # owns_cache=False path: alias the orchestrator's input slab.
-    var _cached_input_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     def __init__(out self):
         self.ts = TargetStorage.make_uninit()
         self.cache = List[Scalar[DT]]()
         self.cache_dev = None
         self.cache_dev_n = 0
-        self._cached_input_ptr = UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0)
+        self._cached_input_ptr = None
 
     @staticmethod
     def make[
@@ -290,7 +288,7 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
             comptime if Self.OP.owns_cache:
                 c_p = self.cache.unsafe_ptr()
             else:
-                c_p = self._cached_input_ptr
+                c_p = self._cached_input_ptr.value()
             comptime N = BATCH * Self.DIM
             var k = 0
             while k + CPU_SIMD_W <= N:
@@ -314,7 +312,7 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
                 )
             else:
                 cache_lt = LayoutTensor[DT, layout, MutAnyOrigin](
-                    self._cached_input_ptr
+                    self._cached_input_ptr.value()
                 )
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
             comptime kernel = _elementwise_backward_kernel[

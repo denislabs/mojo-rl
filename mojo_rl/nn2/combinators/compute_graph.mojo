@@ -345,19 +345,19 @@ struct ComputeGraph[
         """Returns the named node's output buffer pointer.
 
         Stable after the first `ensure_buffers_via[BATCH]` of that node
-        (which fires inside `forward` / `backward`). Returns null if
-        `node_name` matches no node in the graph. Used by callers that
-        need access to an intermediate node's output value — e.g. the
-        SAC actor loss reads `log_prob`'s out_ptr to compute its mean
-        for the α optimizer.
+        (which fires inside `forward` / `backward`). Raises (via
+        `.value()`) if `node_name` matches no node in the graph. Used by
+        callers that need access to an intermediate node's output value
+        — e.g. the SAC actor loss reads `log_prob`'s out_ptr to compute
+        its mean for the α optimizer.
         """
-        var out_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
+        var out_p: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None
         comptime for i in range(Self.N):
             comptime if Self.NODES[i].NAME == node_name:
                 out_p = self.nodes[i].out_ptr_via()
-        return out_p
+        return out_p.value()
 
     def grad_input_ptr[
         slot_name: StaticString,
@@ -367,18 +367,18 @@ struct ComputeGraph[
         The buffer holds the accumulated gradient flowing back to this
         input after `backward` has run. Sized [BATCH, slot.OUT_DIM].
         Stable across the lifetime of the graph (resolved once in
-        `ensure_buffers_via`). Returns null if `slot_name` matches no
-        InputSlot in the graph.
+        `ensure_buffers_via`). Raises (via `.value()`) if `slot_name`
+        matches no InputSlot in the graph.
         """
-        var out_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
+        var out_p: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None
         comptime for i in range(Self.N):
             comptime if (
                 Self.NODES[i].KIND == 0 and Self.NODES[i].NAME == slot_name
             ):
                 out_p = self.nodes[i].grad_out_ptr_via()
-        return out_p
+        return out_p.value()
 
     # ──────────────────────────────────────────────────────────────────
     # Per-call node attribute mutation. Resolves the target node by
@@ -569,8 +569,9 @@ def _forward_cpu[
 ) raises:
     comptime N = NODES.size
 
-    # Null sentinel for unary nodes' unused in1 slot.
-    var null_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
+    # Seed sentinel: a valid pointer (node 0's out_ptr) used purely as
+    # InlineArray fill; every slot is overwritten in the loop below.
+    var seed_ptr = g.nodes[0].out_ptr_via()
 
     comptime for i in range(N):
         comptime kind = NODES[i].KIND
@@ -582,7 +583,7 @@ def _forward_cpu[
             # k in [0, ARITY). KIND cap dropped on the dispatch layer.
             var ptrs = InlineArray[
                 UnsafePointer[Scalar[DT], MutAnyOrigin], kind,
-            ](fill=null_ptr)
+            ](fill=seed_ptr)
             comptime for k in range(kind):
                 comptime src_k = NODES[i].IN_NAMES[k]
                 comptime for j in range(N):
@@ -637,14 +638,11 @@ def _backward_cpu[
             g.nodes[i].vjp_via[target, BATCH, POLICY=POLICY]()
 
             # I.2.6.e — collect grad_in pointers into a fixed-4
-            # InlineArray, then uniform comptime-for over KIND for
-            # scatter-add. The dispatch surface stays fixed-4 to match
-            # forward_via's signature.
+            # InlineArray of Optionals, then uniform comptime-for over
+            # KIND for scatter-add. Slots K >= ARITY stay None.
             var grad_in_ptrs = InlineArray[
-                UnsafePointer[Scalar[DT], MutAnyOrigin], 4
-            ](fill=UnsafePointer[Scalar[DT], MutAnyOrigin](
-                unsafe_from_address=0
-            ))
+                Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]], 4
+            ](fill=None)
             grad_in_ptrs[0] = g.nodes[i].grad_in0_ptr_via()
             grad_in_ptrs[1] = g.nodes[i].grad_in1_ptr_via()
             grad_in_ptrs[2] = g.nodes[i].grad_in2_ptr_via()
@@ -657,7 +655,9 @@ def _backward_cpu[
                 comptime for j in range(N):
                     comptime if NODES[j].NAME == src_k:
                         var pred_go_p = g.nodes[j].grad_out_ptr_via()
-                        _scatter_add_cpu(pred_go_p, grad_in_ptrs[k], total_k)
+                        _scatter_add_cpu(
+                            pred_go_p, grad_in_ptrs[k].value(), total_k,
+                        )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -682,7 +682,9 @@ def _forward_gpu[
 ) raises:
     comptime N = NODES.size
     var ctx = g.ts.ctx.value()
-    var null_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
+    # Seed sentinel: valid pointer from node 0 used purely as
+    # InlineArray fill; every slot is overwritten in the loop below.
+    var seed_ptr = g.nodes[0].out_ptr_via()
 
     comptime for i in range(N):
         comptime kind = NODES[i].KIND
@@ -690,7 +692,7 @@ def _forward_gpu[
             # I.2.6.k — InlineArray sized at per-node KIND (mirrors _forward_cpu).
             var ptrs = InlineArray[
                 UnsafePointer[Scalar[DT], MutAnyOrigin], kind,
-            ](fill=null_ptr)
+            ](fill=seed_ptr)
             comptime for k in range(kind):
                 comptime src_k = NODES[i].IN_NAMES[k]
                 comptime for j in range(N):
@@ -744,10 +746,8 @@ def _backward_gpu[
 
             # I.2.6.e — uniform comptime-for over KIND (mirrors _backward_cpu).
             var grad_in_ptrs = InlineArray[
-                UnsafePointer[Scalar[DT], MutAnyOrigin], 4
-            ](fill=UnsafePointer[Scalar[DT], MutAnyOrigin](
-                unsafe_from_address=0
-            ))
+                Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]], 4
+            ](fill=None)
             grad_in_ptrs[0] = g.nodes[i].grad_in0_ptr_via()
             grad_in_ptrs[1] = g.nodes[i].grad_in1_ptr_via()
             grad_in_ptrs[2] = g.nodes[i].grad_in2_ptr_via()
@@ -760,4 +760,6 @@ def _backward_gpu[
                 comptime for j in range(N):
                     comptime if NODES[j].NAME == src_k:
                         var pred_go_p = g.nodes[j].grad_out_ptr_via()
-                        _enqueue_add[total_k](ctx, pred_go_p, grad_in_ptrs[k])
+                        _enqueue_add[total_k](
+                            ctx, pred_go_p, grad_in_ptrs[k].value(),
+                        )

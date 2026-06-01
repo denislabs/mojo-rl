@@ -158,23 +158,21 @@ struct CriticUpdateBlock[
         y_t: TileTensor[
             dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        weights_p: UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
-        td_residuals_p: UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
+        weights_p: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+        td_residuals_p: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None,
     ) raises -> Scalar[DT]:
-        """Phase C.3c — `weights_p` (optional, default null sentinel)
-        is a `[BATCH]` per-sample IS weight vector. When non-null, the
+        """Phase C.3c — `weights_p` (optional, default None)
+        is a `[BATCH]` per-sample IS weight vector. When provided, the
         gradient `mb_grad_q` produced by `mse.vjp` is scaled in-place
         by `weights_p[i]` before flowing into `critic.vjp`. CPU path
         does a sequential loop; GPU path launches
-        `_scale_grad_by_weights_kernel`. Null pointer → unweighted
+        `_scale_grad_by_weights_kernel`. None → unweighted
         MSE → bit-identical to pre-C.3c.
 
-        `td_residuals_p` (optional, default null sentinel) is a
-        `[BATCH]` output vector. When non-null, the unscaled signed TD
+        `td_residuals_p` (optional, default None) is a
+        `[BATCH]` output vector. When provided, the unscaled signed TD
         residual `(Q − y)` is captured between `mse.vjp` and the IS-
         weight scaling and written here. Used by PER to refresh sum-
         tree priorities. Captured BEFORE IS scaling so priorities
@@ -216,19 +214,20 @@ struct CriticUpdateBlock[
 
         # PER residual capture (raw signed TD `Q − y = mb_grad_q · BATCH`),
         # taken BEFORE the IS-weight scaling below so priorities reflect
-        # error magnitude not weighted gradient. Null pointer → no capture.
-        if Int(td_residuals_p) != 0:
+        # error magnitude not weighted gradient. None → no capture.
+        if td_residuals_p:
+            var td_p = td_residuals_p.value()
             comptime if target == "cpu":
                 var scale = Scalar[DT](Self.BATCH)
                 for i in range(Self.BATCH):
-                    td_residuals_p[i] = mb_grad_q_p[i] * scale
+                    td_p[i] = mb_grad_q_p[i] * scale
             else:
                 var grad_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin,
                 ](mb_grad_q_p)
                 var out_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-                ](td_residuals_p)
+                ](td_p)
                 comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
                 comptime capture_kernel = _capture_td_residuals_kernel[
                     Self.BATCH
@@ -239,18 +238,19 @@ struct CriticUpdateBlock[
                     grid_dim=n_blocks, block_dim=TPB,
                 )
 
-        # Phase C.3c — IS-weight scaling, gated on non-null sentinel.
-        if Int(weights_p) != 0:
+        # Phase C.3c — IS-weight scaling, gated on Optional sentinel.
+        if weights_p:
+            var w_p = weights_p.value()
             comptime if target == "cpu":
                 for i in range(Self.BATCH):
-                    mb_grad_q_p[i] = mb_grad_q_p[i] * weights_p[i]
+                    mb_grad_q_p[i] = mb_grad_q_p[i] * w_p[i]
             else:
                 var grad_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin,
                 ](mb_grad_q_p)
                 var w_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-                ](weights_p)
+                ](w_p)
                 comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
                 comptime scale_kernel = _scale_grad_by_weights_kernel[
                     Self.BATCH
@@ -328,18 +328,16 @@ struct TwinCriticUpdateBlock[
         mb_y_t: TileTensor[
             dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        weights_p: UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
-        td_residuals_p: UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
+        weights_p: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+        td_residuals_p: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None,
     ) raises -> Scalar[DT]:
-        """Phase C.3c — `weights_p` (optional, default null) flows
+        """Phase C.3c — `weights_p` (optional, default None) flows
         through both sub-block updates so both critics receive the
-        same per-sample PER weighting. Bit-identical when null.
+        same per-sample PER weighting. Bit-identical when None.
 
-        `td_residuals_p` (optional, default null) captures the signed
+        `td_residuals_p` (optional, default None) captures the signed
         TD residual from critic1 only — canonical choice for PER
         priority refresh; critic2 sees the same target so |Q1−y| is
         a representative single-critic proxy (Schaul et al. §3.1).

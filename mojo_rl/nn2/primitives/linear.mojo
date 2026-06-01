@@ -137,7 +137,7 @@ struct Linear[IN: Int, OUT: Int](Module):
 
     # Forward-time pointer alias of the orchestrator's input slab.
     # Backward reads from this directly; no copy at forward time.
-    var _cached_input_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     # AMP scratch (lazy-allocated on first bf16 call).
     var amp: LinearAMPState[Self.IN, Self.OUT]
@@ -149,9 +149,7 @@ struct Linear[IN: Int, OUT: Int](Module):
     def __init__(out self):
         self.weight = Param["weight", True,  Self.W_SIZE]()
         self.bias   = Param["bias",   False, Self.B_SIZE]()
-        self._cached_input_ptr = UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ](unsafe_from_address=0)
+        self._cached_input_ptr = None
         self.amp = LinearAMPState[Self.IN, Self.OUT].make()
         self.ts = TargetStorage.make_uninit()
 
@@ -395,7 +393,7 @@ struct Linear[IN: Int, OUT: Int](Module):
             # grad_input write since grad_input may alias the cache slab.
             comptime if mode == "all":
                 var gw_ptr = self.weight.grad_unsafe_ptr_cpu()
-                var cache_ptr = self._cached_input_ptr
+                var cache_ptr = self._cached_input_ptr.value()
                 comptime if CompilationTarget.is_macos() and DT == DType.float32:
                     # Apple Accelerate: dW += cache.T @ grad_output in one
                     # cblas_sgemm call (transpose_a, beta=1). No temp alloc.
@@ -524,7 +522,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                 comptime go_layout2 = Layout.row_major(BATCH, Self.OUT)
                 comptime gw_layout = Layout.row_major(Self.IN, Self.OUT)
                 var cache_lt = LayoutTensor[DT, cache_layout, MutAnyOrigin](
-                    self._cached_input_ptr
+                    self._cached_input_ptr.value()
                 )
                 var go_lt2 = LayoutTensor[DT, go_layout2, MutAnyOrigin](go_p)
                 var gw_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](

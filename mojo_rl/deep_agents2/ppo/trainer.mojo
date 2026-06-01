@@ -127,12 +127,12 @@ struct PPOTrainer[
     ]
 
     # Host-side staging for the N=1 host-list wrapper paths (so they
-    # don't allocate per call).
-    var _obs1: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _act1: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _rew1: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _done1: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _nobs1: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    # don't allocate per call). None until `make` allocates real buffers.
+    var _obs1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _act1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _rew1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _done1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _nobs1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     # ── Hyperparameters ──────────────────────────────────────────────
     var gamma: Scalar[DT]
@@ -143,7 +143,7 @@ struct PPOTrainer[
 
     # ── Episode tracker (per-env running-return + completed-return window) ─
     var tracker: EpisodeTracker
-    var _ep_returns: UnsafePointer[Scalar[DT], MutAnyOrigin]  # N_ENVS
+    var _ep_returns: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]  # N_ENVS
 
     # ── Train-step accumulators (summed across all minibatch updates) ────
     var _actor_L_accum: Scalar[DT]
@@ -154,7 +154,7 @@ struct PPOTrainer[
     var _clip_accum: Scalar[DT]
     var _ev_accum: Scalar[DT]
     # Host scratch for the diag actor forward (MINIBATCH * 2 * ACT_DIM).
-    var _diag_ao: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _diag_ao: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
     var _update_count: Int
     # Never reset by `flush_*` — emitted as `train_steps` so the
     # downstream monitor can plot cumulative minibatch updates.
@@ -212,14 +212,11 @@ struct PPOTrainer[
             Self.OBS_DIM, Self.ACT_DIM, Self.ROLLOUT_LEN, Self.MINIBATCH,
             Self.N_ENVS,
         ]()
-        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self._obs1  = null_p
-        self._act1  = null_p
-        self._rew1  = null_p
-        self._done1 = null_p
-        self._nobs1 = null_p
+        self._obs1  = None
+        self._act1  = None
+        self._rew1  = None
+        self._done1 = None
+        self._nobs1 = None
         self.gamma = Scalar[DT](0.99)
         self.gae_lambda = Scalar[DT](0.95)
         self.clip_eps = Scalar[DT](0.2)
@@ -228,14 +225,14 @@ struct PPOTrainer[
         self.tracker = EpisodeTracker.new(
             window_size=10, initial_fill=Scalar[DT](-1600.0),
         )
-        self._ep_returns = null_p
+        self._ep_returns = None
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._entropy_accum = Scalar[DT](0.0)
         self._kl_accum = Scalar[DT](0.0)
         self._clip_accum = Scalar[DT](0.0)
         self._ev_accum = Scalar[DT](0.0)
-        self._diag_ao = null_p
+        self._diag_ao = None
         self._update_count = 0
         self._total_train_steps = 0
         self.timer = Timer.new()
@@ -316,9 +313,10 @@ struct PPOTrainer[
         t._rew1  = alloc[Scalar[DT]](1)
         t._done1 = alloc[Scalar[DT]](1)
         t._nobs1 = alloc[Scalar[DT]](Self.OBS_DIM)
-        t._ep_returns = alloc[Scalar[DT]](Self.N_ENVS)
+        var ep_returns_p = alloc[Scalar[DT]](Self.N_ENVS)
         for e in range(Self.N_ENVS):
-            t._ep_returns[e] = Scalar[DT](0.0)
+            ep_returns_p[e] = Scalar[DT](0.0)
+        t._ep_returns = ep_returns_p
         t._diag_ao = alloc[Scalar[DT]](Self.MINIBATCH * 2 * Self.ACT_DIM)
         t.gamma = gamma
         t.gae_lambda = gae_lambda
@@ -357,11 +355,13 @@ struct PPOTrainer[
             "PPOTrainer.select_action: host-list wrapper only valid "
             "at N_ENVS=1; use select_action_batched for N_ENVS>1"
         )
+        var obs_p = self._obs1.value()
+        var act_p = self._act1.value()
         for d in range(Self.OBS_DIM):
-            self._obs1[d] = obs[d]
-        self.select_action_batched(self._obs1, self._act1, step_idx)
+            obs_p[d] = obs[d]
+        self.select_action_batched(obs_p, act_p, step_idx)
         for j in range(Self.ACT_DIM):
-            action_out[j] = self._act1[j]
+            action_out[j] = act_p[j]
 
     def select_action_batched(
         mut self,
@@ -408,15 +408,19 @@ struct PPOTrainer[
             "valid at N_ENVS=1; use record_batch_cpu for N_ENVS>1"
         )
         _ = action  # env-ready action ignored (cached unbounded used)
+        var obs_p = self._obs1.value()
+        var nobs_p = self._nobs1.value()
+        var rew_p = self._rew1.value()
+        var done_p = self._done1.value()
         for d in range(Self.OBS_DIM):
-            self._obs1[d]  = obs[d]
-            self._nobs1[d] = next_obs[d]
-        self._rew1[0]  = reward
-        self._done1[0] = done
+            obs_p[d]  = obs[d]
+            nobs_p[d] = next_obs[d]
+        rew_p[0]  = reward
+        done_p[0] = done
         self.record_step.step[
             Self.train_target, Self.MINIBATCH, Self.N_ENVS,
         ](
-            self.state, self._obs1, self._rew1, self._nobs1, self._done1,
+            self.state, obs_p, rew_p, nobs_p, done_p,
         )
         self.tracker.add_reward(reward)
 
@@ -434,14 +438,15 @@ struct PPOTrainer[
         self.record_step.step[
             Self.train_target, Self.MINIBATCH, Self.N_ENVS,
         ](self.state, obs_ptr, reward_ptr, next_obs_ptr, done_ptr)
+        var ep_ret_p = self._ep_returns.value()
         for e in range(Self.N_ENVS):
-            self._ep_returns[e] += reward_ptr[e]
+            ep_ret_p[e] += reward_ptr[e]
             if done_ptr[e] > Scalar[DT](0.5):
                 # Push a single completed-episode return into the tracker
                 # window using its add_reward + end_episode contract.
-                self.tracker.add_reward(self._ep_returns[e])
+                self.tracker.add_reward(ep_ret_p[e])
                 self.tracker.end_episode()
-                self._ep_returns[e] = Scalar[DT](0.0)
+                ep_ret_p[e] = Scalar[DT](0.0)
 
     def mark_terminal(mut self) raises:
         """N=1 host-list wrapper — env 0 terminal."""
@@ -525,9 +530,9 @@ struct PPOTrainer[
         var obs_p = self.state.mb_obs.target_ptr["cpu"]()
 
         var obs_t = TileTensor(obs_p, row_major[MB, Self.OBS_DIM]())
-        var ao_t = TileTensor(self._diag_ao, row_major[MB, 2 * ACT]())
+        var ao = self._diag_ao.value()
+        var ao_t = TileTensor(ao, row_major[MB, 2 * ACT]())
         self.actor.forward["cpu", MB](obs_t, output=ao_t)
-        var ao = self._diag_ao
 
         var ent_sum = Scalar[DT](0.0)
         var kl_sum = Scalar[DT](0.0)

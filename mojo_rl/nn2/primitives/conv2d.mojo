@@ -384,15 +384,13 @@ struct Conv2D[
 
     var weight: Param["weight", True,  Self.W_SIZE]
     var bias:   Param["bias",   False, Self.B_SIZE]
-    var _cached_input_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
     var ts: TargetStorage
 
     def __init__(out self):
         self.weight = Param["weight", True,  Self.W_SIZE]()
         self.bias   = Param["bias",   False, Self.B_SIZE]()
-        self._cached_input_ptr = UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ](unsafe_from_address=0)
+        self._cached_input_ptr = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -598,7 +596,7 @@ struct Conv2D[
             var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 grad_input_v.ptr
             )
-            var x_p = self._cached_input_ptr
+            var x_p = self._cached_input_ptr.value()
             var w_p = self.weight.value_unsafe_ptr_cpu()
             var dw_p = self.weight.grad_unsafe_ptr_cpu()
             var db_p = self.bias.grad_unsafe_ptr_cpu()
@@ -613,17 +611,13 @@ struct Conv2D[
             var d_col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
                 Scalar[DT]
             ](Self.SPATIAL_OUT * Self.COL_SIZE)
-            var dw_tmp: UnsafePointer[Scalar[DT], MutAnyOrigin]
-            var go_b_T_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
+            var dw_tmp: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+            var go_b_T_buf: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
             comptime if (
                 CompilationTarget.is_macos() and DT == DType.float32
             ):
-                dw_tmp = UnsafePointer[Scalar[DT], MutAnyOrigin](
-                    unsafe_from_address=0
-                )
-                go_b_T_buf = UnsafePointer[Scalar[DT], MutAnyOrigin](
-                    unsafe_from_address=0
-                )
+                dw_tmp = None
+                go_b_T_buf = None
             else:
                 dw_tmp = alloc[Scalar[DT]](Self.W_SIZE)
                 go_b_T_buf = alloc[Scalar[DT]](
@@ -696,8 +690,9 @@ struct Conv2D[
                             Int32(Self.COL_SIZE),
                         )
                     else:
+                        var dw_tmp_p = dw_tmp.value()
                         var dw_tmp_tt = TileTensor(
-                            dw_tmp,
+                            dw_tmp_p,
                             row_major[Self.OC, Self.COL_SIZE](),
                         )
                         max_matmul[target="cpu"](
@@ -706,11 +701,11 @@ struct Conv2D[
                         var i = 0
                         while i + CPU_SIMD_W <= Self.W_SIZE:
                             var dwv = dw_p.load[width=CPU_SIMD_W](i)
-                            var tv = dw_tmp.load[width=CPU_SIMD_W](i)
+                            var tv = dw_tmp_p.load[width=CPU_SIMD_W](i)
                             dw_p.store(i, dwv + tv)
                             i += CPU_SIMD_W
                         while i < Self.W_SIZE:
-                            dw_p[i] = dw_p[i] + dw_tmp[i]
+                            dw_p[i] = dw_p[i] + dw_tmp_p[i]
                             i += 1
 
                 # ---- 4. d_col_b = d_out_b.T @ weight ------------------
@@ -751,13 +746,14 @@ struct Conv2D[
                 else:
                     # Build d_out_b.T into go_b_T_buf, then untransposed
                     # matmul. The temp is SPATIAL_OUT × OC.
+                    var go_b_T_buf_p = go_b_T_buf.value()
                     for s in range(Self.SPATIAL_OUT):
                         for oc in range(Self.OC):
-                            go_b_T_buf[s * Self.OC + oc] = go_b_p[
+                            go_b_T_buf_p[s * Self.OC + oc] = go_b_p[
                                 oc * Self.SPATIAL_OUT + s
                             ]
                     var go_b_T_tt = TileTensor(
-                        go_b_T_buf,
+                        go_b_T_buf_p,
                         row_major[Self.SPATIAL_OUT, Self.OC](),
                     )
                     var d_col_tt = TileTensor(
@@ -782,8 +778,8 @@ struct Conv2D[
             comptime if not (
                 CompilationTarget.is_macos() and DT == DType.float32
             ):
-                dw_tmp.free()
-                go_b_T_buf.free()
+                dw_tmp.value().free()
+                go_b_T_buf.value().free()
         else:
             var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 grad_output_v.ptr
@@ -791,7 +787,7 @@ struct Conv2D[
             var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 grad_input_v.ptr
             )
-            var x_p = self._cached_input_ptr
+            var x_p = self._cached_input_ptr.value()
             comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
             comptime out_layout = Layout.row_major(
                 BATCH, Self.OUT_DIM_FLAT

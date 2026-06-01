@@ -95,14 +95,14 @@ struct SingleCriticStep[
         )
 
         # PER hook (mirrors TwinCriticStep): forward IS weights + capture
-        # signed TD residuals when state.has_per is set. Null otherwise →
+        # signed TD residuals when state.has_per is set. None otherwise →
         # uniform path, bit-identical to pre-PER.
-        var weights_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        var td_res_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
+        var weights_p: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None
+        var td_res_p: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None
         if state.has_per:
             weights_p = state.mb_w.target_ptr[target]()
             td_res_p = state.td_residuals.target_ptr[target]()
