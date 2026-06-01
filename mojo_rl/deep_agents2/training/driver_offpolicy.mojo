@@ -866,11 +866,22 @@ def run_offpolicy_train_batched[
             if base_step + step_idx >= trainer.learning_starts_count():
                 var c = ctx.value()
 
-                def _captured_step() capturing raises -> None:
-                    trainer.train_device_kernels()
+                # Capture ALL `updates_per_step` device-kernel sequences into a
+                # SINGLE graph, replayed once per iteration — vs the old "one
+                # graph replay per update" (which made `cuGraphLaunch` =
+                # updates_per_step × iters, the dominant CPU/launch cost on
+                # NVIDIA). Each captured `train_device_kernels` advances the
+                # device RNG / Adam counters, so the replayed sequence draws a
+                # fresh minibatch per sub-update — identical correctness to
+                # single-update capture, just far fewer launches.
+                def _captured_updates() capturing raises -> None:
+                    for _ in range(updates_per_step):
+                        trainer.train_device_kernels()
 
+                maybe_capture_replay[_captured_updates](train_graph, c)
+                # Host bookkeeping advances once per logical update (the graph
+                # replays the device work; counters stay on the host).
                 for _ in range(updates_per_step):
-                    maybe_capture_replay[_captured_step](train_graph, c)
                     trainer.note_train_update()
         else:
             for _ in range(updates_per_step):

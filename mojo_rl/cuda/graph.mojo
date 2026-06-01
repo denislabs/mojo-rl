@@ -47,6 +47,11 @@ struct CUDAGraph(Movable):
     var _mojo_stream: _CUptr
     var _replay_stream: _CUptr
     var _lib: OwnedDLHandle
+    # Cached `intercept_graph_launch` pointer — resolved once in `__init__`
+    # instead of re-`dlsym`'d on every replay (replays happen tens of
+    # thousands of times per run). NVIDIA-only; uninit + never called on
+    # non-NVIDIA (the replay methods comptime-return there).
+    var _launch_fn: def (_CUptr, _CUptr) thin -> c_int
 
     def __init__(out self, ctx: DeviceContext) raises:
         """Initialize CUDA graph capture.
@@ -64,9 +69,16 @@ struct CUDAGraph(Movable):
         self._mojo_stream = _uninit[_CUptr]()
         self._replay_stream = _uninit[_CUptr]()
 
+        self._launch_fn = _uninit[def (_CUptr, _CUptr) thin -> c_int]()
+
         comptime if has_nvidia_gpu_accelerator():
             ctx.synchronize()
             self._lib = OwnedDLHandle("./mojo_rl/cuda/libcuda_intercept.so")
+
+            # Resolve the hot graph-launch symbol once (used by every replay).
+            self._launch_fn = self._lib.get_function[
+                def (_CUptr, _CUptr) thin -> c_int
+            ]("intercept_graph_launch")
 
             # Get Mojo's internal stream
             var get_stream = self._lib.get_function[def() thin -> _CUptr](
@@ -187,9 +199,7 @@ struct CUDAGraph(Movable):
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._lib.get_function[def(_CUptr, _CUptr) thin -> c_int](
-            "intercept_graph_launch"
-        )(self._exec, self._replay_stream)
+        _ = self._launch_fn(self._exec, self._replay_stream)
 
         _ = self._lib.get_function[def(_CUptr) thin -> c_int](
             "intercept_stream_synchronize"
@@ -204,9 +214,7 @@ struct CUDAGraph(Movable):
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._lib.get_function[def(_CUptr, _CUptr) thin -> c_int](
-            "intercept_graph_launch"
-        )(self._exec, self._replay_stream)
+        _ = self._launch_fn(self._exec, self._replay_stream)
 
     def replay_on_mojo_stream(self) raises:
         """Replay on Mojo's main stream (implicit ordering with other kernels).
@@ -226,9 +234,7 @@ struct CUDAGraph(Movable):
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._lib.get_function[def(_CUptr, _CUptr) thin -> c_int](
-            "intercept_graph_launch"
-        )(self._exec, self._mojo_stream)
+        _ = self._launch_fn(self._exec, self._mojo_stream)
 
     def sync(self) raises:
         """Synchronize the replay stream. No-op on non-NVIDIA."""
