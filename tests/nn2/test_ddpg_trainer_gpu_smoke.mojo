@@ -116,19 +116,32 @@ def test_ddpg_gpu_smoke() raises:
     var cl = m.critic_loss.to_f64()
     var nup = m.n_updates.to_f64()
     var tsteps = m.train_steps.to_f64()
+    var mq = m.mean_q.to_f64()
+    var mr = m.mean_reward.to_f64()
+    var mtgt = m.mean_target.to_f64()
     var mret = Float64(trainer.mean_return())
     print("  actor_loss  =", al)
     print("  critic_loss =", cl)
     print("  n_updates   =", nup)
     print("  train_steps =", tsteps)
+    print("  mean_q      =", mq)
+    print("  mean_target =", mtgt)
+    print("  mean_reward =", mr)
     print("  mean_ret(10)=", mret)
 
     _finite(al, "actor_loss")
     _finite(cl, "critic_loss")
+    _finite(mq, "mean_q")
+    _finite(mr, "mean_reward")
+    _finite(mtgt, "mean_target")
     _finite(mret, "mean_return")
     assert_true(nup > 0.0, "no training updates ran")
     assert_true(tsteps > 0.0, "no cumulative train steps recorded")
     assert_true(cl >= 0.0, "critic MSE loss should be >= 0")
+    # Device-diag fix: these read a hard 0.0 on GPU before the device
+    # reductions were wired. Pendulum reward is strictly negative.
+    assert_true(mr < 0.0, "mean_reward should be < 0 on Pendulum (device diag)")
+    assert_true(mq != 0.0, "mean_q is 0 on GPU (device accumulator unwired?)")
     print("PASS")
 
 

@@ -17,8 +17,11 @@ from the SAMPLE block + target-Y γ^n.
 
 from std.math import exp as fexp, log as flog
 from std.random import random_float64
+from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
+
+from mojo_rl.nn2.constants import TPB
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
@@ -44,12 +47,55 @@ from ..core.checkpoint_helpers import (
 )
 from ..core.online_target_pair import OnlineTargetPair
 from ..training.episode_tracker import EpisodeTracker
+from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy_discrete import OffPolicyDiscreteAgent
 from ..training.blocks import SampleBlock, SinglePolyakStep
 from .blocks.target_y_step import C51TargetYStep
 from .blocks.q_update_step import C51QUpdateStep
 from .metrics import C51Metrics
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GPU per-sample distributional diag kernel. One thread per batch row b:
+# softmax the taken-action logit row, then write the expected Q
+# (`eq = Σ p_k z_k`), the categorical entropy (`ent = −Σ p_k log p_k`), and
+# the target-distribution expected value (`tq = Σ m_k z_k`) into three
+# `[BATCH]` buffers. The trainer reduces those via `DeviceMeanAccum`. Mirrors
+# the CPU walk in `_train_step_impl` exactly (same max-shift softmax + 1e-12
+# entropy floor).
+# ──────────────────────────────────────────────────────────────────────────
+def _c51_diag_kernel[BATCH: Int, NK: Int](
+    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    m: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    z: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    eq_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ent_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    tq_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b >= BATCH:
+        return
+    var base = b * NK
+    var maxl = logits[base]
+    for k in range(1, NK):
+        if logits[base + k] > maxl:
+            maxl = logits[base + k]
+    var sum_exp: Scalar[DT] = 0.0
+    for k in range(NK):
+        sum_exp += fexp(logits[base + k] - maxl)
+    var eq: Scalar[DT] = 0.0
+    var ent: Scalar[DT] = 0.0
+    var tq: Scalar[DT] = 0.0
+    for k in range(NK):
+        var p = fexp(logits[base + k] - maxl) / sum_exp
+        eq += p * z[k]
+        if p > Scalar[DT](1e-12):
+            ent -= p * flog(p)
+        tq += m[base + k] * z[k]
+    eq_out[b] = eq
+    ent_out[b] = ent
+    tq_out[b] = tq
 
 
 struct C51Trainer[
@@ -120,6 +166,17 @@ struct C51Trainer[
     var _dist_entropy_accum: Scalar[DT]
     var _reward_accum: Scalar[DT]
     var _done_accum: Scalar[DT]
+    # GPU device-resident mirrors (CPU keeps the host scalars above). The
+    # distributional means are derived by `_c51_diag_kernel` into three
+    # `[BATCH]` device buffers, then reduced via these accumulators.
+    var _q_mean_dev: DeviceMeanAccum
+    var _target_mean_dev: DeviceMeanAccum
+    var _dist_entropy_mean_dev: DeviceMeanAccum
+    var _reward_mean_dev: DeviceMeanAccum
+    var _done_mean_dev: DeviceMeanAccum
+    var _diag_eq_dev: Optional[DeviceBuffer[DT]]
+    var _diag_ent_dev: Optional[DeviceBuffer[DT]]
+    var _diag_tq_dev: Optional[DeviceBuffer[DT]]
     var _update_count: Int
     # Never reset by `flush_*` — emitted as `train_steps` so the
     # downstream monitor can plot cumulative updates over time.
@@ -171,6 +228,14 @@ struct C51Trainer[
         self._dist_entropy_accum = Scalar[DT](0.0)
         self._reward_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
+        self._q_mean_dev = DeviceMeanAccum()
+        self._target_mean_dev = DeviceMeanAccum()
+        self._dist_entropy_mean_dev = DeviceMeanAccum()
+        self._reward_mean_dev = DeviceMeanAccum()
+        self._done_mean_dev = DeviceMeanAccum()
+        self._diag_eq_dev = None
+        self._diag_ent_dev = None
+        self._diag_tq_dev = None
         self._update_count = 0
         self._total_train_steps = 0
         self.timer = Timer.new()
@@ -252,6 +317,19 @@ struct C51Trainer[
         )
 
         init_scratch_auto[Self, target=Self.train_target](t, ctx)
+
+        comptime if Self.train_target == "gpu":
+            # Device-resident mean accumulators + per-sample diag scratch
+            # ([BATCH] eq/ent/tq buffers filled by `_c51_diag_kernel`).
+            var c = ctx.value()
+            t._q_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._target_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._dist_entropy_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._reward_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._done_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._diag_eq_dev = c.enqueue_create_buffer[DT](Self.BATCH)
+            t._diag_ent_dev = c.enqueue_create_buffer[DT](Self.BATCH)
+            t._diag_tq_dev = c.enqueue_create_buffer[DT](Self.BATCH)
 
         t.sample_blk.configure_per(
             alpha=per_alpha, beta=per_beta, epsilon=per_epsilon,
@@ -352,6 +430,32 @@ struct C51Trainer[
             self._dist_entropy_accum += sum_ent * inv_b
             self._reward_accum += sum_r * inv_b
             self._done_accum += sum_d * inv_b
+        else:
+            # `_c51_diag_kernel` derives per-sample expected-Q / entropy /
+            # target-Q on device; the three [BATCH] buffers are then folded
+            # into device-resident running means. reward/done are plain means.
+            var ctx_v = self.ctx.value()
+            var lg_ptr = self.q_update_blk.inner._logits_a.target_ptr["gpu"]()
+            var m_ptr = self._mb_m.target_ptr["gpu"]()
+            var z_ptr = self.target_y_blk.inner._z.target_ptr["gpu"]()
+            var eq_ptr = self._diag_eq_dev.value().unsafe_ptr()
+            var ent_ptr = self._diag_ent_dev.value().unsafe_ptr()
+            var tq_ptr = self._diag_tq_dev.value().unsafe_ptr()
+            comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
+            comptime diag_k = _c51_diag_kernel[Self.BATCH, Self.N_ATOMS]
+            ctx_v.enqueue_function[diag_k](
+                lg_ptr, m_ptr, z_ptr, eq_ptr, ent_ptr, tq_ptr,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
+            self._q_mean_dev.accumulate_gpu[Self.BATCH](eq_ptr)
+            self._target_mean_dev.accumulate_gpu[Self.BATCH](tq_ptr)
+            self._dist_entropy_mean_dev.accumulate_gpu[Self.BATCH](ent_ptr)
+            self._reward_mean_dev.accumulate_gpu[Self.BATCH](
+                self.state.mb_r.target_ptr["gpu"]()
+            )
+            self._done_mean_dev.accumulate_gpu[Self.BATCH](
+                self.state.mb_d.target_ptr["gpu"]()
+            )
         self.timer.accumulate(Self._T_DIAG, t_diag)
 
         self._update_count += 1
@@ -618,14 +722,33 @@ struct C51Trainer[
         `_total_train_steps` counter is NOT reset."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        # Distributional diag means: device-resident on GPU (derived by
+        # `_c51_diag_kernel`), host scalars on CPU.
+        var q_mean: Scalar[DT]
+        var target_mean: Scalar[DT]
+        var dist_entropy_mean: Scalar[DT]
+        var reward_mean: Scalar[DT]
+        var done_mean: Scalar[DT]
+        comptime if Self.train_target == "gpu":
+            q_mean = self._q_mean_dev.read["gpu"]()
+            target_mean = self._target_mean_dev.read["gpu"]()
+            dist_entropy_mean = self._dist_entropy_mean_dev.read["gpu"]()
+            reward_mean = self._reward_mean_dev.read["gpu"]()
+            done_mean = self._done_mean_dev.read["gpu"]()
+        else:
+            q_mean = self._q_accum * inv
+            target_mean = self._target_accum * inv
+            dist_entropy_mean = self._dist_entropy_accum * inv
+            reward_mean = self._reward_accum * inv
+            done_mean = self._done_accum * inv
         var bundle = C51Metrics(
             loss=LogScalar[DT](self._loss_accum * inv),
             epsilon=LogScalar[DT](self.epsilon),
-            mean_q=LogScalar[DT](self._q_accum * inv),
-            mean_target=LogScalar[DT](self._target_accum * inv),
-            dist_entropy=LogScalar[DT](self._dist_entropy_accum * inv),
-            mean_reward=LogScalar[DT](self._reward_accum * inv),
-            mean_done=LogScalar[DT](self._done_accum * inv),
+            mean_q=LogScalar[DT](q_mean),
+            mean_target=LogScalar[DT](target_mean),
+            dist_entropy=LogScalar[DT](dist_entropy_mean),
+            mean_reward=LogScalar[DT](reward_mean),
+            mean_done=LogScalar[DT](done_mean),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
@@ -635,6 +758,12 @@ struct C51Trainer[
         self._dist_entropy_accum = Scalar[DT](0.0)
         self._reward_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
+        comptime if Self.train_target == "gpu":
+            self._q_mean_dev.reset["gpu"]()
+            self._target_mean_dev.reset["gpu"]()
+            self._dist_entropy_mean_dev.reset["gpu"]()
+            self._reward_mean_dev.reset["gpu"]()
+            self._done_mean_dev.reset["gpu"]()
         self._update_count = 0
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)

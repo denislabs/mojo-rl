@@ -49,6 +49,7 @@ from ..core.checkpoint_helpers import (
 )
 from ..core.online_target_pair import OnlineTargetPair
 from ..training.episode_tracker import EpisodeTracker
+from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy_discrete import OffPolicyDiscreteAgent
 from ..training.blocks import SampleBlock, SinglePolyakStep
@@ -120,6 +121,12 @@ struct DQNTrainer[
     var _td_error_accum: Scalar[DT]
     var _reward_accum: Scalar[DT]
     var _done_accum: Scalar[DT]
+    # GPU device-resident mirrors (CPU keeps the host scalars above).
+    var _q_mean_dev: DeviceMeanAccum
+    var _target_mean_dev: DeviceMeanAccum
+    var _td_error_mean_dev: DeviceMeanAccum
+    var _reward_mean_dev: DeviceMeanAccum
+    var _done_mean_dev: DeviceMeanAccum
     var _update_count: Int
     # Never reset by `flush_*` — emitted as `train_steps` so the
     # downstream monitor can plot cumulative updates over time.
@@ -165,6 +172,11 @@ struct DQNTrainer[
         self._td_error_accum = Scalar[DT](0.0)
         self._reward_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
+        self._q_mean_dev = DeviceMeanAccum()
+        self._target_mean_dev = DeviceMeanAccum()
+        self._td_error_mean_dev = DeviceMeanAccum()
+        self._reward_mean_dev = DeviceMeanAccum()
+        self._done_mean_dev = DeviceMeanAccum()
         self._update_count = 0
         self._total_train_steps = 0
         self.timer = Timer.new()
@@ -241,6 +253,14 @@ struct DQNTrainer[
         )
 
         init_scratch_auto[Self, target=Self.train_target](t, ctx)
+
+        comptime if Self.train_target == "gpu":
+            # Device-resident mean accumulators for the GPU diag path.
+            t._q_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._target_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._td_error_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._reward_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._done_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
 
         # PER hyperparameter wiring: no-op default for uniform blocks.
         t.sample_blk.configure_per(
@@ -331,6 +351,18 @@ struct DQNTrainer[
             self._td_error_accum += sum_te * inv_b
             self._reward_accum += sum_r * inv_b
             self._done_accum += sum_d * inv_b
+        else:
+            var q_ptr = self.q_update_blk.inner._mb_q_gath.target_ptr["gpu"]()
+            var y_ptr = self.state.mb_y.target_ptr["gpu"]()
+            var r_ptr = self.state.mb_r.target_ptr["gpu"]()
+            var d_ptr = self.state.mb_d.target_ptr["gpu"]()
+            self._q_mean_dev.accumulate_gpu[Self.BATCH](q_ptr)
+            self._target_mean_dev.accumulate_gpu[Self.BATCH](y_ptr)
+            self._td_error_mean_dev.accumulate_gpu_abs_diff[Self.BATCH](
+                q_ptr, y_ptr
+            )
+            self._reward_mean_dev.accumulate_gpu[Self.BATCH](r_ptr)
+            self._done_mean_dev.accumulate_gpu[Self.BATCH](d_ptr)
         self.timer.accumulate(Self._T_DIAG, t_diag)
 
         self._update_count += 1
@@ -583,14 +615,33 @@ struct DQNTrainer[
         `_total_train_steps` counter is NOT reset."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        # Per-batch diag means: device-resident on GPU (folded in by
+        # `_train_step_impl`), host scalars on CPU.
+        var q_mean: Scalar[DT]
+        var target_mean: Scalar[DT]
+        var td_error_mean: Scalar[DT]
+        var reward_mean: Scalar[DT]
+        var done_mean: Scalar[DT]
+        comptime if Self.train_target == "gpu":
+            q_mean = self._q_mean_dev.read["gpu"]()
+            target_mean = self._target_mean_dev.read["gpu"]()
+            td_error_mean = self._td_error_mean_dev.read["gpu"]()
+            reward_mean = self._reward_mean_dev.read["gpu"]()
+            done_mean = self._done_mean_dev.read["gpu"]()
+        else:
+            q_mean = self._q_accum * inv
+            target_mean = self._target_accum * inv
+            td_error_mean = self._td_error_accum * inv
+            reward_mean = self._reward_accum * inv
+            done_mean = self._done_accum * inv
         var bundle = DQNMetrics(
             loss=LogScalar[DT](self._loss_accum * inv),
             epsilon=LogScalar[DT](self.epsilon),
-            mean_q=LogScalar[DT](self._q_accum * inv),
-            mean_target=LogScalar[DT](self._target_accum * inv),
-            mean_td_error=LogScalar[DT](self._td_error_accum * inv),
-            mean_reward=LogScalar[DT](self._reward_accum * inv),
-            mean_done=LogScalar[DT](self._done_accum * inv),
+            mean_q=LogScalar[DT](q_mean),
+            mean_target=LogScalar[DT](target_mean),
+            mean_td_error=LogScalar[DT](td_error_mean),
+            mean_reward=LogScalar[DT](reward_mean),
+            mean_done=LogScalar[DT](done_mean),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
@@ -601,6 +652,12 @@ struct DQNTrainer[
         self._reward_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
         self._update_count = 0
+        comptime if Self.train_target == "gpu":
+            self._q_mean_dev.reset["gpu"]()
+            self._target_mean_dev.reset["gpu"]()
+            self._td_error_mean_dev.reset["gpu"]()
+            self._reward_mean_dev.reset["gpu"]()
+            self._done_mean_dev.reset["gpu"]()
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^

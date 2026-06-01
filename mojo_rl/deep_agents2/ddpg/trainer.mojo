@@ -63,6 +63,7 @@ from mojo_rl.nn2.training.timer import Timer
 from ..training.action_sampling_block import ActionSamplingBlock
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.episode_tracker import EpisodeTracker
+from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
 from ..training.blocks import SampleBlock, SingleCriticStep
 from .blocks.target_y_step import DDPGTargetYStep
@@ -198,10 +199,15 @@ struct DDPGTrainer[
     # Never reset by `flush_*` — emitted as `train_steps`.
     var _total_train_steps: Int
 
-    # Per-batch diagnostic accumulators (CPU-only diag walk; GPU leaves 0).
+    # Per-batch diagnostic accumulators. CPU sums the host scratches; GPU
+    # folds the same `[BATCH]` device buffers into device-resident running
+    # means (no per-step D2H) read at flush.
     var _q_accum: Scalar[DT]
     var _target_accum: Scalar[DT]
     var _reward_accum: Scalar[DT]
+    var _q_mean_dev: DeviceMeanAccum
+    var _target_mean_dev: DeviceMeanAccum
+    var _reward_mean_dev: DeviceMeanAccum
 
     var timer: Timer
 
@@ -256,6 +262,9 @@ struct DDPGTrainer[
         self._q_accum = Scalar[DT](0.0)
         self._target_accum = Scalar[DT](0.0)
         self._reward_accum = Scalar[DT](0.0)
+        self._q_mean_dev = DeviceMeanAccum()
+        self._target_mean_dev = DeviceMeanAccum()
+        self._reward_mean_dev = DeviceMeanAccum()
         self.timer = Timer.new()
 
     @staticmethod
@@ -329,6 +338,12 @@ struct DDPGTrainer[
         ].make[Self.train_target](ctx=ctx)
 
         init_scratch_auto[Self, target=Self.train_target](t, ctx)
+
+        comptime if Self.train_target == "gpu":
+            # Device-resident mean accumulators for the GPU diag path.
+            t._q_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._target_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._reward_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
 
         t.action_scale = action_scale
         t.noise_scale = noise_scale
@@ -471,6 +486,21 @@ struct DDPGTrainer[
             self.critic_opt,
         )
         self.timer.accumulate(Self._T_CRITIC, t_crit)
+
+        # GPU diag — device-resident running means of Q(s, a), the TD target,
+        # and the batch reward (CPU sums the host scratches in
+        # `_train_step_impl`). `_mb_q` was just populated by the critic
+        # forward; `mb_y` / `mb_r` are the sampled target + reward. Stays
+        # on-device (capture-safe), read at `diag_every` flush.
+        comptime if Self.train_target == "gpu":
+            var t_diag_gpu = perf_counter_ns()
+            var q_ptr = self.critic_blk.inner._mb_q.target_ptr["gpu"]()
+            var y_ptr = self.state.mb_y.target_ptr["gpu"]()
+            var r_ptr = self.state.mb_r.target_ptr["gpu"]()
+            self._q_mean_dev.accumulate_gpu[Self.BATCH](q_ptr)
+            self._target_mean_dev.accumulate_gpu[Self.BATCH](y_ptr)
+            self._reward_mean_dev.accumulate_gpu[Self.BATCH](r_ptr)
+            self.timer.accumulate(Self._T_DIAG, t_diag_gpu)
 
         var t_act = perf_counter_ns()
         self.actor_blk.step[Self.train_target, POLICY](
@@ -725,23 +755,33 @@ struct DDPGTrainer[
     ) raises -> DDPGMetrics:
         """Drain accumulators into a DDPGMetrics bundle. On GPU the actor +
         critic losses are read from the on-device accumulators (no per-step
-        D2H); the per-batch diag means are CPU-only (0 on GPU)."""
+        D2H); the per-batch diag means are device-resident on GPU (Q / target
+        / reward reductions folded in by `_train_post_sample_kernels`)."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
         var actor_mean: Scalar[DT]
         var critic_mean: Scalar[DT]
+        var q_mean: Scalar[DT]
+        var target_mean: Scalar[DT]
+        var reward_mean: Scalar[DT]
         comptime if Self.train_target == "gpu":
             actor_mean = self.actor_blk.read_loss_accum()
             critic_mean = self.critic_blk.inner.mse_loss.read_accum["gpu"]()
+            q_mean = self._q_mean_dev.read["gpu"]()
+            target_mean = self._target_mean_dev.read["gpu"]()
+            reward_mean = self._reward_mean_dev.read["gpu"]()
         else:
             actor_mean = self._actor_L_accum * inv
             critic_mean = self._critic_L_accum * inv
+            q_mean = self._q_accum * inv
+            target_mean = self._target_accum * inv
+            reward_mean = self._reward_accum * inv
         var bundle = DDPGMetrics(
             actor_loss=LogScalar[DT](actor_mean),
             critic_loss=LogScalar[DT](critic_mean),
-            mean_q=LogScalar[DT](self._q_accum * inv),
-            mean_target=LogScalar[DT](self._target_accum * inv),
-            mean_reward=LogScalar[DT](self._reward_accum * inv),
+            mean_q=LogScalar[DT](q_mean),
+            mean_target=LogScalar[DT](target_mean),
+            mean_reward=LogScalar[DT](reward_mean),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
@@ -754,6 +794,9 @@ struct DDPGTrainer[
         comptime if Self.train_target == "gpu":
             self.critic_blk.inner.mse_loss.reset_accum["gpu"]()
             self.actor_blk.reset_loss_accum()
+            self._q_mean_dev.reset["gpu"]()
+            self._target_mean_dev.reset["gpu"]()
+            self._reward_mean_dev.reset["gpu"]()
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^

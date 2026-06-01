@@ -58,6 +58,7 @@ from mojo_rl.nn2.training.timer import Timer
 from ..training.action_sampling_block import ActionSamplingBlock
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.episode_tracker import EpisodeTracker
+from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
 from ..training.blocks import SampleBlock, TwinCriticStep
 from .blocks.target_y_step import TD3TargetYStep
@@ -188,6 +189,11 @@ struct TD3Trainer[
     var _target_accum: Scalar[DT]
     var _reward_accum: Scalar[DT]
     var _done_accum: Scalar[DT]
+    # GPU device-resident mirrors (CPU keeps the host scalars above).
+    var _q_mean_dev: DeviceMeanAccum
+    var _target_mean_dev: DeviceMeanAccum
+    var _reward_mean_dev: DeviceMeanAccum
+    var _done_mean_dev: DeviceMeanAccum
 
     var timer: Timer
 
@@ -239,6 +245,10 @@ struct TD3Trainer[
         self._target_accum = Scalar[DT](0.0)
         self._reward_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
+        self._q_mean_dev = DeviceMeanAccum()
+        self._target_mean_dev = DeviceMeanAccum()
+        self._reward_mean_dev = DeviceMeanAccum()
+        self._done_mean_dev = DeviceMeanAccum()
         self.timer = Timer.new()
 
     @staticmethod
@@ -323,6 +333,13 @@ struct TD3Trainer[
         ].make[Self.train_target](ctx=ctx)
 
         init_scratch_auto[Self, target=Self.train_target](t, ctx)
+
+        comptime if Self.train_target == "gpu":
+            # Device-resident mean accumulators for the GPU diag path.
+            t._q_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._target_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._reward_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._done_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
 
         t.action_scale = action_scale
         t.exploration_noise = exploration_noise
@@ -434,9 +451,10 @@ struct TD3Trainer[
         self._critic_L_accum += self.state.critic_loss
         self._critic_updates += 1
 
-        # Per-batch diagnostics — CPU-only walk (matches SAC/DDPG; GPU 0).
-        # `mean_q` reads twin_critic c1's Q1(s, a); target/reward/done read
-        # the minibatch scratches. On the critic cadence (fires every step).
+        # Per-batch diagnostics — `mean_q` reads twin_critic c1's Q1(s, a);
+        # target/reward/done read the minibatch scratches. Fires every step
+        # (critic cadence). CPU sums the host scratches; GPU folds the same
+        # `[BATCH]` device buffers into device-resident running means.
         var t_diag = perf_counter_ns()
         comptime if Self.train_target == "cpu":
             var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
@@ -457,6 +475,15 @@ struct TD3Trainer[
             self._target_accum += sum_y * inv_b
             self._reward_accum += sum_r * inv_b
             self._done_accum += sum_d * inv_b
+        else:
+            var q_ptr = self.twin_critic_blk.inner.c1._mb_q.target_ptr["gpu"]()
+            var y_ptr = self.state.mb_y.target_ptr["gpu"]()
+            var r_ptr = self.state.mb_r.target_ptr["gpu"]()
+            var d_ptr = self.state.mb_d.target_ptr["gpu"]()
+            self._q_mean_dev.accumulate_gpu[Self.BATCH](q_ptr)
+            self._target_mean_dev.accumulate_gpu[Self.BATCH](y_ptr)
+            self._reward_mean_dev.accumulate_gpu[Self.BATCH](r_ptr)
+            self._done_mean_dev.accumulate_gpu[Self.BATCH](d_ptr)
         self.timer.accumulate(Self._T_DIAG, t_diag)
 
         # TD3 actor + 3-pair polyak (gated by internal counter). Block reads
@@ -674,28 +701,41 @@ struct TD3Trainer[
     ) raises -> TD3Metrics:
         """Drain accumulators into a TD3Metrics bundle. On GPU the actor +
         critic losses are read from the on-device accumulators (no per-step
-        D2H); per-batch diag means are CPU-only (0 on GPU)."""
+        D2H); per-batch diag means are device-resident on GPU (Q / target /
+        reward / done reductions folded in each critic update)."""
         var na = self._actor_updates if self._actor_updates > 0 else 1
         var nc = self._critic_updates if self._critic_updates > 0 else 1
         var inv_a = Scalar[DT](1.0) / Scalar[DT](na)
         var inv_c = Scalar[DT](1.0) / Scalar[DT](nc)
         var actor_mean: Scalar[DT]
         var critic_mean: Scalar[DT]
+        var q_mean: Scalar[DT]
+        var target_mean: Scalar[DT]
+        var reward_mean: Scalar[DT]
+        var done_mean: Scalar[DT]
         comptime if Self.train_target == "gpu":
             actor_mean = self.actor_polyak_blk.read_loss_accum()
             var cl1 = self.twin_critic_blk.inner.c1.mse_loss.read_accum["gpu"]()
             var cl2 = self.twin_critic_blk.inner.c2.mse_loss.read_accum["gpu"]()
             critic_mean = cl1 + cl2
+            q_mean = self._q_mean_dev.read["gpu"]()
+            target_mean = self._target_mean_dev.read["gpu"]()
+            reward_mean = self._reward_mean_dev.read["gpu"]()
+            done_mean = self._done_mean_dev.read["gpu"]()
         else:
             actor_mean = self._actor_L_accum * inv_a
             critic_mean = self._critic_L_accum * inv_c
+            q_mean = self._q_accum * inv_c
+            target_mean = self._target_accum * inv_c
+            reward_mean = self._reward_accum * inv_c
+            done_mean = self._done_accum * inv_c
         var bundle = TD3Metrics(
             actor_loss=LogScalar[DT](actor_mean),
             critic_loss=LogScalar[DT](critic_mean),
-            mean_q=LogScalar[DT](self._q_accum * inv_c),
-            mean_target=LogScalar[DT](self._target_accum * inv_c),
-            mean_reward=LogScalar[DT](self._reward_accum * inv_c),
-            mean_done=LogScalar[DT](self._done_accum * inv_c),
+            mean_q=LogScalar[DT](q_mean),
+            mean_target=LogScalar[DT](target_mean),
+            mean_reward=LogScalar[DT](reward_mean),
+            mean_done=LogScalar[DT](done_mean),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_actor_updates=LogScalar[DT](Scalar[DT](self._actor_updates)),
             n_critic_updates=LogScalar[DT](Scalar[DT](self._critic_updates)),
@@ -712,6 +752,10 @@ struct TD3Trainer[
             self.twin_critic_blk.inner.c1.mse_loss.reset_accum["gpu"]()
             self.twin_critic_blk.inner.c2.mse_loss.reset_accum["gpu"]()
             self.actor_polyak_blk.reset_loss_accum()
+            self._q_mean_dev.reset["gpu"]()
+            self._target_mean_dev.reset["gpu"]()
+            self._reward_mean_dev.reset["gpu"]()
+            self._done_mean_dev.reset["gpu"]()
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^

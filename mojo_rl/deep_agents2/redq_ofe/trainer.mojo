@@ -89,6 +89,7 @@ from ..training.trainer_block import TrainerState
 from ..training.episode_tracker import EpisodeTracker
 from ..training.blocks.sample_block import SampleBlock
 from ..training.driver_offpolicy import OffPolicyAgent
+from mojo_rl.core.logger import Logger
 from ..sac.blocks.alpha_update_step import AlphaUpdateStep
 from ..redq.ensemble import CriticEnsemble
 from ..redq.blocks.ensemble_polyak_step import EnsemblePolyakStep
@@ -1017,6 +1018,31 @@ struct REDQOFETrainer[
         self._acc_n_updates = 0
         self._acc_n_actor_updates = 0
         return m^
+
+    def flush_metrics_through_logger[L: Logger](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        step: Int,
+    ) raises:
+        """Trait-uniform cadence hook (overrides the no-op default) so the
+        off-policy driver streams REDQ-OFE metrics at its `diag_every`
+        cadence. `REDQOFEMetrics` holds plain host scalars (not `LogScalar`),
+        so the fields are emitted explicitly rather than via `log_bundle`.
+        Values are correct on both CPU and GPU — the accumulators are filled
+        unconditionally in `train_step` (REDQ-OFE runs host control flow,
+        no CUDA-graph capture)."""
+        var m = self.flush_metrics()
+        if Bool(logger):
+            var lg = logger.value()
+            lg[].log_scalar("critic_loss", Float64(m.critic_loss), step)
+            lg[].log_scalar("actor_loss", Float64(m.actor_loss), step)
+            lg[].log_scalar("alpha", Float64(m.alpha), step)
+            lg[].log_scalar("log_prob_mean", Float64(m.log_prob_mean), step)
+            lg[].log_scalar("aux_loss", Float64(m.aux_loss), step)
+            lg[].log_scalar("n_updates", Float64(m.n_updates), step)
+            lg[].log_scalar(
+                "n_actor_updates", Float64(m.n_actor_updates), step
+            )
 
     # ──────────────────────────────────────────────────────────────────
     # OffPolicyAgent trait methods — batched action surface + per-lane

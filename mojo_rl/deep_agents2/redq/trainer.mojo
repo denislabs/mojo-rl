@@ -68,6 +68,7 @@ from mojo_rl.nn2.optimizer.scalar_adam import ScalarAdam
 from mojo_rl.nn2.training.timer import Timer
 
 from ..training.episode_tracker import EpisodeTracker
+from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy import OffPolicyAgent, OffPolicyAgentGpu
 from ..data.n_step_replay import GPUNStepBuffer
@@ -254,6 +255,12 @@ struct REDQTrainer[
     var _reward_accum: Scalar[DT]
     var _done_accum: Scalar[DT]
     var _abs_action_accum: Scalar[DT]
+    # GPU device-resident mirrors (CPU keeps the host scalars above).
+    var _q_mean_dev: DeviceMeanAccum
+    var _target_mean_dev: DeviceMeanAccum
+    var _reward_mean_dev: DeviceMeanAccum
+    var _done_mean_dev: DeviceMeanAccum
+    var _abs_action_mean_dev: DeviceMeanAccum
     var _update_count: Int  # inner steps this chunk
     var _actor_update_count: Int  # actor steps this chunk
     var _total_train_steps: Int  # cumulative inner steps (never reset)
@@ -341,6 +348,11 @@ struct REDQTrainer[
         self._reward_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
         self._abs_action_accum = Scalar[DT](0.0)
+        self._q_mean_dev = DeviceMeanAccum()
+        self._target_mean_dev = DeviceMeanAccum()
+        self._reward_mean_dev = DeviceMeanAccum()
+        self._done_mean_dev = DeviceMeanAccum()
+        self._abs_action_mean_dev = DeviceMeanAccum()
         self._update_count = 0
         self._actor_update_count = 0
         self._total_train_steps = 0
@@ -458,6 +470,14 @@ struct REDQTrainer[
 
         init_scratch_auto[Self, target=Self.train_target](t, ctx)
 
+        comptime if Self.train_target == "gpu":
+            # Device-resident mean accumulators for the GPU diag path.
+            t._q_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._target_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._reward_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._done_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._abs_action_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+
         t.action_scale = action_scale
         t.learning_starts = learning_starts
 
@@ -549,13 +569,13 @@ struct REDQTrainer[
             self._alpha_accum += fexp(self.alpha_opt.value)
             self._actor_update_count += 1
 
-        # Per-batch diagnostic accumulators. CPU walks the host
-        # scratches directly; GPU skips (matches SAC convention —
-        # `mean_q` / `mean_target` / `mean_reward` / `mean_done` /
-        # `mean_abs_action` stay 0.0 on GPU until a device-side diag
-        # walker is added).
+        # Per-batch diagnostic accumulators. CPU walks the host scratches
+        # directly; GPU folds the same `[BATCH]` device buffers into
+        # device-resident running means (no per-step D2H) read at flush.
         comptime if Self.train_target == "cpu":
             self._accumulate_diag()
+        else:
+            self._accumulate_diag_gpu()
 
         self._critic_L_accum += self.state.critic_loss
         self._update_count += 1
@@ -594,6 +614,25 @@ struct REDQTrainer[
         self._abs_action_accum += sum_a * (
             Scalar[DT](1.0) / Scalar[DT](Self.BATCH * Self.ACT_DIM)
         )
+        self.timer.accumulate(Self._T_DIAG, t_diag)
+
+    def _accumulate_diag_gpu(mut self) raises:
+        """GPU mirror of `_accumulate_diag`: device reductions of the same
+        batch scratches into device-resident running means. `mean_abs_action`
+        uses the abs-reduction over the `[BATCH*ACT_DIM]` action buffer."""
+        var t_diag = perf_counter_ns()
+        var q_ptr = self.critic_blk.member_step._mb_q.target_ptr["gpu"]()
+        var y_ptr = self.state.mb_y.target_ptr["gpu"]()
+        var r_ptr = self.state.mb_r.target_ptr["gpu"]()
+        var d_ptr = self.state.mb_d.target_ptr["gpu"]()
+        var a_ptr = self.state.mb_a.target_ptr["gpu"]()
+        self._q_mean_dev.accumulate_gpu[Self.BATCH](q_ptr)
+        self._target_mean_dev.accumulate_gpu[Self.BATCH](y_ptr)
+        self._reward_mean_dev.accumulate_gpu[Self.BATCH](r_ptr)
+        self._done_mean_dev.accumulate_gpu[Self.BATCH](d_ptr)
+        self._abs_action_mean_dev.accumulate_gpu_abs[
+            Self.BATCH * Self.ACT_DIM
+        ](a_ptr)
         self.timer.accumulate(Self._T_DIAG, t_diag)
 
     # ────────────────────────────────────────────────────────────────
@@ -959,16 +998,36 @@ struct REDQTrainer[
         var na = self._actor_update_count if self._actor_update_count > 0 else 1
         var inv_a = Scalar[DT](1.0) / Scalar[DT](na)
 
+        # Per-batch diag means: device-resident on GPU (folded in by
+        # `_accumulate_diag_gpu`), host scalars on CPU.
+        var q_mean: Scalar[DT]
+        var target_mean: Scalar[DT]
+        var reward_mean: Scalar[DT]
+        var done_mean: Scalar[DT]
+        var abs_action_mean: Scalar[DT]
+        comptime if Self.train_target == "gpu":
+            q_mean = self._q_mean_dev.read["gpu"]()
+            target_mean = self._target_mean_dev.read["gpu"]()
+            reward_mean = self._reward_mean_dev.read["gpu"]()
+            done_mean = self._done_mean_dev.read["gpu"]()
+            abs_action_mean = self._abs_action_mean_dev.read["gpu"]()
+        else:
+            q_mean = self._q_accum * inv
+            target_mean = self._target_accum * inv
+            reward_mean = self._reward_accum * inv
+            done_mean = self._done_accum * inv
+            abs_action_mean = self._abs_action_accum * inv
+
         var bundle = REDQMetrics(
             actor_loss=LogScalar[DT](self._actor_L_accum * inv_a),
             critic_loss=LogScalar[DT](self._critic_L_accum * inv),
             alpha=LogScalar[DT](self._alpha_accum * inv_a),
-            mean_q=LogScalar[DT](self._q_accum * inv),
-            mean_target=LogScalar[DT](self._target_accum * inv),
-            mean_reward=LogScalar[DT](self._reward_accum * inv),
+            mean_q=LogScalar[DT](q_mean),
+            mean_target=LogScalar[DT](target_mean),
+            mean_reward=LogScalar[DT](reward_mean),
             mean_next_q=LogScalar[DT](Scalar[DT](0.0)),
-            mean_done=LogScalar[DT](self._done_accum * inv),
-            mean_abs_action=LogScalar[DT](self._abs_action_accum * inv),
+            mean_done=LogScalar[DT](done_mean),
+            mean_abs_action=LogScalar[DT](abs_action_mean),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
@@ -982,6 +1041,12 @@ struct REDQTrainer[
         self._abs_action_accum = Scalar[DT](0.0)
         self._update_count = 0
         self._actor_update_count = 0
+        comptime if Self.train_target == "gpu":
+            self._q_mean_dev.reset["gpu"]()
+            self._target_mean_dev.reset["gpu"]()
+            self._reward_mean_dev.reset["gpu"]()
+            self._done_mean_dev.reset["gpu"]()
+            self._abs_action_mean_dev.reset["gpu"]()
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^

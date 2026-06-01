@@ -23,14 +23,17 @@ host-only; the K-epoch minibatch is H2D-uploaded into device-side
 mb_* scratches before each PPOActorTrainStep / PPOCriticTrainStep.
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu import global_idx, thread_idx
+from std.gpu.primitives import block
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.math import exp as fexp
 from std.memory import alloc
 from std.time import perf_counter_ns
 from layout import TileTensor, row_major
 
 from mojo_rl.core.logger import Logger, NoOpLogger
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB, TPB_REDUCE
+from ..training.device_mean_accum import DeviceMeanAccum
 from mojo_rl.nn2.core import Module
 from mojo_rl.nn2.core.checkpoint import (
     save_state_v2_body, load_state_v2_body,
@@ -66,6 +69,98 @@ comptime _DIAG_LOG_STD_MAX: Scalar[DT] = 2.0
 comptime _DIAG_LOG_PROB_DIFF_MAX: Scalar[DT] = 20.0
 comptime _DIAG_EPS_STD: Scalar[DT] = 1e-6
 comptime _DIAG_LOG_2PI: Scalar[DT] = 1.8378770664093453
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GPU diag kernels — mirror the CPU walk in `_accumulate_diag` exactly (same
+# clamps + Schulman-2020 KL + CleanRL explained variance).
+#
+# `_ppo_diag_per_sample_kernel`: one thread per minibatch row; recomputes the
+# new log-prob from the (post-update) actor output `ao = [μ, log σ]`, the
+# Gaussian entropy, the clamped ratio, and writes per-sample entropy / KL /
+# clip-indicator into three `[MB]` buffers (reduced to means by the trainer).
+# ──────────────────────────────────────────────────────────────────────────
+def _ppo_diag_per_sample_kernel[MB: Int, ACT: Int](
+    ao: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    act: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    olp: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    clip_eps: Scalar[DT],
+    ent_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    kl_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    clip_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b >= MB:
+        return
+    var nlp: Scalar[DT] = 0.0
+    var ent: Scalar[DT] = 0.0
+    for j in range(ACT):
+        var mu = ao[b * 2 * ACT + j]
+        var ls = ao[b * 2 * ACT + ACT + j]
+        if ls < _DIAG_LOG_STD_MIN:
+            ls = _DIAG_LOG_STD_MIN
+        elif ls > _DIAG_LOG_STD_MAX:
+            ls = _DIAG_LOG_STD_MAX
+        var std = fexp(ls)
+        var a = act[b * ACT + j]
+        var zz = (a - mu) / (std + _DIAG_EPS_STD)
+        nlp += Scalar[DT](-0.5) * (
+            _DIAG_LOG_2PI + Scalar[DT](2.0) * ls + zz * zz
+        )
+        ent += Scalar[DT](0.5) * (
+            _DIAG_LOG_2PI + Scalar[DT](1.0) + Scalar[DT](2.0) * ls
+        )
+    var diff = nlp - olp[b]
+    if diff > _DIAG_LOG_PROB_DIFF_MAX:
+        diff = _DIAG_LOG_PROB_DIFF_MAX
+    elif diff < -_DIAG_LOG_PROB_DIFF_MAX:
+        diff = -_DIAG_LOG_PROB_DIFF_MAX
+    var ratio = fexp(diff)
+    kl_out[b] = (ratio - Scalar[DT](1.0)) - diff
+    var dev = ratio - Scalar[DT](1.0)
+    if dev < Scalar[DT](0.0):
+        dev = -dev
+    clip_out[b] = Scalar[DT](1.0) if dev > clip_eps else Scalar[DT](0.0)
+    ent_out[b] = ent
+
+
+# `_ppo_ev_kernel`: single-block two-pass CleanRL explained variance over the
+# minibatch — `1 − Var(ret − v) / Var(ret)` (mean-centred), or 0 when
+# Var(ret) is ~0. Writes the scalar into `ev_out[0]`. Launch grid_dim=1,
+# block_dim=TPB_REDUCE.
+def _ppo_ev_kernel[MB: Int](
+    ret: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    v: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ev_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    var t = Int(thread_idx.x)
+    var s_ret: Scalar[DT] = 0.0
+    var s_res: Scalar[DT] = 0.0
+    var k = t
+    while k < MB:
+        s_ret += ret[k]
+        s_res += ret[k] - v[k]
+        k += TPB_REDUCE
+    var tot_ret = block.sum[block_size=TPB_REDUCE, broadcast=True](val=s_ret)
+    var tot_res = block.sum[block_size=TPB_REDUCE, broadcast=True](val=s_res)
+    var mean_ret = tot_ret[0] / Scalar[DT](MB)
+    var mean_res = tot_res[0] / Scalar[DT](MB)
+    var vr: Scalar[DT] = 0.0
+    var vs: Scalar[DT] = 0.0
+    k = t
+    while k < MB:
+        var dr = ret[k] - mean_ret
+        var rr = (ret[k] - v[k]) - mean_res
+        vr += dr * dr
+        vs += rr * rr
+        k += TPB_REDUCE
+    var var_ret = block.sum[block_size=TPB_REDUCE, broadcast=False](val=vr)
+    var var_res = block.sum[block_size=TPB_REDUCE, broadcast=False](val=vs)
+    if t == 0:
+        var ev: Scalar[DT] = 0.0
+        if var_ret[0] > Scalar[DT](1e-8):
+            ev = Scalar[DT](1.0) - var_res[0] / var_ret[0]
+        ev_out[0] = ev
 
 
 struct PPOTrainer[
@@ -155,6 +250,18 @@ struct PPOTrainer[
     var _ev_accum: Scalar[DT]
     # Host scratch for the diag actor forward (MINIBATCH * 2 * ACT_DIM).
     var _diag_ao: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    # GPU diag: device-resident mirrors + the device scratch the diag
+    # kernels read/write. The per-minibatch entropy / KL / clip means and the
+    # explained-variance scalar are reduced into these accumulators on GPU.
+    var _entropy_mean_dev: DeviceMeanAccum
+    var _kl_mean_dev: DeviceMeanAccum
+    var _clip_mean_dev: DeviceMeanAccum
+    var _ev_mean_dev: DeviceMeanAccum
+    var _diag_ao_dev: Optional[DeviceBuffer[DT]]
+    var _diag_ent_dev: Optional[DeviceBuffer[DT]]
+    var _diag_kl_dev: Optional[DeviceBuffer[DT]]
+    var _diag_clip_dev: Optional[DeviceBuffer[DT]]
+    var _diag_ev_dev: Optional[DeviceBuffer[DT]]
     var _update_count: Int
     # Never reset by `flush_*` — emitted as `train_steps` so the
     # downstream monitor can plot cumulative minibatch updates.
@@ -233,6 +340,15 @@ struct PPOTrainer[
         self._clip_accum = Scalar[DT](0.0)
         self._ev_accum = Scalar[DT](0.0)
         self._diag_ao = None
+        self._entropy_mean_dev = DeviceMeanAccum()
+        self._kl_mean_dev = DeviceMeanAccum()
+        self._clip_mean_dev = DeviceMeanAccum()
+        self._ev_mean_dev = DeviceMeanAccum()
+        self._diag_ao_dev = None
+        self._diag_ent_dev = None
+        self._diag_kl_dev = None
+        self._diag_clip_dev = None
+        self._diag_ev_dev = None
         self._update_count = 0
         self._total_train_steps = 0
         self.timer = Timer.new()
@@ -318,6 +434,24 @@ struct PPOTrainer[
             ep_returns_p[e] = Scalar[DT](0.0)
         t._ep_returns = ep_returns_p
         t._diag_ao = alloc[Scalar[DT]](Self.MINIBATCH * 2 * Self.ACT_DIM)
+
+        comptime if Self.train_target == "gpu":
+            # Device diag scratch + mean accumulators. `_diag_ao_dev` holds the
+            # recomputed post-update actor output; the per-sample kernel writes
+            # ent/kl/clip; the EV kernel writes a [1] scalar.
+            var c = ctx.value()
+            t._diag_ao_dev = c.enqueue_create_buffer[DT](
+                Self.MINIBATCH * 2 * Self.ACT_DIM
+            )
+            t._diag_ent_dev = c.enqueue_create_buffer[DT](Self.MINIBATCH)
+            t._diag_kl_dev = c.enqueue_create_buffer[DT](Self.MINIBATCH)
+            t._diag_clip_dev = c.enqueue_create_buffer[DT](Self.MINIBATCH)
+            t._diag_ev_dev = c.enqueue_create_buffer[DT](1)
+            t._entropy_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._kl_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._clip_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._ev_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+
         t.gamma = gamma
         t.gae_lambda = gae_lambda
         t.clip_eps = clip_eps
@@ -502,10 +636,12 @@ struct PPOTrainer[
                 self._critic_L_accum += cL
                 self._update_count += 1
                 self._total_train_steps += 1
+                var t_diag = perf_counter_ns()
                 comptime if Self.train_target == "cpu":
-                    var t_diag = perf_counter_ns()
                     self._accumulate_diag()
-                    self.timer.accumulate(Self._T_DIAG, t_diag)
+                else:
+                    self._accumulate_diag_gpu()
+                self.timer.accumulate(Self._T_DIAG, t_diag)
         self.timer.accumulate(Self._T_UPDATE, t_upd)
 
         # ── Reset rollout cursor + clear term buf.
@@ -598,6 +734,51 @@ struct PPOTrainer[
             ev = Scalar[DT](1.0) - var_res / var_ret
         self._ev_accum += ev
 
+    def _accumulate_diag_gpu(mut self) raises:
+        """GPU mirror of `_accumulate_diag`: re-run the (post-update) actor on
+        the current minibatch obs on device, then derive entropy / KL / clip /
+        explained-variance via the diag kernels and fold them into the
+        device-resident running means. No per-minibatch D2H — read at flush."""
+        comptime ACT = Self.ACT_DIM
+        comptime MB = Self.MINIBATCH
+        var ctx = self.ctx.value()
+
+        # Recompute the actor output on the gathered minibatch obs (device).
+        var obs_p = self.state.mb_obs.target_ptr["gpu"]()
+        var obs_t = TileTensor(obs_p, row_major[MB, Self.OBS_DIM]())
+        var ao_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._diag_ao_dev.value().unsafe_ptr()
+        )
+        var ao_t = TileTensor(ao_p, row_major[MB, 2 * ACT]())
+        self.actor.forward["gpu", MB](obs_t, output=ao_t)
+
+        var act_p = self.state.mb_act.target_ptr["gpu"]()
+        var olp_p = self.state.mb_olp.target_ptr["gpu"]()
+        var v_p = self.state.mb_v.target_ptr["gpu"]()
+        var ret_p = self.state.mb_ret.target_ptr["gpu"]()
+        var ent_p = self._diag_ent_dev.value().unsafe_ptr()
+        var kl_p = self._diag_kl_dev.value().unsafe_ptr()
+        var clip_p = self._diag_clip_dev.value().unsafe_ptr()
+        var ev_p = self._diag_ev_dev.value().unsafe_ptr()
+
+        comptime n_blocks = (MB + TPB - 1) // TPB
+        comptime per_k = _ppo_diag_per_sample_kernel[MB, ACT]
+        ctx.enqueue_function[per_k](
+            ao_p, act_p, olp_p, self.clip_eps,
+            ent_p, kl_p, clip_p,
+            grid_dim=n_blocks, block_dim=TPB,
+        )
+        self._entropy_mean_dev.accumulate_gpu[MB](ent_p)
+        self._kl_mean_dev.accumulate_gpu[MB](kl_p)
+        self._clip_mean_dev.accumulate_gpu[MB](clip_p)
+
+        comptime ev_k = _ppo_ev_kernel[MB]
+        ctx.enqueue_function[ev_k](
+            ret_p, v_p, ev_p, grid_dim=1, block_dim=TPB_REDUCE,
+        )
+        # The EV scalar lives in a [1] buffer; reducing it folds (ev, +1).
+        self._ev_mean_dev.accumulate_gpu[1](ev_p)
+
     def mean_return(self) -> Scalar[DT]:
         return self.tracker.mean_return()
 
@@ -648,15 +829,32 @@ struct PPOTrainer[
         `_total_train_steps` counter is NOT reset."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        # entropy / approx_kl / clip_fraction / explained_variance are
+        # device-resident on GPU (derived by `_accumulate_diag_gpu`), host
+        # scalars on CPU.
+        var entropy_mean: Scalar[DT]
+        var kl_mean: Scalar[DT]
+        var clip_mean: Scalar[DT]
+        var ev_mean: Scalar[DT]
+        comptime if Self.train_target == "gpu":
+            entropy_mean = self._entropy_mean_dev.read["gpu"]()
+            kl_mean = self._kl_mean_dev.read["gpu"]()
+            clip_mean = self._clip_mean_dev.read["gpu"]()
+            ev_mean = self._ev_mean_dev.read["gpu"]()
+        else:
+            entropy_mean = self._entropy_accum * inv
+            kl_mean = self._kl_accum * inv
+            clip_mean = self._clip_accum * inv
+            ev_mean = self._ev_accum * inv
         var bundle = PPOMetrics(
             actor_loss=LogScalar[DT](self._actor_L_accum * inv),
             critic_loss=LogScalar[DT](self._critic_L_accum * inv),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
-            entropy=LogScalar[DT](self._entropy_accum * inv),
-            approx_kl=LogScalar[DT](self._kl_accum * inv),
-            clip_fraction=LogScalar[DT](self._clip_accum * inv),
-            explained_variance=LogScalar[DT](self._ev_accum * inv),
+            entropy=LogScalar[DT](entropy_mean),
+            approx_kl=LogScalar[DT](kl_mean),
+            clip_fraction=LogScalar[DT](clip_mean),
+            explained_variance=LogScalar[DT](ev_mean),
         )
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
@@ -665,6 +863,11 @@ struct PPOTrainer[
         self._clip_accum = Scalar[DT](0.0)
         self._ev_accum = Scalar[DT](0.0)
         self._update_count = 0
+        comptime if Self.train_target == "gpu":
+            self._entropy_mean_dev.reset["gpu"]()
+            self._kl_mean_dev.reset["gpu"]()
+            self._clip_mean_dev.reset["gpu"]()
+            self._ev_mean_dev.reset["gpu"]()
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^

@@ -49,6 +49,45 @@ def _mean_reduce_add_kernel[N: Int](
         acc[1] = acc[1] + Scalar[DT](1.0)
 
 
+def _mean_abs_reduce_add_kernel[N: Int](
+    data: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """Same as `_mean_reduce_add_kernel` but reduces `mean(|data[k]|)`. Used
+    for `mean_abs_action` (sum of absolute action components / N)."""
+    var t = Int(thread_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    var k = t
+    while k < N:
+        var v = data[k]
+        my_sum += v if v >= Scalar[DT](0.0) else -v
+        k += TPB_REDUCE
+    var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
+    if t == 0:
+        acc[0] = acc[0] + total[0] / Scalar[DT](N)
+        acc[1] = acc[1] + Scalar[DT](1.0)
+
+
+def _mean_abs_diff_reduce_add_kernel[N: Int](
+    a: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    b: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """Reduces `mean(|a[k] - b[k]|)` over `[N]`. Used for `mean_td_error`
+    (the Bellman residual magnitude |Q − y|)."""
+    var t = Int(thread_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    var k = t
+    while k < N:
+        var d = a[k] - b[k]
+        my_sum += d if d >= Scalar[DT](0.0) else -d
+        k += TPB_REDUCE
+    var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
+    if t == 0:
+        acc[0] = acc[0] + total[0] / Scalar[DT](N)
+        acc[1] = acc[1] + Scalar[DT](1.0)
+
+
 struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDestructible):
     """Running mean of a `[N]` buffer over a flush window.
 
@@ -97,6 +136,37 @@ struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDestructible):
         comptime red_k = _mean_reduce_add_kernel[N]
         ctx.enqueue_function[red_k](
             data_ptr,
+            self.acc_dev.value().unsafe_ptr(),
+            grid_dim=1,
+            block_dim=TPB_REDUCE,
+        )
+
+    def accumulate_gpu_abs[N: Int](
+        mut self,
+        data_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """Like `accumulate_gpu` but folds `mean(|data[k]|)` (for
+        `mean_abs_action`)."""
+        var ctx = self.ctx.value()
+        comptime red_k = _mean_abs_reduce_add_kernel[N]
+        ctx.enqueue_function[red_k](
+            data_ptr,
+            self.acc_dev.value().unsafe_ptr(),
+            grid_dim=1,
+            block_dim=TPB_REDUCE,
+        )
+
+    def accumulate_gpu_abs_diff[N: Int](
+        mut self,
+        a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        b_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """Folds `mean(|a[k] - b[k]|)` (for `mean_td_error`)."""
+        var ctx = self.ctx.value()
+        comptime red_k = _mean_abs_diff_reduce_add_kernel[N]
+        ctx.enqueue_function[red_k](
+            a_ptr,
+            b_ptr,
             self.acc_dev.value().unsafe_ptr(),
             grid_dim=1,
             block_dim=TPB_REDUCE,
