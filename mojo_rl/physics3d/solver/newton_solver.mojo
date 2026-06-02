@@ -160,7 +160,7 @@ comptime MINVAL: Float64 = 1e-10
 # NV (Humanoid, NV=23) where the O(NV^3) factor dominates the per-iteration cost;
 # set False to keep the tid-0 factor (the 5b oracle). See
 # docs/PHYSICS3D_BLOCKED_SOLVER.md (section 5d).
-comptime SOLVE_COOP_NEWTON: Bool = True
+comptime SOLVE_COOP_NEWTON: Bool = False
 
 
 @no_inline
@@ -471,6 +471,58 @@ def _build_hessian[
                         * constraints.J[r * NV + i]
                         * constraints.J[r * NV + j]
                     )
+
+
+@no_inline
+def matvec_mv_jve_coop[
+    DTYPE: DType,
+    NV: Int,
+    V_SIZE: Int,
+    M_SIZE: Int,
+    ME: Int,
+](
+    tid: Int,
+    n_threads: Int,
+    num_edges: Int,
+    M_sh: LayoutTensor[
+        DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    Je_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME * V_SIZE), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    search_sh: LayoutTensor[
+        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    Mv_sh: LayoutTensor[
+        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    Jv_e_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+):
+    """Cooperative Mv = M·search and Jv_e = Je·search (5d.2). One output element
+    per thread, inner sum ascending → bit-identical to the serial matvecs.
+    @no_inline keeps it out of the giant solve_gpu_blocked kernel. Caller
+    barriers before (search_sh published) and after (results consumed)."""
+    for i in range(tid, NV, n_threads):
+        var s: Scalar[DTYPE] = 0
+        for j in range(NV):
+            s += rebind[Scalar[DTYPE]](M_sh[i * NV + j]) * rebind[
+                Scalar[DTYPE]
+            ](search_sh[j])
+        Mv_sh[i] = s
+    for e in range(tid, num_edges, n_threads):
+        var s: Scalar[DTYPE] = 0
+        for i in range(NV):
+            s += rebind[Scalar[DTYPE]](Je_sh[e * NV + i]) * rebind[
+                Scalar[DTYPE]
+            ](search_sh[i])
+        Jv_e_sh[e] = s
 
 
 struct NewtonSolver(ConstraintSolver):
@@ -2926,6 +2978,25 @@ struct NewtonSolver(ConstraintSolver):
             MutAnyOrigin,
             address_space=AddressSpace.SHARED,
         ].stack_allocation()
+        # 5d.2: cooperative matvecs publish search and read back Mv / Jv_e here.
+        var search_sh = LayoutTensor[
+            DTYPE,
+            Layout.row_major(V_SIZE),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+        var Mv_sh = LayoutTensor[
+            DTYPE,
+            Layout.row_major(V_SIZE),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+        var Jv_e_sh = LayoutTensor[
+            DTYPE,
+            Layout.row_major(ME),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
         # Scalar shared state: [0]=num_edges, [1]=done flag, [2]=Cholesky
         # rank-deficient flag (5d.1).
         var ctrl_sh = LayoutTensor[
@@ -2978,6 +3049,7 @@ struct NewtonSolver(ConstraintSolver):
         var grad = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         var search = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         var Mv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var Jv_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
         var qfrc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         var scale: Scalar[DTYPE] = 0
         var num_edges = 0
@@ -3327,24 +3399,54 @@ struct NewtonSolver(ConstraintSolver):
                 for i in range(NV):
                     search[i] = -search[i]
 
-                # Mv = M * search
-                for i in range(NV):
-                    Mv[i] = Scalar[DTYPE](0)
-                    for j in range(NV):
-                        Mv[i] += (
-                            rebind[Scalar[DTYPE]](M_sh[i * NV + j]) * search[j]
-                        )
-
-                # Precompute Jv_e = Je · search per edge
-                var Jv_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
-                for e_idx in range(num_edges_b):
-                    Jv_e[e_idx] = Scalar[DTYPE](0)
+                comptime if SOLVE_COOP_NEWTON:
+                    # Publish search; Mv/Jv_e computed cooperatively below.
                     for i in range(NV):
-                        Jv_e[e_idx] += (
-                            rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i])
-                            * search[i]
-                        )
+                        search_sh[i] = search[i]
+                else:
+                    # Mv = M * search (oracle, tid 0)
+                    for i in range(NV):
+                        Mv[i] = Scalar[DTYPE](0)
+                        for j in range(NV):
+                            Mv[i] += (
+                                rebind[Scalar[DTYPE]](M_sh[i * NV + j])
+                                * search[j]
+                            )
+                    # Jv_e = Je · search per edge (oracle, tid 0)
+                    for e_idx in range(num_edges_b):
+                        Jv_e[e_idx] = Scalar[DTYPE](0)
+                        for i in range(NV):
+                            Jv_e[e_idx] += (
+                                rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i])
+                                * search[i]
+                            )
 
+            # --- 5d.2: cooperative Mv = M·search and Jv_e = Je·search across the
+            # block threads (one output element per thread, ascending inner sum
+            # → bit-identical). @no_inline helper keeps it out of this kernel.
+            # tid 0 reads the shared results back into its local Mv / Jv_e so the
+            # downstream line-search code below is unchanged. ---
+            comptime if SOLVE_COOP_NEWTON:
+                barrier()
+                matvec_mv_jve_coop[DTYPE, NV, V_SIZE, M_SIZE, ME](
+                    tid,
+                    THREADS,
+                    num_edges_b,
+                    M_sh,
+                    Je_sh,
+                    search_sh,
+                    Mv_sh,
+                    Jv_e_sh,
+                )
+                barrier()
+                if valid_env and tid == 0:
+                    for i in range(NV):
+                        Mv[i] = rebind[Scalar[DTYPE]](Mv_sh[i])
+                    for e_idx in range(num_edges_b):
+                        Jv_e[e_idx] = rebind[Scalar[DTYPE]](Jv_e_sh[e_idx])
+
+            # --- Thread 0: gauss / p0 / line search / update / cost ---
+            if valid_env and tid == 0:
                 var gauss_a: Scalar[DTYPE] = 0
                 var gauss_b: Scalar[DTYPE] = 0
                 for i in range(NV):
