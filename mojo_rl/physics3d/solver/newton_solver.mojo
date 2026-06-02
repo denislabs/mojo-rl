@@ -162,6 +162,13 @@ comptime MINVAL: Float64 = 1e-10
 # docs/PHYSICS3D_BLOCKED_SOLVER.md (section 5d).
 comptime SOLVE_COOP_NEWTON: Bool = True
 
+# 5d.3 sub-gate: when True, the jar/force/qfrc recompute is also cooperative
+# (parallel two-phase, bit-identical). Default False so the recompute stays
+# serial on tid 0 while 5d.1/5d.2 (SOLVE_COOP_NEWTON) remain active — keeps the
+# branch building until 5d.3 is compile/parity-validated. See
+# docs/PHYSICS3D_BLOCKED_SOLVER.md (section 5d).
+comptime SOLVE_COOP_RECOMPUTE: Bool = False
+
 
 @no_inline
 def chol_factor_coop_gpu[
@@ -533,6 +540,72 @@ def matvec_mv_jve_coop[
                 Scalar[DTYPE]
             ](search_sh[i])
         Jv_e_sh[e] = s
+
+
+@no_inline
+def recompute_jfq_coop[
+    DTYPE: DType,
+    NV: Int,
+    V_SIZE: Int,
+    ME: Int,
+](
+    tid: Int,
+    n_threads: Int,
+    num_edges: Int,
+    Je_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME * V_SIZE), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    De_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    bias_e_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    qacc_sh: LayoutTensor[
+        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    jar_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    force_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    qfrc_sh: LayoutTensor[
+        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+):
+    """Cooperative jar/force/qfrc recompute (5d.3). Two phases, both
+    one-output-element-per-thread with ascending inner sums → bit-identical to
+    the serial recompute. Phase A (per edge): jar[e] = bias[e] + Je[e]·qacc,
+    force[e] = relu. Phase B (per dof): qfrc[i] = Σ_e Je[e,i]·force[e]. A
+    block-wide barrier separates them (B reads force from A). @no_inline keeps it
+    out of the giant solve_gpu_blocked kernel."""
+    for e in range(tid, num_edges, n_threads):
+        var j = rebind[Scalar[DTYPE]](bias_e_sh[e])
+        for i in range(NV):
+            j += rebind[Scalar[DTYPE]](Je_sh[e * NV + i]) * rebind[
+                Scalar[DTYPE]
+            ](qacc_sh[i])
+        jar_sh[e] = j
+        if j >= Scalar[DTYPE](0):
+            force_sh[e] = Scalar[DTYPE](0)
+        else:
+            force_sh[e] = -rebind[Scalar[DTYPE]](De_sh[e]) * j
+    barrier()
+    for i in range(tid, NV, n_threads):
+        var q: Scalar[DTYPE] = 0
+        for e in range(num_edges):
+            q += rebind[Scalar[DTYPE]](Je_sh[e * NV + i]) * rebind[
+                Scalar[DTYPE]
+            ](force_sh[e])
+        qfrc_sh[i] = q
 
 
 struct NewtonSolver(ConstraintSolver):
@@ -3007,6 +3080,26 @@ struct NewtonSolver(ConstraintSolver):
             MutAnyOrigin,
             address_space=AddressSpace.SHARED,
         ].stack_allocation()
+        # 5d.3: cooperative jar/force/qfrc recompute publishes qacc and reads
+        # back jar / qfrc here (force_sh above is reused).
+        var qacc_sh = LayoutTensor[
+            DTYPE,
+            Layout.row_major(V_SIZE),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+        var jar_sh = LayoutTensor[
+            DTYPE,
+            Layout.row_major(ME),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+        var qfrc_sh = LayoutTensor[
+            DTYPE,
+            Layout.row_major(V_SIZE),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
         # Scalar shared state: [0]=num_edges, [1]=done flag, [2]=Cholesky
         # rank-deficient flag (5d.1).
         var ctrl_sh = LayoutTensor[
@@ -3061,6 +3154,14 @@ struct NewtonSolver(ConstraintSolver):
         var Mv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         var Jv_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
         var qfrc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        # 5d.3: hoisted to kernel scope so the (split) accept/revert logic can
+        # read them across the cooperative-recompute parallel section.
+        var old_qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var old_Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var old_jar = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+        var old_force = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+        var old_qfrc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var old_cost: Scalar[DTYPE] = 0
         var scale: Scalar[DTYPE] = 0
         var num_edges = 0
 
@@ -3528,22 +3629,8 @@ struct NewtonSolver(ConstraintSolver):
                 else:
                     ctrl_sh[1] = Scalar[DTYPE](0)
 
-                    # Save old state for revert
-                    var old_qacc = InlineArray[Scalar[DTYPE], V_SIZE](
-                        uninitialized=True
-                    )
-                    var old_Ma = InlineArray[Scalar[DTYPE], V_SIZE](
-                        uninitialized=True
-                    )
-                    var old_jar = InlineArray[Scalar[DTYPE], ME](
-                        uninitialized=True
-                    )
-                    var old_force = InlineArray[Scalar[DTYPE], ME](
-                        uninitialized=True
-                    )
-                    var old_qfrc = InlineArray[Scalar[DTYPE], V_SIZE](
-                        uninitialized=True
-                    )
+                    # Save old state for revert (hoisted to kernel scope so the
+                    # split coop accept/revert below can still read them).
                     for i in range(NV):
                         old_qacc[i] = qacc[i]
                         old_Ma[i] = Ma[i]
@@ -3554,7 +3641,7 @@ struct NewtonSolver(ConstraintSolver):
                             force_sh[e_idx]
                         )
 
-                    var old_cost: Scalar[DTYPE] = 0
+                    old_cost = Scalar[DTYPE](0)
                     for i in range(NV):
                         old_cost += (
                             Scalar[DTYPE](0.5)
@@ -3574,62 +3661,132 @@ struct NewtonSolver(ConstraintSolver):
                         qacc[i] += alpha * search[i]
                         Ma[i] += alpha * Mv[i]
 
-                    for i in range(NV):
-                        qfrc[i] = Scalar[DTYPE](0)
-                    for e_idx in range(num_edges_b):
-                        jar[e_idx] = rebind[Scalar[DTYPE]](bias_e_sh[e_idx])
+                    comptime if not SOLVE_COOP_RECOMPUTE:
+                        # Serial recompute + accept/revert (tid 0). Runs whenever
+                        # 5d.3 is off (independent of SOLVE_COOP_NEWTON).
                         for i in range(NV):
-                            jar[e_idx] += (
-                                rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i])
-                                * qacc[i]
+                            qfrc[i] = Scalar[DTYPE](0)
+                        for e_idx in range(num_edges_b):
+                            jar[e_idx] = rebind[Scalar[DTYPE]](
+                                bias_e_sh[e_idx]
                             )
-                        var f_e: Scalar[DTYPE]
-                        if jar[e_idx] >= Scalar[DTYPE](0):
-                            f_e = Scalar[DTYPE](0)
-                        else:
-                            f_e = (
-                                -rebind[Scalar[DTYPE]](De_sh[e_idx])
-                                * jar[e_idx]
-                            )
-                        force_sh[e_idx] = f_e
-                        for i in range(NV):
-                            qfrc[i] += (
-                                rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i])
-                                * f_e
-                            )
+                            for i in range(NV):
+                                jar[e_idx] += (
+                                    rebind[Scalar[DTYPE]](
+                                        Je_sh[e_idx * NV + i]
+                                    )
+                                    * qacc[i]
+                                )
+                            var f_e: Scalar[DTYPE]
+                            if jar[e_idx] >= Scalar[DTYPE](0):
+                                f_e = Scalar[DTYPE](0)
+                            else:
+                                f_e = (
+                                    -rebind[Scalar[DTYPE]](De_sh[e_idx])
+                                    * jar[e_idx]
+                                )
+                            force_sh[e_idx] = f_e
+                            for i in range(NV):
+                                qfrc[i] += (
+                                    rebind[Scalar[DTYPE]](
+                                        Je_sh[e_idx * NV + i]
+                                    )
+                                    * f_e
+                                )
 
-                    var new_cost: Scalar[DTYPE] = 0
-                    for i in range(NV):
-                        new_cost += (
-                            Scalar[DTYPE](0.5)
-                            * (Ma[i] - f_smooth[i])
-                            * (qacc[i] - qacc_smooth[i])
-                        )
-                    for e_idx in range(num_edges_b):
-                        if jar[e_idx] < Scalar[DTYPE](0):
+                        var new_cost: Scalar[DTYPE] = 0
+                        for i in range(NV):
                             new_cost += (
                                 Scalar[DTYPE](0.5)
-                                * rebind[Scalar[DTYPE]](De_sh[e_idx])
-                                * jar[e_idx]
-                                * jar[e_idx]
+                                * (Ma[i] - f_smooth[i])
+                                * (qacc[i] - qacc_smooth[i])
                             )
+                        for e_idx in range(num_edges_b):
+                            if jar[e_idx] < Scalar[DTYPE](0):
+                                new_cost += (
+                                    Scalar[DTYPE](0.5)
+                                    * rebind[Scalar[DTYPE]](De_sh[e_idx])
+                                    * jar[e_idx]
+                                    * jar[e_idx]
+                                )
 
-                    var improvement = scale * (old_cost - new_cost)
-                    if (
-                        improvement < Scalar[DTYPE](NEWTON_TOL_GPU)
-                        and iter_n > 0
-                    ):
-                        if improvement < Scalar[DTYPE](0):
-                            for i in range(NV):
-                                qacc[i] = old_qacc[i]
-                                Ma[i] = old_Ma[i]
-                                qfrc[i] = old_qfrc[i]
-                            for e_idx in range(num_edges_b):
-                                jar[e_idx] = old_jar[e_idx]
-                                force_sh[e_idx] = old_force[e_idx]
-                        ctrl_sh[1] = Scalar[DTYPE](1)  # done
+                        var improvement = scale * (old_cost - new_cost)
+                        if (
+                            improvement < Scalar[DTYPE](NEWTON_TOL_GPU)
+                            and iter_n > 0
+                        ):
+                            if improvement < Scalar[DTYPE](0):
+                                for i in range(NV):
+                                    qacc[i] = old_qacc[i]
+                                    Ma[i] = old_Ma[i]
+                                    qfrc[i] = old_qfrc[i]
+                                for e_idx in range(num_edges_b):
+                                    jar[e_idx] = old_jar[e_idx]
+                                    force_sh[e_idx] = old_force[e_idx]
+                            ctrl_sh[1] = Scalar[DTYPE](1)  # done
 
-            # force_sh updated by thread 0; make visible for next assembly.
+                comptime if SOLVE_COOP_RECOMPUTE:
+                    # 5d.3: publish qacc unconditionally. When alpha<1e-10 qacc is
+                    # unchanged, so the cooperative recompute reproduces identical
+                    # jar/force/qfrc (bit-identical to the serial "no recompute").
+                    for i in range(NV):
+                        qacc_sh[i] = qacc[i]
+
+            # 5d.3: cooperative jar/force/qfrc recompute (bit-identical), then
+            # tid 0 reads back jar/qfrc and finishes the accept/revert.
+            comptime if SOLVE_COOP_RECOMPUTE:
+                barrier()
+                recompute_jfq_coop[DTYPE, NV, V_SIZE, ME](
+                    tid,
+                    THREADS,
+                    num_edges_b,
+                    Je_sh,
+                    De_sh,
+                    bias_e_sh,
+                    qacc_sh,
+                    jar_sh,
+                    force_sh,
+                    qfrc_sh,
+                )
+                barrier()
+                if valid_env and tid == 0:
+                    for e_idx in range(num_edges_b):
+                        jar[e_idx] = rebind[Scalar[DTYPE]](jar_sh[e_idx])
+                    for i in range(NV):
+                        qfrc[i] = rebind[Scalar[DTYPE]](qfrc_sh[i])
+                    if Int(rebind[Scalar[DTYPE]](ctrl_sh[1])) == 0:
+                        var new_cost: Scalar[DTYPE] = 0
+                        for i in range(NV):
+                            new_cost += (
+                                Scalar[DTYPE](0.5)
+                                * (Ma[i] - f_smooth[i])
+                                * (qacc[i] - qacc_smooth[i])
+                            )
+                        for e_idx in range(num_edges_b):
+                            if jar[e_idx] < Scalar[DTYPE](0):
+                                new_cost += (
+                                    Scalar[DTYPE](0.5)
+                                    * rebind[Scalar[DTYPE]](De_sh[e_idx])
+                                    * jar[e_idx]
+                                    * jar[e_idx]
+                                )
+
+                        var improvement = scale * (old_cost - new_cost)
+                        if (
+                            improvement < Scalar[DTYPE](NEWTON_TOL_GPU)
+                            and iter_n > 0
+                        ):
+                            if improvement < Scalar[DTYPE](0):
+                                for i in range(NV):
+                                    qacc[i] = old_qacc[i]
+                                    Ma[i] = old_Ma[i]
+                                    qfrc[i] = old_qfrc[i]
+                                for e_idx in range(num_edges_b):
+                                    jar[e_idx] = old_jar[e_idx]
+                                    force_sh[e_idx] = old_force[e_idx]
+                            ctrl_sh[1] = Scalar[DTYPE](1)  # done
+
+            # force_sh updated; make visible for next assembly.
             barrier()
             if Int(rebind[Scalar[DTYPE]](ctrl_sh[1])) == 1:
                 break
