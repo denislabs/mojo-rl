@@ -2195,6 +2195,71 @@ def compute_M_inv_from_ldl_gpu[
             workspace[env, M_inv_idx + i * NV + j] = col[i]
 
 
+@always_inline
+def compute_M_inv_from_ldl_gpu_mt[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    tid: Int,
+    n_threads: Int,
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+):
+    """Multi-threaded dense M^-1 from LDL factors. Each column j of M^-1 is an
+    independent triangular solve, so thread `tid` handles columns
+    j where j % n_threads == tid. Bit-identical to compute_M_inv_from_ldl_gpu
+    (same per-column arithmetic). Caller must barrier() before (LDL factors
+    ready) and after (all columns written). Uses the idle STEP_THREADS threads
+    in the RK4 stage kernel instead of computing all NV columns on tid 0.
+    """
+    from ..gpu.constants import ws_L_offset, ws_D_offset, ws_m_inv_offset
+
+    comptime L_idx = ws_L_offset[NV, NBODY]()
+    comptime D_idx = ws_D_offset[NV, NBODY]()
+    comptime M_inv_idx = ws_m_inv_offset[NV, NBODY]()
+
+    comptime V_SIZE = _ensure_positive[NV]()
+    var e = InlineArray[workspace.element_type, V_SIZE](uninitialized=True)
+    var col = InlineArray[workspace.element_type, V_SIZE](uninitialized=True)
+
+    for j in range(tid, NV, n_threads):
+        for i in range(NV):
+            e[i] = 0
+        e[j] = 1
+
+        # Forward substitution: y = L^(-1) * e
+        var y = InlineArray[workspace.element_type, V_SIZE](uninitialized=True)
+        for i in range(NV):
+            var s = e[i]
+            for k in range(i):
+                s = s - workspace[env, L_idx + i * NV + k] * y[k]
+            y[i] = s
+
+        # Diagonal solve: z = D^(-1) * y
+        var z = InlineArray[workspace.element_type, V_SIZE](uninitialized=True)
+        for i in range(NV):
+            var d_i = workspace[env, D_idx + i]
+            if d_i > 1e-14 or d_i < -1e-14:
+                z[i] = y[i] / d_i
+            else:
+                z[i] = 0
+
+        # Backward substitution: col = L^(-T) * z
+        for i in range(NV - 1, -1, -1):
+            var s = z[i]
+            for k in range(i + 1, NV):
+                s = s - workspace[env, L_idx + k * NV + i] * col[k]
+            col[i] = s
+
+        for i in range(NV):
+            workspace[env, M_inv_idx + i * NV + j] = col[i]
+
+
 # =============================================================================
 # GPU: Sparse Mass Matrix + LDL (matching MuJoCo mj_factorI / mj_solveLD)
 # =============================================================================

@@ -45,6 +45,7 @@ from ..dynamics.mass_matrix import (
     ldl_solve_workspace_gpu,
     compute_M_inv_from_ldl,
     compute_M_inv_from_ldl_gpu,
+    compute_M_inv_from_ldl_gpu_mt,
     build_sparse_pattern,
     compute_mass_matrix_sparse,
     ldl_factor_sparse,
@@ -723,6 +724,14 @@ def _integrate_pos[
 # preserve the Integrator trait signature; mirrors USE_NEWTON_SIMD. See
 # docs/PHYSICS3D_BLOCKED_SOLVER.md.
 comptime RK4_BLOCKED_SOLVER: Bool = True
+
+
+# When True (and STEP_THREADS>1, dense, solver needs M_inv), the dense M^-1
+# computation in rk4_stage_kernel is distributed across the STEP_THREADS threads
+# that would otherwise sit idle after the mass matrix (each thread solves its
+# share of the NV independent M^-1 columns). Bit-identical to the serial path.
+# See docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_PARALLEL_MINV: Bool = True
 
 
 struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
@@ -1474,46 +1483,73 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         comptime if STEP_THREADS > 1:
             barrier()
 
-        # After mass matrix, only tid==0 continues (LDL, RNE, solve are serial)
-        comptime if STEP_THREADS > 1:
-            if tid != 0:
+        # After the mass matrix the remaining work (armature, LDL, M_inv, RNE,
+        # accel) is serial per env. M_inv, however, is NV independent column
+        # solves — when supported we distribute those across the STEP_THREADS
+        # threads that would otherwise idle after `if tid != 0: return`.
+        comptime USE_PAR_MINV = (
+            RK4_PARALLEL_MINV
+            and (STEP_THREADS > 1)
+            and (not SPARSE)
+            and Self.SOLVER.NEEDS_M_INV
+        )
+
+        # 6b. Armature only (no implicit damping for RK4) — tid 0 modifies the
+        # mass-matrix diagonal before LDL.
+        if valid_env and tid == 0:
+            for j in range(NJOINT):
+                var joint_off = model_joint_offset[NBODY](j)
+                var jnt_type = Int(model[0, joint_off + JOINT_IDX_TYPE])
+                var dof_adr = Int(model[0, joint_off + JOINT_IDX_DOF_ADR])
+                var arm = model[0, joint_off + JOINT_IDX_ARMATURE]
+                if jnt_type == JNT_FREE:
+                    for d in range(6):
+                        var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+                        workspace[env, idx] += arm
+                elif jnt_type == JNT_BALL:
+                    for d in range(3):
+                        var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+                        workspace[env, idx] += arm
+                else:
+                    var idx = M_idx + dof_adr * NV + dof_adr
+                    workspace[env, idx] += arm
+
+        comptime if USE_PAR_MINV:
+            # tid 0 factorizes; all threads then solve their share of columns.
+            if valid_env and tid == 0:
+                ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
+            barrier()
+            if valid_env:
+                compute_M_inv_from_ldl_gpu_mt[
+                    DTYPE, NV, NBODY, BATCH, WS_SIZE
+                ](env, tid, STEP_THREADS, workspace)
+            barrier()
+            # Only tid 0 runs the remaining serial work (RNE bias + accel).
+            if tid != 0 or not valid_env:
                 return
-        if not valid_env:
-            return
-
-        # 6b. Armature only (no implicit damping for RK4)
-        for j in range(NJOINT):
-            var joint_off = model_joint_offset[NBODY](j)
-            var jnt_type = Int(model[0, joint_off + JOINT_IDX_TYPE])
-            var dof_adr = Int(model[0, joint_off + JOINT_IDX_DOF_ADR])
-            var arm = model[0, joint_off + JOINT_IDX_ARMATURE]
-            if jnt_type == JNT_FREE:
-                for d in range(6):
-                    var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
-                    workspace[env, idx] += arm
-            elif jnt_type == JNT_BALL:
-                for d in range(3):
-                    var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
-                    workspace[env, idx] += arm
-            else:
-                var idx = M_idx + dof_adr * NV + dof_adr
-                workspace[env, idx] += arm
-
-        # 7. LDL factorize M, compute M_inv
-        comptime if SPARSE:
-            ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
-                env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
-            )
-            comptime if Self.SOLVER.NEEDS_M_INV:
-                compute_M_inv_from_sparse_ldl_gpu[
-                    DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
-                ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
         else:
-            ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
-            comptime if Self.SOLVER.NEEDS_M_INV:
-                compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-                    env, workspace
+            # Serial tail on tid 0 (existing behavior).
+            comptime if STEP_THREADS > 1:
+                if tid != 0:
+                    return
+            if not valid_env:
+                return
+
+            # 7. LDL factorize M, compute M_inv
+            comptime if SPARSE:
+                ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                    env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
                 )
+                comptime if Self.SOLVER.NEEDS_M_INV:
+                    compute_M_inv_from_sparse_ldl_gpu[
+                        DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
+                    ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+            else:
+                ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
+                comptime if Self.SOLVER.NEEDS_M_INV:
+                    compute_M_inv_from_ldl_gpu[
+                        DTYPE, NV, NBODY, BATCH, WS_SIZE
+                    ](env, workspace)
 
         # 8. Bias forces
         compute_bias_forces_rne_gpu[
