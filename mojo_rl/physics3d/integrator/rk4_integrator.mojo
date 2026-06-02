@@ -722,7 +722,7 @@ def _integrate_pos[
 # across independently-scheduled blocks. Module-level (not a step_gpu param) to
 # preserve the Integrator trait signature; mirrors USE_NEWTON_SIMD. See
 # docs/PHYSICS3D_BLOCKED_SOLVER.md.
-comptime RK4_BLOCKED_SOLVER: Bool = False
+comptime RK4_BLOCKED_SOLVER: Bool = True
 
 
 struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
@@ -1378,8 +1378,15 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
             # 3a. Compute subtree_com
             compute_subtree_com_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, BATCH,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
             ](env, state, model)
 
             # 4. Compute cdof
@@ -1804,7 +1811,9 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
                 # Apply wrench at xipos via Jacobian transpose (kinematic tree walk)
                 # Transport wrench to subtree_com[rootid] (cdof reference point)
-                comptime stcom_off_fl = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+                comptime stcom_off_fl = subtree_com_offset[
+                    NQ, NV, NBODY, MAX_CONTACTS
+                ]()
                 var px_b = rebind[Scalar[DTYPE]](
                     state[env, xipos_off_fl + b * 3 + 0]
                 )
@@ -1814,12 +1823,20 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 var pz_b = rebind[Scalar[DTYPE]](
                     state[env, xipos_off_fl + b * 3 + 2]
                 )
-                var rootid_b = Int(rebind[Scalar[DTYPE]](
-                    model[0, body_off_b + BODY_IDX_ROOTID]
-                ))
-                var dx_b = px_b - rebind[Scalar[DTYPE]](state[env, stcom_off_fl + rootid_b * 3 + 0])
-                var dy_b = py_b - rebind[Scalar[DTYPE]](state[env, stcom_off_fl + rootid_b * 3 + 1])
-                var dz_b = pz_b - rebind[Scalar[DTYPE]](state[env, stcom_off_fl + rootid_b * 3 + 2])
+                var rootid_b = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, body_off_b + BODY_IDX_ROOTID]
+                    )
+                )
+                var dx_b = px_b - rebind[Scalar[DTYPE]](
+                    state[env, stcom_off_fl + rootid_b * 3 + 0]
+                )
+                var dy_b = py_b - rebind[Scalar[DTYPE]](
+                    state[env, stcom_off_fl + rootid_b * 3 + 1]
+                )
+                var dz_b = pz_b - rebind[Scalar[DTYPE]](
+                    state[env, stcom_off_fl + rootid_b * 3 + 2]
+                )
                 var tau_ox = tx_w + dy_b * fz_w - dz_b * fy_w
                 var tau_oy = ty_w + dz_b * fx_w - dx_b * fz_w
                 var tau_oz = tz_w + dx_b * fy_w - dy_b * fx_w
@@ -2072,8 +2089,13 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         """
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
         comptime MODEL_SIZE = model_size_with_invweight[
-            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY,
-            NTENDON=MAX_TENDON, NSITE=NSITE,
+            NBODY,
+            NJOINT,
+            NV,
+            NGEOM,
+            NEQUALITY=MAX_EQUALITY,
+            NTENDON=MAX_TENDON,
+            NSITE=NSITE,
         ]()
         comptime SOLVER_WS = Self.SOLVER.solver_workspace_size[
             NV, MAX_CONTACTS
@@ -2395,8 +2417,13 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         """
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
         comptime MODEL_SIZE = model_size_with_invweight[
-            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY,
-            NTENDON=MAX_TENDON, NSITE=NSITE,
+            NBODY,
+            NJOINT,
+            NV,
+            NGEOM,
+            NEQUALITY=MAX_EQUALITY,
+            NTENDON=MAX_TENDON,
+            NSITE=NSITE,
         ]()
         comptime SOLVER_WS = Self.SOLVER.solver_workspace_size[
             NV, MAX_CONTACTS
