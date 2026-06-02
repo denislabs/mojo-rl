@@ -778,15 +778,33 @@ def run_offpolicy_train_batched[
             # replay advances physics from the current state in-place. First
             # capture happens on iteration 0 (warmup), so the inherent
             # settle+capture double-step only perturbs one warmup transition.
+            # TEMP DIAGNOSTIC (rule out the `maybe_capture_replay` closure):
+            # inline, legacy-style explicit CUDAGraph capture. Capture once on
+            # the first iteration (settle run → begin → re-run → end), replay on
+            # the mojo stream thereafter. The node-count print confirms capture
+            # actually happened and how many kernels it grabbed (a tiny/zero
+            # count means capture silently failed).
             var ce = ctx.value()
-
-            def _captured_env_step() capturing raises -> None:
+            if not env_graph:
                 env.step_batch[N_ENVS](
-                    ctx=ctx,
-                    rng_seed=rng_seed + UInt64(iter_idx + 1),
+                    ctx=ctx, rng_seed=rng_seed + UInt64(iter_idx + 1),
                 )
-
-            maybe_capture_replay[_captured_env_step](env_graph, ce)
+                ce.synchronize()
+                var g = CUDAGraph(ce)
+                g.begin_capture()
+                env.step_batch[N_ENVS](
+                    ctx=ctx, rng_seed=rng_seed + UInt64(iter_idx + 1),
+                )
+                g.end_capture()
+                if verbose:
+                    print(
+                        "[CUDA Graph] Captured ENV STEP with",
+                        g.num_nodes(),
+                        "nodes",
+                    )
+                env_graph = g^
+            else:
+                env_graph.value().replay_on_mojo_stream()
         else:
             env.step_batch[N_ENVS](
                 ctx=ctx,
@@ -899,15 +917,33 @@ def run_offpolicy_train_batched[
         # `rng_seed` arg is retained for trait/CPU compatibility but the GPU
         # reset ignores it (the device counter is authoritative).
         comptime if USE_ENV_CUDA_GRAPH and env_target == "gpu":
+            # TEMP DIAGNOSTIC: inline, legacy-style explicit CUDAGraph capture
+            # (mirrors the env-step block above). Reset randomness is driven by
+            # the env's DEVICE RNG counter (bumped inside `selective_reset_batch`
+            # → captured), so each replay resets done envs to fresh states.
             var cr = ctx.value()
-
-            def _captured_env_reset() capturing raises -> None:
+            if not env_reset_graph:
                 env.selective_reset_batch[N_ENVS](
                     ctx=ctx,
                     rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
                 )
-
-            maybe_capture_replay[_captured_env_reset](env_reset_graph, cr)
+                cr.synchronize()
+                var gr = CUDAGraph(cr)
+                gr.begin_capture()
+                env.selective_reset_batch[N_ENVS](
+                    ctx=ctx,
+                    rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
+                )
+                gr.end_capture()
+                if verbose:
+                    print(
+                        "[CUDA Graph] Captured ENV RESET with",
+                        gr.num_nodes(),
+                        "nodes",
+                    )
+                env_reset_graph = gr^
+            else:
+                env_reset_graph.value().replay_on_mojo_stream()
         else:
             env.selective_reset_batch[N_ENVS](
                 ctx=ctx,

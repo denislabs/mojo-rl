@@ -296,6 +296,15 @@ def maybe_capture_replay[
             g.begin_capture()
             STEP()
             g.end_capture()
+            # Diagnostic: confirm the harness actually captured kernels (a
+            # tiny/zero node count means capture silently failed — e.g. the
+            # closure enqueued on a different stream than the one being
+            # captured). Printed once per graph (first call only).
+            print(
+                "[CUDA Graph] maybe_capture_replay captured",
+                g.num_nodes(),
+                "nodes",
+            )
             graph = g^
         else:
             graph.value().replay_on_mojo_stream()
