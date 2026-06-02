@@ -321,6 +321,16 @@ struct BatchedGpuEnv[
     var _reward: DeviceBuffer[DT]
     var _done: DeviceBuffer[DT]
     var _terminated: DeviceBuffer[DT]
+    # Persistent physics step workspace: shared model params + per-env solver
+    # scratch (layout [STEP_WS_SHARED | N_ENVS*STEP_WS_PER_ENV]). Allocated and
+    # model-initialized ONCE here, then passed to `step_kernel_gpu` every step.
+    # Without it, `step_kernel_gpu(workspace_ptr=None)` allocates AND re-uploads
+    # the model on EVERY step (large per-step waste) — and, fatally, under
+    # CUDA-graph capture the captured kernels reference that per-call buffer
+    # after it is freed, so every replay runs physics on garbage model params
+    # (silent divergence on NVIDIA; invisible on Apple where capture is a
+    # no-op). Mirrors the legacy GPU driver's persistent `workspace_buf`.
+    var _workspace: DeviceBuffer[DT]
 
     def __init__(out self, ctx: DeviceContext) raises:
         self._states = ctx.enqueue_create_buffer[DT](
@@ -339,6 +349,17 @@ struct BatchedGpuEnv[
         ctx.enqueue_memset(self._reward, 0)
         ctx.enqueue_memset(self._done, 0)
         ctx.enqueue_memset(self._terminated, 0)
+        # Persistent step workspace (shared model + per-env scratch). Min size 1
+        # so envs with no workspace (STEP_WS_SHARED+PER_ENV==0) still hold a
+        # valid (unused) buffer. Initialize the shared model portion once.
+        comptime WS_TOTAL = (
+            Self.E.STEP_WS_SHARED + Self.N_ENVS * Self.E.STEP_WS_PER_ENV
+        )
+        self._workspace = ctx.enqueue_create_buffer[DT](
+            WS_TOTAL if WS_TOTAL > 0 else 1
+        )
+        comptime if WS_TOTAL > 0:
+            Self.E.init_step_workspace_gpu[Self.N_ENVS](ctx, self._workspace)
 
     def reset_batch[BATCH: Int](
         mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
@@ -365,6 +386,11 @@ struct BatchedGpuEnv[
         if not ctx:
             raise Error("BatchedGpuEnv.step_batch: ctx required")
         var c = ctx.value()
+        # Pass the PERSISTENT workspace so `step_kernel_gpu` neither
+        # re-allocates nor re-uploads the model per step, and — critically —
+        # the captured kernels (USE_ENV_CUDA_GRAPH) reference stable memory on
+        # every replay. physics3d uses it; envs that don't need a workspace
+        # ignore the pointer.
         Self.E.step_kernel_gpu[
             Self.N_ENVS, Self.STATE_SIZE, Self.OBS_DIM, Self.ACT_DIM
         ](
@@ -376,6 +402,9 @@ struct BatchedGpuEnv[
             self._terminated,
             self._obs,
             rng_seed=rng_seed,
+            workspace_ptr=rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._workspace.unsafe_ptr()
+            ),
         )
 
     def selective_reset_batch[BATCH: Int](
