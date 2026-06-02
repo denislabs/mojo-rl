@@ -68,7 +68,12 @@ comptime NUM_ELITES = 5
 # in-distribution. Do NOT copy this to the CPU example.
 comptime REAL_RATIO_PCT = 5
 comptime LOGVAR_MIN_F = -10.0
-comptime LOGVAR_MAX_F = -5.0
+# Match legacy MBPO's dynamics uncertainty bound (max std ≈ 0.37). The prior
+# −5.0 capped std at ≈0.08 → an over-confident model the policy could exploit
+# (predicted 0.81/step vs 0.20/step real). Legacy's wider bound injects more
+# rollout noise (regularizes the policy) and lets the model hedge on OOD
+# rollout actions instead of emitting sharp optimistic means.
+comptime LOGVAR_MAX_F = -2.0
 
 comptime NUM_STEPS = 300_000  # MBPO needs ~10× fewer real steps than SAC
 comptime PRINT_EVERY = 10_000
@@ -85,14 +90,17 @@ comptime CHECKPOINT_PATH = "mbpo_half_cheetah_nn2_gpu.ckpt"
 #   FIX_ALPHA = True  → arm B: alpha PINNED at legacy's level (alpha_lr=0 so the
 #                       ScalarAdam update is a no-op → alpha frozen at init).
 # If arm B tracks legacy's mean_q / reward, alpha is confirmed as THE lever.
-comptime FIX_ALPHA = True
+# Reverted to auto-α: the α A/B was REFUTED (fixed α=0.12 left reward flat at
+# ~200 vs auto's ~210; the policy wasn't timid — mean_abs_action≈0.48). The
+# real lever is the dynamics uncertainty bound (LOGVAR_MAX above).
+comptime FIX_ALPHA = False
 comptime FIXED_ALPHA: Scalar[DT] = 0.12  # legacy's stable equilibrium
 comptime INIT_ALPHA: Scalar[DT] = FIXED_ALPHA if FIX_ALPHA else 0.2
 comptime ALPHA_LR: Scalar[DT] = 0.0 if FIX_ALPHA else 3e-4
 comptime RUN_NAME = (
     "MBPO HalfCheetah NN2 (GPU) — fixed alpha=0.12"
     if FIX_ALPHA
-    else "MBPO HalfCheetah NN2 (GPU) — auto alpha"
+    else "MBPO HalfCheetah NN2 (GPU) — auto alpha, logvar_max=-2"
 )
 
 
@@ -165,6 +173,7 @@ def main() raises:
         logger.set_config("env", "HalfCheetah")
         logger.set_config("target", "gpu")
         logger.set_config("alpha_mode", "fixed_0.12" if FIX_ALPHA else "auto")
+        logger.set_config("logvar_max", String(LOGVAR_MAX_F))
         logger.set_config("hidden", String(HIDDEN))
         logger.set_config("dyn_hidden", String(DYN_HIDDEN))
         logger.set_config("batch", String(BATCH))
