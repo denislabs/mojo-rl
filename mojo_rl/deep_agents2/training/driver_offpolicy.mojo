@@ -539,6 +539,7 @@ def run_offpolicy_train_batched[
     NS: Int = 1,
     L: Logger = NoOpLogger,
     USE_TRAIN_CUDA_GRAPH: Bool = False,
+    USE_ENV_CUDA_GRAPH: Bool = False,
 ](
     ctx: Optional[DeviceContext],
     mut trainer: A,
@@ -625,6 +626,15 @@ def run_offpolicy_train_batched[
             "USE_TRAIN_CUDA_GRAPH requires train_target == 'gpu' (CUDA-graph"
             " capture is a GPU-only path; no-op on non-NVIDIA)"
         )
+    comptime if USE_ENV_CUDA_GRAPH:
+        comptime assert env_target == "gpu", (
+            "USE_ENV_CUDA_GRAPH requires env_target == 'gpu' (the captured env"
+            " step is GPU physics kernels; no-op on non-NVIDIA). Only valid for"
+            " envs whose GPU step is RNG-free / deterministic (physics3d:"
+            " RNG lives in reset, which stays eager) — a stochastic-step env"
+            " would bake its step seed and must wire a device RNG counter"
+            " first."
+        )
     comptime assert (
         E.OBS_DIM == OBS and E.ACT_DIM == ACT
     ), "BatchedEnv dimensions must match trainer dimensions"
@@ -661,6 +671,11 @@ def run_offpolicy_train_batched[
     # loop's capture branch). Unused when USE_TRAIN_CUDA_GRAPH is False, and
     # a no-op on non-NVIDIA where `CUDAGraph` itself is a no-op.
     var train_graph: Optional[CUDAGraph] = None
+    # Env-step graph (env capture). None until first capture; the deterministic
+    # physics `step_batch` is captured once and replayed per iteration when
+    # `USE_ENV_CUDA_GRAPH` — collapsing the env's per-step eager kernel launches
+    # (newton / integrators / collision) into one launch. No-op otherwise.
+    var env_graph: Optional[CUDAGraph] = None
 
     # All scratches on the single target (env_target == train_target).
     var ao = DriverScratch["ao", N_ENVS, 2 * ACT].make[train_target](ctx=ctx)
@@ -738,10 +753,34 @@ def run_offpolicy_train_batched[
         )
 
         # ── 3. Env step (writes env-internal obs/reward/done).
-        env.step_batch[N_ENVS](
-            ctx=ctx,
-            rng_seed=rng_seed + UInt64(iter_idx + 1),
-        )
+        comptime if USE_ENV_CUDA_GRAPH and env_target == "gpu":
+            # Capture the (deterministic) physics `step_batch` into a CUDA graph
+            # and replay it once per iteration — collapses the env's dozens of
+            # eager per-step kernel launches (newton solver, integrators,
+            # collision) into a single launch, keeping the GPU fed at low
+            # N_ENVS / high iteration counts (the walker2d N_ENVS=4 / 250k-iter
+            # regime). SAFE: the env's GPU step is RNG-free (the `rng_seed` arg
+            # is accepted but unused — RNG lives only in reset, which stays
+            # eager), so the value baked at capture is never read. The captured
+            # kernels read the LIVE action/state device buffers (the eager
+            # `select_action` above wrote `action_ptr` this iteration), so each
+            # replay advances physics from the current state in-place. First
+            # capture happens on iteration 0 (warmup), so the inherent
+            # settle+capture double-step only perturbs one warmup transition.
+            var ce = ctx.value()
+
+            def _captured_env_step() capturing raises -> None:
+                env.step_batch[N_ENVS](
+                    ctx=ctx,
+                    rng_seed=rng_seed + UInt64(iter_idx + 1),
+                )
+
+            maybe_capture_replay[_captured_env_step](env_graph, ce)
+        else:
+            env.step_batch[N_ENVS](
+                ctx=ctx,
+                rng_seed=rng_seed + UInt64(iter_idx + 1),
+            )
 
         # ── 4. Replay push (env-target-specific).
         comptime if env_target == "cpu":

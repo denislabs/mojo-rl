@@ -168,6 +168,13 @@ def main() raises:
             # only — do NOT combine with ERE (still host-scalar / not capture
             # safe). NVIDIA only; no-op on Apple/Metal.
             USE_TRAIN_CUDA_GRAPH=True,
+            # Capture the deterministic physics step too — collapses the env's
+            # per-step eager kernel launches (newton/integrators/collision) into
+            # one graph replay/iteration. The decisive lever at N_ENVS=4 / 250k
+            # iters, where per-iteration launch+dispatch (not GPU compute)
+            # dominates wall-clock. Safe: physics3d's GPU step is RNG-free
+            # (RNG only in reset, which stays eager). NVIDIA only.
+            USE_ENV_CUDA_GRAPH=True,
         ](
             env,
             NUM_STEPS,

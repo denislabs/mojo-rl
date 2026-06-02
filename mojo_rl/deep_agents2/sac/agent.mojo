@@ -140,6 +140,7 @@ struct SACAgent[
         NS: Int = 1,
         L: Logger = NoOpLogger,
         USE_TRAIN_CUDA_GRAPH: Bool = False,
+        USE_ENV_CUDA_GRAPH: Bool = False,
     ](
         mut self,
         mut env: E,
@@ -192,6 +193,7 @@ struct SACAgent[
             NS,
             L,
             USE_TRAIN_CUDA_GRAPH,
+            USE_ENV_CUDA_GRAPH,
         ](
             ctx,
             self.trainer,
