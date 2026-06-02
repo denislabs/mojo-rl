@@ -676,6 +676,17 @@ def run_offpolicy_train_batched[
     # `USE_ENV_CUDA_GRAPH` — collapsing the env's per-step eager kernel launches
     # (newton / integrators / collision) into one launch. No-op otherwise.
     var env_graph: Optional[CUDAGraph] = None
+    # Env-reset graph (env capture). Sibling of `env_graph` for the selective
+    # reset: [increment device RNG counter → selective_reset_kernel →
+    # extract_obs]. Captured once and replayed thereafter. The reset randomness
+    # is driven by the env's DEVICE-resident RNG counter (bumped inside the
+    # captured sequence), so each replay resets done envs to FRESH random
+    # states without host intervention — the recapture-free pattern legacy uses
+    # (cf. gpu_offpolicy_train.mojo selective_reset in-graph). `record` stays
+    # eager between the step and reset graphs (its replay write index is a host
+    # scalar — NOT capture-safe), so we capture step and reset as two separate
+    # graphs rather than one. No-op otherwise.
+    var env_reset_graph: Optional[CUDAGraph] = None
 
     # All scratches on the single target (env_target == train_target).
     var ao = DriverScratch["ao", N_ENVS, 2 * ACT].make[train_target](ctx=ctx)
@@ -882,11 +893,26 @@ def run_offpolicy_train_batched[
                             ep_returns.append(trainer.mean_return())
                 pending_eps = 0
 
-        # ── 8. Selective env reset.
-        env.selective_reset_batch[N_ENVS](
-            ctx=ctx,
-            rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
-        )
+        # ── 8. Selective env reset. Driven by the env's DEVICE-resident RNG
+        # counter (bumped inside `selective_reset_batch`), so the captured graph
+        # advances reset randomness on every replay — no baked host seed. The
+        # `rng_seed` arg is retained for trait/CPU compatibility but the GPU
+        # reset ignores it (the device counter is authoritative).
+        comptime if USE_ENV_CUDA_GRAPH and env_target == "gpu":
+            var cr = ctx.value()
+
+            def _captured_env_reset() capturing raises -> None:
+                env.selective_reset_batch[N_ENVS](
+                    ctx=ctx,
+                    rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
+                )
+
+            maybe_capture_replay[_captured_env_reset](env_reset_graph, cr)
+        else:
+            env.selective_reset_batch[N_ENVS](
+                ctx=ctx,
+                rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
+            )
 
         step_idx += N_ENVS
         iter_idx += 1

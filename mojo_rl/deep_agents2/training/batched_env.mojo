@@ -40,10 +40,23 @@ reconstructs non-owning views via
 `DeviceBuffer[DT](ctx, env.obs_ptr(), N*OBS, owning=False)`.
 """
 
+from std.gpu import thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.core.env_traits import BoxContinuousActionEnv, GPUContinuousEnv
+
+
+def _increment_env_rng_kernel(
+    counter: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Bump the device-resident env RNG counter by 1. Launch grid=(1,),
+    block=(1,). Enqueued at the head of the selective-reset sequence so each
+    CUDA-graph replay draws a FRESH reset seed without host intervention —
+    mirrors legacy `increment_env_rng_kernel`."""
+    if Int(thread_idx.x) == 0:
+        counter[0] = counter[0] + UInt64(1)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -331,6 +344,16 @@ struct BatchedGpuEnv[
     # (silent divergence on NVIDIA; invisible on Apple where capture is a
     # no-op). Mirrors the legacy GPU driver's persistent `workspace_buf`.
     var _workspace: DeviceBuffer[DT]
+    # Device-resident env RNG counter (1-elem uint64). `selective_reset_batch`
+    # bumps it (via `_increment_env_rng_kernel`) and feeds it to the env's
+    # `selective_reset_kernel_gpu` as `rng_counter_ptr`, so reset randomness
+    # lives on-device and advances on every CUDA-graph replay (the env-reset
+    # graph would otherwise bake a host seed → every episode resets to the SAME
+    # initial state, collapsing the start-state distribution). This changes the
+    # reset RNG stream vs the old host-seed scheme, so trajectories differ from
+    # prior runs (same distribution, different draw) — but Apple-eager and
+    # NVIDIA-captured now share the identical device-counter stream.
+    var _env_rng_counter: DeviceBuffer[DType.uint64]
 
     def __init__(out self, ctx: DeviceContext) raises:
         self._states = ctx.enqueue_create_buffer[DT](
@@ -360,6 +383,10 @@ struct BatchedGpuEnv[
         )
         comptime if WS_TOTAL > 0:
             Self.E.init_step_workspace_gpu[Self.N_ENVS](ctx, self._workspace)
+        # Seed the device RNG counter. Any nonzero start works; reset uses the
+        # live counter value, bumped before each selective reset.
+        self._env_rng_counter = ctx.enqueue_create_buffer[DType.uint64](1)
+        self._env_rng_counter.enqueue_fill(UInt64(42))
 
     def reset_batch[BATCH: Int](
         mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
@@ -416,9 +443,38 @@ struct BatchedGpuEnv[
         if not ctx:
             raise Error("BatchedGpuEnv.selective_reset_batch: ctx required")
         var c = ctx.value()
+        # `rng_seed` is retained for trait/CPU compatibility but the GPU reset
+        # is driven by the DEVICE counter (capture-safe): bump it, then pass it
+        # as `rng_counter_ptr` so `selective_reset_kernel_gpu` ignores the host
+        # seed. The bump is enqueued on the same stream and is captured into the
+        # env-reset graph, so every replay advances the seed.
+        _ = rng_seed
+        var cnt_t = LayoutTensor[
+            DType.uint64, Layout.row_major(1), MutAnyOrigin
+        ](self._env_rng_counter.unsafe_ptr())
+        c.enqueue_function[_increment_env_rng_kernel](
+            cnt_t, grid_dim=(1,), block_dim=(1,)
+        )
         Self.E.selective_reset_kernel_gpu[
             Self.N_ENVS, Self.STATE_SIZE
-        ](c, self._states, self._done, rng_seed=rng_seed)
+        ](
+            c,
+            self._states,
+            self._done,
+            rng_seed=rng_seed,
+            # Pass the PERSISTENT workspace: like `step_kernel_gpu`,
+            # `selective_reset_kernel_gpu` otherwise allocates AND re-uploads the
+            # model on EVERY reset (per-reset waste) — and, fatally under
+            # capture, the captured kernels would reference that per-call buffer
+            # after it is freed (garbage model on replay → divergence). Mirrors
+            # legacy's reset call passing `workspace_buf`.
+            workspace_ptr=rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._workspace.unsafe_ptr()
+            ),
+            rng_counter_ptr=rebind[
+                UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            ](self._env_rng_counter.unsafe_ptr()),
+        )
         Self.E.extract_obs_kernel_gpu[
             Self.N_ENVS, Self.STATE_SIZE, Self.OBS_DIM
         ](c, self._states, self._obs)
