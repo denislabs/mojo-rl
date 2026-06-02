@@ -50,18 +50,15 @@ struct OnlineTargetPair[M: Module](Movable & ImplicitlyDestructible):
         p.online = Self.M.make[target, INIT](ctx)
         p.target_net = Self.M.make[target, INIT](ctx)
         hard_copy_params[target, M=Self.M](p.online, p.target_net, ctx)
-        comptime if (
-            has_nvidia_gpu_accelerator()
-            and target == "gpu"
-            and USE_GROUPED_GPU_OPTIMIZER
-        ):
-            # Cache the online/target param addresses for the grouped launch.
-            # Built after hard_copy so both nets are allocated + initialized;
-            # addresses stay valid across the pair's move into the trainer
-            # (move transfers buffer handles, device allocations don't relocate).
-            p._polyak_cache = GroupedPolyakCache.build[target, M=Self.M](
-                p.online, p.target_net, ctx.value()
-            )
+        # NOTE: the grouped-polyak descriptor cache is NOT built here. `make`
+        # returns `p^`, moving the pair into `trainer.pair1`/`pair2` afterward —
+        # capturing the param-buffer addresses now records the PRE-move `p`
+        # buffers, and the move relocates them, so the cache would go stale and
+        # the target net silently stops tracking (degraded convergence; the
+        # online net still learns via its own optimizer). Build it LAZILY on the
+        # first `polyak_step`, when `self` is the settled trainer field — the
+        # same timing at which the critic Adam captures `trainer.pair1.online`
+        # (AFTER the pair move), which is why Adam was unaffected.
         return p^
 
     def polyak_step[
@@ -77,7 +74,16 @@ struct OnlineTargetPair[M: Module](Movable & ImplicitlyDestructible):
             and target == "gpu"
             and USE_GROUPED_GPU_OPTIMIZER
         ):
-            # Grouped single-launch soft-update (descriptors built in make).
+            # Lazily build the descriptor cache on first use — `self` is now the
+            # settled trainer field, so the captured online/target param-buffer
+            # addresses are final/live (see the NOTE in `make`). The build's
+            # host work (named_params walk + uploads) runs on this first call,
+            # which under CUDA-graph capture is the pre-`begin_capture` settle
+            # run, so only the grouped kernel ends up in the graph.
+            if not self._polyak_cache:
+                self._polyak_cache = GroupedPolyakCache.build[target, M=Self.M](
+                    self.online, self.target_net, ctx.value()
+                )
             self._polyak_cache.value().apply(
                 Scalar[DT](1.0) - tau, tau, ctx.value()
             )
