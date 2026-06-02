@@ -160,7 +160,7 @@ comptime MINVAL: Float64 = 1e-10
 # NV (Humanoid, NV=23) where the O(NV^3) factor dominates the per-iteration cost;
 # set False to keep the tid-0 factor (the 5b oracle). See
 # docs/PHYSICS3D_BLOCKED_SOLVER.md (section 5d).
-comptime SOLVE_COOP_NEWTON: Bool = False
+comptime SOLVE_COOP_NEWTON: Bool = True
 
 
 @no_inline
@@ -172,16 +172,22 @@ def chol_factor_coop_gpu[
     tid: Int,
     n_threads: Int,
     H_sh: LayoutTensor[
-        DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        DTYPE,
+        Layout.row_major(M_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
     ],
     L_sh: LayoutTensor[
-        DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        DTYPE,
+        Layout.row_major(M_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
     ],
     ctrl_sh: LayoutTensor[
-        DTYPE, Layout.row_major(3), MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        DTYPE,
+        Layout.row_major(3),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
     ],
 ):
     """Cooperative column-parallel Cholesky of the shared Hessian H_sh -> L_sh
@@ -217,9 +223,9 @@ def chol_factor_coop_gpu[
             for i in range(j + 1 + tid, NV, n_threads):
                 var s: Scalar[DTYPE] = 0
                 for k in range(j):
-                    s += rebind[Scalar[DTYPE]](
-                        L_sh[i * NV + k]
-                    ) * rebind[Scalar[DTYPE]](L_sh[j * NV + k])
+                    s += rebind[Scalar[DTYPE]](L_sh[i * NV + k]) * rebind[
+                        Scalar[DTYPE]
+                    ](L_sh[j * NV + k])
                 L_sh[i * NV + j] = (
                     rebind[Scalar[DTYPE]](H_sh[i * NV + j]) - s
                 ) / ljj
@@ -2881,44 +2887,44 @@ struct NewtonSolver(ConstraintSolver):
             DTYPE,
             Layout.row_major(M_SIZE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var H_sh = LayoutTensor[
             DTYPE,
             Layout.row_major(M_SIZE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var Je_sh = LayoutTensor[
             DTYPE,
             Layout.row_major(ME * V_SIZE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var De_sh = LayoutTensor[
             DTYPE,
             Layout.row_major(ME),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var bias_e_sh = LayoutTensor[
             DTYPE,
             Layout.row_major(ME),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var force_sh = LayoutTensor[
             DTYPE,
             Layout.row_major(ME),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         # Cholesky factor (5d.1): cooperative column-parallel factor writes here.
         var L_sh = LayoutTensor[
             DTYPE,
             Layout.row_major(M_SIZE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         # Scalar shared state: [0]=num_edges, [1]=done flag, [2]=Cholesky
         # rank-deficient flag (5d.1).
@@ -2926,7 +2932,7 @@ struct NewtonSolver(ConstraintSolver):
             DTYPE,
             Layout.row_major(3),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         comptime pyr_sc = ws_Jt1_idx + 4 * MC * NV
@@ -2963,9 +2969,7 @@ struct NewtonSolver(ConstraintSolver):
         # === THREAD 0: joint-limit edge detection + initial setup ===
         # All per-thread serial scratch stays thread-0-local exactly as serial.
         var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var qacc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](
-            uninitialized=True
-        )
+        var qacc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         var f_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         var jar = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
@@ -3054,9 +3058,7 @@ struct NewtonSolver(ConstraintSolver):
                 var li_power = rebind[Scalar[DTYPE]](
                     model[0, j_off + JOINT_IDX_SOLIMP_LIMIT_4]
                 )
-                if li_dmax <= Scalar[DTYPE](0) and li_width <= Scalar[DTYPE](
-                    0
-                ):
+                if li_dmax <= Scalar[DTYPE](0) and li_width <= Scalar[DTYPE](0):
                     li_dmin = li_dmin_def
                     li_dmax = li_dmax_def
                     li_width = li_width_def
@@ -3473,9 +3475,10 @@ struct NewtonSolver(ConstraintSolver):
                         if jar[e_idx] >= Scalar[DTYPE](0):
                             f_e = Scalar[DTYPE](0)
                         else:
-                            f_e = -rebind[Scalar[DTYPE]](De_sh[e_idx]) * jar[
-                                e_idx
-                            ]
+                            f_e = (
+                                -rebind[Scalar[DTYPE]](De_sh[e_idx])
+                                * jar[e_idx]
+                            )
                         force_sh[e_idx] = f_e
                         for i in range(NV):
                             qfrc[i] += (
