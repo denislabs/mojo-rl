@@ -174,7 +174,7 @@ def main() raises:
             # iters, where per-iteration launch+dispatch (not GPU compute)
             # dominates wall-clock. Safe: physics3d's GPU step is RNG-free
             # (RNG only in reset, which stays eager). NVIDIA only.
-            USE_ENV_CUDA_GRAPH=False,
+            USE_ENV_CUDA_GRAPH=True,
         ](
             env,
             NUM_STEPS,
