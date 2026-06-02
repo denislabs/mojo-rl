@@ -2121,6 +2121,12 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         # 5a: RK4_BLOCKED_SOLVER launches solve_gpu one-env-per-block. With
         # block_dim.x == 1, env = block_idx.x and contact_tid = thread_idx.y,
         # so the per-env math is byte-for-byte identical to the packed launch.
+        # 5b: for PYRAMIDAL cones the dedicated solve_gpu_blocked kernel runs
+        # cooperatively across the block's threads (one env per block, 1D
+        # block_dim=(THREADS,)). Non-PYRAMIDAL cones keep the 5a serial launch.
+        comptime USE_BLOCKED_PYR = RK4_BLOCKED_SOLVER and (
+            CONE_TYPE == ConeType.PYRAMIDAL
+        )
         comptime SOLVER_GRID_X = BATCH if RK4_BLOCKED_SOLVER else SOLVER_ENV_BLOCKS
         comptime SOLVER_GRID_Y = 1 if RK4_BLOCKED_SOLVER else SOLVER_THREADS_BLOCKS
         comptime SOLVER_BLOCK_X = 1 if RK4_BLOCKED_SOLVER else SOLVER_ENV_TPB
@@ -2195,13 +2201,40 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             MAX_TENDON,
             NSITE,
         ]
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
-            block_dim=(SOLVER_BLOCK_X, THREADS),
-        )
+        comptime solver_blocked_wrapper = Self.SOLVER.solve_gpu_blocked[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
+        ]
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         # --- Stage 1: forward dynamics at (q0+dt/2*C[0], v0+dt/2*A[0]) ---
         comptime stage1_kernel = Self.rk4_stage_kernel[
@@ -2238,13 +2271,22 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
             )
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
-            block_dim=(SOLVER_BLOCK_X, THREADS),
-        )
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         # --- Stage 2: forward dynamics at (q0+dt/2*C[1], v0+dt/2*A[1]) ---
         comptime stage2_kernel = Self.rk4_stage_kernel[
@@ -2281,13 +2323,22 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
             )
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
-            block_dim=(SOLVER_BLOCK_X, THREADS),
-        )
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         # --- Stage 3: forward dynamics at (q0+dt*C[2], v0+dt*A[2]) ---
         comptime stage3_kernel = Self.rk4_stage_kernel[
@@ -2324,13 +2375,22 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
             )
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
-            block_dim=(SOLVER_BLOCK_X, THREADS),
-        )
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         # --- Combine: weighted average + integrate ---
         comptime combine_kernel = Self.rk4_combine_kernel[
@@ -2447,6 +2507,10 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         ) // SOLVER_ENV_TPB
 
         # 5a: RK4_BLOCKED_SOLVER launches solve_gpu one-env-per-block (see step_gpu).
+        # 5b: PYRAMIDAL cones route to the cooperative solve_gpu_blocked kernel.
+        comptime USE_BLOCKED_PYR = RK4_BLOCKED_SOLVER and (
+            CONE_TYPE == ConeType.PYRAMIDAL
+        )
         comptime SOLVER_GRID_X = BATCH if RK4_BLOCKED_SOLVER else SOLVER_ENV_BLOCKS
         comptime SOLVER_GRID_Y = 1 if RK4_BLOCKED_SOLVER else SOLVER_THREADS_BLOCKS
         comptime SOLVER_BLOCK_X = 1 if RK4_BLOCKED_SOLVER else SOLVER_ENV_TPB
@@ -2462,6 +2526,24 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         ](workspace_buf)
 
         comptime solver_wrapper = Self.SOLVER.solve_gpu[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
+        ]
+        comptime solver_blocked_wrapper = Self.SOLVER.solve_gpu_blocked[
             DTYPE,
             NQ,
             NV,
@@ -2507,13 +2589,22 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
-            block_dim=(SOLVER_BLOCK_X, THREADS),
-        )
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         timer.sync_and_accumulate(base + 0, ctx)
 
@@ -2544,13 +2635,22 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
-            block_dim=(SOLVER_BLOCK_X, THREADS),
-        )
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         timer.sync_and_accumulate(base + 1, ctx)
 
@@ -2581,13 +2681,22 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
-            block_dim=(SOLVER_BLOCK_X, THREADS),
-        )
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         timer.sync_and_accumulate(base + 2, ctx)
 
@@ -2618,13 +2727,22 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
-            block_dim=(SOLVER_BLOCK_X, THREADS),
-        )
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         timer.sync_and_accumulate(base + 3, ctx)
 

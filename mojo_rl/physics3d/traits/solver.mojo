@@ -143,3 +143,58 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
                 in-place to satisfy constraints (acceleration-level).
         """
         ...
+
+    @staticmethod
+    def solve_gpu_blocked[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        STATE_SIZE: Int,
+        MODEL_SIZE: Int,
+        V_SIZE: Int,
+        BATCH: Int,
+        WS_SIZE: Int,
+        NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
+    ](
+        state: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
+        model: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ],
+        workspace: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+        ],
+    ):
+        """One-block-per-env GPU solve (cooperative). Default delegates to
+        `solve_gpu`. Solvers that support a blocked launch (currently only the
+        Newton solver, PYRAMIDAL cone) override this. The default body lets the
+        launch site reference `solve_gpu_blocked` for any solver without a
+        compile error; it is only ever launched with blocked dims when the
+        overriding solver supports it.
+        """
+        Self.solve_gpu[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
+        ](state, model, workspace)
