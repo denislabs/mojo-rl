@@ -18,7 +18,7 @@ CPU + GPU.
 from std.sys import has_nvidia_gpu_accelerator
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, USE_GROUPED_GPU_OPTIMIZER
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.initializer import Initializer
 from mojo_rl.nn2.core.map_params import (
@@ -50,7 +50,11 @@ struct OnlineTargetPair[M: Module](Movable & ImplicitlyDestructible):
         p.online = Self.M.make[target, INIT](ctx)
         p.target_net = Self.M.make[target, INIT](ctx)
         hard_copy_params[target, M=Self.M](p.online, p.target_net, ctx)
-        comptime if has_nvidia_gpu_accelerator() and target == "gpu":
+        comptime if (
+            has_nvidia_gpu_accelerator()
+            and target == "gpu"
+            and USE_GROUPED_GPU_OPTIMIZER
+        ):
             # Cache the online/target param addresses for the grouped launch.
             # Built after hard_copy so both nets are allocated + initialized;
             # addresses stay valid across the pair's move into the trainer
@@ -68,7 +72,11 @@ struct OnlineTargetPair[M: Module](Movable & ImplicitlyDestructible):
         GPU path requires `ctx` — pass the trainer's `DeviceContext` to
         avoid per-step `DeviceContext()` construction (Apple Metal command-
         queue exhaustion)."""
-        comptime if has_nvidia_gpu_accelerator() and target == "gpu":
+        comptime if (
+            has_nvidia_gpu_accelerator()
+            and target == "gpu"
+            and USE_GROUPED_GPU_OPTIMIZER
+        ):
             # Grouped single-launch soft-update (descriptors built in make).
             self._polyak_cache.value().apply(
                 Scalar[DT](1.0) - tau, tau, ctx.value()

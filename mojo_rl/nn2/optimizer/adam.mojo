@@ -25,7 +25,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
-from ..constants import DT, CPU_SIMD_W, TPB
+from ..constants import DT, CPU_SIMD_W, TPB, USE_GROUPED_GPU_OPTIMIZER
 from ..core import ParamVisitor
 from ..core.grad_clip import (
     clip_grads_auto,
@@ -592,7 +592,7 @@ struct Adam(Optimizer, Saveable):
             # Build the multi-tensor descriptor arrays (NVIDIA only). On Apple
             # these stay None and step/zero_grad take the per-tensor path
             # (Metal can't deref host-captured device addresses in-kernel).
-            comptime if has_nvidia_gpu_accelerator():
+            comptime if has_nvidia_gpu_accelerator() and USE_GROUPED_GPU_OPTIMIZER:
                 var pa = List[UInt64]()
                 var ga = List[UInt64]()
                 var coll = _MTDescriptorCollector(
@@ -626,7 +626,7 @@ struct Adam(Optimizer, Saveable):
             model.for_each_param[target, _ZeroGradCPUVisitor](String(""), v)
         else:
             var ctx = self.ts.ctx.value()
-            comptime if has_nvidia_gpu_accelerator():
+            comptime if has_nvidia_gpu_accelerator() and USE_GROUPED_GPU_OPTIMIZER:
                 # Grouped: one launch zeros every grad tensor. Descriptors were
                 # built in make[gpu]. (`_mt_n_params == 0` → no params, no-op.)
                 if self._mt_n_params > 0:
@@ -703,7 +703,7 @@ struct Adam(Optimizer, Saveable):
                 step_ptr, bc_ptr, self.beta1, self.beta2,
                 grid_dim=1, block_dim=1,
             )
-            comptime if has_nvidia_gpu_accelerator():
+            comptime if has_nvidia_gpu_accelerator() and USE_GROUPED_GPU_OPTIMIZER:
                 # Grouped: ONE launch updates every param tensor. Reads the
                 # device-resident descriptor arrays (built in make[gpu]) and the
                 # device bias-correction (bc_ptr) — fully CUDA-graph capturable.
