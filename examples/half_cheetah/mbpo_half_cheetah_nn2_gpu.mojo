@@ -98,7 +98,7 @@ comptime ALPHA_LR: Scalar[DT] = 0.0 if FIX_ALPHA else 3e-4
 comptime RUN_NAME = (
     "MBPO HalfCheetah NN2 (GPU) — fixed alpha=0.12"
     if FIX_ALPHA
-    else "MBPO HalfCheetah NN2 (GPU) — early-stop dyn, logvar=-5"
+    else "MBPO HalfCheetah NN2 (GPU) — early-stop dyn + per-tx elite, logvar=-5"
 )
 
 
