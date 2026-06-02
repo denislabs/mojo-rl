@@ -167,7 +167,7 @@ comptime SOLVE_COOP_NEWTON: Bool = True
 # serial on tid 0 while 5d.1/5d.2 (SOLVE_COOP_NEWTON) remain active — keeps the
 # branch building until 5d.3 is compile/parity-validated. See
 # docs/PHYSICS3D_BLOCKED_SOLVER.md (section 5d).
-comptime SOLVE_COOP_RECOMPUTE: Bool = False
+comptime SOLVE_COOP_RECOMPUTE: Bool = True
 
 
 @no_inline
