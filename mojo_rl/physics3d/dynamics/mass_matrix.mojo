@@ -13,6 +13,7 @@ Reference: Featherstone, "Rigid Body Dynamics Algorithms"
 """
 
 from std.math import sqrt
+from std.gpu import barrier
 from layout import LayoutTensor, Layout
 
 from ..types import Model, Data, ConeType
@@ -2042,6 +2043,76 @@ def ldl_factor_gpu[
                         * workspace[env, D_idx + k]
                     )
                 workspace[env, L_idx + i * NV + j] = l_ij / d_j
+
+
+@always_inline
+def ldl_factor_gpu_mt[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    tid: Int,
+    n_threads: Int,
+    valid_env: Bool,
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+):
+    """Multi-threaded LDL factorization (bit-identical to ldl_factor_gpu).
+
+    Columns are sequential, but within column j the off-diagonal entries
+    L[i,j] (i>j) are independent — thread `tid` handles rows i = j+1+tid,
+    j+1+tid+n_threads, ... Each thread recomputes d_j locally (same reads, same
+    arithmetic → identical to the serial D[j]); tid 0 writes D[j] to workspace.
+
+    Barriers are block-wide and UNCONDITIONAL (executed by every thread,
+    including invalid-env threads sharing the 2D stage block) so the per-column
+    dependency is satisfied without deadlock. Caller need not barrier() after.
+    """
+    comptime M_idx = ws_M_offset[NV, NBODY]()
+    comptime L_idx = ws_L_offset[NV, NBODY]()
+    comptime D_idx = ws_D_offset[NV, NBODY]()
+
+    # Distributed init: L = 0, D = 0, unit diagonal.
+    if valid_env:
+        for i in range(tid, NV * NV, n_threads):
+            workspace[env, L_idx + i] = 0
+        for i in range(tid, NV, n_threads):
+            workspace[env, D_idx + i] = 0
+            workspace[env, L_idx + i * NV + i] = 1
+    barrier()
+
+    for j in range(NV):
+        if valid_env:
+            # d_j: identical reduction to serial (k ascending). All threads
+            # compute it; only tid 0 commits to workspace.
+            var d_j = workspace[env, M_idx + j * NV + j]
+            for k in range(j):
+                d_j = (
+                    d_j
+                    - workspace[env, L_idx + j * NV + k]
+                    * workspace[env, L_idx + j * NV + k]
+                    * workspace[env, D_idx + k]
+                )
+            if tid == 0:
+                workspace[env, D_idx + j] = d_j
+
+            if d_j > 1e-14 or d_j < -1e-14:
+                for i in range(j + 1 + tid, NV, n_threads):
+                    var l_ij = workspace[env, M_idx + i * NV + j]
+                    for k in range(j):
+                        l_ij = (
+                            l_ij
+                            - workspace[env, L_idx + i * NV + k]
+                            * workspace[env, L_idx + j * NV + k]
+                            * workspace[env, D_idx + k]
+                        )
+                    workspace[env, L_idx + i * NV + j] = l_ij / d_j
+        # Column j complete (L[*,j], D[j]) before column j+1 reads it.
+        barrier()
 
 
 @always_inline

@@ -40,6 +40,7 @@ from ..dynamics.mass_matrix import (
     compute_mass_matrix_full_gpu_mt,
     ldl_factor,
     ldl_factor_gpu,
+    ldl_factor_gpu_mt,
     ldl_solve,
     ldl_solve_gpu,
     ldl_solve_workspace_gpu,
@@ -732,6 +733,13 @@ comptime RK4_BLOCKED_SOLVER: Bool = True
 # share of the NV independent M^-1 columns). Bit-identical to the serial path.
 # See docs/PHYSICS3D_BLOCKED_SOLVER.md.
 comptime RK4_PARALLEL_MINV: Bool = True
+
+
+# Sub-gate of RK4_PARALLEL_MINV: when True, the LDL factorization of the mass
+# matrix is also cooperative (each column's off-diagonal entries distributed
+# across the idle threads, block-wide barrier per column) instead of running on
+# tid 0. Bit-identical. Set False to keep LDL serial while M^-1 stays parallel.
+comptime RK4_PARALLEL_LDL: Bool = True
 
 
 struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
@@ -1515,10 +1523,21 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                     workspace[env, idx] += arm
 
         comptime if USE_PAR_MINV:
-            # tid 0 factorizes; all threads then solve their share of columns.
-            if valid_env and tid == 0:
-                ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
+            # Make tid 0's armature writes to M visible before the cooperative
+            # LDL/M_inv read it.
             barrier()
+            # LDL: cooperative (per-column distributed, internal barriers) or
+            # serial on tid 0, then all threads solve their share of M^-1 cols.
+            comptime if RK4_PARALLEL_LDL:
+                ldl_factor_gpu_mt[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                    env, tid, STEP_THREADS, valid_env, workspace
+                )
+            else:
+                if valid_env and tid == 0:
+                    ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                        env, workspace
+                    )
+                barrier()
             if valid_env:
                 compute_M_inv_from_ldl_gpu_mt[
                     DTYPE, NV, NBODY, BATCH, WS_SIZE
