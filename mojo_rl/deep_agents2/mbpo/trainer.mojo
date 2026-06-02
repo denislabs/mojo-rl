@@ -316,6 +316,16 @@ struct MBPOTrainer[
     var dyn_batch_size: Int
     var last_dyn_step: Int
     var _use_bf16: Bool
+    # Dynamics-training early-stopping (legacy `train_on_buffer` discipline):
+    # split the real buffer into a fixed train/holdout set and train each
+    # member until the HELD-OUT NLL stops improving, instead of a fixed
+    # `dyn_epochs_per_round` on the whole buffer. Prevents the world model
+    # from overfitting → over-confident → optimistic on the policy's OOD
+    # rollout actions (the root cause of the nn2-MBPO convergence gap).
+    var dyn_holdout_ratio: Scalar[DT]  # fraction held out (legacy 0.2)
+    var dyn_max_epochs: Int            # epoch ceiling (legacy 100)
+    var dyn_patience: Int              # stop after N checks w/o improve (5)
+    var dyn_holdout_check_every: Int   # eval holdout every N epochs (5)
 
     # Philox state for GPU warmup actions + rollout noise.
     var _warmup_rng_seed: UInt64
@@ -441,6 +451,15 @@ struct MBPOTrainer[
         self.num_rollouts_per_step = 400
         self.sac_updates_per_step = 20
         self.dyn_batch_size = 256
+        self.dyn_holdout_ratio = Scalar[DT](0.2)
+        # Ceiling only — early-stopping on the held-out NLL is the real
+        # regularizer and typically stops well before this. Kept below
+        # legacy's 100 because nn2's dyn-train loop isn't CUDA-graphed (one
+        # loss D2H per member-step), so the ceiling bounds worst-case wall
+        # time per model-train round.
+        self.dyn_max_epochs = 40
+        self.dyn_patience = 5
+        self.dyn_holdout_check_every = 5
         self.last_dyn_step = -1
         self._use_bf16 = False
         self._warmup_rng_seed = UInt64(0xC0FFEE_C0DE)
@@ -1426,92 +1445,123 @@ struct MBPOTrainer[
 
     # ─── Dynamics training + synthetic rollouts (CPU) ─────────────────
 
-    def _train_dynamics_ensemble(mut self) raises:
-        var n_data = self.sample_blk.real_count["cpu"]()
-        if n_data < self.dyn_batch_size:
-            return
-        var bs = self.dyn_batch_size
-        var steps_per_epoch = n_data // bs
-        if steps_per_epoch < 1:
-            steps_per_epoch = 1
-        var total_steps = steps_per_epoch * self.dyn_epochs_per_round
-
+    def _fill_dyn_batch_cpu(mut self, k: Int, idx: Int):
+        """Fill row `k` of the host dyn_in/dyn_tgt scratch from real-buffer
+        transition `idx`: dyn_in = [obs, act] (raw, whitened by caller),
+        dyn_tgt = [reward, Δobs]."""
         var dyn_in_p = self._dyn_in.cpu_ptr()
         var dyn_tgt_p = self._dyn_tgt.cpu_ptr()
-
         var rb_obs = self.sample_blk.real_cpu.value().obs
         var rb_act = self.sample_blk.real_cpu.value().act
         var rb_rew = self.sample_blk.real_cpu.value().rew
         var rb_nxt = self.sample_blk.real_cpu.value().nxt
+        for d in range(Self.OBS_DIM):
+            dyn_in_p[k * Self.DYN_IN + d] = rb_obs[idx * Self.OBS_DIM + d]
+        for j in range(Self.ACT_DIM):
+            dyn_in_p[k * Self.DYN_IN + Self.OBS_DIM + j] = rb_act[
+                idx * Self.ACT_DIM + j
+            ]
+        dyn_tgt_p[k * Self.DYN_PRED + 0] = rb_rew[idx]
+        for d in range(Self.OBS_DIM):
+            dyn_tgt_p[k * Self.DYN_PRED + 1 + d] = (
+                rb_nxt[idx * Self.OBS_DIM + d] - rb_obs[idx * Self.OBS_DIM + d]
+            )
+
+    def _eval_member_holdout_cpu(
+        mut self, m: Int, n_train: Int, n_holdout: Int,
+    ) raises -> Scalar[DT]:
+        """Mean GaussianNLL of member `m` over the held-out slice
+        `[n_train, n_train + n_holdout)` of the real buffer, evaluated in
+        BATCH chunks (whitened inputs, raw targets — training convention).
+        This is a TRUE holdout (never trained on), so it detects overfit."""
+        var dyn_in_p = self._dyn_in.cpu_ptr()
+        var dyn_tgt_p = self._dyn_tgt.cpu_ptr()
+        var n_chunks = n_holdout // Self.BATCH
+        if n_chunks < 1:
+            n_chunks = 1
+        var total = Scalar[DT](0.0)
+        for c in range(n_chunks):
+            for k in range(Self.BATCH):
+                var idx = n_train + ((c * Self.BATCH + k) % n_holdout)
+                self._fill_dyn_batch_cpu(k, idx)
+            self._normalize_dyn_in_cpu()
+            var in_t = TileTensor(dyn_in_p, row_major[Self.BATCH, Self.DYN_IN]())
+            var tgt_t = TileTensor(
+                dyn_tgt_p, row_major[Self.BATCH, Self.DYN_PRED]()
+            )
+            total += self.ensemble.eval_member_loss["cpu"](m, in_t, tgt_t)
+        return total / Scalar[DT](n_chunks)
+
+    def _train_dynamics_ensemble(mut self) raises:
+        var n_data = self.sample_blk.real_count["cpu"]()
+        if n_data < self.dyn_batch_size:
+            return
+        # Fixed train/holdout split (legacy `holdout_ratio`): train each
+        # member on the first `n_train`, validate + early-stop + rank elites
+        # on the last `n_holdout`. A TRUE holdout (never trained on) is what
+        # lets early-stopping prevent the overfit→over-confident→optimistic
+        # failure mode (the old code trained on the whole buffer for a fixed
+        # `dyn_epochs_per_round` and "validated" on data resampled from it).
+        var n_holdout = Int(Scalar[DT](n_data) * self.dyn_holdout_ratio)
+        if n_holdout < 1:
+            n_holdout = 1
+        var n_train = n_data - n_holdout
+        if n_train < self.dyn_batch_size:
+            # Buffer too small to split (only the first round or two) — train
+            # on all, eval on all. Harmless; the split kicks in once n_data
+            # grows past `dyn_batch_size / (1 - holdout_ratio)`.
+            n_train = n_data
+            n_holdout = n_data
+        var bs = self.dyn_batch_size
+        var steps_per_epoch = n_train // bs
+        if steps_per_epoch < 1:
+            steps_per_epoch = 1
+        var dyn_in_p = self._dyn_in.cpu_ptr()
+        var dyn_tgt_p = self._dyn_tgt.cpu_ptr()
+        var n_checks = self.dyn_max_epochs // self.dyn_holdout_check_every
+        if n_checks < 1:
+            n_checks = 1
 
         for m in range(Self.N_ENSEMBLE):
-            for _ in range(total_steps):
-                for k in range(Self.BATCH):
-                    var idx = Int(random_float64() * Float64(n_data))
-                    if idx >= n_data:
-                        idx = n_data - 1
-                    for d in range(Self.OBS_DIM):
-                        dyn_in_p[k * Self.DYN_IN + d] = rb_obs[
-                            idx * Self.OBS_DIM + d
-                        ]
-                    for j in range(Self.ACT_DIM):
-                        dyn_in_p[k * Self.DYN_IN + Self.OBS_DIM + j] = rb_act[
-                            idx * Self.ACT_DIM + j
-                        ]
-                    dyn_tgt_p[k * Self.DYN_PRED + 0] = rb_rew[idx]
-                    for d in range(Self.OBS_DIM):
-                        dyn_tgt_p[k * Self.DYN_PRED + 1 + d] = (
-                            rb_nxt[idx * Self.OBS_DIM + d]
-                            - rb_obs[idx * Self.OBS_DIM + d]
+            var best = Scalar[DT](1e30)
+            var since = 0
+            var stop = False
+            for _check in range(n_checks):
+                if stop:
+                    break
+                for _ep in range(self.dyn_holdout_check_every):
+                    for _ in range(steps_per_epoch):
+                        for k in range(Self.BATCH):
+                            var idx = Int(random_float64() * Float64(n_train))
+                            if idx >= n_train:
+                                idx = n_train - 1
+                            self._fill_dyn_batch_cpu(k, idx)
+                        self._normalize_dyn_in_cpu()
+                        var in_t = TileTensor(
+                            dyn_in_p, row_major[Self.BATCH, Self.DYN_IN]()
                         )
-                # Whiten inputs (targets stay in raw reward/Δobs space).
-                self._normalize_dyn_in_cpu()
-                var dyn_in_t = TileTensor(
-                    dyn_in_p, row_major[Self.BATCH, Self.DYN_IN]()
-                )
-                var dyn_tgt_t = TileTensor(
-                    dyn_tgt_p, row_major[Self.BATCH, Self.DYN_PRED]()
-                )
-                var dyn_loss = self.ensemble.train_member_step["cpu"](
-                    m, dyn_in_t, dyn_tgt_t,
-                )
-                self._dyn_loss_accum += dyn_loss
-                self._dyn_step_count += 1
+                        var tgt_t = TileTensor(
+                            dyn_tgt_p, row_major[Self.BATCH, Self.DYN_PRED]()
+                        )
+                        var dyn_loss = self.ensemble.train_member_step["cpu"](
+                            m, in_t, tgt_t,
+                        )
+                        self._dyn_loss_accum += dyn_loss
+                        self._dyn_step_count += 1
+                # Early-stop check on the TRUE holdout.
+                var hl = self._eval_member_holdout_cpu(m, n_train, n_holdout)
+                if hl < best - Scalar[DT](1e-2):
+                    best = hl
+                    since = 0
+                else:
+                    since += 1
+                    if since >= self.dyn_patience:
+                        stop = True
 
-        # ── Elite ranking ────────────────────────────────────────────────
-        # Score every member on ONE shared held-out validation batch and
-        # keep the NUM_ELITES with the lowest NLL. Without this the elite
-        # set stays frozen at [0..NUM_ELITES) and rollouts sample from
-        # un-vetted members. (Members are bootstrap-trained on independent
-        # random draws, so a fresh random batch is a fair relative score.)
-        for k in range(Self.BATCH):
-            var idx = Int(random_float64() * Float64(n_data))
-            if idx >= n_data:
-                idx = n_data - 1
-            for d in range(Self.OBS_DIM):
-                dyn_in_p[k * Self.DYN_IN + d] = rb_obs[idx * Self.OBS_DIM + d]
-            for j in range(Self.ACT_DIM):
-                dyn_in_p[k * Self.DYN_IN + Self.OBS_DIM + j] = rb_act[
-                    idx * Self.ACT_DIM + j
-                ]
-            dyn_tgt_p[k * Self.DYN_PRED + 0] = rb_rew[idx]
-            for d in range(Self.OBS_DIM):
-                dyn_tgt_p[k * Self.DYN_PRED + 1 + d] = (
-                    rb_nxt[idx * Self.OBS_DIM + d]
-                    - rb_obs[idx * Self.OBS_DIM + d]
-                )
-        self._normalize_dyn_in_cpu()
-        var val_in_t = TileTensor(
-            dyn_in_p, row_major[Self.BATCH, Self.DYN_IN]()
-        )
-        var val_tgt_t = TileTensor(
-            dyn_tgt_p, row_major[Self.BATCH, Self.DYN_PRED]()
-        )
+        # Elite ranking on the same held-out set (now a TRUE holdout).
         var holdout = List[Scalar[DT]]()
         for m in range(Self.N_ENSEMBLE):
-            holdout.append(
-                self.ensemble.eval_member_loss["cpu"](m, val_in_t, val_tgt_t)
-            )
+            holdout.append(self._eval_member_holdout_cpu(m, n_train, n_holdout))
         self._record_holdout_stats(holdout)
         self.ensemble.update_elites(holdout)
 
@@ -1624,78 +1674,18 @@ struct MBPOTrainer[
 
     # ─── Dynamics training + synthetic rollouts (GPU) ─────────────────
 
-    def _train_dynamics_ensemble_gpu(mut self) raises:
-        var n_data = self.sample_blk.real_count["gpu"]()
-        if n_data < self.dyn_batch_size:
-            return
-        var bs = self.dyn_batch_size
-        var steps_per_epoch = n_data // bs
-        if steps_per_epoch < 1:
-            steps_per_epoch = 1
-        var total_steps = steps_per_epoch * self.dyn_epochs_per_round
+    def _build_dyn_batch_gpu(mut self, lo: Int, hi: Int) raises:
+        """Sample BATCH transitions from real-buffer index range [lo, hi)
+        into the rollout scratches, then materialize the device tiles
+        `self._dyn_in` (whitened [obs, act]) + `self._dyn_tgt` ([reward,
+        Δobs]) ready for `train_member_step` / `eval_member_loss`."""
         var ctx = self.ctx.value()
-
         comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
         comptime tgt_kernel = _build_dyn_target_kernel[
             Self.BATCH, Self.OBS_DIM, Self.DYN_PRED
         ]
-
-        for m in range(Self.N_ENSEMBLE):
-            for _ in range(total_steps):
-                # Bootstrap batch: draw BATCH transitions from real_buf into
-                # the rollout device scratches (s=ro_obs, a=ro_act, r=ro_rew,
-                # sp=ro_nxt, d=ro_done).
-                self.sample_blk.real_sample[Self.BATCH](
-                    ctx,
-                    self._ro_obs.dev.value(),
-                    self._ro_act.dev.value(),
-                    self._ro_rew.dev.value(),
-                    self._ro_nxt.dev.value(),
-                    self._ro_done.dev.value(),
-                )
-                # dyn_in = concat(s, a).
-                concat_sa_gpu[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH](
-                    ctx,
-                    self._ro_obs.dev_ptr(),
-                    self._ro_act.dev_ptr(),
-                    self._dyn_in.dev_ptr(),
-                )
-                # Whiten inputs (targets below stay in raw reward/Δobs space).
-                self._normalize_dyn_in_gpu()
-                # dyn_tgt = [r, sp - s].
-                var rew_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-                ](self._ro_rew.dev_ptr())
-                var s_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH, Self.OBS_DIM), MutAnyOrigin,
-                ](self._ro_obs.dev_ptr())
-                var sp_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH, Self.OBS_DIM), MutAnyOrigin,
-                ](self._ro_nxt.dev_ptr())
-                var tgt_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH, Self.DYN_PRED), MutAnyOrigin,
-                ](self._dyn_tgt.dev_ptr())
-                ctx.enqueue_function[tgt_kernel](
-                    rew_lt, s_lt, sp_lt, tgt_lt,
-                    grid_dim=n_blocks, block_dim=TPB,
-                )
-                var dyn_in_t = TileTensor(
-                    self._dyn_in.dev_ptr(),
-                    row_major[Self.BATCH, Self.DYN_IN](),
-                )
-                var dyn_tgt_t = TileTensor(
-                    self._dyn_tgt.dev_ptr(),
-                    row_major[Self.BATCH, Self.DYN_PRED](),
-                )
-                var dyn_loss = self.ensemble.train_member_step["gpu"](
-                    m, dyn_in_t, dyn_tgt_t,
-                )
-                self._dyn_loss_accum += dyn_loss
-                self._dyn_step_count += 1
-
-        # ── Elite ranking on a shared held-out device batch ──────────────
-        self.sample_blk.real_sample[Self.BATCH](
-            ctx,
+        self.sample_blk.real_sample_range[Self.BATCH](
+            ctx, lo, hi,
             self._ro_obs.dev.value(),
             self._ro_act.dev.value(),
             self._ro_rew.dev.value(),
@@ -1709,33 +1699,113 @@ struct MBPOTrainer[
             self._dyn_in.dev_ptr(),
         )
         self._normalize_dyn_in_gpu()
-        var v_rew_lt = LayoutTensor[
+        var rew_lt = LayoutTensor[
             DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
         ](self._ro_rew.dev_ptr())
-        var v_s_lt = LayoutTensor[
+        var s_lt = LayoutTensor[
             DT, Layout.row_major(Self.BATCH, Self.OBS_DIM), MutAnyOrigin,
         ](self._ro_obs.dev_ptr())
-        var v_sp_lt = LayoutTensor[
+        var sp_lt = LayoutTensor[
             DT, Layout.row_major(Self.BATCH, Self.OBS_DIM), MutAnyOrigin,
         ](self._ro_nxt.dev_ptr())
-        var v_tgt_lt = LayoutTensor[
+        var tgt_lt = LayoutTensor[
             DT, Layout.row_major(Self.BATCH, Self.DYN_PRED), MutAnyOrigin,
         ](self._dyn_tgt.dev_ptr())
         ctx.enqueue_function[tgt_kernel](
-            v_rew_lt, v_s_lt, v_sp_lt, v_tgt_lt,
+            rew_lt, s_lt, sp_lt, tgt_lt,
             grid_dim=n_blocks, block_dim=TPB,
         )
-        var val_in_t = TileTensor(
-            self._dyn_in.dev_ptr(), row_major[Self.BATCH, Self.DYN_IN]()
-        )
-        var val_tgt_t = TileTensor(
-            self._dyn_tgt.dev_ptr(), row_major[Self.BATCH, Self.DYN_PRED]()
-        )
+
+    def _eval_member_holdout_gpu(
+        mut self, m: Int, lo: Int, hi: Int,
+    ) raises -> Scalar[DT]:
+        """Mean GaussianNLL of member `m` over the holdout range [lo, hi),
+        averaged across up to 4 BATCH draws (a Monte-Carlo estimate of the
+        held-out NLL — cheaper than a full reduction; averaging stabilizes
+        the early-stop signal)."""
+        var span = hi - lo
+        var n_chunks = span // Self.BATCH
+        if n_chunks < 1:
+            n_chunks = 1
+        if n_chunks > 4:
+            n_chunks = 4
+        var total = Scalar[DT](0.0)
+        for _ in range(n_chunks):
+            self._build_dyn_batch_gpu(lo, hi)
+            var in_t = TileTensor(
+                self._dyn_in.dev_ptr(), row_major[Self.BATCH, Self.DYN_IN]()
+            )
+            var tgt_t = TileTensor(
+                self._dyn_tgt.dev_ptr(), row_major[Self.BATCH, Self.DYN_PRED]()
+            )
+            total += self.ensemble.eval_member_loss["gpu"](m, in_t, tgt_t)
+        return total / Scalar[DT](n_chunks)
+
+    def _train_dynamics_ensemble_gpu(mut self) raises:
+        var n_data = self.sample_blk.real_count["gpu"]()
+        if n_data < self.dyn_batch_size:
+            return
+        # Fixed train/holdout split + per-member early stopping on the TRUE
+        # holdout (mirrors the CPU path + legacy `train_on_buffer`). Train on
+        # [0, n_train); validate + early-stop + rank elites on [hold_lo,
+        # hold_hi). Prevents the overfit→over-confident→optimistic world model
+        # the policy was exploiting.
+        var n_holdout = Int(Scalar[DT](n_data) * self.dyn_holdout_ratio)
+        if n_holdout < 1:
+            n_holdout = 1
+        var n_train = n_data - n_holdout
+        var hold_lo = n_train
+        var hold_hi = n_data
+        if n_train < self.dyn_batch_size:
+            # Buffer too small to split (first round or two) — train + eval
+            # on all; the split engages once n_data grows.
+            n_train = n_data
+            hold_lo = 0
+            hold_hi = n_data
+        var bs = self.dyn_batch_size
+        var steps_per_epoch = n_train // bs
+        if steps_per_epoch < 1:
+            steps_per_epoch = 1
+        var n_checks = self.dyn_max_epochs // self.dyn_holdout_check_every
+        if n_checks < 1:
+            n_checks = 1
+
+        for m in range(Self.N_ENSEMBLE):
+            var best = Scalar[DT](1e30)
+            var since = 0
+            var stop = False
+            for _check in range(n_checks):
+                if stop:
+                    break
+                for _ep in range(self.dyn_holdout_check_every):
+                    for _ in range(steps_per_epoch):
+                        self._build_dyn_batch_gpu(0, n_train)
+                        var dyn_in_t = TileTensor(
+                            self._dyn_in.dev_ptr(),
+                            row_major[Self.BATCH, Self.DYN_IN](),
+                        )
+                        var dyn_tgt_t = TileTensor(
+                            self._dyn_tgt.dev_ptr(),
+                            row_major[Self.BATCH, Self.DYN_PRED](),
+                        )
+                        var dyn_loss = self.ensemble.train_member_step["gpu"](
+                            m, dyn_in_t, dyn_tgt_t,
+                        )
+                        self._dyn_loss_accum += dyn_loss
+                        self._dyn_step_count += 1
+                var hl = self._eval_member_holdout_gpu(m, hold_lo, hold_hi)
+                if hl < best - Scalar[DT](1e-2):
+                    best = hl
+                    since = 0
+                else:
+                    since += 1
+                    if since >= self.dyn_patience:
+                        stop = True
+
+        # Elite ranking on the TRUE holdout.
         var holdout = List[Scalar[DT]]()
         for m in range(Self.N_ENSEMBLE):
-            holdout.append(
-                self.ensemble.eval_member_loss["gpu"](m, val_in_t, val_tgt_t)
-            )
+            holdout.append(self._eval_member_holdout_gpu(m, hold_lo, hold_hi))
         self._record_holdout_stats(holdout)
         self.ensemble.update_elites(holdout)
 

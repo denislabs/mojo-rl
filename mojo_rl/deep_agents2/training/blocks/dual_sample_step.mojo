@@ -128,6 +128,25 @@ struct DualSampleStep[
         buffers (GPU dynamics-train bootstrap + rollout start states)."""
         self.real_gpu.value().sample[N](ctx, mb_s, mb_a, mb_r, mb_sp, mb_d)
 
+    def real_sample_range[
+        N: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        lo: Int,
+        hi: Int,
+        mb_s: DeviceBuffer[DT],
+        mb_a: DeviceBuffer[DT],
+        mb_r: DeviceBuffer[DT],
+        mb_sp: DeviceBuffer[DT],
+        mb_d: DeviceBuffer[DT],
+    ) raises:
+        """Draw N transitions from the real-buffer index range `[lo, hi)` —
+        the MBPO dyn-train train/holdout split."""
+        self.real_gpu.value().sample_range[N](
+            ctx, lo, hi, mb_s, mb_a, mb_r, mb_sp, mb_d
+        )
+
     def real_count[target: StaticString](self) -> Int:
         comptime if target == "cpu":
             if not self.real_cpu:

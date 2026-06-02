@@ -110,6 +110,38 @@ def _bump_size_kernel[CAP: Int](
         size_buf[0] = Scalar[DType.int32](s)
 
 
+def _sample_indices_range_kernel[BATCH: Int](
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+    ],
+    lo: Int32,
+    hi: Int32,
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Philox uniform → integer index in `[lo, hi)`. Host-passed range (the
+    MBPO dyn train/holdout split is NOT CUDA-graph captured, so host scalars
+    are fine here). Advances the same `offset_buf` counter as
+    `_sample_indices_kernel`."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+    var offset_base = rebind[UInt64](offset_buf[0])
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var u = Float32(philox.step_uniform()[0])
+    var lo_i = Int(lo)
+    var hi_i = Int(hi)
+    var span = hi_i - lo_i
+    if span < 1:
+        span = 1
+    var idx = lo_i + Int(u * Float32(span))
+    if idx >= hi_i:
+        idx = hi_i - 1
+    if idx < lo_i:
+        idx = lo_i
+    indices[i] = Scalar[DType.int32](idx)
+
+
 def _sample_indices_kernel[BATCH: Int](
     indices: LayoutTensor[
         DType.int32, Layout.row_major(BATCH), MutAnyOrigin
@@ -797,6 +829,82 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             DT, Layout.row_major(Self.CAP), MutAnyOrigin
         ](self.dne.unsafe_ptr())
 
+        comptime gather_kernel = _gather_batch_kernel[
+            BATCH, Self.OBS, Self.ACT, Self.CAP
+        ]
+        ctx.enqueue_function[gather_kernel](
+            mb_s_lt, mb_a_lt, mb_r_lt, mb_sp_lt, mb_d_lt,
+            buf_s_lt, buf_a_lt, buf_r_lt, buf_sp_lt, buf_d_lt,
+            idx_lt,
+            grid_dim=n_blocks, block_dim=TPB,
+        )
+
+    def sample_range[BATCH: Int](
+        mut self,
+        ctx: DeviceContext,
+        lo: Int,
+        hi: Int,
+        mb_s: DeviceBuffer[DT],
+        mb_a: DeviceBuffer[DT],
+        mb_r: DeviceBuffer[DT],
+        mb_sp: DeviceBuffer[DT],
+        mb_d: DeviceBuffer[DT],
+    ) raises:
+        """Like `sample`, but draws indices uniformly from `[lo, hi)`
+        instead of the whole live buffer — used by MBPO dynamics training to
+        enforce a fixed train/holdout split. Not CUDA-graph captured, so the
+        host `lo`/`hi` range is fine. Ignores ERE."""
+        comptime assert BATCH > 0, "BATCH must be > 0"
+        if BATCH > self.batch_capacity:
+            raise Error(
+                "GPUReplay.sample_range[BATCH=" + String(BATCH)
+                + "] exceeds batch_capacity=" + String(self.batch_capacity)
+            )
+        var idx_lt = LayoutTensor[
+            DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+        ](self.indices.unsafe_ptr())
+        var off_lt = LayoutTensor[
+            DType.uint64, Layout.row_major(1), MutAnyOrigin
+        ](self._rng_offset_dev.unsafe_ptr())
+        comptime n_blocks = (BATCH + TPB - 1) // TPB
+        comptime range_kernel = _sample_indices_range_kernel[BATCH]
+        ctx.enqueue_function[range_kernel](
+            idx_lt, Int32(lo), Int32(hi), self.rng_seed, off_lt,
+            grid_dim=n_blocks, block_dim=TPB,
+        )
+        comptime inc_kernel = _increment_rng_offset_kernel[BATCH]
+        ctx.enqueue_function[inc_kernel](off_lt, grid_dim=1, block_dim=1)
+
+        var mb_s_lt = LayoutTensor[
+            DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
+        ](mb_s.unsafe_ptr())
+        var mb_a_lt = LayoutTensor[
+            DT, Layout.row_major(BATCH, Self.ACT), MutAnyOrigin
+        ](mb_a.unsafe_ptr())
+        var mb_r_lt = LayoutTensor[
+            DT, Layout.row_major(BATCH), MutAnyOrigin
+        ](mb_r.unsafe_ptr())
+        var mb_sp_lt = LayoutTensor[
+            DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
+        ](mb_sp.unsafe_ptr())
+        var mb_d_lt = LayoutTensor[
+            DT, Layout.row_major(BATCH), MutAnyOrigin
+        ](mb_d.unsafe_ptr())
+        var buf_s_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+        ](self.obs.unsafe_ptr())
+        var buf_a_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin
+        ](self.act.unsafe_ptr())
+        var buf_r_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP), MutAnyOrigin
+        ](self.rew.unsafe_ptr())
+        var buf_sp_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+        ](self.nxt.unsafe_ptr())
+        var buf_d_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP), MutAnyOrigin
+        ](self.dne.unsafe_ptr())
         comptime gather_kernel = _gather_batch_kernel[
             BATCH, Self.OBS, Self.ACT, Self.CAP
         ]
