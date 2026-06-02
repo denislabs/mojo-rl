@@ -19,7 +19,8 @@ Internals:
 """
 
 from std.math import sqrt
-from std.gpu import global_idx
+from std.sys import has_nvidia_gpu_accelerator
+from std.gpu import global_idx, block_idx, block_dim, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
@@ -98,6 +99,97 @@ def _zero_fill_kernel(
     var i = Int(global_idx.x)
     if i < n_elems:
         ptr[i] = 0.0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Multi-tensor ("grouped") GPU kernels — NVIDIA only.
+#
+# nn2 stores each param tensor in its OWN DeviceBuffer (Param.make_gpu), so
+# params are not a contiguous slab — one slab-wide kernel can't address them.
+# Instead, one launch updates ALL params via a 2-D grid (grid.y = param index,
+# grid.x = element block) reading device-resident arrays of per-param value/grad
+# pointer ADDRESSES (+ sizes + moment offsets). Each block reconstructs the
+# param/grad pointer from its address. This collapses the per-tensor Adam / zero
+# launches into ONE launch per optimizer.
+#
+# NVIDIA-only: dereferencing a host-captured device address in-kernel is valid
+# on CUDA (generic addressing) but NOT on Apple Metal (writes are silently lost
+# — verified by tests/nn2/test_grouped_adam_prototype.mojo). The callers gate
+# these under `has_nvidia_gpu_accelerator()`; Apple keeps the per-tensor path.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _grouped_adam_update_kernel(
+    param_addrs: UnsafePointer[UInt64, MutAnyOrigin],
+    grad_addrs: UnsafePointer[UInt64, MutAnyOrigin],
+    sizes: UnsafePointer[Int32, MutAnyOrigin],
+    moment_offs: UnsafePointer[Int32, MutAnyOrigin],
+    m_base: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    v_base: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    lr: Scalar[DT],
+    beta1: Scalar[DT],
+    beta2: Scalar[DT],
+    eps: Scalar[DT],
+):
+    var p = Int(block_idx.y)
+    var e = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
+    if e < Int(sizes[p]):
+        var param = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=Int(param_addrs[p])
+        )
+        var grad = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=Int(grad_addrs[p])
+        )
+        var mo = Int(moment_offs[p]) + e
+        var one: Scalar[DT] = 1.0
+        var bc1 = bc_ptr[2]
+        var bc2 = bc_ptr[3]
+        var g = grad[e]
+        var m_new = beta1 * m_base[mo] + (one - beta1) * g
+        var v_new = beta2 * v_base[mo] + (one - beta2) * g * g
+        m_base[mo] = m_new
+        v_base[mo] = v_new
+        var m_hat = m_new / bc1
+        var v_hat = v_new / bc2
+        param[e] = param[e] - lr * m_hat / (sqrt(v_hat) + eps)
+
+
+def _grouped_zero_kernel(
+    grad_addrs: UnsafePointer[UInt64, MutAnyOrigin],
+    sizes: UnsafePointer[Int32, MutAnyOrigin],
+):
+    var p = Int(block_idx.y)
+    var e = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
+    if e < Int(sizes[p]):
+        var grad = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=Int(grad_addrs[p])
+        )
+        grad[e] = 0.0
+
+
+def _upload_u64(
+    ctx: DeviceContext, ref h: List[UInt64]
+) raises -> DeviceBuffer[DType.uint64]:
+    var d = ctx.enqueue_create_buffer[DType.uint64](len(h))
+    var hb = ctx.enqueue_create_host_buffer[DType.uint64](len(h))
+    ctx.synchronize()
+    for i in range(len(h)):
+        hb.unsafe_ptr()[i] = h[i]
+    ctx.enqueue_copy(d, hb)
+    return d^
+
+
+def _upload_i32(
+    ctx: DeviceContext, ref h: List[Int32]
+) raises -> DeviceBuffer[DType.int32]:
+    var d = ctx.enqueue_create_buffer[DType.int32](len(h))
+    var hb = ctx.enqueue_create_host_buffer[DType.int32](len(h))
+    ctx.synchronize()
+    for i in range(len(h)):
+        hb.unsafe_ptr()[i] = h[i]
+    ctx.enqueue_copy(d, hb)
+    return d^
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -308,6 +400,41 @@ struct _ZeroGradGPUVisitor(ParamVisitor):
         )
 
 
+@fieldwise_init
+struct _MTDescriptorCollector(ParamVisitor):
+    """Walks the model's params (NVIDIA grouped path) WITHOUT launching kernels,
+    gathering each param's value/grad pointer ADDRESS and element count into host
+    Lists (later uploaded to device descriptor arrays). Tracks the max param size
+    to size the grouped kernel's element grid. Run ONCE in `make[target='gpu']`
+    — the per-Param DeviceBuffers are allocated and stable, so the addresses
+    stay valid for the optimizer's lifetime."""
+
+    var param_addrs_ptr: UnsafePointer[List[UInt64], MutAnyOrigin]
+    var grad_addrs_ptr: UnsafePointer[List[UInt64], MutAnyOrigin]
+    var sizes_ptr: UnsafePointer[List[Int32], MutAnyOrigin]
+    var max_size_ptr: UnsafePointer[Int, MutAnyOrigin]
+
+    def visit(
+        mut self,
+        name: String,
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        n_elems: Int,
+        apply_decay: Bool,
+    ) raises:
+        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        self.param_addrs_ptr[].append(UInt64(Int(p_ptr)))
+        self.grad_addrs_ptr[].append(UInt64(Int(g_ptr)))
+        self.sizes_ptr[].append(Int32(n_elems))
+        if n_elems > self.max_size_ptr[]:
+            self.max_size_ptr[] = n_elems
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Adam.
 # ──────────────────────────────────────────────────────────────────────
@@ -357,6 +484,18 @@ struct Adam(Optimizer, Saveable):
     # the init walker has run.
     var _clip_state: Optional[GradClipState]
 
+    # Multi-tensor ("grouped") GPU optimizer descriptors. Built ONCE in
+    # `make[target='gpu']` on NVIDIA only (Apple Metal can't deref host-captured
+    # device addresses in-kernel, so it keeps the per-tensor path). The grouped
+    # Adam-step / zero kernels read these device-resident arrays to update every
+    # param tensor in ONE launch. None / 0 on CPU + Apple.
+    var _mt_param_addrs: Optional[DeviceBuffer[DType.uint64]]
+    var _mt_grad_addrs: Optional[DeviceBuffer[DType.uint64]]
+    var _mt_sizes: Optional[DeviceBuffer[DType.int32]]
+    var _mt_moment_offs: Optional[DeviceBuffer[DType.int32]]
+    var _mt_n_params: Int
+    var _mt_max_size: Int
+
     var ts: TargetStorage
 
     def __init__(out self):
@@ -377,6 +516,12 @@ struct Adam(Optimizer, Saveable):
         self.beta2_pow_t = Scalar[DT](1.0)
         self.max_grad_norm = Scalar[DT](0.0)
         self._clip_state = None
+        self._mt_param_addrs = None
+        self._mt_grad_addrs = None
+        self._mt_sizes = None
+        self._mt_moment_offs = None
+        self._mt_n_params = 0
+        self._mt_max_size = 0
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -433,6 +578,35 @@ struct Adam(Optimizer, Saveable):
             opt.step_dev = step_real^
             opt.bc_dev = bc_real^
             opt.ts = TargetStorage.make_gpu(ctx_v)
+            # Build the multi-tensor descriptor arrays (NVIDIA only). On Apple
+            # these stay None and step/zero_grad take the per-tensor path
+            # (Metal can't deref host-captured device addresses in-kernel).
+            comptime if has_nvidia_gpu_accelerator():
+                var pa = List[UInt64]()
+                var ga = List[UInt64]()
+                var sz = List[Int32]()
+                var maxs: Int = 0
+                var coll = _MTDescriptorCollector(
+                    param_addrs_ptr=UnsafePointer(to=pa),
+                    grad_addrs_ptr=UnsafePointer(to=ga),
+                    sizes_ptr=UnsafePointer(to=sz),
+                    max_size_ptr=UnsafePointer(to=maxs),
+                )
+                model.for_each_param[target, _MTDescriptorCollector](
+                    String(""), coll
+                )
+                # Moment offsets are exactly the init walker's `offsets`
+                # (same walk order), narrowed to int32 for the kernel.
+                var mo = List[Int32]()
+                for i in range(len(opt.offsets)):
+                    mo.append(Int32(opt.offsets[i]))
+                opt._mt_n_params = len(sz)
+                opt._mt_max_size = maxs
+                if opt._mt_n_params > 0:
+                    opt._mt_param_addrs = _upload_u64(ctx_v, pa)
+                    opt._mt_grad_addrs = _upload_u64(ctx_v, ga)
+                    opt._mt_sizes = _upload_i32(ctx_v, sz)
+                    opt._mt_moment_offs = _upload_i32(ctx_v, mo)
         return opt^
 
     def zero_grad[
@@ -444,8 +618,25 @@ struct Adam(Optimizer, Saveable):
             var v = _ZeroGradCPUVisitor()
             model.for_each_param[target, _ZeroGradCPUVisitor](String(""), v)
         else:
-            var v = _ZeroGradGPUVisitor(ctx=self.ts.ctx.value())
-            model.for_each_param[target, _ZeroGradGPUVisitor](String(""), v)
+            var ctx = self.ts.ctx.value()
+            comptime if has_nvidia_gpu_accelerator():
+                # Grouped: one launch zeros every grad tensor. Descriptors were
+                # built in make[gpu]. (`_mt_n_params == 0` → no params, no-op.)
+                if self._mt_n_params > 0:
+                    var blocks_x = (self._mt_max_size + TPB - 1) // TPB
+                    ctx.enqueue_function[_grouped_zero_kernel](
+                        rebind[UnsafePointer[UInt64, MutAnyOrigin]](
+                            self._mt_grad_addrs.value().unsafe_ptr()
+                        ),
+                        rebind[UnsafePointer[Int32, MutAnyOrigin]](
+                            self._mt_sizes.value().unsafe_ptr()
+                        ),
+                        grid_dim=(blocks_x, self._mt_n_params),
+                        block_dim=TPB,
+                    )
+            else:
+                var v = _ZeroGradGPUVisitor(ctx=ctx)
+                model.for_each_param[target, _ZeroGradGPUVisitor](String(""), v)
 
     def step[
         target: StaticString,
@@ -503,16 +694,51 @@ struct Adam(Optimizer, Saveable):
                 step_ptr, bc_ptr, self.beta1, self.beta2,
                 grid_dim=1, block_dim=1,
             )
-            var visitor = _AdamGPUStepVisitor(
-                ctx=ctx,
-                m_base=self.m_dev.value().unsafe_ptr(),
-                v_base=self.v_dev.value().unsafe_ptr(),
-                bc_base=bc_ptr,
-                offsets_ptr=UnsafePointer(to=self.offsets),
-                idx=0,
-                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
-            )
-            model.for_each_param[target, _AdamGPUStepVisitor](String(""), visitor)
+            comptime if has_nvidia_gpu_accelerator():
+                # Grouped: ONE launch updates every param tensor. Reads the
+                # device-resident descriptor arrays (built in make[gpu]) and the
+                # device bias-correction (bc_ptr) — fully CUDA-graph capturable.
+                # (`_mt_n_params == 0` → no params, no-op.)
+                if self._mt_n_params > 0:
+                    var blocks_x = (self._mt_max_size + TPB - 1) // TPB
+                    ctx.enqueue_function[_grouped_adam_update_kernel](
+                        rebind[UnsafePointer[UInt64, MutAnyOrigin]](
+                            self._mt_param_addrs.value().unsafe_ptr()
+                        ),
+                        rebind[UnsafePointer[UInt64, MutAnyOrigin]](
+                            self._mt_grad_addrs.value().unsafe_ptr()
+                        ),
+                        rebind[UnsafePointer[Int32, MutAnyOrigin]](
+                            self._mt_sizes.value().unsafe_ptr()
+                        ),
+                        rebind[UnsafePointer[Int32, MutAnyOrigin]](
+                            self._mt_moment_offs.value().unsafe_ptr()
+                        ),
+                        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                            self.m_dev.value().unsafe_ptr()
+                        ),
+                        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                            self.v_dev.value().unsafe_ptr()
+                        ),
+                        bc_ptr,
+                        self.lr, self.beta1, self.beta2, self.eps,
+                        grid_dim=(blocks_x, self._mt_n_params),
+                        block_dim=TPB,
+                    )
+            else:
+                var visitor = _AdamGPUStepVisitor(
+                    ctx=ctx,
+                    m_base=self.m_dev.value().unsafe_ptr(),
+                    v_base=self.v_dev.value().unsafe_ptr(),
+                    bc_base=bc_ptr,
+                    offsets_ptr=UnsafePointer(to=self.offsets),
+                    idx=0,
+                    lr=self.lr, beta1=self.beta1, beta2=self.beta2,
+                    eps=self.eps,
+                )
+                model.for_each_param[target, _AdamGPUStepVisitor](
+                    String(""), visitor
+                )
 
     # ─────────────────────────── Saveable (CPU only) ───────────────────────────
     # Saved fields:
