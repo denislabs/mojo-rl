@@ -45,7 +45,7 @@ from mojo_rl.envs.walker2d import Walker2d
 
 # ─── Profiling knobs ──────────────────────────────────────────────────────
 comptime USE_TRAIN_CUDA_GRAPH = True
-comptime USE_ENV_CUDA_GRAPH = False
+comptime USE_ENV_CUDA_GRAPH = True
 comptime EPISODE_SYNC_EVERY = 32
 
 # ─── Sizing (mirrors sac_walker2d_profile_graph.mojo exactly) ──────────────
