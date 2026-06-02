@@ -68,12 +68,10 @@ comptime NUM_ELITES = 5
 # in-distribution. Do NOT copy this to the CPU example.
 comptime REAL_RATIO_PCT = 5
 comptime LOGVAR_MIN_F = -10.0
-# Match legacy MBPO's dynamics uncertainty bound (max std ≈ 0.37). The prior
-# −5.0 capped std at ≈0.08 → an over-confident model the policy could exploit
-# (predicted 0.81/step vs 0.20/step real). Legacy's wider bound injects more
-# rollout noise (regularizes the policy) and lets the model hedge on OOD
-# rollout actions instead of emitting sharp optimistic means.
-comptime LOGVAR_MAX_F = -2.0
+# Back to −5.0 (the original baseline bound): LOGVAR_MAX=−2 was REFUTED
+# on its own (reward 115 vs 210), so to cleanly isolate the dynamics
+# early-stopping fix we keep the baseline logvar bound here.
+comptime LOGVAR_MAX_F = -5.0
 
 comptime NUM_STEPS = 300_000  # MBPO needs ~10× fewer real steps than SAC
 comptime PRINT_EVERY = 10_000
@@ -100,7 +98,7 @@ comptime ALPHA_LR: Scalar[DT] = 0.0 if FIX_ALPHA else 3e-4
 comptime RUN_NAME = (
     "MBPO HalfCheetah NN2 (GPU) — fixed alpha=0.12"
     if FIX_ALPHA
-    else "MBPO HalfCheetah NN2 (GPU) — auto alpha, logvar_max=-2"
+    else "MBPO HalfCheetah NN2 (GPU) — early-stop dyn, logvar=-5"
 )
 
 

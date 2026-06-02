@@ -150,6 +150,57 @@ def _rollout_posterior_kernel[
         out_nxt[k, d] = rebind[Scalar[DT]](obs[k, d]) + delta
 
 
+def _mbpo_elite_assign_kernel[BATCH: Int](
+    slot: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    n_elites: Int32,
+    seed: UInt64,
+    offset: UInt64,
+):
+    """Per-transition random elite slot ∈ [0, n_elites), stored as DT. One
+    thread per lane. Mirrors legacy `sample_elite_assignment_kernel` /
+    softlearning `np.random.choice(elite_inds, size=batch)`."""
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+    var philox = PhiloxRandom(seed=seed + UInt64(b), offset=offset)
+    var u = Float32(philox.step_uniform()[0])
+    var ne = Int(n_elites)
+    var s = Int(u * Float32(ne))
+    if s >= ne:
+        s = ne - 1
+    if s < 0:
+        s = 0
+    slot[b] = Scalar[DT](s)
+
+
+def _mbpo_elite_gather_kernel[BATCH: Int, NELITES: Int, PRED: Int](
+    mu_all: LayoutTensor[
+        DT, Layout.row_major(NELITES * BATCH, PRED), MutAnyOrigin
+    ],
+    lv_all: LayoutTensor[
+        DT, Layout.row_major(NELITES * BATCH, PRED), MutAnyOrigin
+    ],
+    slot: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    out_mu: LayoutTensor[DT, Layout.row_major(BATCH, PRED), MutAnyOrigin],
+    out_lv: LayoutTensor[DT, Layout.row_major(BATCH, PRED), MutAnyOrigin],
+):
+    """Per-transition gather: `out[b,:] = all[slot[b]·BATCH + b, :]` (the
+    stacked elite outputs are laid out [NELITES, BATCH, PRED]). One thread
+    per lane."""
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+    var s = Int(rebind[Scalar[DT]](slot[b]))
+    if s < 0:
+        s = 0
+    if s >= NELITES:
+        s = NELITES - 1
+    var row = s * BATCH + b
+    for d in range(PRED):
+        out_mu[b, d] = rebind[Scalar[DT]](mu_all[row, d])
+        out_lv[b, d] = rebind[Scalar[DT]](lv_all[row, d])
+
+
 def _build_dyn_target_kernel[
     BATCH: Int, OBS: Int, PRED: Int
 ](
@@ -289,6 +340,20 @@ struct MBPOTrainer[
     var _ro_nxt: Scratch["ro_nxt", Self.BATCH * Self.OBS_DIM]
     var _ro_mu: Scratch["ro_mu", Self.BATCH * Self.DYN_PRED]
     var _ro_lv: Scratch["ro_lv", Self.BATCH * Self.DYN_PRED]
+    # Stacked elite outputs [NUM_ELITES, BATCH, DYN_PRED] + per-transition
+    # elite slot [BATCH]: rollouts forward ALL elites then gather a random
+    # elite PER TRANSITION (legacy `sample_elite_assignment_kernel` /
+    # softlearning fake_env: `np.random.choice(elite_inds, size=batch)`).
+    # One-elite-per-chunk lets the policy exploit a single model's bias →
+    # over-confident/optimistic synthetic reward (the remaining gap after the
+    # dyn early-stopping fix).
+    var _ro_mu_all: Scratch[
+        "ro_mu_all", Self.NUM_ELITES * Self.BATCH * Self.DYN_PRED
+    ]
+    var _ro_lv_all: Scratch[
+        "ro_lv_all", Self.NUM_ELITES * Self.BATCH * Self.DYN_PRED
+    ]
+    var _ro_slot: Scratch["ro_slot", Self.BATCH]
     # GPU-only rollout extras (allocated on both targets; unused on CPU).
     var _ro_rew: Scratch["ro_rew", Self.BATCH]
     var _ro_done: Scratch["ro_done", Self.BATCH]
@@ -332,6 +397,7 @@ struct MBPOTrainer[
     var _warmup_rng_offset: UInt64
     var _roll_rng_seed: UInt64
     var _roll_rng_offset: UInt64
+    var _elite_rng_offset: UInt64  # per-transition elite-slot assignment
 
     var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
@@ -436,6 +502,13 @@ struct MBPOTrainer[
         self._ro_nxt = Scratch["ro_nxt", Self.BATCH * Self.OBS_DIM]()
         self._ro_mu = Scratch["ro_mu", Self.BATCH * Self.DYN_PRED]()
         self._ro_lv = Scratch["ro_lv", Self.BATCH * Self.DYN_PRED]()
+        self._ro_mu_all = Scratch[
+            "ro_mu_all", Self.NUM_ELITES * Self.BATCH * Self.DYN_PRED
+        ]()
+        self._ro_lv_all = Scratch[
+            "ro_lv_all", Self.NUM_ELITES * Self.BATCH * Self.DYN_PRED
+        ]()
+        self._ro_slot = Scratch["ro_slot", Self.BATCH]()
         self._ro_rew = Scratch["ro_rew", Self.BATCH]()
         self._ro_done = Scratch["ro_done", Self.BATCH]()
         self._ro_noise = Scratch["ro_noise", Self.BATCH * Self.DYN_PRED]()
@@ -466,6 +539,7 @@ struct MBPOTrainer[
         self._warmup_rng_offset = UInt64(0)
         self._roll_rng_seed = UInt64(0xB0A75E_D00D)
         self._roll_rng_offset = UInt64(0)
+        self._elite_rng_offset = UInt64(0)
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._update_count = 0
@@ -1580,8 +1654,6 @@ struct MBPOTrainer[
             var roll_obs_p = self._ro_obs.cpu_ptr()
             var roll_act_p = self._ro_act.cpu_ptr()
             var roll_nxt_p = self._ro_nxt.cpu_ptr()
-            var ro_mu_p = self._ro_mu.cpu_ptr()
-            var ro_lv_p = self._ro_lv.cpu_ptr()
             var dyn_in_p = self._dyn_in.cpu_ptr()
 
             var rb_obs = self.sample_blk.real_cpu.value().obs
@@ -1622,20 +1694,24 @@ struct MBPOTrainer[
                 var dyn_in_t = TileTensor(
                     dyn_in_p, row_major[Self.BATCH, Self.DYN_IN]()
                 )
-                var ro_mu_t = TileTensor(
-                    ro_mu_p, row_major[Self.BATCH, Self.DYN_PRED]()
-                )
-                var ro_lv_t = TileTensor(
-                    ro_lv_p, row_major[Self.BATCH, Self.DYN_PRED]()
-                )
+                # Per-transition elite mixing (CPU): forward ALL elites into
+                # stacked host buffers; the posterior loop below picks a random
+                # elite PER transition. (One elite per chunk lets the policy
+                # exploit a single model's bias → optimistic synthetic reward.)
                 var n_elites = len(self.ensemble.elite_indices)
-                var elite_pick = Int(random_float64() * Float64(n_elites))
-                if elite_pick >= n_elites:
-                    elite_pick = n_elites - 1
-                var member_idx = self.ensemble.elite_indices[elite_pick]
-                self.ensemble.predict_member["cpu"](
-                    member_idx, dyn_in_t, ro_mu_t, ro_lv_t,
-                )
+                var mu_all_p = self._ro_mu_all.cpu_ptr()
+                var lv_all_p = self._ro_lv_all.cpu_ptr()
+                for e in range(n_elites):
+                    var off = e * Self.BATCH * Self.DYN_PRED
+                    var mu_e_t = TileTensor(
+                        mu_all_p + off, row_major[Self.BATCH, Self.DYN_PRED]()
+                    )
+                    var lv_e_t = TileTensor(
+                        lv_all_p + off, row_major[Self.BATCH, Self.DYN_PRED]()
+                    )
+                    self.ensemble.predict_member["cpu"](
+                        self.ensemble.elite_indices[e], dyn_in_t, mu_e_t, lv_e_t,
+                    )
 
                 var s_list = List[Scalar[DT]](capacity=Self.OBS_DIM)
                 var a_list = List[Scalar[DT]](capacity=Self.ACT_DIM)
@@ -1646,15 +1722,21 @@ struct MBPOTrainer[
                 for _ in range(Self.ACT_DIM):
                     a_list.append(Scalar[DT](0.0))
                 for k in range(this_batch):
-                    var mu_r = ro_mu_p[k * Self.DYN_PRED + 0]
-                    var lv_r = ro_lv_p[k * Self.DYN_PRED + 0]
+                    var e = Int(random_float64() * Float64(n_elites))
+                    if e >= n_elites:
+                        e = n_elites - 1
+                    var base = (
+                        e * Self.BATCH * Self.DYN_PRED + k * Self.DYN_PRED
+                    )
+                    var mu_r = mu_all_p[base + 0]
+                    var lv_r = lv_all_p[base + 0]
                     var std_r = fsqrt(fexp(lv_r))
                     var noise_r = Scalar[DT](randn_float64())
                     var rew = mu_r + std_r * noise_r
                     for d in range(Self.OBS_DIM):
                         s_list[d] = roll_obs_p[k * Self.OBS_DIM + d]
-                        var mu_d = ro_mu_p[k * Self.DYN_PRED + 1 + d]
-                        var lv_d = ro_lv_p[k * Self.DYN_PRED + 1 + d]
+                        var mu_d = mu_all_p[base + 1 + d]
+                        var lv_d = lv_all_p[base + 1 + d]
                         var std_d = fsqrt(fexp(lv_d))
                         var noise = Scalar[DT](randn_float64())
                         var delta = mu_d + std_d * noise
@@ -1884,21 +1966,62 @@ struct MBPOTrainer[
                     self._dyn_in.dev_ptr(),
                     row_major[Self.BATCH, Self.DYN_IN](),
                 )
-                var ro_mu_t = TileTensor(
-                    self._ro_mu.dev_ptr(),
-                    row_major[Self.BATCH, Self.DYN_PRED](),
-                )
-                var ro_lv_t = TileTensor(
-                    self._ro_lv.dev_ptr(),
-                    row_major[Self.BATCH, Self.DYN_PRED](),
-                )
+                # Per-transition elite mixing: forward ALL elites into the
+                # stacked (mu, lv) buffers, then gather a random elite PER
+                # transition. (One elite per chunk lets the policy exploit a
+                # single model's bias → optimistic synthetic reward.)
                 var n_elites = len(self.ensemble.elite_indices)
-                var elite_pick = Int(random_float64() * Float64(n_elites))
-                if elite_pick >= n_elites:
-                    elite_pick = n_elites - 1
-                var member_idx = self.ensemble.elite_indices[elite_pick]
-                self.ensemble.predict_member["gpu"](
-                    member_idx, dyn_in_t, ro_mu_t, ro_lv_t,
+                for e in range(n_elites):
+                    var off = e * Self.BATCH * Self.DYN_PRED
+                    var mu_e_t = TileTensor(
+                        self._ro_mu_all.dev_ptr() + off,
+                        row_major[Self.BATCH, Self.DYN_PRED](),
+                    )
+                    var lv_e_t = TileTensor(
+                        self._ro_lv_all.dev_ptr() + off,
+                        row_major[Self.BATCH, Self.DYN_PRED](),
+                    )
+                    self.ensemble.predict_member["gpu"](
+                        self.ensemble.elite_indices[e], dyn_in_t, mu_e_t, lv_e_t,
+                    )
+                comptime assign_kernel = _mbpo_elite_assign_kernel[Self.BATCH]
+                var slot_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+                ](self._ro_slot.dev_ptr())
+                ctx.enqueue_function[assign_kernel](
+                    slot_lt,
+                    Int32(n_elites),
+                    self._roll_rng_seed + UInt64(0x5107),
+                    self._elite_rng_offset,
+                    grid_dim=n_lane_blocks, block_dim=TPB,
+                )
+                self._elite_rng_offset += UInt64(Self.BATCH)
+                comptime gather_kernel = _mbpo_elite_gather_kernel[
+                    Self.BATCH, Self.NUM_ELITES, Self.DYN_PRED
+                ]
+                var mu_all_lt = LayoutTensor[
+                    DT,
+                    Layout.row_major(
+                        Self.NUM_ELITES * Self.BATCH, Self.DYN_PRED
+                    ),
+                    MutAnyOrigin,
+                ](self._ro_mu_all.dev_ptr())
+                var lv_all_lt = LayoutTensor[
+                    DT,
+                    Layout.row_major(
+                        Self.NUM_ELITES * Self.BATCH, Self.DYN_PRED
+                    ),
+                    MutAnyOrigin,
+                ](self._ro_lv_all.dev_ptr())
+                var g_mu_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.DYN_PRED), MutAnyOrigin,
+                ](self._ro_mu.dev_ptr())
+                var g_lv_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.DYN_PRED), MutAnyOrigin,
+                ](self._ro_lv.dev_ptr())
+                ctx.enqueue_function[gather_kernel](
+                    mu_all_lt, lv_all_lt, slot_lt, g_mu_lt, g_lv_lt,
+                    grid_dim=n_lane_blocks, block_dim=TPB,
                 )
 
                 # Posterior sample: device box-muller noise → (rew, nxt).
