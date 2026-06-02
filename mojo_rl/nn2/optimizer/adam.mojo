@@ -308,57 +308,6 @@ struct _ZeroGradGPUVisitor(ParamVisitor):
         )
 
 
-@fieldwise_init
-struct _AdamGPUSlabCollector(ParamVisitor):
-    """Walks the model's params WITHOUT launching any kernel — it records the
-    param/grad slab base pointers and verifies the params (and grads) are laid
-    out contiguously in walk order (`param[idx].ptr == base + Σ n_elems`).
-
-    nn2 models keep their params in one contiguous slab (stateless layers are
-    `LayoutTensor` views into it) and the Adam moment slab `m_flat`/`v_flat` is
-    built with the SAME walk-order offsets — so when contiguity holds, the
-    whole Adam update (and `zero_grad`) is a single element-wise pass over
-    `[0, total_size)` instead of one kernel per param tensor. `_adam_update_kernel`
-    applies plain Adam with NO weight-decay term, so a slab-wide launch is
-    bit-identical to the per-tensor launches (same elements, same math).
-
-    `contiguous` stays True only if every tensor abuts the previous one; any
-    gap (e.g. a model whose params are NOT one slab) flips it False and the
-    caller falls back to the per-tensor visitor — so this is safe for any model.
-    """
-
-    var idx: Int
-    var running: Int  # cumulative n_elems seen so far (walk-order offset)
-    var param_base: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var grad_base: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var contiguous: Bool
-
-    def visit(
-        mut self,
-        name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int,
-        apply_decay: Bool,
-    ) raises:
-        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
-        var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
-        if self.idx == 0:
-            self.param_base = p_ptr
-            self.grad_base = g_ptr
-        else:
-            if p_ptr != self.param_base.value() + self.running:
-                self.contiguous = False
-            if g_ptr != self.grad_base.value() + self.running:
-                self.contiguous = False
-        self.running += n_elems
-        self.idx += 1
-
-
 # ──────────────────────────────────────────────────────────────────────
 # Adam.
 # ──────────────────────────────────────────────────────────────────────
@@ -495,32 +444,8 @@ struct Adam(Optimizer, Saveable):
             var v = _ZeroGradCPUVisitor()
             model.for_each_param[target, _ZeroGradCPUVisitor](String(""), v)
         else:
-            var ctx = self.ts.ctx.value()
-            # Batched path: one `_zero_fill_kernel` over the whole grad slab
-            # when params are contiguous (the common nn2 case). Falls back to
-            # the per-tensor visitor otherwise. Bit-identical either way.
-            var collector = _AdamGPUSlabCollector(
-                idx=0, running=0, param_base=None, grad_base=None,
-                contiguous=True,
-            )
-            model.for_each_param[target, _AdamGPUSlabCollector](
-                String(""), collector
-            )
-            if (
-                collector.contiguous
-                and collector.running == self.total_size
-                and self.total_size > 0
-            ):
-                var n_blocks = (self.total_size + TPB - 1) // TPB
-                ctx.enqueue_function[_zero_fill_kernel](
-                    collector.grad_base.value(),
-                    self.total_size,
-                    grid_dim=n_blocks,
-                    block_dim=TPB,
-                )
-            else:
-                var v = _ZeroGradGPUVisitor(ctx=ctx)
-                model.for_each_param[target, _ZeroGradGPUVisitor](String(""), v)
+            var v = _ZeroGradGPUVisitor(ctx=self.ts.ctx.value())
+            model.for_each_param[target, _ZeroGradGPUVisitor](String(""), v)
 
     def step[
         target: StaticString,
@@ -578,50 +503,16 @@ struct Adam(Optimizer, Saveable):
                 step_ptr, bc_ptr, self.beta1, self.beta2,
                 grid_dim=1, block_dim=1,
             )
-            # Batched path: one `_adam_update_kernel` over the whole param/grad/
-            # moment slab when params are contiguous (the common nn2 case),
-            # replacing one kernel PER param tensor. The moment slab is built
-            # with the same walk-order offsets, so element i of the param slab
-            # pairs with element i of `m_dev`/`v_dev` — identical to the
-            # per-tensor launches (plain Adam, no per-tensor weight decay).
-            # Falls back to the per-tensor visitor if a model isn't contiguous.
-            var collector = _AdamGPUSlabCollector(
-                idx=0, running=0, param_base=None, grad_base=None,
-                contiguous=True,
+            var visitor = _AdamGPUStepVisitor(
+                ctx=ctx,
+                m_base=self.m_dev.value().unsafe_ptr(),
+                v_base=self.v_dev.value().unsafe_ptr(),
+                bc_base=bc_ptr,
+                offsets_ptr=UnsafePointer(to=self.offsets),
+                idx=0,
+                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
             )
-            model.for_each_param[target, _AdamGPUSlabCollector](
-                String(""), collector
-            )
-            if (
-                collector.contiguous
-                and collector.running == self.total_size
-                and self.total_size > 0
-            ):
-                var n_blocks = (self.total_size + TPB - 1) // TPB
-                ctx.enqueue_function[_adam_update_kernel](
-                    collector.param_base.value(),
-                    collector.grad_base.value(),
-                    self.m_dev.value().unsafe_ptr(),
-                    self.v_dev.value().unsafe_ptr(),
-                    bc_ptr,
-                    self.total_size,
-                    self.lr, self.beta1, self.beta2, self.eps,
-                    grid_dim=n_blocks, block_dim=TPB,
-                )
-            else:
-                var visitor = _AdamGPUStepVisitor(
-                    ctx=ctx,
-                    m_base=self.m_dev.value().unsafe_ptr(),
-                    v_base=self.v_dev.value().unsafe_ptr(),
-                    bc_base=bc_ptr,
-                    offsets_ptr=UnsafePointer(to=self.offsets),
-                    idx=0,
-                    lr=self.lr, beta1=self.beta1, beta2=self.beta2,
-                    eps=self.eps,
-                )
-                model.for_each_param[target, _AdamGPUStepVisitor](
-                    String(""), visitor
-                )
+            model.for_each_param[target, _AdamGPUStepVisitor](String(""), visitor)
 
     # ─────────────────────────── Saveable (CPU only) ───────────────────────────
     # Saved fields:
