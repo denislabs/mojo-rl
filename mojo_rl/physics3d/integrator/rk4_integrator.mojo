@@ -715,6 +715,16 @@ def _integrate_pos[
             qpos_out[qpos_adr] = qpos_base[qpos_adr] + vel[dof_adr] * dt
 
 
+# 5a: when True, RK4Integrator.step_gpu launches the Newton solver
+# one-environment-per-block (grid=(BATCH,1), block=(1, THREADS)) instead of
+# packing many envs per block. Bit-identical to the packed launch (same kernel,
+# same per-env math) but isolates per-env Newton iteration-count divergence
+# across independently-scheduled blocks. Module-level (not a step_gpu param) to
+# preserve the Integrator trait signature; mirrors USE_NEWTON_SIMD. See
+# docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_BLOCKED_SOLVER: Bool = False
+
+
 struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
     """4th-order Runge-Kutta integrator with configurable constraint solver.
 
@@ -2052,6 +2062,13 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         Launches 9 kernels: 4 × (stage + solver) + 1 combine.
         Workspace must include RK4 extra space beyond the standard layout.
+
+        Solver launch is gated by the module-level RK4_BLOCKED_SOLVER flag
+        (5a): when True the Newton solver runs one-environment-per-block instead
+        of packing many envs per block. Bit-identical to the packed launch (same
+        kernel, same per-env math) but isolates per-env Newton iteration-count
+        divergence across independently-scheduled blocks. See
+        docs/PHYSICS3D_BLOCKED_SOLVER.md.
         """
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
         comptime MODEL_SIZE = model_size_with_invweight[
@@ -2078,6 +2095,13 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         comptime SOLVER_ENV_BLOCKS = (
             BATCH + SOLVER_ENV_TPB - 1
         ) // SOLVER_ENV_TPB
+
+        # 5a: RK4_BLOCKED_SOLVER launches solve_gpu one-env-per-block. With
+        # block_dim.x == 1, env = block_idx.x and contact_tid = thread_idx.y,
+        # so the per-env math is byte-for-byte identical to the packed launch.
+        comptime SOLVER_GRID_X = BATCH if RK4_BLOCKED_SOLVER else SOLVER_ENV_BLOCKS
+        comptime SOLVER_GRID_Y = 1 if RK4_BLOCKED_SOLVER else SOLVER_THREADS_BLOCKS
+        comptime SOLVER_BLOCK_X = 1 if RK4_BLOCKED_SOLVER else SOLVER_ENV_TPB
 
         var state = LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -2153,8 +2177,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             state,
             model,
             workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
+            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+            block_dim=(SOLVER_BLOCK_X, THREADS),
         )
 
         # --- Stage 1: forward dynamics at (q0+dt/2*C[0], v0+dt/2*A[0]) ---
@@ -2196,8 +2220,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             state,
             model,
             workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
+            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+            block_dim=(SOLVER_BLOCK_X, THREADS),
         )
 
         # --- Stage 2: forward dynamics at (q0+dt/2*C[1], v0+dt/2*A[1]) ---
@@ -2239,8 +2263,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             state,
             model,
             workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
+            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+            block_dim=(SOLVER_BLOCK_X, THREADS),
         )
 
         # --- Stage 3: forward dynamics at (q0+dt*C[2], v0+dt*A[2]) ---
@@ -2282,8 +2306,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             state,
             model,
             workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
+            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+            block_dim=(SOLVER_BLOCK_X, THREADS),
         )
 
         # --- Combine: weighted average + integrate ---
@@ -2395,6 +2419,11 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             BATCH + SOLVER_ENV_TPB - 1
         ) // SOLVER_ENV_TPB
 
+        # 5a: RK4_BLOCKED_SOLVER launches solve_gpu one-env-per-block (see step_gpu).
+        comptime SOLVER_GRID_X = BATCH if RK4_BLOCKED_SOLVER else SOLVER_ENV_BLOCKS
+        comptime SOLVER_GRID_Y = 1 if RK4_BLOCKED_SOLVER else SOLVER_THREADS_BLOCKS
+        comptime SOLVER_BLOCK_X = 1 if RK4_BLOCKED_SOLVER else SOLVER_ENV_TPB
+
         var state = LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ](state_buf)
@@ -2455,8 +2484,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             state,
             model,
             workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
+            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+            block_dim=(SOLVER_BLOCK_X, THREADS),
         )
 
         timer.sync_and_accumulate(base + 0, ctx)
@@ -2492,8 +2521,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             state,
             model,
             workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
+            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+            block_dim=(SOLVER_BLOCK_X, THREADS),
         )
 
         timer.sync_and_accumulate(base + 1, ctx)
@@ -2529,8 +2558,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             state,
             model,
             workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
+            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+            block_dim=(SOLVER_BLOCK_X, THREADS),
         )
 
         timer.sync_and_accumulate(base + 2, ctx)
@@ -2566,8 +2595,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             state,
             model,
             workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
+            grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+            block_dim=(SOLVER_BLOCK_X, THREADS),
         )
 
         timer.sync_and_accumulate(base + 3, ctx)
