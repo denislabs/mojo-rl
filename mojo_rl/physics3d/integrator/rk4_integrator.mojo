@@ -31,6 +31,7 @@ from ..kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
     forward_kinematics_gpu,
+    forward_kinematics_gpu_mt,
     compute_body_velocities_gpu,
 )
 from ..kinematics.quat_math import quat_normalize, quat_integrate
@@ -742,6 +743,18 @@ comptime RK4_PARALLEL_MINV: Bool = True
 comptime RK4_PARALLEL_LDL: Bool = True
 
 
+# When True (and STEP_THREADS>1), forward kinematics in rk4_stage_kernel is
+# computed level-parallel instead of redundantly on every thread: bodies are
+# processed by kinematic-tree depth, and bodies at the same depth (independent —
+# none is another's parent) are striped across the STEP_THREADS threads. Tree
+# levels are derived in-kernel from body_parent (no model/parser change).
+# Bit-identical to the serial tree walk (same fk_body_gpu per body). Lever 1
+# (branch/level-parallel forward dynamics); default OFF pending NVIDIA per-phase
+# measurement (tests/physics3d/profile_rk4_phases_humanoid.mojo). See
+# docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_PARALLEL_FK: Bool = False
+
+
 struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
     """4th-order Runge-Kutta integrator with configurable constraint solver.
 
@@ -1352,20 +1365,38 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         # ---- Forward dynamics pipeline (same as EulerIntegrator.step_kernel) ----
 
-        if valid_env:
-            # 1. Forward kinematics
-            forward_kinematics_gpu[
+        # 1. Forward kinematics. When RK4_PARALLEL_FK (and STEP_THREADS>1) the
+        # cooperative level-parallel variant is called UNCONDITIONALLY so every
+        # thread (incl. invalid-env / other packed envs) reaches its internal
+        # barriers; per-body writes are guarded by valid_env inside it. Otherwise
+        # the serial walk runs redundantly per valid-env thread (as before).
+        comptime USE_PAR_FK = RK4_PARALLEL_FK and (STEP_THREADS > 1)
+        comptime if USE_PAR_FK:
+            forward_kinematics_gpu_mt[
                 DTYPE,
                 NQ,
                 NV,
                 NBODY,
                 NJOINT,
-                MAX_CONTACTS,
                 STATE_SIZE,
                 MODEL_SIZE,
                 BATCH,
-            ](env, state, model)
+            ](env, tid, STEP_THREADS, valid_env, state, model)
+        else:
+            if valid_env:
+                forward_kinematics_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                ](env, state, model)
 
+        if valid_env:
             # 2. Body velocities
             compute_body_velocities_gpu[
                 DTYPE,
