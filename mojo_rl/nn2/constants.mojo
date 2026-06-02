@@ -33,4 +33,4 @@ comptime TPB_REDUCE = 64
 # per-tensor path is used even on NVIDIA. No effect on CPU/Apple (always
 # per-tensor — Metal can't deref host-captured device addresses in-kernel).
 # Flip to False + rebuild to A/B the grouped path on NVIDIA.
-comptime USE_GROUPED_GPU_OPTIMIZER = False
+comptime USE_GROUPED_GPU_OPTIMIZER = True
