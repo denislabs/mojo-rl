@@ -1450,6 +1450,14 @@ struct NewtonSolver(ConstraintSolver):
             var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
             comptime M_idx = ws_M_offset[NV, NBODY]()
             comptime qacc_init_idx = ws_qacc_constrained_offset[NV, NBODY]()
+
+            # Cache M locally once — M is loop-invariant during Newton iterations.
+            # Avoids ~2*NV² workspace (global) reads per iteration (Hessian build
+            # + Mv = M*search). Mirrors the ELLIPTIC path's M_local optimization.
+            var M_local = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+            for k in range(NV * NV):
+                M_local[k] = rebind[Scalar[DTYPE]](workspace[env, M_idx + k])
+
             for i in range(NV):
                 var q_i = rebind[Scalar[DTYPE]](
                     workspace[env, qacc_init_idx + i]
@@ -1459,12 +1467,7 @@ struct NewtonSolver(ConstraintSolver):
             for i in range(NV):
                 Ma[i] = Scalar[DTYPE](0)
                 for j in range(NV):
-                    Ma[i] += (
-                        rebind[Scalar[DTYPE]](
-                            workspace[env, M_idx + i * NV + j]
-                        )
-                        * qacc[j]
-                    )
+                    Ma[i] += M_local[i * NV + j] * qacc[j]
             # f_smooth = M * qacc (matching CPU's qfrc_smooth = M * qacc_smooth)
             # Using Ma directly avoids LDL round-trip error (f_net ≠ M*M^{-1}*f_net)
             var f_smooth = InlineArray[Scalar[DTYPE], V_SIZE](
@@ -1476,9 +1479,7 @@ struct NewtonSolver(ConstraintSolver):
             # Scale for convergence check
             var scale: Scalar[DTYPE] = 0
             for i in range(NV):
-                scale += rebind[Scalar[DTYPE]](
-                    workspace[env, M_idx + i * NV + i]
-                )
+                scale += M_local[i * NV + i]
             if scale > Scalar[DTYPE](1e-10):
                 scale = Scalar[DTYPE](1.0) / scale
             else:
@@ -1522,9 +1523,7 @@ struct NewtonSolver(ConstraintSolver):
                 # Build Hessian H = M + sum_active(D[e] * Je^T * Je)
                 for i in range(NV):
                     for j in range(NV):
-                        H[i * NV + j] = rebind[Scalar[DTYPE]](
-                            workspace[env, M_idx + i * NV + j]
-                        )
+                        H[i * NV + j] = M_local[i * NV + j]
                 for e_idx in range(num_edges):
                     if force[e_idx] > Scalar[DTYPE](0):
                         for i in range(NV):
@@ -1551,12 +1550,7 @@ struct NewtonSolver(ConstraintSolver):
                 for i in range(NV):
                     Mv[i] = Scalar[DTYPE](0)
                     for j in range(NV):
-                        Mv[i] += (
-                            rebind[Scalar[DTYPE]](
-                                workspace[env, M_idx + i * NV + j]
-                            )
-                            * search[j]
-                        )
+                        Mv[i] += M_local[i * NV + j] * search[j]
 
                 # Analytical Newton linesearch (matches CPU primal_linesearch_with_D)
                 # Precompute Jv_e = Je · search for each edge
