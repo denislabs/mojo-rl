@@ -119,11 +119,26 @@ def _zero_fill_kernel(
 # ──────────────────────────────────────────────────────────────────────
 
 
+@always_inline
+def _find_param(
+    moment_offs: UnsafePointer[Int32, MutAnyOrigin], n_params: Int, flat: Int
+) -> Int:
+    """Linear scan over the dense per-param offset table (`moment_offs[p]` =
+    Σ sizes[0..p)) to find which param a flat element index belongs to: the
+    largest p with `moment_offs[p] <= flat`. n_params is tiny (a few per net),
+    so the scan is cheap and avoids the 2-D grid's idle-block waste."""
+    var p = 0
+    while p + 1 < n_params and Int(moment_offs[p + 1]) <= flat:
+        p += 1
+    return p
+
+
 def _grouped_adam_update_kernel(
     param_addrs: UnsafePointer[UInt64, MutAnyOrigin],
     grad_addrs: UnsafePointer[UInt64, MutAnyOrigin],
-    sizes: UnsafePointer[Int32, MutAnyOrigin],
     moment_offs: UnsafePointer[Int32, MutAnyOrigin],
+    n_params: Int,
+    total: Int,
     m_base: UnsafePointer[Scalar[DT], MutAnyOrigin],
     v_base: UnsafePointer[Scalar[DT], MutAnyOrigin],
     bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -132,40 +147,46 @@ def _grouped_adam_update_kernel(
     beta2: Scalar[DT],
     eps: Scalar[DT],
 ):
-    var p = Int(block_idx.y)
-    var e = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
-    if e < Int(sizes[p]):
+    # 1-D grid over ALL params' elements (dense flat index == moment slab index;
+    # the moment slab m_dev/v_dev is contiguous in walk order). Exact block
+    # count = ceil(total / TPB) — no idle blocks.
+    var flat = Int(global_idx.x)
+    if flat < total:
+        var p = _find_param(moment_offs, n_params, flat)
+        var local = flat - Int(moment_offs[p])
         var param = UnsafePointer[Scalar[DT], MutAnyOrigin](
             unsafe_from_address=Int(param_addrs[p])
         )
         var grad = UnsafePointer[Scalar[DT], MutAnyOrigin](
             unsafe_from_address=Int(grad_addrs[p])
         )
-        var mo = Int(moment_offs[p]) + e
         var one: Scalar[DT] = 1.0
         var bc1 = bc_ptr[2]
         var bc2 = bc_ptr[3]
-        var g = grad[e]
-        var m_new = beta1 * m_base[mo] + (one - beta1) * g
-        var v_new = beta2 * v_base[mo] + (one - beta2) * g * g
-        m_base[mo] = m_new
-        v_base[mo] = v_new
+        var g = grad[local]
+        var m_new = beta1 * m_base[flat] + (one - beta1) * g
+        var v_new = beta2 * v_base[flat] + (one - beta2) * g * g
+        m_base[flat] = m_new
+        v_base[flat] = v_new
         var m_hat = m_new / bc1
         var v_hat = v_new / bc2
-        param[e] = param[e] - lr * m_hat / (sqrt(v_hat) + eps)
+        param[local] = param[local] - lr * m_hat / (sqrt(v_hat) + eps)
 
 
 def _grouped_zero_kernel(
     grad_addrs: UnsafePointer[UInt64, MutAnyOrigin],
-    sizes: UnsafePointer[Int32, MutAnyOrigin],
+    moment_offs: UnsafePointer[Int32, MutAnyOrigin],
+    n_params: Int,
+    total: Int,
 ):
-    var p = Int(block_idx.y)
-    var e = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
-    if e < Int(sizes[p]):
+    var flat = Int(global_idx.x)
+    if flat < total:
+        var p = _find_param(moment_offs, n_params, flat)
+        var local = flat - Int(moment_offs[p])
         var grad = UnsafePointer[Scalar[DT], MutAnyOrigin](
             unsafe_from_address=Int(grad_addrs[p])
         )
-        grad[e] = 0.0
+        grad[local] = 0.0
 
 
 def _upload_u64(
@@ -403,16 +424,13 @@ struct _ZeroGradGPUVisitor(ParamVisitor):
 @fieldwise_init
 struct _MTDescriptorCollector(ParamVisitor):
     """Walks the model's params (NVIDIA grouped path) WITHOUT launching kernels,
-    gathering each param's value/grad pointer ADDRESS and element count into host
-    Lists (later uploaded to device descriptor arrays). Tracks the max param size
-    to size the grouped kernel's element grid. Run ONCE in `make[target='gpu']`
-    — the per-Param DeviceBuffers are allocated and stable, so the addresses
-    stay valid for the optimizer's lifetime."""
+    gathering each param's value/grad pointer ADDRESS into host Lists (later
+    uploaded to device descriptor arrays). Run ONCE in `make[target='gpu']` —
+    the per-Param DeviceBuffers are allocated and stable, so the addresses stay
+    valid for the optimizer's lifetime."""
 
     var param_addrs_ptr: UnsafePointer[List[UInt64], MutAnyOrigin]
     var grad_addrs_ptr: UnsafePointer[List[UInt64], MutAnyOrigin]
-    var sizes_ptr: UnsafePointer[List[Int32], MutAnyOrigin]
-    var max_size_ptr: UnsafePointer[Int, MutAnyOrigin]
 
     def visit(
         mut self,
@@ -430,9 +448,6 @@ struct _MTDescriptorCollector(ParamVisitor):
         var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
         self.param_addrs_ptr[].append(UInt64(Int(p_ptr)))
         self.grad_addrs_ptr[].append(UInt64(Int(g_ptr)))
-        self.sizes_ptr[].append(Int32(n_elems))
-        if n_elems > self.max_size_ptr[]:
-            self.max_size_ptr[] = n_elems
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -491,10 +506,8 @@ struct Adam(Optimizer, Saveable):
     # param tensor in ONE launch. None / 0 on CPU + Apple.
     var _mt_param_addrs: Optional[DeviceBuffer[DType.uint64]]
     var _mt_grad_addrs: Optional[DeviceBuffer[DType.uint64]]
-    var _mt_sizes: Optional[DeviceBuffer[DType.int32]]
     var _mt_moment_offs: Optional[DeviceBuffer[DType.int32]]
     var _mt_n_params: Int
-    var _mt_max_size: Int
 
     var ts: TargetStorage
 
@@ -518,10 +531,8 @@ struct Adam(Optimizer, Saveable):
         self._clip_state = None
         self._mt_param_addrs = None
         self._mt_grad_addrs = None
-        self._mt_sizes = None
         self._mt_moment_offs = None
         self._mt_n_params = 0
-        self._mt_max_size = 0
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -584,28 +595,24 @@ struct Adam(Optimizer, Saveable):
             comptime if has_nvidia_gpu_accelerator():
                 var pa = List[UInt64]()
                 var ga = List[UInt64]()
-                var sz = List[Int32]()
-                var maxs: Int = 0
                 var coll = _MTDescriptorCollector(
                     param_addrs_ptr=UnsafePointer(to=pa),
                     grad_addrs_ptr=UnsafePointer(to=ga),
-                    sizes_ptr=UnsafePointer(to=sz),
-                    max_size_ptr=UnsafePointer(to=maxs),
                 )
                 model.for_each_param[target, _MTDescriptorCollector](
                     String(""), coll
                 )
                 # Moment offsets are exactly the init walker's `offsets`
-                # (same walk order), narrowed to int32 for the kernel.
+                # (same walk order = dense per-param prefix sums), narrowed to
+                # int32. The grouped kernels use them to map a flat element
+                # index back to its param + local offset.
                 var mo = List[Int32]()
                 for i in range(len(opt.offsets)):
                     mo.append(Int32(opt.offsets[i]))
-                opt._mt_n_params = len(sz)
-                opt._mt_max_size = maxs
+                opt._mt_n_params = len(pa)
                 if opt._mt_n_params > 0:
                     opt._mt_param_addrs = _upload_u64(ctx_v, pa)
                     opt._mt_grad_addrs = _upload_u64(ctx_v, ga)
-                    opt._mt_sizes = _upload_i32(ctx_v, sz)
                     opt._mt_moment_offs = _upload_i32(ctx_v, mo)
         return opt^
 
@@ -623,15 +630,17 @@ struct Adam(Optimizer, Saveable):
                 # Grouped: one launch zeros every grad tensor. Descriptors were
                 # built in make[gpu]. (`_mt_n_params == 0` → no params, no-op.)
                 if self._mt_n_params > 0:
-                    var blocks_x = (self._mt_max_size + TPB - 1) // TPB
+                    var n_blocks = (self.total_size + TPB - 1) // TPB
                     ctx.enqueue_function[_grouped_zero_kernel](
                         rebind[UnsafePointer[UInt64, MutAnyOrigin]](
                             self._mt_grad_addrs.value().unsafe_ptr()
                         ),
                         rebind[UnsafePointer[Int32, MutAnyOrigin]](
-                            self._mt_sizes.value().unsafe_ptr()
+                            self._mt_moment_offs.value().unsafe_ptr()
                         ),
-                        grid_dim=(blocks_x, self._mt_n_params),
+                        self._mt_n_params,
+                        self.total_size,
+                        grid_dim=n_blocks,
                         block_dim=TPB,
                     )
             else:
@@ -700,7 +709,7 @@ struct Adam(Optimizer, Saveable):
                 # device bias-correction (bc_ptr) — fully CUDA-graph capturable.
                 # (`_mt_n_params == 0` → no params, no-op.)
                 if self._mt_n_params > 0:
-                    var blocks_x = (self._mt_max_size + TPB - 1) // TPB
+                    var n_blocks = (self.total_size + TPB - 1) // TPB
                     ctx.enqueue_function[_grouped_adam_update_kernel](
                         rebind[UnsafePointer[UInt64, MutAnyOrigin]](
                             self._mt_param_addrs.value().unsafe_ptr()
@@ -709,11 +718,10 @@ struct Adam(Optimizer, Saveable):
                             self._mt_grad_addrs.value().unsafe_ptr()
                         ),
                         rebind[UnsafePointer[Int32, MutAnyOrigin]](
-                            self._mt_sizes.value().unsafe_ptr()
-                        ),
-                        rebind[UnsafePointer[Int32, MutAnyOrigin]](
                             self._mt_moment_offs.value().unsafe_ptr()
                         ),
+                        self._mt_n_params,
+                        self.total_size,
                         rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                             self.m_dev.value().unsafe_ptr()
                         ),
@@ -722,7 +730,7 @@ struct Adam(Optimizer, Saveable):
                         ),
                         bc_ptr,
                         self.lr, self.beta1, self.beta2, self.eps,
-                        grid_dim=(blocks_x, self._mt_n_params),
+                        grid_dim=n_blocks,
                         block_dim=TPB,
                     )
             else:
