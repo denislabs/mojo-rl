@@ -77,6 +77,24 @@ comptime CHECKPOINT_EVERY = 50_000
 
 comptime CHECKPOINT_PATH = "mbpo_half_cheetah_nn2_gpu.ckpt"
 
+# ─── A/B: entropy-temperature (alpha) ablation ───────────────────────────────
+# The nn2-MBPO vs legacy overlay showed nn2's auto-tuned alpha equilibrates
+# 2–4× BELOW legacy (0.035–0.086 vs ~0.12), correlating with ~4× slower mean_q
+# growth + a climbing critic loss + a timid (low mean_abs_action) policy.
+#   FIX_ALPHA = False → arm A: auto-tuned alpha (alpha_lr live, init 0.2).
+#   FIX_ALPHA = True  → arm B: alpha PINNED at legacy's level (alpha_lr=0 so the
+#                       ScalarAdam update is a no-op → alpha frozen at init).
+# If arm B tracks legacy's mean_q / reward, alpha is confirmed as THE lever.
+comptime FIX_ALPHA = True
+comptime FIXED_ALPHA: Scalar[DT] = 0.12  # legacy's stable equilibrium
+comptime INIT_ALPHA: Scalar[DT] = FIXED_ALPHA if FIX_ALPHA else 0.2
+comptime ALPHA_LR: Scalar[DT] = 0.0 if FIX_ALPHA else 3e-4
+comptime RUN_NAME = (
+    "MBPO HalfCheetah NN2 (GPU) — fixed alpha=0.12"
+    if FIX_ALPHA
+    else "MBPO HalfCheetah NN2 (GPU) — auto alpha"
+)
+
 
 comptime ActorNet = StochasticActor[
     OBS_DIM,
@@ -139,13 +157,14 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="MBPO HalfCheetah NN2 (GPU)",
+            run_name=RUN_NAME,
             buffer_size=64,
             api_key=api_key,
         )
         logger.set_config("algorithm", "MBPO")
         logger.set_config("env", "HalfCheetah")
         logger.set_config("target", "gpu")
+        logger.set_config("alpha_mode", "fixed_0.12" if FIX_ALPHA else "auto")
         logger.set_config("hidden", String(HIDDEN))
         logger.set_config("dyn_hidden", String(DYN_HIDDEN))
         logger.set_config("batch", String(BATCH))
@@ -174,12 +193,12 @@ def main() raises:
             ctx=ctx,
             actor_lr=3e-4,
             critic_lr=3e-4,
-            alpha_lr=3e-4,
+            alpha_lr=ALPHA_LR,  # A/B: 0.0 freezes alpha (arm B), 3e-4 = auto
             model_lr=1e-3,
             gamma=0.99,
             tau=0.005,
             action_scale=1.0,
-            init_alpha=0.2,
+            init_alpha=INIT_ALPHA,  # A/B: 0.12 (arm B) vs 0.2 (arm A)
             target_entropy=-3.0,  # legacy MBPO value
             learning_starts=5_000,  # legacy warmup
             window_size=100,

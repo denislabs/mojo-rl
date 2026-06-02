@@ -335,6 +335,9 @@ struct MBPOTrainer[
     # as `_q_accum` / `_q_mean_dev`.
     var _td_accum: Scalar[DT]
     var _done_accum: Scalar[DT]
+    # Mean |action| over the mixed batch (legacy `mean_abs_action`): the
+    # cleanest proxy for "is the policy committing" vs staying timid.
+    var _action_abs_accum: Scalar[DT]
     var _dyn_loss_accum: Scalar[DT]
     var _dyn_step_count: Int
     # Last computed dynamics-NLL mean. The ensemble only trains on the
@@ -358,6 +361,7 @@ struct MBPOTrainer[
     var _reward_mean_dev: DeviceMeanAccum
     var _td_mean_dev: DeviceMeanAccum
     var _done_mean_dev: DeviceMeanAccum
+    var _action_abs_mean_dev: DeviceMeanAccum
 
     var timer: Timer
 
@@ -451,6 +455,7 @@ struct MBPOTrainer[
         self._reward_accum = Scalar[DT](0.0)
         self._td_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
+        self._action_abs_accum = Scalar[DT](0.0)
         self._dyn_loss_accum = Scalar[DT](0.0)
         self._dyn_step_count = 0
         self._dyn_loss_last = Scalar[DT](0.0)
@@ -462,6 +467,7 @@ struct MBPOTrainer[
         self._reward_mean_dev = DeviceMeanAccum()
         self._td_mean_dev = DeviceMeanAccum()
         self._done_mean_dev = DeviceMeanAccum()
+        self._action_abs_mean_dev = DeviceMeanAccum()
         self.timer = Timer.new()
 
     @staticmethod
@@ -545,6 +551,7 @@ struct MBPOTrainer[
             t._reward_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
             t._td_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
             t._done_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._action_abs_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
 
         t.alpha_blk = AlphaUpdateStep[
             Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
@@ -832,6 +839,7 @@ struct MBPOTrainer[
                 var r_p = self.state.mb_r.target_ptr["cpu"]()
                 var y_p = self.state.mb_y.target_ptr["cpu"]()
                 var d_p = self.state.mb_d.target_ptr["cpu"]()
+                var a_p = self.state.mb_a.target_ptr["cpu"]()
                 var sum_q: Scalar[DT] = 0.0
                 var sum_r: Scalar[DT] = 0.0
                 var sum_y: Scalar[DT] = 0.0
@@ -841,10 +849,16 @@ struct MBPOTrainer[
                     sum_r += r_p[i]
                     sum_y += y_p[i]
                     sum_d += d_p[i]
+                var sum_a: Scalar[DT] = 0.0
+                for i in range(Self.BATCH * Self.ACT_DIM):
+                    sum_a += abs(a_p[i])
                 self._q_accum += sum_q * inv_b
                 self._reward_accum += sum_r * inv_b
                 self._td_accum += sum_y * inv_b
                 self._done_accum += sum_d * inv_b
+                self._action_abs_accum += sum_a / Scalar[DT](
+                    Self.BATCH * Self.ACT_DIM
+                )
             else:
                 var q_ptr = self.twin_critic_blk.inner.c1._mb_q.target_ptr[
                     "gpu"
@@ -852,10 +866,14 @@ struct MBPOTrainer[
                 var r_ptr = self.state.mb_r.target_ptr["gpu"]()
                 var y_ptr = self.state.mb_y.target_ptr["gpu"]()
                 var d_ptr = self.state.mb_d.target_ptr["gpu"]()
+                var a_ptr = self.state.mb_a.target_ptr["gpu"]()
                 self._q_mean_dev.accumulate_gpu[Self.BATCH](q_ptr)
                 self._reward_mean_dev.accumulate_gpu[Self.BATCH](r_ptr)
                 self._td_mean_dev.accumulate_gpu[Self.BATCH](y_ptr)
                 self._done_mean_dev.accumulate_gpu[Self.BATCH](d_ptr)
+                self._action_abs_mean_dev.accumulate_gpu_abs[
+                    Self.BATCH * Self.ACT_DIM
+                ](a_ptr)
             self.timer.accumulate(Self._T_DIAG, t_diag)
 
             self._actor_L_accum += self.state.actor_loss
@@ -892,6 +910,7 @@ struct MBPOTrainer[
         self._reward_accum = Scalar[DT](0.0)
         self._td_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
+        self._action_abs_accum = Scalar[DT](0.0)
         self._dyn_loss_accum = Scalar[DT](0.0)
         self._dyn_step_count = 0
         return out
@@ -930,6 +949,7 @@ struct MBPOTrainer[
         var reward_mean: Scalar[DT]
         var td_mean: Scalar[DT]
         var done_mean: Scalar[DT]
+        var act_abs_mean: Scalar[DT]
         comptime if Self.train_target == "gpu":
             actor_mean = self.actor_blk.read_loss_accum()
             var cl1 = self.twin_critic_blk.inner.c1.mse_loss.read_accum["gpu"]()
@@ -940,6 +960,7 @@ struct MBPOTrainer[
             reward_mean = self._reward_mean_dev.read["gpu"]()
             td_mean = self._td_mean_dev.read["gpu"]()
             done_mean = self._done_mean_dev.read["gpu"]()
+            act_abs_mean = self._action_abs_mean_dev.read["gpu"]()
         else:
             actor_mean = self._actor_L_accum * inv
             critic_mean = self._critic_L_accum * inv
@@ -948,6 +969,7 @@ struct MBPOTrainer[
             reward_mean = self._reward_accum * inv
             td_mean = self._td_accum * inv
             done_mean = self._done_accum * inv
+            act_abs_mean = self._action_abs_accum * inv
         var bundle = MBPOMetrics(
             actor_loss=LogScalar[DT](actor_mean),
             critic_loss=LogScalar[DT](critic_mean),
@@ -956,6 +978,7 @@ struct MBPOTrainer[
             mean_reward=LogScalar[DT](reward_mean),
             td_target=LogScalar[DT](td_mean),
             done_ratio=LogScalar[DT](done_mean),
+            mean_abs_action=LogScalar[DT](act_abs_mean),
             dyn_loss=LogScalar[DT](self._dyn_loss_last),
             dyn_holdout_loss=LogScalar[DT](self._dyn_holdout_loss),
             dyn_holdout_min=LogScalar[DT](self._dyn_holdout_min),
@@ -974,6 +997,7 @@ struct MBPOTrainer[
         self._reward_accum = Scalar[DT](0.0)
         self._td_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
+        self._action_abs_accum = Scalar[DT](0.0)
         self._dyn_loss_accum = Scalar[DT](0.0)
         self._dyn_step_count = 0
         comptime if Self.train_target == "gpu":
@@ -984,6 +1008,7 @@ struct MBPOTrainer[
             self._reward_mean_dev.reset["gpu"]()
             self._td_mean_dev.reset["gpu"]()
             self._done_mean_dev.reset["gpu"]()
+            self._action_abs_mean_dev.reset["gpu"]()
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^

@@ -42,6 +42,9 @@ struct MBPOMetrics(Copyable, Movable, ImplicitlyDestructible):
     # prime tell for synthetic-data Q-degradation.
     var td_target:   LogScalar[DT]
     var done_ratio:  LogScalar[DT]
+    # Mean |action| over the mixed batch (legacy `mean_abs_action`): proxy for
+    # whether the policy is committing (large torques) or staying timid.
+    var mean_abs_action: LogScalar[DT]
     var dyn_loss:    LogScalar[DT]
     # Dynamics holdout suite (refreshed each model-train round, held between
     # rounds) — mirrors the legacy MBPO logging so the two versions overlay:
