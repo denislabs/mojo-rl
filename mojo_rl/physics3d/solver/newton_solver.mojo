@@ -154,6 +154,84 @@ comptime NEWTON_CPU_TOLERANCE: Float64 = 1e-12
 comptime NEWTON_CPU_DEBUG: Bool = False
 comptime MINVAL: Float64 = 1e-10
 
+# 5d.1: when True, solve_gpu_blocked factorizes the Newton Hessian cooperatively
+# (column-parallel Cholesky across the block's threads, writing the shared L_sh)
+# instead of on tid 0 only. Bit-identical to chol_factor_inline. Aimed at large
+# NV (Humanoid, NV=23) where the O(NV^3) factor dominates the per-iteration cost;
+# set False to keep the tid-0 factor (the 5b oracle). See
+# docs/PHYSICS3D_BLOCKED_SOLVER.md (section 5d).
+comptime SOLVE_COOP_NEWTON: Bool = False
+
+
+@no_inline
+def chol_factor_coop_gpu[
+    DTYPE: DType,
+    NV: Int,
+    M_SIZE: Int,
+](
+    tid: Int,
+    n_threads: Int,
+    H_sh: LayoutTensor[
+        DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    L_sh: LayoutTensor[
+        DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    ctrl_sh: LayoutTensor[
+        DTYPE, Layout.row_major(3), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+):
+    """Cooperative column-parallel Cholesky of the shared Hessian H_sh -> L_sh
+    (5d.1). Bit-identical to chol_factor_inline: each entry's inner sum is over
+    k=0..j-1 ascending, computed by one thread. Columns are sequential with a
+    block-wide barrier per column; the diagonal is on tid 0, off-diagonal rows
+    split across threads. ctrl_sh[2] is the rank-deficiency flag — on a singular
+    column tid 0 sets it, the diagonal is clamped to 1e-10, and after the factor
+    1e-6 is added to the H diagonal and the factor re-runs once (matching the
+    serial retry). @no_inline keeps these nested loops OUT of the giant
+    solve_gpu_blocked kernel (Mojo inline-explosion guard). All threads in the
+    block call this; barriers are unconditional.
+    """
+    for _attempt in range(2):
+        if tid == 0:
+            ctrl_sh[2] = Scalar[DTYPE](0)
+        for k in range(tid, NV * NV, n_threads):
+            L_sh[k] = Scalar[DTYPE](0)
+        barrier()
+        for j in range(NV):
+            if tid == 0:
+                var s_d: Scalar[DTYPE] = 0
+                for k in range(j):
+                    var ljk = rebind[Scalar[DTYPE]](L_sh[j * NV + k])
+                    s_d += ljk * ljk
+                var diag = rebind[Scalar[DTYPE]](H_sh[j * NV + j]) - s_d
+                if diag < Scalar[DTYPE](1e-10):
+                    ctrl_sh[2] = Scalar[DTYPE](1)
+                    diag = Scalar[DTYPE](1e-10)
+                L_sh[j * NV + j] = sqrt(diag)
+            barrier()
+            var ljj = rebind[Scalar[DTYPE]](L_sh[j * NV + j])
+            for i in range(j + 1 + tid, NV, n_threads):
+                var s: Scalar[DTYPE] = 0
+                for k in range(j):
+                    s += rebind[Scalar[DTYPE]](
+                        L_sh[i * NV + k]
+                    ) * rebind[Scalar[DTYPE]](L_sh[j * NV + k])
+                L_sh[i * NV + j] = (
+                    rebind[Scalar[DTYPE]](H_sh[i * NV + j]) - s
+                ) / ljj
+            barrier()
+        if Int(rebind[Scalar[DTYPE]](ctrl_sh[2])) == 0:
+            break
+        # Rank-deficient: add 1e-6 to the H diagonal and refactor once.
+        if tid == 0:
+            for i in range(NV):
+                H_sh[i * NV + i] += Scalar[DTYPE](1e-6)
+        barrier()
+
 
 @always_inline
 def _build_hessian[
@@ -2835,10 +2913,18 @@ struct NewtonSolver(ConstraintSolver):
             MutAnyOrigin,
             address_space = AddressSpace.SHARED,
         ].stack_allocation()
-        # Scalar shared state: [0]=num_edges, [1]=done flag.
+        # Cholesky factor (5d.1): cooperative column-parallel factor writes here.
+        var L_sh = LayoutTensor[
+            DTYPE,
+            Layout.row_major(M_SIZE),
+            MutAnyOrigin,
+            address_space = AddressSpace.SHARED,
+        ].stack_allocation()
+        # Scalar shared state: [0]=num_edges, [1]=done flag, [2]=Cholesky
+        # rank-deficient flag (5d.1).
         var ctrl_sh = LayoutTensor[
             DTYPE,
-            Layout.row_major(2),
+            Layout.row_major(3),
             MutAnyOrigin,
             address_space = AddressSpace.SHARED,
         ].stack_allocation()
@@ -3205,16 +3291,34 @@ struct NewtonSolver(ConstraintSolver):
                     H_sh[idx] = h
             barrier()
 
+            # --- Cholesky factor of H (5d.1): cooperative column-parallel into
+            # L_sh, or tid-0 serial (oracle). The cooperative factor lives in a
+            # @no_inline device helper (chol_factor_coop_gpu) so its nested loops
+            # do NOT inline into this already-huge kernel and tip it over the
+            # Mojo compile inline-explosion threshold. Bit-identical to
+            # chol_factor_inline (per-entry inner sum ascending k), with the same
+            # +1e-6 rank-deficiency refactor. ---
+            comptime if SOLVE_COOP_NEWTON:
+                chol_factor_coop_gpu[DTYPE, NV, M_SIZE](
+                    tid, THREADS, H_sh, L_sh, ctrl_sh
+                )
+
             # --- Thread 0: Cholesky solve + line search + state update ---
             if valid_env and tid == 0:
-                for k in range(NV * NV):
-                    H[k] = rebind[Scalar[DTYPE]](H_sh[k])
+                comptime if SOLVE_COOP_NEWTON:
+                    for k in range(NV * NV):
+                        L_chol[k] = rebind[Scalar[DTYPE]](L_sh[k])
+                else:
+                    for k in range(NV * NV):
+                        H[k] = rebind[Scalar[DTYPE]](H_sh[k])
 
-                var chol_ok = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
-                if not chol_ok:
-                    for i in range(NV):
-                        H[i * NV + i] += Scalar[DTYPE](1e-6)
-                    _ = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+                    var chol_ok = chol_factor_inline[DTYPE, NV, M_SIZE](
+                        H, L_chol
+                    )
+                    if not chol_ok:
+                        for i in range(NV):
+                            H[i * NV + i] += Scalar[DTYPE](1e-6)
+                        _ = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
                 chol_solve_inline[DTYPE, NV, M_SIZE, V_SIZE](
                     L_chol, grad, search
                 )
