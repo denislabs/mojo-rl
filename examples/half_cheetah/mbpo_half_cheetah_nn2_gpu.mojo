@@ -91,12 +91,12 @@ comptime CHECKPOINT_PATH = "mbpo_half_cheetah_nn2_gpu.ckpt"
 # Reverted to auto-α: the α A/B was REFUTED (fixed α=0.12 left reward flat at
 # ~200 vs auto's ~210; the policy wasn't timid — mean_abs_action≈0.48). The
 # real lever is the dynamics uncertainty bound (LOGVAR_MAX above).
-comptime FIX_ALPHA = False
+comptime FIX_ALPHA = True
 comptime FIXED_ALPHA: Scalar[DT] = 0.12  # legacy's stable equilibrium
 comptime INIT_ALPHA: Scalar[DT] = FIXED_ALPHA if FIX_ALPHA else 0.2
 comptime ALPHA_LR: Scalar[DT] = 0.0 if FIX_ALPHA else 3e-4
 comptime RUN_NAME = (
-    "MBPO HalfCheetah NN2 (GPU) — fixed alpha=0.12"
+    "MBPO HalfCheetah NN2 (GPU) — early-stop+elite, fixed alpha=0.12"
     if FIX_ALPHA
     else "MBPO HalfCheetah NN2 (GPU) — early-stop dyn + per-tx elite, logvar=-5"
 )
