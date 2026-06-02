@@ -160,7 +160,7 @@ comptime MINVAL: Float64 = 1e-10
 # NV (Humanoid, NV=23) where the O(NV^3) factor dominates the per-iteration cost;
 # set False to keep the tid-0 factor (the 5b oracle). See
 # docs/PHYSICS3D_BLOCKED_SOLVER.md (section 5d).
-comptime SOLVE_COOP_NEWTON: Bool = False
+comptime SOLVE_COOP_NEWTON: Bool = True
 
 
 @no_inline
@@ -485,24 +485,34 @@ def matvec_mv_jve_coop[
     n_threads: Int,
     num_edges: Int,
     M_sh: LayoutTensor[
-        DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        DTYPE,
+        Layout.row_major(M_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
     ],
     Je_sh: LayoutTensor[
-        DTYPE, Layout.row_major(ME * V_SIZE), MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        DTYPE,
+        Layout.row_major(ME * V_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
     ],
     search_sh: LayoutTensor[
-        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        DTYPE,
+        Layout.row_major(V_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
     ],
     Mv_sh: LayoutTensor[
-        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        DTYPE,
+        Layout.row_major(V_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
     ],
     Jv_e_sh: LayoutTensor[
-        DTYPE, Layout.row_major(ME), MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        DTYPE,
+        Layout.row_major(ME),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
     ],
 ):
     """Cooperative Mv = M·search and Jv_e = Je·search (5d.2). One output element
