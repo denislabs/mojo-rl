@@ -16,10 +16,11 @@ and pi optimizer are passed by ref (trainer-owned).
 """
 
 from std.memory import alloc
-from layout import TileTensor, row_major
-from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor, TileTensor, row_major
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.initializer import Zero
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.deep_agents2.primitives.rsample import RSample
@@ -28,6 +29,28 @@ from mojo_rl.deep_agents2.loss.seed_grad_inv_batch import seed_grad_inv_batch
 from .nets import TDMPC2Policy, TDMPC2QNet
 from .policy_graph import TDMPC2PolicyGraph
 from .running_scale import RunningScale
+
+
+@always_inline
+def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+
+
+@always_inline
+def _lt_pol[N: Int](
+    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
+    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
+
+
+def _scale_copy_k[N: Int](
+    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    f: Scalar[DT],
+):
+    var i = Int(global_idx.x)
+    if i < N:
+        dst[i] = rebind[Scalar[DT]](src[i]) * f
 
 
 struct PolicyStep[
@@ -60,13 +83,37 @@ struct PolicyStep[
     def make[target: StaticString](
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert target == "cpu", (
-            "PolicyStep: only the CPU path is implemented (GPU is P4)"
+        comptime assert target == "cpu" or target == "gpu", (
+            "PolicyStep: target must be 'cpu' or 'gpu'"
         )
         var s = Self()
         s.graph = Self.GraphT.make[target, INIT=Zero](ctx=ctx)
         s.rsample = RSample[Self.ACT].make[target, INIT=Zero](ctx=ctx)
         return s^
+
+    def _bind[target: StaticString](
+        mut self,
+        mut policy: Self.PolicyT,
+        mut q: List[Self.QNetT],
+        qi: Int,
+        qj: Int,
+        z: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        # Two `mut` subscripts of one List in a single call is rejected by
+        # Mojo's aliasing checker — bind in separate statements.
+        self.graph.set_external["pi_out", Self.PolicyT](policy)
+        self.graph.set_external["alp", RSample[Self.ACT]](self.rsample)
+        self.graph.set_external["q1", Self.QNetT](q[qi])
+        self.graph.set_external["q2", Self.QNetT](q[qj])
+        self.graph.set_input["z", Self.B](
+            TileTensor(z, row_major[Self.B, Self.LATENT]())
+        )
+        self.graph.set_node_attr["alpha_lp", "multiplier"](
+            self.entropy_coef * Scalar[DT](Self.ACT)
+        )
+        self.graph.set_node_attr["qscaled", "multiplier"](
+            Scalar[DT](0.5) * self.scale.inv()
+        )
 
     def step[target: StaticString](
         mut self,
@@ -76,31 +123,24 @@ struct PolicyStep[
         qj: Int,
         mut pi_opt: Adam,
         z: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, LATENT]
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Scalar[DT]:
-        comptime assert target == "cpu", "PolicyStep.step: CPU only (P4 = GPU)"
+        comptime if target == "cpu":
+            return self._pol_cpu[target](policy, q, qi, qj, pi_opt, z)
+        else:
+            return self._pol_gpu[target](policy, q, qi, qj, pi_opt, z, ctx.value())
+
+    def _pol_cpu[target: StaticString](
+        mut self,
+        mut policy: Self.PolicyT,
+        mut q: List[Self.QNetT],
+        qi: Int,
+        qj: Int,
+        mut pi_opt: Adam,
+        z: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises -> Scalar[DT]:
         comptime BB = Self.B
-
-        # ── Bind externals (repeat each call: fields may move). The two Q
-        # heads are indexed from the ensemble List in separate statements
-        # (two `mut` subscripts of one List in a single call is rejected by
-        # Mojo's aliasing checker — feedback_optimizer_bundle_alias). ────
-        self.graph.set_external["pi_out", Self.PolicyT](policy)
-        self.graph.set_external["alp", RSample[Self.ACT]](self.rsample)
-        self.graph.set_external["q1", Self.QNetT](q[qi])
-        self.graph.set_external["q2", Self.QNetT](q[qj])
-
-        self.graph.set_input["z", BB](
-            TileTensor(z, row_major[BB, Self.LATENT]())
-        )
-
-        # entropy term coef = entropy_coef·ACT; Q scaled by 0.5/scale.
-        self.graph.set_node_attr["alpha_lp", "multiplier"](
-            self.entropy_coef * Scalar[DT](Self.ACT)
-        )
-        self.graph.set_node_attr["qscaled", "multiplier"](
-            Scalar[DT](0.5) * self.scale.inv()
-        )
-
+        self._bind[target](policy, q, qi, qj, z)
         pi_opt.zero_grad[target, Self.PolicyT](policy)
 
         var loss = alloc[Scalar[DT]](BB)
@@ -112,22 +152,67 @@ struct PolicyStep[
             loss_sum += loss[b]
         var loss_mean = loss_sum / Scalar[DT](BB)
 
-        # ── Update RunningScale from this step's avg-Q (for next step). ─
         var qsum = self.graph.node_out_ptr["qsum"]()
         var qavg = alloc[Scalar[DT]](BB)
         for b in range(BB):
             qavg[b] = qsum[b] * Scalar[DT](0.5)
         self.scale.update_from(qavg, BB)
 
-        # ── Backward (policy only) + step. ─────────────────────────────
         var grad = alloc[Scalar[DT]](BB)
         seed_grad_inv_batch[target, BB](grad, ctx=None)
         var grad_t = TileTensor(grad, row_major[BB, 1]())
         self.graph.vjp[target, BB](grad_t)
 
         pi_opt.step[target, Self.PolicyT](policy)
+        loss.free(); qavg.free(); grad.free()
+        return loss_mean
 
-        loss.free()
-        qavg.free()
-        grad.free()
+    def _pol_gpu[target: StaticString](
+        mut self,
+        mut policy: Self.PolicyT,
+        mut q: List[Self.QNetT],
+        qi: Int,
+        qj: Int,
+        mut pi_opt: Adam,
+        z: UnsafePointer[Scalar[DT], MutAnyOrigin],   # device [B, LATENT]
+        ctx: DeviceContext,
+    ) raises -> Scalar[DT]:
+        comptime BB = Self.B
+        self._bind[target](policy, q, qi, qj, z)
+        pi_opt.zero_grad[target, Self.PolicyT](policy)
+
+        var d_loss = ctx.enqueue_create_buffer[DT](BB)
+        var loss_t = TileTensor(_dp(d_loss), row_major[BB, 1]())
+        self.graph.forward[target, BB](loss_t)
+
+        # D2H loss + (scaled) qsum → host reductions identical to CPU.
+        var d_qavg = ctx.enqueue_create_buffer[DT](BB)
+        comptime sck = _scale_copy_k[BB]
+        comptime nb = (BB + TPB - 1) // TPB
+        ctx.enqueue_function[sck](
+            _lt_pol[BB](self.graph.node_out_ptr["qsum"]()),
+            _lt_pol[BB](_dp(d_qavg)),
+            Scalar[DT](0.5),
+            grid_dim=nb, block_dim=TPB,
+        )
+        var h_loss = ctx.enqueue_create_host_buffer[DT](BB)
+        var h_qavg = ctx.enqueue_create_host_buffer[DT](BB)
+        ctx.enqueue_copy(h_loss, d_loss)
+        ctx.enqueue_copy(h_qavg, d_qavg)
+        ctx.synchronize()
+        var loss_sum: Scalar[DT] = 0.0
+        for b in range(BB):
+            loss_sum += h_loss.unsafe_ptr()[b]
+        var loss_mean = loss_sum / Scalar[DT](BB)
+        self.scale.update_from(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](h_qavg.unsafe_ptr()),
+            BB,
+        )
+
+        var d_grad = ctx.enqueue_create_buffer[DT](BB)
+        seed_grad_inv_batch[target, BB](_dp(d_grad), ctx=ctx)
+        var grad_t = TileTensor(_dp(d_grad), row_major[BB, 1]())
+        self.graph.vjp[target, BB](grad_t)
+
+        pi_opt.step[target, Self.PolicyT](policy)
         return loss_mean
