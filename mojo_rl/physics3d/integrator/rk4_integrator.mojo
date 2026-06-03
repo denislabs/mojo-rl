@@ -40,6 +40,7 @@ from ..dynamics.mass_matrix import (
     compute_mass_matrix_full,
     compute_mass_matrix_full_gpu,
     compute_mass_matrix_full_gpu_mt,
+    compute_mass_matrix_treewalk_gpu_mt,
     ldl_factor,
     ldl_factor_gpu,
     ldl_factor_gpu_mt,
@@ -783,6 +784,19 @@ comptime RK4_PARALLEL_CDOF: Bool = True
 # Within float32 tolerance of the serial walk. Default ON. Requires RK4_PARALLEL_MINV
 # (RNE-mt runs before the tid0 drop-out in that tail). See docs/PHYSICS3D_BLOCKED_SOLVER.md.
 comptime RK4_PARALLEL_RNE: Bool = True
+
+
+# When True (and STEP_THREADS>1, dense), the mass matrix uses the tree-walk CRBA
+# (compute_mass_matrix_treewalk_gpu_mt): per-DOF-row ancestor walk with a composite
+# spatial inertia about stcom[rootid], O(NV·depth) vs the dense O(NV²·NBODY). Within
+# float32 tolerance of the dense `_mt` oracle — a slightly looser agreement than the
+# other phases' ~1e-9 (the composite-about-P additive accumulation reorders the sum and
+# the parallel-axis shift introduces cancellation), but per-eval M agrees to ~1e-8.
+# VALIDATED on both joint topologies: HalfCheetah (slide/hinge) full-step CPU-vs-GPU 6/6
+# (test_rk4_cpu_vs_gpu @ STEP_THREADS=NV), and Ant (6-DOF FREE joint, used by Humanoid)
+# dense-vs-tree-walk ~1e-8 (test_mass_matrix_treewalk_ant). Default ON.
+# See docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_PARALLEL_CRBA: Bool = True
 
 
 struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
@@ -1560,22 +1574,10 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                     sp_col_ind,
                 )
         else:
-            comptime if STEP_THREADS > 1:
-                if valid_env:
-                    compute_mass_matrix_full_gpu_mt[
-                        DTYPE,
-                        NQ,
-                        NV,
-                        NBODY,
-                        NJOINT,
-                        MAX_CONTACTS,
-                        STATE_SIZE,
-                        MODEL_SIZE,
-                        BATCH,
-                        WS_SIZE,
-                    ](env, tid, STEP_THREADS, state, model, workspace)
-            else:
-                compute_mass_matrix_full_gpu[
+            comptime if RK4_PARALLEL_CRBA and (STEP_THREADS > 1):
+                # Tree-walk CRBA: called UNCONDITIONALLY (internal barriers);
+                # work guarded by valid_env. O(NV·depth) vs dense O(NV²·NBODY).
+                compute_mass_matrix_treewalk_gpu_mt[
                     DTYPE,
                     NQ,
                     NV,
@@ -1586,7 +1588,35 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                     MODEL_SIZE,
                     BATCH,
                     WS_SIZE,
-                ](env, state, model, workspace)
+                ](env, tid, STEP_THREADS, valid_env, state, model, workspace)
+            else:
+                comptime if STEP_THREADS > 1:
+                    if valid_env:
+                        compute_mass_matrix_full_gpu_mt[
+                            DTYPE,
+                            NQ,
+                            NV,
+                            NBODY,
+                            NJOINT,
+                            MAX_CONTACTS,
+                            STATE_SIZE,
+                            MODEL_SIZE,
+                            BATCH,
+                            WS_SIZE,
+                        ](env, tid, STEP_THREADS, state, model, workspace)
+                else:
+                    compute_mass_matrix_full_gpu[
+                        DTYPE,
+                        NQ,
+                        NV,
+                        NBODY,
+                        NJOINT,
+                        MAX_CONTACTS,
+                        STATE_SIZE,
+                        MODEL_SIZE,
+                        BATCH,
+                        WS_SIZE,
+                    ](env, state, model, workspace)
         comptime if STEP_THREADS > 1:
             barrier()
 

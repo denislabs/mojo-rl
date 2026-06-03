@@ -1996,6 +1996,212 @@ def compute_mass_matrix_full_gpu_mt[
                 workspace[env, M_idx + j * NV + i] = mij
 
 
+# =============================================================================
+# Tree-walk CRBA mass matrix (cooperative) — O(NV·depth) vs the dense
+# O(NV²·NBODY) above. Borrows mujoco_warp `_M_dense` (smooth.py): per-DOF row,
+# walk ancestor DOFs, using a composite spatial inertia.
+#
+# Composite is built ABOUT the common reference P = subtree_com[rootid] (same
+# reference cdof uses), so within one kinematic tree it's a simple additive
+# leaf→root sum (no per-body re-shift). Per body i:
+#   comp = (Mc, hc=Σm·d, Ic_rot=Σ[I_world + m·((d·d)I - d⊗d)]), d = xipos - P.
+# Then f_i = comp·cdof_i:  f_ang = Ic_rot·a_i + hc×l_i ;  f_lin = Mc·l_i + a_i×hc
+#   M[i,j] = a_j·f_ang + l_j·f_lin   (for j an ancestor DOF of i; symmetric).
+# This reproduces the dense kernel's Σ_k[m·(vki·vkj) + a_i·I_world_k·a_j]
+# (single-root → common P), within float32 tolerance. Setup (dof maps + comp)
+# is per-thread redundant (cheap: NBODY+NV); only the row loop is distributed.
+# =============================================================================
+
+
+@always_inline
+def compute_mass_matrix_treewalk_gpu_mt[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    tid: Int,
+    n_threads: Int,
+    valid_env: Bool,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+):
+    comptime M_idx = ws_M_offset[NV, NBODY]()
+    comptime cdof_idx = ws_cdof_offset()
+    var xipos_off = xipos_offset[NQ, NV, NBODY]()
+    var xquat_off = xquat_offset[NQ, NV, NBODY]()
+    var stcom_off = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+
+    comptime NV_S = _ensure_positive[NV]()
+    comptime NB_S = _ensure_positive[NBODY]()
+    comptime CMP_S = _ensure_positive[NBODY * 10]()
+    var dof_body = InlineArray[Int, NV_S](fill=0)
+    var dof_parent = InlineArray[Int, NV_S](fill=-1)
+    var body_first = InlineArray[Int, NB_S](fill=-1)
+    var body_last = InlineArray[Int, NB_S](fill=-1)
+    var comp = InlineArray[Scalar[DTYPE], CMP_S](fill=0)
+
+    # --- dof_body + per-body dof range ---
+    for j in range(NJOINT):
+        var joint_off = model_joint_offset[NBODY](j)
+        var jb = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
+        var dadr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
+        var jt = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
+        var ndof = 1
+        if jt == JNT_FREE:
+            ndof = 6
+        elif jt == JNT_BALL:
+            ndof = 3
+        for d in range(ndof):
+            dof_body[dadr + d] = jb
+        if body_first[jb] < 0 or dadr < body_first[jb]:
+            body_first[jb] = dadr
+        if dadr + ndof - 1 > body_last[jb]:
+            body_last[jb] = dadr + ndof - 1
+
+    # --- dof_parent: within body = d-1; at body's first dof = last dof of the
+    #     nearest ancestor body that has DOFs (else -1) ---
+    for d in range(NV):
+        var b = dof_body[d]
+        if d > body_first[b]:
+            dof_parent[d] = d - 1
+        else:
+            var p = Int(
+                rebind[Scalar[DTYPE]](model[0, model_body_offset(b) + BODY_IDX_PARENT])
+            )
+            while p > 0:
+                if body_last[p] >= 0:
+                    dof_parent[d] = body_last[p]
+                    break
+                p = Int(
+                    rebind[Scalar[DTYPE]](model[0, model_body_offset(p) + BODY_IDX_PARENT])
+                )
+
+    # --- per-body composite contribution about P = stcom[rootid] ---
+    for b in range(NBODY):
+        var body_off = model_body_offset(b)
+        var mass = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_MASS])
+        # rotated body inertia (world-aligned, about body COM)
+        var Ixx_l = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IXX])
+        var Iyy_l = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IYY])
+        var Izz_l = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IZZ])
+        var bqx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
+        var bqy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
+        var bqz = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
+        var bqw = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+        var iqx = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_X])
+        var iqy = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_Y])
+        var iqz = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_Z])
+        var iqw = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_W])
+        var iq = gpu_quat_mul(bqx, bqy, bqz, bqw, iqx, iqy, iqz, iqw)
+        var qx = iq[0]
+        var qy = iq[1]
+        var qz = iq[2]
+        var qw = iq[3]
+        var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
+        var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
+        var r20 = Scalar[DTYPE](2) * (qx * qz - qw * qy)
+        var r01 = Scalar[DTYPE](2) * (qx * qy - qw * qz)
+        var r11 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qz * qz)
+        var r21 = Scalar[DTYPE](2) * (qy * qz + qw * qx)
+        var r02 = Scalar[DTYPE](2) * (qx * qz + qw * qy)
+        var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
+        var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
+        var Iw_xx = Ixx_l * r00 * r00 + Iyy_l * r01 * r01 + Izz_l * r02 * r02
+        var Iw_yy = Ixx_l * r10 * r10 + Iyy_l * r11 * r11 + Izz_l * r12 * r12
+        var Iw_zz = Ixx_l * r20 * r20 + Iyy_l * r21 * r21 + Izz_l * r22 * r22
+        var Iw_xy = Ixx_l * r00 * r10 + Iyy_l * r01 * r11 + Izz_l * r02 * r12
+        var Iw_xz = Ixx_l * r00 * r20 + Iyy_l * r01 * r21 + Izz_l * r02 * r22
+        var Iw_yz = Ixx_l * r10 * r20 + Iyy_l * r11 * r21 + Izz_l * r12 * r22
+        # d = xipos[b] - stcom[rootid[b]]
+        var rootb = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_ROOTID]))
+        var dx = rebind[Scalar[DTYPE]](state[env, xipos_off + b * 3 + 0]) - rebind[Scalar[DTYPE]](state[env, stcom_off + rootb * 3 + 0])
+        var dy = rebind[Scalar[DTYPE]](state[env, xipos_off + b * 3 + 1]) - rebind[Scalar[DTYPE]](state[env, stcom_off + rootb * 3 + 1])
+        var dz = rebind[Scalar[DTYPE]](state[env, xipos_off + b * 3 + 2]) - rebind[Scalar[DTYPE]](state[env, stcom_off + rootb * 3 + 2])
+        var dd = dx * dx + dy * dy + dz * dz
+        comp[b * 10 + 0] = mass
+        comp[b * 10 + 1] = mass * dx
+        comp[b * 10 + 2] = mass * dy
+        comp[b * 10 + 3] = mass * dz
+        comp[b * 10 + 4] = Iw_xx + mass * (dd - dx * dx)
+        comp[b * 10 + 5] = Iw_yy + mass * (dd - dy * dy)
+        comp[b * 10 + 6] = Iw_zz + mass * (dd - dz * dz)
+        comp[b * 10 + 7] = Iw_xy - mass * dx * dy
+        comp[b * 10 + 8] = Iw_xz - mass * dx * dz
+        comp[b * 10 + 9] = Iw_yz - mass * dy * dz
+
+    # leaf→root accumulate (common P within a tree → additive; stop at roots)
+    for b in range(NBODY - 1, 0, -1):
+        var p = Int(rebind[Scalar[DTYPE]](model[0, model_body_offset(b) + BODY_IDX_PARENT]))
+        if p > 0:
+            for e in range(10):
+                comp[p * 10 + e] = comp[p * 10 + e] + comp[b * 10 + e]
+
+    # zero M (distributed)
+    if valid_env:
+        for idx in range(tid, NV * NV, n_threads):
+            workspace[env, M_idx + idx] = Scalar[DTYPE](0)
+    barrier()
+
+    # per-DOF row, distributed: f_i = comp[body_i]·cdof_i, walk ancestor DOFs
+    if valid_env:
+        for i in range(tid, NV, n_threads):
+            var bi = dof_body[i]
+            var ai0 = workspace[env, cdof_idx + i * 6 + 0]
+            var ai1 = workspace[env, cdof_idx + i * 6 + 1]
+            var ai2 = workspace[env, cdof_idx + i * 6 + 2]
+            var li0 = workspace[env, cdof_idx + i * 6 + 3]
+            var li1 = workspace[env, cdof_idx + i * 6 + 4]
+            var li2 = workspace[env, cdof_idx + i * 6 + 5]
+            var Mc = comp[bi * 10 + 0]
+            var hx = comp[bi * 10 + 1]
+            var hy = comp[bi * 10 + 2]
+            var hz = comp[bi * 10 + 3]
+            var Cxx = comp[bi * 10 + 4]
+            var Cyy = comp[bi * 10 + 5]
+            var Czz = comp[bi * 10 + 6]
+            var Cxy = comp[bi * 10 + 7]
+            var Cxz = comp[bi * 10 + 8]
+            var Cyz = comp[bi * 10 + 9]
+            # f_ang = Ic_rot·a_i + hc×l_i
+            var fa0 = Cxx * ai0 + Cxy * ai1 + Cxz * ai2 + (hy * li2 - hz * li1)
+            var fa1 = Cxy * ai0 + Cyy * ai1 + Cyz * ai2 + (hz * li0 - hx * li2)
+            var fa2 = Cxz * ai0 + Cyz * ai1 + Czz * ai2 + (hx * li1 - hy * li0)
+            # f_lin = Mc·l_i + a_i×hc
+            var fl0 = Mc * li0 + (ai1 * hz - ai2 * hy)
+            var fl1 = Mc * li1 + (ai2 * hx - ai0 * hz)
+            var fl2 = Mc * li2 + (ai0 * hy - ai1 * hx)
+            var j = i
+            while j >= 0:
+                var aj0 = workspace[env, cdof_idx + j * 6 + 0]
+                var aj1 = workspace[env, cdof_idx + j * 6 + 1]
+                var aj2 = workspace[env, cdof_idx + j * 6 + 2]
+                var lj0 = workspace[env, cdof_idx + j * 6 + 3]
+                var lj1 = workspace[env, cdof_idx + j * 6 + 4]
+                var lj2 = workspace[env, cdof_idx + j * 6 + 5]
+                var mij = (
+                    aj0 * fa0 + aj1 * fa1 + aj2 * fa2
+                    + lj0 * fl0 + lj1 * fl1 + lj2 * fl2
+                )
+                workspace[env, M_idx + i * NV + j] = mij
+                if i != j:
+                    workspace[env, M_idx + j * NV + i] = mij
+                j = dof_parent[j]
+    barrier()
+
+
 @always_inline
 def ldl_factor_gpu[
     DTYPE: DType,
