@@ -66,7 +66,6 @@ from mojo_rl.physics3d.collision.broadphase_sap import (
     detect_contacts_auto_gpu,
 )
 from mojo_rl.physics3d.solver.newton_solver import NewtonSolver
-from mojo_rl.physics3d.integrator.rk4_integrator import RK4Integrator
 
 from mojo_rl.envs.humanoid import Humanoid
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
@@ -84,14 +83,6 @@ def main() raises:
     # the headroom (check `nvidia-smi`); the relative split won't change.
     comptime BATCH = 64
     comptime N_STEPS = 200  # RK4 is heavier than Euler; fewer steps suffice
-
-    # When False (default), the full RK4 step_gpu is NEVER launched — only the
-    # individual phase kernels are. This avoids reserving the large per-kernel
-    # local-memory windows of the 4 fused rk4_stage_kernel instantiations + the
-    # Newton solver (the real CUDA-OOM cause; see warmup note). The per-phase
-    # split (this profiler's purpose) does not need the full step. Set True only
-    # to also measure the monolithic step total, and only if VRAM allows.
-    comptime PROFILE_FULL_STEP = False
 
     # Humanoid dimensions (from HumanoidModel = ModelDefFromXML[...])
     comptime NQ = HumanoidModel.NQ  # 24
@@ -513,28 +504,6 @@ def main() raises:
             + String(Float64(free1 - free2) / 1.0e6) + " MB)"
         )
 
-        comptime if PROFILE_FULL_STEP:
-            print("Warming up full RK4 step_gpu (PROFILE_FULL_STEP=True)...")
-            for _ in range(10):
-                RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-                    dtype,
-                    NQ,
-                    NV,
-                    NBODY,
-                    NJOINT,
-                    MAX_CONTACTS,
-                    BATCH,
-                    NGEOM,
-                    STEP_THREADS=NV,
-                ](ctx, state_buf, model_buf, workspace_buf)
-            ctx.synchronize()
-            var (free3, total3) = ctx.get_memory_info()
-            print(
-                "VRAM after full step:    free "
-                + String(Float64(free3) / 1.0e9)
-                + " GB  (step_gpu kernels reserved "
-                + String(Float64(free2 - free3) / 1.0e6) + " MB)"
-            )
         print("Warmup done!")
         print()
 
@@ -699,26 +668,13 @@ def main() raises:
             "10. LDL solve:               " + String(solve_us)[byte=:8] + " μs"
         )
 
-        # ── Reference: full monolithic RK4 step (gated — see PROFILE_FULL_STEP).
-        var full_us = Float64(0)
-        comptime if PROFILE_FULL_STEP:
-            ctx.synchronize()
-            t0 = perf_counter_ns()
-            for _ in range(N_STEPS):
-                RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-                    dtype,
-                    NQ,
-                    NV,
-                    NBODY,
-                    NJOINT,
-                    MAX_CONTACTS,
-                    BATCH,
-                    NGEOM,
-                    STEP_THREADS=NV,
-                ](ctx, state_buf, model_buf, workspace_buf)
-            ctx.synchronize()
-            t1 = perf_counter_ns()
-            full_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
+        # NOTE: the full monolithic RK4 step (step_gpu) is intentionally NOT run
+        # here. It instantiates the 4 fused rk4_stage_kernel variants + the
+        # Newton solver — by far the largest kernels in the codebase — and
+        # compiling them cold spikes the Mojo compiler's host RAM enough to trip
+        # the container's cgroup OOM-killer ("Killed" during compile). The
+        # per-phase split (this profiler's purpose) does not need it. To time the
+        # full step, use the SAC Humanoid profiler instead.
 
         print()
         print("=" * 60)
@@ -740,14 +696,6 @@ def main() raises:
             + String(phases_total)[byte=:8]
             + " μs"
         )
-        comptime if PROFILE_FULL_STEP:
-            print(
-                "Full RK4 step (×20 passes):  "
-                + String(full_us)[byte=:8] + " μs"
-            )
-            print("  (includes 20× solver + finalize + 4-stage RK4 combine)")
-        else:
-            print("Full RK4 step:               skipped (PROFILE_FULL_STEP=False)")
         print()
 
         print("Phase breakdown (% of summed phases):")
