@@ -112,9 +112,28 @@ def main() raises:
         + String(STEP_ENV_BLOCKS)
     )
     print("Steps: " + String(N_STEPS))
+    # Exact host-side buffer footprint (device VRAM these will occupy).
+    print(
+        "Buffers: state "
+        + String(Float64(BATCH * STATE_SIZE * 4) / 1.0e6)
+        + " MB + model "
+        + String(Float64(MODEL_SIZE * 4) / 1.0e6)
+        + " MB + workspace "
+        + String(Float64(BATCH * WS_SIZE * 4) / 1.0e6)
+        + " MB"
+    )
     print()
 
     with DeviceContext() as ctx:
+        var (free0, total0) = ctx.get_memory_info()
+        print(
+            "VRAM @ ctx open:     free "
+            + String(Float64(free0) / 1.0e9)
+            + " / "
+            + String(Float64(total0) / 1.0e9)
+            + " GB"
+        )
+
         # Allocate buffers
         var state_buf = ctx.enqueue_create_buffer[dtype](BATCH * STATE_SIZE)
         var model_buf = ctx.enqueue_create_buffer[dtype](MODEL_SIZE)
@@ -129,6 +148,15 @@ def main() raises:
         # Zero workspace
         ctx.enqueue_memset(workspace_buf, 0)
         ctx.synchronize()
+
+        var (free1, total1) = ctx.get_memory_info()
+        print(
+            "VRAM after buffers:  free "
+            + String(Float64(free1) / 1.0e9)
+            + " GB  (buffers+init used "
+            + String(Float64(free0 - free1) / 1.0e6)
+            + " MB)"
+        )
 
         var state = LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -362,7 +390,15 @@ def main() raises:
                 STEP_THREADS=NV,
             ](ctx, state_buf, model_buf, workspace_buf)
         ctx.synchronize()
+        var (free2, total2) = ctx.get_memory_info()
         print("Warmup done!")
+        print(
+            "VRAM after warmup:   free "
+            + String(Float64(free2) / 1.0e9)
+            + " GB  (RK4 step_gpu kernels reserved "
+            + String(Float64(free1 - free2) / 1.0e6)
+            + " MB)"
+        )
         print()
 
         # ── Profile each phase separately ──
