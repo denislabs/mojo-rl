@@ -30,7 +30,18 @@ from mojo_rl.deep_agents2.primitives.rsample import RSample
 from mojo_rl.deep_agents2.dreamerv3.polyak import polyak_module
 from mojo_rl.deep_agents2.data.sequence_replay import SequenceReplay
 from mojo_rl.planners.trajectory.mppi import MPPIGPUBatched
+from mojo_rl.nn2.core.checkpoint import (
+    save_state_v2_body, load_state_v2_body,
+    save_state_v2_body_gpu, load_state_v2_body_gpu,
+)
+from mojo_rl.deep_agents2.core.checkpoint_helpers import (
+    save_optimizer_v2_body, load_optimizer_v2_body,
+    save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
+    split_lines_v2, read_file_v2, expect_v2_header,
+)
+from mojo_rl.core.logger import Logger
 from .callback import TDMPC2RolloutCallbackGPU
+from .metrics import TDMPC2Metrics
 
 from .nets import (
     TDMPC2Encoder, TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet, TDMPC2Policy,
@@ -145,6 +156,15 @@ struct TDMPC2Agent[
     var step_count: Int
     var _last_wm: Scalar[DT]
     var _last_pi: Scalar[DT]
+    # per-component last + diag-window accumulators (drained by flush_metrics).
+    var _last_cons: Scalar[DT]
+    var _last_rew: Scalar[DT]
+    var _last_val: Scalar[DT]
+    var _cons_acc: Scalar[DT]
+    var _rew_acc: Scalar[DT]
+    var _val_acc: Scalar[DT]
+    var _pi_acc: Scalar[DT]
+    var _n_diag: Int
     var ctx: Optional[DeviceContext]
     # MPC planner (persistent warm-start; None on CPU). The rollout callback
     # is built transiently in select_action_mpc (it points at self's modules,
@@ -212,7 +232,12 @@ struct TDMPC2Agent[
             replay=SequenceReplay[Self.OBS, Self.ACT, Self.CAP].new(),
             gamma=gamma, tau=tau, action_scale=action_scale,
             learning_starts=learning_starts, step_count=0,
-            _last_wm=Scalar[DT](0.0), _last_pi=Scalar[DT](0.0), ctx=ctx,
+            _last_wm=Scalar[DT](0.0), _last_pi=Scalar[DT](0.0),
+            _last_cons=Scalar[DT](0.0), _last_rew=Scalar[DT](0.0),
+            _last_val=Scalar[DT](0.0), _cons_acc=Scalar[DT](0.0),
+            _rew_acc=Scalar[DT](0.0), _val_acc=Scalar[DT](0.0),
+            _pi_acc=Scalar[DT](0.0), _n_diag=0,
+            ctx=ctx,
             planner=planner^, temperature=temperature,
         )
 
@@ -350,6 +375,148 @@ struct TDMPC2Agent[
     def last_pi_loss(self) -> Scalar[DT]:
         return self._last_pi
 
+    def last_consistency_loss(self) -> Scalar[DT]:
+        return self._last_cons
+
+    def last_reward_loss(self) -> Scalar[DT]:
+        return self._last_rew
+
+    def last_value_loss(self) -> Scalar[DT]:
+        return self._last_val
+
+    def pi_scale(self) -> Scalar[DT]:
+        return self.pol_step.scale.value
+
+    # ── Metrics: drain the diag-window accumulators into a bundle and, if a
+    #    logger is wired, stream one log_scalar per field (driver cadence). ──
+    def flush_metrics[
+        L: Logger
+    ](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        step: Int,
+    ) raises -> TDMPC2Metrics:
+        var n = self._n_diag if self._n_diag > 0 else 1
+        var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        var m = TDMPC2Metrics(
+            consistency_loss=self._cons_acc * inv,
+            reward_loss=self._rew_acc * inv,
+            value_loss=self._val_acc * inv,
+            wm_loss=(self._cons_acc + self._rew_acc + self._val_acc) * inv,
+            pi_loss=self._pi_acc * inv,
+            pi_scale=self.pol_step.scale.value,
+        )
+        if Bool(logger):
+            var lg = logger.value()
+            lg[].log_scalar("consistency_loss", Float64(m.consistency_loss), step)
+            lg[].log_scalar("reward_loss", Float64(m.reward_loss), step)
+            lg[].log_scalar("value_loss", Float64(m.value_loss), step)
+            lg[].log_scalar("wm_loss", Float64(m.wm_loss), step)
+            lg[].log_scalar("pi_loss", Float64(m.pi_loss), step)
+            lg[].log_scalar("pi_scale", Float64(m.pi_scale), step)
+        # reset the chunk accumulators
+        self._cons_acc = Scalar[DT](0.0)
+        self._rew_acc = Scalar[DT](0.0)
+        self._val_acc = Scalar[DT](0.0)
+        self._pi_acc = Scalar[DT](0.0)
+        self._n_diag = 0
+        return m^
+
+    def flush_metrics_through_logger[
+        L: Logger
+    ](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        step: Int,
+    ) raises:
+        _ = self.flush_metrics[L](logger, step)
+
+    # ── Checkpointing (one-file nn2-ckpt v2 envelope) ──────────────────
+    def save_state(mut self, path: String) raises:
+        """Save every world-model module (encoder/dynamics/reward + online
+        & target Q ensemble + policy) and its optimizer. running_scale is
+        NOT saved (re-converges via its EMA in ~100 steps). Overwrites
+        `path`."""
+        comptime tg = Self.target
+        var body = String("")
+        comptime if tg == "cpu":
+            save_state_v2_body(self.encoder, body, "encoder")
+            save_state_v2_body(self.dynamics, body, "dynamics")
+            save_state_v2_body(self.reward, body, "reward")
+            save_state_v2_body(self.policy, body, "policy")
+            for i in range(NQ):
+                save_state_v2_body(self.q[i], body, "q" + String(i))
+                save_state_v2_body(self.qt[i], body, "qt" + String(i))
+            save_optimizer_v2_body(self.enc_opt, body, "enc_opt")
+            save_optimizer_v2_body(self.dyn_opt, body, "dyn_opt")
+            save_optimizer_v2_body(self.rew_opt, body, "rew_opt")
+            save_optimizer_v2_body(self.pi_opt, body, "pi_opt")
+            for i in range(NQ):
+                save_optimizer_v2_body(self.q_opt[i], body, "q_opt" + String(i))
+        else:
+            var c = self.ctx.value()
+            save_state_v2_body_gpu(self.encoder, body, "encoder", c)
+            save_state_v2_body_gpu(self.dynamics, body, "dynamics", c)
+            save_state_v2_body_gpu(self.reward, body, "reward", c)
+            save_state_v2_body_gpu(self.policy, body, "policy", c)
+            for i in range(NQ):
+                save_state_v2_body_gpu(self.q[i], body, "q" + String(i), c)
+                save_state_v2_body_gpu(self.qt[i], body, "qt" + String(i), c)
+            save_optimizer_v2_body_gpu(self.enc_opt, body, "enc_opt")
+            save_optimizer_v2_body_gpu(self.dyn_opt, body, "dyn_opt")
+            save_optimizer_v2_body_gpu(self.rew_opt, body, "rew_opt")
+            save_optimizer_v2_body_gpu(self.pi_opt, body, "pi_opt")
+            for i in range(NQ):
+                save_optimizer_v2_body_gpu(
+                    self.q_opt[i], body, "q_opt" + String(i)
+                )
+        var content = String("nn2-ckpt v2\n") + body
+        with open(path, "w") as f:
+            f.write(content)
+
+    def load_state(mut self, path: String) raises:
+        """Inverse of `save_state` (online + target Q both restored)."""
+        comptime tg = Self.target
+        var content = read_file_v2(path)
+        var lines = split_lines_v2(content)
+        expect_v2_header(lines)
+        var idx: Int = 1
+        comptime if tg == "cpu":
+            load_state_v2_body(self.encoder, lines, idx, "encoder")
+            load_state_v2_body(self.dynamics, lines, idx, "dynamics")
+            load_state_v2_body(self.reward, lines, idx, "reward")
+            load_state_v2_body(self.policy, lines, idx, "policy")
+            for i in range(NQ):
+                load_state_v2_body(self.q[i], lines, idx, "q" + String(i))
+                load_state_v2_body(self.qt[i], lines, idx, "qt" + String(i))
+            load_optimizer_v2_body(self.enc_opt, lines, idx, "enc_opt")
+            load_optimizer_v2_body(self.dyn_opt, lines, idx, "dyn_opt")
+            load_optimizer_v2_body(self.rew_opt, lines, idx, "rew_opt")
+            load_optimizer_v2_body(self.pi_opt, lines, idx, "pi_opt")
+            for i in range(NQ):
+                load_optimizer_v2_body(
+                    self.q_opt[i], lines, idx, "q_opt" + String(i)
+                )
+        else:
+            var c = self.ctx.value()
+            load_state_v2_body_gpu(self.encoder, lines, idx, "encoder", c)
+            load_state_v2_body_gpu(self.dynamics, lines, idx, "dynamics", c)
+            load_state_v2_body_gpu(self.reward, lines, idx, "reward", c)
+            load_state_v2_body_gpu(self.policy, lines, idx, "policy", c)
+            for i in range(NQ):
+                load_state_v2_body_gpu(self.q[i], lines, idx, "q" + String(i), c)
+                load_state_v2_body_gpu(
+                    self.qt[i], lines, idx, "qt" + String(i), c
+                )
+            load_optimizer_v2_body_gpu(self.enc_opt, lines, idx, "enc_opt")
+            load_optimizer_v2_body_gpu(self.dyn_opt, lines, idx, "dyn_opt")
+            load_optimizer_v2_body_gpu(self.rew_opt, lines, idx, "rew_opt")
+            load_optimizer_v2_body_gpu(self.pi_opt, lines, idx, "pi_opt")
+            for i in range(NQ):
+                load_optimizer_v2_body_gpu(
+                    self.q_opt[i], lines, idx, "q_opt" + String(i)
+                )
+
     def train_step(mut self) raises -> Bool:
         self.step_count += 1
         if not self.replay.can_sample[Self.H]():
@@ -402,11 +569,15 @@ struct TDMPC2Agent[
                 self.encoder, self.policy, self.qt, ta, tb,
                 ot, rt, dt, td, self.gamma,
             )
-            self._last_wm = self.wm_step.step[tg](
+            var wl = self.wm_step.step[tg](
                 self.wm_graph, self.encoder, self.dynamics, self.reward, self.q,
                 self.enc_opt, self.dyn_opt, self.rew_opt, self.q_opt,
                 ot, at, rt, td,
             )
+            self._last_cons = wl.consistency
+            self._last_rew = wl.reward
+            self._last_val = wl.value
+            self._last_wm = wl.total()
             var zpol = _alloc(Self.PB * LAT)
             var zpol_t = TileTensor(zpol, row_major[Self.PB, LAT]())
             self.encoder.forward[tg, Self.PB](
@@ -426,11 +597,15 @@ struct TDMPC2Agent[
                 self.encoder, self.policy, self.qt, ta, tb,
                 ot, rt, dt, td, self.gamma, ctx=ctx,
             )
-            self._last_wm = self.wm_step.step[tg](
+            var wl = self.wm_step.step[tg](
                 self.wm_graph, self.encoder, self.dynamics, self.reward, self.q,
                 self.enc_opt, self.dyn_opt, self.rew_opt, self.q_opt,
                 ot, at, rt, td, ctx=ctx,
             )
+            self._last_cons = wl.consistency
+            self._last_rew = wl.reward
+            self._last_val = wl.value
+            self._last_wm = wl.total()
             var d_ot = _upload(ctx, ot, Self.PB * OBSD)
             var d_zpol = ctx.enqueue_create_buffer[DT](Self.PB * LAT)
             var zpol_t = TileTensor(_dp(d_zpol), row_major[Self.PB, LAT]())
@@ -444,6 +619,13 @@ struct TDMPC2Agent[
                 polyak_module[tg, Self.QNetT](
                     self.q[i], self.qt[i], self.tau, ctx=ctx
                 )
+
+        # diag-window accumulation (drained by flush_metrics).
+        self._cons_acc += self._last_cons
+        self._rew_acc += self._last_rew
+        self._val_acc += self._last_val
+        self._pi_acc += self._last_pi
+        self._n_diag += 1
 
         ob.free(); ab.free(); rb.free(); db.free()
         ot.free(); at.free(); rt.free(); dt.free()

@@ -28,6 +28,8 @@ from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents2.tdmpc2.agent import TDMPC2Agent
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
@@ -57,6 +59,9 @@ comptime LEARN_START = 5_000
 comptime TRAIN_EVERY = 1
 comptime TOTAL = 1_000_000
 comptime EVAL_EVERY = 20_000
+comptime DIAG_EVERY = 2_000   # flush_metrics → logger cadence
+comptime CHECKPOINT_EVERY = 50_000
+comptime CHECKPOINT_PATH = "tdmpc2_half_cheetah.ckpt"
 comptime EVAL_EPS = 2
 comptime EP_LEN = 1_000
 
@@ -108,6 +113,22 @@ def main() raises:
         ctx=ctx,
     )
 
+    # RemoteLogger (dashboard) — URL/key from .env; no-ops if unset.
+    var env_vars = load_dotenv()
+    var logger = RemoteLogger(
+        server_url=env_vars.get("RL_MONITOR_URL", ""),
+        run_name="TD-MPC2 HalfCheetah",
+        buffer_size=200,
+        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+    )
+    logger.set_config("algorithm", "TD-MPC2")
+    logger.set_config("env", "HalfCheetah")
+    var mpc_cfg = String("0")
+    comptime if USE_MPC:
+        mpc_cfg = String("1")
+    logger.set_config("mpc", mpc_cfg)
+    var logger_ptr = UnsafePointer(to=logger)
+
     var obs = env.reset_obs_list()
     var obsbuf = alloc[Scalar[DT]](OBS)
     var actbuf = alloc[Scalar[DT]](ACT)
@@ -138,19 +159,28 @@ def main() raises:
                 ag.mpc_start_episode()
         if step >= LEARN_START and step % TRAIN_EVERY == 0:
             _ = ag.train_step()
+        if step > 0 and step % DIAG_EVERY == 0:
+            ag.flush_metrics_through_logger[RemoteLogger](logger_ptr, step)
+        if step > 0 and step % CHECKPOINT_EVERY == 0:
+            ag.save_state(CHECKPOINT_PATH)
         if step > 0 and step % EVAL_EVERY == 0:
             var ret = _greedy_eval(ag, env)
             if ret > best:
                 best = ret
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
+            logger.log_scalar("eval_return", Float64(ret), step)
             print(
                 "  step", step, " eval_return=", ret, " best=", best,
                 " wm=", ag.last_wm_loss(), " pi=", ag.last_pi_loss(),
                 " (", elapsed, "s )",
             )
 
+    ag.save_state(CHECKPOINT_PATH)
+    logger.close()
+    _ = logger  # lifetime extender for logger_ptr
     print("=" * 70)
     print("  FINAL best eval return =", best)
     print("  ( HalfCheetah: >3000 good, >8000 strong )")
+    print("  checkpoint:", CHECKPOINT_PATH)
     print("=" * 70)
     obsbuf.free(); actbuf.free()

@@ -103,7 +103,7 @@ def test_wm_bptt_loss_decreases() raises:
             graph, enc, dyn, rew_net, q,
             enc_opt, dyn_opt, rew_opt, q_opt,
             obs, act, rew, td,
-        )
+        ).total()
         assert_true(isfinite(l), "WM loss must be finite")
         if it == 0:
             first = l

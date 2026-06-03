@@ -114,11 +114,11 @@ def main() raises:
         var lc = step_c.step["cpu"](
             graph_c, enc_c, dyn_c, rew_c, q_c, eo_c, do_c, ro_c, qo_c,
             obs, act, rew, td,
-        )
+        ).total()
         var lg = step_g.step["gpu"](
             graph_g, enc_g, dyn_g, rew_g, q_g, eo_g, do_g, ro_g, qo_g,
             obs, act, rew, td, ctx=ctx,
-        )
+        ).total()
         var d = lc - lg
         if d < 0:
             d = -d

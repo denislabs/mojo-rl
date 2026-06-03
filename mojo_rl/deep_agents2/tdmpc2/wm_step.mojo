@@ -43,6 +43,18 @@ def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return alloc[Scalar[DT]](n)
 
 
+@fieldwise_init
+struct WMLossOut(Copyable & Movable):
+    """Per-component world-model losses (already coef·ρ^t/norm weighted)."""
+    var consistency: Scalar[DT]
+    var reward: Scalar[DT]
+    var value: Scalar[DT]
+
+    @always_inline
+    def total(self) -> Scalar[DT]:
+        return self.consistency + self.reward + self.value
+
+
 # ── GPU marshalling helpers + kernels (mirror dreamerv3/blocks + the
 #    spike_wm_bptt_gpu device-buffer orchestration). ─────────────────────
 @always_inline
@@ -112,23 +124,27 @@ def _seed_wm_k[B_: Int, OW_: Int, LAT_: Int, NQ_: Int](
 
 def _accum_metric_k[B_: Int, OW_: Int, NQ_: Int](
     ob: LayoutTensor[DT, Layout.row_major(B_ * OW_), MutAnyOrigin],
-    acc: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+    acc: LayoutTensor[DT, Layout.row_major(3), MutAnyOrigin],
     sc_cons: Scalar[DT],
     sc_rew: Scalar[DT],
     sc_val: Scalar[DT],
 ):
-    """acc[0] += Σ_b (sc_cons·cons + sc_rew·rew + sc_val·Σ_q v_q). One thread."""
+    """acc += [Σ_b sc_cons·cons, Σ_b sc_rew·rew, Σ_b sc_val·Σ_q v_q]. One thread."""
     var t = Int(global_idx.x)
     if t == 0:
-        var s: Scalar[DT] = 0.0
+        var sc: Scalar[DT] = 0.0
+        var sr: Scalar[DT] = 0.0
+        var sv: Scalar[DT] = 0.0
         for b in range(B_):
-            var v = sc_cons * rebind[Scalar[DT]](ob[b * OW_ + 0]) + sc_rew * (
-                rebind[Scalar[DT]](ob[b * OW_ + 1])
-            )
+            sc += sc_cons * rebind[Scalar[DT]](ob[b * OW_ + 0])
+            sr += sc_rew * rebind[Scalar[DT]](ob[b * OW_ + 1])
+            var v: Scalar[DT] = 0.0
             for q in range(NQ_):
-                v += sc_val * rebind[Scalar[DT]](ob[b * OW_ + 2 + q])
-            s += v
-        acc[0] = rebind[Scalar[DT]](acc[0]) + s
+                v += rebind[Scalar[DT]](ob[b * OW_ + 2 + q])
+            sv += sc_val * v
+        acc[0] = rebind[Scalar[DT]](acc[0]) + sc
+        acc[1] = rebind[Scalar[DT]](acc[1]) + sr
+        acc[2] = rebind[Scalar[DT]](acc[2]) + sv
 
 
 struct WMStep[
@@ -212,7 +228,7 @@ struct WMStep[
             s.d_scratch = c.enqueue_create_buffer[DT](Self.B * OW)
             s.d_seed = c.enqueue_create_buffer[DT](Self.B * OW)
             s.d_gz = c.enqueue_create_buffer[DT](Self.B * LAT)
-            s.d_acc = c.enqueue_create_buffer[DT](1)
+            s.d_acc = c.enqueue_create_buffer[DT](3)
             s.d_gobs = c.enqueue_create_buffer[DT](Self.B * Self.OBS)
             s.h_obs = c.enqueue_create_host_buffer[DT](
                 (Self.H + 1) * Self.B * Self.OBS
@@ -220,7 +236,7 @@ struct WMStep[
             s.h_act = c.enqueue_create_host_buffer[DT](Self.H * Self.B * Self.ACT)
             s.h_rew = c.enqueue_create_host_buffer[DT](Self.H * Self.B)
             s.h_td = c.enqueue_create_host_buffer[DT](Self.H * Self.B)
-            s.h_acc = c.enqueue_create_host_buffer[DT](1)
+            s.h_acc = c.enqueue_create_host_buffer[DT](3)
             c.synchronize()
         return s^
 
@@ -240,7 +256,7 @@ struct WMStep[
         rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B]
         td: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B]
         ctx: Optional[DeviceContext] = None,
-    ) raises -> Scalar[DT]:
+    ) raises -> WMLossOut:
         comptime if target == "cpu":
             return self._wm_cpu[target](
                 graph, enc, dyn, rew_net, q,
@@ -268,7 +284,7 @@ struct WMStep[
         act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B,ACT]
         rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B]
         td: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B]
-    ) raises -> Scalar[DT]:
+    ) raises -> WMLossOut:
         comptime LAT = Self.LATENT
         comptime OW = Self.OUTW
 
@@ -303,7 +319,9 @@ struct WMStep[
         )
 
         # ── 3. Forward scan: roll latents, accumulate weighted loss. ───
-        var total: Scalar[DT] = 0.0
+        var cons_t: Scalar[DT] = 0.0
+        var rew_t: Scalar[DT] = 0.0
+        var val_t: Scalar[DT] = 0.0
         var rho_t: Scalar[DT] = 1.0
         var inv_b = Scalar[DT](1.0) / Scalar[DT](Self.B)
         var inv_h = Scalar[DT](1.0) / Scalar[DT](Self.H)
@@ -322,11 +340,9 @@ struct WMStep[
                 var vl: Scalar[DT] = 0.0
                 for qq in range(NQ):
                     vl += out[b * OW + 2 + qq]
-                total += rho_t * inv_h * (
-                    self.consistency_coef * inv_b * inv_lat * cons
-                    + self.reward_coef * inv_b * rl
-                    + self.value_coef * inv_b * inv_nq * vl
-                )
+                cons_t += rho_t * inv_h * self.consistency_coef * inv_b * inv_lat * cons
+                rew_t += rho_t * inv_h * self.reward_coef * inv_b * rl
+                val_t += rho_t * inv_h * self.value_coef * inv_b * inv_nq * vl
             rho_t *= self.rho
 
         # ── 4. Zero grads (encoder + all external WM modules). ─────────
@@ -392,7 +408,7 @@ struct WMStep[
 
         carry.free(); zen.free(); out.free()
         gz.free(); seed.free(); scratch.free(); gobs.free()
-        return total
+        return WMLossOut(cons_t, rew_t, val_t)
 
     def _wm_gpu[target: StaticString](
         mut self,
@@ -410,7 +426,7 @@ struct WMStep[
         rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B] host
         td: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B] host
         ctx: DeviceContext,
-    ) raises -> Scalar[DT]:
+    ) raises -> WMLossOut:
         comptime LAT = Self.LATENT
         comptime OW = Self.OUTW
         comptime BB = Self.B
@@ -498,7 +514,7 @@ struct WMStep[
                 grid_dim=nb_lat, block_dim=TPB,
             )
             ctx.enqueue_function[acc_k](
-                _lt[BB * OW](_dp(d_out)), _lt[1](_dp(d_acc)),
+                _lt[BB * OW](_dp(d_out)), _lt[3](_dp(d_acc)),
                 self.consistency_coef * rho_t * inv_b * inv_lat * inv_h,
                 self.reward_coef * rho_t * inv_b * inv_h,
                 self.value_coef * rho_t * inv_b * inv_nq * inv_h,
@@ -563,7 +579,9 @@ struct WMStep[
         var h = self.h_acc.value()
         ctx.enqueue_copy(h, d_acc)
         ctx.synchronize()
-        return h.unsafe_ptr()[0]
+        return WMLossOut(
+            h.unsafe_ptr()[0], h.unsafe_ptr()[1], h.unsafe_ptr()[2]
+        )
 
     def _set_step_inputs[target: StaticString](
         self,
