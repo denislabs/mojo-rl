@@ -1532,20 +1532,29 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                     WS_SIZE,
                 ](env, state, model, workspace)
 
-        if valid_env:
+        # The tree-walk CRBA builds its own composite inertia and never reads
+        # `crb`; its only other consumer (the dense mass matrix) is not called
+        # in that path, and RNE later overwrites the crb slot with cvel. So the
+        # composite-inertia pass is DEAD when the tree-walk runs — skip it
+        # (~−41µs). Single source of truth for "tree-walk is the MM path":
+        comptime USE_TREEWALK_MM = (
+            (not SPARSE) and RK4_PARALLEL_CRBA and (STEP_THREADS > 1)
+        )
+        comptime if not USE_TREEWALK_MM:
             # 5. Composite rigid body inertia
-            compute_composite_inertia_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](env, state, model, workspace)
+            if valid_env:
+                compute_composite_inertia_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](env, state, model, workspace)
 
         # 6. Full mass matrix (multi-threaded when STEP_THREADS > 1)
         comptime if STEP_THREADS > 1:
@@ -1574,7 +1583,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                     sp_col_ind,
                 )
         else:
-            comptime if RK4_PARALLEL_CRBA and (STEP_THREADS > 1):
+            comptime if USE_TREEWALK_MM:
                 # Tree-walk CRBA: called UNCONDITIONALLY (internal barriers);
                 # work guarded by valid_env. O(NV·depth) vs dense O(NV²·NBODY).
                 compute_mass_matrix_treewalk_gpu_mt[
