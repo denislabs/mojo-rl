@@ -29,4 +29,5 @@ from .policy_graph import TDMPC2PolicyGraph
 from .policy_step import PolicyStep
 from .running_scale import RunningScale
 from .td_target_step import TDTargetStep
+from .callback import TDMPC2RolloutCallbackCPU
 from .agent import TDMPC2Agent
