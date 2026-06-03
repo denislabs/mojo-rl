@@ -33,6 +33,10 @@ from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 # ── target: "gpu" for the NVIDIA run; "cpu" works too (slower at this scale).
 comptime TARGET = "gpu"
+# ── MPC: True → act via MPPI planning (select_action_mpc, GPU only — heavy:
+#    ~536 batched forwards/action at the reference 512/24 config). False →
+#    MPC-off policy acting. Flip on for the full TD-MPC2 algorithm on NVIDIA.
+comptime USE_MPC = False
 
 comptime OBS = HalfCheetahConfig.OBS_DIM        # 17
 comptime ACT = HalfCheetahConfig.ACTION_DIM     #  6
@@ -68,10 +72,15 @@ def _greedy_eval(mut ag: Ag, mut env: Env) raises -> Scalar[DT]:
     var total: Scalar[DT] = 0.0
     for _ep in range(EVAL_EPS):
         var obs = env.reset_obs_list()
+        comptime if USE_MPC:
+            ag.mpc_start_episode()
         for _s in range(EP_LEN):
             for i in range(OBS):
                 obsbuf[i] = obs[i]
-            ag.select_greedy_action(obsbuf, actbuf)
+            comptime if USE_MPC:
+                ag.select_action_mpc(obsbuf, actbuf, explore=False)
+            else:
+                ag.select_greedy_action(obsbuf, actbuf)
             var al = List[Scalar[DT]]()
             for j in range(ACT):
                 al.append(actbuf[j])
@@ -112,7 +121,10 @@ def main() raises:
             for j in range(ACT):
                 actbuf[j] = Scalar[DT](random_float64() * 2.0 - 1.0)
         else:
-            ag.select_action(obsbuf, actbuf, explore=True)
+            comptime if USE_MPC:
+                ag.select_action_mpc(obsbuf, actbuf, explore=True)
+            else:
+                ag.select_action(obsbuf, actbuf, explore=True)
         var al = List[Scalar[DT]]()
         for j in range(ACT):
             al.append(actbuf[j])
@@ -122,6 +134,8 @@ def main() raises:
         obs = res[0].copy()
         if res[2]:
             obs = env.reset_obs_list()
+            comptime if USE_MPC:
+                ag.mpc_start_episode()
         if step >= LEARN_START and step % TRAIN_EVERY == 0:
             _ = ag.train_step()
         if step > 0 and step % EVAL_EVERY == 0:
