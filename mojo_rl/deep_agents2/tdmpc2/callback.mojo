@@ -22,11 +22,16 @@ acting path); the batched GPU planner callback is a later phase.
 
 from std.memory import alloc
 from std.math import tanh
-from layout import row_major, TileTensor
+from std.random.philox import Random as PhiloxRandom
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
+from layout import Layout, LayoutTensor, row_major, TileTensor
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.initializer import Zero
-from mojo_rl.planners.trajectory.rollout_callback import RolloutCallbackCPU
+from mojo_rl.planners.trajectory.rollout_callback import (
+    RolloutCallbackCPU, RolloutCallbackGPU,
+)
 
 from .nets import TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet, TDMPC2Policy
 from .losses import TwoHotDecode
@@ -161,3 +166,241 @@ struct TDMPC2RolloutCallbackCPU[
         var qb = Float64(qs[0])
         za.free(); ql.free(); qs.free()
         return (qa + qb) * 0.5
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GPU batched MPPI callback — the practical MPC path (MPPIGPUBatched plans
+# all N_ENVS×TOTAL_SAMPLES trajectories per horizon step in one grid).
+# ──────────────────────────────────────────────────────────────────────
+
+
+@always_inline
+def _dpg(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+
+
+@always_inline
+def _ltg[N: Int](
+    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
+    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
+
+
+def _extract_tanh_mean_k[B_: Int, ACT_: Int, POL_: Int](
+    pio: LayoutTensor[DT, Layout.row_major(B_ * POL_), MutAnyOrigin],
+    action: LayoutTensor[DT, Layout.row_major(B_ * ACT_), MutAnyOrigin],
+):
+    """action[b,j] = tanh(pio[b, j])  (mean = first ACT cols of [mean|log_std])."""
+    var i = Int(global_idx.x)
+    if i < B_ * ACT_:
+        var b = i // ACT_
+        var j = i % ACT_
+        action[i] = tanh(rebind[Scalar[DT]](pio[b * POL_ + j]))
+
+
+def _build_za_scaled_k[B_: Int, LATENT_: Int, ACT_: Int, ZA_: Int](
+    z: LayoutTensor[DT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
+    a: LayoutTensor[DT, Layout.row_major(B_ * ACT_), MutAnyOrigin],
+    za: LayoutTensor[DT, Layout.row_major(B_ * ZA_), MutAnyOrigin],
+    scale: Scalar[DT],
+):
+    """za[b] = [z[b] | a[b]·scale]."""
+    var i = Int(global_idx.x)
+    if i < B_ * ZA_:
+        var b = i // ZA_
+        var k = i % ZA_
+        if k < LATENT_:
+            za[i] = rebind[Scalar[DT]](z[b * LATENT_ + k])
+        else:
+            za[i] = rebind[Scalar[DT]](a[b * ACT_ + (k - LATENT_)]) * scale
+
+
+def _avg2_k[B_: Int](
+    qa: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+    qb: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+    out_v: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b < B_:
+        out_v[b] = Scalar[DT](0.5) * (
+            rebind[Scalar[DT]](qa[b]) + rebind[Scalar[DT]](qb[b])
+        )
+
+
+@fieldwise_init
+struct TDMPC2RolloutCallbackGPU[
+    ACT: Int,
+    LATENT: Int,
+    MLP: Int,
+    BINS: Int,
+    SN: Int,
+    VMIN: Int,
+    VMAX: Int,
+    NUM_Q: Int,
+    BT: Int,   # BATCH_TOTAL = N_ENVS × TOTAL_SAMPLES
+](RolloutCallbackGPU):
+    comptime LATENT_DIM: Int = Self.LATENT
+    comptime ACTION_DIM: Int = Self.ACT
+    comptime POL: Int = 2 * Self.ACT
+    comptime ZA: Int = Self.LATENT + Self.ACT
+    comptime DynT = TDMPC2Dynamics[Self.LATENT, Self.ACT, Self.MLP, Self.SN]
+    comptime RewT = TDMPC2Reward[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]
+    comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]
+    comptime PolicyT = TDMPC2Policy[Self.LATENT, Self.ACT, Self.MLP]
+
+    var dyn: UnsafePointer[Self.DynT, MutAnyOrigin]
+    var rew: UnsafePointer[Self.RewT, MutAnyOrigin]
+    var pol: UnsafePointer[Self.PolicyT, MutAnyOrigin]
+    var qt: UnsafePointer[List[Self.QNetT], MutAnyOrigin]
+    var decode: TwoHotDecode[Self.BINS, Self.VMIN, Self.VMAX]
+    var action_scale: Scalar[DT]
+    # device scratch (sized BT)
+    var pio: DeviceBuffer[DT]
+    var action: DeviceBuffer[DT]
+    var za: DeviceBuffer[DT]
+    var rlog: DeviceBuffer[DT]
+    var qlog: DeviceBuffer[DT]
+    var qa: DeviceBuffer[DT]
+    var qb: DeviceBuffer[DT]
+
+    @staticmethod
+    def make(
+        mut dyn: Self.DynT,
+        mut rew: Self.RewT,
+        mut pol: Self.PolicyT,
+        mut qt: List[Self.QNetT],
+        action_scale: Scalar[DT],
+        ctx: DeviceContext,
+    ) raises -> Self:
+        return Self(
+            dyn=UnsafePointer(to=dyn),
+            rew=UnsafePointer(to=rew),
+            pol=UnsafePointer(to=pol),
+            qt=UnsafePointer(to=qt),
+            decode=TwoHotDecode[
+                Self.BINS, Self.VMIN, Self.VMAX
+            ].make["gpu", INIT=Zero](ctx=ctx),
+            action_scale=action_scale,
+            pio=ctx.enqueue_create_buffer[DT](Self.BT * Self.POL),
+            action=ctx.enqueue_create_buffer[DT](Self.BT * Self.ACT),
+            za=ctx.enqueue_create_buffer[DT](Self.BT * Self.ZA),
+            rlog=ctx.enqueue_create_buffer[DT](Self.BT * Self.BINS),
+            qlog=ctx.enqueue_create_buffer[DT](Self.BT * Self.BINS),
+            qa=ctx.enqueue_create_buffer[DT](Self.BT),
+            qb=ctx.enqueue_create_buffer[DT](Self.BT),
+        )
+
+    def policy_action_gpu[B: Int](
+        mut self,
+        ctx: DeviceContext,
+        z: LayoutTensor[
+            DT, Layout.row_major(B, Self.LATENT_DIM), MutAnyOrigin
+        ],
+        action_out: LayoutTensor[
+            DT, Layout.row_major(B, Self.ACTION_DIM), MutAnyOrigin
+        ],
+    ) raises:
+        comptime assert B == Self.BT, "callback B must equal BT"
+        var zp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](z.ptr)
+        var ap = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](action_out.ptr)
+        var pio_t = TileTensor(_dpg(self.pio), row_major[B, Self.POL]())
+        self.pol[].forward["gpu", B](
+            TileTensor(zp, row_major[B, Self.LATENT]()), output=pio_t
+        )
+        comptime k = _extract_tanh_mean_k[B, Self.ACT, Self.POL]
+        comptime nb = (B * Self.ACT + TPB - 1) // TPB
+        ctx.enqueue_function[k](
+            _ltg[B * Self.POL](_dpg(self.pio)), _ltg[B * Self.ACT](ap),
+            grid_dim=nb, block_dim=TPB,
+        )
+
+    def rollout_step_gpu[B: Int](
+        mut self,
+        ctx: DeviceContext,
+        z: LayoutTensor[
+            DT, Layout.row_major(B, Self.LATENT_DIM), MutAnyOrigin
+        ],
+        a: LayoutTensor[
+            DT, Layout.row_major(B, Self.ACTION_DIM), MutAnyOrigin
+        ],
+        z_next_out: LayoutTensor[
+            DT, Layout.row_major(B, Self.LATENT_DIM), MutAnyOrigin
+        ],
+        r_out: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    ) raises:
+        comptime assert B == Self.BT, "callback B must equal BT"
+        var zp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](z.ptr)
+        var ap = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](a.ptr)
+        var znp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](z_next_out.ptr)
+        var rp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](r_out.ptr)
+        comptime bza = _build_za_scaled_k[B, Self.LATENT, Self.ACT, Self.ZA]
+        comptime nbz = (B * Self.ZA + TPB - 1) // TPB
+        ctx.enqueue_function[bza](
+            _ltg[B * Self.LATENT](zp), _ltg[B * Self.ACT](ap),
+            _ltg[B * Self.ZA](_dpg(self.za)), self.action_scale,
+            grid_dim=nbz, block_dim=TPB,
+        )
+        var za_t = TileTensor(_dpg(self.za), row_major[B, Self.ZA]())
+        var zn_t = TileTensor(znp, row_major[B, Self.LATENT]())
+        self.dyn[].forward["gpu", B](za_t, output=zn_t)
+        var rl_t = TileTensor(_dpg(self.rlog), row_major[B, Self.BINS]())
+        self.rew[].forward["gpu", B](za_t, output=rl_t)
+        var r_t = TileTensor(rp, row_major[B, 1]())
+        self.decode.forward["gpu", B](rl_t, output=r_t)
+
+    def terminal_value_gpu[B: Int](
+        mut self,
+        ctx: DeviceContext,
+        z: LayoutTensor[
+            DT, Layout.row_major(B, Self.LATENT_DIM), MutAnyOrigin
+        ],
+        v_out: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+        seed: UInt32,
+    ) raises:
+        comptime assert B == Self.BT, "callback B must equal BT"
+        # host Philox → 2 distinct Q indices (matches legacy recipe).
+        var rng = PhiloxRandom(seed=UInt64(seed) + UInt64(0xA1B2C3D4), offset=0)
+        var u = rng.step_uniform()
+        var qi = Int(Float64(u[0]) * Float64(Self.NUM_Q)) % Self.NUM_Q
+        var qj = (
+            qi + 1 + Int(Float64(u[1]) * Float64(Self.NUM_Q - 1))
+            % (Self.NUM_Q - 1)
+        ) % Self.NUM_Q
+
+        var zp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](z.ptr)
+        var vp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](v_out.ptr)
+        # action = tanh(mean) of π(z)
+        var pio_t = TileTensor(_dpg(self.pio), row_major[B, Self.POL]())
+        self.pol[].forward["gpu", B](
+            TileTensor(zp, row_major[B, Self.LATENT]()), output=pio_t
+        )
+        comptime ek = _extract_tanh_mean_k[B, Self.ACT, Self.POL]
+        comptime nba = (B * Self.ACT + TPB - 1) // TPB
+        ctx.enqueue_function[ek](
+            _ltg[B * Self.POL](_dpg(self.pio)),
+            _ltg[B * Self.ACT](_dpg(self.action)),
+            grid_dim=nba, block_dim=TPB,
+        )
+        # za = [z, action·scale]
+        comptime bza = _build_za_scaled_k[B, Self.LATENT, Self.ACT, Self.ZA]
+        comptime nbz = (B * Self.ZA + TPB - 1) // TPB
+        ctx.enqueue_function[bza](
+            _ltg[B * Self.LATENT](zp), _ltg[B * Self.ACT](_dpg(self.action)),
+            _ltg[B * Self.ZA](_dpg(self.za)), self.action_scale,
+            grid_dim=nbz, block_dim=TPB,
+        )
+        var za_t = TileTensor(_dpg(self.za), row_major[B, Self.ZA]())
+        # avg of 2 (random) target-Q, two-hot decoded
+        var ql_t = TileTensor(_dpg(self.qlog), row_major[B, Self.BINS]())
+        var qa_t = TileTensor(_dpg(self.qa), row_major[B, 1]())
+        var qb_t = TileTensor(_dpg(self.qb), row_major[B, 1]())
+        self.qt[][qi].forward["gpu", B](za_t, output=ql_t)
+        self.decode.forward["gpu", B](ql_t, output=qa_t)
+        self.qt[][qj].forward["gpu", B](za_t, output=ql_t)
+        self.decode.forward["gpu", B](ql_t, output=qb_t)
+        comptime ak = _avg2_k[B]
+        comptime nbb = (B + TPB - 1) // TPB
+        ctx.enqueue_function[ak](
+            _ltg[B](_dpg(self.qa)), _ltg[B](_dpg(self.qb)), _ltg[B](vp),
+            grid_dim=nbb, block_dim=TPB,
+        )
