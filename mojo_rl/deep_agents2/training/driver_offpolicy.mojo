@@ -555,8 +555,22 @@ def run_offpolicy_train_batched[
     base_step: Int = 0,
     diag_every: Int = 0,
     episode_sync_every: Int = 1,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
 ) raises -> List[Scalar[DT]]:
     """Tier-3 off-policy driver covering same-target combinations.
+
+    `checkpoint_every` (env steps, default 0 = off) + `checkpoint_path`:
+    when both set, the driver calls `trainer.save_state(checkpoint_path)`
+    inline every `checkpoint_every` env-steps and one final time at the
+    end of the loop — overwriting `checkpoint_path` with the one-file
+    `nn2-ckpt v2` envelope (actor + twin critics + their optimizers +
+    alpha optimizer; the replay buffer and episode tracker are NOT
+    persisted). On the GPU train target the save does a D2H of the live
+    params; it runs in host code between iterations, so it is safe to
+    combine with `USE_TRAIN_CUDA_GRAPH` / `USE_ENV_CUDA_GRAPH` (the
+    captured graphs are per-step, not the whole loop). Default trait
+    `save_state` impl is a no-op, so non-SAC trainers ignore it.
 
     `episode_sync_every` (GPU-env path only): batch the per-iteration
     reward/done D2H readback used for episode-return bookkeeping over this many
@@ -734,6 +748,10 @@ def run_offpolicy_train_batched[
     # Independent counter for the diag-bundle flush cadence (mean_q /
     # critic_loss / alpha / train_steps / …). Disabled when diag_every == 0.
     var next_diag: Int = diag_every if diag_every > 0 else total_env_steps + 1
+    # Independent counter for the checkpoint cadence. Disabled when
+    # checkpoint_every == 0 or checkpoint_path is empty.
+    var ckpt_on: Bool = checkpoint_every > 0 and checkpoint_path.byte_length() > 0
+    var next_ckpt: Int = checkpoint_every if ckpt_on else total_env_steps + 1
 
     while step_idx < total_env_steps:
         # ── 1. Snapshot prev_obs from env.obs_ptr().
@@ -1057,6 +1075,26 @@ def run_offpolicy_train_batched[
                     logger, base_step + step_idx
                 )
                 next_diag += diag_every
+
+        # ── Checkpoint cadence — overwrite `checkpoint_path` with the
+        # trainer's one-file v2 envelope. Runs in host code between
+        # iterations (D2H of live params on the GPU target), so it is
+        # CUDA-graph-capture safe. Default `save_state` impl is a no-op.
+        if ckpt_on and step_idx >= next_ckpt:
+            trainer.save_state(checkpoint_path)
+            if verbose:
+                print(
+                    "[step ",
+                    base_step + step_idx,
+                    "] checkpoint → ",
+                    checkpoint_path,
+                )
+            next_ckpt += checkpoint_every
+
+    # Always overwrite the final checkpoint at end so resume gets the
+    # freshest weights regardless of cadence alignment.
+    if ckpt_on:
+        trainer.save_state(checkpoint_path)
 
     # Defensive final drain of any buffered episode readbacks. With
     # `sync_every == 1` (or the last iteration hitting an emit boundary)

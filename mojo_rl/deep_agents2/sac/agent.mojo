@@ -154,6 +154,8 @@ struct SACAgent[
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         episode_sync_every: Int = 1,
+        checkpoint_path: String = "",
+        checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         """Off-policy training via `run_offpolicy_train_batched`.
 
@@ -179,7 +181,16 @@ struct SACAgent[
         the train step. Pair it with `episode_sync_every > 1` to also batch
         the per-iteration reward/done readback, so the host stops serializing
         the GPU pipeline every iteration (otherwise that sync negates the
-        capture win). Returns stay exact at every print/diag boundary."""
+        capture win). Returns stay exact at every print/diag boundary.
+
+        Set `checkpoint_every > 0` + `checkpoint_path` to auto-save the
+        trainer's one-file `nn2-ckpt v2` envelope (actor + twin critics +
+        optimizers + alpha optimizer) every `checkpoint_every` env-steps and
+        one final time at the end — the batched GPU counterpart of
+        `train_single`'s checkpoint cadence. The save runs in host code
+        between iterations (D2H of live params on the GPU target) so it is
+        CUDA-graph-capture safe. The replay buffer / episode tracker are NOT
+        persisted, so resume starts with a fresh replay."""
         var ctx = self.trainer.ctx
         return run_offpolicy_train_batched[
             SACTrainer[
@@ -207,6 +218,8 @@ struct SACAgent[
             logger=logger,
             diag_every=diag_every,
             episode_sync_every=episode_sync_every,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
         )
 
     def train_single[

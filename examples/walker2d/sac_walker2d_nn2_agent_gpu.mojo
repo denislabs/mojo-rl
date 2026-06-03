@@ -15,9 +15,14 @@ GPU successor of `sac_walker2d_nn2_agent.mojo` and counterpart of the legacy
 
 `updates_per_step=N_ENVS` keeps the effective UTD = 1 per collected transition.
 
-NOTE on checkpointing: the facade's `save`/`load` are CPU-only and the batched
-`train` entry point has no inline checkpoint/diag cadence (those live on
-`train_single`). This GPU example trains + summarizes only.
+NOTE on checkpointing: the batched `train` entry point now supports an inline
+checkpoint cadence (`checkpoint_every` + `checkpoint_path`) — it auto-saves the
+trainer's one-file `nn2-ckpt v2` envelope (actor + twin critics + optimizers +
+alpha optimizer) every `CHECKPOINT_EVERY` env-steps and one final time at the
+end. The save runs between iterations (a D2H of the live GPU params) so it is
+safe to combine with the CUDA-graph capture below. The replay buffer / episode
+tracker are NOT persisted, so a resumed run starts with a fresh replay. Load a
+saved checkpoint back into a fresh agent with `agent.load(CHECKPOINT_PATH)`.
 
 Walker2d (Phyics3dEnv, MuJoCo-style):
   * 17D observation (qpos[1:9] + qvel[0:9])
@@ -70,6 +75,8 @@ comptime NUM_STEPS = 1_000_000
 comptime WARMUP_STEPS = 10_000
 comptime PRINT_EVERY = 50_000
 comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
+comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
+comptime CHECKPOINT_PATH = "sac_walker2d_nn2.ckpt"
 
 
 comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
@@ -105,6 +112,8 @@ def main() raises:
     print("  NUM_STEPS          =", NUM_STEPS)
     print("  WARMUP_STEPS       =", WARMUP_STEPS)
     print("  PRINT_EVERY        =", PRINT_EVERY)
+    print("  CHECKPOINT_EVERY   =", CHECKPOINT_EVERY)
+    print("  CHECKPOINT_PATH    =", CHECKPOINT_PATH)
     print("=" * 70)
 
     with DeviceContext() as ctx:
@@ -189,6 +198,12 @@ def main() raises:
             # only stalls the GPU pipeline ~1/32 as often (returns are drained
             # exactly at every print/diag boundary, so logged values are fresh).
             episode_sync_every=32,
+            # Auto-save the SAC weights+optimizers every CHECKPOINT_EVERY
+            # env-steps (and once more at the end). Safe alongside the
+            # CUDA-graph capture above — the save is host-side D2H between
+            # iterations. Resume/eval later via `agent.load(CHECKPOINT_PATH)`.
+            checkpoint_every=CHECKPOINT_EVERY,
+            checkpoint_path=CHECKPOINT_PATH,
         )
         var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
         logger.close()
@@ -203,6 +218,7 @@ def main() raises:
         print("  mean ep return (last 100) =", agent.mean_return())
         print("  episodes completed        =", agent.ep_count())
         print("  remote points sent        =", logger.total_logged())
+        print("  checkpoint saved to       =", CHECKPOINT_PATH)
         print("=" * 70)
 
         var final_avg = Float64(agent.mean_return())
