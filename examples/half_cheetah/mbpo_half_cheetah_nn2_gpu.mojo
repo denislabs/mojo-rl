@@ -68,9 +68,15 @@ comptime NUM_ELITES = 5
 # in-distribution. Do NOT copy this to the CPU example.
 comptime REAL_RATIO_PCT = 5
 comptime LOGVAR_MIN_F = -10.0
-# Back to −5.0 (the original baseline bound): LOGVAR_MAX=−2 was REFUTED
-# on its own (reward 115 vs 210), so to cleanly isolate the dynamics
-# early-stopping fix we keep the baseline logvar bound here.
+# Kept at -5.0. The AdamW weight-decay fix 2.6×'d reward (337→873 @40k); the
+# still-high holdout NLL (~400 vs legacy ~42) reflects a still-imperfect MEAN
+# model, NOT a too-tight variance bound — legacy's effective max_logvar is ~-2
+# (learnable, init +0.5, learned DOWN to [-1,-2] via 0.01 L2 penalty; bnn.py),
+# and legacy explicitly found fixed +0.5 "too loose → synthetic rollouts drift
+# far out of dist." nn2's own A/B agrees (-2 scored 115 vs -5's 210). Raising
+# the ceiling would let the model mask a bad mean with large variance and make
+# rollouts noisier. The faithful fix is LEARNABLE bounds + L2 penalty, not a
+# looser fixed ceiling.
 comptime LOGVAR_MAX_F = -5.0
 
 comptime NUM_STEPS = 300_000  # MBPO needs ~10× fewer real steps than SAC
