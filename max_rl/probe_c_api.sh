@@ -12,6 +12,11 @@
 
 set -uo pipefail
 
+# The project's LD_PRELOAD CUDA interceptor prints a banner on every child process,
+# which floods this scan (it spawns nm/python hundreds of times). The interceptor is
+# irrelevant to a static symbol scan, so drop it here.
+unset LD_PRELOAD
+
 PREFIX="${CONDA_PREFIX:-${1:-}}"
 if [[ -z "$PREFIX" || ! -d "$PREFIX" ]]; then
   echo "Could not determine env prefix. Run via 'pixi run -e <env> bash $0' or pass the prefix as arg 1."

@@ -26,14 +26,19 @@ CUDA on NVIDIA (same Python, different backend); falls back to CPU if no acceler
 
 ## How to run
 
-**Build to a binary — do NOT `mojo run`.**
+**Build to a binary — do NOT `mojo run`** (JIT triggers an `M::Context` clash with MAX's
+Python engine; a compiled binary has no JIT context). **And run the binary *inside* the
+activated env** — the embedded Python needs `MOJO_PYTHON_LIBRARY` set, which `pixi run` only
+provides for the command it wraps. Build + run in one pixi invocation:
 
 ```bash
 # Apple (Metal)
-pixi run -e apple  mojo build -I . max_rl/benchmark_interop.mojo -o /tmp/bench && /tmp/bench
+pixi run -e apple  bash -c 'mojo build -I . max_rl/benchmark_interop.mojo -o /tmp/bench && /tmp/bench'
 # NVIDIA (CUDA)
-pixi run -e nvidia mojo build -I . max_rl/benchmark_interop.mojo -o /tmp/bench && /tmp/bench
+pixi run -e nvidia bash -c 'mojo build -I . max_rl/benchmark_interop.mojo -o /tmp/bench && /tmp/bench'
 ```
+(Running the bare `/tmp/bench` outside `pixi run` fails with "No module named 'max'", because
+activation env vars aren't set in your shell.)
 
 nn2 baseline (pure nn2, no Python — plain `mojo run` is fine):
 ```bash
@@ -88,7 +93,36 @@ iteration that sweeps many shapes. NVIDIA compile times are the ones that matter
 | wide-b1     (256→512→512→64, b=1)   | 699  | **287**   | 868   |
 | wide-b1024  (b=1024)                | **8913** | 12455 | 15050 |
 
-Reading (Metal only — **NVIDIA is the decisive run, your part**):
+### nn2 vs MAX head-to-head (NVIDIA / CUDA, µs per call) — the decisive run
+
+| Shape | nn2 forward (delivered) | MAX raw compute | MAX delivered (e2e) | nn2 vs MAX-delivered |
+|---|---|---|---|---|
+| actor-b1    | **26.6** | 45.3 | 73.8  | nn2 2.8× |
+| actor-b64   | **36.9** | 71.1 | 99.3  | nn2 2.7× |
+| actor-b1024 | **38.9** | 55.5 | 104.5 | nn2 2.7× |
+| wide-b1     | **18.7** | 30.8 | 75.2  | nn2 4.0× |
+| wide-b1024  | **68.0** | 51.2 | 202.5 | nn2 3.0× |
+
+Reading (CUDA — **this is the verdict**):
+- **nn2 wins delivered latency everywhere, ~2.7–4×.** H2D+D2H+Python glue (30–150 µs) dwarfs
+  compute at RL-MLP scale.
+- **nn2 wins even raw compute in 4/5 shapes.** MAX's compiler only leads at the widest matmul
+  (wide-b1024) — the large/transformer regime it's built for, not small RL MLPs.
+- **Interop bridge is free (0.18 µs/call)** on CUDA too — the cost is transfer + Python glue.
+- nn2 here is **unoptimized** (plain `Linear+ReLU`, no fused `LinearReLU`, no CUDA-graph
+  capture) — a *ceiling*; the real nn2 is faster still.
+- **MAX compile cost on CUDA is ~46–52 s per shape** (vs ~15 s Metal) — a real RL shape-sweep tax.
+- **This bounds path B too:** path B's best case ≈ MAX raw compute (45–71 µs for actor) still
+  loses to nn2 delivered (27–39 µs) except at wide-b1024 (where nn2 is unoptimized). A perfect
+  no-Python path B can't flip the RL-scale verdict.
+
+**Bottom line for "why don't I incorporate MAX?": at RL-MLP inference scale on NVIDIA, nn2 is
+~3× faster delivered and competitive-to-better on raw compute, with no interop tax and no
+per-shape compile wall. MAX pays off at large/transformer-scale graphs, not here.**
+
+### (Earlier) Apple/Metal numbers — for reference
+
+Reading (Metal only):
 - **MAX raw compute wins at small batch** (~2× faster, 284 vs 658 µs at b=1) but **loses
   end-to-end** once you add H2D+D2H+Python glue — the *delivered* MAX latency to a Mojo
   caller (507–978 µs) is at or above nn2's (618–699 µs).
