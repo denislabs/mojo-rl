@@ -58,7 +58,7 @@ from mojo_rl.nn2.core.scratch import Scratch
 from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 from mojo_rl.nn2.loss.gaussian_nll_loss import GaussianNLLLoss
-from mojo_rl.nn2.optimizer.adam import Adam
+from mojo_rl.nn2.optimizer.adamw import AdamW
 
 
 def _split_clamp_logvar_kernel[
@@ -106,7 +106,7 @@ struct DynamicsEnsembleBlock[
     comptime PRED_DIM: Int = Self.OUT_DIM // 2
 
     var members: List[Self.DynNet]
-    var opts: List[Adam]
+    var opts: List[AdamW]
     var loss: GaussianNLLLoss[Self.PRED_DIM, Self.LOGVAR_MIN, Self.LOGVAR_MAX]
     var elite_indices: List[Int]
 
@@ -128,7 +128,7 @@ struct DynamicsEnsembleBlock[
             " (holds for typical MBPO surfaces where OBS > ACT - 2)"
         )
         self.members = List[Self.DynNet]()
-        self.opts = List[Adam]()
+        self.opts = List[AdamW]()
         self.loss = GaussianNLLLoss[
             Self.PRED_DIM, Self.LOGVAR_MIN, Self.LOGVAR_MAX
         ]()
@@ -157,7 +157,12 @@ struct DynamicsEnsembleBlock[
         var blk = Self()
         for _ in range(Self.N):
             var net = Self.DynNet.make[target, INIT]()
-            var opt = Adam.make[target, M=Self.DynNet](net)
+            var opt = AdamW.make[target, M=Self.DynNet](net)
+            # PETS/MBPO-reference dynamics weight decay (legacy default
+            # `dyn_weight_decay=5e-5`). Without this the ensemble overfits:
+            # train NLL collapses while holdout NLL diverges → optimistic
+            # OOD synthetic data. Tunable post-make via `set_weight_decay`.
+            opt.weight_decay = Scalar[DT](5e-5)
             blk.members.append(net^)
             blk.opts.append(opt^)
         for i in range(Self.NUM_ELITES):
@@ -188,7 +193,12 @@ struct DynamicsEnsembleBlock[
         var blk = Self()
         for _ in range(Self.N):
             var net = Self.DynNet.make[target, INIT](ctx=ctx)
-            var opt = Adam.make[target, M=Self.DynNet](net, ctx=ctx)
+            var opt = AdamW.make[target, M=Self.DynNet](net, ctx=ctx)
+            # PETS/MBPO-reference dynamics weight decay (legacy default
+            # `dyn_weight_decay=5e-5`). Without this the ensemble overfits:
+            # train NLL collapses while holdout NLL diverges → optimistic
+            # OOD synthetic data. Tunable post-make via `set_weight_decay`.
+            opt.weight_decay = Scalar[DT](5e-5)
             blk.members.append(net^)
             blk.opts.append(opt^)
         for i in range(Self.NUM_ELITES):
@@ -205,16 +215,25 @@ struct DynamicsEnsembleBlock[
     # ------------------------------------------------------------------
 
     def set_lr(mut self, lr: Scalar[DT]):
-        """Set every member's Adam LR. Matches the deep_agents config
+        """Set every member's AdamW LR. Matches the deep_agents config
         convention (single `model_lr` applies to all ensemble members)."""
         for i in range(Self.N):
             self.opts[i].lr = lr
 
-    def set_max_grad_norm(mut self, threshold: Scalar[DT]):
-        """Apply a global grad-norm clip to every member's Adam.
-        `0.0` disables.  Mirrors `Adam.max_grad_norm`."""
+    def set_weight_decay(mut self, wd: Scalar[DT]):
+        """Set every member's AdamW decoupled weight decay. Defaults to the
+        PETS/MBPO-reference `5e-5` at make-time; this overrides it. The
+        dynamics ensemble REQUIRES decay to generalise — without it the
+        members overfit (train NLL ↓, holdout NLL ↑) and synthetic data
+        becomes optimistic OOD garbage. Mirrors legacy `dyn_weight_decay`."""
         for i in range(Self.N):
-            self.opts[i].max_grad_norm = threshold
+            self.opts[i].weight_decay = wd
+
+    def set_max_grad_norm(mut self, threshold: Scalar[DT]):
+        """No-op: the dynamics ensemble uses AdamW, which does not implement
+        a grad-norm clip (decoupled weight decay is the regulariser here).
+        Kept for API compatibility; never invoked on the MBPO path."""
+        pass
 
     # ------------------------------------------------------------------
     # Predict — forward through one member, split + clamp logvar.

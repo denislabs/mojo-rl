@@ -23,6 +23,8 @@ from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import ParamVisitor
 from ..core.module import Module
 from ..core.optimizer import Optimizer
+from ..core.saveable import Saveable
+from ..core.save_scalar import _expect_kv_line
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -320,7 +322,7 @@ struct _ZeroGradGPUVisitor(ParamVisitor):
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct AdamW(Optimizer):
+struct AdamW(Optimizer, Saveable):
     # CPU storage
     var m_flat: List[Scalar[DT]]
     var v_flat: List[Scalar[DT]]
@@ -479,3 +481,139 @@ struct AdamW(Optimizer):
                 weight_decay=self.weight_decay,
             )
             model.for_each_param[target, _AdamWGPUStepVisitor](String(""), visitor)
+
+    # ─────────────────────────── Saveable (CPU only) ───────────────────────────
+    # Same envelope as `Adam` plus a `<prefix>.weight_decay=<float>` line.
+    # `apply_decay` flags are topology-derived (rebuilt by `make` from the
+    # model) and NOT serialized — `make[target, M](model)` MUST run before
+    # `load` so the in-memory optimizer is sized and decay-flagged.
+
+    def save(self, mut out: String, prefix: String) raises:
+        out += prefix + ".lr=" + String(self.lr) + "\n"
+        out += prefix + ".beta1=" + String(self.beta1) + "\n"
+        out += prefix + ".beta2=" + String(self.beta2) + "\n"
+        out += prefix + ".eps=" + String(self.eps) + "\n"
+        out += prefix + ".weight_decay=" + String(self.weight_decay) + "\n"
+        out += prefix + ".step_count=" + String(self.step_count) + "\n"
+        out += prefix + ".beta1_pow_t=" + String(self.beta1_pow_t) + "\n"
+        out += prefix + ".beta2_pow_t=" + String(self.beta2_pow_t) + "\n"
+        out += prefix + ".m_flat#size=" + String(self.total_size) + "\n"
+        var m_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.m_flat.unsafe_ptr()
+        )
+        for k in range(self.total_size):
+            out += String(m_ptr[k]) + "\n"
+        out += prefix + ".v_flat#size=" + String(self.total_size) + "\n"
+        var v_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.v_flat.unsafe_ptr()
+        )
+        for k in range(self.total_size):
+            out += String(v_ptr[k]) + "\n"
+
+    def load(
+        mut self, lines: List[String], mut idx: Int, prefix: String,
+    ) raises:
+        self.lr = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".lr")))
+        idx += 1
+        self.beta1 = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".beta1")))
+        idx += 1
+        self.beta2 = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".beta2")))
+        idx += 1
+        self.eps = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".eps")))
+        idx += 1
+        self.weight_decay = Scalar[DT](atof(
+            _expect_kv_line(lines, idx, prefix + ".weight_decay")
+        ))
+        idx += 1
+        self.step_count = atol(_expect_kv_line(lines, idx, prefix + ".step_count"))
+        idx += 1
+        self.beta1_pow_t = Scalar[DT](atof(
+            _expect_kv_line(lines, idx, prefix + ".beta1_pow_t")
+        ))
+        idx += 1
+        self.beta2_pow_t = Scalar[DT](atof(
+            _expect_kv_line(lines, idx, prefix + ".beta2_pow_t")
+        ))
+        idx += 1
+        AdamW._load_flat_section(
+            lines, idx, prefix + ".m_flat", self.m_flat, self.total_size,
+        )
+        AdamW._load_flat_section(
+            lines, idx, prefix + ".v_flat", self.v_flat, self.total_size,
+        )
+
+    # ─── GPU checkpoint sync (mirrors Adam) ──────────────────────────────
+
+    def sync_to_host(mut self) raises:
+        """D2H device buffers → host fields. Call before `save` on GPU."""
+        var ctx = self.ts.ctx.value()
+        if len(self.m_flat) != self.total_size:
+            self.m_flat = List[Scalar[DT]](
+                length=self.total_size, fill=Scalar[DT](0.0)
+            )
+            self.v_flat = List[Scalar[DT]](
+                length=self.total_size, fill=Scalar[DT](0.0)
+            )
+        ctx.enqueue_copy(self.m_flat.unsafe_ptr(), self.m_dev.value())
+        ctx.enqueue_copy(self.v_flat.unsafe_ptr(), self.v_dev.value())
+        var step_host = ctx.enqueue_create_host_buffer[DType.uint32](1)
+        ctx.enqueue_copy(step_host, self.step_dev.value())
+        var bc_host = ctx.enqueue_create_host_buffer[DT](4)
+        ctx.enqueue_copy(bc_host, self.bc_dev.value())
+        ctx.synchronize()
+        self.step_count = Int(step_host.unsafe_ptr()[0])
+        self.beta1_pow_t = bc_host.unsafe_ptr()[0]
+        self.beta2_pow_t = bc_host.unsafe_ptr()[1]
+
+    def upload_from_host(mut self) raises:
+        """H2D host fields → device buffers. Call after `load` on GPU."""
+        var ctx = self.ts.ctx.value()
+        ctx.enqueue_copy(self.m_dev.value(), self.m_flat.unsafe_ptr())
+        ctx.enqueue_copy(self.v_dev.value(), self.v_flat.unsafe_ptr())
+        var step_host = ctx.enqueue_create_host_buffer[DType.uint32](1)
+        var bc_host = ctx.enqueue_create_host_buffer[DT](4)
+        ctx.synchronize()
+        step_host.unsafe_ptr()[0] = UInt32(self.step_count)
+        bc_host.unsafe_ptr()[0] = self.beta1_pow_t
+        bc_host.unsafe_ptr()[1] = self.beta2_pow_t
+        bc_host.unsafe_ptr()[2] = Scalar[DT](1.0) - self.beta1_pow_t
+        bc_host.unsafe_ptr()[3] = Scalar[DT](1.0) - self.beta2_pow_t
+        ctx.enqueue_copy(self.step_dev.value(), step_host)
+        ctx.enqueue_copy(self.bc_dev.value(), bc_host)
+        ctx.synchronize()
+
+    @staticmethod
+    def _load_flat_section(
+        lines: List[String],
+        mut idx: Int,
+        expected_prefix: String,
+        mut target: List[Scalar[DT]],
+        expected_size: Int,
+    ) raises:
+        if idx >= len(lines):
+            raise Error(
+                "AdamW.load: out of input at `" + expected_prefix
+                + "#size=...` (idx " + String(idx) + ")"
+            )
+        var header = lines[idx]
+        var expected_header = (
+            expected_prefix + "#size=" + String(expected_size)
+        )
+        if header != expected_header:
+            raise Error(
+                "AdamW.load: section header mismatch. Expected `"
+                + expected_header + "`, got `" + header + "`"
+            )
+        idx += 1
+        var t_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            target.unsafe_ptr()
+        )
+        for k in range(expected_size):
+            if idx >= len(lines):
+                raise Error(
+                    "AdamW.load: short read for `" + expected_prefix
+                    + "` at element " + String(k) + " of "
+                    + String(expected_size)
+                )
+            t_ptr[k] = Scalar[DT](atof(lines[idx]))
+            idx += 1

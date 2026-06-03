@@ -98,7 +98,7 @@ comptime ALPHA_LR: Scalar[DT] = 0.0 if FIX_ALPHA else 3e-4
 comptime RUN_NAME = (
     "MBPO HalfCheetah NN2 (GPU) — early-stop+elite, fixed alpha=0.12"
     if FIX_ALPHA
-    else "MBPO HalfCheetah NN2 (GPU) — dyn_max_epochs=150 (full ensemble train)"
+    else "MBPO HalfCheetah NN2 (GPU) — dyn AdamW weight_decay=5e-5 (overfit fix)"
 )
 
 
@@ -219,10 +219,15 @@ def main() raises:
             num_rollouts_per_step=100_000,
             sac_updates_per_step=40,
             dyn_batch_size=256,
-            # Legacy trains the ensemble up to 150 epochs/round; the nn2
-            # default ceiling of 40 cut training off while holdout NLL was
-            # still falling → under-trained model → weak synthetic data.
+            # Ceiling on dyn-train epochs/round; early-stop on holdout NLL
+            # governs in practice (matches legacy's 150 cap).
             dyn_max_epochs=150,
+            # ROOT-CAUSE FIX: the nn2 dynamics ensemble used plain Adam (no
+            # weight decay) → catastrophic overfit (train NLL → -19, holdout
+            # NLL → 100+ vs legacy ~42) → optimistic OOD synthetic data that
+            # adds ~nothing. Legacy uses AdamW with dyn_weight_decay=5e-5
+            # (PETS/MBPO reference). Now matched.
+            dyn_weight_decay=5e-5,
         )
         var env = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]()
 

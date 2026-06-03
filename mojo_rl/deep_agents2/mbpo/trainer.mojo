@@ -585,6 +585,7 @@ struct MBPOTrainer[
         sac_updates_per_step: Int = 20,
         dyn_batch_size: Int = 256,
         dyn_max_epochs: Int = 40,
+        dyn_weight_decay: Scalar[DT] = Scalar[DT](5e-5),
         use_bf16: Bool = False,
     ) raises -> Self:
         comptime assert (
@@ -661,6 +662,7 @@ struct MBPOTrainer[
         else:
             t.ensemble = Self.ENSEMBLE.make[Self.train_target, INIT=Kaiming]()
         t.ensemble.set_lr(model_lr)
+        t.ensemble.set_weight_decay(dyn_weight_decay)
 
         t.tracker = EpisodeTracker.new(
             window_size=window_size, initial_fill=initial_episode_fill

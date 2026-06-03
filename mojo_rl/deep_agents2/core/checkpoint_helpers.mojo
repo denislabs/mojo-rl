@@ -19,6 +19,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.save_scalar import _expect_kv_line
 from mojo_rl.nn2.core.saveable import Saveable
 from mojo_rl.nn2.optimizer.adam import Adam
+from mojo_rl.nn2.optimizer.adamw import AdamW
 from mojo_rl.nn2.optimizer.scalar_adam import ScalarAdam
 
 
@@ -118,6 +119,40 @@ def load_optimizer_v2_body_gpu(
     `total_size` values straight into those lists' buffers, so they MUST
     be pre-sized or the writes corrupt the heap. Size them here before
     parsing, then upload to device."""
+    if len(opt.m_flat) != opt.total_size:
+        opt.m_flat = List[Scalar[DT]](
+            length=opt.total_size, fill=Scalar[DT](0.0)
+        )
+        opt.v_flat = List[Scalar[DT]](
+            length=opt.total_size, fill=Scalar[DT](0.0)
+        )
+    opt.load(lines, idx, prefix)
+    opt.upload_from_host()
+
+
+def save_optimizer_v2_body_gpu(
+    mut opt: AdamW,
+    mut out: String,
+    prefix: String,
+) raises:
+    """GPU `AdamW` section (overload). Downloads device state into the
+    optimizer's host fields, then emits the identical CPU section. Used by
+    the MBPO dynamics ensemble, which optimises with decoupled weight
+    decay."""
+    opt.sync_to_host()
+    opt.save(out, prefix)
+
+
+def load_optimizer_v2_body_gpu(
+    mut opt: AdamW,
+    lines: List[String],
+    mut idx: Int,
+    prefix: String,
+) raises:
+    """Inverse of the `AdamW` `save_optimizer_v2_body_gpu` overload: CPU
+    parse into host fields, then upload to the device buffers. A GPU-built
+    `AdamW` has empty `m_flat`/`v_flat`; size them before parsing so
+    `AdamW.load` writes into valid storage."""
     if len(opt.m_flat) != opt.total_size:
         opt.m_flat = List[Scalar[DT]](
             length=opt.total_size, fill=Scalar[DT](0.0)
