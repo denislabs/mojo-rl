@@ -27,7 +27,7 @@ Inputs (t-major, contiguous per step):
 from std.memory import alloc
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.optimizer.adam import Adam
@@ -158,11 +158,37 @@ struct WMStep[
     var value_coef: Scalar[DT]
     var rho: Scalar[DT]
 
+    # Persistent GPU scratch (allocated once in make[gpu]; None on CPU). Reused
+    # across train steps to avoid per-step device allocation + per-upload syncs.
+    var d_obs: Optional[DeviceBuffer[DT]]
+    var d_act: Optional[DeviceBuffer[DT]]
+    var d_rew: Optional[DeviceBuffer[DT]]
+    var d_td: Optional[DeviceBuffer[DT]]
+    var d_carry: Optional[DeviceBuffer[DT]]
+    var d_zen: Optional[DeviceBuffer[DT]]
+    var d_out: Optional[DeviceBuffer[DT]]
+    var d_scratch: Optional[DeviceBuffer[DT]]
+    var d_seed: Optional[DeviceBuffer[DT]]
+    var d_gz: Optional[DeviceBuffer[DT]]
+    var d_acc: Optional[DeviceBuffer[DT]]
+    var d_gobs: Optional[DeviceBuffer[DT]]
+    var h_obs: Optional[HostBuffer[DT]]
+    var h_act: Optional[HostBuffer[DT]]
+    var h_rew: Optional[HostBuffer[DT]]
+    var h_td: Optional[HostBuffer[DT]]
+    var h_acc: Optional[HostBuffer[DT]]
+
     def __init__(out self):
         self.consistency_coef = Scalar[DT](20.0)
         self.reward_coef = Scalar[DT](0.1)
         self.value_coef = Scalar[DT](0.1)
         self.rho = Scalar[DT](0.5)
+        self.d_obs = None; self.d_act = None; self.d_rew = None
+        self.d_td = None; self.d_carry = None; self.d_zen = None
+        self.d_out = None; self.d_scratch = None; self.d_seed = None
+        self.d_gz = None; self.d_acc = None; self.d_gobs = None
+        self.h_obs = None; self.h_act = None; self.h_rew = None
+        self.h_td = None; self.h_acc = None
 
     @staticmethod
     def make[target: StaticString](
@@ -171,7 +197,32 @@ struct WMStep[
         comptime assert target == "cpu" or target == "gpu", (
             "WMStep: target must be 'cpu' or 'gpu'"
         )
-        return Self()
+        var s = Self()
+        comptime if target == "gpu":
+            var c = ctx.value()
+            comptime LAT = Self.LATENT
+            comptime OW = Self.OUTW
+            s.d_obs = c.enqueue_create_buffer[DT]((Self.H + 1) * Self.B * Self.OBS)
+            s.d_act = c.enqueue_create_buffer[DT](Self.H * Self.B * Self.ACT)
+            s.d_rew = c.enqueue_create_buffer[DT](Self.H * Self.B)
+            s.d_td = c.enqueue_create_buffer[DT](Self.H * Self.B)
+            s.d_carry = c.enqueue_create_buffer[DT]((Self.H + 1) * Self.B * LAT)
+            s.d_zen = c.enqueue_create_buffer[DT](Self.H * Self.B * LAT)
+            s.d_out = c.enqueue_create_buffer[DT](Self.B * OW)
+            s.d_scratch = c.enqueue_create_buffer[DT](Self.B * OW)
+            s.d_seed = c.enqueue_create_buffer[DT](Self.B * OW)
+            s.d_gz = c.enqueue_create_buffer[DT](Self.B * LAT)
+            s.d_acc = c.enqueue_create_buffer[DT](1)
+            s.d_gobs = c.enqueue_create_buffer[DT](Self.B * Self.OBS)
+            s.h_obs = c.enqueue_create_host_buffer[DT](
+                (Self.H + 1) * Self.B * Self.OBS
+            )
+            s.h_act = c.enqueue_create_host_buffer[DT](Self.H * Self.B * Self.ACT)
+            s.h_rew = c.enqueue_create_host_buffer[DT](Self.H * Self.B)
+            s.h_td = c.enqueue_create_host_buffer[DT](Self.H * Self.B)
+            s.h_acc = c.enqueue_create_host_buffer[DT](1)
+            c.synchronize()
+        return s^
 
     def step[target: StaticString](
         mut self,
@@ -365,20 +416,36 @@ struct WMStep[
         comptime BB = Self.B
         comptime OBSD = Self.OBS
 
-        # ── upload inputs + allocate device scratch ────────────────────
-        var d_obs = _upload(ctx, obs, (Self.H + 1) * BB * OBSD)
-        var d_act = _upload(ctx, act, Self.H * BB * Self.ACT)
-        var d_rew = _upload(ctx, rew, Self.H * BB)
-        var d_td = _upload(ctx, td, Self.H * BB)
-        var d_carry = ctx.enqueue_create_buffer[DT]((Self.H + 1) * BB * LAT)
-        var d_zen = ctx.enqueue_create_buffer[DT](Self.H * BB * LAT)
-        var d_out = ctx.enqueue_create_buffer[DT](BB * OW)
-        var d_scratch = ctx.enqueue_create_buffer[DT](BB * OW)
-        var d_seed = ctx.enqueue_create_buffer[DT](BB * OW)
-        var d_gz = ctx.enqueue_create_buffer[DT](BB * LAT)
-        var d_acc = ctx.enqueue_create_buffer[DT](1)
+        # ── bind persistent scratch + stage inputs (fill host buffers
+        #    in-place, async H2D, single sync at the end) ────────────────
+        var d_obs = self.d_obs.value()
+        var d_act = self.d_act.value()
+        var d_rew = self.d_rew.value()
+        var d_td = self.d_td.value()
+        var d_carry = self.d_carry.value()
+        var d_zen = self.d_zen.value()
+        var d_out = self.d_out.value()
+        var d_scratch = self.d_scratch.value()
+        var d_seed = self.d_seed.value()
+        var d_gz = self.d_gz.value()
+        var d_acc = self.d_acc.value()
+        var d_gobs = self.d_gobs.value()
+        var ho = self.h_obs.value()
+        var ha = self.h_act.value()
+        var hr = self.h_rew.value()
+        var htd = self.h_td.value()
+        for i in range((Self.H + 1) * BB * OBSD):
+            ho.unsafe_ptr()[i] = obs[i]
+        for i in range(Self.H * BB * Self.ACT):
+            ha.unsafe_ptr()[i] = act[i]
+        for i in range(Self.H * BB):
+            hr.unsafe_ptr()[i] = rew[i]
+            htd.unsafe_ptr()[i] = td[i]
+        ctx.enqueue_copy(d_obs, ho)
+        ctx.enqueue_copy(d_act, ha)
+        ctx.enqueue_copy(d_rew, hr)
+        ctx.enqueue_copy(d_td, htd)
         d_acc.enqueue_fill(0.0)
-        var d_gobs = ctx.enqueue_create_buffer[DT](BB * OBSD)
 
         graph.set_external["znext", Self.DynT](dyn)
         graph.set_external["rlog", Self.RewT](rew_net)
@@ -493,7 +560,7 @@ struct WMStep[
         for i in range(NQ):
             q_opt[i].step[target, Self.QNetT](q[i])
 
-        var h = ctx.enqueue_create_host_buffer[DT](1)
+        var h = self.h_acc.value()
         ctx.enqueue_copy(h, d_acc)
         ctx.synchronize()
         return h.unsafe_ptr()[0]
