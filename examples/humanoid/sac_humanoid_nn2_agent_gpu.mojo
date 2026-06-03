@@ -40,6 +40,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
+from mojo_rl.nn2.primitives.linear_relu import LinearReLU
 from mojo_rl.deep_agents2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents2.sac import SACAgent
 from mojo_rl.deep_agents2.training.blocks import UniformSampleGpuStep
@@ -69,6 +70,9 @@ comptime N_ENVS = 4
 comptime NUM_STEPS = 3_000_000
 comptime WARMUP_STEPS = 25_000
 comptime PRINT_EVERY = 50_000
+comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
+comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
+comptime CHECKPOINT_PATH = "sac_humanoid_nn2.ckpt"
 
 
 comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
@@ -76,16 +80,12 @@ comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
 comptime ActorNet = StochasticActor[
     OBS_DIM,
     ACT_DIM,
-    Linear[OBS_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS_DIM + ACT_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
@@ -158,6 +158,8 @@ def main() raises:
             BatchedEnvT,
             N_ENVS=N_ENVS,
             L=RemoteLogger,
+            USE_TRAIN_CUDA_GRAPH=True,
+            USE_ENV_CUDA_GRAPH=True,
         ](
             env,
             NUM_STEPS,
@@ -166,6 +168,10 @@ def main() raises:
             print_every=PRINT_EVERY,
             verbose=True,
             logger=logger_ptr,
+            diag_every=DIAG_EVERY,
+            episode_sync_every=32,
+            checkpoint_every=CHECKPOINT_EVERY,
+            checkpoint_path=CHECKPOINT_PATH,
         )
         var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
         logger.close()

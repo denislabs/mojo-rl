@@ -1,14 +1,21 @@
 """Evaluate + render a trained Walker2d SAC (deep_agents2) checkpoint.
 
 Loads the one-file `nn2-ckpt v2` checkpoint written by
-`sac_walker2d_nn2_agent.mojo` (CPU training) and runs deterministic
+`sac_walker2d_nn2_agent_gpu.mojo` (GPU training) and runs deterministic
 (greedy / actor-mean, no sampling) episodes with live 3D rendering via the
 physics3d `RenderableEnv` interface — the same renderer the legacy
 `sac_walker2d_eval_cpu.mojo` drives, but on the new `SACAgent` facade.
 
 The agent architecture here MUST match the training script exactly (same
 `ActorNet` / `CriticNet`, dims, hidden width) or `agent.load` will read a
-mismatched parameter layout.
+mismatched parameter layout. In particular the layer *fusion* must match:
+the checkpoint section names embed the trunk index, so a fused
+`LinearReLU` (one module) and an unfused `Linear` + `ReLU` pair (two
+modules) produce DIFFERENT layouts even though the math is identical. This
+script mirrors the GPU trainer's fused `LinearReLU` actor/critic so its
+checkpoints load directly. (The CPU trainer `sac_walker2d_nn2_agent.mojo`
+still uses the unfused `Linear` + `ReLU` form — to eval one of *its*
+checkpoints, switch the nets below back to that layout.)
 
 Controls (renderer window):
   * close the window or press its quit key to stop early.
@@ -23,7 +30,7 @@ from std.time import perf_counter_ns
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
-from mojo_rl.nn2.primitives.relu import ReLU
+from mojo_rl.nn2.primitives.linear_relu import LinearReLU
 from mojo_rl.deep_agents2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents2.sac import SACAgent
 from mojo_rl.deep_agents2.training.blocks import UniformSampleCpuStep
@@ -52,16 +59,12 @@ comptime FRAME_DELAY_MS = 16  # ~60 FPS playback
 comptime ActorNet = StochasticActor[
     OBS_DIM,
     ACT_DIM,
-    Linear[OBS_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS_DIM + ACT_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
