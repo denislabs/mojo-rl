@@ -13,6 +13,9 @@ from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.initializer import Kaiming
+from mojo_rl.deep_agents2.tdmpc2.nets import (
+    TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet,
+)
 from mojo_rl.deep_agents2.tdmpc2.wm_graph import TDMPC2WMGraph
 
 
@@ -33,8 +36,27 @@ def _fill_rand(p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int):
 
 def test_wm_graph_forward_cpu() raises:
     seed(0)
+    comptime DynT = TDMPC2Dynamics[LATENT, ACT, MLP, SN]
+    comptime RewT = TDMPC2Reward[LATENT, ACT, MLP, BINS]
+    comptime QNetT = TDMPC2QNet[LATENT, ACT, MLP, BINS]
     comptime GraphT = TDMPC2WMGraph[LATENT, ACT, MLP, BINS, SN, VMIN, VMAX]
     var g = GraphT.make["cpu", INIT=Kaiming]()
+
+    # Bind the external dynamics / reward / Q heads.
+    var dyn = DynT.make["cpu", INIT=Kaiming]()
+    var rew_net = RewT.make["cpu", INIT=Kaiming]()
+    var q0 = QNetT.make["cpu", INIT=Kaiming]()
+    var q1 = QNetT.make["cpu", INIT=Kaiming]()
+    var q2 = QNetT.make["cpu", INIT=Kaiming]()
+    var q3 = QNetT.make["cpu", INIT=Kaiming]()
+    var q4 = QNetT.make["cpu", INIT=Kaiming]()
+    g.set_external["znext", DynT](dyn)
+    g.set_external["rlog", RewT](rew_net)
+    g.set_external["q0", QNetT](q0)
+    g.set_external["q1", QNetT](q1)
+    g.set_external["q2", QNetT](q2)
+    g.set_external["q3", QNetT](q3)
+    g.set_external["q4", QNetT](q4)
 
     var z = _alloc_fill(BATCH * LATENT)
     var a = _alloc_fill(BATCH * ACT)

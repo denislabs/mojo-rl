@@ -26,7 +26,7 @@ NQ is fixed at 5 (reference `num_q`); the graph node list is written out
 """
 
 from mojo_rl.nn2.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn2.combinators.graph_nodes import InputSlot, Node
+from mojo_rl.nn2.combinators.graph_nodes import InputSlot, Node, ExternalNode
 from mojo_rl.nn2.primitives.concat import Concat
 
 from .nets import TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet
@@ -52,15 +52,15 @@ comptime TDMPC2WMGraph[
     InputSlot["r", 1],
     InputSlot["td", 1],
     Node["za", Concat[LATENT, ACT], "z", "a"],
-    Node["znext", TDMPC2Dynamics[LATENT, ACT, MLP, SN], "za"],
+    ExternalNode["znext", TDMPC2Dynamics[LATENT, ACT, MLP, SN], "za"],
     Node["cons", MSELossPlain[LATENT], "znext", "z_enc_next"],
-    Node["rlog", TDMPC2Reward[LATENT, ACT, MLP, BINS], "za"],
+    ExternalNode["rlog", TDMPC2Reward[LATENT, ACT, MLP, BINS], "za"],
     Node["rloss", TDMPC2TwoHotLoss[BINS, VMIN, VMAX], "rlog", "r"],
-    Node["q0", TDMPC2QNet[LATENT, ACT, MLP, BINS], "za"],
-    Node["q1", TDMPC2QNet[LATENT, ACT, MLP, BINS], "za"],
-    Node["q2", TDMPC2QNet[LATENT, ACT, MLP, BINS], "za"],
-    Node["q3", TDMPC2QNet[LATENT, ACT, MLP, BINS], "za"],
-    Node["q4", TDMPC2QNet[LATENT, ACT, MLP, BINS], "za"],
+    ExternalNode["q0", TDMPC2QNet[LATENT, ACT, MLP, BINS], "za"],
+    ExternalNode["q1", TDMPC2QNet[LATENT, ACT, MLP, BINS], "za"],
+    ExternalNode["q2", TDMPC2QNet[LATENT, ACT, MLP, BINS], "za"],
+    ExternalNode["q3", TDMPC2QNet[LATENT, ACT, MLP, BINS], "za"],
+    ExternalNode["q4", TDMPC2QNet[LATENT, ACT, MLP, BINS], "za"],
     Node["v0", TDMPC2TwoHotLoss[BINS, VMIN, VMAX], "q0", "td"],
     Node["v1", TDMPC2TwoHotLoss[BINS, VMIN, VMAX], "q1", "td"],
     Node["v2", TDMPC2TwoHotLoss[BINS, VMIN, VMAX], "q2", "td"],

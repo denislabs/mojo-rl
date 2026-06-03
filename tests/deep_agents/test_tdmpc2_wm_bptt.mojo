@@ -21,7 +21,9 @@ from std.testing import assert_true, TestSuite
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.optimizer.adam import Adam
-from mojo_rl.deep_agents2.tdmpc2.nets import TDMPC2Encoder
+from mojo_rl.deep_agents2.tdmpc2.nets import (
+    TDMPC2Encoder, TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet,
+)
 from mojo_rl.deep_agents2.tdmpc2.wm_graph import TDMPC2WMGraph
 from mojo_rl.deep_agents2.tdmpc2.wm_step import WMStep
 
@@ -53,16 +55,33 @@ def _fill_pseudo(p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int, sd: Int):
 
 def test_wm_bptt_loss_decreases() raises:
     comptime EncT = TDMPC2Encoder[OBS, ENC, LATENT, SN]
+    comptime DynT = TDMPC2Dynamics[LATENT, ACT, MLP, SN]
+    comptime RewT = TDMPC2Reward[LATENT, ACT, MLP, BINS]
+    comptime QNetT = TDMPC2QNet[LATENT, ACT, MLP, BINS]
     comptime GraphT = TDMPC2WMGraph[LATENT, ACT, MLP, BINS, SN, VMIN, VMAX]
     comptime StepT = WMStep[OBS, ENC, ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, B, H]
 
     var enc = EncT.make["cpu", INIT=Kaiming]()
+    var dyn = DynT.make["cpu", INIT=Kaiming]()
+    var rew_net = RewT.make["cpu", INIT=Kaiming]()
     var graph = GraphT.make["cpu", INIT=Kaiming]()
-    var enc_opt = Adam.make["cpu", EncT](enc)
-    var wm_opt = Adam.make_graph["cpu"](graph)
+
     var lr = Scalar[DT](3e-3)
+    var enc_opt = Adam.make["cpu", EncT](enc)
     enc_opt.lr = lr * Scalar[DT](0.3)   # reference enc_lr_scale
-    wm_opt.lr = lr
+    var dyn_opt = Adam.make["cpu", DynT](dyn)
+    dyn_opt.lr = lr
+    var rew_opt = Adam.make["cpu", RewT](rew_net)
+    rew_opt.lr = lr
+
+    var q = List[QNetT]()
+    var q_opt = List[Adam]()
+    for _ in range(5):
+        var qn = QNetT.make["cpu", INIT=Kaiming]()
+        var qo = Adam.make["cpu", QNetT](qn)
+        qo.lr = lr
+        q.append(qn^)
+        q_opt.append(qo^)
     var step = StepT.make["cpu"]()
 
     # Fixed synthetic batch (t-major). td targets are arbitrary stop-grad
@@ -80,7 +99,11 @@ def test_wm_bptt_loss_decreases() raises:
     var last: Scalar[DT] = 0.0
     comptime ITERS = 40
     for it in range(ITERS):
-        var l = step.step["cpu"](enc, graph, enc_opt, wm_opt, obs, act, rew, td)
+        var l = step.step["cpu"](
+            graph, enc, dyn, rew_net, q,
+            enc_opt, dyn_opt, rew_opt, q_opt,
+            obs, act, rew, td,
+        )
         assert_true(isfinite(l), "WM loss must be finite")
         if it == 0:
             first = l
