@@ -57,3 +57,11 @@ comptime TDMPC2QNet[LATENT: Int, ACT: Int, MLP: Int, BINS: Int] = Sequential[
     NormedLinear[MLP, MLP],
     Linear[MLP, BINS],
 ]
+
+# Policy prior π(z): trunk → Linear(2·ACT) = [mean | log_std], consumed by
+# RSample (tanh-squashed Gaussian). Reference `mlp(latent, 2*[mlp], 2*act)`.
+comptime TDMPC2Policy[LATENT: Int, ACT: Int, MLP: Int] = Sequential[
+    NormedLinear[LATENT, MLP],
+    NormedLinear[MLP, MLP],
+    Linear[MLP, 2 * ACT],
+]

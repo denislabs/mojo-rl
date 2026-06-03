@@ -23,7 +23,7 @@ cache the two input pointers in `forward`; write BOTH grad_inputs in `vjp`
 scalar + an arbitrary bin grid), fed the symlog'd target + linear bins.
 """
 
-from std.math import exp, log, log1p
+from std.math import exp, log, log1p, expm1
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu import global_idx
 from std.gpu.memory import AddressSpace
@@ -36,6 +36,7 @@ from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 from mojo_rl.deep_agents2.dreamerv3.twohot import (
     twohot_loss,
     twohot_loss_backward,
+    twohot_pred,
 )
 
 
@@ -484,4 +485,223 @@ struct TDMPC2TwoHotLoss[BINS: Int, VMIN: Int, VMAX: Int](Module):
                 _dlt[BATCH](gop), _dlt[BATCH * Self.BINS](lg), _dlt[BATCH](tgt),
                 _dlt[Self.BINS](binsd), _dlt[BATCH * Self.BINS](glp),
                 _dlt[BATCH](gtp), grid_dim=nb, block_dim=TPB,
+            )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TwoHotDecode[BINS, VMIN, VMAX] — logits → scalar value (ARITY=1).
+# value = symexp(Σ_c softmax(logits)_c · bins_c), linear bins in [VMIN,VMAX].
+# Differentiable w.r.t. logits (used by the policy loss: Q(z,π(z)) decoded
+# to a scalar with grad flowing back to the action; the Q params are frozen
+# via the graph's MODE="input_only"). Also reused by the TD-target step +
+# MPPI callback (forward only there). Reference `math.two_hot_inv`.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@always_inline
+def _symexp(x: Scalar[DT]) -> Scalar[DT]:
+    var s = Scalar[DT](1.0) if x >= Scalar[DT](0.0) else Scalar[DT](-1.0)
+    var a = x if x >= Scalar[DT](0.0) else -x
+    return s * expm1(a)
+
+
+def _decode_fwd_kernel[B: Int, BINS: Int](
+    lg: LayoutTensor[DT, Layout.row_major(B * BINS), MutAnyOrigin],
+    bins: LayoutTensor[DT, Layout.row_major(BINS), MutAnyOrigin],
+    o: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b < B:
+        var base = b * BINS
+        var zmax = rebind[Scalar[DT]](lg[base])
+        for c in range(1, BINS):
+            var v = rebind[Scalar[DT]](lg[base + c])
+            if v > zmax:
+                zmax = v
+        var ssum: Scalar[DT] = 0.0
+        for c in range(BINS):
+            ssum += exp(rebind[Scalar[DT]](lg[base + c]) - zmax)
+        var inv = Scalar[DT](1.0) / ssum
+        var s: Scalar[DT] = 0.0
+        for c in range(BINS):
+            s += exp(rebind[Scalar[DT]](lg[base + c]) - zmax) * inv * rebind[
+                Scalar[DT]
+            ](bins[c])
+        var sgn = Scalar[DT](1.0) if s >= Scalar[DT](0.0) else Scalar[DT](-1.0)
+        var a = s if s >= Scalar[DT](0.0) else -s
+        o[b] = sgn * (exp(a) - Scalar[DT](1.0))
+
+
+def _decode_bwd_kernel[B: Int, BINS: Int](
+    go: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    lg: LayoutTensor[DT, Layout.row_major(B * BINS), MutAnyOrigin],
+    bins: LayoutTensor[DT, Layout.row_major(BINS), MutAnyOrigin],
+    glg: LayoutTensor[DT, Layout.row_major(B * BINS), MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b < B:
+        var base = b * BINS
+        var up = rebind[Scalar[DT]](go[b])
+        var zmax = rebind[Scalar[DT]](lg[base])
+        for c in range(1, BINS):
+            var v = rebind[Scalar[DT]](lg[base + c])
+            if v > zmax:
+                zmax = v
+        var ssum: Scalar[DT] = 0.0
+        for c in range(BINS):
+            ssum += exp(rebind[Scalar[DT]](lg[base + c]) - zmax)
+        var inv = Scalar[DT](1.0) / ssum
+        var s: Scalar[DT] = 0.0
+        for c in range(BINS):
+            s += exp(rebind[Scalar[DT]](lg[base + c]) - zmax) * inv * rebind[
+                Scalar[DT]
+            ](bins[c])
+        var a = s if s >= Scalar[DT](0.0) else -s
+        var dds = exp(a)   # d symexp / d s
+        for c in range(BINS):
+            var p = exp(rebind[Scalar[DT]](lg[base + c]) - zmax) * inv
+            glg[base + c] = up * dds * p * (rebind[Scalar[DT]](bins[c]) - s)
+
+
+struct TwoHotDecode[BINS: Int, VMIN: Int, VMAX: Int](Module):
+    comptime ARITY: Int = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.BINS)
+    comptime OUT_DIM = 1
+
+    @staticmethod
+    def display_label() -> String:
+        return String("TwoHotDecode")
+
+    var bins: List[Scalar[DT]]
+    var _bins_dev: Optional[DeviceBuffer[DT]]
+    var _logits_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var ts: TargetStorage
+
+    def __init__(out self):
+        self.bins = List[Scalar[DT]]()
+        self._bins_dev = None
+        self._logits_ptr = None
+        self.ts = TargetStorage.make_uninit()
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        comptime assert target == "cpu" or target == "gpu", (
+            "TwoHotDecode: target must be 'cpu' or 'gpu'"
+        )
+        var m = Self()
+        m.bins = List[Scalar[DT]](length=Self.BINS, fill=Scalar[DT](0.0))
+        _linspace_bins[Self.BINS](
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](m.bins.unsafe_ptr()),
+            lo=Scalar[DT](Self.VMIN),
+            hi=Scalar[DT](Self.VMAX),
+        )
+        comptime if target == "cpu":
+            m.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("TwoHotDecode.make[gpu]: ctx required")
+            var c = ctx.value()
+            var bd = c.enqueue_create_buffer[DT](Self.BINS)
+            var hb = c.enqueue_create_host_buffer[DT](Self.BINS)
+            c.synchronize()
+            for i in range(Self.BINS):
+                hb.unsafe_ptr()[i] = m.bins[i]
+            c.enqueue_copy(bd, hb)
+            c.synchronize()
+            m._bins_dev = bd^
+            m.ts = TargetStorage.make_gpu(c)
+        return m^
+
+    def bins_unsafe_ptr(mut self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.bins.unsafe_ptr()
+        )
+
+    def forward[
+        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
+    ](
+        mut self,
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        assert_tag_for["TwoHotDecode", target](self.ts.target_tag)
+        var lg = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            typed_view[BATCH, Self.BINS](inputs[0]).ptr
+        )
+        self._logits_ptr = lg
+        var o = typed_view_mut[BATCH, 1](output).ptr
+        comptime if target == "cpu":
+            var bins = self.bins_unsafe_ptr()
+            for b in range(BATCH):
+                var s = twohot_pred[Self.BINS](lg, b * Self.BINS, bins)
+                o[b] = _symexp(s)
+        else:
+            var binsd = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._bins_dev.value().unsafe_ptr()
+            )
+            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
+            comptime nb = (BATCH + TPB - 1) // TPB
+            comptime kf = _decode_fwd_kernel[BATCH, Self.BINS]
+            self.ts.ctx.value().enqueue_function[kf](
+                _dlt[BATCH * Self.BINS](lg), _dlt[Self.BINS](binsd),
+                _dlt[BATCH](op), grid_dim=nb, block_dim=TPB,
+            )
+
+    def vjp[
+        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        mut *grad_inputs: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        var go = typed_view[BATCH, 1](grad_output).ptr
+        var g_lg = typed_view_mut[BATCH, Self.BINS](grad_inputs[0]).ptr
+        var lg = self._logits_ptr.value()
+        comptime if target == "cpu":
+            var bins = self.bins_unsafe_ptr()
+            for b in range(BATCH):
+                var base = b * Self.BINS
+                var s = twohot_pred[Self.BINS](lg, base, bins)
+                var a = s if s >= Scalar[DT](0.0) else -s
+                var dds = exp(a)
+                var up = go[b]
+                # recompute softmax for p_c
+                var zmax = lg[base]
+                for c in range(1, Self.BINS):
+                    if lg[base + c] > zmax:
+                        zmax = lg[base + c]
+                var ssum: Scalar[DT] = 0.0
+                for c in range(Self.BINS):
+                    ssum += exp(lg[base + c] - zmax)
+                var inv = Scalar[DT](1.0) / ssum
+                for c in range(Self.BINS):
+                    var p = exp(lg[base + c] - zmax) * inv
+                    g_lg[base + c] = up * dds * p * (bins[c] - s)
+        else:
+            var binsd = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._bins_dev.value().unsafe_ptr()
+            )
+            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
+            var glp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_lg)
+            comptime nb = (BATCH + TPB - 1) // TPB
+            comptime kb = _decode_bwd_kernel[BATCH, Self.BINS]
+            self.ts.ctx.value().enqueue_function[kb](
+                _dlt[BATCH](gop), _dlt[BATCH * Self.BINS](lg),
+                _dlt[Self.BINS](binsd), _dlt[BATCH * Self.BINS](glp),
+                grid_dim=nb, block_dim=TPB,
             )
