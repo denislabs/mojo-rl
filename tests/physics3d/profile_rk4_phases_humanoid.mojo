@@ -41,6 +41,7 @@ from mojo_rl.physics3d.gpu.constants import (
 )
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics_gpu,
+    forward_kinematics_gpu_mt,
     compute_body_velocities_gpu,
 )
 from mojo_rl.physics3d.dynamics.jacobian import (
@@ -205,6 +206,32 @@ def main() raises:
                 BATCH,
                 NGEOM,
             ](env, s, m)
+
+        # Phase 1b: FK level-parallel (RK4_PARALLEL_FK path). Cooperative across
+        # STEP_THREADS with internal per-level barriers → 2D launch, called
+        # unconditionally, valid_env-guarded. Head-to-head vs serial FK.
+        @always_inline
+        def fk_mt_kernel(
+            s: LayoutTensor[
+                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+            ],
+            m: LayoutTensor[
+                dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            var tid = Int(thread_idx.y)
+            var valid_env = env < BATCH
+            forward_kinematics_gpu_mt[
+                dtype,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+            ](env, tid, STEP_THREADS, valid_env, s, m)
 
         # Phase 2: Body Velocities (serial)
         @always_inline
@@ -405,6 +432,12 @@ def main() raises:
             ctx.enqueue_function[fk_kernel](
                 state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
             )
+            ctx.enqueue_function[fk_mt_kernel](
+                state,
+                model,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
+            )
             ctx.enqueue_function[vel_kernel](
                 state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
             )
@@ -497,6 +530,27 @@ def main() raises:
         var t1 = perf_counter_ns()
         var fk_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
         print("1. FK (forward kinematics):  " + String(fk_us)[byte=:8] + " μs")
+
+        # Phase 1b: FK level-parallel (MT) — head-to-head vs serial FK
+        ctx.synchronize()
+        t0 = perf_counter_ns()
+        for _ in range(N_STEPS):
+            ctx.enqueue_function[fk_mt_kernel](
+                state,
+                model,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
+            )
+        ctx.synchronize()
+        t1 = perf_counter_ns()
+        var fk_mt_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
+        print(
+            "1b. FK (MT level-parallel):  "
+            + String(fk_mt_us)[byte=:8]
+            + " μs  (serial FK = "
+            + String(fk_us)[byte=:8]
+            + ")"
+        )
 
         # Phase 2: Body Velocities
         ctx.synchronize()
