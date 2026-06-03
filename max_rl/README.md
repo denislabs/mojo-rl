@@ -17,6 +17,7 @@ It answers three questions for "should mojo-rl incorporate MAX?":
 | `mlp_inference.py` | `MLPInference` — configurable MLP (dims/batch/device all variables) built+compiled once on MAX, plus timing primitives. Inference only; weights are random. |
 | `benchmark_interop.mojo` | Mojo driver that imports the package via Python interop and times the MAX decomposition across a batch/shape sweep. |
 | `benchmark_nn2_baseline.mojo` | Pure-nn2 native GPU forward on the SAME shapes — the apples-to-apples "why incorporate MAX?" baseline. |
+| `probe_c_api.sh` | Path-B feasibility probe: is the MAX C API linkable + is there a MEF-export path? Prints GO/NO-GO. Run under `-e nvidia`. |
 | `graph_mlp_example.py`, `graph_relu_example.py` | Original MAX reference snippets (kept for reference). |
 
 `MLPInference(input_dim, hidden, output_dim, batch, device="gpu", seed=0)` — `hidden` is a
@@ -101,14 +102,51 @@ Reading (Metal only — **NVIDIA is the decisive run, your part**):
   handling); both columns are Metal and not the target platform. Treat the *shape of the
   story* (compute vs delivered, small vs large batch) as the takeaway, not absolute µs.
 
+## Path B (no-Python hot path): investigated — blocked on Apple, GO/NO-GO probe for NVIDIA
+
+Path B = Mojo → MAX **C API** (`M_compileModel` → `M_initModel` → `M_executeModelSync`) on a
+precompiled artifact, removing Python (and its ~hundreds-of-µs glue) from the hot loop.
+
+**Finding on Apple (2026-06-03): blocked at the linker level.**
+- The C API is **header-only** here: `include/max/c/*.h` ship, but a scan of *every*
+  `.dylib`/`.so`/`.a` in the env finds **zero** exported `M_compileModel` /
+  `M_executeModelSync` / `M_newRuntimeContext` symbols. The engine is compiled *into* the
+  Python extension `max/_core*.so` with hidden visibility — only reachable through the
+  Python bindings, not linkable or `dlopen`-able from Mojo.
+- There is also **no exposed Python path to emit a `.mef`** (no save/export/serialize on
+  `CompiledModel` or `max._core`), so you can't even hand the C API a precompiled artifact.
+- ⇒ Path B is not buildable on this Apple install. (This *extends* the training assessment:
+  even the "Mojo in the hot path via C API" fallback is unavailable here.)
+
+**The C API library genuinely might ship in the linux/NVIDIA MAX package** (the C API and its
+`examples/capi` are linux-oriented). Run the probe there — it prints a GO/NO-GO verdict:
+```bash
+pixi run -e nvidia bash max_rl/probe_c_api.sh
+```
+(`probe_c_api.sh` checks headers, scans all libs for the exported C-ABI symbols, and checks
+for a MEF-export path. On Apple it correctly reports NO-GO.)
+
+**If the probe says GO on NVIDIA, the FFI binding is mechanical** — Mojo `external_call` over
+this sequence (signatures already mapped from `include/max/c/{common,context,device,model,tensor}.h`):
+```
+M_newStatus → M_newRuntimeConfig → (M_newDevice|M_createAcceleratorDevice) →
+M_runtimeConfigAddDevice → M_newRuntimeContext →
+M_newCompileConfig → M_setModelPath(<artifact>) → M_compileModel → M_waitForCompilation →
+M_initModel → M_waitForModel →
+[hot loop] M_newAsyncTensorMap → M_newTensorSpec → M_borrowTensorInto →
+           M_executeModelSync → M_getTensorByNameFrom → M_getTensorData
+```
+Open sub-question even on GO: what file `M_setModelPath` accepts. If no `.mef` export exists,
+serialize the graph's MLIR (`Graph.module`) from Python and let the C API compile it once at
+startup — Python stays out of the *execution* loop, which is the point.
+
 ## Not yet done (next steps)
-- **NVIDIA run** (the decisive measurement — your part). Re-verify the `mojo run` clash and
-  whether it reproduces or differs on CUDA, and whether MAX's compute edge widens enough to
-  flip the end-to-end verdict against nn2.
-- **Path (B)**: a thin Mojo C-API binding to `M_executeModelSync` on a precompiled MEF, to
-  measure the no-Python hot path (removes the Python-glue tax entirely).
-- bf16 / fp16, CUDA-graph capture/replay (`M_captureModelSync`).
+- **NVIDIA run** (the decisive measurement — your part): the interop decomposition + nn2
+  baseline on CUDA, re-verify the `mojo run`/`M::Context` clash, and run `probe_c_api.sh`.
+- If probe = GO: implement the Mojo C-API FFI binding above and measure the no-Python path.
+- bf16 / fp16, CUDA-graph capture/replay (`M_captureModelSync` / `M_replayModelSync`).
 
 ## Done
 - ✅ `MLPInference` MAX package (configurable dims/batch/device) + interop decomposition.
 - ✅ nn2 native baseline on identical shapes (`benchmark_nn2_baseline.mojo`).
+- ✅ Path B feasibility probe (`probe_c_api.sh`) + finding (blocked on Apple; GO/NO-GO for NVIDIA).

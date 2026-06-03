@@ -70,11 +70,15 @@ mojo-compiler = ">=1.0.0b2.dev2026053106,<2"
 [package.run-dependencies]
 mojo-compiler = ">=1.0.0b2.dev2026053106,<2"
 
+# Point Mojo's embedded Python at the *active* env (CONDA_PREFIX), not a hardcoded
+# `default` env — otherwise `pixi run -e nvidia/apple` loads the wrong libpython and
+# `Python.import_module("max")` fails with "No module named 'max'" when `default`
+# isn't installed. Each env carries its own libpython + max.
 [target.osx-arm64.activation]
-env = { MOJO_PYTHON_LIBRARY = "$PIXI_PROJECT_ROOT/.pixi/envs/default/lib/libpython3.13.dylib" }
+env = { MOJO_PYTHON_LIBRARY = "$CONDA_PREFIX/lib/libpython3.13.dylib" }
 
 [target.linux-64.activation]
-env = { MOJO_PYTHON_LIBRARY = "$PIXI_PROJECT_ROOT/.pixi/envs/default/lib/libpython3.13.so" }
+env = { MOJO_PYTHON_LIBRARY = "$CONDA_PREFIX/lib/libpython3.13.so" }
 
 [environments]
 nvidia = { features = ["nvidia"], solve-group = "nvidia" }
