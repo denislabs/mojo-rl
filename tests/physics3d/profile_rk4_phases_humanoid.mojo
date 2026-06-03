@@ -58,6 +58,7 @@ from mojo_rl.physics3d.dynamics.bias_forces import (
     compute_bias_forces_rne_gpu,
 )
 from mojo_rl.physics3d.solver.newton_solver import NewtonSolver
+from mojo_rl.physics3d.integrator.rk4_integrator import RK4Integrator
 
 from mojo_rl.envs.humanoid import Humanoid
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
@@ -429,6 +430,36 @@ def main() raises:
             + " GB  (phase kernels reserved "
             + String(Float64(free1 - free2) / 1.0e6)
             + " MB)"
+        )
+        print()
+
+        # ── Confirmation: full RK4 step with CONE_TYPE=PYRAMIDAL routes to the
+        # blocked (shared-memory) solver instead of the serial solve_gpu whose
+        # huge per-thread InlineArrays (Je=ME*V_SIZE etc.) OOM the device. With
+        # PYRAMIDAL this should run and reserve only a small frame. (Omitting
+        # CONE_TYPE → ELLIPTIC default → serial solver → CUDA OOM at BATCH=256.)
+        print("Full RK4 step (CONE_TYPE=PYRAMIDAL, blocked solver)...")
+        for _ in range(10):
+            RK4Integrator[SOLVER=NewtonSolver].step_gpu[
+                dtype,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                BATCH,
+                NGEOM,
+                CONE_TYPE=HumanoidModel.CONE_TYPE,
+                STEP_THREADS=NV,
+            ](ctx, state_buf, model_buf, workspace_buf)
+        ctx.synchronize()
+        var (free3, total3) = ctx.get_memory_info()
+        print(
+            "VRAM after full step: free "
+            + String(Float64(free3) / 1.0e9)
+            + " GB  (blocked step_gpu reserved "
+            + String(Float64(free2 - free3) / 1.0e6)
+            + " MB)  <- if this prints, no OOM"
         )
         print()
 
