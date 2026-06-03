@@ -66,6 +66,7 @@ from ..dynamics.mass_matrix import (
 from ..dynamics.bias_forces import (
     compute_bias_forces_rne,
     compute_bias_forces_rne_gpu,
+    compute_bias_forces_rne_gpu_mt,
 )
 from ..dynamics.jacobian import (
     compute_subtree_com,
@@ -772,6 +773,16 @@ comptime RK4_PARALLEL_VEL: Bool = True
 # 2 barriers (after zero-init, after the body sweep). Within float32 tolerance
 # of the serial walk. Default ON. See docs/PHYSICS3D_BLOCKED_SOLVER.md.
 comptime RK4_PARALLEL_CDOF: Bool = True
+
+
+# When True (and the parallel M-inv tail runs, i.e. STEP_THREADS>1 + dense), RNE
+# bias forces are computed cooperatively: cinert flat + forward cvel/cacc
+# level-parallel (rne_fwd_body) + cfrc flat + backward tid0 (cheap ~NBODY adds) +
+# qfrc flat. Borrows mujoco_warp's 4-pass decomposition but skips its per-level
+# atomic backward (our one-block-per-env model makes tid0-serial backward free).
+# Within float32 tolerance of the serial walk. Default ON. Requires RK4_PARALLEL_MINV
+# (RNE-mt runs before the tid0 drop-out in that tail). See docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_PARALLEL_RNE: Bool = True
 
 
 struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
@@ -1631,7 +1642,23 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                     DTYPE, NV, NBODY, BATCH, WS_SIZE
                 ](env, tid, STEP_THREADS, workspace)
             barrier()
-            # Only tid 0 runs the remaining serial work (RNE bias + accel).
+            # RNE bias forces — cooperative across all threads BEFORE the tid 0
+            # drop-out (it has internal barriers). When off, the serial RNE runs
+            # on tid 0 below (gated by USE_PAR_MINV+RK4_PARALLEL_RNE).
+            comptime if RK4_PARALLEL_RNE:
+                compute_bias_forces_rne_gpu_mt[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](env, tid, STEP_THREADS, valid_env, state, model, workspace)
+            # Only tid 0 runs the remaining serial work (f_net + accel).
             if tid != 0 or not valid_env:
                 return
         else:
@@ -1658,19 +1685,21 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                         DTYPE, NV, NBODY, BATCH, WS_SIZE
                     ](env, workspace)
 
-        # 8. Bias forces
-        compute_bias_forces_rne_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-            WS_SIZE,
-        ](env, state, model, workspace)
+        # 8. Bias forces (serial, tid 0) — skipped when the cooperative RNE-mt
+        # already ran in the parallel tail (RK4_PARALLEL_RNE + USE_PAR_MINV).
+        comptime if not (RK4_PARALLEL_RNE and USE_PAR_MINV):
+            compute_bias_forces_rne_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](env, state, model, workspace)
 
         # 9. f_net = qfrc - bias
         for i in range(NV):

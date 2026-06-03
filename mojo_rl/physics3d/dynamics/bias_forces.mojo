@@ -11,6 +11,7 @@ Reference: Featherstone, "Rigid Body Dynamics Algorithms"
 """
 
 from std.math import sin, cos
+from std.gpu import barrier
 from layout import LayoutTensor, Layout
 
 from ..types import Model, Data, _max_one, ConeType
@@ -1174,6 +1175,333 @@ def compute_bias_forces_rne[
 # =============================================================================
 
 
+# =============================================================================
+# RNE forward pass — single body (cvel/cacc from parent). Shared by serial +
+# level-parallel. Reads parent cvel/cacc (workspace), cdof (workspace), qvel;
+# writes this body's cvel/cacc (workspace). Requires the parent already done.
+# =============================================================================
+
+
+@no_inline
+def rne_fwd_body[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    b: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+):
+    comptime cdof_idx = ws_cdof_offset()
+    comptime cvel_idx = ws_crb_offset[NV]()
+    comptime cacc_idx = ws_rne_cacc_offset[NV, NBODY]()
+    var qvel_off = qvel_offset[NQ, NV]()
+    var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+    var gx = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_GRAVITY_X])
+    var gy = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_GRAVITY_Y])
+    var gz = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_GRAVITY_Z])
+    var body_off = model_body_offset(b)
+    var parent = Int(
+        rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
+    )
+
+    # Initialize cvel from parent — simple copy (subtree_com convention)
+    var cv_wx = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 0])
+    var cv_wy = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 1])
+    var cv_wz = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 2])
+    var cv_vx = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 3])
+    var cv_vy = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 4])
+    var cv_vz = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 5])
+
+    if parent == 0:
+        # Root body (parent is worldbody): gravity as fictitious acceleration
+        workspace[env, cacc_idx + b * 6 + 0] = Scalar[DTYPE](0)
+        workspace[env, cacc_idx + b * 6 + 1] = Scalar[DTYPE](0)
+        workspace[env, cacc_idx + b * 6 + 2] = Scalar[DTYPE](0)
+        workspace[env, cacc_idx + b * 6 + 3] = -gx
+        workspace[env, cacc_idx + b * 6 + 4] = -gy
+        workspace[env, cacc_idx + b * 6 + 5] = -gz
+    else:
+        for k in range(6):
+            workspace[env, cacc_idx + b * 6 + k] = workspace[env, cacc_idx + parent * 6 + k]
+
+    # Process each joint of this body
+    for j in range(NJOINT):
+        var joint_off = model_joint_offset[NBODY](j)
+        var jnt_body = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+        )
+        if jnt_body != b:
+            continue
+
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
+
+        if jnt_type == JNT_FREE:
+            # Translation DOFs: cdof_dot = 0, just update cvel
+            for d in range(3):
+                var dof = dof_adr + d
+                var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
+                cv_wx = (
+                    cv_wx
+                    + rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 0]
+                    )
+                    * qdot
+                )
+                cv_wy = (
+                    cv_wy
+                    + rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 1]
+                    )
+                    * qdot
+                )
+                cv_wz = (
+                    cv_wz
+                    + rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 2]
+                    )
+                    * qdot
+                )
+                cv_vx = (
+                    cv_vx
+                    + rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 3]
+                    )
+                    * qdot
+                )
+                cv_vy = (
+                    cv_vy
+                    + rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 4]
+                    )
+                    * qdot
+                )
+                cv_vz = (
+                    cv_vz
+                    + rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 5]
+                    )
+                    * qdot
+                )
+
+            # Rotation DOFs: compute cdof_dot with current cvel
+            for d in range(3, 6):
+                var dof = dof_adr + d
+                var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
+                var s_ang_x = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 0]
+                )
+                var s_ang_y = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 1]
+                )
+                var s_ang_z = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 2]
+                )
+                var s_lin_x = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 3]
+                )
+                var s_lin_y = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 4]
+                )
+                var s_lin_z = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 5]
+                )
+
+                var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
+                var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
+                var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
+                var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (
+                    cv_vy * s_ang_z - cv_vz * s_ang_y
+                )
+                var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (
+                    cv_vz * s_ang_x - cv_vx * s_ang_z
+                )
+                var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (
+                    cv_vx * s_ang_y - cv_vy * s_ang_x
+                )
+
+                workspace[env, cacc_idx + b * 6 + 0] = workspace[env, cacc_idx + b * 6 + 0] + cdot_ang_x * qdot
+                workspace[env, cacc_idx + b * 6 + 1] = workspace[env, cacc_idx + b * 6 + 1] + cdot_ang_y * qdot
+                workspace[env, cacc_idx + b * 6 + 2] = workspace[env, cacc_idx + b * 6 + 2] + cdot_ang_z * qdot
+                workspace[env, cacc_idx + b * 6 + 3] = workspace[env, cacc_idx + b * 6 + 3] + cdot_lin_x * qdot
+                workspace[env, cacc_idx + b * 6 + 4] = workspace[env, cacc_idx + b * 6 + 4] + cdot_lin_y * qdot
+                workspace[env, cacc_idx + b * 6 + 5] = workspace[env, cacc_idx + b * 6 + 5] + cdot_lin_z * qdot
+
+                cv_wx = cv_wx + s_ang_x * qdot
+                cv_wy = cv_wy + s_ang_y * qdot
+                cv_wz = cv_wz + s_ang_z * qdot
+                cv_vx = cv_vx + s_lin_x * qdot
+                cv_vy = cv_vy + s_lin_y * qdot
+                cv_vz = cv_vz + s_lin_z * qdot
+
+        elif jnt_type == JNT_BALL:
+            # BALL: compute all 3 cdof_dots using current cvel, then update
+            for d in range(3):
+                var dof = dof_adr + d
+                var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
+                var s_ang_x = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 0]
+                )
+                var s_ang_y = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 1]
+                )
+                var s_ang_z = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 2]
+                )
+                var s_lin_x = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 3]
+                )
+                var s_lin_y = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 4]
+                )
+                var s_lin_z = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 5]
+                )
+
+                var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
+                var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
+                var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
+                var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (
+                    cv_vy * s_ang_z - cv_vz * s_ang_y
+                )
+                var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (
+                    cv_vz * s_ang_x - cv_vx * s_ang_z
+                )
+                var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (
+                    cv_vx * s_ang_y - cv_vy * s_ang_x
+                )
+
+                workspace[env, cacc_idx + b * 6 + 0] = workspace[env, cacc_idx + b * 6 + 0] + cdot_ang_x * qdot
+                workspace[env, cacc_idx + b * 6 + 1] = workspace[env, cacc_idx + b * 6 + 1] + cdot_ang_y * qdot
+                workspace[env, cacc_idx + b * 6 + 2] = workspace[env, cacc_idx + b * 6 + 2] + cdot_ang_z * qdot
+                workspace[env, cacc_idx + b * 6 + 3] = workspace[env, cacc_idx + b * 6 + 3] + cdot_lin_x * qdot
+                workspace[env, cacc_idx + b * 6 + 4] = workspace[env, cacc_idx + b * 6 + 4] + cdot_lin_y * qdot
+                workspace[env, cacc_idx + b * 6 + 5] = workspace[env, cacc_idx + b * 6 + 5] + cdot_lin_z * qdot
+
+            # Update cvel after all 3 DOFs
+            for d in range(3):
+                var dof = dof_adr + d
+                var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
+                cv_wx = (
+                    cv_wx
+                    + rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 0]
+                    )
+                    * qdot
+                )
+                cv_wy = (
+                    cv_wy
+                    + rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 1]
+                    )
+                    * qdot
+                )
+                cv_wz = (
+                    cv_wz
+                    + rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 2]
+                    )
+                    * qdot
+                )
+                cv_vx = (
+                    cv_vx
+                    + rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 3]
+                    )
+                    * qdot
+                )
+                cv_vy = (
+                    cv_vy
+                    + rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 4]
+                    )
+                    * qdot
+                )
+                cv_vz = (
+                    cv_vz
+                    + rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 5]
+                    )
+                    * qdot
+                )
+
+        else:
+            # HINGE or SLIDE (1 DOF)
+            var dof = dof_adr
+            var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
+            var s_ang_x = rebind[Scalar[DTYPE]](
+                workspace[env, cdof_idx + dof * 6 + 0]
+            )
+            var s_ang_y = rebind[Scalar[DTYPE]](
+                workspace[env, cdof_idx + dof * 6 + 1]
+            )
+            var s_ang_z = rebind[Scalar[DTYPE]](
+                workspace[env, cdof_idx + dof * 6 + 2]
+            )
+            var s_lin_x = rebind[Scalar[DTYPE]](
+                workspace[env, cdof_idx + dof * 6 + 3]
+            )
+            var s_lin_y = rebind[Scalar[DTYPE]](
+                workspace[env, cdof_idx + dof * 6 + 4]
+            )
+            var s_lin_z = rebind[Scalar[DTYPE]](
+                workspace[env, cdof_idx + dof * 6 + 5]
+            )
+
+            var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
+            var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
+            var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
+            var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (
+                cv_vy * s_ang_z - cv_vz * s_ang_y
+            )
+            var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (
+                cv_vz * s_ang_x - cv_vx * s_ang_z
+            )
+            var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (
+                cv_vx * s_ang_y - cv_vy * s_ang_x
+            )
+
+            workspace[env, cacc_idx + b * 6 + 0] = workspace[env, cacc_idx + b * 6 + 0] + cdot_ang_x * qdot
+            workspace[env, cacc_idx + b * 6 + 1] = workspace[env, cacc_idx + b * 6 + 1] + cdot_ang_y * qdot
+            workspace[env, cacc_idx + b * 6 + 2] = workspace[env, cacc_idx + b * 6 + 2] + cdot_ang_z * qdot
+            workspace[env, cacc_idx + b * 6 + 3] = workspace[env, cacc_idx + b * 6 + 3] + cdot_lin_x * qdot
+            workspace[env, cacc_idx + b * 6 + 4] = workspace[env, cacc_idx + b * 6 + 4] + cdot_lin_y * qdot
+            workspace[env, cacc_idx + b * 6 + 5] = workspace[env, cacc_idx + b * 6 + 5] + cdot_lin_z * qdot
+
+            cv_wx = cv_wx + s_ang_x * qdot
+            cv_wy = cv_wy + s_ang_y * qdot
+            cv_wz = cv_wz + s_ang_z * qdot
+            cv_vx = cv_vx + s_lin_x * qdot
+            cv_vy = cv_vy + s_lin_y * qdot
+            cv_vz = cv_vz + s_lin_z * qdot
+
+    # Store final cvel for this body (in workspace crb region)
+    workspace[env, cvel_idx + b * 6 + 0] = cv_wx
+    workspace[env, cvel_idx + b * 6 + 1] = cv_wy
+    workspace[env, cvel_idx + b * 6 + 2] = cv_wz
+    workspace[env, cvel_idx + b * 6 + 3] = cv_vx
+    workspace[env, cvel_idx + b * 6 + 4] = cv_vy
+    workspace[env, cvel_idx + b * 6 + 5] = cv_vz
+
+
 @always_inline
 def compute_bias_forces_rne_gpu[
     DTYPE: DType,
@@ -1314,293 +1642,9 @@ def compute_bias_forces_rne_gpu[
 
     # Skip worldbody at 0 (no joints, cvel=0, cacc=0)
     for b in range(1, NBODY):
-        var body_off = model_body_offset(b)
-        var parent = Int(
-            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
-        )
-
-        # Initialize cvel from parent — simple copy (subtree_com convention)
-        var cv_wx = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 0])
-        var cv_wy = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 1])
-        var cv_wz = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 2])
-        var cv_vx = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 3])
-        var cv_vy = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 4])
-        var cv_vz = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 5])
-
-        if parent == 0:
-            # Root body (parent is worldbody): gravity as fictitious acceleration
-            workspace[env, cacc_idx + b * 6 + 0] = Scalar[DTYPE](0)
-            workspace[env, cacc_idx + b * 6 + 1] = Scalar[DTYPE](0)
-            workspace[env, cacc_idx + b * 6 + 2] = Scalar[DTYPE](0)
-            workspace[env, cacc_idx + b * 6 + 3] = -gx
-            workspace[env, cacc_idx + b * 6 + 4] = -gy
-            workspace[env, cacc_idx + b * 6 + 5] = -gz
-        else:
-            for k in range(6):
-                workspace[env, cacc_idx + b * 6 + k] = workspace[env, cacc_idx + parent * 6 + k]
-
-        # Process each joint of this body
-        for j in range(NJOINT):
-            var joint_off = model_joint_offset[NBODY](j)
-            var jnt_body = Int(
-                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
-            )
-            if jnt_body != b:
-                continue
-
-            var jnt_type = Int(
-                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
-            )
-            var dof_adr = Int(
-                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
-            )
-
-            if jnt_type == JNT_FREE:
-                # Translation DOFs: cdof_dot = 0, just update cvel
-                for d in range(3):
-                    var dof = dof_adr + d
-                    var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
-                    cv_wx = (
-                        cv_wx
-                        + rebind[Scalar[DTYPE]](
-                            workspace[env, cdof_idx + dof * 6 + 0]
-                        )
-                        * qdot
-                    )
-                    cv_wy = (
-                        cv_wy
-                        + rebind[Scalar[DTYPE]](
-                            workspace[env, cdof_idx + dof * 6 + 1]
-                        )
-                        * qdot
-                    )
-                    cv_wz = (
-                        cv_wz
-                        + rebind[Scalar[DTYPE]](
-                            workspace[env, cdof_idx + dof * 6 + 2]
-                        )
-                        * qdot
-                    )
-                    cv_vx = (
-                        cv_vx
-                        + rebind[Scalar[DTYPE]](
-                            workspace[env, cdof_idx + dof * 6 + 3]
-                        )
-                        * qdot
-                    )
-                    cv_vy = (
-                        cv_vy
-                        + rebind[Scalar[DTYPE]](
-                            workspace[env, cdof_idx + dof * 6 + 4]
-                        )
-                        * qdot
-                    )
-                    cv_vz = (
-                        cv_vz
-                        + rebind[Scalar[DTYPE]](
-                            workspace[env, cdof_idx + dof * 6 + 5]
-                        )
-                        * qdot
-                    )
-
-                # Rotation DOFs: compute cdof_dot with current cvel
-                for d in range(3, 6):
-                    var dof = dof_adr + d
-                    var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
-                    var s_ang_x = rebind[Scalar[DTYPE]](
-                        workspace[env, cdof_idx + dof * 6 + 0]
-                    )
-                    var s_ang_y = rebind[Scalar[DTYPE]](
-                        workspace[env, cdof_idx + dof * 6 + 1]
-                    )
-                    var s_ang_z = rebind[Scalar[DTYPE]](
-                        workspace[env, cdof_idx + dof * 6 + 2]
-                    )
-                    var s_lin_x = rebind[Scalar[DTYPE]](
-                        workspace[env, cdof_idx + dof * 6 + 3]
-                    )
-                    var s_lin_y = rebind[Scalar[DTYPE]](
-                        workspace[env, cdof_idx + dof * 6 + 4]
-                    )
-                    var s_lin_z = rebind[Scalar[DTYPE]](
-                        workspace[env, cdof_idx + dof * 6 + 5]
-                    )
-
-                    var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
-                    var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
-                    var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
-                    var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (
-                        cv_vy * s_ang_z - cv_vz * s_ang_y
-                    )
-                    var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (
-                        cv_vz * s_ang_x - cv_vx * s_ang_z
-                    )
-                    var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (
-                        cv_vx * s_ang_y - cv_vy * s_ang_x
-                    )
-
-                    workspace[env, cacc_idx + b * 6 + 0] = workspace[env, cacc_idx + b * 6 + 0] + cdot_ang_x * qdot
-                    workspace[env, cacc_idx + b * 6 + 1] = workspace[env, cacc_idx + b * 6 + 1] + cdot_ang_y * qdot
-                    workspace[env, cacc_idx + b * 6 + 2] = workspace[env, cacc_idx + b * 6 + 2] + cdot_ang_z * qdot
-                    workspace[env, cacc_idx + b * 6 + 3] = workspace[env, cacc_idx + b * 6 + 3] + cdot_lin_x * qdot
-                    workspace[env, cacc_idx + b * 6 + 4] = workspace[env, cacc_idx + b * 6 + 4] + cdot_lin_y * qdot
-                    workspace[env, cacc_idx + b * 6 + 5] = workspace[env, cacc_idx + b * 6 + 5] + cdot_lin_z * qdot
-
-                    cv_wx = cv_wx + s_ang_x * qdot
-                    cv_wy = cv_wy + s_ang_y * qdot
-                    cv_wz = cv_wz + s_ang_z * qdot
-                    cv_vx = cv_vx + s_lin_x * qdot
-                    cv_vy = cv_vy + s_lin_y * qdot
-                    cv_vz = cv_vz + s_lin_z * qdot
-
-            elif jnt_type == JNT_BALL:
-                # BALL: compute all 3 cdof_dots using current cvel, then update
-                for d in range(3):
-                    var dof = dof_adr + d
-                    var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
-                    var s_ang_x = rebind[Scalar[DTYPE]](
-                        workspace[env, cdof_idx + dof * 6 + 0]
-                    )
-                    var s_ang_y = rebind[Scalar[DTYPE]](
-                        workspace[env, cdof_idx + dof * 6 + 1]
-                    )
-                    var s_ang_z = rebind[Scalar[DTYPE]](
-                        workspace[env, cdof_idx + dof * 6 + 2]
-                    )
-                    var s_lin_x = rebind[Scalar[DTYPE]](
-                        workspace[env, cdof_idx + dof * 6 + 3]
-                    )
-                    var s_lin_y = rebind[Scalar[DTYPE]](
-                        workspace[env, cdof_idx + dof * 6 + 4]
-                    )
-                    var s_lin_z = rebind[Scalar[DTYPE]](
-                        workspace[env, cdof_idx + dof * 6 + 5]
-                    )
-
-                    var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
-                    var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
-                    var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
-                    var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (
-                        cv_vy * s_ang_z - cv_vz * s_ang_y
-                    )
-                    var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (
-                        cv_vz * s_ang_x - cv_vx * s_ang_z
-                    )
-                    var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (
-                        cv_vx * s_ang_y - cv_vy * s_ang_x
-                    )
-
-                    workspace[env, cacc_idx + b * 6 + 0] = workspace[env, cacc_idx + b * 6 + 0] + cdot_ang_x * qdot
-                    workspace[env, cacc_idx + b * 6 + 1] = workspace[env, cacc_idx + b * 6 + 1] + cdot_ang_y * qdot
-                    workspace[env, cacc_idx + b * 6 + 2] = workspace[env, cacc_idx + b * 6 + 2] + cdot_ang_z * qdot
-                    workspace[env, cacc_idx + b * 6 + 3] = workspace[env, cacc_idx + b * 6 + 3] + cdot_lin_x * qdot
-                    workspace[env, cacc_idx + b * 6 + 4] = workspace[env, cacc_idx + b * 6 + 4] + cdot_lin_y * qdot
-                    workspace[env, cacc_idx + b * 6 + 5] = workspace[env, cacc_idx + b * 6 + 5] + cdot_lin_z * qdot
-
-                # Update cvel after all 3 DOFs
-                for d in range(3):
-                    var dof = dof_adr + d
-                    var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
-                    cv_wx = (
-                        cv_wx
-                        + rebind[Scalar[DTYPE]](
-                            workspace[env, cdof_idx + dof * 6 + 0]
-                        )
-                        * qdot
-                    )
-                    cv_wy = (
-                        cv_wy
-                        + rebind[Scalar[DTYPE]](
-                            workspace[env, cdof_idx + dof * 6 + 1]
-                        )
-                        * qdot
-                    )
-                    cv_wz = (
-                        cv_wz
-                        + rebind[Scalar[DTYPE]](
-                            workspace[env, cdof_idx + dof * 6 + 2]
-                        )
-                        * qdot
-                    )
-                    cv_vx = (
-                        cv_vx
-                        + rebind[Scalar[DTYPE]](
-                            workspace[env, cdof_idx + dof * 6 + 3]
-                        )
-                        * qdot
-                    )
-                    cv_vy = (
-                        cv_vy
-                        + rebind[Scalar[DTYPE]](
-                            workspace[env, cdof_idx + dof * 6 + 4]
-                        )
-                        * qdot
-                    )
-                    cv_vz = (
-                        cv_vz
-                        + rebind[Scalar[DTYPE]](
-                            workspace[env, cdof_idx + dof * 6 + 5]
-                        )
-                        * qdot
-                    )
-
-            else:
-                # HINGE or SLIDE (1 DOF)
-                var dof = dof_adr
-                var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
-                var s_ang_x = rebind[Scalar[DTYPE]](
-                    workspace[env, cdof_idx + dof * 6 + 0]
-                )
-                var s_ang_y = rebind[Scalar[DTYPE]](
-                    workspace[env, cdof_idx + dof * 6 + 1]
-                )
-                var s_ang_z = rebind[Scalar[DTYPE]](
-                    workspace[env, cdof_idx + dof * 6 + 2]
-                )
-                var s_lin_x = rebind[Scalar[DTYPE]](
-                    workspace[env, cdof_idx + dof * 6 + 3]
-                )
-                var s_lin_y = rebind[Scalar[DTYPE]](
-                    workspace[env, cdof_idx + dof * 6 + 4]
-                )
-                var s_lin_z = rebind[Scalar[DTYPE]](
-                    workspace[env, cdof_idx + dof * 6 + 5]
-                )
-
-                var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
-                var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
-                var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
-                var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (
-                    cv_vy * s_ang_z - cv_vz * s_ang_y
-                )
-                var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (
-                    cv_vz * s_ang_x - cv_vx * s_ang_z
-                )
-                var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (
-                    cv_vx * s_ang_y - cv_vy * s_ang_x
-                )
-
-                workspace[env, cacc_idx + b * 6 + 0] = workspace[env, cacc_idx + b * 6 + 0] + cdot_ang_x * qdot
-                workspace[env, cacc_idx + b * 6 + 1] = workspace[env, cacc_idx + b * 6 + 1] + cdot_ang_y * qdot
-                workspace[env, cacc_idx + b * 6 + 2] = workspace[env, cacc_idx + b * 6 + 2] + cdot_ang_z * qdot
-                workspace[env, cacc_idx + b * 6 + 3] = workspace[env, cacc_idx + b * 6 + 3] + cdot_lin_x * qdot
-                workspace[env, cacc_idx + b * 6 + 4] = workspace[env, cacc_idx + b * 6 + 4] + cdot_lin_y * qdot
-                workspace[env, cacc_idx + b * 6 + 5] = workspace[env, cacc_idx + b * 6 + 5] + cdot_lin_z * qdot
-
-                cv_wx = cv_wx + s_ang_x * qdot
-                cv_wy = cv_wy + s_ang_y * qdot
-                cv_wz = cv_wz + s_ang_z * qdot
-                cv_vx = cv_vx + s_lin_x * qdot
-                cv_vy = cv_vy + s_lin_y * qdot
-                cv_vz = cv_vz + s_lin_z * qdot
-
-        # Store final cvel for this body (in workspace crb region)
-        workspace[env, cvel_idx + b * 6 + 0] = cv_wx
-        workspace[env, cvel_idx + b * 6 + 1] = cv_wy
-        workspace[env, cvel_idx + b * 6 + 2] = cv_wz
-        workspace[env, cvel_idx + b * 6 + 3] = cv_vx
-        workspace[env, cvel_idx + b * 6 + 4] = cv_vy
-        workspace[env, cvel_idx + b * 6 + 5] = cv_vz
+        rne_fwd_body[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE
+        ](env, b, state, model, workspace)
 
     # =========================================================================
     # Step 2: Compute spatial forces per body
@@ -1703,3 +1747,232 @@ def compute_bias_forces_rne_gpu[
                     + workspace[env, cdof_idx + dof * 6 + k]
                     * workspace[env, cfrc_idx + body * 6 + k]
                 )
+# =============================================================================
+# RNE bias forces — cooperative (level/flat-parallel across STEP_THREADS).
+# cinert (flat) + forward (level-parallel via rne_fwd_body) + cfrc (flat) +
+# backward (tid0, ~NBODY adds) + qfrc (flat). cinert stays per-thread; step0
+# and step2 use the SAME range(tid,NBODY,n) mapping so cinert_g[b] is local.
+# Within float32 tolerance of compute_bias_forces_rne_gpu. Barriers block-wide
+# + unconditional (count model-only) → no deadlock; work guarded by valid_env.
+# =============================================================================
+
+
+@always_inline
+def compute_bias_forces_rne_gpu_mt[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    tid: Int,
+    n_threads: Int,
+    valid_env: Bool,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+):
+    """Cooperative RNE; see header. Bit-identical helpers, threads distribute work."""
+    comptime cdof_idx = ws_cdof_offset()
+    comptime bias_idx = ws_bias_offset[NV, NBODY]()
+    comptime cvel_idx = ws_crb_offset[NV]()
+    comptime cacc_idx = ws_rne_cacc_offset[NV, NBODY]()
+    comptime cfrc_idx = ws_rne_cfrc_offset[NV, NBODY]()
+    var xquat_off = xquat_offset[NQ, NV, NBODY]()
+    var xipos_off = xipos_offset[NQ, NV, NBODY]()
+    var qvel_off = qvel_offset[NQ, NV]()
+    var stcom_gpu_off = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+    comptime CINERT_GPU_SIZE = _max_one[NBODY * 10]()
+    var cinert_g = InlineArray[Scalar[DTYPE], CINERT_GPU_SIZE](uninitialized=True)
+    # body tree depth (level) for the forward pass, derived from body_parent
+    var level = InlineArray[Int, NBODY](fill=0)
+    var max_level = 0
+    for b in range(1, NBODY):
+        var bo = model_body_offset(b)
+        var pp = Int(rebind[Scalar[DTYPE]](model[0, bo + BODY_IDX_PARENT]))
+        level[b] = level[pp] + 1
+        if level[b] > max_level:
+            max_level = level[b]
+    # init bias/cvel/cacc/cfrc (distributed)
+    if valid_env:
+        for i in range(tid, NV, n_threads):
+            workspace[env, bias_idx + i] = Scalar[DTYPE](0)
+        for i in range(tid, NBODY * 6, n_threads):
+            workspace[env, cvel_idx + i] = Scalar[DTYPE](0)
+            workspace[env, cacc_idx + i] = Scalar[DTYPE](0)
+            workspace[env, cfrc_idx + i] = Scalar[DTYPE](0)
+    barrier()
+    # Step 0: cinert (flat, my bodies → per-thread cinert_g)
+    if valid_env:
+        for b in range(tid, NBODY, n_threads):
+                var body_off = model_body_offset(b)
+                var Ixx_local = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IXX])
+                var Iyy_local = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IYY])
+                var Izz_local = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IZZ])
+
+                # Compose xquat with body_iquat for inertia rotation
+                var bqx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
+                var bqy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
+                var bqz = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
+                var bqw = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+                var iqx = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_X])
+                var iqy = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_Y])
+                var iqz = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_Z])
+                var iqw = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_W])
+                var iq = gpu_quat_mul(bqx, bqy, bqz, bqw, iqx, iqy, iqz, iqw)
+                var qx = iq[0]
+                var qy = iq[1]
+                var qz = iq[2]
+                var qw = iq[3]
+
+                # Rotation matrix from quaternion
+                var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
+                var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
+                var r20 = Scalar[DTYPE](2) * (qx * qz - qw * qy)
+                var r01 = Scalar[DTYPE](2) * (qx * qy - qw * qz)
+                var r11 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qz * qz)
+                var r21 = Scalar[DTYPE](2) * (qy * qz + qw * qx)
+                var r02 = Scalar[DTYPE](2) * (qx * qz + qw * qy)
+                var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
+                var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
+
+                # cinert: rotated inertia + parallel axis shift to subtree_com
+                var mass_b = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_MASS])
+                cinert_g[b*10+0] = Ixx_local*r00*r00 + Iyy_local*r01*r01 + Izz_local*r02*r02
+                cinert_g[b*10+1] = Ixx_local*r10*r10 + Iyy_local*r11*r11 + Izz_local*r12*r12
+                cinert_g[b*10+2] = Ixx_local*r20*r20 + Iyy_local*r21*r21 + Izz_local*r22*r22
+                cinert_g[b*10+3] = Ixx_local*r00*r10 + Iyy_local*r01*r11 + Izz_local*r02*r12
+                cinert_g[b*10+4] = Ixx_local*r00*r20 + Iyy_local*r01*r21 + Izz_local*r02*r22
+                cinert_g[b*10+5] = Ixx_local*r10*r20 + Iyy_local*r11*r21 + Izz_local*r12*r22
+                # Parallel axis shift: dif = xipos - subtree_com[rootid]
+                var rootid_b = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_ROOTID]))
+                var dx_b = rebind[Scalar[DTYPE]](state[env, xipos_off + b*3+0]) - rebind[Scalar[DTYPE]](state[env, stcom_gpu_off + rootid_b*3+0])
+                var dy_b = rebind[Scalar[DTYPE]](state[env, xipos_off + b*3+1]) - rebind[Scalar[DTYPE]](state[env, stcom_gpu_off + rootid_b*3+1])
+                var dz_b = rebind[Scalar[DTYPE]](state[env, xipos_off + b*3+2]) - rebind[Scalar[DTYPE]](state[env, stcom_gpu_off + rootid_b*3+2])
+                cinert_g[b*10+0] = cinert_g[b*10+0] + mass_b*(dy_b*dy_b + dz_b*dz_b)
+                cinert_g[b*10+1] = cinert_g[b*10+1] + mass_b*(dx_b*dx_b + dz_b*dz_b)
+                cinert_g[b*10+2] = cinert_g[b*10+2] + mass_b*(dx_b*dx_b + dy_b*dy_b)
+                cinert_g[b*10+3] = cinert_g[b*10+3] - mass_b*dx_b*dy_b
+                cinert_g[b*10+4] = cinert_g[b*10+4] - mass_b*dx_b*dz_b
+                cinert_g[b*10+5] = cinert_g[b*10+5] - mass_b*dy_b*dz_b
+                cinert_g[b*10+6] = mass_b*dx_b
+                cinert_g[b*10+7] = mass_b*dy_b
+                cinert_g[b*10+8] = mass_b*dz_b
+                cinert_g[b*10+9] = mass_b
+    # Step 1: forward cvel/cacc (level-parallel; rne_fwd_body shared with serial)
+    for lvl in range(1, max_level + 1):
+        if valid_env:
+            for b in range(1 + tid, NBODY, n_threads):
+                if level[b] == lvl:
+                    rne_fwd_body[
+                        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE
+                    ](env, b, state, model, workspace)
+        barrier()
+    # Step 2: cfrc (flat, SAME mapping as cinert so cinert_g[b] is local)
+    if valid_env:
+        for b in range(tid, NBODY, n_threads):
+                var body_off = model_body_offset(b)
+                var mass = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_MASS])
+
+                # Body velocities from accumulated cvel (stored in workspace)
+                var wx = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + b * 6 + 0])
+                var wy = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + b * 6 + 1])
+                var wz = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + b * 6 + 2])
+                var vx = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + b * 6 + 3])
+                var vy = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + b * 6 + 4])
+                var vz = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + b * 6 + 5])
+
+                # cinert * cacc (MuJoCo mju_mulInertVec)
+                var ci0 = cinert_g[b*10+0]; var ci1 = cinert_g[b*10+1]; var ci2 = cinert_g[b*10+2]
+                var ci3 = cinert_g[b*10+3]; var ci4 = cinert_g[b*10+4]; var ci5 = cinert_g[b*10+5]
+                var ci6 = cinert_g[b*10+6]; var ci7 = cinert_g[b*10+7]; var ci8 = cinert_g[b*10+8]
+                var ci9 = cinert_g[b*10+9]
+                var ax = workspace[env, cacc_idx + b*6+0]; var ay = workspace[env, cacc_idx + b*6+1]; var az = workspace[env, cacc_idx + b*6+2]
+                var alx = workspace[env, cacc_idx + b*6+3]; var aly = workspace[env, cacc_idx + b*6+4]; var alz = workspace[env, cacc_idx + b*6+5]
+
+                var Ia0 = ci0*ax + ci3*ay + ci4*az - ci8*aly + ci7*alz
+                var Ia1 = ci3*ax + ci1*ay + ci5*az + ci8*alx - ci6*alz
+                var Ia2 = ci4*ax + ci5*ay + ci2*az - ci7*alx + ci6*aly
+                var Ia3 = ci8*ay - ci7*az + ci9*alx
+                var Ia4 = ci6*az - ci8*ax + ci9*aly
+                var Ia5 = ci7*ax - ci6*ay + ci9*alz
+
+                # cinert * cvel
+                var Iv0 = ci0*wx + ci3*wy + ci4*wz - ci8*vy + ci7*vz
+                var Iv1 = ci3*wx + ci1*wy + ci5*wz + ci8*vx - ci6*vz
+                var Iv2 = ci4*wx + ci5*wy + ci2*wz - ci7*vx + ci6*vy
+                var Iv3 = ci8*wy - ci7*wz + ci9*vx
+                var Iv4 = ci6*wz - ci8*wx + ci9*vy
+                var Iv5 = ci7*wx - ci6*wy + ci9*vz
+
+                # cvel x* (cinert * cvel) — MuJoCo mju_crossForce
+                var xf0 = wy*Iv2 - wz*Iv1 + vy*Iv5 - vz*Iv4
+                var xf1 = wz*Iv0 - wx*Iv2 + vz*Iv3 - vx*Iv5
+                var xf2 = wx*Iv1 - wy*Iv0 + vx*Iv4 - vy*Iv3
+                var xf3 = wy*Iv5 - wz*Iv4
+                var xf4 = wz*Iv3 - wx*Iv5
+                var xf5 = wx*Iv4 - wy*Iv3
+
+                workspace[env, cfrc_idx + b*6+0] = Ia0 + xf0
+                workspace[env, cfrc_idx + b*6+1] = Ia1 + xf1
+                workspace[env, cfrc_idx + b*6+2] = Ia2 + xf2
+                workspace[env, cfrc_idx + b*6+3] = Ia3 + xf3
+                workspace[env, cfrc_idx + b*6+4] = Ia4 + xf4
+                workspace[env, cfrc_idx + b*6+5] = Ia5 + xf5
+    barrier()
+    # Step 3: backward cfrc accumulation (cheap, tid 0 serial)
+    if valid_env and tid == 0:
+        for b in range(NBODY - 1, 0, -1):
+                var body_off = model_body_offset(b)
+                var parent = Int(
+                    rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
+                )
+                if parent > 0:
+                    workspace[env, cfrc_idx + parent*6+0] = workspace[env, cfrc_idx + parent*6+0] + workspace[env, cfrc_idx + b*6+0]
+                    workspace[env, cfrc_idx + parent*6+1] = workspace[env, cfrc_idx + parent*6+1] + workspace[env, cfrc_idx + b*6+1]
+                    workspace[env, cfrc_idx + parent*6+2] = workspace[env, cfrc_idx + parent*6+2] + workspace[env, cfrc_idx + b*6+2]
+                    workspace[env, cfrc_idx + parent*6+3] = workspace[env, cfrc_idx + parent*6+3] + workspace[env, cfrc_idx + b*6+3]
+                    workspace[env, cfrc_idx + parent*6+4] = workspace[env, cfrc_idx + parent*6+4] + workspace[env, cfrc_idx + b*6+4]
+                    workspace[env, cfrc_idx + parent*6+5] = workspace[env, cfrc_idx + parent*6+5] + workspace[env, cfrc_idx + b*6+5]
+    barrier()
+    # Step 4: qfrc projection (flat per joint)
+    if valid_env:
+        for j in range(tid, NJOINT, n_threads):
+                var joint_off = model_joint_offset[NBODY](j)
+                var jnt_type = Int(
+                    rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+                )
+                var body = Int(
+                    rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+                )
+                var dof_adr = Int(
+                    rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+                )
+                var num_dof = 1
+                if jnt_type == JNT_FREE:
+                    num_dof = 6
+                elif jnt_type == JNT_BALL:
+                    num_dof = 3
+
+                for d in range(num_dof):
+                    var dof = dof_adr + d
+                    workspace[env, bias_idx + dof] = 0
+                    for k in range(6):
+                        workspace[env, bias_idx + dof] = (
+                            workspace[env, bias_idx + dof]
+                            + workspace[env, cdof_idx + dof * 6 + k]
+                            * workspace[env, cfrc_idx + body * 6 + k]
+                        )
+    barrier()
+
+

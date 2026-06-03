@@ -61,6 +61,7 @@ from mojo_rl.physics3d.dynamics.mass_matrix import (
 )
 from mojo_rl.physics3d.dynamics.bias_forces import (
     compute_bias_forces_rne_gpu,
+    compute_bias_forces_rne_gpu_mt,
 )
 from mojo_rl.physics3d.solver.newton_solver import NewtonSolver
 
@@ -463,6 +464,35 @@ def main() raises:
                 WS_SIZE,
             ](env, s, m, w)
 
+        # Phase 8b: RNE cooperative (MT) — head-to-head
+        @always_inline
+        def rne_mt_kernel(
+            s: LayoutTensor[
+                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+            ],
+            m: LayoutTensor[
+                dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+            ],
+            w: LayoutTensor[
+                dtype, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            var tid = Int(thread_idx.y)
+            var valid_env = env < BATCH
+            compute_bias_forces_rne_gpu_mt[
+                dtype,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](env, tid, STEP_THREADS, valid_env, s, m, w)
+
         # Phase 9: LDL Solve (serial)
         @always_inline
         def ldl_solve_kernel(
@@ -533,6 +563,13 @@ def main() raises:
             )
             ctx.enqueue_function[rne_kernel](
                 state, model, workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[rne_mt_kernel](
+                state,
+                model,
+                workspace,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
             ctx.enqueue_function[ldl_solve_kernel](
                 workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
@@ -750,6 +787,28 @@ def main() raises:
         t1 = perf_counter_ns()
         var rne_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
         print("8. RNE (bias forces):        " + String(rne_us)[byte=:8] + " μs")
+
+        # Phase 8b: RNE cooperative (MT)
+        ctx.synchronize()
+        t0 = perf_counter_ns()
+        for _ in range(N_STEPS):
+            ctx.enqueue_function[rne_mt_kernel](
+                state,
+                model,
+                workspace,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
+            )
+        ctx.synchronize()
+        t1 = perf_counter_ns()
+        var rne_mt_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
+        print(
+            "8b. RNE (MT cooperative):    "
+            + String(rne_mt_us)[byte=:8]
+            + " μs  (serial = "
+            + String(rne_us)[byte=:8]
+            + ")"
+        )
 
         # Phase 9: LDL Solve
         ctx.synchronize()
