@@ -58,7 +58,6 @@ from mojo_rl.physics3d.dynamics.bias_forces import (
     compute_bias_forces_rne_gpu,
 )
 from mojo_rl.physics3d.solver.newton_solver import NewtonSolver
-from mojo_rl.physics3d.integrator.rk4_integrator import RK4Integrator
 
 from mojo_rl.envs.humanoid import Humanoid
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
@@ -382,27 +381,52 @@ def main() raises:
                 return
             ldl_solve_workspace_gpu[dtype, NV, NBODY, BATCH, WS_SIZE](env, w)
 
-        # ── Warmup: run full step a few times ──
-        print("Warming up...")
-        for _ in range(10):
-            RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-                dtype,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                BATCH,
-                NGEOM,
-                STEP_THREADS=NV,
-            ](ctx, state_buf, model_buf, workspace_buf)
+        # ── Warmup: run the individual phase kernels (dependency order). We do
+        # NOT launch the full RK4 step_gpu: the fused rk4_stage_kernel inlines
+        # every phase's per-thread InlineArrays into one mega-kernel, giving a
+        # huge per-thread stack frame; at BATCH=256 its local-memory reservation
+        # (frame × launched threads) exceeds device VRAM → CUDA OOM at launch
+        # (rk4_integrator.mojo:2317). The per-phase split does not need it.
+        print("Warming up phase kernels...")
+        for _ in range(3):
+            ctx.enqueue_function[fk_kernel](
+                state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[vel_kernel](
+                state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[cdof_kernel](
+                state, model, workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[crb_kernel](
+                state, model, workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[mass_matrix_kernel](
+                state,
+                model,
+                workspace,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
+            )
+            ctx.enqueue_function[ldl_kernel](
+                workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[minv_kernel](
+                workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[rne_kernel](
+                state, model, workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[ldl_solve_kernel](
+                workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
         ctx.synchronize()
         var (free2, total2) = ctx.get_memory_info()
         print("Warmup done!")
         print(
             "VRAM after warmup:   free "
             + String(Float64(free2) / 1.0e9)
-            + " GB  (RK4 step_gpu kernels reserved "
+            + " GB  (phase kernels reserved "
             + String(Float64(free1 - free2) / 1.0e6)
             + " MB)"
         )
@@ -554,24 +578,9 @@ def main() raises:
             "9. LDL solve:                " + String(solve_us)[byte=:8] + " μs"
         )
 
-        # ── Reference: full monolithic step ──
-        ctx.synchronize()
-        t0 = perf_counter_ns()
-        for _ in range(N_STEPS):
-            RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-                dtype,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                BATCH,
-                NGEOM,
-                STEP_THREADS=NV,
-            ](ctx, state_buf, model_buf, workspace_buf)
-        ctx.synchronize()
-        t1 = perf_counter_ns()
-        var full_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
+        # NOTE: the full monolithic RK4 step (step_gpu) is intentionally NOT run
+        # — its fused rk4_stage_kernel has too large a per-thread frame and OOMs
+        # the device at BATCH=256 (see warmup note).
 
         print()
         print("=" * 60)
@@ -591,10 +600,6 @@ def main() raises:
             + String(phases_total)[byte=:8]
             + " μs"
         )
-        print(
-            "Full step (monolithic):      " + String(full_us)[byte=:8] + " μs"
-        )
-        print("  (includes solver + finalize + contact detection)")
         print()
 
         # Percentages
