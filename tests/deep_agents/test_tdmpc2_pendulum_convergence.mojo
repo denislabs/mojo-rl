@@ -40,6 +40,7 @@ comptime EVAL_EVERY = 1000
 comptime EVAL_EPS = 4
 
 comptime Ag = TDMPC2Agent[
+    "cpu",
     OBS, ENC, ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, B, H, CAP
 ]
 
