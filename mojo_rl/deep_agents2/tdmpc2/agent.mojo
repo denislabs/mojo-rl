@@ -29,6 +29,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.deep_agents2.primitives.rsample import RSample
 from mojo_rl.deep_agents2.dreamerv3.polyak import polyak_module
 from mojo_rl.deep_agents2.data.sequence_replay import SequenceReplay
+from mojo_rl.planners.trajectory.mppi import MPPIGPUBatched
+from .callback import TDMPC2RolloutCallbackGPU
 
 from .nets import (
     TDMPC2Encoder, TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet, TDMPC2Policy,
@@ -77,6 +79,13 @@ struct TDMPC2Agent[
     B: Int,
     H: Int,
     CAP: Int,
+    # MPC (MPPIGPUBatched) planning config — defaults match the reference.
+    # Used only by select_action_mpc (GPU). Existing instantiations that omit
+    # these get the reference values.
+    NUM_SAMPLES: Int = 512,
+    NUM_PI_TRAJS: Int = 24,
+    NUM_ELITES: Int = 64,
+    NUM_ITERS: Int = 6,
 ](Movable & ImplicitlyDestructible):
     comptime EncT = TDMPC2Encoder[Self.OBS, Self.ENC, Self.LATENT, Self.SN]
     comptime DynT = TDMPC2Dynamics[Self.LATENT, Self.ACT, Self.MLP, Self.SN]
@@ -97,6 +106,16 @@ struct TDMPC2Agent[
     comptime TDStepT = TDTargetStep[
         Self.OBS, Self.ENC, Self.ACT, Self.LATENT, Self.MLP, Self.BINS,
         Self.SN, Self.VMIN, Self.VMAX, Self.B, Self.H,
+    ]
+    # MPC: single-env (N_ENVS=1) batched planner + its rollout callback.
+    comptime MPC_BT = Self.NUM_SAMPLES + Self.NUM_PI_TRAJS
+    comptime PlannerT = MPPIGPUBatched[
+        Self.LATENT, Self.ACT, Self.H, Self.NUM_SAMPLES, Self.NUM_PI_TRAJS,
+        Self.NUM_ELITES, Self.NUM_ITERS, 1,
+    ]
+    comptime MpcCB = TDMPC2RolloutCallbackGPU[
+        Self.ACT, Self.LATENT, Self.MLP, Self.BINS, Self.SN, Self.VMIN,
+        Self.VMAX, NQ, Self.MPC_BT,
     ]
 
     var encoder: Self.EncT
@@ -127,6 +146,11 @@ struct TDMPC2Agent[
     var _last_wm: Scalar[DT]
     var _last_pi: Scalar[DT]
     var ctx: Optional[DeviceContext]
+    # MPC planner (persistent warm-start; None on CPU). The rollout callback
+    # is built transiently in select_action_mpc (it points at self's modules,
+    # valid only during the call — never stored, to avoid self-pointer hazards).
+    var planner: Optional[Self.PlannerT]
+    var temperature: Scalar[DT]
 
     @staticmethod
     def make(
@@ -136,6 +160,7 @@ struct TDMPC2Agent[
         action_scale: Scalar[DT] = Scalar[DT](1.0),
         learning_starts: Int = 1000,
         enc_lr_scale: Scalar[DT] = Scalar[DT](0.3),
+        temperature: Scalar[DT] = Scalar[DT](0.5),
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
         comptime tg = Self.target
@@ -171,6 +196,10 @@ struct TDMPC2Agent[
         var ar = RSample[Self.ACT].make[tg, INIT=Zero](ctx=ctx)
         ar.action_scale = action_scale
 
+        var planner: Optional[Self.PlannerT] = None
+        comptime if tg == "gpu":
+            planner = Self.PlannerT(ctx.value())
+
         return Self(
             encoder=enc^, dynamics=dyn^, reward=rew^, q=q^, qt=qt^, policy=pol^,
             enc_opt=enc_opt^, dyn_opt=dyn_opt^, rew_opt=rew_opt^, q_opt=q_opt^,
@@ -184,6 +213,7 @@ struct TDMPC2Agent[
             gamma=gamma, tau=tau, action_scale=action_scale,
             learning_starts=learning_starts, step_count=0,
             _last_wm=Scalar[DT](0.0), _last_pi=Scalar[DT](0.0), ctx=ctx,
+            planner=planner^, temperature=temperature,
         )
 
     # ── acting (MPC-off): a = π(encode(obs)) ───────────────────────────
@@ -249,6 +279,61 @@ struct TDMPC2Agent[
         act_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         self.select_action(obs, act_out, explore=False)
+
+    def mpc_start_episode(mut self) raises:
+        """Reset the MPC planner's warm-start state (call on env reset)."""
+        comptime if Self.target == "gpu":
+            self.planner.value().start_episode(0)
+
+    def select_action_mpc(
+        mut self,
+        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        act_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        explore: Bool = True,
+    ) raises:
+        """MPC acting: plan in latent space via MPPIGPUBatched (single env).
+        GPU only — the per-sample CPU planner is too slow for acting."""
+        comptime assert Self.target == "gpu", (
+            "select_action_mpc requires target='gpu' (CPU MPPI is eval-only)"
+        )
+        comptime A = Self.ACT
+        comptime LAT = Self.LATENT
+        var ctx = self.ctx.value()
+
+        # encode obs → z0 [1, LATENT] on device
+        var d_obs = _upload(ctx, obs, Self.OBS)
+        var d_z0 = ctx.enqueue_create_buffer[DT](LAT)
+        var z0_t = TileTensor(_dp(d_z0), row_major[1, LAT]())
+        self.encoder.forward[Self.target, 1](
+            TileTensor(_dp(d_obs), row_major[1, Self.OBS]()), output=z0_t,
+        )
+
+        # transient callback over self's modules (uses TARGET Q for the
+        # terminal bootstrap; never stored → no self-pointer hazard).
+        var cb = Self.MpcCB.make(
+            self.dynamics, self.reward, self.policy, self.qt,
+            self.action_scale, ctx,
+        )
+
+        var d_out = ctx.enqueue_create_buffer[DT](A)
+        var z0_lt = LayoutTensor[DT, Layout.row_major(1, LAT), MutAnyOrigin](
+            _dp(d_z0)
+        )
+        var out_lt = LayoutTensor[DT, Layout.row_major(1 * A), MutAnyOrigin](
+            _dp(d_out)
+        )
+        self.planner.value().plan_gpu[Self.MpcCB](
+            ctx, cb, z0_lt, out_lt,
+            gamma=Float64(self.gamma),
+            temperature=Float64(self.temperature),
+            action_scale=Float64(self.action_scale),
+            deterministic=not explore,
+        )
+        var h = ctx.enqueue_create_host_buffer[DT](A)
+        ctx.enqueue_copy(h, d_out)
+        ctx.synchronize()
+        for j in range(A):
+            act_out[j] = h.unsafe_ptr()[j]
 
     def record(
         mut self,
