@@ -104,7 +104,7 @@ comptime ALPHA_LR: Scalar[DT] = 0.0 if FIX_ALPHA else 3e-4
 comptime RUN_NAME = (
     "MBPO HalfCheetah NN2 (GPU) — early-stop+elite, fixed alpha=0.12"
     if FIX_ALPHA
-    else "MBPO HalfCheetah NN2 (GPU) — dyn AdamW weight_decay=5e-5 (overfit fix)"
+    else "MBPO HalfCheetah NN2 (GPU) — AdamW wd=5e-5 + learnable logvar bounds"
 )
 
 
@@ -228,12 +228,18 @@ def main() raises:
             # Ceiling on dyn-train epochs/round; early-stop on holdout NLL
             # governs in practice (matches legacy's 150 cap).
             dyn_max_epochs=150,
-            # ROOT-CAUSE FIX: the nn2 dynamics ensemble used plain Adam (no
+            # ROOT-CAUSE FIX #1: the nn2 dynamics ensemble used plain Adam (no
             # weight decay) → catastrophic overfit (train NLL → -19, holdout
             # NLL → 100+ vs legacy ~42) → optimistic OOD synthetic data that
             # adds ~nothing. Legacy uses AdamW with dyn_weight_decay=5e-5
-            # (PETS/MBPO reference). Now matched.
+            # (PETS/MBPO reference). Now matched (2.6× reward).
             dyn_weight_decay=5e-5,
+            # ROOT-CAUSE FIX #2: the variance head was pinned over-confident by
+            # the fixed LOGVAR_MAX, leaving holdout NLL ~400 vs legacy ~42.
+            # Legacy uses LEARNABLE per-member/per-dim logvar bounds (soft
+            # double-softplus clamp, init +0.5/−10, learned down to ~[−1,−2]
+            # via a 0.01 L2 penalty). This is the last structural diff.
+            dyn_learnable_bounds=True,
         )
         var env = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]()
 

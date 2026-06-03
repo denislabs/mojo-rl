@@ -763,8 +763,27 @@ def model_mesh_vert_offset[
 
 
 def integrator_workspace_size[NV: Int, NBODY: Int]() -> Int:
-    """Total integrator temporaries size per environment."""
+    """Total integrator temporaries size per environment.
+
+    Layout: cdof(NV*6) | crb(NBODY*10) | M(NV*NV) | L(NV*NV) | D(NV) | bias(NV) |
+            fnet(NV) | qacc_ws(NV) | qacc_constrained(NV) |
+            rne_cacc(NBODY*6) | rne_cfrc(NBODY*6)
+    The two rne_* slots back the RNE forward-pass spatial accel + body force so
+    the cooperative (level/flat-parallel) RNE threads can share them (cvel reuses
+    the crb slot). Appended at the end so M_inv/solver/rk4-extra offsets — all
+    derived from this size — shift consistently.
+    """
+    return NV * 6 + NBODY * 10 + 2 * NV * NV + 5 * NV + 2 * NBODY * 6
+
+
+def ws_rne_cacc_offset[NV: Int, NBODY: Int]() -> Int:
+    """Offset to RNE spatial acceleration cacc (NBODY*6) in workspace buffer."""
     return NV * 6 + NBODY * 10 + 2 * NV * NV + 5 * NV
+
+
+def ws_rne_cfrc_offset[NV: Int, NBODY: Int]() -> Int:
+    """Offset to RNE spatial body force cfrc (NBODY*6) in workspace buffer."""
+    return NV * 6 + NBODY * 10 + 2 * NV * NV + 5 * NV + NBODY * 6
 
 
 def ws_cdof_offset() -> Int:

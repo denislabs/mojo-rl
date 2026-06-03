@@ -46,6 +46,7 @@ Trait conventions:
     refresh `elite_indices` (lowest NUM_ELITES losses are elite).
 """
 
+from std.math import exp as fexp, log as flog, sqrt as fsqrt
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
@@ -88,6 +89,167 @@ def _split_clamp_logvar_kernel[
     out_lv[b, j] = v
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Learnable per-member/per-dim logvar bounds (MBPO/PETS reference,
+# deep_agents/core/agents/mbpo_agent.mojo + kernels.mojo). Faithful port:
+# soft DOUBLE-softplus clamp lets gradients flow to BOTH the network logvar
+# output AND the bounds, which are Adam-updated with a 0.01 L2 penalty
+# (`+0.01·Σmax − 0.01·Σmin`) that learns the upper bound DOWN from +0.5 to
+# ≈[−1,−2]. This is the regulariser the fixed nn2 clamp lacked.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _softplus_dt(x: Scalar[DT]) -> Scalar[DT]:
+    """Numerically-stable softplus log(1+exp(x)) with ±20 saturation
+    (matches legacy kernels.mojo)."""
+    if x > Scalar[DT](20.0):
+        return x
+    elif x > Scalar[DT](-20.0):
+        return flog(Scalar[DT](1.0) + fexp(x))
+    return Scalar[DT](0.0)
+
+
+def _sigmoid_dt(x: Scalar[DT]) -> Scalar[DT]:
+    """Sigmoid 1/(1+exp(-x)) with ±20 saturation = d softplus(x)/dx."""
+    if x > Scalar[DT](20.0):
+        return Scalar[DT](1.0)
+    elif x > Scalar[DT](-20.0):
+        return Scalar[DT](1.0) / (Scalar[DT](1.0) + fexp(-x))
+    return Scalar[DT](0.0)
+
+
+def _soft_clamp_lv(
+    raw: Scalar[DT], max_d: Scalar[DT], min_d: Scalar[DT]
+) -> Scalar[DT]:
+    """Double-softplus soft clamp of `raw` into (min_d, max_d):
+    `lv = min_d + softplus((max_d − softplus(max_d − raw)) − min_d)`."""
+    var lv_inter = max_d - _softplus_dt(max_d - raw)
+    return min_d + _softplus_dt(lv_inter - min_d)
+
+
+def _dyn_learnable_nll_grad_kernel[
+    BATCH: Int, PRED_DIM: Int
+](
+    pred: LayoutTensor[DT, Layout.row_major(BATCH, 2 * PRED_DIM), MutAnyOrigin],
+    target: LayoutTensor[DT, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin],
+    max_lv: LayoutTensor[DT, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_lv: LayoutTensor[DT, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    grad_out: LayoutTensor[
+        DT, Layout.row_major(BATCH, 2 * PRED_DIM), MutAnyOrigin
+    ],
+    gmax: LayoutTensor[DT, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin],
+    gmin: LayoutTensor[DT, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin],
+    ploss: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+):
+    """Combined Gaussian-NLL forward + grad with soft logvar bounds. One
+    thread per batch row. Grads use legacy normalisation `2/(BATCH·PRED)`
+    so the downstream 0.01 L2 keeps its reference weight; `ploss` keeps
+    nn2's `Σ_d[½d²σ⁻²+½lv]` convention for metric continuity."""
+    var b = Int(global_idx.x)
+    if b >= BATCH:
+        return
+    var inv_norm = Scalar[DT](2.0) / Scalar[DT](BATCH * PRED_DIM)
+    var row_loss = Scalar[DT](0.0)
+    for d in range(PRED_DIM):
+        var mu = rebind[Scalar[DT]](pred[b, d])
+        var raw = rebind[Scalar[DT]](pred[b, PRED_DIM + d])
+        var y = rebind[Scalar[DT]](target[b, d])
+        var max_d = rebind[Scalar[DT]](max_lv[d])
+        var min_d = rebind[Scalar[DT]](min_lv[d])
+        var a1 = max_d - raw
+        var g1 = _sigmoid_dt(a1)
+        var lv_inter = max_d - _softplus_dt(a1)
+        var a2 = lv_inter - min_d
+        var g2 = _sigmoid_dt(a2)
+        var lv = min_d + _softplus_dt(a2)
+        var inv_var = fexp(-lv)
+        var diff = mu - y
+        var dsq = diff * diff
+        row_loss += Scalar[DT](0.5) * dsq * inv_var + Scalar[DT](0.5) * lv
+        var grad_lv = Scalar[DT](0.5) * (Scalar[DT](1.0) - dsq * inv_var) * inv_norm
+        grad_out[b, d] = diff * inv_var * inv_norm
+        grad_out[b, PRED_DIM + d] = grad_lv * g1 * g2
+        gmax[b, d] = grad_lv * g2 * (Scalar[DT](1.0) - g1)
+        gmin[b, d] = grad_lv * (Scalar[DT](1.0) - g2)
+    ploss[b] = row_loss
+
+
+def _dyn_bounds_adam_kernel[
+    PRED_DIM: Int, BATCH: Int
+](
+    max_lv: LayoutTensor[DT, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_lv: LayoutTensor[DT, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    max_m: LayoutTensor[DT, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    max_v: LayoutTensor[DT, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_m: LayoutTensor[DT, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_v: LayoutTensor[DT, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    gmax: LayoutTensor[DT, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin],
+    gmin: LayoutTensor[DT, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin],
+    l2_coef: Scalar[DT],
+    lr: Scalar[DT],
+    beta1: Scalar[DT],
+    beta2: Scalar[DT],
+    eps: Scalar[DT],
+    bc1: Scalar[DT],
+    bc2: Scalar[DT],
+):
+    """Reduce per-batch bound grads, add the L2 term (`+l2` to max pulls it
+    down, `−l2` to min pushes it up → bounds tighten toward each other),
+    then Adam-step each per-dim bound. One thread per output dim."""
+    var d = Int(global_idx.x)
+    if d >= PRED_DIM:
+        return
+    var one = Scalar[DT](1.0)
+    var g_max = Scalar[DT](0.0)
+    var g_min = Scalar[DT](0.0)
+    for b in range(BATCH):
+        g_max += rebind[Scalar[DT]](gmax[b, d])
+        g_min += rebind[Scalar[DT]](gmin[b, d])
+    g_max += l2_coef
+    g_min -= l2_coef
+    # Adam on max_lv[d].
+    var m1 = beta1 * rebind[Scalar[DT]](max_m[d]) + (one - beta1) * g_max
+    var v1 = beta2 * rebind[Scalar[DT]](max_v[d]) + (one - beta2) * g_max * g_max
+    max_m[d] = m1
+    max_v[d] = v1
+    max_lv[d] = rebind[Scalar[DT]](max_lv[d]) - lr * (m1 / bc1) / (
+        fsqrt(v1 / bc2) + eps
+    )
+    # Adam on min_lv[d].
+    var m2 = beta1 * rebind[Scalar[DT]](min_m[d]) + (one - beta1) * g_min
+    var v2 = beta2 * rebind[Scalar[DT]](min_v[d]) + (one - beta2) * g_min * g_min
+    min_m[d] = m2
+    min_v[d] = v2
+    min_lv[d] = rebind[Scalar[DT]](min_lv[d]) - lr * (m2 / bc1) / (
+        fsqrt(v2 / bc2) + eps
+    )
+
+
+def _soft_clamp_split_kernel[
+    BATCH: Int, OUT_DIM: Int, PRED_DIM: Int
+](
+    pred: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+    max_lv: LayoutTensor[DT, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_lv: LayoutTensor[DT, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    out_mu: LayoutTensor[DT, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin],
+    out_lv: LayoutTensor[DT, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin],
+):
+    """Soft-clamp variant of `_split_clamp_logvar_kernel` using the member's
+    learnable per-dim bounds. Used by `predict_member` (→ rollout/eval) so
+    sampled σ² matches the training-time soft clamp."""
+    var idx = Int(global_idx.x)
+    var total = BATCH * PRED_DIM
+    if idx >= total:
+        return
+    var b = idx // PRED_DIM
+    var j = idx % PRED_DIM
+    out_mu[b, j] = rebind[Scalar[DT]](pred[b, j])
+    var raw = rebind[Scalar[DT]](pred[b, PRED_DIM + j])
+    out_lv[b, j] = _soft_clamp_lv(
+        raw, rebind[Scalar[DT]](max_lv[j]), rebind[Scalar[DT]](min_lv[j])
+    )
+
+
 struct DynamicsEnsembleBlock[
     DynNet: Module,
     N: Int,
@@ -113,6 +275,26 @@ struct DynamicsEnsembleBlock[
     var _mb_pred: Scratch["mb_pred", Self.BATCH * Self.OUT_DIM]
     var _mb_grad: Scratch["mb_grad", Self.BATCH * Self.OUT_DIM]
 
+    # ─── Learnable logvar bounds (opt-in via `learnable_bounds`) ──────────
+    # Per-member/per-dim [N * PRED_DIM]: bounds + Adam moments. Always
+    # allocated (cheap: ~N·PRED floats); only USED when `learnable_bounds`
+    # is set. Default off ⇒ fixed-clamp path is bit-identical.
+    var learnable_bounds: Bool
+    var _bnd_lr: Scalar[DT]
+    var _bnd_step: Int
+    var _max_lv: Scratch["dyn_max_lv", Self.N * Self.PRED_DIM]
+    var _min_lv: Scratch["dyn_min_lv", Self.N * Self.PRED_DIM]
+    var _max_lv_m: Scratch["dyn_max_lv_m", Self.N * Self.PRED_DIM]
+    var _max_lv_v: Scratch["dyn_max_lv_v", Self.N * Self.PRED_DIM]
+    var _min_lv_m: Scratch["dyn_min_lv_m", Self.N * Self.PRED_DIM]
+    var _min_lv_v: Scratch["dyn_min_lv_v", Self.N * Self.PRED_DIM]
+    # Per-member reusable grad scratch [BATCH * PRED_DIM] + loss partial.
+    var _bnd_gmax: Scratch["dyn_bnd_gmax", Self.BATCH * Self.PRED_DIM]
+    var _bnd_gmin: Scratch["dyn_bnd_gmin", Self.BATCH * Self.PRED_DIM]
+    # STAGING ⇒ GPU make also allocates the CPU mirror so the per-row loss
+    # can be D2H'd through `cpu_ptr()` for the host-side reduction.
+    var _bnd_ploss: Scratch["dyn_bnd_ploss", Self.BATCH, True]
+
     var ts: TargetStorage
 
     def __init__(out self):
@@ -135,6 +317,18 @@ struct DynamicsEnsembleBlock[
         self.elite_indices = List[Int]()
         self._mb_pred = Scratch["mb_pred", Self.BATCH * Self.OUT_DIM]()
         self._mb_grad = Scratch["mb_grad", Self.BATCH * Self.OUT_DIM]()
+        self.learnable_bounds = False
+        self._bnd_lr = Scalar[DT](1e-3)
+        self._bnd_step = 0
+        self._max_lv = Scratch["dyn_max_lv", Self.N * Self.PRED_DIM]()
+        self._min_lv = Scratch["dyn_min_lv", Self.N * Self.PRED_DIM]()
+        self._max_lv_m = Scratch["dyn_max_lv_m", Self.N * Self.PRED_DIM]()
+        self._max_lv_v = Scratch["dyn_max_lv_v", Self.N * Self.PRED_DIM]()
+        self._min_lv_m = Scratch["dyn_min_lv_m", Self.N * Self.PRED_DIM]()
+        self._min_lv_v = Scratch["dyn_min_lv_v", Self.N * Self.PRED_DIM]()
+        self._bnd_gmax = Scratch["dyn_bnd_gmax", Self.BATCH * Self.PRED_DIM]()
+        self._bnd_gmin = Scratch["dyn_bnd_gmin", Self.BATCH * Self.PRED_DIM]()
+        self._bnd_ploss = Scratch["dyn_bnd_ploss", Self.BATCH, True]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -172,6 +366,7 @@ struct DynamicsEnsembleBlock[
         ].make[target]()
         blk.ts = TargetStorage.make_cpu()
         init_scratch_auto[Self, target="cpu"](blk)
+        blk._init_bounds["cpu"]()
         return blk^
 
     @staticmethod
@@ -208,15 +403,42 @@ struct DynamicsEnsembleBlock[
         ].make[target](ctx=ctx)
         blk.ts = TargetStorage.make_gpu(ctx)
         init_scratch_auto[Self, target="gpu"](blk, ctx)
+        blk._init_bounds["gpu"]()
         return blk^
+
+    def _init_bounds[target: StaticString](mut self) raises:
+        """Init the learnable-bound state: max_lv=+0.5, min_lv=−10 (PETS/MBPO
+        `bnn.py` inits), Adam moments=0. Device buffers from `enqueue_create`
+        are uninitialised, so we fill all of them explicitly on GPU; on CPU
+        the lists are already zero so only the bounds need filling."""
+        comptime if target == "cpu":
+            var maxp = self._max_lv.cpu_ptr()
+            var minp = self._min_lv.cpu_ptr()
+            for i in range(Self.N * Self.PRED_DIM):
+                maxp[i] = Scalar[DT](0.5)
+                minp[i] = Scalar[DT](-10.0)
+        else:
+            self._max_lv.dev.value().enqueue_fill(Scalar[DT](0.5))
+            self._min_lv.dev.value().enqueue_fill(Scalar[DT](-10.0))
+            self._max_lv_m.dev.value().enqueue_fill(Scalar[DT](0.0))
+            self._max_lv_v.dev.value().enqueue_fill(Scalar[DT](0.0))
+            self._min_lv_m.dev.value().enqueue_fill(Scalar[DT](0.0))
+            self._min_lv_v.dev.value().enqueue_fill(Scalar[DT](0.0))
 
     # ------------------------------------------------------------------
     # Public knobs.
     # ------------------------------------------------------------------
 
+    def enable_learnable_bounds(mut self):
+        """Opt into learnable per-member/per-dim logvar bounds (soft
+        double-softplus clamp + 0.01-L2 Adam-updated bounds, init +0.5/−10).
+        Off by default ⇒ the fixed `[LOGVAR_MIN, LOGVAR_MAX]` hard clamp."""
+        self.learnable_bounds = True
+
     def set_lr(mut self, lr: Scalar[DT]):
         """Set every member's AdamW LR. Matches the deep_agents config
         convention (single `model_lr` applies to all ensemble members)."""
+        self._bnd_lr = lr
         for i in range(Self.N):
             self.opts[i].lr = lr
 
@@ -276,18 +498,26 @@ struct DynamicsEnsembleBlock[
             var lv_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out_lv_t.ptr)
             var lv_min = Scalar[DT](Self.LOGVAR_MIN)
             var lv_max = Scalar[DT](Self.LOGVAR_MAX)
+            var bo = member_idx * Self.PRED_DIM
+            var maxp = self._max_lv.cpu_ptr()
+            var minp = self._min_lv.cpu_ptr()
             for b in range(Self.BATCH):
                 var src = b * Self.OUT_DIM
                 var dst = b * Self.PRED_DIM
                 for j in range(Self.PRED_DIM):
                     mu_p[dst + j] = pred_p[src + j]
                     var raw = pred_p[src + Self.PRED_DIM + j]
-                    var v = raw
-                    if v > lv_max:
-                        v = lv_max
-                    elif v < lv_min:
-                        v = lv_min
-                    lv_p[dst + j] = v
+                    if self.learnable_bounds:
+                        lv_p[dst + j] = _soft_clamp_lv(
+                            raw, maxp[bo + j], minp[bo + j]
+                        )
+                    else:
+                        var v = raw
+                        if v > lv_max:
+                            v = lv_max
+                        elif v < lv_min:
+                            v = lv_min
+                        lv_p[dst + j] = v
         else:
             var ctx = self.ts.ctx.value()
             var pred_p = self._mb_pred.dev_ptr()
@@ -310,13 +540,214 @@ struct DynamicsEnsembleBlock[
             ](lv_p)
             comptime total = Self.BATCH * Self.PRED_DIM
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime split_kernel = _split_clamp_logvar_kernel[
-                Self.BATCH, Self.OUT_DIM, Self.PRED_DIM
+            if self.learnable_bounds:
+                var bo = member_idx * Self.PRED_DIM
+                var max_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
+                ](self._max_lv.dev_ptr() + bo)
+                var min_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
+                ](self._min_lv.dev_ptr() + bo)
+                comptime soft_kernel = _soft_clamp_split_kernel[
+                    Self.BATCH, Self.OUT_DIM, Self.PRED_DIM
+                ]
+                ctx.enqueue_function[soft_kernel](
+                    pred_lt, max_lt, min_lt, mu_lt, lv_lt,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
+            else:
+                comptime split_kernel = _split_clamp_logvar_kernel[
+                    Self.BATCH, Self.OUT_DIM, Self.PRED_DIM
+                ]
+                ctx.enqueue_function[split_kernel](
+                    pred_lt, mu_lt, lv_lt,
+                    Scalar[DT](Self.LOGVAR_MIN), Scalar[DT](Self.LOGVAR_MAX),
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
+
+    # ------------------------------------------------------------------
+    # Learnable-bounds helpers (soft-clamp NLL grad + bound Adam step).
+    # ------------------------------------------------------------------
+
+    def _nll_grad_learnable[target: StaticString](
+        mut self, member_idx: Int,
+        pred_t: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        mb_target_t: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises -> Scalar[DT]:
+        """Soft-clamp Gaussian-NLL forward+grad for one member. Reads the
+        already-computed `pred_t` (BATCH × OUT_DIM), writes the network
+        output grad into `_mb_grad` and the per-(b,d) bound grads into
+        `_bnd_gmax`/`_bnd_gmin`. Returns the scalar NLL (nn2 convention)."""
+        var bo = member_idx * Self.PRED_DIM
+        comptime if target == "cpu":
+            var pp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](pred_t.ptr)
+            var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                mb_target_t.ptr
+            )
+            var gp = self._mb_grad.cpu_ptr()
+            var gmaxp = self._bnd_gmax.cpu_ptr()
+            var gminp = self._bnd_gmin.cpu_ptr()
+            var maxp = self._max_lv.cpu_ptr()
+            var minp = self._min_lv.cpu_ptr()
+            var inv_norm = Scalar[DT](2.0) / Scalar[DT](Self.BATCH * Self.PRED_DIM)
+            var total = Scalar[DT](0.0)
+            for b in range(Self.BATCH):
+                var po = b * Self.OUT_DIM
+                var to = b * Self.PRED_DIM
+                for d in range(Self.PRED_DIM):
+                    var mu = pp[po + d]
+                    var raw = pp[po + Self.PRED_DIM + d]
+                    var y = tp[to + d]
+                    var max_d = maxp[bo + d]
+                    var min_d = minp[bo + d]
+                    var a1 = max_d - raw
+                    var g1 = _sigmoid_dt(a1)
+                    var lv_inter = max_d - _softplus_dt(a1)
+                    var a2 = lv_inter - min_d
+                    var g2 = _sigmoid_dt(a2)
+                    var lv = min_d + _softplus_dt(a2)
+                    var inv_var = fexp(-lv)
+                    var diff = mu - y
+                    var dsq = diff * diff
+                    total += Scalar[DT](0.5) * dsq * inv_var + Scalar[DT](0.5) * lv
+                    var grad_lv = (
+                        Scalar[DT](0.5) * (Scalar[DT](1.0) - dsq * inv_var)
+                        * inv_norm
+                    )
+                    gp[po + d] = diff * inv_var * inv_norm
+                    gp[po + Self.PRED_DIM + d] = grad_lv * g1 * g2
+                    gmaxp[to + d] = grad_lv * g2 * (Scalar[DT](1.0) - g1)
+                    gminp[to + d] = grad_lv * (Scalar[DT](1.0) - g2)
+            return total / Scalar[DT](Self.BATCH)
+        else:
+            var ctx = self.ts.ctx.value()
+            var pred_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH, Self.OUT_DIM), MutAnyOrigin,
+            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](pred_t.ptr))
+            var tgt_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH, Self.PRED_DIM), MutAnyOrigin,
+            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](mb_target_t.ptr))
+            var max_lt = LayoutTensor[
+                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
+            ](self._max_lv.dev_ptr() + bo)
+            var min_lt = LayoutTensor[
+                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
+            ](self._min_lv.dev_ptr() + bo)
+            var grad_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH, Self.OUT_DIM), MutAnyOrigin,
+            ](self._mb_grad.dev_ptr())
+            var gmax_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH, Self.PRED_DIM), MutAnyOrigin,
+            ](self._bnd_gmax.dev_ptr())
+            var gmin_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH, Self.PRED_DIM), MutAnyOrigin,
+            ](self._bnd_gmin.dev_ptr())
+            var ploss_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+            ](self._bnd_ploss.dev_ptr())
+            comptime n_rows = (Self.BATCH + TPB - 1) // TPB
+            comptime grad_kernel = _dyn_learnable_nll_grad_kernel[
+                Self.BATCH, Self.PRED_DIM
             ]
-            ctx.enqueue_function[split_kernel](
-                pred_lt, mu_lt, lv_lt,
-                Scalar[DT](Self.LOGVAR_MIN), Scalar[DT](Self.LOGVAR_MAX),
-                grid_dim=n_blocks, block_dim=TPB,
+            ctx.enqueue_function[grad_kernel](
+                pred_lt, tgt_lt, max_lt, min_lt,
+                grad_lt, gmax_lt, gmin_lt, ploss_lt,
+                grid_dim=n_rows, block_dim=TPB,
+            )
+            # D2H the per-row losses through the staging CPU mirror.
+            ctx.enqueue_copy(
+                self._bnd_ploss.cpu_ptr(), self._bnd_ploss.dev.value()
+            )
+            ctx.synchronize()
+            var hp = self._bnd_ploss.cpu_ptr()
+            var total = Scalar[DT](0.0)
+            for b in range(Self.BATCH):
+                total += hp[b]
+            return total / Scalar[DT](Self.BATCH)
+
+    def _bounds_step[target: StaticString](mut self, member_idx: Int) raises:
+        """Adam-update member `member_idx`'s per-dim bounds from the grads in
+        `_bnd_gmax`/`_bnd_gmin` (reduced over batch) + the 0.01 L2 penalty."""
+        self._bnd_step += 1
+        var beta1 = Scalar[DT](0.9)
+        var beta2 = Scalar[DT](0.999)
+        var eps = Scalar[DT](1e-8)
+        var l2 = Scalar[DT](0.01)
+        var sf = Scalar[DT](self._bnd_step)
+        var bc1 = Scalar[DT](1.0) - fexp(sf * flog(beta1))
+        var bc2 = Scalar[DT](1.0) - fexp(sf * flog(beta2))
+        var bo = member_idx * Self.PRED_DIM
+        comptime if target == "cpu":
+            var maxp = self._max_lv.cpu_ptr()
+            var minp = self._min_lv.cpu_ptr()
+            var mmp = self._max_lv_m.cpu_ptr()
+            var mvp = self._max_lv_v.cpu_ptr()
+            var nmp = self._min_lv_m.cpu_ptr()
+            var nvp = self._min_lv_v.cpu_ptr()
+            var gmaxp = self._bnd_gmax.cpu_ptr()
+            var gminp = self._bnd_gmin.cpu_ptr()
+            for d in range(Self.PRED_DIM):
+                var g_max = l2
+                var g_min = -l2
+                for b in range(Self.BATCH):
+                    g_max += gmaxp[b * Self.PRED_DIM + d]
+                    g_min += gminp[b * Self.PRED_DIM + d]
+                var i = bo + d
+                var m1 = beta1 * mmp[i] + (Scalar[DT](1.0) - beta1) * g_max
+                var v1 = beta2 * mvp[i] + (Scalar[DT](1.0) - beta2) * g_max * g_max
+                mmp[i] = m1
+                mvp[i] = v1
+                maxp[i] = maxp[i] - self._bnd_lr * (m1 / bc1) / (
+                    fsqrt(v1 / bc2) + eps
+                )
+                var m2 = beta1 * nmp[i] + (Scalar[DT](1.0) - beta1) * g_min
+                var v2 = beta2 * nvp[i] + (Scalar[DT](1.0) - beta2) * g_min * g_min
+                nmp[i] = m2
+                nvp[i] = v2
+                minp[i] = minp[i] - self._bnd_lr * (m2 / bc1) / (
+                    fsqrt(v2 / bc2) + eps
+                )
+        else:
+            var ctx = self.ts.ctx.value()
+            var max_lt = LayoutTensor[
+                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
+            ](self._max_lv.dev_ptr() + bo)
+            var min_lt = LayoutTensor[
+                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
+            ](self._min_lv.dev_ptr() + bo)
+            var mm_lt = LayoutTensor[
+                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
+            ](self._max_lv_m.dev_ptr() + bo)
+            var mv_lt = LayoutTensor[
+                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
+            ](self._max_lv_v.dev_ptr() + bo)
+            var nm_lt = LayoutTensor[
+                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
+            ](self._min_lv_m.dev_ptr() + bo)
+            var nv_lt = LayoutTensor[
+                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
+            ](self._min_lv_v.dev_ptr() + bo)
+            var gmax_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH, Self.PRED_DIM), MutAnyOrigin,
+            ](self._bnd_gmax.dev_ptr())
+            var gmin_lt = LayoutTensor[
+                DT, Layout.row_major(Self.BATCH, Self.PRED_DIM), MutAnyOrigin,
+            ](self._bnd_gmin.dev_ptr())
+            comptime n_dim_blocks = (Self.PRED_DIM + TPB - 1) // TPB
+            comptime bnd_kernel = _dyn_bounds_adam_kernel[
+                Self.PRED_DIM, Self.BATCH
+            ]
+            ctx.enqueue_function[bnd_kernel](
+                max_lt, min_lt, mm_lt, mv_lt, nm_lt, nv_lt,
+                gmax_lt, gmin_lt,
+                l2, self._bnd_lr, beta1, beta2, eps, bc1, bc2,
+                grid_dim=n_dim_blocks, block_dim=TPB,
             )
 
     # ------------------------------------------------------------------
@@ -357,10 +788,19 @@ struct DynamicsEnsembleBlock[
             self.members[member_idx].forward[target, Self.BATCH, POLICY](
                 mb_in_t, output=pred_t,
             )
-            var loss = self.loss.forward[target, Self.BATCH, POLICY](
-                pred_t, mb_target_t,
-            )
-            self.loss.vjp[target, Self.BATCH, POLICY](mb_target_t, grad_t)
+            var loss: Scalar[DT]
+            if self.learnable_bounds:
+                # Soft-clamp NLL with learnable bounds: fills `grad_t`
+                # (= _mb_grad) with the network output grad + the per-(b,d)
+                # bound grads into _bnd_gmax/_bnd_gmin.
+                loss = self._nll_grad_learnable[target](
+                    member_idx, pred_t, mb_target_t,
+                )
+            else:
+                loss = self.loss.forward[target, Self.BATCH, POLICY](
+                    pred_t, mb_target_t,
+                )
+                self.loss.vjp[target, Self.BATCH, POLICY](mb_target_t, grad_t)
             # Reuse pred buffer for grad-input scratch (member backward
             # writes into a slab the same size as IN_DIM; we don't need
             # to inspect those grad-inputs, just have a sink for them).
@@ -374,6 +814,8 @@ struct DynamicsEnsembleBlock[
             self.opts[member_idx].step[target, M=Self.DynNet](
                 self.members[member_idx]
             )
+            if self.learnable_bounds:
+                self._bounds_step[target](member_idx)
             return loss
         else:
             var pred_p = self._mb_pred.dev_ptr()
@@ -390,10 +832,19 @@ struct DynamicsEnsembleBlock[
             self.members[member_idx].forward[target, Self.BATCH, POLICY](
                 mb_in_t, output=pred_t,
             )
-            var loss = self.loss.forward[target, Self.BATCH, POLICY](
-                pred_t, mb_target_t,
-            )
-            self.loss.vjp[target, Self.BATCH, POLICY](mb_target_t, grad_t)
+            var loss: Scalar[DT]
+            if self.learnable_bounds:
+                # Soft-clamp NLL with learnable bounds: fills `grad_t`
+                # (= _mb_grad) with the network output grad + the per-(b,d)
+                # bound grads into _bnd_gmax/_bnd_gmin.
+                loss = self._nll_grad_learnable[target](
+                    member_idx, pred_t, mb_target_t,
+                )
+            else:
+                loss = self.loss.forward[target, Self.BATCH, POLICY](
+                    pred_t, mb_target_t,
+                )
+                self.loss.vjp[target, Self.BATCH, POLICY](mb_target_t, grad_t)
             # Reuse pred buffer as a discard sink for member grad-inputs
             # (OUT_DIM >= IN_DIM asserted in __init__).
             var gi_p = self._mb_pred.dev_ptr()
@@ -406,6 +857,8 @@ struct DynamicsEnsembleBlock[
             self.opts[member_idx].step[target, M=Self.DynNet](
                 self.members[member_idx]
             )
+            if self.learnable_bounds:
+                self._bounds_step[target](member_idx)
             return loss
 
     # ------------------------------------------------------------------
@@ -441,6 +894,12 @@ struct DynamicsEnsembleBlock[
             self.members[member_idx].forward[target, Self.BATCH, POLICY](
                 mb_in_t, output=pred_t,
             )
+            if self.learnable_bounds:
+                # Soft-clamp NLL with the member's learnable bounds (grads
+                # land in throwaway scratch; no opt step here).
+                return self._nll_grad_learnable[target](
+                    member_idx, pred_t, mb_target_t,
+                )
             return self.loss.forward[target, Self.BATCH, POLICY](
                 pred_t, mb_target_t,
             )
@@ -452,6 +911,12 @@ struct DynamicsEnsembleBlock[
             self.members[member_idx].forward[target, Self.BATCH, POLICY](
                 mb_in_t, output=pred_t,
             )
+            if self.learnable_bounds:
+                # Soft-clamp NLL with the member's learnable bounds (grads
+                # land in throwaway scratch; no opt step here).
+                return self._nll_grad_learnable[target](
+                    member_idx, pred_t, mb_target_t,
+                )
             return self.loss.forward[target, Self.BATCH, POLICY](
                 pred_t, mb_target_t,
             )

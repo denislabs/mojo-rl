@@ -32,6 +32,8 @@ from ..gpu.constants import (
     ws_cdof_offset,
     ws_crb_offset,
     ws_bias_offset,
+    ws_rne_cacc_offset,
+    ws_rne_cfrc_offset,
     BODY_IDX_PARENT,
     BODY_IDX_MASS,
     BODY_IDX_IXX,
@@ -1227,12 +1229,12 @@ def compute_bias_forces_rne_gpu[
 
     # Per-body arrays: spatial acceleration, force, world-frame inertia
     comptime BODY6_SIZE = _max_one[NBODY * 6]()
-    var cacc = InlineArray[Scalar[DTYPE], BODY6_SIZE](uninitialized=True)
+    comptime cacc_idx = ws_rne_cacc_offset[NV, NBODY]()
+    comptime cfrc_idx = ws_rne_cfrc_offset[NV, NBODY]()
     for i in range(BODY6_SIZE):
-        cacc[i] = Scalar[DTYPE](0)
-    var cfrc = InlineArray[Scalar[DTYPE], BODY6_SIZE](uninitialized=True)
+        workspace[env, cacc_idx + i] = Scalar[DTYPE](0)
     for i in range(BODY6_SIZE):
-        cfrc[i] = Scalar[DTYPE](0)
+        workspace[env, cfrc_idx + i] = Scalar[DTYPE](0)
     comptime CINERT_GPU_SIZE = _max_one[NBODY * 10]()
     var cinert_g = InlineArray[Scalar[DTYPE], CINERT_GPU_SIZE](uninitialized=True)
     for i in range(CINERT_GPU_SIZE):
@@ -1327,15 +1329,15 @@ def compute_bias_forces_rne_gpu[
 
         if parent == 0:
             # Root body (parent is worldbody): gravity as fictitious acceleration
-            cacc[b * 6 + 0] = Scalar[DTYPE](0)
-            cacc[b * 6 + 1] = Scalar[DTYPE](0)
-            cacc[b * 6 + 2] = Scalar[DTYPE](0)
-            cacc[b * 6 + 3] = -gx
-            cacc[b * 6 + 4] = -gy
-            cacc[b * 6 + 5] = -gz
+            workspace[env, cacc_idx + b * 6 + 0] = Scalar[DTYPE](0)
+            workspace[env, cacc_idx + b * 6 + 1] = Scalar[DTYPE](0)
+            workspace[env, cacc_idx + b * 6 + 2] = Scalar[DTYPE](0)
+            workspace[env, cacc_idx + b * 6 + 3] = -gx
+            workspace[env, cacc_idx + b * 6 + 4] = -gy
+            workspace[env, cacc_idx + b * 6 + 5] = -gz
         else:
             for k in range(6):
-                cacc[b * 6 + k] = cacc[parent * 6 + k]
+                workspace[env, cacc_idx + b * 6 + k] = workspace[env, cacc_idx + parent * 6 + k]
 
         # Process each joint of this body
         for j in range(NJOINT):
@@ -1437,12 +1439,12 @@ def compute_bias_forces_rne_gpu[
                         cv_vx * s_ang_y - cv_vy * s_ang_x
                     )
 
-                    cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
-                    cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
-                    cacc[b * 6 + 2] = cacc[b * 6 + 2] + cdot_ang_z * qdot
-                    cacc[b * 6 + 3] = cacc[b * 6 + 3] + cdot_lin_x * qdot
-                    cacc[b * 6 + 4] = cacc[b * 6 + 4] + cdot_lin_y * qdot
-                    cacc[b * 6 + 5] = cacc[b * 6 + 5] + cdot_lin_z * qdot
+                    workspace[env, cacc_idx + b * 6 + 0] = workspace[env, cacc_idx + b * 6 + 0] + cdot_ang_x * qdot
+                    workspace[env, cacc_idx + b * 6 + 1] = workspace[env, cacc_idx + b * 6 + 1] + cdot_ang_y * qdot
+                    workspace[env, cacc_idx + b * 6 + 2] = workspace[env, cacc_idx + b * 6 + 2] + cdot_ang_z * qdot
+                    workspace[env, cacc_idx + b * 6 + 3] = workspace[env, cacc_idx + b * 6 + 3] + cdot_lin_x * qdot
+                    workspace[env, cacc_idx + b * 6 + 4] = workspace[env, cacc_idx + b * 6 + 4] + cdot_lin_y * qdot
+                    workspace[env, cacc_idx + b * 6 + 5] = workspace[env, cacc_idx + b * 6 + 5] + cdot_lin_z * qdot
 
                     cv_wx = cv_wx + s_ang_x * qdot
                     cv_wy = cv_wy + s_ang_y * qdot
@@ -1488,12 +1490,12 @@ def compute_bias_forces_rne_gpu[
                         cv_vx * s_ang_y - cv_vy * s_ang_x
                     )
 
-                    cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
-                    cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
-                    cacc[b * 6 + 2] = cacc[b * 6 + 2] + cdot_ang_z * qdot
-                    cacc[b * 6 + 3] = cacc[b * 6 + 3] + cdot_lin_x * qdot
-                    cacc[b * 6 + 4] = cacc[b * 6 + 4] + cdot_lin_y * qdot
-                    cacc[b * 6 + 5] = cacc[b * 6 + 5] + cdot_lin_z * qdot
+                    workspace[env, cacc_idx + b * 6 + 0] = workspace[env, cacc_idx + b * 6 + 0] + cdot_ang_x * qdot
+                    workspace[env, cacc_idx + b * 6 + 1] = workspace[env, cacc_idx + b * 6 + 1] + cdot_ang_y * qdot
+                    workspace[env, cacc_idx + b * 6 + 2] = workspace[env, cacc_idx + b * 6 + 2] + cdot_ang_z * qdot
+                    workspace[env, cacc_idx + b * 6 + 3] = workspace[env, cacc_idx + b * 6 + 3] + cdot_lin_x * qdot
+                    workspace[env, cacc_idx + b * 6 + 4] = workspace[env, cacc_idx + b * 6 + 4] + cdot_lin_y * qdot
+                    workspace[env, cacc_idx + b * 6 + 5] = workspace[env, cacc_idx + b * 6 + 5] + cdot_lin_z * qdot
 
                 # Update cvel after all 3 DOFs
                 for d in range(3):
@@ -1578,12 +1580,12 @@ def compute_bias_forces_rne_gpu[
                     cv_vx * s_ang_y - cv_vy * s_ang_x
                 )
 
-                cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
-                cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
-                cacc[b * 6 + 2] = cacc[b * 6 + 2] + cdot_ang_z * qdot
-                cacc[b * 6 + 3] = cacc[b * 6 + 3] + cdot_lin_x * qdot
-                cacc[b * 6 + 4] = cacc[b * 6 + 4] + cdot_lin_y * qdot
-                cacc[b * 6 + 5] = cacc[b * 6 + 5] + cdot_lin_z * qdot
+                workspace[env, cacc_idx + b * 6 + 0] = workspace[env, cacc_idx + b * 6 + 0] + cdot_ang_x * qdot
+                workspace[env, cacc_idx + b * 6 + 1] = workspace[env, cacc_idx + b * 6 + 1] + cdot_ang_y * qdot
+                workspace[env, cacc_idx + b * 6 + 2] = workspace[env, cacc_idx + b * 6 + 2] + cdot_ang_z * qdot
+                workspace[env, cacc_idx + b * 6 + 3] = workspace[env, cacc_idx + b * 6 + 3] + cdot_lin_x * qdot
+                workspace[env, cacc_idx + b * 6 + 4] = workspace[env, cacc_idx + b * 6 + 4] + cdot_lin_y * qdot
+                workspace[env, cacc_idx + b * 6 + 5] = workspace[env, cacc_idx + b * 6 + 5] + cdot_lin_z * qdot
 
                 cv_wx = cv_wx + s_ang_x * qdot
                 cv_wy = cv_wy + s_ang_y * qdot
@@ -1622,8 +1624,8 @@ def compute_bias_forces_rne_gpu[
         var ci3 = cinert_g[b*10+3]; var ci4 = cinert_g[b*10+4]; var ci5 = cinert_g[b*10+5]
         var ci6 = cinert_g[b*10+6]; var ci7 = cinert_g[b*10+7]; var ci8 = cinert_g[b*10+8]
         var ci9 = cinert_g[b*10+9]
-        var ax = cacc[b*6+0]; var ay = cacc[b*6+1]; var az = cacc[b*6+2]
-        var alx = cacc[b*6+3]; var aly = cacc[b*6+4]; var alz = cacc[b*6+5]
+        var ax = workspace[env, cacc_idx + b*6+0]; var ay = workspace[env, cacc_idx + b*6+1]; var az = workspace[env, cacc_idx + b*6+2]
+        var alx = workspace[env, cacc_idx + b*6+3]; var aly = workspace[env, cacc_idx + b*6+4]; var alz = workspace[env, cacc_idx + b*6+5]
 
         var Ia0 = ci0*ax + ci3*ay + ci4*az - ci8*aly + ci7*alz
         var Ia1 = ci3*ax + ci1*ay + ci5*az + ci8*alx - ci6*alz
@@ -1648,12 +1650,12 @@ def compute_bias_forces_rne_gpu[
         var xf4 = wz*Iv3 - wx*Iv5
         var xf5 = wx*Iv4 - wy*Iv3
 
-        cfrc[b*6+0] = Ia0 + xf0
-        cfrc[b*6+1] = Ia1 + xf1
-        cfrc[b*6+2] = Ia2 + xf2
-        cfrc[b*6+3] = Ia3 + xf3
-        cfrc[b*6+4] = Ia4 + xf4
-        cfrc[b*6+5] = Ia5 + xf5
+        workspace[env, cfrc_idx + b*6+0] = Ia0 + xf0
+        workspace[env, cfrc_idx + b*6+1] = Ia1 + xf1
+        workspace[env, cfrc_idx + b*6+2] = Ia2 + xf2
+        workspace[env, cfrc_idx + b*6+3] = Ia3 + xf3
+        workspace[env, cfrc_idx + b*6+4] = Ia4 + xf4
+        workspace[env, cfrc_idx + b*6+5] = Ia5 + xf5
 
     # =========================================================================
     # Step 3: Backward pass — simple addition (subtree_com convention)
@@ -1664,16 +1666,16 @@ def compute_bias_forces_rne_gpu[
             rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
         )
         if parent > 0:
-            cfrc[parent*6+0] = cfrc[parent*6+0] + cfrc[b*6+0]
-            cfrc[parent*6+1] = cfrc[parent*6+1] + cfrc[b*6+1]
-            cfrc[parent*6+2] = cfrc[parent*6+2] + cfrc[b*6+2]
-            cfrc[parent*6+3] = cfrc[parent*6+3] + cfrc[b*6+3]
-            cfrc[parent*6+4] = cfrc[parent*6+4] + cfrc[b*6+4]
-            cfrc[parent*6+5] = cfrc[parent*6+5] + cfrc[b*6+5]
+            workspace[env, cfrc_idx + parent*6+0] = workspace[env, cfrc_idx + parent*6+0] + workspace[env, cfrc_idx + b*6+0]
+            workspace[env, cfrc_idx + parent*6+1] = workspace[env, cfrc_idx + parent*6+1] + workspace[env, cfrc_idx + b*6+1]
+            workspace[env, cfrc_idx + parent*6+2] = workspace[env, cfrc_idx + parent*6+2] + workspace[env, cfrc_idx + b*6+2]
+            workspace[env, cfrc_idx + parent*6+3] = workspace[env, cfrc_idx + parent*6+3] + workspace[env, cfrc_idx + b*6+3]
+            workspace[env, cfrc_idx + parent*6+4] = workspace[env, cfrc_idx + parent*6+4] + workspace[env, cfrc_idx + b*6+4]
+            workspace[env, cfrc_idx + parent*6+5] = workspace[env, cfrc_idx + parent*6+5] + workspace[env, cfrc_idx + b*6+5]
 
     # =========================================================================
     # Step 4: Project to joint space
-    #   bias[d] = cdof[d] . cfrc[body_of_dof[d]]
+    #   bias[d] = cdof[d] . workspace[env, cfrc_idx + body_of_dof[d]]
     # =========================================================================
     for j in range(NJOINT):
         var joint_off = model_joint_offset[NBODY](j)
@@ -1699,5 +1701,5 @@ def compute_bias_forces_rne_gpu[
                 workspace[env, bias_idx + dof] = (
                     workspace[env, bias_idx + dof]
                     + workspace[env, cdof_idx + dof * 6 + k]
-                    * cfrc[body * 6 + k]
+                    * workspace[env, cfrc_idx + body * 6 + k]
                 )

@@ -87,6 +87,7 @@ struct MBPOAgent[
         dyn_batch_size: Int = 256,
         dyn_max_epochs: Int = 40,
         dyn_weight_decay: Scalar[DT] = 5e-5,
+        dyn_learnable_bounds: Bool = False,
         use_bf16: Bool = False,
     ) raises:
         """Construct an MBPOAgent. Forwards every kwarg to `MBPOTrainer.make`.
@@ -114,6 +115,7 @@ struct MBPOAgent[
             dyn_batch_size=dyn_batch_size,
             dyn_max_epochs=dyn_max_epochs,
             dyn_weight_decay=dyn_weight_decay,
+            dyn_learnable_bounds=dyn_learnable_bounds,
             use_bf16=use_bf16,
         )
 
