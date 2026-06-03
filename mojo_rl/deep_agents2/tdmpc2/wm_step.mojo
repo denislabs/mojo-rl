@@ -25,10 +25,11 @@ Inputs (t-major, contiguous per step):
 """
 
 from std.memory import alloc
-from layout import TileTensor, row_major
-from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor, TileTensor, row_major
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.optimizer.adam import Adam
 
 from .nets import (
@@ -40,6 +41,94 @@ from .wm_graph import TDMPC2WMGraph, NQ
 @always_inline
 def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return alloc[Scalar[DT]](n)
+
+
+# ── GPU marshalling helpers + kernels (mirror dreamerv3/blocks + the
+#    spike_wm_bptt_gpu device-buffer orchestration). ─────────────────────
+@always_inline
+def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+
+
+@always_inline
+def _lt[N: Int](
+    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
+    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
+
+
+def _upload(
+    ctx: DeviceContext, src: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int
+) raises -> DeviceBuffer[DT]:
+    """Host raw pointer → fresh device buffer (one H2D)."""
+    var d = ctx.enqueue_create_buffer[DT](n)
+    var h = ctx.enqueue_create_host_buffer[DT](n)
+    ctx.synchronize()
+    for i in range(n):
+        h.unsafe_ptr()[i] = src[i]
+    ctx.enqueue_copy(d, h)
+    ctx.synchronize()
+    return d^
+
+
+def _copyk[N: Int](
+    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    var i = Int(global_idx.x)
+    if i < N:
+        dst[i] = rebind[Scalar[DT]](src[i])
+
+
+def _extract_carry_k[B_: Int, LAT_: Int, OW_: Int](
+    ob: LayoutTensor[DT, Layout.row_major(B_ * OW_), MutAnyOrigin],
+    carry_next: LayoutTensor[DT, Layout.row_major(B_ * LAT_), MutAnyOrigin],
+):
+    """carry_next[b,k] = out[b, 7+k]  (znext passthrough columns)."""
+    var i = Int(global_idx.x)
+    if i < B_ * LAT_:
+        var b = i // LAT_
+        var k = i % LAT_
+        carry_next[i] = rebind[Scalar[DT]](ob[b * OW_ + 7 + k])
+
+
+def _seed_wm_k[B_: Int, OW_: Int, LAT_: Int, NQ_: Int](
+    seed: LayoutTensor[DT, Layout.row_major(B_ * OW_), MutAnyOrigin],
+    gz: LayoutTensor[DT, Layout.row_major(B_ * LAT_), MutAnyOrigin],
+    sc_cons: Scalar[DT],
+    sc_rew: Scalar[DT],
+    sc_val: Scalar[DT],
+):
+    """seed[b] = [sc_cons, sc_rew, sc_val×NQ, gz[b]]."""
+    var b = Int(global_idx.x)
+    if b < B_:
+        seed[b * OW_ + 0] = sc_cons
+        seed[b * OW_ + 1] = sc_rew
+        for q in range(NQ_):
+            seed[b * OW_ + 2 + q] = sc_val
+        for k in range(LAT_):
+            seed[b * OW_ + 7 + k] = rebind[Scalar[DT]](gz[b * LAT_ + k])
+
+
+def _accum_metric_k[B_: Int, OW_: Int, NQ_: Int](
+    ob: LayoutTensor[DT, Layout.row_major(B_ * OW_), MutAnyOrigin],
+    acc: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+    sc_cons: Scalar[DT],
+    sc_rew: Scalar[DT],
+    sc_val: Scalar[DT],
+):
+    """acc[0] += Σ_b (sc_cons·cons + sc_rew·rew + sc_val·Σ_q v_q). One thread."""
+    var t = Int(global_idx.x)
+    if t == 0:
+        var s: Scalar[DT] = 0.0
+        for b in range(B_):
+            var v = sc_cons * rebind[Scalar[DT]](ob[b * OW_ + 0]) + sc_rew * (
+                rebind[Scalar[DT]](ob[b * OW_ + 1])
+            )
+            for q in range(NQ_):
+                v += sc_val * rebind[Scalar[DT]](ob[b * OW_ + 2 + q])
+            s += v
+        acc[0] = rebind[Scalar[DT]](acc[0]) + s
 
 
 struct WMStep[
@@ -79,12 +168,41 @@ struct WMStep[
     def make[target: StaticString](
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert target == "cpu", (
-            "WMStep: only the CPU path is implemented (GPU is port-plan P4)"
+        comptime assert target == "cpu" or target == "gpu", (
+            "WMStep: target must be 'cpu' or 'gpu'"
         )
         return Self()
 
     def step[target: StaticString](
+        mut self,
+        mut graph: Self.GraphT,
+        mut enc: Self.EncT,
+        mut dyn: Self.DynT,
+        mut rew_net: Self.RewT,
+        mut q: List[Self.QNetT],
+        mut enc_opt: Adam,
+        mut dyn_opt: Adam,
+        mut rew_opt: Adam,
+        mut q_opt: List[Adam],
+        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(H+1),B,OBS] (host)
+        act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B,ACT]
+        rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B]
+        td: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B]
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Scalar[DT]:
+        comptime if target == "cpu":
+            return self._wm_cpu[target](
+                graph, enc, dyn, rew_net, q,
+                enc_opt, dyn_opt, rew_opt, q_opt, obs, act, rew, td,
+            )
+        else:
+            return self._wm_gpu[target](
+                graph, enc, dyn, rew_net, q,
+                enc_opt, dyn_opt, rew_opt, q_opt, obs, act, rew, td,
+                ctx.value(),
+            )
+
+    def _wm_cpu[target: StaticString](
         mut self,
         mut graph: Self.GraphT,
         mut enc: Self.EncT,
@@ -100,7 +218,6 @@ struct WMStep[
         rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B]
         td: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B]
     ) raises -> Scalar[DT]:
-        comptime assert target == "cpu", "WMStep.step: CPU only (P4 = GPU)"
         comptime LAT = Self.LATENT
         comptime OW = Self.OUTW
 
@@ -225,6 +342,161 @@ struct WMStep[
         carry.free(); zen.free(); out.free()
         gz.free(); seed.free(); scratch.free(); gobs.free()
         return total
+
+    def _wm_gpu[target: StaticString](
+        mut self,
+        mut graph: Self.GraphT,
+        mut enc: Self.EncT,
+        mut dyn: Self.DynT,
+        mut rew_net: Self.RewT,
+        mut q: List[Self.QNetT],
+        mut enc_opt: Adam,
+        mut dyn_opt: Adam,
+        mut rew_opt: Adam,
+        mut q_opt: List[Adam],
+        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(H+1),B,OBS] host
+        act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B,ACT] host
+        rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B] host
+        td: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B] host
+        ctx: DeviceContext,
+    ) raises -> Scalar[DT]:
+        comptime LAT = Self.LATENT
+        comptime OW = Self.OUTW
+        comptime BB = Self.B
+        comptime OBSD = Self.OBS
+
+        # ── upload inputs + allocate device scratch ────────────────────
+        var d_obs = _upload(ctx, obs, (Self.H + 1) * BB * OBSD)
+        var d_act = _upload(ctx, act, Self.H * BB * Self.ACT)
+        var d_rew = _upload(ctx, rew, Self.H * BB)
+        var d_td = _upload(ctx, td, Self.H * BB)
+        var d_carry = ctx.enqueue_create_buffer[DT]((Self.H + 1) * BB * LAT)
+        var d_zen = ctx.enqueue_create_buffer[DT](Self.H * BB * LAT)
+        var d_out = ctx.enqueue_create_buffer[DT](BB * OW)
+        var d_scratch = ctx.enqueue_create_buffer[DT](BB * OW)
+        var d_seed = ctx.enqueue_create_buffer[DT](BB * OW)
+        var d_gz = ctx.enqueue_create_buffer[DT](BB * LAT)
+        var d_acc = ctx.enqueue_create_buffer[DT](1)
+        d_acc.enqueue_fill(0.0)
+        var d_gobs = ctx.enqueue_create_buffer[DT](BB * OBSD)
+
+        graph.set_external["znext", Self.DynT](dyn)
+        graph.set_external["rlog", Self.RewT](rew_net)
+        graph.set_external["q0", Self.QNetT](q[0])
+        graph.set_external["q1", Self.QNetT](q[1])
+        graph.set_external["q2", Self.QNetT](q[2])
+        graph.set_external["q3", Self.QNetT](q[3])
+        graph.set_external["q4", Self.QNetT](q[4])
+
+        comptime nb_lat = (BB * LAT + TPB - 1) // TPB
+        comptime nb_b = (BB + TPB - 1) // TPB
+        comptime ext_k = _extract_carry_k[BB, LAT, OW]
+        comptime acc_k = _accum_metric_k[BB, OW, NQ]
+        comptime seed_k = _seed_wm_k[BB, OW, LAT, NQ]
+        comptime cp_k = _copyk[BB * LAT]
+
+        var inv_b = Scalar[DT](1.0) / Scalar[DT](BB)
+        var inv_h = Scalar[DT](1.0) / Scalar[DT](Self.H)
+        var inv_lat = Scalar[DT](1.0) / Scalar[DT](LAT)
+        var inv_nq = Scalar[DT](1.0) / Scalar[DT](NQ)
+
+        # ── 1. consistency targets enc(obs[t+1]) → d_zen[t] (stop-grad) ─
+        for t in range(Self.H):
+            var dst = _dp(d_zen) + t * BB * LAT
+            var dst_t = TileTensor(dst, row_major[BB, LAT]())
+            enc.forward[target, BB](
+                TileTensor(
+                    _dp(d_obs) + (t + 1) * BB * OBSD, row_major[BB, OBSD]()
+                ),
+                output=dst_t,
+            )
+        # ── 2. z_0 = enc(obs[0]) → d_carry[0] (cache = obs[0]) ─────────
+        var z0_t = TileTensor(_dp(d_carry), row_major[BB, LAT]())
+        enc.forward[target, BB](
+            TileTensor(_dp(d_obs), row_major[BB, OBSD]()), output=z0_t,
+        )
+
+        # ── 3. forward scan ────────────────────────────────────────────
+        var rho_t = Scalar[DT](1.0)
+        for t in range(Self.H):
+            self._set_step_inputs[target](
+                graph, _dp(d_carry), _dp(d_zen), _dp(d_act), _dp(d_rew),
+                _dp(d_td), t,
+            )
+            var ot = TileTensor(_dp(d_out), row_major[BB, OW]())
+            graph.forward[target, BB](ot)
+            ctx.enqueue_function[ext_k](
+                _lt[BB * OW](_dp(d_out)),
+                _lt[BB * LAT](_dp(d_carry) + (t + 1) * BB * LAT),
+                grid_dim=nb_lat, block_dim=TPB,
+            )
+            ctx.enqueue_function[acc_k](
+                _lt[BB * OW](_dp(d_out)), _lt[1](_dp(d_acc)),
+                self.consistency_coef * rho_t * inv_b * inv_lat * inv_h,
+                self.reward_coef * rho_t * inv_b * inv_h,
+                self.value_coef * rho_t * inv_b * inv_nq * inv_h,
+                grid_dim=1, block_dim=1,
+            )
+            rho_t *= self.rho
+
+        # ── 4. zero grads + gz ─────────────────────────────────────────
+        enc_opt.zero_grad[target, Self.EncT](enc)
+        dyn_opt.zero_grad[target, Self.DynT](dyn)
+        rew_opt.zero_grad[target, Self.RewT](rew_net)
+        for i in range(NQ):
+            q_opt[i].zero_grad[target, Self.QNetT](q[i])
+        d_gz.enqueue_fill(0.0)
+
+        # ── 5. reverse-scan BPTT ───────────────────────────────────────
+        var rho_rev = Scalar[DT](1.0)
+        for _ in range(Self.H - 1):
+            rho_rev *= self.rho
+        for rev in range(Self.H):
+            var t = Self.H - 1 - rev
+            self._set_step_inputs[target](
+                graph, _dp(d_carry), _dp(d_zen), _dp(d_act), _dp(d_rew),
+                _dp(d_td), t,
+            )
+            var sct = TileTensor(_dp(d_scratch), row_major[BB, OW]())
+            graph.forward[target, BB](sct)
+            ctx.enqueue_function[seed_k](
+                _lt[BB * OW](_dp(d_seed)), _lt[BB * LAT](_dp(d_gz)),
+                self.consistency_coef * rho_rev * inv_b * inv_lat * inv_h,
+                self.reward_coef * rho_rev * inv_b * inv_h,
+                self.value_coef * rho_rev * inv_b * inv_nq * inv_h,
+                grid_dim=nb_b, block_dim=TPB,
+            )
+            graph.vjp[target, BB](
+                TileTensor(_dp(d_seed), row_major[BB, OW]())
+            )
+            ctx.enqueue_function[cp_k](
+                _lt[BB * LAT](graph.grad_input_ptr["z"]()),
+                _lt[BB * LAT](_dp(d_gz)),
+                grid_dim=nb_lat, block_dim=TPB,
+            )
+            rho_rev /= self.rho
+
+        # ── 6. encoder backward from t=0 carry grad ────────────────────
+        var z0r_t = TileTensor(_dp(d_carry), row_major[BB, LAT]())
+        enc.forward[target, BB](
+            TileTensor(_dp(d_obs), row_major[BB, OBSD]()), output=z0r_t,
+        )
+        var gobs_t = TileTensor(_dp(d_gobs), row_major[BB, OBSD]())
+        enc.vjp[target, BB](
+            TileTensor(_dp(d_gz), row_major[BB, LAT]()), gobs_t,
+        )
+
+        # ── 7. optimizer steps ─────────────────────────────────────────
+        enc_opt.step[target, Self.EncT](enc)
+        dyn_opt.step[target, Self.DynT](dyn)
+        rew_opt.step[target, Self.RewT](rew_net)
+        for i in range(NQ):
+            q_opt[i].step[target, Self.QNetT](q[i])
+
+        var h = ctx.enqueue_create_host_buffer[DT](1)
+        ctx.enqueue_copy(h, d_acc)
+        ctx.synchronize()
+        return h.unsafe_ptr()[0]
 
     def _set_step_inputs[target: StaticString](
         self,
