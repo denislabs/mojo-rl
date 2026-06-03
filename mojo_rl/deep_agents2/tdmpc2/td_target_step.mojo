@@ -81,8 +81,9 @@ struct TDTargetStep[
         mut self,
         mut enc: Self.EncT,
         mut policy: Self.PolicyT,
-        mut qt1: Self.QNetT,
-        mut qt2: Self.QNetT,
+        mut qt: List[Self.QNetT],
+        qi: Int,
+        qj: Int,
         obs: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [(H+1),B,OBS]
         reward: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [H,B]
         done: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B]
@@ -128,11 +129,11 @@ struct TDTargetStep[
             # Q = min of 2 target heads, two-hot decoded.
             var ql1_t = TileTensor(qlog1, row_major[Self.B, Self.BINS]())
             var qa_t = TileTensor(qa, row_major[Self.B, 1]())
-            qt1.forward[target, Self.B](za_t, output=ql1_t)
+            qt[qi].forward[target, Self.B](za_t, output=ql1_t)
             self.decode.forward[target, Self.B](ql1_t, output=qa_t)
             var ql2_t = TileTensor(qlog2, row_major[Self.B, Self.BINS]())
             var qb_t = TileTensor(qb, row_major[Self.B, 1]())
-            qt2.forward[target, Self.B](za_t, output=ql2_t)
+            qt[qj].forward[target, Self.B](za_t, output=ql2_t)
             self.decode.forward[target, Self.B](ql2_t, output=qb_t)
             for b in range(Self.B):
                 var qmin = min(qa[b], qb[b])

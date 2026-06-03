@@ -50,8 +50,9 @@ def test_td_target_smoke() raises:
 
     var enc = EncT.make["cpu", INIT=Kaiming]()
     var policy = PolicyT.make["cpu", INIT=Kaiming]()
-    var qt1 = QNetT.make["cpu", INIT=Kaiming]()
-    var qt2 = QNetT.make["cpu", INIT=Kaiming]()
+    var qt = List[QNetT]()
+    qt.append(QNetT.make["cpu", INIT=Kaiming]())
+    qt.append(QNetT.make["cpu", INIT=Kaiming]())
     var step = StepT.make["cpu"]()
 
     var obs = alloc[Scalar[DT]]((H + 1) * B * OBS)
@@ -64,7 +65,7 @@ def test_td_target_smoke() raises:
         done[i] = Scalar[DT](0.0)
 
     var gamma = Scalar[DT](0.99)
-    step.step["cpu"](enc, policy, qt1, qt2, obs, rew, done, td, gamma)
+    step.step["cpu"](enc, policy, qt, 0, 1, obs, rew, done, td, gamma)
 
     var finite = True
     for i in range(H * B):
@@ -76,7 +77,7 @@ def test_td_target_smoke() raises:
     for i in range(H * B):
         done[i] = Scalar[DT](1.0)
     var td2 = alloc[Scalar[DT]](H * B)
-    step.step["cpu"](enc, policy, qt1, qt2, obs, rew, done, td2, gamma)
+    step.step["cpu"](enc, policy, qt, 0, 1, obs, rew, done, td2, gamma)
     for i in range(H * B):
         assert_almost_equal(
             td2[i], rew[i], atol=1e-5,
@@ -88,7 +89,7 @@ def test_td_target_smoke() raises:
     for i in range(H * B):
         rew[i] = Scalar[DT](1.5)
     var td3 = alloc[Scalar[DT]](H * B)
-    step.step["cpu"](enc, policy, qt1, qt2, obs, rew, done, td3, gamma)
+    step.step["cpu"](enc, policy, qt, 0, 1, obs, rew, done, td3, gamma)
     for i in range(H * B):
         assert_almost_equal(
             td3[i], Scalar[DT](1.5), atol=1e-5,

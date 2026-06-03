@@ -48,8 +48,9 @@ def test_policy_ascends_q() raises:
     comptime StepT = PolicyStep[LATENT, ACT, MLP, BINS, VMIN, VMAX, B]
 
     var policy = PolicyT.make["cpu", INIT=Kaiming]()
-    var q1 = QNetT.make["cpu", INIT=Kaiming]()
-    var q2 = QNetT.make["cpu", INIT=Kaiming]()
+    var q = List[QNetT]()
+    q.append(QNetT.make["cpu", INIT=Kaiming]())
+    q.append(QNetT.make["cpu", INIT=Kaiming]())
     var pi_opt = Adam.make["cpu", PolicyT](policy)
     pi_opt.lr = Scalar[DT](1e-3)
 
@@ -65,7 +66,7 @@ def test_policy_ascends_q() raises:
     var last: Scalar[DT] = 0.0
     comptime ITERS = 80
     for it in range(ITERS):
-        var l = step.step["cpu"](policy, q1, q2, pi_opt, z)
+        var l = step.step["cpu"](policy, q, 0, 1, pi_opt, z)
         assert_true(isfinite(l), "policy loss must be finite")
         if it == 0:
             first = l

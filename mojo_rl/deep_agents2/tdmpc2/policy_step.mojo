@@ -71,19 +71,23 @@ struct PolicyStep[
     def step[target: StaticString](
         mut self,
         mut policy: Self.PolicyT,
-        mut q1: Self.QNetT,
-        mut q2: Self.QNetT,
+        mut q: List[Self.QNetT],
+        qi: Int,
+        qj: Int,
         mut pi_opt: Adam,
         z: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, LATENT]
     ) raises -> Scalar[DT]:
         comptime assert target == "cpu", "PolicyStep.step: CPU only (P4 = GPU)"
         comptime BB = Self.B
 
-        # ── Bind externals (repeat each call: fields may move). ────────
+        # ── Bind externals (repeat each call: fields may move). The two Q
+        # heads are indexed from the ensemble List in separate statements
+        # (two `mut` subscripts of one List in a single call is rejected by
+        # Mojo's aliasing checker — feedback_optimizer_bundle_alias). ────
         self.graph.set_external["pi_out", Self.PolicyT](policy)
         self.graph.set_external["alp", RSample[Self.ACT]](self.rsample)
-        self.graph.set_external["q1", Self.QNetT](q1)
-        self.graph.set_external["q2", Self.QNetT](q2)
+        self.graph.set_external["q1", Self.QNetT](q[qi])
+        self.graph.set_external["q2", Self.QNetT](q[qj])
 
         self.graph.set_input["z", BB](
             TileTensor(z, row_major[BB, Self.LATENT]())
