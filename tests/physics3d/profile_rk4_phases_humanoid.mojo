@@ -51,7 +51,9 @@ from mojo_rl.physics3d.dynamics.mass_matrix import (
     compute_mass_matrix_full_gpu,
     compute_mass_matrix_full_gpu_mt,
     ldl_factor_gpu,
+    ldl_factor_gpu_mt,
     compute_M_inv_from_ldl_gpu,
+    compute_M_inv_from_ldl_gpu_mt,
     ldl_solve_workspace_gpu,
 )
 from mojo_rl.physics3d.dynamics.bias_forces import (
@@ -317,7 +319,10 @@ def main() raises:
                 WS_SIZE,
             ](env, tid, STEP_THREADS, s, m, w)
 
-        # Phase 6: LDL Factorization (serial)
+        # Phase 6: LDL factorization (MT — production path, RK4_PARALLEL_LDL).
+        # Cooperative across STEP_THREADS with internal per-column barriers, so
+        # it must be launched 2D (envs × threads) and called UNCONDITIONALLY
+        # (all threads reach the barriers); valid_env guards the writes.
         @always_inline
         def ldl_kernel(
             w: LayoutTensor[
@@ -325,11 +330,15 @@ def main() raises:
             ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if env >= BATCH:
-                return
-            ldl_factor_gpu[dtype, NV, NBODY, BATCH, WS_SIZE](env, w)
+            var tid = Int(thread_idx.y)
+            var valid_env = env < BATCH
+            ldl_factor_gpu_mt[dtype, NV, NBODY, BATCH, WS_SIZE](
+                env, tid, STEP_THREADS, valid_env, w
+            )
 
-        # Phase 7: M_inv from LDL (serial)
+        # Phase 7: M_inv from LDL (MT — production path, RK4_PARALLEL_MINV).
+        # Columns are independent (no internal barriers); the prior kernel
+        # boundary guarantees the LDL factors are ready.
         @always_inline
         def minv_kernel(
             w: LayoutTensor[
@@ -337,9 +346,12 @@ def main() raises:
             ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            var tid = Int(thread_idx.y)
             if env >= BATCH:
                 return
-            compute_M_inv_from_ldl_gpu[dtype, NV, NBODY, BATCH, WS_SIZE](env, w)
+            compute_M_inv_from_ldl_gpu_mt[dtype, NV, NBODY, BATCH, WS_SIZE](
+                env, tid, STEP_THREADS, w
+            )
 
         # Phase 8: Bias Forces RNE (serial)
         @always_inline
@@ -410,10 +422,14 @@ def main() raises:
                 block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
             ctx.enqueue_function[ldl_kernel](
-                workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+                workspace,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
             ctx.enqueue_function[minv_kernel](
-                workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+                workspace,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
             ctx.enqueue_function[rne_kernel](
                 state, model, workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
@@ -547,34 +563,34 @@ def main() raises:
         var mm_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
         print("5. Mass matrix (MT):         " + String(mm_us)[byte=:8] + " μs")
 
-        # Phase 6: LDL
+        # Phase 6: LDL (MT — production path)
         ctx.synchronize()
         t0 = perf_counter_ns()
         for _ in range(N_STEPS):
             ctx.enqueue_function[ldl_kernel](
                 workspace,
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
         ctx.synchronize()
         t1 = perf_counter_ns()
         var ldl_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("6. LDL factorization:        " + String(ldl_us)[byte=:8] + " μs")
+        print("6. LDL factorization (MT):   " + String(ldl_us)[byte=:8] + " μs")
 
-        # Phase 7: M_inv
+        # Phase 7: M_inv (MT — production path)
         ctx.synchronize()
         t0 = perf_counter_ns()
         for _ in range(N_STEPS):
             ctx.enqueue_function[minv_kernel](
                 workspace,
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
         ctx.synchronize()
         t1 = perf_counter_ns()
         var minv_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
         print(
-            "7. M_inv from LDL:           " + String(minv_us)[byte=:8] + " μs"
+            "7. M_inv from LDL (MT):      " + String(minv_us)[byte=:8] + " μs"
         )
 
         # Phase 8: RNE
