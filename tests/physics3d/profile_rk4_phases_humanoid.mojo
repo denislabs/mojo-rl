@@ -81,7 +81,7 @@ def main() raises:
     # OOM that BATCH=256 hits (256 full-Humanoid workspaces + the fused
     # rk4_stage_kernel's local-memory reservation). Bump back up if the GPU has
     # the headroom (check `nvidia-smi`); the relative split won't change.
-    comptime BATCH = 64
+    comptime BATCH = 1
     comptime N_STEPS = 200  # RK4 is heavier than Euler; fewer steps suffice
 
     # Humanoid dimensions (from HumanoidModel = ModelDefFromXML[...])
@@ -147,16 +147,25 @@ def main() raises:
     # Computed buffer footprint (host-side, exact).
     print("Buffer sizes (per env / total):")
     print(
-        "  STATE_SIZE = " + String(STATE_SIZE) + " floats  -> state_buf "
-        + String(Float64(BATCH * STATE_SIZE * 4) / 1.0e6) + " MB"
+        "  STATE_SIZE = "
+        + String(STATE_SIZE)
+        + " floats  -> state_buf "
+        + String(Float64(BATCH * STATE_SIZE * 4) / 1.0e6)
+        + " MB"
     )
     print(
-        "  MODEL_SIZE = " + String(MODEL_SIZE) + " floats  -> model_buf "
-        + String(Float64(MODEL_SIZE * 4) / 1.0e6) + " MB"
+        "  MODEL_SIZE = "
+        + String(MODEL_SIZE)
+        + " floats  -> model_buf "
+        + String(Float64(MODEL_SIZE * 4) / 1.0e6)
+        + " MB"
     )
     print(
-        "  WS_SIZE    = " + String(WS_SIZE) + " floats  -> workspace_buf "
-        + String(Float64(BATCH * WS_SIZE * 4) / 1.0e6) + " MB"
+        "  WS_SIZE    = "
+        + String(WS_SIZE)
+        + " floats  -> workspace_buf "
+        + String(Float64(BATCH * WS_SIZE * 4) / 1.0e6)
+        + " MB"
     )
     print(
         "  TOTAL buffers = "
@@ -172,8 +181,10 @@ def main() raises:
         var (free0, total0) = ctx.get_memory_info()
         print(
             "VRAM @ ctx open:        free "
-            + String(Float64(free0) / 1.0e9) + " / "
-            + String(Float64(total0) / 1.0e9) + " GB"
+            + String(Float64(free0) / 1.0e9)
+            + " / "
+            + String(Float64(total0) / 1.0e9)
+            + " GB"
         )
 
         var state_buf = ctx.enqueue_create_buffer[dtype](BATCH * STATE_SIZE)
@@ -188,8 +199,10 @@ def main() raises:
         var (free1, total1) = ctx.get_memory_info()
         print(
             "VRAM after buffers:     free "
-            + String(Float64(free1) / 1.0e9) + " GB  (buffers+init used "
-            + String(Float64(free0 - free1) / 1.0e6) + " MB)"
+            + String(Float64(free1) / 1.0e9)
+            + " GB  (buffers+init used "
+            + String(Float64(free0 - free1) / 1.0e6)
+            + " MB)"
         )
 
         var state = LayoutTensor[
@@ -471,10 +484,18 @@ def main() raises:
                 state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
             )
             ctx.enqueue_function[cdof_kernel](
-                state, model, workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+                state,
+                model,
+                workspace,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
             ctx.enqueue_function[crb_kernel](
-                state, model, workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+                state,
+                model,
+                workspace,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
             ctx.enqueue_function[mass_matrix_kernel](
                 state,
@@ -490,7 +511,11 @@ def main() raises:
                 workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
             )
             ctx.enqueue_function[rne_kernel](
-                state, model, workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+                state,
+                model,
+                workspace,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
             ctx.enqueue_function[ldl_solve_kernel](
                 workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
@@ -501,7 +526,8 @@ def main() raises:
             "VRAM after phase warmup: free "
             + String(Float64(free2) / 1.0e9)
             + " GB  (phase kernels reserved "
-            + String(Float64(free1 - free2) / 1.0e6) + " MB)"
+            + String(Float64(free1 - free2) / 1.0e6)
+            + " MB)"
         )
 
         print("Warmup done!")
