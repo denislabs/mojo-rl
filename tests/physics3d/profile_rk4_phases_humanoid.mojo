@@ -1,38 +1,22 @@
-"""Profile RK4 forward-dynamics phases individually — Humanoid (NV=23).
+"""Profile Euler integrator phases individually.
 
-Humanoid counterpart of `profile_euler_phases.mojo` (HalfCheetah/Euler). Breaks
-the monolithic `rk4_stage_kernel` into separate per-phase kernel launches so we
-can measure each phase (FK, velocities, contacts, subtree-COM, CDOF, CRB, mass
-matrix, LDL, M_inv, RNE, LDL-solve) in isolation on the *real* large-NV target.
+Breaks the monolithic step_kernel_mt into separate kernel launches for each
+phase, so nsys can measure FK, CDOF, CRB, MassMatrix, LDL, RNE, etc.
+individually.
 
-This is the apples-to-apples per-phase split the blocked-solver doc calls for
-before investing in Lever 1 (branch/level-parallel forward dynamics): it tells
-us whether FK + velocities (the serial root→leaf tree walks) are a slice worth
-parallelizing, vs CRB/LDL/M_inv (dense linear algebra) or RNE.
-
-Humanoid uses RK4Integrator[NewtonSolver] with frame_skip=5, so a single
-env.step runs 20 solves and 20 forward-dynamics passes (4 RK4 stages × 5
-substeps). Each phase below is launched standalone with the same dims/layout the
-RK4 stage kernel uses (STEP_THREADS=NV), so the per-phase µs are directly the
-per-pass cost; multiply by 20 to weight a full env.step.
-
-NOTE on multi-threaded phases: mass matrix is launched multi-threaded
-(`*_gpu_mt`, the one phase already distributed). FK / velocities / CDOF / CRB /
-RNE are launched single-thread-per-env here (matching how the *current* stage
-kernel runs them — redundantly on all STEP_THREADS, so per-env latency = one
-serial walk). LDL / M_inv are launched single-thread here to isolate the raw
-serial cost (the stage kernel parallelizes them via RK4_PARALLEL_LDL/MINV).
+Uses Humanoid configuration (NV=23, NBODY=14, STEP_THREADS=23). Same RK4 phase
+profiler as the HalfCheetah variant, env swapped — used to reproduce the
+compile-time OOM at large dims.
 
 Run:
-    pixi run -e nvidia mojo run -I . tests/physics3d/profile_rk4_phases_humanoid.mojo
+    pixi run -e nvidia mojo run -I . tests/physics3d/profile_euler_phases.mojo
 
-nsys (per-kernel):
-    nsys profile -o rk4_phases_humanoid pixi run -e nvidia mojo run -I . \
-        tests/physics3d/profile_rk4_phases_humanoid.mojo
-    nsys stats --report cuda_gpu_kern_sum rk4_phases_humanoid.nsys-rep | head -40
+Profile:
+    nsys profile -o euler_phases pixi run -e nvidia mojo run -I . tests/physics3d/profile_euler_phases.mojo
+    nsys stats --report cuda_gpu_kern_sum euler_phases.nsys-rep | head -40
 """
 
-from std.random import seed
+from std.random import seed, random_float64
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu import thread_idx, block_idx, block_dim, barrier
@@ -43,6 +27,17 @@ from mojo_rl.physics3d.gpu.constants import (
     state_size,
     model_size_with_invweight,
     integrator_workspace_size,
+    rk4_extra_workspace_size,
+    ws_cdof_offset,
+    ws_crb_offset,
+    ws_M_offset,
+    ws_L_offset,
+    ws_D_offset,
+    ws_m_inv_offset,
+    ws_bias_offset,
+    ws_fnet_offset,
+    ws_qacc_ws_offset,
+    ws_qacc_constrained_offset,
 )
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics_gpu,
@@ -51,9 +46,9 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import (
 from mojo_rl.physics3d.dynamics.jacobian import (
     compute_cdof_gpu,
     compute_composite_inertia_gpu,
-    compute_subtree_com_gpu,
 )
 from mojo_rl.physics3d.dynamics.mass_matrix import (
+    compute_mass_matrix_full_gpu,
     compute_mass_matrix_full_gpu_mt,
     ldl_factor_gpu,
     compute_M_inv_from_ldl_gpu,
@@ -62,10 +57,8 @@ from mojo_rl.physics3d.dynamics.mass_matrix import (
 from mojo_rl.physics3d.dynamics.bias_forces import (
     compute_bias_forces_rne_gpu,
 )
-from mojo_rl.physics3d.collision.broadphase_sap import (
-    detect_contacts_auto_gpu,
-)
 from mojo_rl.physics3d.solver.newton_solver import NewtonSolver
+from mojo_rl.physics3d.integrator.rk4_integrator import RK4Integrator
 
 from mojo_rl.envs.humanoid import Humanoid
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
@@ -76,53 +69,39 @@ def main() raises:
     seed(42)
 
     comptime dtype = DType.float32
-    # NOTE: the per-phase % split is BATCH-invariant (every phase scales with
-    # BATCH), so a small BATCH is fine for the breakdown — and avoids the CUDA
-    # OOM that BATCH=256 hits (256 full-Humanoid workspaces + the fused
-    # rk4_stage_kernel's local-memory reservation). Bump back up if the GPU has
-    # the headroom (check `nvidia-smi`); the relative split won't change.
-    comptime BATCH = 1
-    comptime N_STEPS = 200  # RK4 is heavier than Euler; fewer steps suffice
+    comptime BATCH = 256
+    comptime N_STEPS = 500  # Enough for profiling
 
-    # Humanoid dimensions (from HumanoidModel = ModelDefFromXML[...])
+    # Humanoid dimensions (ModelDefFromXML)
     comptime NQ = HumanoidModel.NQ  # 24
     comptime NV = HumanoidModel.NV  # 23
     comptime NBODY = HumanoidModel.NBODY  # 14
     comptime NJOINT = HumanoidModel.NJOINT  # 18
-    comptime NGEOM = HumanoidModel.NGEOM  # 18
     comptime MAX_CONTACTS = HumanoidModel.MAX_CONTACTS  # 50
+    comptime NGEOM = HumanoidModel.NGEOM  # 18
     comptime NSITE = HumanoidModel.NSITE
     comptime MAX_EQUALITY = HumanoidModel.MAX_EQUALITY
     comptime MAX_TENDON = HumanoidModel.MAX_TENDON
     comptime NEXCLUDE = HumanoidModel.nexclude
 
-    # Sizes must match Phyics3dEnv exactly (Humanoid has sites + tendons, so the
-    # model/state buffers carry equality/tendon/site/exclude blocks too).
+    # Sizes must match Phyics3dEnv (Humanoid has sites + tendons).
     comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
     comptime MODEL_SIZE = model_size_with_invweight[
-        NBODY,
-        NJOINT,
-        NV,
-        NGEOM,
-        MAX_EQUALITY,
-        MAX_TENDON,
-        NSITE,
-        NEXCLUDE,
+        NBODY, NJOINT, NV, NGEOM, MAX_EQUALITY, MAX_TENDON, NSITE, NEXCLUDE
     ]()
-    # RK4 path needs the extra workspace (INTEGRATOR_WS_EXTRA = NQ + 7*NV).
     comptime WS_SIZE = integrator_workspace_size[
         NV, NBODY
     ]() + NV * NV + NewtonSolver.solver_workspace_size[
         NV, MAX_CONTACTS
-    ]() + HumanoidConfig.INTEGRATOR_WS_EXTRA
+    ]() + rk4_extra_workspace_size[NQ, NV]()
 
-    comptime STEP_THREADS = NV  # 23
+    comptime STEP_THREADS = NV  # 10
     comptime ENV_BLOCKS = (BATCH + TPB - 1) // TPB
     comptime STEP_ENV_TPB = TPB // STEP_THREADS
     comptime STEP_ENV_BLOCKS = (BATCH + STEP_ENV_TPB - 1) // STEP_ENV_TPB
 
     print("=" * 60)
-    print("RK4 Forward-Dynamics Phase Profiling — Humanoid")
+    print("RK4 Integrator Phase Profiling — Humanoid (NV=23)")
     print("=" * 60)
     print(
         "BATCH="
@@ -131,8 +110,6 @@ def main() raises:
         + String(NV)
         + " NBODY="
         + String(NBODY)
-        + " MAX_CONTACTS="
-        + String(MAX_CONTACTS)
     )
     print("STEP_THREADS=" + String(STEP_THREADS))
     print(
@@ -141,38 +118,15 @@ def main() raises:
         + " STEP_ENV_BLOCKS="
         + String(STEP_ENV_BLOCKS)
     )
-    print("Steps: " + String(N_STEPS) + " (per RK4 pass; ×20 for a full step)")
-    print()
-
-    # Computed buffer footprint (host-side, exact).
-    print("Buffer sizes (per env / total):")
+    print("Steps: " + String(N_STEPS))
+    # Exact host-side buffer footprint (device VRAM these will occupy).
     print(
-        "  STATE_SIZE = "
-        + String(STATE_SIZE)
-        + " floats  -> state_buf "
+        "Buffers: state "
         + String(Float64(BATCH * STATE_SIZE * 4) / 1.0e6)
-        + " MB"
-    )
-    print(
-        "  MODEL_SIZE = "
-        + String(MODEL_SIZE)
-        + " floats  -> model_buf "
+        + " MB + model "
         + String(Float64(MODEL_SIZE * 4) / 1.0e6)
-        + " MB"
-    )
-    print(
-        "  WS_SIZE    = "
-        + String(WS_SIZE)
-        + " floats  -> workspace_buf "
+        + " MB + workspace "
         + String(Float64(BATCH * WS_SIZE * 4) / 1.0e6)
-        + " MB"
-    )
-    print(
-        "  TOTAL buffers = "
-        + String(
-            Float64((BATCH * STATE_SIZE + MODEL_SIZE + BATCH * WS_SIZE) * 4)
-            / 1.0e6
-        )
         + " MB"
     )
     print()
@@ -180,25 +134,31 @@ def main() raises:
     with DeviceContext() as ctx:
         var (free0, total0) = ctx.get_memory_info()
         print(
-            "VRAM @ ctx open:        free "
+            "VRAM @ ctx open:     free "
             + String(Float64(free0) / 1.0e9)
             + " / "
             + String(Float64(total0) / 1.0e9)
             + " GB"
         )
 
+        # Allocate buffers
         var state_buf = ctx.enqueue_create_buffer[dtype](BATCH * STATE_SIZE)
         var model_buf = ctx.enqueue_create_buffer[dtype](MODEL_SIZE)
         var workspace_buf = ctx.enqueue_create_buffer[dtype](BATCH * WS_SIZE)
 
+        # Initialize model (physics params, body masses, joint axes, etc.)
         HumanoidModel.init_model_gpu(ctx, model_buf)
+
+        # Reset state (sets qpos to home position, zeros qvel)
         Humanoid[dtype].reset_kernel_gpu[BATCH, STATE_SIZE](ctx, state_buf)
+
+        # Zero workspace
         ctx.enqueue_memset(workspace_buf, 0)
         ctx.synchronize()
 
         var (free1, total1) = ctx.get_memory_info()
         print(
-            "VRAM after buffers:     free "
+            "VRAM after buffers:  free "
             + String(Float64(free1) / 1.0e9)
             + " GB  (buffers+init used "
             + String(Float64(free0 - free1) / 1.0e6)
@@ -215,8 +175,10 @@ def main() raises:
             dtype, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
         ](workspace_buf.unsafe_ptr())
 
-        # ── Phase kernels (one launch per phase) ──
+        # ── Phase kernels ──
+        # Each phase is a separate kernel launch so nsys can measure individually
 
+        # Phase 1: Forward Kinematics (serial, 1 thread per env)
         @always_inline
         def fk_kernel(
             s: LayoutTensor[
@@ -242,6 +204,7 @@ def main() raises:
                 NGEOM,
             ](env, s, m)
 
+        # Phase 2: Body Velocities (serial)
         @always_inline
         def vel_kernel(
             s: LayoutTensor[
@@ -266,55 +229,7 @@ def main() raises:
                 BATCH,
             ](env, s, m)
 
-        @always_inline
-        def detect_kernel(
-            s: LayoutTensor[
-                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-            ],
-            m: LayoutTensor[
-                dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
-            ],
-        ):
-            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if env >= BATCH:
-                return
-            detect_contacts_auto_gpu[
-                dtype,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-                NGEOM,
-            ](env, s, m)
-
-        @always_inline
-        def com_kernel(
-            s: LayoutTensor[
-                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-            ],
-            m: LayoutTensor[
-                dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
-            ],
-        ):
-            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if env >= BATCH:
-                return
-            compute_subtree_com_gpu[
-                dtype,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-            ](env, s, m)
-
+        # Phase 3: CDOF (serial)
         @always_inline
         def cdof_kernel(
             s: LayoutTensor[
@@ -343,6 +258,7 @@ def main() raises:
                 WS_SIZE,
             ](env, s, m, w)
 
+        # Phase 4: Composite Rigid Body Inertia (serial)
         @always_inline
         def crb_kernel(
             s: LayoutTensor[
@@ -371,6 +287,7 @@ def main() raises:
                 WS_SIZE,
             ](env, s, m, w)
 
+        # Phase 5: Mass Matrix (multi-threaded)
         @always_inline
         def mass_matrix_kernel(
             s: LayoutTensor[
@@ -400,6 +317,7 @@ def main() raises:
                 WS_SIZE,
             ](env, tid, STEP_THREADS, s, m, w)
 
+        # Phase 6: LDL Factorization (serial)
         @always_inline
         def ldl_kernel(
             w: LayoutTensor[
@@ -411,6 +329,7 @@ def main() raises:
                 return
             ldl_factor_gpu[dtype, NV, NBODY, BATCH, WS_SIZE](env, w)
 
+        # Phase 7: M_inv from LDL (serial)
         @always_inline
         def minv_kernel(
             w: LayoutTensor[
@@ -422,6 +341,7 @@ def main() raises:
                 return
             compute_M_inv_from_ldl_gpu[dtype, NV, NBODY, BATCH, WS_SIZE](env, w)
 
+        # Phase 8: Bias Forces RNE (serial)
         @always_inline
         def rne_kernel(
             s: LayoutTensor[
@@ -450,6 +370,7 @@ def main() raises:
                 WS_SIZE,
             ](env, s, m, w)
 
+        # Phase 9: LDL Solve (serial)
         @always_inline
         def ldl_solve_kernel(
             w: LayoutTensor[
@@ -461,81 +382,34 @@ def main() raises:
                 return
             ldl_solve_workspace_gpu[dtype, NV, NBODY, BATCH, WS_SIZE](env, w)
 
-        # ── Warmup: run each phase kernel in dependency order (populates the
-        # workspace + triggers each kernel's first-launch local-memory window).
-        # We deliberately do NOT launch the full RK4 step_gpu here: its 4 fused
-        # rk4_stage_kernel instantiations + the Newton solver reserve large
-        # per-kernel local-memory backing stores (stackframe × max-resident
-        # threads), which is the real VRAM consumer behind the CUDA OOM — and
-        # none of those kernels is among the phases we measure. The VRAM probe
-        # below shows exactly how much the *phase* kernels reserve.
-        print("Warming up phase kernels (dependency order)...")
-        for _ in range(3):
-            ctx.enqueue_function[fk_kernel](
-                state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
-            )
-            ctx.enqueue_function[vel_kernel](
-                state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
-            )
-            ctx.enqueue_function[detect_kernel](
-                state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
-            )
-            ctx.enqueue_function[com_kernel](
-                state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
-            )
-            ctx.enqueue_function[cdof_kernel](
-                state,
-                model,
-                workspace,
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function[crb_kernel](
-                state,
-                model,
-                workspace,
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function[mass_matrix_kernel](
-                state,
-                model,
-                workspace,
-                grid_dim=(STEP_ENV_BLOCKS, 1),
-                block_dim=(STEP_ENV_TPB, STEP_THREADS),
-            )
-            ctx.enqueue_function[ldl_kernel](
-                workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
-            )
-            ctx.enqueue_function[minv_kernel](
-                workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
-            )
-            ctx.enqueue_function[rne_kernel](
-                state,
-                model,
-                workspace,
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function[ldl_solve_kernel](
-                workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
-            )
+        # ── Warmup: run full step a few times ──
+        print("Warming up...")
+        for _ in range(10):
+            RK4Integrator[SOLVER=NewtonSolver].step_gpu[
+                dtype,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                BATCH,
+                NGEOM,
+                STEP_THREADS=NV,
+            ](ctx, state_buf, model_buf, workspace_buf)
         ctx.synchronize()
         var (free2, total2) = ctx.get_memory_info()
+        print("Warmup done!")
         print(
-            "VRAM after phase warmup: free "
+            "VRAM after warmup:   free "
             + String(Float64(free2) / 1.0e9)
-            + " GB  (phase kernels reserved "
+            + " GB  (RK4 step_gpu kernels reserved "
             + String(Float64(free1 - free2) / 1.0e6)
             + " MB)"
         )
-
-        print("Warmup done!")
         print()
 
-        print(
-            "Profiling individual phases (" + String(N_STEPS) + " launches)..."
-        )
+        # ── Profile each phase separately ──
+        print("Profiling individual phases (" + String(N_STEPS) + " steps)...")
         print("-" * 60)
 
         # Phase 1: FK
@@ -543,52 +417,32 @@ def main() raises:
         var t0 = perf_counter_ns()
         for _ in range(N_STEPS):
             ctx.enqueue_function[fk_kernel](
-                state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+                state,
+                model,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
         ctx.synchronize()
         var t1 = perf_counter_ns()
         var fk_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("1.  FK (forward kinematics): " + String(fk_us)[byte=:8] + " μs")
+        print("1. FK (forward kinematics):  " + String(fk_us)[byte=:8] + " μs")
 
-        # Phase 2: Body velocities
+        # Phase 2: Body Velocities
         ctx.synchronize()
         t0 = perf_counter_ns()
         for _ in range(N_STEPS):
             ctx.enqueue_function[vel_kernel](
-                state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+                state,
+                model,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
         ctx.synchronize()
         t1 = perf_counter_ns()
         var vel_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("2.  Body velocities:         " + String(vel_us)[byte=:8] + " μs")
+        print("2. Body velocities:          " + String(vel_us)[byte=:8] + " μs")
 
-        # Phase 3: Contact detection
-        ctx.synchronize()
-        t0 = perf_counter_ns()
-        for _ in range(N_STEPS):
-            ctx.enqueue_function[detect_kernel](
-                state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
-            )
-        ctx.synchronize()
-        t1 = perf_counter_ns()
-        var detect_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print(
-            "3.  Contact detection:       " + String(detect_us)[byte=:8] + " μs"
-        )
-
-        # Phase 3a: Subtree COM
-        ctx.synchronize()
-        t0 = perf_counter_ns()
-        for _ in range(N_STEPS):
-            ctx.enqueue_function[com_kernel](
-                state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
-            )
-        ctx.synchronize()
-        t1 = perf_counter_ns()
-        var com_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("3a. Subtree COM:             " + String(com_us)[byte=:8] + " μs")
-
-        # Phase 4: CDOF
+        # Phase 3: CDOF
         ctx.synchronize()
         t0 = perf_counter_ns()
         for _ in range(N_STEPS):
@@ -603,10 +457,10 @@ def main() raises:
         t1 = perf_counter_ns()
         var cdof_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
         print(
-            "4.  CDOF (motion axes):      " + String(cdof_us)[byte=:8] + " μs"
+            "3. CDOF (motion axes):       " + String(cdof_us)[byte=:8] + " μs"
         )
 
-        # Phase 5: CRB
+        # Phase 4: CRB
         ctx.synchronize()
         t0 = perf_counter_ns()
         for _ in range(N_STEPS):
@@ -620,9 +474,9 @@ def main() raises:
         ctx.synchronize()
         t1 = perf_counter_ns()
         var crb_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("5.  CRB (composite inertia): " + String(crb_us)[byte=:8] + " μs")
+        print("4. CRB (composite inertia):  " + String(crb_us)[byte=:8] + " μs")
 
-        # Phase 6: Mass matrix (multi-threaded)
+        # Phase 5: Mass Matrix (multi-threaded)
         ctx.synchronize()
         t0 = perf_counter_ns()
         for _ in range(N_STEPS):
@@ -636,35 +490,39 @@ def main() raises:
         ctx.synchronize()
         t1 = perf_counter_ns()
         var mm_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("6.  Mass matrix (MT):        " + String(mm_us)[byte=:8] + " μs")
+        print("5. Mass matrix (MT):         " + String(mm_us)[byte=:8] + " μs")
 
-        # Phase 7: LDL factorization (serial — isolate raw cost)
+        # Phase 6: LDL
         ctx.synchronize()
         t0 = perf_counter_ns()
         for _ in range(N_STEPS):
             ctx.enqueue_function[ldl_kernel](
-                workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+                workspace,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
         ctx.synchronize()
         t1 = perf_counter_ns()
         var ldl_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("7.  LDL factorization:       " + String(ldl_us)[byte=:8] + " μs")
+        print("6. LDL factorization:        " + String(ldl_us)[byte=:8] + " μs")
 
-        # Phase 8: M_inv from LDL (serial — isolate raw cost)
+        # Phase 7: M_inv
         ctx.synchronize()
         t0 = perf_counter_ns()
         for _ in range(N_STEPS):
             ctx.enqueue_function[minv_kernel](
-                workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+                workspace,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
         ctx.synchronize()
         t1 = perf_counter_ns()
         var minv_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
         print(
-            "8.  M_inv from LDL:          " + String(minv_us)[byte=:8] + " μs"
+            "7. M_inv from LDL:           " + String(minv_us)[byte=:8] + " μs"
         )
 
-        # Phase 9: RNE (bias forces)
+        # Phase 8: RNE
         ctx.synchronize()
         t0 = perf_counter_ns()
         for _ in range(N_STEPS):
@@ -678,37 +536,48 @@ def main() raises:
         ctx.synchronize()
         t1 = perf_counter_ns()
         var rne_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
-        print("9.  RNE (bias forces):       " + String(rne_us)[byte=:8] + " μs")
+        print("8. RNE (bias forces):        " + String(rne_us)[byte=:8] + " μs")
 
-        # Phase 10: LDL solve
+        # Phase 9: LDL Solve
         ctx.synchronize()
         t0 = perf_counter_ns()
         for _ in range(N_STEPS):
             ctx.enqueue_function[ldl_solve_kernel](
-                workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+                workspace,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
         ctx.synchronize()
         t1 = perf_counter_ns()
         var solve_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
         print(
-            "10. LDL solve:               " + String(solve_us)[byte=:8] + " μs"
+            "9. LDL solve:                " + String(solve_us)[byte=:8] + " μs"
         )
 
-        # NOTE: the full monolithic RK4 step (step_gpu) is intentionally NOT run
-        # here. It instantiates the 4 fused rk4_stage_kernel variants + the
-        # Newton solver — by far the largest kernels in the codebase — and
-        # compiling them cold spikes the Mojo compiler's host RAM enough to trip
-        # the container's cgroup OOM-killer ("Killed" during compile). The
-        # per-phase split (this profiler's purpose) does not need it. To time the
-        # full step, use the SAC Humanoid profiler instead.
+        # ── Reference: full monolithic step ──
+        ctx.synchronize()
+        t0 = perf_counter_ns()
+        for _ in range(N_STEPS):
+            RK4Integrator[SOLVER=NewtonSolver].step_gpu[
+                dtype,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                BATCH,
+                NGEOM,
+                STEP_THREADS=NV,
+            ](ctx, state_buf, model_buf, workspace_buf)
+        ctx.synchronize()
+        t1 = perf_counter_ns()
+        var full_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
 
         print()
         print("=" * 60)
         var phases_total = (
             fk_us
             + vel_us
-            + detect_us
-            + com_us
             + cdof_us
             + crb_us
             + mm_us
@@ -722,9 +591,14 @@ def main() raises:
             + String(phases_total)[byte=:8]
             + " μs"
         )
+        print(
+            "Full step (monolithic):      " + String(full_us)[byte=:8] + " μs"
+        )
+        print("  (includes solver + finalize + contact detection)")
         print()
 
-        print("Phase breakdown (% of summed phases):")
+        # Percentages
+        print("Phase breakdown:")
         print(
             "  FK:          "
             + String(fk_us / phases_total * 100)[byte=:5]
@@ -733,16 +607,6 @@ def main() raises:
         print(
             "  Velocities:  "
             + String(vel_us / phases_total * 100)[byte=:5]
-            + "%"
-        )
-        print(
-            "  Contacts:    "
-            + String(detect_us / phases_total * 100)[byte=:5]
-            + "%"
-        )
-        print(
-            "  SubtreeCOM:  "
-            + String(com_us / phases_total * 100)[byte=:5]
             + "%"
         )
         print(
@@ -781,9 +645,3 @@ def main() raises:
             + "%"
         )
         print("=" * 60)
-        print()
-        print(
-            "FK + Velocities (Lever 1 target) = "
-            + String((fk_us + vel_us) / phases_total * 100)[byte=:5]
-            + "% of phases"
-        )
