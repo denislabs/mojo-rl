@@ -43,9 +43,11 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics_gpu,
     forward_kinematics_gpu_mt,
     compute_body_velocities_gpu,
+    compute_body_velocities_gpu_mt,
 )
 from mojo_rl.physics3d.dynamics.jacobian import (
     compute_cdof_gpu,
+    compute_cdof_gpu_mt,
     compute_composite_inertia_gpu,
 )
 from mojo_rl.physics3d.dynamics.mass_matrix import (
@@ -258,6 +260,30 @@ def main() raises:
                 BATCH,
             ](env, s, m)
 
+        # Phase 2b: Body velocities level-parallel (MT) — head-to-head
+        @always_inline
+        def vel_mt_kernel(
+            s: LayoutTensor[
+                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+            ],
+            m: LayoutTensor[
+                dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            var tid = Int(thread_idx.y)
+            var valid_env = env < BATCH
+            compute_body_velocities_gpu_mt[
+                dtype,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+            ](env, tid, STEP_THREADS, valid_env, s, m)
+
         # Phase 3: CDOF (serial)
         @always_inline
         def cdof_kernel(
@@ -286,6 +312,35 @@ def main() raises:
                 BATCH,
                 WS_SIZE,
             ](env, s, m, w)
+
+        # Phase 3b: CDOF flat-parallel (MT) — head-to-head
+        @always_inline
+        def cdof_mt_kernel(
+            s: LayoutTensor[
+                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+            ],
+            m: LayoutTensor[
+                dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+            ],
+            w: LayoutTensor[
+                dtype, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            var tid = Int(thread_idx.y)
+            var valid_env = env < BATCH
+            compute_cdof_gpu_mt[
+                dtype,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](env, tid, STEP_THREADS, valid_env, s, m, w)
 
         # Phase 4: Composite Rigid Body Inertia (serial)
         @always_inline
@@ -441,8 +496,21 @@ def main() raises:
             ctx.enqueue_function[vel_kernel](
                 state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
             )
+            ctx.enqueue_function[vel_mt_kernel](
+                state,
+                model,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
+            )
             ctx.enqueue_function[cdof_kernel](
                 state, model, workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[cdof_mt_kernel](
+                state,
+                model,
+                workspace,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
             ctx.enqueue_function[crb_kernel](
                 state, model, workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
@@ -567,6 +635,27 @@ def main() raises:
         var vel_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
         print("2. Body velocities:          " + String(vel_us)[byte=:8] + " μs")
 
+        # Phase 2b: Body velocities level-parallel (MT)
+        ctx.synchronize()
+        t0 = perf_counter_ns()
+        for _ in range(N_STEPS):
+            ctx.enqueue_function[vel_mt_kernel](
+                state,
+                model,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
+            )
+        ctx.synchronize()
+        t1 = perf_counter_ns()
+        var vel_mt_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
+        print(
+            "2b. Body velocities (MT):    "
+            + String(vel_mt_us)[byte=:8]
+            + " μs  (serial = "
+            + String(vel_us)[byte=:8]
+            + ")"
+        )
+
         # Phase 3: CDOF
         ctx.synchronize()
         t0 = perf_counter_ns()
@@ -583,6 +672,28 @@ def main() raises:
         var cdof_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
         print(
             "3. CDOF (motion axes):       " + String(cdof_us)[byte=:8] + " μs"
+        )
+
+        # Phase 3b: CDOF flat-parallel (MT)
+        ctx.synchronize()
+        t0 = perf_counter_ns()
+        for _ in range(N_STEPS):
+            ctx.enqueue_function[cdof_mt_kernel](
+                state,
+                model,
+                workspace,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
+            )
+        ctx.synchronize()
+        t1 = perf_counter_ns()
+        var cdof_mt_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
+        print(
+            "3b. CDOF (MT):               "
+            + String(cdof_mt_us)[byte=:8]
+            + " μs  (serial = "
+            + String(cdof_us)[byte=:8]
+            + ")"
         )
 
         # Phase 4: CRB

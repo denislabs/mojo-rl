@@ -33,6 +33,7 @@ from ..kinematics.forward_kinematics import (
     forward_kinematics_gpu,
     forward_kinematics_gpu_mt,
     compute_body_velocities_gpu,
+    compute_body_velocities_gpu_mt,
 )
 from ..kinematics.quat_math import quat_normalize, quat_integrate
 from ..dynamics.mass_matrix import (
@@ -71,6 +72,7 @@ from ..dynamics.jacobian import (
     compute_cdof,
     compute_subtree_com_gpu,
     compute_cdof_gpu,
+    compute_cdof_gpu_mt,
     compute_composite_inertia,
     compute_composite_inertia_gpu,
 )
@@ -749,10 +751,27 @@ comptime RK4_PARALLEL_LDL: Bool = True
 # none is another's parent) are striped across the STEP_THREADS threads. Tree
 # levels are derived in-kernel from body_parent (no model/parser change).
 # Bit-identical to the serial tree walk (same fk_body_gpu per body). Lever 1
-# (branch/level-parallel forward dynamics); default OFF pending NVIDIA per-phase
-# measurement (tests/physics3d/profile_rk4_phases_humanoid.mojo). See
-# docs/PHYSICS3D_BLOCKED_SOLVER.md.
-comptime RK4_PARALLEL_FK: Bool = False
+# (branch/level-parallel forward dynamics). NVIDIA Humanoid measured 2.6×
+# (64µs→25µs standalone, profile_rk4_phases_humanoid.mojo 2026-06-03) → ON by
+# default. See docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_PARALLEL_FK: Bool = True
+
+
+# When True (and STEP_THREADS>1), body velocities are computed level-parallel
+# (same recipe as FK: vel_body_gpu per body, distributed by tree depth). The
+# serial root→leaf walk is the oracle. Within float32 tolerance vs serial
+# (~1e-9 — well under the 1e-6 parallel-path bar; FK happened to be byte-exact,
+# velocities is within-tol). Default ON (velocities is the same structure as FK,
+# expect a similar win). See docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_PARALLEL_VEL: Bool = True
+
+
+# When True (and STEP_THREADS>1), cdof (spatial motion axes) is computed
+# flat-parallel: bodies are independent (each writes its own DOFs' cdof from FK
+# state + subtree_com), so threads just stripe over bodies — no level ordering,
+# 2 barriers (after zero-init, after the body sweep). Within float32 tolerance
+# of the serial walk. Default ON. See docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_PARALLEL_CDOF: Bool = True
 
 
 struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
@@ -1396,20 +1415,38 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                     BATCH,
                 ](env, state, model)
 
-        if valid_env:
-            # 2. Body velocities
-            compute_body_velocities_gpu[
+        # 2. Body velocities. When RK4_PARALLEL_VEL (and STEP_THREADS>1) the
+        # cooperative level-parallel variant is called UNCONDITIONALLY (for its
+        # barriers); per-body writes guarded by valid_env. Otherwise the serial
+        # walk runs redundantly per valid-env thread. FK above already published
+        # xpos/xquat (mt FK ends with a barrier; serial FK is per-thread redundant).
+        comptime USE_PAR_VEL = RK4_PARALLEL_VEL and (STEP_THREADS > 1)
+        comptime if USE_PAR_VEL:
+            compute_body_velocities_gpu_mt[
                 DTYPE,
                 NQ,
                 NV,
                 NBODY,
                 NJOINT,
-                MAX_CONTACTS,
                 STATE_SIZE,
                 MODEL_SIZE,
                 BATCH,
-            ](env, state, model)
+            ](env, tid, STEP_THREADS, valid_env, state, model)
+        else:
+            if valid_env:
+                compute_body_velocities_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                ](env, state, model)
 
+        if valid_env:
             # 3. Detect contacts
             detect_contacts_auto_gpu[
                 DTYPE,
@@ -1437,8 +1474,13 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 BATCH,
             ](env, state, model)
 
-            # 4. Compute cdof
-            compute_cdof_gpu[
+        # 4. Compute cdof. Flat-parallel (mt) called UNCONDITIONALLY for its
+        # barriers when RK4_PARALLEL_CDOF; serial in valid_env otherwise. Reads
+        # FK state + subtree_com, both written redundantly per-thread just above
+        # (each thread has its own copy) → no extra barrier needed before this.
+        comptime USE_PAR_CDOF = RK4_PARALLEL_CDOF and (STEP_THREADS > 1)
+        comptime if USE_PAR_CDOF:
+            compute_cdof_gpu_mt[
                 DTYPE,
                 NQ,
                 NV,
@@ -1449,8 +1491,23 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 MODEL_SIZE,
                 BATCH,
                 WS_SIZE,
-            ](env, state, model, workspace)
+            ](env, tid, STEP_THREADS, valid_env, state, model, workspace)
+        else:
+            if valid_env:
+                compute_cdof_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](env, state, model, workspace)
 
+        if valid_env:
             # 5. Composite rigid body inertia
             compute_composite_inertia_gpu[
                 DTYPE,

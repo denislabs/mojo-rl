@@ -1377,6 +1377,191 @@ def forward_kinematics_gpu_mt[
 
 
 # =============================================================================
+# GPU Compute Body Velocities — single body (shared by serial + level-parallel)
+# =============================================================================
+
+
+@no_inline
+def vel_body_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    body: Int,
+    num_joints: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+):
+    """Compute one body's world velocity (xvel/xangvel) from its parent.
+
+    Extracted verbatim from the per-body loop of compute_body_velocities_gpu so
+    the serial walk and the level-parallel variant share identical arithmetic
+    (bit-identical). Requires the parent body's velocity already written.
+    """
+    var qvel_off = qvel_offset[NQ, NV]()
+    var xvel_off = xvel_offset[NQ, NV, NBODY]()
+    var xangvel_off = xangvel_offset[NQ, NV, NBODY]()
+    var xquat_off = xquat_offset[NQ, NV, NBODY]()
+    var body_off = model_body_offset(body)
+    var parent = Int(
+        rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
+    )
+
+    # Start with parent's velocity
+    var vx = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 0])
+    var vy = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 1])
+    var vz = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 2])
+    var wx = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 0])
+    var wy = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 1])
+    var wz = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 2])
+
+    # Add velocity from parent's rotation about this body's offset
+    var xipos_off = xipos_offset[NQ, NV, NBODY]()
+    var body_px = rebind[Scalar[DTYPE]](
+        state[env, xipos_off + body * 3 + 0]
+    )
+    var body_py = rebind[Scalar[DTYPE]](
+        state[env, xipos_off + body * 3 + 1]
+    )
+    var body_pz = rebind[Scalar[DTYPE]](
+        state[env, xipos_off + body * 3 + 2]
+    )
+    var parent_px = rebind[Scalar[DTYPE]](
+        state[env, xipos_off + parent * 3 + 0]
+    )
+    var parent_py = rebind[Scalar[DTYPE]](
+        state[env, xipos_off + parent * 3 + 1]
+    )
+    var parent_pz = rebind[Scalar[DTYPE]](
+        state[env, xipos_off + parent * 3 + 2]
+    )
+
+    var rx = body_px - parent_px
+    var ry = body_py - parent_py
+    var rz = body_pz - parent_pz
+
+    # v = parent_v + parent_w x r
+    vx = vx + (wy * rz - wz * ry)
+    vy = vy + (wz * rx - wx * rz)
+    vz = vz + (wx * ry - wy * rx)
+
+    # Apply joint velocities - accumulate for all joints on this body
+    for j in range(num_joints):
+        var joint_off = model_joint_offset[NBODY](j)
+        var joint_body = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+        )
+
+        if joint_body != body:
+            continue
+
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
+        var axis_x = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_AXIS_X]
+        )
+        var axis_y = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_AXIS_Y]
+        )
+        var axis_z = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_AXIS_Z]
+        )
+
+        if jnt_type == JNT_FREE:
+            # FREE joint: direct velocity from qvel
+            vx = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 0])
+            vy = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 1])
+            vz = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 2])
+            wx = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 3])
+            wy = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 4])
+            wz = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 5])
+
+        elif jnt_type == JNT_BALL:
+            # BALL joint: add angular velocity from qvel
+            wx = wx + rebind[Scalar[DTYPE]](
+                state[env, qvel_off + dof_adr + 0]
+            )
+            wy = wy + rebind[Scalar[DTYPE]](
+                state[env, qvel_off + dof_adr + 1]
+            )
+            wz = wz + rebind[Scalar[DTYPE]](
+                state[env, qvel_off + dof_adr + 2]
+            )
+
+        elif jnt_type == JNT_SLIDE:
+            # SLIDE joint: add velocity along axis
+            var vel = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr])
+
+            # Rotate axis from body frame to world frame
+            var pqx = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + parent * 4 + 0]
+            )
+            var pqy = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + parent * 4 + 1]
+            )
+            var pqz = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + parent * 4 + 2]
+            )
+            var pqw = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + parent * 4 + 3]
+            )
+            var rotated = gpu_quat_rotate(
+                pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
+            )
+
+            vx = vx + rotated[0] * vel
+            vy = vy + rotated[1] * vel
+            vz = vz + rotated[2] * vel
+
+        elif jnt_type == JNT_HINGE:
+            # HINGE joint: add angular velocity around axis
+            var omega = rebind[Scalar[DTYPE]](
+                state[env, qvel_off + dof_adr]
+            )
+
+            # Rotate axis from body frame to world frame
+            var pqx = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + parent * 4 + 0]
+            )
+            var pqy = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + parent * 4 + 1]
+            )
+            var pqz = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + parent * 4 + 2]
+            )
+            var pqw = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + parent * 4 + 3]
+            )
+            var rotated = gpu_quat_rotate(
+                pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
+            )
+
+            wx = wx + rotated[0] * omega
+            wy = wy + rotated[1] * omega
+            wz = wz + rotated[2] * omega
+
+    # Store computed velocities
+    state[env, xvel_off + body * 3 + 0] = vx
+    state[env, xvel_off + body * 3 + 1] = vy
+    state[env, xvel_off + body * 3 + 2] = vz
+    state[env, xangvel_off + body * 3 + 0] = wx
+    state[env, xangvel_off + body * 3 + 1] = wy
+    state[env, xangvel_off + body * 3 + 2] = wz
+
+
+# =============================================================================
 # GPU Compute Body Velocities Kernel
 # =============================================================================
 
@@ -1426,152 +1611,87 @@ def compute_body_velocities_gpu[
 
     # Process each body in order (skip worldbody at 0, already zero)
     for body in range(1, NBODY):
-        var body_off = model_body_offset(body)
-        var parent = Int(
-            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
+        vel_body_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, STATE_SIZE, MODEL_SIZE, BATCH
+        ](env, body, num_joints, state, model)
+
+
+# =============================================================================
+# GPU Compute Body Velocities — level-parallel (cooperative across STEP_THREADS)
+# =============================================================================
+
+
+@always_inline
+def compute_body_velocities_gpu_mt[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    tid: Int,
+    n_threads: Int,
+    valid_env: Bool,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+):
+    """Level-parallel body velocities (threads of one env cooperate).
+
+    Within float32 tolerance of compute_body_velocities_gpu (~1e-9, under the
+    1e-6 parallel-path bar): each body uses the SAME vel_body_gpu helper; only
+    the distribution across threads differs. Bodies are processed by tree depth
+    (root first); same-level bodies are independent.
+    Worldbody (0) velocity stays 0 (root); bodies 1..NBODY-1 are overwritten by
+    vel_body_gpu, so only body 0 needs zeroing. Barriers are block-wide and
+    unconditional (count = 1 + max_level, model-only) → no deadlock; per-body
+    writes guarded by valid_env.
+    """
+    var xvel_off = xvel_offset[NQ, NV, NBODY]()
+    var xangvel_off = xangvel_offset[NQ, NV, NBODY]()
+    var meta_off = model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(
+        rebind[Scalar[DTYPE]](model[0, meta_off + MODEL_META_IDX_NJOINT])
+    )
+
+    var level = InlineArray[Int, NBODY](fill=0)
+    var max_level = 0
+    for b in range(1, NBODY):
+        var b_off = model_body_offset(b)
+        var p = Int(
+            rebind[Scalar[DTYPE]](model[0, b_off + BODY_IDX_PARENT])
         )
+        level[b] = level[p] + 1
+        if level[b] > max_level:
+            max_level = level[b]
 
-        # Start with parent's velocity
-        var vx = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 0])
-        var vy = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 1])
-        var vz = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 2])
-        var wx = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 0])
-        var wy = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 1])
-        var wz = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 2])
+    # Worldbody (index 0): zero velocity (root). One writer, publish via barrier.
+    if valid_env and tid == 0:
+        state[env, xvel_off + 0] = Scalar[DTYPE](0)
+        state[env, xvel_off + 1] = Scalar[DTYPE](0)
+        state[env, xvel_off + 2] = Scalar[DTYPE](0)
+        state[env, xangvel_off + 0] = Scalar[DTYPE](0)
+        state[env, xangvel_off + 1] = Scalar[DTYPE](0)
+        state[env, xangvel_off + 2] = Scalar[DTYPE](0)
+    barrier()
 
-        # Add velocity from parent's rotation about this body's offset
-        var xipos_off = xipos_offset[NQ, NV, NBODY]()
-        var body_px = rebind[Scalar[DTYPE]](
-            state[env, xipos_off + body * 3 + 0]
-        )
-        var body_py = rebind[Scalar[DTYPE]](
-            state[env, xipos_off + body * 3 + 1]
-        )
-        var body_pz = rebind[Scalar[DTYPE]](
-            state[env, xipos_off + body * 3 + 2]
-        )
-        var parent_px = rebind[Scalar[DTYPE]](
-            state[env, xipos_off + parent * 3 + 0]
-        )
-        var parent_py = rebind[Scalar[DTYPE]](
-            state[env, xipos_off + parent * 3 + 1]
-        )
-        var parent_pz = rebind[Scalar[DTYPE]](
-            state[env, xipos_off + parent * 3 + 2]
-        )
-
-        var rx = body_px - parent_px
-        var ry = body_py - parent_py
-        var rz = body_pz - parent_pz
-
-        # v = parent_v + parent_w x r
-        vx = vx + (wy * rz - wz * ry)
-        vy = vy + (wz * rx - wx * rz)
-        vz = vz + (wx * ry - wy * rx)
-
-        # Apply joint velocities - accumulate for all joints on this body
-        for j in range(num_joints):
-            var joint_off = model_joint_offset[NBODY](j)
-            var joint_body = Int(
-                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
-            )
-
-            if joint_body != body:
-                continue
-
-            var jnt_type = Int(
-                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
-            )
-            var dof_adr = Int(
-                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
-            )
-            var axis_x = rebind[Scalar[DTYPE]](
-                model[0, joint_off + JOINT_IDX_AXIS_X]
-            )
-            var axis_y = rebind[Scalar[DTYPE]](
-                model[0, joint_off + JOINT_IDX_AXIS_Y]
-            )
-            var axis_z = rebind[Scalar[DTYPE]](
-                model[0, joint_off + JOINT_IDX_AXIS_Z]
-            )
-
-            if jnt_type == JNT_FREE:
-                # FREE joint: direct velocity from qvel
-                vx = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 0])
-                vy = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 1])
-                vz = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 2])
-                wx = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 3])
-                wy = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 4])
-                wz = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 5])
-
-            elif jnt_type == JNT_BALL:
-                # BALL joint: add angular velocity from qvel
-                wx = wx + rebind[Scalar[DTYPE]](
-                    state[env, qvel_off + dof_adr + 0]
-                )
-                wy = wy + rebind[Scalar[DTYPE]](
-                    state[env, qvel_off + dof_adr + 1]
-                )
-                wz = wz + rebind[Scalar[DTYPE]](
-                    state[env, qvel_off + dof_adr + 2]
-                )
-
-            elif jnt_type == JNT_SLIDE:
-                # SLIDE joint: add velocity along axis
-                var vel = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr])
-
-                # Rotate axis from body frame to world frame
-                var pqx = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 0]
-                )
-                var pqy = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 1]
-                )
-                var pqz = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 2]
-                )
-                var pqw = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 3]
-                )
-                var rotated = gpu_quat_rotate(
-                    pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
-                )
-
-                vx = vx + rotated[0] * vel
-                vy = vy + rotated[1] * vel
-                vz = vz + rotated[2] * vel
-
-            elif jnt_type == JNT_HINGE:
-                # HINGE joint: add angular velocity around axis
-                var omega = rebind[Scalar[DTYPE]](
-                    state[env, qvel_off + dof_adr]
-                )
-
-                # Rotate axis from body frame to world frame
-                var pqx = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 0]
-                )
-                var pqy = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 1]
-                )
-                var pqz = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 2]
-                )
-                var pqw = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 3]
-                )
-                var rotated = gpu_quat_rotate(
-                    pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
-                )
-
-                wx = wx + rotated[0] * omega
-                wy = wy + rotated[1] * omega
-                wz = wz + rotated[2] * omega
-
-        # Store computed velocities
-        state[env, xvel_off + body * 3 + 0] = vx
-        state[env, xvel_off + body * 3 + 1] = vy
-        state[env, xvel_off + body * 3 + 2] = vz
-        state[env, xangvel_off + body * 3 + 0] = wx
-        state[env, xangvel_off + body * 3 + 1] = wy
-        state[env, xangvel_off + body * 3 + 2] = wz
+    for lvl in range(1, max_level + 1):
+        if valid_env:
+            for body in range(1 + tid, NBODY, n_threads):
+                if level[body] == lvl:
+                    vel_body_gpu[
+                        DTYPE,
+                        NQ,
+                        NV,
+                        NBODY,
+                        NJOINT,
+                        STATE_SIZE,
+                        MODEL_SIZE,
+                        BATCH,
+                    ](env, body, num_joints, state, model)
+        barrier()
