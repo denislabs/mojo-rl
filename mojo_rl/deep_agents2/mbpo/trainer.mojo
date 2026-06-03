@@ -584,6 +584,7 @@ struct MBPOTrainer[
         num_rollouts_per_step: Int = 400,
         sac_updates_per_step: Int = 20,
         dyn_batch_size: Int = 256,
+        dyn_max_epochs: Int = 40,
         use_bf16: Bool = False,
     ) raises -> Self:
         comptime assert (
@@ -679,6 +680,7 @@ struct MBPOTrainer[
         t.num_rollouts_per_step = num_rollouts_per_step
         t.sac_updates_per_step = sac_updates_per_step
         t.dyn_batch_size = dyn_batch_size
+        t.dyn_max_epochs = dyn_max_epochs
         t._use_bf16 = use_bf16
 
         t.sample_blk.setup[Self.train_target](learning_starts, ctx=ctx)

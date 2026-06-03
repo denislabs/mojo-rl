@@ -91,14 +91,14 @@ comptime CHECKPOINT_PATH = "mbpo_half_cheetah_nn2_gpu.ckpt"
 # Reverted to auto-α: the α A/B was REFUTED (fixed α=0.12 left reward flat at
 # ~200 vs auto's ~210; the policy wasn't timid — mean_abs_action≈0.48). The
 # real lever is the dynamics uncertainty bound (LOGVAR_MAX above).
-comptime FIX_ALPHA = True
+comptime FIX_ALPHA = False
 comptime FIXED_ALPHA: Scalar[DT] = 0.12  # legacy's stable equilibrium
 comptime INIT_ALPHA: Scalar[DT] = FIXED_ALPHA if FIX_ALPHA else 0.2
 comptime ALPHA_LR: Scalar[DT] = 0.0 if FIX_ALPHA else 3e-4
 comptime RUN_NAME = (
     "MBPO HalfCheetah NN2 (GPU) — early-stop+elite, fixed alpha=0.12"
     if FIX_ALPHA
-    else "MBPO HalfCheetah NN2 (GPU) — early-stop dyn + per-tx elite, logvar=-5"
+    else "MBPO HalfCheetah NN2 (GPU) — dyn_max_epochs=150 (full ensemble train)"
 )
 
 
@@ -219,6 +219,10 @@ def main() raises:
             num_rollouts_per_step=100_000,
             sac_updates_per_step=40,
             dyn_batch_size=256,
+            # Legacy trains the ensemble up to 150 epochs/round; the nn2
+            # default ceiling of 40 cut training off while holdout NLL was
+            # still falling → under-trained model → weak synthetic data.
+            dyn_max_epochs=150,
         )
         var env = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]()
 

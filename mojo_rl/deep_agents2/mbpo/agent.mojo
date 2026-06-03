@@ -85,6 +85,7 @@ struct MBPOAgent[
         num_rollouts_per_step: Int = 400,
         sac_updates_per_step: Int = 20,
         dyn_batch_size: Int = 256,
+        dyn_max_epochs: Int = 40,
         use_bf16: Bool = False,
     ) raises:
         """Construct an MBPOAgent. Forwards every kwarg to `MBPOTrainer.make`.
@@ -110,6 +111,7 @@ struct MBPOAgent[
             num_rollouts_per_step=num_rollouts_per_step,
             sac_updates_per_step=sac_updates_per_step,
             dyn_batch_size=dyn_batch_size,
+            dyn_max_epochs=dyn_max_epochs,
             use_bf16=use_bf16,
         )
 
