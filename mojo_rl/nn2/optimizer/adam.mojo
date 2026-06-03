@@ -26,7 +26,8 @@ from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W, TPB, USE_GROUPED_GPU_OPTIMIZER
-from ..core import ParamVisitor
+from ..core import ParamVisitor, GraphNode
+from ..combinators.compute_graph import ComputeGraph
 from ..core.grad_clip import (
     clip_grads_auto,
     clip_grads_auto_gpu,
@@ -747,6 +748,125 @@ struct Adam(Optimizer, Saveable):
                 model.for_each_param[target, _AdamGPUStepVisitor](
                     String(""), visitor
                 )
+
+    # ──────────────────────────────────────────────────────────────────
+    # ComputeGraph overloads — a `ComputeGraph` exposes the same
+    # `for_each_param` walk as a `Module` but does NOT conform to the
+    # `Module` trait (it uses `set_input` instead of the variadic forward
+    # surface). TD-MPC2's world-model loss graph owns its params as graph
+    # nodes (dynamics + reward + 5 Q heads), so these overloads let one
+    # Adam size/zero/step over a whole graph's params. Bodies mirror
+    # make/zero_grad/step; the GPU path uses the per-tensor (non-grouped)
+    # visitors — the grouped multi-tensor descriptor build is a Module-only
+    # optimization (mirrors DreamerOpt's graph overloads).
+    #
+    # NOTE: global grad-norm clip (`max_grad_norm`) is NOT applied in
+    # `step_graph` — `clip_grads_auto` is Module-typed. TD-MPC2 grad
+    # clipping is handled at the trainer level (port-plan P5 parity).
+    # ──────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def make_graph[
+        target: StaticString, OUT: Int, *NODES: GraphNode
+    ](
+        mut g: ComputeGraph[OUT, *NODES],
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        comptime assert target == "cpu" or target == "gpu", (
+            "Adam.make_graph: target must be 'cpu' or 'gpu'"
+        )
+        var opt = Self()
+        comptime if target == "cpu":
+            var visitor = _AdamCPUInitVisitor(
+                m_flat_ptr=UnsafePointer(to=opt.m_flat),
+                v_flat_ptr=UnsafePointer(to=opt.v_flat),
+                offsets_ptr=UnsafePointer(to=opt.offsets),
+            )
+            g.for_each_param[target, _AdamCPUInitVisitor](String(""), visitor)
+            opt.total_size = len(opt.m_flat)
+            opt.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("Adam.make_graph[target='gpu']: ctx required")
+            var ctx_v = ctx.value()
+            var visitor = _AdamGPUInitVisitor(
+                offsets_ptr=UnsafePointer(to=opt.offsets),
+                total_ptr=UnsafePointer(to=opt.total_size),
+            )
+            g.for_each_param[target, _AdamGPUInitVisitor](String(""), visitor)
+            var m_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
+            var v_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
+            m_real.enqueue_fill(0.0)
+            v_real.enqueue_fill(0.0)
+            opt.m_dev = m_real^
+            opt.v_dev = v_real^
+            var step_real = ctx_v.enqueue_create_buffer[DType.uint32](1)
+            step_real.enqueue_fill(0)
+            var bc_real = ctx_v.enqueue_create_buffer[DT](4)
+            var bc_init_host = ctx_v.enqueue_create_host_buffer[DT](4)
+            ctx_v.synchronize()
+            bc_init_host.unsafe_ptr()[0] = Scalar[DT](1.0)
+            bc_init_host.unsafe_ptr()[1] = Scalar[DT](1.0)
+            bc_init_host.unsafe_ptr()[2] = Scalar[DT](0.0)
+            bc_init_host.unsafe_ptr()[3] = Scalar[DT](0.0)
+            ctx_v.enqueue_copy(bc_real, bc_init_host)
+            opt.step_dev = step_real^
+            opt.bc_dev = bc_real^
+            opt.ts = TargetStorage.make_gpu(ctx_v)
+        return opt^
+
+    def zero_grad_graph[
+        target: StaticString, OUT: Int, *NODES: GraphNode
+    ](mut self, mut g: ComputeGraph[OUT, *NODES]) raises:
+        assert_tag_for["Adam", target](self.ts.target_tag)
+        comptime if target == "cpu":
+            var v = _ZeroGradCPUVisitor()
+            g.for_each_param[target, _ZeroGradCPUVisitor](String(""), v)
+        else:
+            var v = _ZeroGradGPUVisitor(ctx=self.ts.ctx.value())
+            g.for_each_param[target, _ZeroGradGPUVisitor](String(""), v)
+
+    def step_graph[
+        target: StaticString, OUT: Int, *NODES: GraphNode
+    ](mut self, mut g: ComputeGraph[OUT, *NODES]) raises:
+        assert_tag_for["Adam", target](self.ts.target_tag)
+        comptime if target == "cpu":
+            self.step_count += 1
+            self.beta1_pow_t = self.beta1_pow_t * self.beta1
+            self.beta2_pow_t = self.beta2_pow_t * self.beta2
+            var bc1: Scalar[DT] = Scalar[DT](1.0) - self.beta1_pow_t
+            var bc2: Scalar[DT] = Scalar[DT](1.0) - self.beta2_pow_t
+            var visitor = _AdamCPUStepVisitor(
+                m_flat_ptr=UnsafePointer(to=self.m_flat),
+                v_flat_ptr=UnsafePointer(to=self.v_flat),
+                offsets_ptr=UnsafePointer(to=self.offsets),
+                idx=0,
+                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
+                bias_correction1=bc1, bias_correction2=bc2,
+            )
+            g.for_each_param[target, _AdamCPUStepVisitor](String(""), visitor)
+        else:
+            var ctx = self.ts.ctx.value()
+            var step_ptr: UnsafePointer[UInt32, MutAnyOrigin] = (
+                self.step_dev.value().unsafe_ptr()
+            )
+            var bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = (
+                self.bc_dev.value().unsafe_ptr()
+            )
+            ctx.enqueue_function[_adam_step_prep_kernel](
+                step_ptr, bc_ptr, self.beta1, self.beta2,
+                grid_dim=1, block_dim=1,
+            )
+            var visitor = _AdamGPUStepVisitor(
+                ctx=ctx,
+                m_base=self.m_dev.value().unsafe_ptr(),
+                v_base=self.v_dev.value().unsafe_ptr(),
+                bc_base=bc_ptr,
+                offsets_ptr=UnsafePointer(to=self.offsets),
+                idx=0,
+                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
+            )
+            g.for_each_param[target, _AdamGPUStepVisitor](String(""), visitor)
 
     # ─────────────────────────── Saveable (CPU only) ───────────────────────────
     # Saved fields:
