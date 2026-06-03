@@ -141,7 +141,18 @@ def _rollout_posterior_kernel[
     var mu_r = rebind[Scalar[DT]](mu[k, 0])
     var lv_r = rebind[Scalar[DT]](lv[k, 0])
     var z_r = rebind[Scalar[DT]](noise[k, 0])
-    out_rew[k] = mu_r + fexp(Scalar[DT](0.5) * lv_r) * z_r
+    # Legacy parity (mbpo_agent.mojo clamp_rewards_kernel): clamp the
+    # model-predicted synthetic reward to [-100, 100] and map NaN→0. Guards
+    # against NaN cascades + caps the worst OOD optimism spikes the policy
+    # could otherwise exploit.
+    var r = mu_r + fexp(Scalar[DT](0.5) * lv_r) * z_r
+    if r != r:
+        r = Scalar[DT](0.0)
+    elif r < Scalar[DT](-100.0):
+        r = Scalar[DT](-100.0)
+    elif r > Scalar[DT](100.0):
+        r = Scalar[DT](100.0)
+    out_rew[k] = r
     for d in range(OBS):
         var mu_d = rebind[Scalar[DT]](mu[k, 1 + d])
         var lv_d = rebind[Scalar[DT]](lv[k, 1 + d])
@@ -1740,6 +1751,13 @@ struct MBPOTrainer[
                     var std_r = fsqrt(fexp(lv_r))
                     var noise_r = Scalar[DT](randn_float64())
                     var rew = mu_r + std_r * noise_r
+                    # Legacy parity: clamp synth reward to [-100, 100], NaN→0.
+                    if rew != rew:
+                        rew = Scalar[DT](0.0)
+                    elif rew < Scalar[DT](-100.0):
+                        rew = Scalar[DT](-100.0)
+                    elif rew > Scalar[DT](100.0):
+                        rew = Scalar[DT](100.0)
                     for d in range(Self.OBS_DIM):
                         s_list[d] = roll_obs_p[k * Self.OBS_DIM + d]
                         var mu_d = mu_all_p[base + 1 + d]
