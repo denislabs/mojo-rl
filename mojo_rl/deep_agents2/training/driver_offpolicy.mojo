@@ -48,7 +48,7 @@ from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 from ..data.n_step_replay import GPUNStepBuffer
-from mojo_rl.core.env_traits import BoxContinuousActionEnv
+from mojo_rl.core.env_traits import BoxContinuousActionEnv, RenderableEnv
 from .batched_env import BatchedEnv
 from .driver_scratch import DriverScratch
 
@@ -1440,6 +1440,113 @@ def run_offpolicy_eval[
                 " steps=",
                 ep_steps,
             )
+
+    var mean = total_return / Scalar[DT](num_episodes)
+    if verbose:
+        var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
+        print(
+            "eval: mean_return=",
+            mean,
+            " (",
+            num_episodes,
+            " episodes, ",
+            elapsed,
+            " s)",
+        )
+    return mean
+
+
+def run_offpolicy_eval_render[
+    A: OffPolicyAgent,
+    E: BoxContinuousActionEnv & RenderableEnv,
+](
+    mut trainer: A,
+    mut env: E,
+    num_episodes: Int,
+    *,
+    max_steps_per_episode: Int = 1_000,
+    frame_delay_ms: Int = 16,
+    verbose: Bool = False,
+) raises -> Scalar[DT]:
+    """Greedy eval with live env-owned 3D/2D rendering — the render-enabled
+    sibling of `run_offpolicy_eval`. Identical greedy loop (only
+    `select_greedy_action` touches the trainer; replay / optimizers /
+    episode tracker are untouched), plus the `RenderableEnv` calls the
+    example eval scripts used to inline: `init_renderer` once, per-step
+    `render_frame` + `renderer_delay`, and a `check_renderer_quit` /
+    `is_renderer_open` early-out that stops ALL episodes when the user
+    closes the window. Falls back to headless (reward-only) if the
+    renderer is unavailable. Returns the mean episode return.
+
+    Bound on `BoxContinuousActionEnv & RenderableEnv` so it stays a no-op-
+    safe single entry point for any physics env. `frame_delay_ms` paces
+    playback (~16 ms ≈ 60 FPS)."""
+    comptime OBS = A.AGENT_OBS_DIM
+    comptime ACT = A.AGENT_ACT_DIM
+
+    var obs = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+    var action = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+
+    var action_list = List[Scalar[E.dtype]](capacity=ACT)
+    for _ in range(ACT):
+        action_list.append(Scalar[E.dtype](0.0))
+
+    var have_renderer = env.init_renderer()
+    if not have_renderer and verbose:
+        print(
+            "  WARNING: renderer unavailable — running headless (reward only)."
+        )
+
+    var total_return = Scalar[DT](0.0)
+    var t_start = perf_counter_ns()
+    var quit = False
+
+    for ep in range(num_episodes):
+        if quit:
+            break
+        var obs_list = env.reset_obs_list()
+        var ep_return = Scalar[DT](0.0)
+        var ep_steps: Int = 0
+
+        for _ in range(max_steps_per_episode):
+            for d in range(OBS):
+                obs[d] = Scalar[DT](obs_list[d])
+            trainer.select_greedy_action(obs, action)
+            for j in range(ACT):
+                action_list[j] = Scalar[E.dtype](action[j])
+            var step_res = env.step_continuous_vec[E.dtype](action_list)
+            var nxt = step_res[0].copy()
+            var reward = step_res[1]
+            var done = step_res[2]
+            ep_return += Scalar[DT](reward)
+            ep_steps += 1
+
+            if have_renderer:
+                env.render_frame()
+                env.renderer_delay(frame_delay_ms)
+                if env.check_renderer_quit() or not env.is_renderer_open():
+                    quit = True
+                    break
+
+            if done:
+                break
+            obs_list = nxt^
+
+        total_return += ep_return
+        if verbose:
+            print(
+                "  [eval ep ",
+                ep + 1,
+                "/",
+                num_episodes,
+                "] return=",
+                ep_return,
+                " steps=",
+                ep_steps,
+            )
+
+    if have_renderer:
+        env.close_renderer()
 
     var mean = total_return / Scalar[DT](num_episodes)
     if verbose:

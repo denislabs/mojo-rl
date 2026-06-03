@@ -32,7 +32,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.primitives.linear import Linear
-from mojo_rl.nn2.primitives.relu import ReLU
+from mojo_rl.nn2.primitives.linear_relu import LinearReLU
 from mojo_rl.nn2.combinators.sequential import Sequential
 
 from ..primitives.stochastic_actor import StochasticActor
@@ -58,20 +58,20 @@ comptime REDQOFEActor[
     PHI_S_DIM: Int, ACT: Int, HIDDEN: Int,
 ] = StochasticActor[
     PHI_S_DIM, ACT,
-    Linear[PHI_S_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    LinearReLU[PHI_S_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
 ]
-"""2-layer MLP trunk + (μ, log σ) heads, consuming φ(s)."""
+"""2-layer fused-MLP trunk + (μ, log σ) heads, consuming φ(s)."""
 
 
 comptime REDQOFECritic[
     PHI_SA_DIM: Int, HIDDEN: Int,
 ] = Sequential[
-    Linear[PHI_SA_DIM, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    LinearReLU[PHI_SA_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
     Linear[HIDDEN, 1],
 ]
-"""2-layer MLP critic, consuming φ(s, a)."""
+"""2-layer fused-MLP critic, consuming φ(s, a)."""
 
 
 # ──────────────────────────────────────────────────────────────────────

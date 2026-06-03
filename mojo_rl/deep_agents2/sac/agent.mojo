@@ -39,7 +39,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
-from mojo_rl.core.env_traits import BoxContinuousActionEnv
+from mojo_rl.core.env_traits import BoxContinuousActionEnv, RenderableEnv
 
 from ..training.blocks import SampleBlock
 from ..training.batched_env import BatchedEnv
@@ -47,6 +47,7 @@ from ..training.driver_offpolicy import (
     run_offpolicy_train,
     run_offpolicy_train_batched,
     run_offpolicy_eval,
+    run_offpolicy_eval_render,
 )
 
 from .metrics import SACMetrics
@@ -307,6 +308,40 @@ struct SACAgent[
             env,
             num_episodes,
             max_steps_per_episode=max_steps_per_episode,
+            verbose=verbose,
+        )
+
+    def eval_render[
+        E: BoxContinuousActionEnv & RenderableEnv,
+    ](
+        mut self,
+        mut env: E,
+        num_episodes: Int = 10,
+        *,
+        max_steps_per_episode: Int = 1_000,
+        frame_delay_ms: Int = 16,
+        verbose: Bool = True,
+    ) raises -> Scalar[DT]:
+        """Greedy eval with live env-owned rendering via
+        `run_offpolicy_eval_render`. Same non-mutating greedy loop as
+        `eval` plus the `RenderableEnv` init/per-frame-render/quit/close
+        handling — replaces the hand-rolled render loop in the eval
+        example scripts. Falls back to headless if no renderer is
+        available. Returns the mean episode return."""
+        return run_offpolicy_eval_render[
+            SACTrainer[
+                Self.train_target,
+                Self.SAMPLE,
+                Self.ACTOR,
+                Self.CRITIC,
+            ],
+            E,
+        ](
+            self.trainer,
+            env,
+            num_episodes,
+            max_steps_per_episode=max_steps_per_episode,
+            frame_delay_ms=frame_delay_ms,
             verbose=verbose,
         )
 

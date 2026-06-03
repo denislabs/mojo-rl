@@ -8,3 +8,13 @@ to the vanilla advantage policy gradient. See `agent.mojo`.
 """
 
 from .agent import A2CDiscreteAgent, A2CAgent
+from .config import (
+    A2CConfigT,
+    A2CConfig,
+    A2CDiscreteConfigT,
+    A2CDiscreteConfig,
+    agent_from_config,
+    agent_from_config_discrete,
+    A2C,
+    A2CDiscrete,
+)

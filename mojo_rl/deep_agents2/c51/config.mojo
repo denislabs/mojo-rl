@@ -33,7 +33,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.primitives.linear import Linear
-from mojo_rl.nn2.primitives.relu import ReLU
+from mojo_rl.nn2.primitives.linear_relu import LinearReLU
 from mojo_rl.nn2.primitives.noisy_linear import NoisyLinear
 from mojo_rl.nn2.primitives.dueling_head_c51 import DuelingHeadC51
 from mojo_rl.nn2.combinators.sequential import Sequential
@@ -54,19 +54,16 @@ from .agent import C51Agent
 # ──────────────────────────────────────────────────────────────────────
 
 comptime C51Net[OBS: Int, ACT: Int, NA: Int, HIDDEN: Int] = Sequential[
-    Linear[OBS, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
     Linear[HIDDEN, ACT * NA],
 ]
-"""Plain categorical Q-net: outputs ACT · NA per-atom logits."""
+"""Plain categorical Q-net: outputs ACT · NA per-atom logits. Hidden
+layers fused (LinearReLU); the logit head is a plain Linear."""
 
 comptime RainbowNet[OBS: Int, ACT: Int, NA: Int, HIDDEN: Int] = Sequential[
-    Linear[OBS, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
     NoisyLinear[HIDDEN, (1 + ACT) * NA],
     DuelingHeadC51[ACT, NA],
 ]

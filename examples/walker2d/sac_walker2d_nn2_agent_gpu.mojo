@@ -43,12 +43,7 @@ from std.time import perf_counter_ns
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.combinators.sequential import Sequential
-from mojo_rl.nn2.primitives.linear import Linear
-from mojo_rl.nn2.primitives.linear_relu import LinearReLU
-from mojo_rl.deep_agents2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents2.sac import SACAgent
-from mojo_rl.deep_agents2.training.blocks import UniformSampleGpuStep
+from mojo_rl.deep_agents2.sac import SAC
 from mojo_rl.deep_agents2.training.batched_env import BatchedGpuEnv
 from mojo_rl.envs.walker2d import Walker2d
 
@@ -81,21 +76,10 @@ comptime CHECKPOINT_PATH = "sac_walker2d_nn2.ckpt"
 
 comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
 
-# Fused matmul+bias+ReLU (`LinearReLU` = `LinearAct[IN, OUT, ReLUOp]`, same
-# param layout as `Linear` — drop-in). Halves the kernel-launch count per
-# hidden layer vs the unfused `Linear → ReLU` pair, which dominates wall-time
-# on the eager (non-CUDA-graph) GPU path.
-comptime ActorNet = StochasticActor[
-    OBS_DIM,
-    ACT_DIM,
-    LinearReLU[OBS_DIM, HIDDEN],
-    LinearReLU[HIDDEN, HIDDEN],
-]
-comptime CriticNet = Sequential[
-    LinearReLU[OBS_DIM + ACT_DIM, HIDDEN],
-    LinearReLU[HIDDEN, HIDDEN],
-    Linear[HIDDEN, 1],
-]
+# Actor + twin critics come from the `SAC[...]` preset (deep_agents2.sac),
+# which bundles the canonical fused-`LinearReLU` `SACActorNet` /
+# `SACCriticNet` (matmul+bias+ReLU in one kernel — halves the per-hidden-
+# layer launch count on the eager GPU path) plus SAC's tuned defaults.
 
 
 def main() raises:
@@ -139,21 +123,15 @@ def main() raises:
         var logger_ptr = UnsafePointer(to=logger)
 
         # ─── Agent + batched GPU env ─────────────────────────────────────
-        var agent = SACAgent[
-            "gpu",
-            UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-            ActorNet,
-            CriticNet,
+        # `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN]` reads like a
+        # constructor: it builds the SACAgent with the fused default nets
+        # and SAC's tuned scalar defaults (lr=3e-4, gamma=0.99, tau=0.005,
+        # init_alpha=0.2, target_entropy=-ACT, …). We override only the
+        # example-specific knobs below; everything else comes from the preset.
+        var agent = SAC[
+            "gpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN
         ](
             ctx=ctx,
-            actor_lr=3e-4,
-            critic_lr=3e-4,
-            alpha_lr=3e-4,
-            gamma=0.99,
-            tau=0.005,
-            action_scale=1.0,
-            init_alpha=0.2,
-            target_entropy=-Scalar[DT](ACT_DIM),  # SAC default heuristic
             learning_starts=WARMUP_STEPS,
             window_size=100,
             initial_episode_fill=0.0,

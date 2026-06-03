@@ -13,9 +13,11 @@ GPU successor of `sac_humanoid_nn2_agent.mojo` and counterpart of the legacy
 
 `updates_per_step=N_ENVS` keeps the effective UTD = 1 per collected transition.
 
-NOTE on checkpointing: the facade's `save`/`load` are CPU-only and the batched
-`train` entry point has no inline checkpoint/diag cadence (those live on
-`train_single`). This GPU example trains + summarizes only.
+NOTE on checkpointing: the batched `train` entry point auto-saves the SAC
+weights+optimizers (one-file `nn2-ckpt v2`) every `CHECKPOINT_EVERY` env-steps
+and once at the end (a host-side D2H between iterations, safe with the CUDA-
+graph capture). The agent is built from the shared `SAC[...]` preset, so the
+checkpoint loads directly into `sac_humanoid_nn2_eval_cpu.mojo` for rendering.
 
 Humanoid (Phyics3dEnv, MuJoCo-style):
   * 45D observation (qpos[2:24] + qvel[0:23])
@@ -37,13 +39,7 @@ from std.time import perf_counter_ns
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.combinators.sequential import Sequential
-from mojo_rl.nn2.primitives.linear import Linear
-from mojo_rl.nn2.primitives.relu import ReLU
-from mojo_rl.nn2.primitives.linear_relu import LinearReLU
-from mojo_rl.deep_agents2.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents2.sac import SACAgent
-from mojo_rl.deep_agents2.training.blocks import UniformSampleGpuStep
+from mojo_rl.deep_agents2.sac import SAC
 from mojo_rl.deep_agents2.training.batched_env import BatchedGpuEnv
 from mojo_rl.envs.humanoid import Humanoid
 
@@ -77,17 +73,11 @@ comptime CHECKPOINT_PATH = "sac_humanoid_nn2.ckpt"
 
 comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
 
-comptime ActorNet = StochasticActor[
-    OBS_DIM,
-    ACT_DIM,
-    LinearReLU[OBS_DIM, HIDDEN],
-    LinearReLU[HIDDEN, HIDDEN],
-]
-comptime CriticNet = Sequential[
-    LinearReLU[OBS_DIM + ACT_DIM, HIDDEN],
-    LinearReLU[HIDDEN, HIDDEN],
-    Linear[HIDDEN, 1],
-]
+# Actor + twin critics come from the `SAC[...]` preset (deep_agents2.sac),
+# which bundles the canonical fused-`LinearReLU` `SACActorNet` /
+# `SACCriticNet` at HIDDEN=256 — exactly the nets this script used inline
+# before, so an existing `sac_humanoid_nn2.ckpt` stays loadable. Sharing the
+# preset also makes the checkpoint portable to the CPU eval script.
 
 
 def main() raises:
@@ -129,21 +119,16 @@ def main() raises:
         var logger_ptr = UnsafePointer(to=logger)
 
         # ─── Agent + batched GPU env ─────────────────────────────────────
-        var agent = SACAgent[
-            "gpu",
-            UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-            ActorNet,
-            CriticNet,
+        # `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN]` builds the SACAgent with
+        # the fused default nets + SAC's tuned defaults (lr=3e-4, gamma=0.99,
+        # tau=0.005, init_alpha=0.2, target_entropy=-ACT). Humanoid overrides
+        # action_scale=0.4 (matches the legacy runs) + the example-specific
+        # warmup/window knobs; the rest come from the preset.
+        var agent = SAC[
+            "gpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN
         ](
             ctx=ctx,
-            actor_lr=3e-4,
-            critic_lr=3e-4,
-            alpha_lr=3e-4,
-            gamma=0.99,
-            tau=0.005,
             action_scale=0.4,  # match legacy Humanoid SAC runs
-            init_alpha=0.2,
-            target_entropy=-Scalar[DT](ACT_DIM),  # SAC default heuristic
             learning_starts=WARMUP_STEPS,
             window_size=100,
             initial_episode_fill=0.0,

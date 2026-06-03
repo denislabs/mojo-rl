@@ -52,7 +52,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.primitives.linear import Linear
-from mojo_rl.nn2.primitives.relu import ReLU
+from mojo_rl.nn2.primitives.linear_relu import LinearReLU
 from mojo_rl.nn2.combinators.sequential import Sequential
 
 from ..primitives.stochastic_actor import StochasticActor
@@ -70,15 +70,15 @@ from .kernels import REDQ_TARGET_MIN, REDQ_TARGET_AVE
 
 comptime REDQActor[OBS: Int, ACT: Int, HIDDEN: Int] = StochasticActor[
     OBS, ACT,
-    Linear[OBS, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    LinearReLU[OBS, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
 ]
-"""2-layer MLP trunk + (μ, log σ) heads — same shape as SAC's actor."""
+"""2-layer fused-MLP trunk + (μ, log σ) heads — same shape as SAC's actor."""
 
 
 comptime REDQCritic[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
-    Linear[OBS + ACT, HIDDEN], ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    LinearReLU[OBS + ACT, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
     Linear[HIDDEN, 1],
 ]
 """2-layer MLP critic. Each of the N online + target nets in

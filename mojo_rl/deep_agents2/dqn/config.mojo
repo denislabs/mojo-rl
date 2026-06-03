@@ -46,6 +46,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.primitives.linear import Linear
+from mojo_rl.nn2.primitives.linear_relu import LinearReLU
 from mojo_rl.nn2.primitives.relu import ReLU
 from mojo_rl.nn2.primitives.noisy_linear import NoisyLinear
 from mojo_rl.nn2.primitives.dueling_head import DuelingHead
@@ -69,19 +70,16 @@ from .agent import DQNAgent
 # ──────────────────────────────────────────────────────────────────────
 
 comptime DQNNet[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
-    Linear[OBS, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
     Linear[HIDDEN, ACT],
 ]
-"""Plain scalar Q-net: outputs one Q-value per action."""
+"""Plain scalar Q-net: outputs one Q-value per action. Hidden layers fused
+(LinearReLU); the Q head is a plain Linear."""
 
 comptime DuelingDQNNet[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
-    Linear[OBS, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
     Linear[HIDDEN, 1 + ACT],
     DuelingHead[ACT],
 ]
@@ -90,19 +88,15 @@ comptime DuelingDQNNet[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
 Wired in Phase 1 (`DuelingDQNConfig`)."""
 
 comptime NoisyDQNNet[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
-    Linear[OBS, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
     NoisyLinear[HIDDEN, ACT],
 ]
 """NoisyLinear head supplies exploration in place of ε-greedy."""
 
 comptime RainbowDQNNet[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
-    Linear[OBS, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
     NoisyLinear[HIDDEN, 1 + ACT],
     DuelingHead[ACT],
 ]
@@ -116,7 +110,7 @@ comptime NatureDQNNet[FRAMES: Int, ACT: Int, HIDDEN: Int = 512] = Sequential[
     Conv2D[32, 64, 4, 2, 0, 20, 20], ReLU[64 * 9 * 9],
     Conv2D[64, 64, 3, 1, 0, 9, 9], ReLU[64 * 7 * 7],
     Flatten[64 * 7 * 7],
-    Linear[64 * 7 * 7, HIDDEN], ReLU[HIDDEN],
+    LinearReLU[64 * 7 * 7, HIDDEN],
     Linear[HIDDEN, ACT],
 ]
 """Canonical Nature-DQN CNN (Mnih et al. 2015 / CleanRL DQN-Atari) for

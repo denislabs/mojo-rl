@@ -106,6 +106,8 @@ struct DDPGAgent[
         N_ENVS: Int = 1,
         NS: Int = 1,
         L: Logger = NoOpLogger,
+        USE_TRAIN_CUDA_GRAPH: Bool = False,
+        USE_ENV_CUDA_GRAPH: Bool = False,
     ](
         mut self,
         mut env: E,
@@ -117,9 +119,16 @@ struct DDPGAgent[
         verbose: Bool = True,
         nstep_gamma: Scalar[DT] = 0.99,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        diag_every: Int = 0,
+        episode_sync_every: Int = 1,
+        checkpoint_path: String = "",
+        checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         """Off-policy training via `run_offpolicy_train_batched`. Covers
-        same-target (cpu+cpu, gpu+gpu) at any `N_ENVS >= 1`."""
+        same-target (cpu+cpu, gpu+gpu) at any `N_ENVS >= 1`. See
+        `SACAgent.train` for `diag_every` / `episode_sync_every` /
+        `checkpoint_*` and the CUDA-graph capture flags (GPU + uniform
+        replay only; off by default, no-op on non-NVIDIA)."""
         var ctx = self.trainer.ctx
         return run_offpolicy_train_batched[
             DDPGTrainer[
@@ -132,6 +141,8 @@ struct DDPGAgent[
             N_ENVS,
             NS,
             L,
+            USE_TRAIN_CUDA_GRAPH,
+            USE_ENV_CUDA_GRAPH,
         ](
             ctx,
             self.trainer,
@@ -143,6 +154,10 @@ struct DDPGAgent[
             verbose=verbose,
             nstep_gamma=nstep_gamma,
             logger=logger,
+            diag_every=diag_every,
+            episode_sync_every=episode_sync_every,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
         )
 
     def train_single[
