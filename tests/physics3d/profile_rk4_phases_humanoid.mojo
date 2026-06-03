@@ -77,8 +77,21 @@ def main() raises:
     seed(42)
 
     comptime dtype = DType.float32
-    comptime BATCH = 256
+    # NOTE: the per-phase % split is BATCH-invariant (every phase scales with
+    # BATCH), so a small BATCH is fine for the breakdown — and avoids the CUDA
+    # OOM that BATCH=256 hits (256 full-Humanoid workspaces + the fused
+    # rk4_stage_kernel's local-memory reservation). Bump back up if the GPU has
+    # the headroom (check `nvidia-smi`); the relative split won't change.
+    comptime BATCH = 64
     comptime N_STEPS = 200  # RK4 is heavier than Euler; fewer steps suffice
+
+    # When False (default), the full RK4 step_gpu is NEVER launched — only the
+    # individual phase kernels are. This avoids reserving the large per-kernel
+    # local-memory windows of the 4 fused rk4_stage_kernel instantiations + the
+    # Newton solver (the real CUDA-OOM cause; see warmup note). The per-phase
+    # split (this profiler's purpose) does not need the full step. Set True only
+    # to also measure the monolithic step total, and only if VRAM allows.
+    comptime PROFILE_FULL_STEP = False
 
     # Humanoid dimensions (from HumanoidModel = ModelDefFromXML[...])
     comptime NQ = HumanoidModel.NQ  # 24
@@ -140,7 +153,38 @@ def main() raises:
     print("Steps: " + String(N_STEPS) + " (per RK4 pass; ×20 for a full step)")
     print()
 
+    # Computed buffer footprint (host-side, exact).
+    print("Buffer sizes (per env / total):")
+    print(
+        "  STATE_SIZE = " + String(STATE_SIZE) + " floats  -> state_buf "
+        + String(Float64(BATCH * STATE_SIZE * 4) / 1.0e6) + " MB"
+    )
+    print(
+        "  MODEL_SIZE = " + String(MODEL_SIZE) + " floats  -> model_buf "
+        + String(Float64(MODEL_SIZE * 4) / 1.0e6) + " MB"
+    )
+    print(
+        "  WS_SIZE    = " + String(WS_SIZE) + " floats  -> workspace_buf "
+        + String(Float64(BATCH * WS_SIZE * 4) / 1.0e6) + " MB"
+    )
+    print(
+        "  TOTAL buffers = "
+        + String(
+            Float64((BATCH * STATE_SIZE + MODEL_SIZE + BATCH * WS_SIZE) * 4)
+            / 1.0e6
+        )
+        + " MB"
+    )
+    print()
+
     with DeviceContext() as ctx:
+        var (free0, total0) = ctx.get_memory_info()
+        print(
+            "VRAM @ ctx open:        free "
+            + String(Float64(free0) / 1.0e9) + " / "
+            + String(Float64(total0) / 1.0e9) + " GB"
+        )
+
         var state_buf = ctx.enqueue_create_buffer[dtype](BATCH * STATE_SIZE)
         var model_buf = ctx.enqueue_create_buffer[dtype](MODEL_SIZE)
         var workspace_buf = ctx.enqueue_create_buffer[dtype](BATCH * WS_SIZE)
@@ -149,6 +193,13 @@ def main() raises:
         Humanoid[dtype].reset_kernel_gpu[BATCH, STATE_SIZE](ctx, state_buf)
         ctx.enqueue_memset(workspace_buf, 0)
         ctx.synchronize()
+
+        var (free1, total1) = ctx.get_memory_info()
+        print(
+            "VRAM after buffers:     free "
+            + String(Float64(free1) / 1.0e9) + " GB  (buffers+init used "
+            + String(Float64(free0 - free1) / 1.0e6) + " MB)"
+        )
 
         var state = LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -406,21 +457,84 @@ def main() raises:
                 return
             ldl_solve_workspace_gpu[dtype, NV, NBODY, BATCH, WS_SIZE](env, w)
 
-        # ── Warmup: full RK4 step a few times ──
-        print("Warming up...")
-        for _ in range(10):
-            RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-                dtype,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                BATCH,
-                NGEOM,
-                STEP_THREADS=NV,
-            ](ctx, state_buf, model_buf, workspace_buf)
+        # ── Warmup: run each phase kernel in dependency order (populates the
+        # workspace + triggers each kernel's first-launch local-memory window).
+        # We deliberately do NOT launch the full RK4 step_gpu here: its 4 fused
+        # rk4_stage_kernel instantiations + the Newton solver reserve large
+        # per-kernel local-memory backing stores (stackframe × max-resident
+        # threads), which is the real VRAM consumer behind the CUDA OOM — and
+        # none of those kernels is among the phases we measure. The VRAM probe
+        # below shows exactly how much the *phase* kernels reserve.
+        print("Warming up phase kernels (dependency order)...")
+        for _ in range(3):
+            ctx.enqueue_function[fk_kernel](
+                state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[vel_kernel](
+                state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[detect_kernel](
+                state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[com_kernel](
+                state, model, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[cdof_kernel](
+                state, model, workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[crb_kernel](
+                state, model, workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[mass_matrix_kernel](
+                state,
+                model,
+                workspace,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
+            )
+            ctx.enqueue_function[ldl_kernel](
+                workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[minv_kernel](
+                workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[rne_kernel](
+                state, model, workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
+            ctx.enqueue_function[ldl_solve_kernel](
+                workspace, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+            )
         ctx.synchronize()
+        var (free2, total2) = ctx.get_memory_info()
+        print(
+            "VRAM after phase warmup: free "
+            + String(Float64(free2) / 1.0e9)
+            + " GB  (phase kernels reserved "
+            + String(Float64(free1 - free2) / 1.0e6) + " MB)"
+        )
+
+        comptime if PROFILE_FULL_STEP:
+            print("Warming up full RK4 step_gpu (PROFILE_FULL_STEP=True)...")
+            for _ in range(10):
+                RK4Integrator[SOLVER=NewtonSolver].step_gpu[
+                    dtype,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    BATCH,
+                    NGEOM,
+                    STEP_THREADS=NV,
+                ](ctx, state_buf, model_buf, workspace_buf)
+            ctx.synchronize()
+            var (free3, total3) = ctx.get_memory_info()
+            print(
+                "VRAM after full step:    free "
+                + String(Float64(free3) / 1.0e9)
+                + " GB  (step_gpu kernels reserved "
+                + String(Float64(free2 - free3) / 1.0e6) + " MB)"
+            )
         print("Warmup done!")
         print()
 
@@ -585,24 +699,26 @@ def main() raises:
             "10. LDL solve:               " + String(solve_us)[byte=:8] + " μs"
         )
 
-        # ── Reference: full monolithic RK4 step ──
-        ctx.synchronize()
-        t0 = perf_counter_ns()
-        for _ in range(N_STEPS):
-            RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-                dtype,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                BATCH,
-                NGEOM,
-                STEP_THREADS=NV,
-            ](ctx, state_buf, model_buf, workspace_buf)
-        ctx.synchronize()
-        t1 = perf_counter_ns()
-        var full_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
+        # ── Reference: full monolithic RK4 step (gated — see PROFILE_FULL_STEP).
+        var full_us = Float64(0)
+        comptime if PROFILE_FULL_STEP:
+            ctx.synchronize()
+            t0 = perf_counter_ns()
+            for _ in range(N_STEPS):
+                RK4Integrator[SOLVER=NewtonSolver].step_gpu[
+                    dtype,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    BATCH,
+                    NGEOM,
+                    STEP_THREADS=NV,
+                ](ctx, state_buf, model_buf, workspace_buf)
+            ctx.synchronize()
+            t1 = perf_counter_ns()
+            full_us = Float64(t1 - t0) / 1000.0 / Float64(N_STEPS)
 
         print()
         print("=" * 60)
@@ -624,10 +740,14 @@ def main() raises:
             + String(phases_total)[byte=:8]
             + " μs"
         )
-        print(
-            "Full RK4 step (×20 passes):  " + String(full_us)[byte=:8] + " μs"
-        )
-        print("  (includes 20× solver + finalize + 4-stage RK4 combine)")
+        comptime if PROFILE_FULL_STEP:
+            print(
+                "Full RK4 step (×20 passes):  "
+                + String(full_us)[byte=:8] + " μs"
+            )
+            print("  (includes 20× solver + finalize + 4-stage RK4 combine)")
+        else:
+            print("Full RK4 step:               skipped (PROFILE_FULL_STEP=False)")
         print()
 
         print("Phase breakdown (% of summed phases):")
