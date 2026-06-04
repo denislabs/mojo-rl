@@ -48,6 +48,11 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
     var act: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var rew: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var dne: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    # Per-transition task id (DT-encoded), [CAP]. Written only by the
+    # multi-task `record_task` path; the single-task `record` never touches it
+    # (so the single-task RNG/compute stream is byte-identical). Allocated
+    # always — a tiny [CAP] buffer that costs nothing when unused.
+    var task: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var size: Int
     var pos: Int
 
@@ -58,6 +63,7 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
             act=alloc[Scalar[DT]](Self.CAP * Self.ACT),
             rew=alloc[Scalar[DT]](Self.CAP),
             dne=alloc[Scalar[DT]](Self.CAP),
+            task=alloc[Scalar[DT]](Self.CAP),
             size=0,
             pos=0,
         )
@@ -91,6 +97,30 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
             self.act[p * Self.ACT + j] = a[j]
         self.rew[p] = r
         self.dne[p] = d
+        self.pos = (self.pos + 1) % Self.CAP
+        if self.size < Self.CAP:
+            self.size += 1
+
+    def record_task(
+        mut self,
+        s: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        a: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        r: Scalar[DT],
+        d: Scalar[DT],
+        task_id: Int,
+    ):
+        """Multi-task variant of `record`: stores the same transition AND the
+        window's `task_id` (one env per window → constant task across the
+        window). Additive — not part of the `SequenceReplayBuffer` trait; the
+        single-task `record` is left untouched so its path is bit-identical."""
+        var p = self.pos
+        for i in range(Self.OBS):
+            self.obs[p * Self.OBS + i] = s[i]
+        for j in range(Self.ACT):
+            self.act[p * Self.ACT + j] = a[j]
+        self.rew[p] = r
+        self.dne[p] = d
+        self.task[p] = Scalar[DT](task_id)
         self.pos = (self.pos + 1) % Self.CAP
         if self.size < Self.CAP:
             self.size += 1
@@ -155,3 +185,48 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
                     act_out[dst_a + j] = self.act[src_a + j]
                 rew_out[b * T + k] = self.rew[phys]
                 dne_out[b * T + k] = self.dne[phys]
+
+    def sample_batch_task[
+        B: Int, T: Int,
+    ](
+        mut self,
+        obs_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        act_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        rew_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        dne_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        task_out: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B] one task/window
+    ) raises:
+        """Multi-task variant of `sample_batch`: identical window sampling, plus
+        one `task_id` per window written to `task_out[b]` (read at the window's
+        start frame — one env per window so the task is constant across it).
+        Additive; not part of the trait."""
+        if self.size < T + 1:
+            raise "SequenceReplay.sample_batch_task: not enough data to sample a length-T window"
+
+        var n_valid = self.size - T
+        var origin = self._origin()
+
+        for b in range(B):
+            var s = Int(random_float64() * Float64(n_valid))
+            if s >= n_valid:
+                s = n_valid - 1
+
+            for k in range(T + 1):
+                var phys = (origin + s + k) % Self.CAP
+                var src = phys * Self.OBS
+                var dst = b * (T + 1) * Self.OBS + k * Self.OBS
+                for i in range(Self.OBS):
+                    obs_out[dst + i] = self.obs[src + i]
+
+            for k in range(T):
+                var phys = (origin + s + k) % Self.CAP
+                var src_a = phys * Self.ACT
+                var dst_a = b * T * Self.ACT + k * Self.ACT
+                for j in range(Self.ACT):
+                    act_out[dst_a + j] = self.act[src_a + j]
+                rew_out[b * T + k] = self.rew[phys]
+                dne_out[b * T + k] = self.dne[phys]
+
+            # Window task = task of the window-start frame.
+            var phys0 = (origin + s) % Self.CAP
+            task_out[b] = self.task[phys0]
