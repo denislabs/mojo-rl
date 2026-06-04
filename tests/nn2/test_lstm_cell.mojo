@@ -35,7 +35,7 @@ def _loss(
     var cp_t = TileTensor(cp, row_major[BATCH, H]())
     var ht_t = TileTensor(ht, row_major[BATCH, H]())
     var ct_t = TileTensor(ct, row_major[BATCH, H]())
-    cell.step_forward_no_cache[BATCH](x_t, hp_t, cp_t, ht_t, ct_t)
+    cell.step_forward_no_cache["cpu", BATCH](x_t, hp_t, cp_t, ht_t, ct_t)
     var s: Scalar[DT] = 0.0
     for i in range(BATCH * H):
         s += go_h[i] * ht[i] + go_c[i] * ct[i]
@@ -83,8 +83,8 @@ def main() raises:
     var dcp_t = TileTensor(dcp, row_major[BATCH, H]())
 
     cell.zero_grad["cpu"]()
-    cell.step_forward[BATCH](x_t, hp_t, cp_t, ht_t, ct_t, cache_t)
-    cell.step_backward[BATCH](
+    cell.step_forward["cpu", BATCH](x_t, hp_t, cp_t, ht_t, ct_t, cache_t)
+    cell.step_backward["cpu", BATCH](
         goh_t, goc_t, x_t, hp_t, cp_t, cache_t, dx_t, dhp_t, dcp_t
     )
 

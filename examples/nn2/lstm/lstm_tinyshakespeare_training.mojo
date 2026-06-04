@@ -123,7 +123,7 @@ def train_step(
         var ht = TileTensor(h_buf + (t + 1) * BATCH * HIDDEN, row_major[BATCH, HIDDEN]())
         var ct = TileTensor(c_buf + (t + 1) * BATCH * HIDDEN, row_major[BATCH, HIDDEN]())
         var cc = TileTensor(cache_buf + t * BATCH * Cell.CACHE_SIZE, row_major[BATCH, Cell.CACHE_SIZE]())
-        cell.step_forward[BATCH](x_t, hp, cp, ht, ct, cc)
+        cell.step_forward["cpu", BATCH](x_t, hp, cp, ht, ct, cc)
         # Scatter h_t rows into the flattened batch + set target one-hot.
         var ht_p = h_buf + (t + 1) * BATCH * HIDDEN
         for b in range(BATCH):
@@ -176,7 +176,7 @@ def train_step(
         var dx_tt = TileTensor(dx_unused, row_major[BATCH, VOCAB]())
         var dhp_tt = TileTensor(dh_prev, row_major[BATCH, HIDDEN]())
         var dcp_tt = TileTensor(dc_prev, row_major[BATCH, HIDDEN]())
-        cell.step_backward[BATCH](dh_tt, dc_tt, x_t, hp, cp, cc, dx_tt, dhp_tt, dcp_tt)
+        cell.step_backward["cpu", BATCH](dh_tt, dc_tt, x_t, hp, cp, cc, dx_tt, dhp_tt, dcp_tt)
         for i in range(BATCH * HIDDEN):
             dh_recur[i] = dh_prev[i]
             dc_recur[i] = dc_prev[i]
@@ -221,7 +221,7 @@ def eval_loss(
             var cp = TileTensor(c_buf, row_major[BATCH, HIDDEN]())
             var ht = TileTensor(h_new, row_major[BATCH, HIDDEN]())
             var ct = TileTensor(c_new, row_major[BATCH, HIDDEN]())
-            cell.step_forward_no_cache[BATCH](x_t, hp, cp, ht, ct)
+            cell.step_forward_no_cache["cpu", BATCH](x_t, hp, cp, ht, ct)
             for b in range(BATCH):
                 var r = _row(t, b)
                 for j in range(HIDDEN):
