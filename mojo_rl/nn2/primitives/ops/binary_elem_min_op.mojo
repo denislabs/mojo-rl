@@ -22,6 +22,10 @@ struct BinaryElemMinOp(BinaryElementOp):
     comptime owns_cache = True
 
     @staticmethod
+    def display_label() -> String:
+        return String("Min")
+
+    @staticmethod
     def forward_scalar(x: Scalar[DT], y: Scalar[DT]) -> Scalar[DT]:
         return x if x < y else y
 

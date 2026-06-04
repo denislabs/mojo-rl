@@ -60,6 +60,10 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN)
     comptime OUT_DIM = Self.END - Self.START
 
+    @staticmethod
+    def display_label() -> String:
+        return String("Slice")
+
     var ts: TargetStorage
 
     def __init__(out self):

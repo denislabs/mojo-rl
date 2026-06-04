@@ -93,6 +93,10 @@ struct RSample[ACT: Int](Module, Saveable):
     comptime IN_DIMS = InlineArray[Int, 1](fill=2 * Self.ACT)
     comptime OUT_DIM = Self.ACT + 1
 
+    @staticmethod
+    def display_label() -> String:
+        return String("RSample")
+
     var action_scale: Scalar[DT]
 
     # Backward caches (CPU). z_cache: fresh noise drawn each forward.

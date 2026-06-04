@@ -132,6 +132,10 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
     comptime IN0_DIM = Self.DIM
     comptime OUT_DIM = Self.DIM
 
+    @staticmethod
+    def display_label() -> String:
+        return Self.OP.display_label()
+
     var ts: TargetStorage
 
     # Cache cluster (used only when Self.OP.owns_cache = True).
