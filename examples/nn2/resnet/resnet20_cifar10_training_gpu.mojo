@@ -35,7 +35,7 @@ from mojo_rl.nn2.composites import Conv2DBatchNormReLU, ResBlockConv2DBN, ResBlo
 from mojo_rl.nn2.primitives.avg_pool_2d import AvgPool2D
 from mojo_rl.nn2.primitives.flatten import Flatten
 from mojo_rl.nn2.primitives.linear import Linear
-from mojo_rl.nn2.combinators import Sequential
+from mojo_rl.nn2.combinators import Sequential, Repeat
 from mojo_rl.nn2.loss import CrossEntropyLoss
 from mojo_rl.nn2.optimizer import Adam
 from mojo_rl.nn2.training import Trainer
@@ -55,19 +55,15 @@ def main() raises:
     var ctx = DeviceContext()
 
     comptime Net = Sequential[
-        Conv2DBatchNormReLU[3, 16, 3, 1, 1, 32, 32],     # stem → 16×32×32
-        # Stage 1: 16 channels, 32×32
-        ResBlockConv2DBN[16, 3, 1, 32, 32],
-        ResBlockConv2DBN[16, 3, 1, 32, 32],
-        ResBlockConv2DBN[16, 3, 1, 32, 32],
-        # Stage 2: 16→32, 32×32 → 16×16
+        Conv2DBatchNormReLU[3, 16, 3, 1, 1, 32, 32],            # stem → 16×32×32
+        # Stage 1: 3 identity blocks @ 16ch, 32×32
+        Repeat[3, ResBlockConv2DBN[16, 3, 1, 32, 32], shared=False],
+        # Stage 2: downsample 16→32 (32×32→16×16) + 2 identity blocks
         ResBlockDownsampleBN[16, 32, 3, 1, 32, 32],
-        ResBlockConv2DBN[32, 3, 1, 16, 16],
-        ResBlockConv2DBN[32, 3, 1, 16, 16],
-        # Stage 3: 32→64, 16×16 → 8×8
+        Repeat[2, ResBlockConv2DBN[32, 3, 1, 16, 16], shared=False],
+        # Stage 3: downsample 32→64 (16×16→8×8) + 2 identity blocks
         ResBlockDownsampleBN[32, 64, 3, 1, 16, 16],
-        ResBlockConv2DBN[64, 3, 1, 8, 8],
-        ResBlockConv2DBN[64, 3, 1, 8, 8],
+        Repeat[2, ResBlockConv2DBN[64, 3, 1, 8, 8], shared=False],
         # Head: global avg pool → 64, linear
         AvgPool2D[64, 8, 8, 0, 8, 8],
         Flatten[64],

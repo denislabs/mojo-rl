@@ -3,6 +3,7 @@
 from .sequential import Sequential
 from .residual import Residual
 from .projected_residual import ProjectedResidual
+from .repeat import Repeat
 from .parallel import Parallel
 from .branch_concat import BranchConcat
 from .skip_concat import SkipConcat
