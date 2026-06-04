@@ -22,7 +22,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.deep_agents2.tdmpc2.nets import (
-    TDMPC2Encoder, TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet,
+    TDMPC2Encoder, TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet, TDMPC2Termination,
 )
 from mojo_rl.deep_agents2.tdmpc2.wm_graph import TDMPC2WMGraph
 from mojo_rl.deep_agents2.tdmpc2.wm_step import WMStep
@@ -58,6 +58,7 @@ def test_wm_bptt_loss_decreases() raises:
     comptime DynT = TDMPC2Dynamics[LATENT, ACT, MLP, SN]
     comptime RewT = TDMPC2Reward[LATENT, ACT, MLP, BINS]
     comptime QNetT = TDMPC2QNet[LATENT, ACT, MLP, BINS]
+    comptime TermT = TDMPC2Termination[LATENT, ACT, MLP]
     comptime GraphT = TDMPC2WMGraph[LATENT, ACT, MLP, BINS, SN, VMIN, VMAX]
     comptime StepT = WMStep[OBS, ENC, ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, B, H]
 
@@ -82,27 +83,35 @@ def test_wm_bptt_loss_decreases() raises:
         qo.lr = lr
         q.append(qn^)
         q_opt.append(qo^)
+    var term = TermT.make["cpu", INIT=Kaiming]()
+    var term_opt = Adam.make["cpu", TermT](term)
+    term_opt.lr = lr
     var step = StepT.make["cpu"]()
 
     # Fixed synthetic batch (t-major). td targets are arbitrary stop-grad
-    # scalars here — P1 validates grad flow, not TD-target correctness.
+    # scalars here — P1 validates grad flow, not TD-target correctness. `done`
+    # is the BCE target; with the default bce_coef=0 the term head is inert, so
+    # the consistency/reward/value BPTT decrease is unchanged.
     var obs = _alloc((H + 1) * B * OBS)
     var act = _alloc(H * B * ACT)
     var rew = _alloc(H * B)
     var td = _alloc(H * B)
+    var done = _alloc(H * B)
     _fill_pseudo(obs, (H + 1) * B * OBS, 1)
     _fill_pseudo(act, H * B * ACT, 2)
     _fill_pseudo(rew, H * B, 3)
     _fill_pseudo(td, H * B, 4)
+    for i in range(H * B):
+        done[i] = Scalar[DT](0.0)
 
     var first: Scalar[DT] = 0.0
     var last: Scalar[DT] = 0.0
     comptime ITERS = 40
     for it in range(ITERS):
         var l = step.step["cpu"](
-            graph, enc, dyn, rew_net, q,
-            enc_opt, dyn_opt, rew_opt, q_opt,
-            obs, act, rew, td,
+            graph, enc, dyn, rew_net, q, term,
+            enc_opt, dyn_opt, rew_opt, q_opt, term_opt,
+            obs, act, rew, td, done,
         ).total()
         assert_true(isfinite(l), "WM loss must be finite")
         if it == 0:
@@ -120,7 +129,7 @@ def test_wm_bptt_loss_decreases() raises:
         " gradient flow to dynamics",
     )
 
-    obs.free(); act.free(); rew.free(); td.free()
+    obs.free(); act.free(); rew.free(); td.free(); done.free()
 
 
 def main() raises:

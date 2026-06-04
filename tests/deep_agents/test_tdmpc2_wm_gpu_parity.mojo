@@ -20,7 +20,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.deep_agents2.tdmpc2.nets import (
-    TDMPC2Encoder, TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet,
+    TDMPC2Encoder, TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet, TDMPC2Termination,
 )
 from mojo_rl.deep_agents2.tdmpc2.wm_graph import TDMPC2WMGraph
 from mojo_rl.deep_agents2.tdmpc2.wm_step import WMStep
@@ -42,6 +42,7 @@ comptime EncT = TDMPC2Encoder[OBS, ENC, LATENT, SN]
 comptime DynT = TDMPC2Dynamics[LATENT, ACT, MLP, SN]
 comptime RewT = TDMPC2Reward[LATENT, ACT, MLP, BINS]
 comptime QNetT = TDMPC2QNet[LATENT, ACT, MLP, BINS]
+comptime TermT = TDMPC2Termination[LATENT, ACT, MLP]
 comptime GraphT = TDMPC2WMGraph[LATENT, ACT, MLP, BINS, SN, VMIN, VMAX]
 comptime StepT = WMStep[OBS, ENC, ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, B, H]
 
@@ -78,6 +79,8 @@ def main() raises:
     var eo_c = Adam.make["cpu", EncT](enc_c); eo_c.lr = lr
     var do_c = Adam.make["cpu", DynT](dyn_c); do_c.lr = lr
     var ro_c = Adam.make["cpu", RewT](rew_c); ro_c.lr = lr
+    var term_c = TermT.make["cpu", INIT=Kaiming]()
+    var to_c = Adam.make["cpu", TermT](term_c); to_c.lr = lr
     var step_c = StepT.make["cpu"]()
 
     # ── GPU set (same seed → same Kaiming draws → same init) ───────────
@@ -97,6 +100,8 @@ def main() raises:
     var eo_g = Adam.make["gpu", EncT](enc_g, ctx=ctx); eo_g.lr = lr
     var do_g = Adam.make["gpu", DynT](dyn_g, ctx=ctx); do_g.lr = lr
     var ro_g = Adam.make["gpu", RewT](rew_g, ctx=ctx); ro_g.lr = lr
+    var term_g = TermT.make["gpu", INIT=Kaiming](ctx=ctx)
+    var to_g = Adam.make["gpu", TermT](term_g, ctx=ctx); to_g.lr = lr
     var step_g = StepT.make["gpu"](ctx=ctx)
 
     # ── fixed shared batch (t-major host) ──────────────────────────────
@@ -104,20 +109,25 @@ def main() raises:
     var act = alloc[Scalar[DT]](H * B * ACT)
     var rew = alloc[Scalar[DT]](H * B)
     var td = alloc[Scalar[DT]](H * B)
+    var done = alloc[Scalar[DT]](H * B)
     _fill_pseudo(obs, (H + 1) * B * OBS, 1)
     _fill_pseudo(act, H * B * ACT, 2)
     _fill_pseudo(rew, H * B, 3)
     _fill_pseudo(td, H * B, 4)
+    for i in range(H * B):
+        done[i] = Scalar[DT](0.0)
 
     var max_rel: Scalar[DT] = 0.0
     for it in range(4):
         var lc = step_c.step["cpu"](
-            graph_c, enc_c, dyn_c, rew_c, q_c, eo_c, do_c, ro_c, qo_c,
-            obs, act, rew, td,
+            graph_c, enc_c, dyn_c, rew_c, q_c, term_c,
+            eo_c, do_c, ro_c, qo_c, to_c,
+            obs, act, rew, td, done,
         ).total()
         var lg = step_g.step["gpu"](
-            graph_g, enc_g, dyn_g, rew_g, q_g, eo_g, do_g, ro_g, qo_g,
-            obs, act, rew, td, ctx=ctx,
+            graph_g, enc_g, dyn_g, rew_g, q_g, term_g,
+            eo_g, do_g, ro_g, qo_g, to_g,
+            obs, act, rew, td, done, ctx=ctx,
         ).total()
         var d = lc - lg
         if d < 0:
@@ -136,4 +146,4 @@ def main() raises:
     print("=" * 70)
     print("PARITY PASSED — TD-MPC2 WMStep GPU matches CPU")
     print("=" * 70)
-    obs.free(); act.free(); rew.free(); td.free()
+    obs.free(); act.free(); rew.free(); td.free(); done.free()
