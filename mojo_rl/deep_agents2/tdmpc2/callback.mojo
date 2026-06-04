@@ -51,12 +51,13 @@ struct TDMPC2RolloutCallbackCPU[
     SN: Int,
     VMIN: Int,
     VMAX: Int,
+    QP: Float64 = 0.0,
 ](RolloutCallbackCPU):
     comptime LATENT_DIM: Int = Self.LATENT
     comptime ACTION_DIM: Int = Self.ACT
     comptime DynT = TDMPC2Dynamics[Self.LATENT, Self.ACT, Self.MLP, Self.SN]
     comptime RewT = TDMPC2Reward[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]
-    comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]
+    comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.QP]
     comptime PolicyT = TDMPC2Policy[Self.LATENT, Self.ACT, Self.MLP]
     comptime ZA = Self.LATENT + Self.ACT
 
@@ -238,6 +239,7 @@ struct TDMPC2RolloutCallbackGPU[
     VMAX: Int,
     NUM_Q: Int,
     BT: Int,   # BATCH_TOTAL = N_ENVS × TOTAL_SAMPLES
+    QP: Float64 = 0.0,
 ](RolloutCallbackGPU):
     comptime LATENT_DIM: Int = Self.LATENT
     comptime ACTION_DIM: Int = Self.ACT
@@ -245,7 +247,7 @@ struct TDMPC2RolloutCallbackGPU[
     comptime ZA: Int = Self.LATENT + Self.ACT
     comptime DynT = TDMPC2Dynamics[Self.LATENT, Self.ACT, Self.MLP, Self.SN]
     comptime RewT = TDMPC2Reward[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]
-    comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]
+    comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.QP]
     comptime PolicyT = TDMPC2Policy[Self.LATENT, Self.ACT, Self.MLP]
 
     var dyn: UnsafePointer[Self.DynT, MutAnyOrigin]

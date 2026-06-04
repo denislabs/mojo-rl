@@ -14,8 +14,24 @@ Trunks (state obs; `num_enc_layers=2`):
   * `TDMPC2QNet`     : (z|a) → [NL(.,mlp)] → [NL(mlp,mlp)] → Linear(mlp,bins)
 
 `SN` is the SimNorm group **size** (reference `simnorm_dim`, default 8); the
-SimNorm primitive takes the group **count** = `DIM // SN`. Dropout in the Q
-trunk is deferred (per the port plan); add once HalfCheetah converges.
+SimNorm primitive takes the group **count** = `DIM // SN`.
+
+Q-trunk dropout (item D, `docs/TDMPC2_DEEP_AGENTS2_PORT.md` §14.4): `TDMPC2QNet`
+takes a `QP: Float64 = 0.0` and *always* threads a `Dropout` through its first
+`NormedLinear` (reference `layers.mlp` applies `dropout*(i==0)` — first hidden
+only, between Linear and LayerNorm). `QP=0.0` makes the Dropout numerically
+identity (mask ≡ 1.0, fwd & grad ×1.0) so the default path is bit-identical;
+the layer is *structurally always present* (Mojo can't conditionally alias two
+type shapes — see memory `feedback_mojo_conditional_type_alias_blocked`).
+
+⚠️ QP>0 caveats (experimental, off by default): (1) all NQ Q-heads share one
+`QSEED` (per-head seeds would need per-head types, which can't live in
+`List[QNetT]`), so their dropout masks are correlated rather than independent;
+(2) the WM reverse-scan *recomputes* each step's forward before its `vjp`
+(cache-light BPTT), so the grad-forward draws a *fresh* mask ≠ the loss-forward's
+mask — the value-loss gradient is w.r.t. a different mask than the loss. Fine as
+a noisy regularizer but not reference-faithful. Enable only to probe value-loss
+instability.
 """
 
 from mojo_rl.nn2.combinators.sequential import Sequential
@@ -23,10 +39,23 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.layer_norm import LayerNorm
 from mojo_rl.nn2.primitives.mish import Mish
 from mojo_rl.nn2.primitives.sim_norm import SimNorm
+from mojo_rl.nn2.primitives.dropout import Dropout
+
+
+# Fixed comptime seed for the Q-trunk dropout (shared across the NQ heads — see
+# the module docstring's QP>0 caveat). Arbitrary; only used when QP>0.
+comptime QDROPOUT_SEED: UInt64 = 0xD40720C2
 
 
 comptime NormedLinear[I: Int, O: Int] = Sequential[
     Linear[I, O], LayerNorm[O], Mish[O],
+]
+
+# NormedLinear with a Dropout between the Linear and the LayerNorm (reference
+# `NormedLinear(..., dropout=p)`: Linear → Dropout → LayerNorm → act). At p=0.0
+# the Dropout is identity, so this is numerically equal to `NormedLinear`.
+comptime NormedLinearDropout[I: Int, O: Int, QP: Float64] = Sequential[
+    Linear[I, O], Dropout[O, QP, QDROPOUT_SEED], LayerNorm[O], Mish[O],
 ]
 
 comptime NormedLinearSimNorm[I: Int, O: Int, SN: Int] = Sequential[
@@ -52,8 +81,10 @@ comptime TDMPC2Reward[LATENT: Int, ACT: Int, MLP: Int, BINS: Int] = Sequential[
     Linear[MLP, BINS],
 ]
 
-comptime TDMPC2QNet[LATENT: Int, ACT: Int, MLP: Int, BINS: Int] = Sequential[
-    NormedLinear[LATENT + ACT, MLP],
+comptime TDMPC2QNet[
+    LATENT: Int, ACT: Int, MLP: Int, BINS: Int, QP: Float64 = 0.0
+] = Sequential[
+    NormedLinearDropout[LATENT + ACT, MLP, QP],
     NormedLinear[MLP, MLP],
     Linear[MLP, BINS],
 ]

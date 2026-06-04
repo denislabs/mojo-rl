@@ -58,6 +58,12 @@ def main() raises:
     assert_true(Cfg.NUM_SAMPLES == 512, "ref MPPI samples")
     assert_true(Cfg.LATENT == LATENT, "dim override threaded")
 
+    # `iterations += 2` heuristic (reference tdmpc2.py:35): act<20 keeps 6,
+    # act>=20 (Humanoid) auto-bumps to 8 — no caller change needed.
+    assert_true(Cfg.NUM_ITERS == 6, "low-dim action keeps 6 MPPI iters")
+    comptime HiDimCfg = TDMPC2Config["cpu", OBS, 24, B, CAP, ENC, LATENT, MLP, BINS]
+    assert_true(HiDimCfg.NUM_ITERS == 8, "act>=20 auto-bumps to 8 MPPI iters")
+
     var env = PendulumV2[DT]()
     var obs = env.reset_obs_list()
     var obsbuf = alloc[Scalar[DT]](OBS)

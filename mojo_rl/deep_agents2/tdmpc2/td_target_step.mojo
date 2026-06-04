@@ -113,10 +113,11 @@ struct TDTargetStep[
     VMAX: Int,
     B: Int,
     H: Int,
+    QP: Float64 = 0.0,
 ](Movable & ImplicitlyDestructible):
     comptime EncT = TDMPC2Encoder[Self.OBS, Self.ENC, Self.LATENT, Self.SN]
     comptime PolicyT = TDMPC2Policy[Self.LATENT, Self.ACT, Self.MLP]
-    comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]
+    comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.QP]
 
     var rsample: RSample[Self.ACT]
     var decode: TwoHotDecode[Self.BINS, Self.VMIN, Self.VMAX]

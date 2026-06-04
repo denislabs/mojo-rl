@@ -39,6 +39,7 @@ comptime TDMPC2PolicyGraph[
     BINS: Int,
     VMIN: Int,
     VMAX: Int,
+    QP: Float64 = 0.0,
 ] = ComputeGraph[
     1,
     InputSlot["z", LATENT],
@@ -47,8 +48,8 @@ comptime TDMPC2PolicyGraph[
     Node["action", Slice[ACT + 1, 0, ACT], "alp"],
     Node["log_prob", Slice[ACT + 1, ACT, ACT + 1], "alp"],
     Node["za", Concat[LATENT, ACT], "z", "action"],
-    ExternalNode["q1", TDMPC2QNet[LATENT, ACT, MLP, BINS], "za", MODE="input_only"],
-    ExternalNode["q2", TDMPC2QNet[LATENT, ACT, MLP, BINS], "za", MODE="input_only"],
+    ExternalNode["q1", TDMPC2QNet[LATENT, ACT, MLP, BINS, QP], "za", MODE="input_only"],
+    ExternalNode["q2", TDMPC2QNet[LATENT, ACT, MLP, BINS, QP], "za", MODE="input_only"],
     Node["q1d", TwoHotDecode[BINS, VMIN, VMAX], "q1"],
     Node["q2d", TwoHotDecode[BINS, VMIN, VMAX], "q2"],
     Node["qsum", Add[1, 2], "q1d", "q2d"],

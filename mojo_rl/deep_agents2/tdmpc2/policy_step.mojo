@@ -61,11 +61,12 @@ struct PolicyStep[
     VMIN: Int,
     VMAX: Int,
     B: Int,
+    QP: Float64 = 0.0,
 ](Movable & ImplicitlyDestructible):
     comptime PolicyT = TDMPC2Policy[Self.LATENT, Self.ACT, Self.MLP]
-    comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]
+    comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.QP]
     comptime GraphT = TDMPC2PolicyGraph[
-        Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.VMIN, Self.VMAX
+        Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.VMIN, Self.VMAX, Self.QP,
     ]
 
     var graph: Self.GraphT

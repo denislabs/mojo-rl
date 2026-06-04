@@ -68,6 +68,8 @@ trait TDMPC2ConfigT(Copyable, Movable, ImplicitlyDestructible):
     comptime NUM_PI_TRAJS: Int
     comptime NUM_ELITES: Int
     comptime NUM_ITERS: Int
+    # Q-trunk dropout prob (item D). 0.0 = always-on no-op (bit-identical).
+    comptime QP: Float64
 
     # Tuned scalar defaults (read into __init__ kwarg defaults).
     comptime DEF_LR: Scalar[DT]
@@ -99,7 +101,11 @@ struct TDMPC2Config[
     num_samples: Int = 512,
     num_pi_trajs: Int = 24,
     num_elites: Int = 64,
-    num_iters: Int = 6,
+    # Reference `tdmpc2.py:35` bumps MPPI iterations by 2 for high-dim action
+    # spaces (harder planning). HalfCheetah (act=6) keeps 6; Humanoid (act>=20)
+    # auto-gets 8 without the caller thinking about it.
+    num_iters: Int = 8 if act >= 20 else 6,
+    qp: Float64 = 0.0,
 ](TDMPC2ConfigT):
     """TD-MPC2 (Hansen et al. 2024) — implicit world model (encoder +
     latent dynamics + reward + Q-ensemble), two-hot distributional
@@ -128,6 +134,7 @@ struct TDMPC2Config[
     comptime NUM_PI_TRAJS = Self.num_pi_trajs
     comptime NUM_ELITES = Self.num_elites
     comptime NUM_ITERS = Self.num_iters
+    comptime QP = Self.qp
 
     comptime DEF_LR = Scalar[DT](3e-4)
     comptime DEF_GAMMA = Scalar[DT](0.99)
@@ -159,7 +166,7 @@ def agent_from_config[
     CONFIG.OBS, CONFIG.ENC, CONFIG.ACT, CONFIG.LATENT, CONFIG.MLP,
     CONFIG.BINS, CONFIG.SN, CONFIG.VMIN, CONFIG.VMAX, CONFIG.B, CONFIG.H,
     CONFIG.CAP, CONFIG.NUM_SAMPLES, CONFIG.NUM_PI_TRAJS, CONFIG.NUM_ELITES,
-    CONFIG.NUM_ITERS,
+    CONFIG.NUM_ITERS, CONFIG.QP,
 ]:
     """Build the primitive `TDMPC2Agent` from any `TDMPC2ConfigT`. Every
     scalar defaults to the config's tuned value but stays overridable. The
@@ -170,7 +177,7 @@ def agent_from_config[
         CONFIG.OBS, CONFIG.ENC, CONFIG.ACT, CONFIG.LATENT, CONFIG.MLP,
         CONFIG.BINS, CONFIG.SN, CONFIG.VMIN, CONFIG.VMAX, CONFIG.B, CONFIG.H,
         CONFIG.CAP, CONFIG.NUM_SAMPLES, CONFIG.NUM_PI_TRAJS,
-        CONFIG.NUM_ELITES, CONFIG.NUM_ITERS,
+        CONFIG.NUM_ELITES, CONFIG.NUM_ITERS, CONFIG.QP,
     ].make(
         lr=lr,
         gamma=gamma,
@@ -203,7 +210,10 @@ def TDMPC2[
     NUM_SAMPLES: Int = 512,
     NUM_PI_TRAJS: Int = 24,
     NUM_ELITES: Int = 64,
-    NUM_ITERS: Int = 6,
+    # Reference `tdmpc2.py:35`: +2 MPPI iterations for high-dim action spaces.
+    # act<20 (HalfCheetah) → 6; act>=20 (Humanoid) → 8, applied automatically.
+    NUM_ITERS: Int = 8 if ACT >= 20 else 6,
+    QP: Float64 = 0.0,
 ](
     ctx: Optional[DeviceContext] = None,
     lr: Scalar[DT] = TDMPC2Config[
@@ -236,7 +246,7 @@ def TDMPC2[
     ].DEF_TEMPERATURE,
 ) raises -> TDMPC2Agent[
     target, OBS, ENC, ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, B, H, CAP,
-    NUM_SAMPLES, NUM_PI_TRAJS, NUM_ELITES, NUM_ITERS,
+    NUM_SAMPLES, NUM_PI_TRAJS, NUM_ELITES, NUM_ITERS, QP,
 ]:
     """TD-MPC2 with the canonical implicit world model + Q-ensemble + MPPI
     planning. `target` selects cpu/gpu; architecture dims default to the
@@ -247,7 +257,7 @@ def TDMPC2[
     return agent_from_config[
         TDMPC2Config[
             target, OBS, ACT, B, CAP, ENC, LATENT, MLP, BINS, SN, VMIN, VMAX,
-            H, NUM_SAMPLES, NUM_PI_TRAJS, NUM_ELITES, NUM_ITERS,
+            H, NUM_SAMPLES, NUM_PI_TRAJS, NUM_ELITES, NUM_ITERS, QP,
         ]
     ](
         ctx=ctx,

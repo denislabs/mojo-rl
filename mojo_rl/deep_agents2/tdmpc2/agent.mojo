@@ -97,26 +97,31 @@ struct TDMPC2Agent[
     NUM_PI_TRAJS: Int = 24,
     NUM_ELITES: Int = 64,
     NUM_ITERS: Int = 6,
+    # Q-trunk dropout prob (item D, §14.4). 0.0 = always-on no-op (bit-identical
+    # default); >0 enables the experimental Q-net dropout (see nets.mojo caveats).
+    QP: Float64 = 0.0,
 ](Movable & ImplicitlyDestructible):
     comptime EncT = TDMPC2Encoder[Self.OBS, Self.ENC, Self.LATENT, Self.SN]
     comptime DynT = TDMPC2Dynamics[Self.LATENT, Self.ACT, Self.MLP, Self.SN]
     comptime RewT = TDMPC2Reward[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]
-    comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]
+    comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.QP]
     comptime PolicyT = TDMPC2Policy[Self.LATENT, Self.ACT, Self.MLP]
     comptime GraphT = TDMPC2WMGraph[
-        Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.SN, Self.VMIN, Self.VMAX
+        Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.SN, Self.VMIN,
+        Self.VMAX, Self.QP,
     ]
     comptime PB = (Self.H + 1) * Self.B
     comptime WMStepT = WMStep[
         Self.OBS, Self.ENC, Self.ACT, Self.LATENT, Self.MLP, Self.BINS,
-        Self.SN, Self.VMIN, Self.VMAX, Self.B, Self.H,
+        Self.SN, Self.VMIN, Self.VMAX, Self.B, Self.H, Self.QP,
     ]
     comptime PolStepT = PolicyStep[
-        Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.VMIN, Self.VMAX, Self.PB,
+        Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.VMIN, Self.VMAX,
+        Self.PB, Self.QP,
     ]
     comptime TDStepT = TDTargetStep[
         Self.OBS, Self.ENC, Self.ACT, Self.LATENT, Self.MLP, Self.BINS,
-        Self.SN, Self.VMIN, Self.VMAX, Self.B, Self.H,
+        Self.SN, Self.VMIN, Self.VMAX, Self.B, Self.H, Self.QP,
     ]
     # MPC: single-env (N_ENVS=1) batched planner + its rollout callback.
     comptime MPC_BT = Self.NUM_SAMPLES + Self.NUM_PI_TRAJS
@@ -126,7 +131,7 @@ struct TDMPC2Agent[
     ]
     comptime MpcCB = TDMPC2RolloutCallbackGPU[
         Self.ACT, Self.LATENT, Self.MLP, Self.BINS, Self.SN, Self.VMIN,
-        Self.VMAX, NQ, Self.MPC_BT,
+        Self.VMAX, NQ, Self.MPC_BT, Self.QP,
     ]
 
     var encoder: Self.EncT
@@ -209,6 +214,16 @@ struct TDMPC2Agent[
             q_opt.append(qo^)
         for i in range(NQ):
             polyak_module[tg, Self.QNetT](q[i], qt[i], Scalar[DT](1.0), ctx=ctx)
+
+        # Q-dropout (item D): target-Q nets are used only for stop-grad targets
+        # (td_target) + the MPPI terminal bootstrap (callback) — both eval
+        # contexts, so force their Dropout to eval mode (no masking). Online Q
+        # keeps training=True (drops in the WM/policy training graphs, matching
+        # the reference, which keeps the model in train mode through update()).
+        # Skipped entirely at QP=0.0 to leave the bit-identical default untouched.
+        comptime if Self.QP > 0.0:
+            for i in range(NQ):
+                qt[i].set_attr["training"](Scalar[DT](0.0))
 
         var enc_opt = Adam.make[tg, Self.EncT](enc, ctx=ctx)
         enc_opt.lr = lr * enc_lr_scale
