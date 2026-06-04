@@ -802,19 +802,16 @@ struct Conv2D[
             )
             var ctx = self.ts.ctx.value()
 
-            # d_input — 1 thread per (b, ic, ih, iw).
-            comptime total_in = BATCH * Self.IN_DIM_FLAT
-            comptime n_blocks_in = (total_in + TPB - 1) // TPB
-            comptime dx_kernel = _conv2d_backward_dx_kernel[
-                BATCH, Self.IC, Self.OC, Self.K, Self.S, Self.P,
-                Self.H, Self.W, Self.OH, Self.OW,
-                Self.IN_DIM_FLAT, Self.OUT_DIM_FLAT,
-            ]
-            ctx.enqueue_function[dx_kernel](
-                go_lt, w_lt, gi_lt,
-                grid_dim=n_blocks_in, block_dim=TPB,
-            )
-
+            # BACKWARD-ORDER INVARIANT (mirrors CPU + Linear): the param
+            # grads (dW, dB) read `in_lt` (the cached forward input), so
+            # they MUST run BEFORE dx, which writes `gi_lt`. When this
+            # conv is not the first layer, Sequential aliases its
+            # grad_input slab onto the same buffer that holds its cached
+            # forward input (memory reuse). Since the GPU queue is
+            # in-order, running dx first would clobber the input with
+            # gradients before dw/db read it → corrupt dW (silent;
+            # diverges only across multi-batch training, where the stale
+            # input differs between steps). Enqueue dw/db first.
             comptime if mode == "all":
                 var dw_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
                     self.weight.grad_dev.value()
@@ -844,6 +841,20 @@ struct Conv2D[
                     go_lt, db_lt,
                     grid_dim=Self.OC, block_dim=CONV_DW_TPB,
                 )
+
+            # d_input — 1 thread per (b, ic, ih, iw). Runs LAST so it may
+            # safely overwrite an aliased input/grad_input slab.
+            comptime total_in = BATCH * Self.IN_DIM_FLAT
+            comptime n_blocks_in = (total_in + TPB - 1) // TPB
+            comptime dx_kernel = _conv2d_backward_dx_kernel[
+                BATCH, Self.IC, Self.OC, Self.K, Self.S, Self.P,
+                Self.H, Self.W, Self.OH, Self.OW,
+                Self.IN_DIM_FLAT, Self.OUT_DIM_FLAT,
+            ]
+            ctx.enqueue_function[dx_kernel](
+                go_lt, w_lt, gi_lt,
+                grid_dim=n_blocks_in, block_dim=TPB,
+            )
 
     # ----- Walkers ---------------------------------------------------------
 

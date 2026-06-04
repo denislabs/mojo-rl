@@ -341,3 +341,7 @@ struct Parallel[A: Module, B: Module](Module):
         assert_tag_for["Parallel", target](self.ts.target_tag)
         self.branch_a.zero_grad[target]()
         self.branch_b.zero_grad[target]()
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        self.branch_a.set_attr[ATTR](value)
+        self.branch_b.set_attr[ATTR](value)

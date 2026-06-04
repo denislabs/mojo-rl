@@ -253,6 +253,10 @@ struct Sequential[*MODULES: Module](Module):
         comptime for i in range(Self.N):
             self.children[i].zero_grad[target]()
 
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        comptime for i in range(Self.N):
+            self.children[i].set_attr[ATTR](value)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Free functions for forward / backward bodies.

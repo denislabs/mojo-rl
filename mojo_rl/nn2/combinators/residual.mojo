@@ -232,3 +232,6 @@ struct Residual[Inner: Module](Module):
     def zero_grad[target: StaticString](mut self) raises:
         assert_tag_for["Residual", target](self.ts.target_tag)
         self.inner.zero_grad[target]()
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        self.inner.set_attr[ATTR](value)
