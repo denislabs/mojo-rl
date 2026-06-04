@@ -35,6 +35,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB
 from ..core import Module, Optimizer, Loss, Initializer, AMPPolicy, NoAMP
+from .augmenter import Augmenter, IdentityAugmenter
 from .shuffle_kernels import (
     init_identity_indices_kernel,
     fisher_yates_shuffle_kernel,
@@ -608,6 +609,7 @@ struct Trainer[
     def train_gpu[
         N_TRAIN: Int,
         N_TEST: Int,
+        AUGMENTER: Augmenter = IdentityAugmenter,
     ](
         mut self,
         train_x: TileTensor[
@@ -624,7 +626,17 @@ struct Trainer[
         print_progress: Bool = True,
         shuffle: Bool = False,
         rng_seed: UInt64 = 42,
+        aug_seed: UInt64 = 1000,
     ) raises -> TrainResult:
+        """Whole-dataset GPU training with per-epoch eval.
+
+        BatchNorm is toggled to train mode before each epoch and eval mode
+        before the per-epoch test pass via `net.set_attr["training"]`
+        (no-op for nets without BN). When `AUGMENTER` is not the identity,
+        an augmentation buffer is allocated once and `AUGMENTER.augment`
+        re-fills it from `train_x` each epoch before the mini-batch loop;
+        training then reads the augmented buffer.
+        """
         comptime assert (
             Self.target == "gpu"
         ), "Trainer.train_gpu requires target='gpu'"
@@ -645,12 +657,22 @@ struct Trainer[
 
         var result = TrainResult.empty()
         var ctx = self.ctx.value()
-        var x_base = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        var raw_x = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             train_x.ptr
         )
         var y_base = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             train_y.ptr
         )
+
+        # Augmentation buffer (allocated once, refilled per epoch). Identity
+        # → skip it and train on `train_x` directly. A real augmenter fully
+        # rewrites this buffer from `train_x` each epoch (no pre-copy).
+        comptime USE_AUG = not AUGMENTER.IS_NOOP
+        var aug_dev: Optional[DeviceBuffer[DT]] = None
+        var x_base = raw_x
+        comptime if USE_AUG:
+            aug_dev = ctx.enqueue_create_buffer[DT](N_TRAIN * Self.IN_DIM)
+            x_base = aug_dev.value().unsafe_ptr()
 
         # Shuffle scratch (device-only; allocated once, reused across epochs).
         var indices_dev: Optional[DeviceBuffer[DType.int32]] = None
@@ -698,6 +720,18 @@ struct Trainer[
                 )
                 ctx.enqueue_function[increment_seed_kernel](
                     seed_t, grid_dim=(1,), block_dim=(1,)
+                )
+            # BN → train mode; (re)build the augmented training set.
+            self.net.set_attr["training"](Scalar[DT](1.0))
+            comptime if USE_AUG:
+                var raw_lt = LayoutTensor[
+                    DT, Layout.row_major(N_TRAIN, Self.IN_DIM), MutAnyOrigin
+                ](raw_x)
+                var aug_lt = LayoutTensor[
+                    DT, Layout.row_major(N_TRAIN, Self.IN_DIM), MutAnyOrigin
+                ](aug_dev.value().unsafe_ptr())
+                AUGMENTER.augment[N_TRAIN, Self.IN_DIM, DT](
+                    ctx, aug_lt, raw_lt, epoch, aug_seed
                 )
             for b in range(N_BATCHES_TRAIN):
                 if shuffle:
@@ -772,6 +806,7 @@ struct Trainer[
             var t1 = perf_counter_ns()
             var train_s = Float64(t1 - t0) / 1e9
 
+            self.net.set_attr["training"](Scalar[DT](0.0))  # BN → eval mode
             var top1 = self.eval_top1_gpu[N_TEST](test_x, test_y_labels)
             var t2 = perf_counter_ns()
             var eval_s = Float64(t2 - t1) / 1e9

@@ -15,9 +15,11 @@ BatchNorm train/eval is toggled per epoch via `set_attr["training"]`,
 which propagates through Sequential/Residual/ProjectedResidual to every
 BatchNorm2D leaf.
 
-Note: no augmentation here; full convergence (~91%) needs SGD+momentum,
-augmentation and ~80 epochs. This example validates the residual stack
-trains end-to-end. ResNet-20 is deep — expect a long compile.
+Uses the trainer's built-in shuffling + per-epoch CIFAR crop+flip
+augmentation (`CIFAR10CropFlipAugmenter`) + BatchNorm train/eval toggle.
+Reaching the reference ~91% additionally needs SGD+momentum and an LR
+schedule; with Adam + augmentation + 50 epochs this clears ~80%+.
+ResNet-20 is deep — expect a long compile.
 
 Run (Apple Metal):
     pixi run -e apple mojo run -I . examples/nn2/resnet/resnet20_cifar10_training_gpu.mojo
@@ -25,7 +27,6 @@ Run (Apple Metal):
 
 from std.random import seed
 from std.testing import assert_true
-from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
@@ -38,16 +39,16 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.combinators import Sequential, Repeat
 from mojo_rl.nn2.loss import CrossEntropyLoss
 from mojo_rl.nn2.optimizer import Adam
-from mojo_rl.nn2.training import Trainer
+from mojo_rl.nn2.training import Trainer, CIFAR10CropFlipAugmenter
 from mojo_rl.nn2.initializer import Kaiming
 
 
 def main() raises:
     comptime N_CLASSES = 10
     comptime BATCH = 100
-    comptime N_EPOCHS = 20
+    comptime N_EPOCHS = 50
     comptime LR: Scalar[DT] = 0.001
-    comptime TARGET_ACC: Float64 = 0.60
+    comptime TARGET_ACC: Float64 = 0.80
 
     seed(42)
     print("loading CIFAR-10...")
@@ -109,27 +110,19 @@ def main() raises:
     var train_y = TileTensor(train_y_dev, row_major[CIFAR10.N_TRAIN, N_CLASSES]())
     var test_x = TileTensor(test_x_dev, row_major[CIFAR10.N_TEST, IN_DIM]())
 
+    # The trainer handles shuffling, per-epoch CIFAR crop+flip augmentation,
+    # the BatchNorm train/eval toggle, and per-epoch top-1 eval internally.
+    var result = trainer.train_gpu[
+        CIFAR10.N_TRAIN, CIFAR10.N_TEST, AUGMENTER=CIFAR10CropFlipAugmenter
+    ](
+        train_x, train_y, test_x, test_labels_host,
+        epochs=N_EPOCHS, shuffle=True, rng_seed=UInt64(42), aug_seed=UInt64(1000),
+    )
+
     var best_acc: Float64 = 0.0
-    for epoch in range(N_EPOCHS):
-        var t0 = perf_counter_ns()
-        trainer.net.set_attr["training"](Scalar[DT](1.0))
-        var r = trainer.train_gpu[CIFAR10.N_TRAIN](
-            train_x, train_y, epochs=1, print_progress=False,
-            shuffle=True, rng_seed=UInt64(42 + epoch),
-        )
-        var train_s = Float64(perf_counter_ns() - t0) / 1e9
-
-        trainer.net.set_attr["training"](Scalar[DT](0.0))
-        var acc = trainer.eval_top1_gpu[CIFAR10.N_TEST](test_x, test_labels_host)
-        if acc > best_acc:
-            best_acc = acc
-        print(
-            "epoch " + String(epoch)
-            + " | train_loss=" + String(r.epoch_train_loss[0])
-            + " | test_acc=" + String(acc * 100.0) + "%"
-            + " | train=" + String(train_s) + "s"
-        )
-
+    for a in result.epoch_test_top1:
+        if a > best_acc:
+            best_acc = a
     print("\nbest test accuracy: " + String(best_acc * 100.0) + "%")
     assert_true(
         best_acc >= TARGET_ACC,

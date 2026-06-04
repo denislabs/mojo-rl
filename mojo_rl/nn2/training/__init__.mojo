@@ -2,3 +2,4 @@
 
 from .trainer import Trainer
 from .timer import Timer
+from .augmenter import Augmenter, IdentityAugmenter, CIFAR10CropFlipAugmenter
