@@ -18,6 +18,14 @@ Extends `run_alphazero_selfplay` with the two production pieces:
 
 The passed-in `net` is the *best* and holds the final (best) weights on return.
 `AUG = IdentityAugmenter` recovers the un-augmented behaviour.
+
+**Telemetry.** Two `GPUEvaluator` opponents (`OPP1`, `OPP2`, e.g. random +
+minimax) and a `Logger` (`L`) can be plugged in. Every `report_every`
+iterations the best net is evaluated (both colors) against each enabled
+opponent, a one-line progress summary is printed, and the metrics (loss, replay
+size, promotions, per-opponent win/draw/loss + win-rate) are flushed to the
+logger. With the defaults (`OPP*=RandomOpponent`, `L=NoOpLogger`,
+`report_every=0`) this is a no-op and matches the original silent behaviour.
 """
 
 from std.memory import alloc
@@ -33,15 +41,18 @@ from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn2.combinators.graph_nodes import InputSlot, Node, ExternalNode
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.planners.tree_search import (
     GenericGPUMCTS, AlphaGoPUCT, DirichletNoise, SelfPlay,
 )
 
 from .loss_ops import AZLossOp
 from .arena import candidate_winrate, should_promote
+from .eval import eval_policy_vs_opponent, EvalResult
 from ..zero.mcts_adapters import AZPredGPU, AZEnvGPU
 from ..zero.example_replay import MCTSExampleReplay
 from ..zero.symmetries import BoardAugmenter
+from ..zero.evaluators import GPUEvaluator, RandomOpponent
 
 
 @fieldwise_init
@@ -50,6 +61,31 @@ struct ArenaRunResult(Copyable, Movable):
     learner was accepted over the best."""
     var last_loss: Float64
     var promotions: Int
+
+
+def _eval_both_colors[
+    ENV: GPUTwoPlayerDiscreteEnv,
+    NET: Module,
+    OPP: GPUEvaluator,
+    N_GAMES: Int,
+    RESULT_IDX: Int,
+    MAX_PLIES: Int,
+](
+    ctx: DeviceContext, mut net: NET, seed: UInt64, open_plies: Int
+) raises -> EvalResult:
+    """Aggregate the net's record vs `OPP` over `N_GAMES` games as *each* color
+    (P0 then P1), so first-move advantage cancels — the legacy eval convention."""
+    var p0 = eval_policy_vs_opponent[ENV, NET, OPP, N_GAMES, RESULT_IDX, MAX_PLIES](
+        ctx, net, agent_player=0, seed=seed, open_plies=open_plies
+    )
+    var p1 = eval_policy_vs_opponent[ENV, NET, OPP, N_GAMES, RESULT_IDX, MAX_PLIES](
+        ctx, net, agent_player=1, seed=seed + 33333, open_plies=open_plies
+    )
+    return EvalResult(
+        wins=p0.wins + p1.wins,
+        draws=p0.draws + p1.draws,
+        losses=p0.losses + p1.losses,
+    )
 
 
 def run_alphazero_selfplay_arena[
@@ -65,6 +101,10 @@ def run_alphazero_selfplay_arena[
     ARENA_GAMES: Int = 32,        # arena games per color (comptime: sizes buffers)
     RESULT_IDX: Int = 10,
     MAX_PLIES: Int = 9,
+    OPP1: GPUEvaluator = RandomOpponent,   # primary eval opponent (do_eval)
+    OPP2: GPUEvaluator = RandomOpponent,   # secondary eval opponent (do_eval2)
+    L: Logger = NoOpLogger,                # metrics sink (NoOp = silent)
+    EVAL_GAMES: Int = 64,                  # games per color in each periodic eval
 ](
     ctx: DeviceContext,
     mut net: NET,                 # the BEST net — holds final weights on return
@@ -76,6 +116,13 @@ def run_alphazero_selfplay_arena[
     arena_every: Int = 100,
     arena_open_plies: Int = 2,
     promote_threshold: Float64 = 0.55,
+    report_every: Int = 0,        # 0 → fall back to arena_every (0 = no reports)
+    do_eval: Bool = True,         # eval the best vs OPP1 each report
+    do_eval2: Bool = False,       # also eval vs OPP2 each report
+    eval_open_plies: Int = 0,     # random opening plies in eval (diversifies vs
+    #                               deterministic opponents like minimax)
+    verbose: Bool = True,         # print a per-report progress line
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> ArenaRunResult:
     comptime OBS = NET.IN_DIMS[0]
     comptime ACT = NET.OUT_DIM - 1
@@ -167,6 +214,17 @@ def run_alphazero_selfplay_arena[
 
     var last_loss: Float64 = 0.0
     var promotions = 0
+
+    # Effective reporting cadence: explicit `report_every`, else piggy-back on
+    # the arena cadence (0 ⇒ no periodic eval/print/log at all).
+    var rep = report_every if report_every > 0 else arena_every
+    if verbose:
+        print(
+            "AlphaZero arena run:", iterations, "iters,",
+            N_ENVS, "envs,", NUM_SIMS, "sims | eval1=", OPP1.NAME,
+            "eval2=", OPP2.NAME if do_eval2 else String("off"),
+            "| report_every=", rep,
+        )
 
     for it in range(iterations):
         # 1. MCTS search with the BEST net (eval mode for any BatchNorm).
@@ -269,9 +327,89 @@ def run_alphazero_selfplay_arena[
                 ENV, NET, NET, ARENA_GAMES, RESULT_IDX, MAX_PLIES,
             ](ctx, learner, net, seed=seed + UInt64(it) * 7 + 1,
               open_plies=arena_open_plies)
-            if should_promote(rec, promote_threshold, min_decisive=ARENA_GAMES // 2):
+            var accepted = should_promote(
+                rec, promote_threshold, min_decisive=ARENA_GAMES // 2
+            )
+            if accepted:
                 hard_copy_params["gpu", M=NET](learner, net, ctx)
                 promotions += 1
+            if verbose:
+                print(
+                    "  arena iter", it + 1,
+                    "| learner vs best  W", rec.wins, "D", rec.draws,
+                    "L", rec.losses,
+                    "→ ACCEPTED" if accepted else "→ rejected",
+                    "(promotions", promotions, ")",
+                )
+
+        # 8. Periodic report: eval the BEST net vs the plugged opponents (both
+        #    colors), print a progress line, and flush metrics to the logger.
+        if rep > 0 and (it + 1) % rep == 0 and it >= learning_starts:
+            net.set_attr["training"](Scalar[DT](0.0))
+            var names = List[String]()
+            var values = List[Float64]()
+            names.append(String("loss"))
+            values.append(last_loss)
+            names.append(String("replay_size"))
+            values.append(Float64(len(replay)))
+            names.append(String("promotions"))
+            values.append(Float64(promotions))
+
+            var line = String("  iter ") + String(it + 1)
+            line += " | loss " + String(last_loss)
+            line += " | replay " + String(len(replay))
+            line += " | promo " + String(promotions)
+
+            if do_eval:
+                var e1 = _eval_both_colors[
+                    ENV, NET, OPP1, EVAL_GAMES, RESULT_IDX, MAX_PLIES
+                ](ctx, net, seed=seed + UInt64(it) * 13 + 5,
+                  open_plies=eval_open_plies)
+                var tot1 = e1.wins + e1.draws + e1.losses
+                var wr1 = (
+                    Float64(e1.wins) / Float64(tot1) if tot1 > 0 else 0.0
+                )
+                names.append(String("eval1_win"))
+                values.append(Float64(e1.wins))
+                names.append(String("eval1_draw"))
+                values.append(Float64(e1.draws))
+                names.append(String("eval1_loss"))
+                values.append(Float64(e1.losses))
+                names.append(String("eval1_winrate"))
+                values.append(wr1)
+                line += (
+                    " | vs " + OPP1.NAME + " W" + String(e1.wins)
+                    + " D" + String(e1.draws) + " L" + String(e1.losses)
+                    + " (wr " + String(Int(wr1 * 100.0)) + "%)"
+                )
+
+            if do_eval2:
+                var e2 = _eval_both_colors[
+                    ENV, NET, OPP2, EVAL_GAMES, RESULT_IDX, MAX_PLIES
+                ](ctx, net, seed=seed + UInt64(it) * 17 + 9,
+                  open_plies=eval_open_plies)
+                var tot2 = e2.wins + e2.draws + e2.losses
+                var wr2 = (
+                    Float64(e2.wins) / Float64(tot2) if tot2 > 0 else 0.0
+                )
+                names.append(String("eval2_win"))
+                values.append(Float64(e2.wins))
+                names.append(String("eval2_draw"))
+                values.append(Float64(e2.draws))
+                names.append(String("eval2_loss"))
+                values.append(Float64(e2.losses))
+                names.append(String("eval2_winrate"))
+                values.append(wr2)
+                line += (
+                    " | vs " + OPP2.NAME + " W" + String(e2.wins)
+                    + " D" + String(e2.draws) + " L" + String(e2.losses)
+                    + " (wr " + String(Int(wr2 * 100.0)) + "%)"
+                )
+
+            if verbose:
+                print(line)
+            if logger:
+                logger.value()[].log_scalars(names, values, it + 1)
 
     # Final flush: ensure the returned best is at least as new as the learner if
     # the learner ended clearly ahead (covers runs shorter than arena_every).

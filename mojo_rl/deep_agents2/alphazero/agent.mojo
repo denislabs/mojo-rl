@@ -28,9 +28,12 @@ from mojo_rl.deep_agents2.core.checkpoint_helpers import (
     split_lines_v2, read_file_v2, expect_v2_header,
 )
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
+from mojo_rl.core.logger import Logger, NoOpLogger
 
-from ..zero.evaluators import GPUEvaluator
+from ..zero.evaluators import GPUEvaluator, RandomOpponent
+from ..zero.symmetries import BoardAugmenter, IdentityAugmenter
 from .selfplay import run_alphazero_selfplay
+from .selfplay_arena import run_alphazero_selfplay_arena, ArenaRunResult
 from .eval import eval_policy_vs_random, eval_policy_vs_opponent, EvalResult
 
 
@@ -72,6 +75,48 @@ struct AlphaZeroAgent[
         ](
             self.ctx, self.net, iterations, learning_starts, train_per_iter,
             self.lr, seed,
+        )
+
+    def train_arena[
+        AUG: BoardAugmenter = IdentityAugmenter,
+        OPP1: GPUEvaluator = RandomOpponent,
+        OPP2: GPUEvaluator = RandomOpponent,
+        L: Logger = NoOpLogger,
+        ARENA_GAMES: Int = 32,
+        RESULT_IDX: Int = 10,
+        MAX_PLIES: Int = 9,
+        EVAL_GAMES: Int = 64,
+    ](
+        mut self,
+        iterations: Int,
+        learning_starts: Int = 20,
+        train_per_iter: Int = 2,
+        seed: UInt64 = 0,
+        arena_every: Int = 100,
+        arena_open_plies: Int = 2,
+        promote_threshold: Float64 = 0.55,
+        report_every: Int = 0,
+        do_eval: Bool = True,
+        do_eval2: Bool = False,
+        eval_open_plies: Int = 0,
+        verbose: Bool = True,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    ) raises -> ArenaRunResult:
+        """Full-AlphaZero training: best/learner split + Arena gating +
+        symmetry augmentation, with two pluggable eval opponents and a logger.
+
+        Defaults (`AUG=Identity`, `OPP*=Random`, `L=NoOp`, `report_every=0`)
+        reduce to a silent arena run. Set `report_every>0` (+ a logger and/or
+        `OPP1=GPUMinimaxTicTacToe`, `do_eval2=True`) for per-report eval+print+
+        metric flush, mirroring the legacy `train_selfplay_gpu` telemetry."""
+        return run_alphazero_selfplay_arena[
+            Self.ENV, Self.NET, AUG, Self.N_ENVS, Self.NUM_SIMS, Self.MAX_NODES,
+            Self.BATCH, Self.CAP, Self.MAX_TRAJ,
+            ARENA_GAMES, RESULT_IDX, MAX_PLIES, OPP1, OPP2, L, EVAL_GAMES,
+        ](
+            self.ctx, self.net, iterations, learning_starts, train_per_iter,
+            self.lr, seed, arena_every, arena_open_plies, promote_threshold,
+            report_every, do_eval, do_eval2, eval_open_plies, verbose, logger,
         )
 
     def eval_vs_random[
