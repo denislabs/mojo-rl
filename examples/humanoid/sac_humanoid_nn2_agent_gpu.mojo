@@ -51,7 +51,7 @@ from mojo_rl.envs.humanoid import Humanoid
 comptime EnvT = Humanoid[DT, TERMINATE_ON_UNHEALTHY=True]
 comptime OBS_DIM = EnvT.OBS_DIM  # 45
 comptime ACT_DIM = EnvT.ACTION_DIM  # 17
-comptime HIDDEN = 256
+comptime HIDDEN = 512
 
 # Off-policy GPU training parameters (mirror the legacy GPU script).
 comptime BATCH = 512
