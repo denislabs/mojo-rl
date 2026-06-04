@@ -9,6 +9,12 @@ from .evaluators import (
     GPUMinimaxTicTacToe,
     GPUMinimaxConnectFour,
 )
+from .symmetries import (
+    BoardAugmenter,
+    IdentityAugmenter,
+    D4SquareAugmenter,
+    HFlipColumnAugmenter,
+)
 from .signs import (
     az_value_target,
     zero_sum_sign,
