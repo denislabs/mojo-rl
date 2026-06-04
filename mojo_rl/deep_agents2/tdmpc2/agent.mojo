@@ -408,11 +408,15 @@ struct TDMPC2Agent[
         )
         if Bool(logger):
             var lg = logger.value()
+            # Names follow the dashboard's KNOWN_GROUPS conventions:
+            #   reward_loss → World Model Losses; value_loss → Critic Loss;
+            #   wm_loss → Loss; policy_loss → Policy Loss; pi_scale → Policy
+            #   Scale. consistency_loss is TD-MPC2-specific (ungrouped).
             lg[].log_scalar("consistency_loss", Float64(m.consistency_loss), step)
             lg[].log_scalar("reward_loss", Float64(m.reward_loss), step)
             lg[].log_scalar("value_loss", Float64(m.value_loss), step)
             lg[].log_scalar("wm_loss", Float64(m.wm_loss), step)
-            lg[].log_scalar("pi_loss", Float64(m.pi_loss), step)
+            lg[].log_scalar("policy_loss", Float64(m.pi_loss), step)
             lg[].log_scalar("pi_scale", Float64(m.pi_scale), step)
         # reset the chunk accumulators
         self._cons_acc = Scalar[DT](0.0)

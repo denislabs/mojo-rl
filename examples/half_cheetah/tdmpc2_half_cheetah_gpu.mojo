@@ -35,10 +35,15 @@ from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 # ── target: "gpu" for the NVIDIA run; "cpu" works too (slower at this scale).
 comptime TARGET = "gpu"
-# ── MPC: True → act via MPPI planning (select_action_mpc, GPU only — heavy:
-#    ~536 batched forwards/action at the reference 512/24 config). False →
-#    MPC-off policy acting. Flip on for the full TD-MPC2 algorithm on NVIDIA.
-comptime USE_MPC = False
+# ── MPC: True → act via MPPI planning (select_action_mpc, GPU only). Much
+#    heavier per env step than MPC-off (a full plan per action). MPC_* set the
+#    planning budget; reference TD-MPC2 is 512/24/64/6 — start lighter for a
+#    feasible first run and bump once it's working.
+comptime USE_MPC = True
+comptime MPC_SAMPLES = 256
+comptime MPC_PI_TRAJS = 12
+comptime MPC_ELITES = 32
+comptime MPC_ITERS = 4
 
 comptime OBS = HalfCheetahConfig.OBS_DIM        # 17
 comptime ACT = HalfCheetahConfig.ACTION_DIM     #  6
@@ -67,7 +72,8 @@ comptime EP_LEN = 1_000
 
 comptime Env = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]
 comptime Ag = TDMPC2Agent[
-    TARGET, OBS, ENC, ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, B, H, CAP
+    TARGET, OBS, ENC, ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, B, H, CAP,
+    MPC_SAMPLES, MPC_PI_TRAJS, MPC_ELITES, MPC_ITERS,
 ]
 
 
@@ -175,7 +181,8 @@ def main() raises:
             if ret > best:
                 best = ret
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
-            logger.log_scalar("eval_return", Float64(ret), step)
+            logger.log_scalar("avg_reward", Float64(ret), step)
+            logger.log_scalar("best_reward", Float64(best), step)
             print(
                 "  step", step, " eval_return=", ret, " best=", best,
                 " wm=", ag.last_wm_loss(), " pi=", ag.last_pi_loss(),
