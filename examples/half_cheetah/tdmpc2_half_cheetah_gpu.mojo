@@ -31,6 +31,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents2.tdmpc2.agent import TDMPC2Agent
+from mojo_rl.deep_agents2.tdmpc2.config import TDMPC2
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 # ── target: "gpu" for the NVIDIA run; "cpu" works too (slower at this scale).
@@ -115,10 +116,16 @@ def main() raises:
     seed(0)
     var ctx = DeviceContext()
     var env = Env()
-    var ag = Ag.make(
-        lr=Scalar[DT](LR), gamma=Scalar[DT](0.99), tau=Scalar[DT](0.01),
+    # Build through the Design-F preset (config.mojo): reads like a
+    # constructor, applies the reference-tuned defaults (gamma 0.99 / tau
+    # 0.01 / enc_lr_scale 0.3 / …), returns exactly `Ag`. Architecture dims
+    # + MPC budget are spelled out here to match the `Ag` alias above.
+    var ag = TDMPC2[
+        TARGET, OBS, ACT, B, CAP, ENC, LATENT, MLP, BINS, SN, VMIN, VMAX, H,
+        MPC_SAMPLES, MPC_PI_TRAJS, MPC_ELITES, MPC_ITERS,
+    ](
+        ctx=ctx, lr=Scalar[DT](LR),
         action_scale=Scalar[DT](ACTION_SCALE), learning_starts=LEARN_START,
-        ctx=ctx,
     )
 
     # RemoteLogger (dashboard) — URL/key from .env; no-ops if unset.

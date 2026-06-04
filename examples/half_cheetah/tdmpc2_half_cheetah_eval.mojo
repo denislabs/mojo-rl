@@ -22,6 +22,7 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.deep_agents2.tdmpc2.agent import TDMPC2Agent
+from mojo_rl.deep_agents2.tdmpc2.config import TDMPC2
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 comptime CKPT = "tdmpc2_half_cheetah_mpcoff.ckpt"
@@ -90,7 +91,11 @@ def main() raises:
     print("=" * 70)
     var ctx = DeviceContext()
     var env = Env()
-    var ag = Ag.make(action_scale=Scalar[DT](1.0), learning_starts=0, ctx=ctx)
+    # Build through the Design-F preset (config.mojo) — returns exactly `Ag`.
+    var ag = TDMPC2[
+        "gpu", OBS, ACT, B, CAP, ENC, LATENT, MLP, BINS, SN, VMIN, VMAX, H,
+        MPC_SAMPLES, MPC_PI_TRAJS, MPC_ELITES, MPC_ITERS,
+    ](ctx=ctx, action_scale=Scalar[DT](1.0), learning_starts=0)
     ag.load_state(CKPT)
 
     var pol = _eval(ag, env, False)
