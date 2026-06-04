@@ -60,7 +60,7 @@ comptime REPLAY_CAPACITY = 1_000_000
 # workspace (mass matrix ∝ NV² + contacts) is replicated across all N_ENVS.
 # Kept small to avoid OOM (Ant at NV=14 already OOMs at 32). Bump up if you
 # have GPU headroom.
-comptime N_ENVS = 4
+comptime N_ENVS = 16
 
 # Training duration. Drop NUM_STEPS to ~50_000 for a smoke run.
 comptime NUM_STEPS = 3_000_000
