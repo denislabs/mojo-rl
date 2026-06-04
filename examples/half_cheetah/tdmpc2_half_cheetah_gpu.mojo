@@ -66,7 +66,8 @@ comptime TOTAL = 1_000_000
 comptime EVAL_EVERY = 20_000
 comptime DIAG_EVERY = 1_000   # flush_metrics → logger cadence
 comptime CHECKPOINT_EVERY = 50_000
-comptime CHECKPOINT_PATH = "tdmpc2_half_cheetah.ckpt"
+# Mode-specific path so an MPC run never overwrites an MPC-off checkpoint.
+comptime CHECKPOINT_PATH = "tdmpc2_half_cheetah_mpc.ckpt" if USE_MPC else "tdmpc2_half_cheetah_mpcoff.ckpt"
 comptime EVAL_EPS = 2
 comptime EP_LEN = 1_000
 
