@@ -128,6 +128,10 @@ def main() raises:
         mpc_cfg = String("1")
     logger.set_config("mpc", mpc_cfg)
     var logger_ptr = UnsafePointer(to=logger)
+    if env_vars.get("RL_MONITOR_URL", "").byte_length() > 0:
+        print("  logger: ENABLED → streaming to dashboard each", DIAG_EVERY, "steps")
+    else:
+        print("  logger: DISABLED — RL_MONITOR_URL not found in .env (no metrics sent)")
 
     var obs = env.reset_obs_list()
     var obsbuf = alloc[Scalar[DT]](OBS)
@@ -161,6 +165,9 @@ def main() raises:
             _ = ag.train_step()
         if step > 0 and step % DIAG_EVERY == 0:
             ag.flush_metrics_through_logger[RemoteLogger](logger_ptr, step)
+            # Stream this diag batch now (buffer_size=200 would otherwise hold
+            # ~30 diag intervals before the first POST + run registration).
+            logger.flush()
         if step > 0 and step % CHECKPOINT_EVERY == 0:
             ag.save_state(CHECKPOINT_PATH)
         if step > 0 and step % EVAL_EVERY == 0:
