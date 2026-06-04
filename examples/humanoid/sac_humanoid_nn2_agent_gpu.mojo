@@ -54,7 +54,7 @@ comptime ACT_DIM = EnvT.ACTION_DIM  # 17
 comptime HIDDEN = 256
 
 # Off-policy GPU training parameters (mirror the legacy GPU script).
-comptime BATCH = 256
+comptime BATCH = 512
 comptime REPLAY_CAPACITY = 1_000_000
 # Humanoid physics (NV=23) is the heaviest model here — its per-env RK4
 # workspace (mass matrix ∝ NV² + contacts) is replicated across all N_ENVS.
