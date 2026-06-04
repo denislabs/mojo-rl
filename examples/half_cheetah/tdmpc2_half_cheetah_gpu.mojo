@@ -59,7 +59,7 @@ comptime LEARN_START = 5_000
 comptime TRAIN_EVERY = 1
 comptime TOTAL = 1_000_000
 comptime EVAL_EVERY = 20_000
-comptime DIAG_EVERY = 2_000   # flush_metrics → logger cadence
+comptime DIAG_EVERY = 1_000   # flush_metrics → logger cadence
 comptime CHECKPOINT_EVERY = 50_000
 comptime CHECKPOINT_PATH = "tdmpc2_half_cheetah.ckpt"
 comptime EVAL_EPS = 2
@@ -118,7 +118,7 @@ def main() raises:
     var logger = RemoteLogger(
         server_url=env_vars.get("RL_MONITOR_URL", ""),
         run_name="TD-MPC2 HalfCheetah",
-        buffer_size=200,
+        buffer_size=64,
         api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
     )
     logger.set_config("algorithm", "TD-MPC2")
