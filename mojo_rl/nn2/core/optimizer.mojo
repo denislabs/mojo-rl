@@ -47,3 +47,14 @@ trait Optimizer(Defaultable & Movable & ImplicitlyDestructible):
         M: Module,
     ](mut self, mut model: M) raises:
         ...
+
+    def set_lr(mut self, lr: Scalar[DT]):
+        """Set the learning rate (for external LR schedules). Default
+        no-op; optimizers with an `lr` field override to assign it."""
+        pass
+
+    def get_lr(self) -> Scalar[DT]:
+        """Current learning rate. Default 1.0; optimizers with an `lr`
+        field override to return it (used by the trainer to read the base
+        LR before applying a schedule)."""
+        return Scalar[DT](1.0)

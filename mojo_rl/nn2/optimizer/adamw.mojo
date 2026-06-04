@@ -423,6 +423,12 @@ struct AdamW(Optimizer, Saveable):
             opt.ts = TargetStorage.make_gpu(ctx_v)
         return opt^
 
+    def set_lr(mut self, lr: Scalar[DT]):
+        self.lr = lr
+
+    def get_lr(self) -> Scalar[DT]:
+        return self.lr
+
     def zero_grad[
         target: StaticString,
         M: Module,

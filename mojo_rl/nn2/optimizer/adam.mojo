@@ -617,6 +617,12 @@ struct Adam(Optimizer, Saveable):
                     opt._mt_moment_offs = _upload_i32(ctx_v, mo)
         return opt^
 
+    def set_lr(mut self, lr: Scalar[DT]):
+        self.lr = lr
+
+    def get_lr(self) -> Scalar[DT]:
+        return self.lr
+
     def zero_grad[
         target: StaticString,
         M: Module,

@@ -16,10 +16,10 @@ which propagates through Sequential/Residual/ProjectedResidual to every
 BatchNorm2D leaf.
 
 Uses the trainer's built-in shuffling + per-epoch CIFAR crop+flip
-augmentation (`CIFAR10CropFlipAugmenter`) + BatchNorm train/eval toggle.
-Reaching the reference ~91% additionally needs SGD+momentum and an LR
-schedule; with Adam + augmentation + 50 epochs this clears ~80%+.
-ResNet-20 is deep — expect a long compile.
+augmentation (`CIFAR10CropFlipAugmenter`) + BatchNorm train/eval toggle +
+LR schedule (`WarmupCosineSchedule`). Reaching the reference ~91% would
+additionally want SGD+momentum; with Adam + augmentation + cosine LR +
+50 epochs this clears ~80%+. ResNet-20 is deep — expect a long compile.
 
 Run (Apple Metal):
     pixi run -e apple mojo run -I . examples/nn2/resnet/resnet20_cifar10_training_gpu.mojo
@@ -39,7 +39,11 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.combinators import Sequential, Repeat
 from mojo_rl.nn2.loss import CrossEntropyLoss
 from mojo_rl.nn2.optimizer import Adam
-from mojo_rl.nn2.training import Trainer, CIFAR10CropFlipAugmenter
+from mojo_rl.nn2.training import (
+    Trainer,
+    CIFAR10CropFlipAugmenter,
+    WarmupCosineSchedule,
+)
 from mojo_rl.nn2.initializer import Kaiming
 
 
@@ -111,9 +115,12 @@ def main() raises:
     var test_x = TileTensor(test_x_dev, row_major[CIFAR10.N_TEST, IN_DIM]())
 
     # The trainer handles shuffling, per-epoch CIFAR crop+flip augmentation,
-    # the BatchNorm train/eval toggle, and per-epoch top-1 eval internally.
+    # the BatchNorm train/eval toggle, the LR schedule (5-epoch warmup then
+    # cosine decay to 1% of base), and per-epoch top-1 eval internally.
     var result = trainer.train_gpu[
-        CIFAR10.N_TRAIN, CIFAR10.N_TEST, AUGMENTER=CIFAR10CropFlipAugmenter
+        CIFAR10.N_TRAIN, CIFAR10.N_TEST,
+        AUGMENTER=CIFAR10CropFlipAugmenter,
+        SCHEDULER = WarmupCosineSchedule[5, 0.01],
     ](
         train_x, train_y, test_x, test_labels_host,
         epochs=N_EPOCHS, shuffle=True, rng_seed=UInt64(42), aug_seed=UInt64(1000),

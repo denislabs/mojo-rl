@@ -36,6 +36,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..constants import DT, TPB
 from ..core import Module, Optimizer, Loss, Initializer, AMPPolicy, NoAMP
 from .augmenter import Augmenter, IdentityAugmenter
+from .lr_scheduler import Scheduler, ConstantSchedule
 from .shuffle_kernels import (
     init_identity_indices_kernel,
     fisher_yates_shuffle_kernel,
@@ -610,6 +611,7 @@ struct Trainer[
         N_TRAIN: Int,
         N_TEST: Int,
         AUGMENTER: Augmenter = IdentityAugmenter,
+        SCHEDULER: Scheduler = ConstantSchedule,
     ](
         mut self,
         train_x: TileTensor[
@@ -635,7 +637,10 @@ struct Trainer[
         (no-op for nets without BN). When `AUGMENTER` is not the identity,
         an augmentation buffer is allocated once and `AUGMENTER.augment`
         re-fills it from `train_x` each epoch before the mini-batch loop;
-        training then reads the augmented buffer.
+        training then reads the augmented buffer. When `SCHEDULER` is not
+        constant, the optimizer LR is set to `base_lr * SCHEDULER.lr_scale_at
+        (epoch, epochs)` each epoch (base_lr = the LR set on `optim` before
+        the call); the constant default leaves the LR untouched.
         """
         comptime assert (
             Self.target == "gpu"
@@ -673,6 +678,14 @@ struct Trainer[
         comptime if USE_AUG:
             aug_dev = ctx.enqueue_create_buffer[DT](N_TRAIN * Self.IN_DIM)
             x_base = aug_dev.value().unsafe_ptr()
+
+        # LR schedule: capture the caller-set base LR; per epoch the LR is
+        # set to base_lr * SCHEDULER.lr_scale_at(epoch, epochs). Skipped
+        # entirely for the constant schedule (LR left exactly as set).
+        comptime USE_SCHED = not SCHEDULER.IS_CONSTANT
+        var base_lr: Scalar[DT] = 0.0
+        comptime if USE_SCHED:
+            base_lr = self.optim.get_lr()
 
         # Shuffle scratch (device-only; allocated once, reused across epochs).
         var indices_dev: Optional[DeviceBuffer[DType.int32]] = None
@@ -720,6 +733,11 @@ struct Trainer[
                 )
                 ctx.enqueue_function[increment_seed_kernel](
                     seed_t, grid_dim=(1,), block_dim=(1,)
+                )
+            # LR schedule for this epoch.
+            comptime if USE_SCHED:
+                self.optim.set_lr(
+                    base_lr * Scalar[DT](SCHEDULER.lr_scale_at(epoch, epochs))
                 )
             # BN → train mode; (re)build the augmented training set.
             self.net.set_attr["training"](Scalar[DT](1.0))
