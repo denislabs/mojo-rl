@@ -69,7 +69,6 @@ def main() raises:
         report_every=100,
         do_eval=True,
         do_eval2=True,
-        eval_open_plies=2,
         verbose=True,
         logger=UnsafePointer(to=logger),
     )
@@ -84,10 +83,10 @@ def main() raises:
         res.last_loss == res.last_loss and res.last_loss < 1e30,
         "telemetry run produced non-finite loss",
     )
-    # Each report flushes: loss, replay_size, promotions (3) + eval1 (4) +
-    # eval2 (4) = 11 scalars. With ≥3 reports that is ≥33 logged rows.
+    # Each report flushes: loss, games, replay_size, promotions (4) + eval1 (4)
+    # + eval2 (4) = 12 scalars. With ≥3 reports that is ≥36 logged rows.
     assert_true(
-        logger.total_logged() >= 33,
+        logger.total_logged() >= 36,
         "logger did not receive the expected per-report metric series",
     )
     print("AZ telemetry (2 evaluators + logger + per-report print): OK")

@@ -22,12 +22,17 @@ BatchNorm-bearing torsos (CNN / ResNet) use running stats — a no-op for the ML
 
 from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
+from mojo_rl.nn.constants import dtype
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
+from mojo_rl.planners.tree_search import (
+    GenericGPUMCTS, AlphaGoPUCT, NoNoise, SelfPlay,
+)
 from ..zero.evaluators import GPUEvaluator, RandomOpponent
+from ..zero.mcts_adapters import AZPredGPU, AZEnvGPU
 
 
 @always_inline
@@ -164,6 +169,139 @@ def eval_policy_vs_random[
             losses += 1
         else:
             draws += 1
+    return EvalResult(wins=wins, draws=draws, losses=losses)
+
+
+def eval_mcts_vs_opponent[
+    ENV: GPUTwoPlayerDiscreteEnv,
+    NET: Module,
+    OPP: GPUEvaluator,
+    N_GAMES: Int,
+    NUM_SIMS: Int,
+    MAX_NODES: Int,
+    MAX_PLIES: Int,
+](
+    ctx: DeviceContext,
+    mut net: NET,
+    agent_player: Int = 0,
+    seed: UInt64 = 1,
+) raises -> EvalResult:
+    """Full-strength eval: the agent plays via **MCTS** (temp=0, no Dirichlet
+    noise), the opponent via its `GPUEvaluator`. This mirrors the legacy
+    `gpu_eval` — the agent's move is the argmax-visit action of a `NUM_SIMS`
+    search on top of the net, *not* the raw policy-head argmax. The policy head
+    alone cannot draw perfect minimax; MCTS on top can, so this is the eval that
+    reflects the deployed agent's true strength.
+
+    Games run in lockstep; as each finishes its result is locked (by reward +
+    whose turn it was, color-agnostic) and the env is reset so the batch can run
+    on for the slower games. `agent_player` (0/1) picks the agent's color. A
+    deterministic opponent (minimax) makes every game in the batch the same
+    canonical line — that is intentional: it asks "does optimal-from-start draw
+    perfect play?", the canonical AlphaZero signal."""
+    comptime OBS = NET.IN_DIMS[0]
+    comptime ACT = NET.OUT_DIM - 1
+    comptime STATE = ENV.STATE_SIZE
+    comptime EVAL_MCTS = GenericGPUMCTS[
+        N_GAMES, ACT, OBS, 1, MAX_NODES, NUM_SIMS, 1,
+        AlphaGoPUCT[2.5], NoNoise, SelfPlay, STATE_SIZE=STATE,
+    ]
+    # Resets let early-finishing games stop interfering; +ACT slack covers any
+    # desync between fast and slow games before all first-games complete.
+    comptime MAX_EVAL_MOVES = MAX_PLIES + ACT
+
+    net.set_attr["training"](Scalar[DT](0.0))  # BN → eval (no-op for MLP)
+
+    var mcts = EVAL_MCTS(ctx, gamma=1.0, v_min=-1.0, v_max=1.0)
+    var states = ctx.enqueue_create_buffer[DT](N_GAMES * STATE)
+    var obs_dev = ctx.enqueue_create_buffer[DT](N_GAMES * OBS)
+    var legal_dev = ctx.enqueue_create_buffer[DT](N_GAMES * ACT)
+    var rew = ctx.enqueue_create_buffer[DT](N_GAMES)
+    var done = ctx.enqueue_create_buffer[DT](N_GAMES)
+    var term = ctx.enqueue_create_buffer[DT](N_GAMES)
+    var obs_next = ctx.enqueue_create_buffer[DT](N_GAMES * OBS)
+    var legal_next = ctx.enqueue_create_buffer[DT](N_GAMES * ACT)
+    var actions_dev = ctx.enqueue_create_buffer[DT](N_GAMES)
+
+    var done_h = ctx.enqueue_create_host_buffer[DT](N_GAMES)
+    var rew_h = ctx.enqueue_create_host_buffer[DT](N_GAMES)
+    ctx.synchronize()
+
+    ENV.reset_kernel_gpu[N_GAMES, STATE](ctx, states)
+    ENV.extract_obs_kernel_gpu[N_GAMES, STATE, OBS](
+        ctx, states, obs_dev, legal_dev
+    )
+    ctx.synchronize()
+
+    var eval_done = InlineArray[Bool, N_GAMES](fill=False)
+    var eval_result = InlineArray[Int, N_GAMES](fill=0)  # 1=win 2=loss 3=draw
+    var all_done = False
+    var move = 0
+
+    while not all_done and move < MAX_EVAL_MOVES:
+        var agent_turn = (move % 2) == agent_player
+        if agent_turn:
+            var pred = AZPredGPU[OBS, ACT, NET].make(net)
+            var env_ad = AZEnvGPU[ENV, STATE, OBS, ACT]()
+            var root_obs = LayoutTensor[
+                dtype, Layout.row_major(N_GAMES, OBS), MutAnyOrigin
+            ](obs_dev.unsafe_ptr())
+            var root_legal = LayoutTensor[
+                dtype, Layout.row_major(N_GAMES * ACT), MutAnyOrigin
+            ](legal_dev.unsafe_ptr())
+            mcts.search_gpu_alphazero[type_of(pred), type_of(env_ad)](
+                ctx, pred, env_ad, root_obs, states, root_legal,
+                rng_seed=seed + UInt64(move),
+            )
+            ctx.enqueue_copy(actions_dev, mcts.actions_out)
+        else:
+            OPP.select_action_gpu[N_GAMES, ACT, STATE](
+                ctx, actions_dev, legal_dev, states,
+                seed + UInt64(move) * 31 + 7,
+            )
+        ctx.synchronize()
+
+        ENV.step_kernel_gpu[N_GAMES, STATE, OBS](
+            ctx, states, actions_dev, rew, done, term, obs_next, legal_next
+        )
+        ctx.enqueue_copy(done_h, done)
+        ctx.enqueue_copy(rew_h, rew)
+        ctx.synchronize()
+
+        all_done = True
+        for e in range(N_GAMES):
+            if not eval_done[e] and Float64(done_h.unsafe_ptr()[e]) > 0.5:
+                eval_done[e] = True
+                var r = Float64(rew_h.unsafe_ptr()[e])
+                # Reward accrues to the player who just moved.
+                if r > 0.5:
+                    eval_result[e] = 1 if agent_turn else 2
+                elif r < -0.5:
+                    eval_result[e] = 2 if agent_turn else 1
+                else:
+                    eval_result[e] = 3
+            if not eval_done[e]:
+                all_done = False
+
+        ENV.selective_reset_kernel_gpu[N_GAMES, STATE](
+            ctx, states, done, rng_seed=seed + UInt64(move) * 7 + 3
+        )
+        ENV.extract_obs_kernel_gpu[N_GAMES, STATE, OBS](
+            ctx, states, obs_dev, legal_dev
+        )
+        ctx.synchronize()
+        move += 1
+
+    var wins = 0
+    var draws = 0
+    var losses = 0
+    for e in range(N_GAMES):
+        if eval_result[e] == 1:
+            wins += 1
+        elif eval_result[e] == 2:
+            losses += 1
+        else:
+            draws += 1  # 3 (draw) or 0 (never finished) → draw
     return EvalResult(wins=wins, draws=draws, losses=losses)
 
 

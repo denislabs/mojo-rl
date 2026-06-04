@@ -48,7 +48,7 @@ from mojo_rl.planners.tree_search import (
 
 from .loss_ops import AZLossOp
 from .arena import candidate_winrate, should_promote
-from .eval import eval_policy_vs_opponent, EvalResult
+from .eval import eval_mcts_vs_opponent, EvalResult
 from ..zero.mcts_adapters import AZPredGPU, AZEnvGPU
 from ..zero.example_replay import MCTSExampleReplay
 from ..zero.symmetries import BoardAugmenter
@@ -68,19 +68,20 @@ def _eval_both_colors[
     NET: Module,
     OPP: GPUEvaluator,
     N_GAMES: Int,
-    RESULT_IDX: Int,
+    NUM_SIMS: Int,
+    MAX_NODES: Int,
     MAX_PLIES: Int,
-](
-    ctx: DeviceContext, mut net: NET, seed: UInt64, open_plies: Int
-) raises -> EvalResult:
-    """Aggregate the net's record vs `OPP` over `N_GAMES` games as *each* color
-    (P0 then P1), so first-move advantage cancels — the legacy eval convention."""
-    var p0 = eval_policy_vs_opponent[ENV, NET, OPP, N_GAMES, RESULT_IDX, MAX_PLIES](
-        ctx, net, agent_player=0, seed=seed, open_plies=open_plies
-    )
-    var p1 = eval_policy_vs_opponent[ENV, NET, OPP, N_GAMES, RESULT_IDX, MAX_PLIES](
-        ctx, net, agent_player=1, seed=seed + 33333, open_plies=open_plies
-    )
+](ctx: DeviceContext, mut net: NET, seed: UInt64) raises -> EvalResult:
+    """Aggregate the net's **MCTS** record vs `OPP` over `N_GAMES` games as
+    *each* color (P0 then P1), so first-move advantage cancels — the legacy eval
+    convention. The agent plays at full search strength (`eval_mcts_vs_opponent`)
+    so the numbers reflect the deployed agent, not the bare policy head."""
+    var p0 = eval_mcts_vs_opponent[
+        ENV, NET, OPP, N_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES
+    ](ctx, net, agent_player=0, seed=seed)
+    var p1 = eval_mcts_vs_opponent[
+        ENV, NET, OPP, N_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES
+    ](ctx, net, agent_player=1, seed=seed + 33333)
     return EvalResult(
         wins=p0.wins + p1.wins,
         draws=p0.draws + p1.draws,
@@ -117,13 +118,18 @@ def run_alphazero_selfplay_arena[
     arena_open_plies: Int = 2,
     promote_threshold: Float64 = 0.55,
     report_every: Int = 0,        # 0 → fall back to arena_every (0 = no reports)
-    do_eval: Bool = True,         # eval the best vs OPP1 each report
-    do_eval2: Bool = False,       # also eval vs OPP2 each report
-    eval_open_plies: Int = 0,     # random opening plies in eval (diversifies vs
-    #                               deterministic opponents like minimax)
+    do_eval: Bool = True,         # MCTS-eval the best vs OPP1 each report
+    do_eval2: Bool = False,       # also MCTS-eval vs OPP2 each report
     verbose: Bool = True,         # print a per-report progress line
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
 ) raises -> ArenaRunResult:
+    # NOTE on units: one loop pass advances every one of `N_ENVS` games by a
+    # single self-play *move* (not a full game). `iterations` is therefore the
+    # number of self-play moves; `report_every` / `arena_every` are in moves. A
+    # report prints the moves done, the cumulative finished-game count, the last
+    # train loss, promotions, and the MCTS eval vs each opponent. This differs
+    # from the legacy batch-then-train driver, whose "iter" was a whole
+    # collect+train+eval round — hence the deliberate `move` / `games` labels.
     comptime OBS = NET.IN_DIMS[0]
     comptime ACT = NET.OUT_DIM - 1
     comptime W = NET.OUT_DIM          # ACT + 1
@@ -214,16 +220,17 @@ def run_alphazero_selfplay_arena[
 
     var last_loss: Float64 = 0.0
     var promotions = 0
+    var total_games = 0          # cumulative finished self-play games
 
     # Effective reporting cadence: explicit `report_every`, else piggy-back on
     # the arena cadence (0 ⇒ no periodic eval/print/log at all).
     var rep = report_every if report_every > 0 else arena_every
     if verbose:
         print(
-            "AlphaZero arena run:", iterations, "iters,",
-            N_ENVS, "envs,", NUM_SIMS, "sims | eval1=", OPP1.NAME,
+            "AlphaZero self-play:", iterations, "moves,",
+            N_ENVS, "envs,", NUM_SIMS, "sims/move | eval(MCTS)1=", OPP1.NAME,
             "eval2=", OPP2.NAME if do_eval2 else String("off"),
-            "| report_every=", rep,
+            "| report_every=", rep, "moves",
         )
 
     for it in range(iterations):
@@ -268,6 +275,7 @@ def run_alphazero_selfplay_arena[
         # 4. Flush finished games with value target z, augmented by symmetry.
         for e in range(N_ENVS):
             if done_h.unsafe_ptr()[e] > 0.5:
+                total_games += 1
                 var L = traj_len[e]
                 var win = Float64(rew_h.unsafe_ptr()[e]) > 0.5
                 for k in range(L):
@@ -335,36 +343,39 @@ def run_alphazero_selfplay_arena[
                 promotions += 1
             if verbose:
                 print(
-                    "  arena iter", it + 1,
+                    "  arena @ move", it + 1,
                     "| learner vs best  W", rec.wins, "D", rec.draws,
                     "L", rec.losses,
                     "→ ACCEPTED" if accepted else "→ rejected",
                     "(promotions", promotions, ")",
                 )
 
-        # 8. Periodic report: eval the BEST net vs the plugged opponents (both
-        #    colors), print a progress line, and flush metrics to the logger.
+        # 8. Periodic report: MCTS-eval the LEARNER (the net actively training,
+        #    matching legacy's "eval after train") vs the plugged opponents
+        #    (both colors), print a progress line, and flush metrics to logger.
         if rep > 0 and (it + 1) % rep == 0 and it >= learning_starts:
-            net.set_attr["training"](Scalar[DT](0.0))
+            learner.set_attr["training"](Scalar[DT](0.0))
             var names = List[String]()
             var values = List[Float64]()
             names.append(String("loss"))
             values.append(last_loss)
+            names.append(String("games"))
+            values.append(Float64(total_games))
             names.append(String("replay_size"))
             values.append(Float64(len(replay)))
             names.append(String("promotions"))
             values.append(Float64(promotions))
 
-            var line = String("  iter ") + String(it + 1)
+            var line = String("  move ") + String(it + 1)
+            line += " | games " + String(total_games)
             line += " | loss " + String(last_loss)
             line += " | replay " + String(len(replay))
             line += " | promo " + String(promotions)
 
             if do_eval:
                 var e1 = _eval_both_colors[
-                    ENV, NET, OPP1, EVAL_GAMES, RESULT_IDX, MAX_PLIES
-                ](ctx, net, seed=seed + UInt64(it) * 13 + 5,
-                  open_plies=eval_open_plies)
+                    ENV, NET, OPP1, EVAL_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES
+                ](ctx, learner, seed=seed + UInt64(it) * 13 + 5)
                 var tot1 = e1.wins + e1.draws + e1.losses
                 var wr1 = (
                     Float64(e1.wins) / Float64(tot1) if tot1 > 0 else 0.0
@@ -385,9 +396,8 @@ def run_alphazero_selfplay_arena[
 
             if do_eval2:
                 var e2 = _eval_both_colors[
-                    ENV, NET, OPP2, EVAL_GAMES, RESULT_IDX, MAX_PLIES
-                ](ctx, net, seed=seed + UInt64(it) * 17 + 9,
-                  open_plies=eval_open_plies)
+                    ENV, NET, OPP2, EVAL_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES
+                ](ctx, learner, seed=seed + UInt64(it) * 17 + 9)
                 var tot2 = e2.wins + e2.draws + e2.losses
                 var wr2 = (
                     Float64(e2.wins) / Float64(tot2) if tot2 > 0 else 0.0

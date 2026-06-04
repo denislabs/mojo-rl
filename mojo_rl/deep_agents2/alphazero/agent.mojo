@@ -34,7 +34,10 @@ from ..zero.evaluators import GPUEvaluator, RandomOpponent
 from ..zero.symmetries import BoardAugmenter, IdentityAugmenter
 from .selfplay import run_alphazero_selfplay
 from .selfplay_arena import run_alphazero_selfplay_arena, ArenaRunResult
-from .eval import eval_policy_vs_random, eval_policy_vs_opponent, EvalResult
+from .eval import (
+    eval_policy_vs_random, eval_policy_vs_opponent, eval_mcts_vs_opponent,
+    EvalResult,
+)
 
 
 @fieldwise_init
@@ -98,7 +101,6 @@ struct AlphaZeroAgent[
         report_every: Int = 0,
         do_eval: Bool = True,
         do_eval2: Bool = False,
-        eval_open_plies: Int = 0,
         verbose: Bool = True,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     ) raises -> ArenaRunResult:
@@ -108,7 +110,9 @@ struct AlphaZeroAgent[
         Defaults (`AUG=Identity`, `OPP*=Random`, `L=NoOp`, `report_every=0`)
         reduce to a silent arena run. Set `report_every>0` (+ a logger and/or
         `OPP1=GPUMinimaxTicTacToe`, `do_eval2=True`) for per-report eval+print+
-        metric flush, mirroring the legacy `train_selfplay_gpu` telemetry."""
+        metric flush, mirroring the legacy `train_selfplay_gpu` telemetry. The
+        periodic eval plays the agent at **full MCTS strength** (temp=0), not the
+        bare policy head — `iterations`/`report_every` are in self-play *moves*."""
         return run_alphazero_selfplay_arena[
             Self.ENV, Self.NET, AUG, Self.N_ENVS, Self.NUM_SIMS, Self.MAX_NODES,
             Self.BATCH, Self.CAP, Self.MAX_TRAJ,
@@ -116,8 +120,22 @@ struct AlphaZeroAgent[
         ](
             self.ctx, self.net, iterations, learning_starts, train_per_iter,
             self.lr, seed, arena_every, arena_open_plies, promote_threshold,
-            report_every, do_eval, do_eval2, eval_open_plies, verbose, logger,
+            report_every, do_eval, do_eval2, verbose, logger,
         )
+
+    def eval_mcts[
+        OPP: GPUEvaluator, N_EVAL: Int, NUM_SIMS: Int, MAX_NODES: Int,
+        MAX_PLIES: Int,
+    ](
+        mut self, agent_player: Int = 0, seed: UInt64 = 1
+    ) raises -> EvalResult:
+        """Full-strength eval: agent plays via MCTS (temp=0) vs `OPP`. This is
+        the deployed-agent metric — the policy head alone cannot draw perfect
+        minimax, MCTS on top can. Pass the agent's own `Self.NUM_SIMS` /
+        `Self.MAX_NODES` for parity with training-time search."""
+        return eval_mcts_vs_opponent[
+            Self.ENV, Self.NET, OPP, N_EVAL, NUM_SIMS, MAX_NODES, MAX_PLIES
+        ](self.ctx, self.net, agent_player, seed)
 
     def eval_vs_random[
         N_EVAL: Int, RESULT_IDX: Int, MAX_PLIES: Int

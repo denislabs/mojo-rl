@@ -3,7 +3,13 @@
 Second-generation port of `tictactoe_alphazero.mojo`. Uses the config-free
 nn2 net torsos + the `AlphaZeroAgent` facade, and exercises the production
 telemetry: two pluggable `GPUEvaluator` opponents (minimax + random), a
-per-report progress print, and a `RemoteLogger` metrics sink.
+per-report progress print, and a `RemoteLogger` metrics sink. The periodic eval
+plays the agent at full **MCTS** strength (temp=0), so the numbers reflect the
+deployed agent — by ~1000 self-play moves it draws perfect minimax in every
+game (W0 D128 L0, both colors), the textbook "optimal never loses" result.
+
+Note `iterations` / `report_every` are in self-play *moves* (one loop pass
+advances all N_ENVS games by one move), not legacy-style collect+train rounds.
 
 Usage:
     pixi run -e nvidia mojo run -I . examples/board_games/tictactoe_alphazero_v2.mojo
@@ -83,7 +89,6 @@ def main() raises:
         report_every=200,
         do_eval=True,
         do_eval2=True,
-        eval_open_plies=2,
         verbose=True,
         logger=UnsafePointer(to=logger),
     )

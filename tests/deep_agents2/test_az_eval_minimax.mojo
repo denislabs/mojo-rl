@@ -23,7 +23,7 @@ from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.deep_agents2.alphazero.nets import AZMLPNet
 from mojo_rl.deep_agents2.alphazero.selfplay import run_alphazero_selfplay
 from mojo_rl.deep_agents2.alphazero.eval import (
-    eval_policy_vs_opponent, eval_policy_vs_random,
+    eval_policy_vs_opponent, eval_policy_vs_random, eval_mcts_vs_opponent,
 )
 from mojo_rl.deep_agents2.zero.evaluators import (
     GPUMinimaxTicTacToe, RandomOpponent,
@@ -77,6 +77,18 @@ def main() raises:
         " draw=", mm_line.draws, " loss=", mm_line.losses,
     )
 
+    # Same canonical-line check, but the agent plays at full MCTS strength
+    # (temp=0) — the eval the production driver/telemetry uses. A net that draws
+    # perfect play via the bare policy head must also draw it with MCTS on top;
+    # this is the end-to-end correctness check for `eval_mcts_vs_opponent`.
+    var mcts_line = eval_mcts_vs_opponent[
+        Env, Net, GPUMinimaxTicTacToe, 16, 24, 64, MAX_PLIES
+    ](ctx, net, agent_player=0, seed=1)
+    print(
+        "vs MINIMAX (MCTS canonical P0) win=", mcts_line.wins,
+        " draw=", mcts_line.draws, " loss=", mcts_line.losses,
+    )
+
     # Cross-check both random-eval paths agree the trained agent is strong.
     var rnd = eval_policy_vs_opponent[
         Env, Net, RandomOpponent, NG_RND, RESULT_IDX, MAX_PLIES
@@ -108,10 +120,16 @@ def main() raises:
         nonloss_after * 100 >= nonloss_before * 115,
         "non-loss rate vs minimax did not clearly improve (>=+15%)",
     )
-    # 2. Canonical-start: trained P0 never loses to perfect play.
+    # 2. Canonical-start: trained P0 never loses to perfect play, by both the
+    #    bare-policy argmax and the full-MCTS eval (the latter validates
+    #    `eval_mcts_vs_opponent` end-to-end).
     assert_true(
         mm_line.losses == 0,
         "trained agent lost the canonical line to minimax as P0",
+    )
+    assert_true(
+        mcts_line.losses == 0,
+        "trained agent (MCTS) lost the canonical line to minimax as P0",
     )
     # 3. Clearly strong vs random on both eval paths.
     assert_true(
