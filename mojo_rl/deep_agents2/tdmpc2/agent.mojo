@@ -45,6 +45,7 @@ from .metrics import TDMPC2Metrics
 
 from .nets import (
     TDMPC2Encoder, TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet, TDMPC2Policy,
+    TDMPC2Termination,
 )
 from .wm_graph import TDMPC2WMGraph, NQ
 from .wm_step import WMStep
@@ -105,6 +106,7 @@ struct TDMPC2Agent[
     comptime DynT = TDMPC2Dynamics[Self.LATENT, Self.ACT, Self.MLP, Self.SN]
     comptime RewT = TDMPC2Reward[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]
     comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.QP]
+    comptime TermT = TDMPC2Termination[Self.LATENT, Self.ACT, Self.MLP]
     comptime PolicyT = TDMPC2Policy[Self.LATENT, Self.ACT, Self.MLP]
     comptime GraphT = TDMPC2WMGraph[
         Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.SN, Self.VMIN,
@@ -140,12 +142,15 @@ struct TDMPC2Agent[
     var q: List[Self.QNetT]
     var qt: List[Self.QNetT]
     var policy: Self.PolicyT
+    # Termination head (item B). Always present; trains only when bce_coef > 0.
+    var termination: Self.TermT
 
     var enc_opt: Adam
     var dyn_opt: Adam
     var rew_opt: Adam
     var q_opt: List[Adam]
     var pi_opt: Adam
+    var term_opt: Adam
 
     var wm_graph: Self.GraphT
     var wm_step: Self.WMStepT
@@ -156,6 +161,9 @@ struct TDMPC2Agent[
 
     var gamma: Scalar[DT]
     var tau: Scalar[DT]
+    # Termination BCE coefficient (item B): 0 = non-episodic (bit-identical);
+    # >0 trains the termination head on episodic envs (Hopper/Walker/Humanoid).
+    var bce_coef: Scalar[DT]
     var action_scale: Scalar[DT]
     var learning_starts: Int
     var step_count: Int
@@ -165,9 +173,11 @@ struct TDMPC2Agent[
     var _last_cons: Scalar[DT]
     var _last_rew: Scalar[DT]
     var _last_val: Scalar[DT]
+    var _last_term: Scalar[DT]
     var _cons_acc: Scalar[DT]
     var _rew_acc: Scalar[DT]
     var _val_acc: Scalar[DT]
+    var _term_acc: Scalar[DT]
     var _pi_acc: Scalar[DT]
     # Q + TD-target diagnostics (means window-averaged; min/max last-step).
     var _q_mean_acc: Scalar[DT]
@@ -193,6 +203,7 @@ struct TDMPC2Agent[
         learning_starts: Int = 1000,
         enc_lr_scale: Scalar[DT] = Scalar[DT](0.3),
         temperature: Scalar[DT] = Scalar[DT](0.5),
+        bce_coef: Scalar[DT] = Scalar[DT](0.0),
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
         comptime tg = Self.target
@@ -225,6 +236,21 @@ struct TDMPC2Agent[
             for i in range(NQ):
                 qt[i].set_attr["training"](Scalar[DT](0.0))
 
+        # Termination head (item B). RNG-discipline for a *truly* bit-identical
+        # off-path: Kaiming init draws from the global RNG (initializers.mojo),
+        # which would shift the downstream warmup/exploration stream. So at
+        # bce_coef=0 (non-episodic) build it with Zero init — no RNG draw, no
+        # gradient, fully inert → the encoder/dynamics/reward/Q/policy AND the
+        # rollout RNG are bit-identical to the pre-item-B agent. Only when
+        # bce_coef>0 (an episodic run, where HalfCheetah parity is moot) do we
+        # Kaiming-init so the head can actually learn state-dependent
+        # termination. Built last so it never perturbs the other nets' init.
+        var term: Self.TermT
+        if bce_coef > Scalar[DT](0.0):
+            term = Self.TermT.make[tg, INIT=Kaiming](ctx=ctx)
+        else:
+            term = Self.TermT.make[tg, INIT=Zero](ctx=ctx)
+
         var enc_opt = Adam.make[tg, Self.EncT](enc, ctx=ctx)
         enc_opt.lr = lr * enc_lr_scale
         var dyn_opt = Adam.make[tg, Self.DynT](dyn, ctx=ctx)
@@ -234,6 +260,8 @@ struct TDMPC2Agent[
         var pi_opt = Adam.make[tg, Self.PolicyT](pol, ctx=ctx)
         pi_opt.lr = lr
         pi_opt.eps = Scalar[DT](1e-5)
+        var term_opt = Adam.make[tg, Self.TermT](term, ctx=ctx)
+        term_opt.lr = lr
 
         var ar = RSample[Self.ACT].make[tg, INIT=Zero](ctx=ctx)
         ar.action_scale = action_scale
@@ -244,20 +272,23 @@ struct TDMPC2Agent[
 
         return Self(
             encoder=enc^, dynamics=dyn^, reward=rew^, q=q^, qt=qt^, policy=pol^,
+            termination=term^,
             enc_opt=enc_opt^, dyn_opt=dyn_opt^, rew_opt=rew_opt^, q_opt=q_opt^,
-            pi_opt=pi_opt^,
+            pi_opt=pi_opt^, term_opt=term_opt^,
             wm_graph=Self.GraphT.make[tg, INIT=Kaiming](ctx=ctx),
-            wm_step=Self.WMStepT.make[tg](ctx=ctx),
+            wm_step=Self.WMStepT.make[tg](ctx=ctx, termination_coef=bce_coef),
             pol_step=Self.PolStepT.make[tg](ctx=ctx),
             td_step=Self.TDStepT.make[tg](ctx=ctx),
             act_rsample=ar^,
             replay=SequenceReplay[Self.OBS, Self.ACT, Self.CAP].new(),
-            gamma=gamma, tau=tau, action_scale=action_scale,
+            gamma=gamma, tau=tau, bce_coef=bce_coef, action_scale=action_scale,
             learning_starts=learning_starts, step_count=0,
             _last_wm=Scalar[DT](0.0), _last_pi=Scalar[DT](0.0),
             _last_cons=Scalar[DT](0.0), _last_rew=Scalar[DT](0.0),
-            _last_val=Scalar[DT](0.0), _cons_acc=Scalar[DT](0.0),
+            _last_val=Scalar[DT](0.0), _last_term=Scalar[DT](0.0),
+            _cons_acc=Scalar[DT](0.0),
             _rew_acc=Scalar[DT](0.0), _val_acc=Scalar[DT](0.0),
+            _term_acc=Scalar[DT](0.0),
             _pi_acc=Scalar[DT](0.0),
             _q_mean_acc=Scalar[DT](0.0), _q_min_last=Scalar[DT](0.0),
             _q_max_last=Scalar[DT](0.0), _td_mean_acc=Scalar[DT](0.0),
@@ -410,6 +441,9 @@ struct TDMPC2Agent[
     def last_value_loss(self) -> Scalar[DT]:
         return self._last_val
 
+    def last_termination_loss(self) -> Scalar[DT]:
+        return self._last_term
+
     def pi_scale(self) -> Scalar[DT]:
         return self.pol_step.scale.value
 
@@ -428,7 +462,10 @@ struct TDMPC2Agent[
             consistency_loss=self._cons_acc * inv,
             reward_loss=self._rew_acc * inv,
             value_loss=self._val_acc * inv,
-            wm_loss=(self._cons_acc + self._rew_acc + self._val_acc) * inv,
+            termination_loss=self._term_acc * inv,
+            wm_loss=(
+                self._cons_acc + self._rew_acc + self._val_acc + self._term_acc
+            ) * inv,
             pi_loss=self._pi_acc * inv,
             pi_scale=self.pol_step.scale.value,
             q_mean=self._q_mean_acc * inv,
@@ -447,6 +484,7 @@ struct TDMPC2Agent[
             lg[].log_scalar("consistency_loss", Float64(m.consistency_loss), step)
             lg[].log_scalar("reward_loss", Float64(m.reward_loss), step)
             lg[].log_scalar("value_loss", Float64(m.value_loss), step)
+            lg[].log_scalar("termination_loss", Float64(m.termination_loss), step)
             lg[].log_scalar("wm_loss", Float64(m.wm_loss), step)
             lg[].log_scalar("policy_loss", Float64(m.pi_loss), step)
             lg[].log_scalar("pi_scale", Float64(m.pi_scale), step)
@@ -460,6 +498,7 @@ struct TDMPC2Agent[
         self._cons_acc = Scalar[DT](0.0)
         self._rew_acc = Scalar[DT](0.0)
         self._val_acc = Scalar[DT](0.0)
+        self._term_acc = Scalar[DT](0.0)
         self._pi_acc = Scalar[DT](0.0)
         self._q_mean_acc = Scalar[DT](0.0)
         self._td_mean_acc = Scalar[DT](0.0)
@@ -497,6 +536,10 @@ struct TDMPC2Agent[
             save_optimizer_v2_body(self.pi_opt, body, "pi_opt")
             for i in range(NQ):
                 save_optimizer_v2_body(self.q_opt[i], body, "q_opt" + String(i))
+            # Termination head (item B) — appended LAST so pre-item-B
+            # checkpoints (which lack it) still load via the guard below.
+            save_state_v2_body(self.termination, body, "termination")
+            save_optimizer_v2_body(self.term_opt, body, "term_opt")
         else:
             var c = self.ctx.value()
             save_state_v2_body_gpu(self.encoder, body, "encoder", c)
@@ -514,6 +557,8 @@ struct TDMPC2Agent[
                 save_optimizer_v2_body_gpu(
                     self.q_opt[i], body, "q_opt" + String(i)
                 )
+            save_state_v2_body_gpu(self.termination, body, "termination", c)
+            save_optimizer_v2_body_gpu(self.term_opt, body, "term_opt")
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
@@ -541,6 +586,12 @@ struct TDMPC2Agent[
                 load_optimizer_v2_body(
                     self.q_opt[i], lines, idx, "q_opt" + String(i)
                 )
+            # Termination head — present only in item-B-era checkpoints; older
+            # files end here, so guard on remaining lines (term stays at init,
+            # which is fine when bce_coef=0).
+            if idx < len(lines):
+                load_state_v2_body(self.termination, lines, idx, "termination")
+                load_optimizer_v2_body(self.term_opt, lines, idx, "term_opt")
         else:
             var c = self.ctx.value()
             load_state_v2_body_gpu(self.encoder, lines, idx, "encoder", c)
@@ -560,6 +611,11 @@ struct TDMPC2Agent[
                 load_optimizer_v2_body_gpu(
                     self.q_opt[i], lines, idx, "q_opt" + String(i)
                 )
+            if idx < len(lines):
+                load_state_v2_body_gpu(
+                    self.termination, lines, idx, "termination", c
+                )
+                load_optimizer_v2_body_gpu(self.term_opt, lines, idx, "term_opt")
 
     def train_step(mut self) raises -> Bool:
         self.step_count += 1
@@ -615,12 +671,15 @@ struct TDMPC2Agent[
             )
             var wl = self.wm_step.step[tg](
                 self.wm_graph, self.encoder, self.dynamics, self.reward, self.q,
+                self.termination,
                 self.enc_opt, self.dyn_opt, self.rew_opt, self.q_opt,
-                ot, at, rt, td,
+                self.term_opt,
+                ot, at, rt, td, dt,
             )
             self._last_cons = wl.consistency
             self._last_rew = wl.reward
             self._last_val = wl.value
+            self._last_term = wl.termination
             self._last_wm = wl.total()
             var zpol = _alloc(Self.PB * LAT)
             var zpol_t = TileTensor(zpol, row_major[Self.PB, LAT]())
@@ -643,12 +702,15 @@ struct TDMPC2Agent[
             )
             var wl = self.wm_step.step[tg](
                 self.wm_graph, self.encoder, self.dynamics, self.reward, self.q,
+                self.termination,
                 self.enc_opt, self.dyn_opt, self.rew_opt, self.q_opt,
-                ot, at, rt, td, ctx=ctx,
+                self.term_opt,
+                ot, at, rt, td, dt, ctx=ctx,
             )
             self._last_cons = wl.consistency
             self._last_rew = wl.reward
             self._last_val = wl.value
+            self._last_term = wl.termination
             self._last_wm = wl.total()
             var d_ot = _upload(ctx, ot, Self.PB * OBSD)
             var d_zpol = ctx.enqueue_create_buffer[DT](Self.PB * LAT)
@@ -680,6 +742,7 @@ struct TDMPC2Agent[
         self._cons_acc += self._last_cons
         self._rew_acc += self._last_rew
         self._val_acc += self._last_val
+        self._term_acc += self._last_term
         self._pi_acc += self._last_pi
         self._q_mean_acc += self.pol_step.q_mean
         self._q_min_last = self.pol_step.q_min

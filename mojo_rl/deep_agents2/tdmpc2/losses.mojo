@@ -330,6 +330,162 @@ struct MSELossPlain[DIM: Int](Module):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# BCEWithLogitsLoss — termination head (item B, §14.2). inputs
+# (logit[B,1], target[B,1]); loss = stable BCE-with-logits per row, target
+# detached. Reference `F.binary_cross_entropy_with_logits` on the
+# termination logit vs the real `terminated` flag.
+#   loss = max(x,0) − x·y + log1p(exp(−|x|))
+#   d/dx = sigmoid(x) − y
+# ──────────────────────────────────────────────────────────────────────
+
+
+@always_inline
+def _bce_with_logits(x: Scalar[DT], y: Scalar[DT]) -> Scalar[DT]:
+    var ax = x if x >= Scalar[DT](0.0) else -x
+    var mx = x if x >= Scalar[DT](0.0) else Scalar[DT](0.0)
+    # log(1 + exp(-|x|)) — use `log` (Metal-safe; `log1p` promotes to f64 and
+    # is rejected by the Metal backend in a kernel, unlike `log` which the
+    # two-hot kernels already use).
+    return mx - x * y + log(Scalar[DT](1.0) + exp(-ax))
+
+
+@always_inline
+def _sigmoid(x: Scalar[DT]) -> Scalar[DT]:
+    return Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-x))
+
+
+def _bce_fwd_kernel[B: Int](
+    lg: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    tgt: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    o: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b < B:
+        o[b] = _bce_with_logits(
+            rebind[Scalar[DT]](lg[b]), rebind[Scalar[DT]](tgt[b])
+        )
+
+
+def _bce_bwd_kernel[B: Int](
+    go: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    lg: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    tgt: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    gl: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    gt: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b < B:
+        gl[b] = rebind[Scalar[DT]](go[b]) * (
+            _sigmoid(rebind[Scalar[DT]](lg[b])) - rebind[Scalar[DT]](tgt[b])
+        )
+        gt[b] = 0.0
+
+
+struct BCEWithLogitsLoss(Module):
+    comptime ARITY: Int = 2
+    comptime IN_DIMS = InlineArray[Int, 2](fill=1)
+    comptime OUT_DIM = 1
+
+    @staticmethod
+    def display_label() -> String:
+        return String("BCEWithLogits")
+
+    var _logit_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _target_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var ts: TargetStorage
+
+    def __init__(out self):
+        self._logit_ptr = None
+        self._target_ptr = None
+        self.ts = TargetStorage.make_uninit()
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        comptime assert target == "cpu" or target == "gpu", (
+            "BCEWithLogitsLoss: target must be 'cpu' or 'gpu'"
+        )
+        var s = Self()
+        comptime if target == "cpu":
+            s.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("BCEWithLogitsLoss.make[gpu]: ctx required")
+            s.ts = TargetStorage.make_gpu(ctx.value())
+        return s^
+
+    def forward[
+        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
+    ](
+        mut self,
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        assert_tag_for["BCEWithLogitsLoss", target](self.ts.target_tag)
+        var lg = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            typed_view[BATCH, 1](inputs[0]).ptr
+        )
+        var tgt = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            typed_view[BATCH, 1](inputs[1]).ptr
+        )
+        self._logit_ptr = lg
+        self._target_ptr = tgt
+        var o = typed_view_mut[BATCH, 1](output).ptr
+        comptime if target == "cpu":
+            for b in range(BATCH):
+                o[b] = _bce_with_logits(lg[b], tgt[b])
+        else:
+            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
+            comptime nb = (BATCH + TPB - 1) // TPB
+            comptime kf = _bce_fwd_kernel[BATCH]
+            self.ts.ctx.value().enqueue_function[kf](
+                _dlt[BATCH](lg), _dlt[BATCH](tgt), _dlt[BATCH](op),
+                grid_dim=nb, block_dim=TPB,
+            )
+
+    def vjp[
+        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        mut *grad_inputs: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        var go = typed_view[BATCH, 1](grad_output).ptr
+        var g_lg = typed_view_mut[BATCH, 1](grad_inputs[0]).ptr
+        var g_tgt = typed_view_mut[BATCH, 1](grad_inputs[1]).ptr
+        var lg = self._logit_ptr.value()
+        var tgt = self._target_ptr.value()
+        comptime if target == "cpu":
+            for b in range(BATCH):
+                g_lg[b] = go[b] * (_sigmoid(lg[b]) - tgt[b])
+                g_tgt[b] = 0.0
+        else:
+            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
+            var glp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_lg)
+            var gtp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_tgt)
+            comptime nb = (BATCH + TPB - 1) // TPB
+            comptime kb = _bce_bwd_kernel[BATCH]
+            self.ts.ctx.value().enqueue_function[kb](
+                _dlt[BATCH](gop), _dlt[BATCH](lg), _dlt[BATCH](tgt),
+                _dlt[BATCH](glp), _dlt[BATCH](gtp), grid_dim=nb, block_dim=TPB,
+            )
+
+
+# ──────────────────────────────────────────────────────────────────────
 # TDMPC2TwoHotLoss[BINS, VMIN, VMAX] — reward + value heads.
 # inputs (logits[B,BINS], target[B,1]); linear bins in [VMIN,VMAX] (symlog
 # space); target symlog'd inside. Bins owned by the op.

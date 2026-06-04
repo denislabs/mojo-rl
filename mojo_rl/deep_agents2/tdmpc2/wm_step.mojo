@@ -33,9 +33,9 @@ from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.optimizer.adam import Adam
 
 from .nets import (
-    TDMPC2Encoder, TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet,
+    TDMPC2Encoder, TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet, TDMPC2Termination,
 )
-from .wm_graph import TDMPC2WMGraph, NQ
+from .wm_graph import TDMPC2WMGraph, NQ, NLOSS, TERM_COL
 
 
 @always_inline
@@ -45,14 +45,16 @@ def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 
 @fieldwise_init
 struct WMLossOut(Copyable & Movable):
-    """Per-component world-model losses (already coef·ρ^t/norm weighted)."""
+    """Per-component world-model losses (already coef·ρ^t/norm weighted).
+    `termination` is the BCE head loss (item B); 0 unless bce_coef > 0."""
     var consistency: Scalar[DT]
     var reward: Scalar[DT]
     var value: Scalar[DT]
+    var termination: Scalar[DT]
 
     @always_inline
     def total(self) -> Scalar[DT]:
-        return self.consistency + self.reward + self.value
+        return self.consistency + self.reward + self.value + self.termination
 
 
 # ── GPU marshalling helpers + kernels (mirror dreamerv3/blocks + the
@@ -96,12 +98,12 @@ def _extract_carry_k[B_: Int, LAT_: Int, OW_: Int](
     ob: LayoutTensor[DT, Layout.row_major(B_ * OW_), MutAnyOrigin],
     carry_next: LayoutTensor[DT, Layout.row_major(B_ * LAT_), MutAnyOrigin],
 ):
-    """carry_next[b,k] = out[b, 7+k]  (znext passthrough columns)."""
+    """carry_next[b,k] = out[b, NLOSS+k]  (znext passthrough columns)."""
     var i = Int(global_idx.x)
     if i < B_ * LAT_:
         var b = i // LAT_
         var k = i % LAT_
-        carry_next[i] = rebind[Scalar[DT]](ob[b * OW_ + 7 + k])
+        carry_next[i] = rebind[Scalar[DT]](ob[b * OW_ + NLOSS + k])
 
 
 def _seed_wm_k[B_: Int, OW_: Int, LAT_: Int, NQ_: Int](
@@ -110,31 +112,36 @@ def _seed_wm_k[B_: Int, OW_: Int, LAT_: Int, NQ_: Int](
     sc_cons: Scalar[DT],
     sc_rew: Scalar[DT],
     sc_val: Scalar[DT],
+    sc_term: Scalar[DT],
 ):
-    """seed[b] = [sc_cons, sc_rew, sc_val×NQ, gz[b]]."""
+    """seed[b] = [sc_cons, sc_rew, sc_val×NQ, sc_term, gz[b]]."""
     var b = Int(global_idx.x)
     if b < B_:
         seed[b * OW_ + 0] = sc_cons
         seed[b * OW_ + 1] = sc_rew
         for q in range(NQ_):
             seed[b * OW_ + 2 + q] = sc_val
+        seed[b * OW_ + TERM_COL] = sc_term
         for k in range(LAT_):
-            seed[b * OW_ + 7 + k] = rebind[Scalar[DT]](gz[b * LAT_ + k])
+            seed[b * OW_ + NLOSS + k] = rebind[Scalar[DT]](gz[b * LAT_ + k])
 
 
 def _accum_metric_k[B_: Int, OW_: Int, NQ_: Int](
     ob: LayoutTensor[DT, Layout.row_major(B_ * OW_), MutAnyOrigin],
-    acc: LayoutTensor[DT, Layout.row_major(3), MutAnyOrigin],
+    acc: LayoutTensor[DT, Layout.row_major(4), MutAnyOrigin],
     sc_cons: Scalar[DT],
     sc_rew: Scalar[DT],
     sc_val: Scalar[DT],
+    sc_term: Scalar[DT],
 ):
-    """acc += [Σ_b sc_cons·cons, Σ_b sc_rew·rew, Σ_b sc_val·Σ_q v_q]. One thread."""
+    """acc += [Σ_b sc_cons·cons, Σ_b sc_rew·rew, Σ_b sc_val·Σ_q v_q,
+    Σ_b sc_term·tloss]. One thread."""
     var t = Int(global_idx.x)
     if t == 0:
         var sc: Scalar[DT] = 0.0
         var sr: Scalar[DT] = 0.0
         var sv: Scalar[DT] = 0.0
+        var st: Scalar[DT] = 0.0
         for b in range(B_):
             sc += sc_cons * rebind[Scalar[DT]](ob[b * OW_ + 0])
             sr += sc_rew * rebind[Scalar[DT]](ob[b * OW_ + 1])
@@ -142,9 +149,11 @@ def _accum_metric_k[B_: Int, OW_: Int, NQ_: Int](
             for q in range(NQ_):
                 v += rebind[Scalar[DT]](ob[b * OW_ + 2 + q])
             sv += sc_val * v
+            st += sc_term * rebind[Scalar[DT]](ob[b * OW_ + TERM_COL])
         acc[0] = rebind[Scalar[DT]](acc[0]) + sc
         acc[1] = rebind[Scalar[DT]](acc[1]) + sr
         acc[2] = rebind[Scalar[DT]](acc[2]) + sv
+        acc[3] = rebind[Scalar[DT]](acc[3]) + st
 
 
 struct WMStep[
@@ -165,15 +174,20 @@ struct WMStep[
     comptime DynT = TDMPC2Dynamics[Self.LATENT, Self.ACT, Self.MLP, Self.SN]
     comptime RewT = TDMPC2Reward[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]
     comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.QP]
+    comptime TermT = TDMPC2Termination[Self.LATENT, Self.ACT, Self.MLP]
     comptime GraphT = TDMPC2WMGraph[
         Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.SN, Self.VMIN,
         Self.VMAX, Self.QP,
     ]
-    comptime OUTW = 7 + Self.LATENT
+    comptime OUTW = NLOSS + Self.LATENT
 
     var consistency_coef: Scalar[DT]
     var reward_coef: Scalar[DT]
     var value_coef: Scalar[DT]
+    # Termination BCE coefficient (item B). 0.0 → non-episodic: the term head
+    # gets zero gradient (Adam no-op) → other nets bit-identical. Reference
+    # `termination_coef` (e.g. 1.0) for episodic envs.
+    var termination_coef: Scalar[DT]
     var rho: Scalar[DT]
 
     # Persistent GPU scratch (allocated once in make[gpu]; None on CPU). Reused
@@ -182,6 +196,7 @@ struct WMStep[
     var d_act: Optional[DeviceBuffer[DT]]
     var d_rew: Optional[DeviceBuffer[DT]]
     var d_td: Optional[DeviceBuffer[DT]]
+    var d_done: Optional[DeviceBuffer[DT]]
     var d_carry: Optional[DeviceBuffer[DT]]
     var d_zen: Optional[DeviceBuffer[DT]]
     var d_out: Optional[DeviceBuffer[DT]]
@@ -194,28 +209,33 @@ struct WMStep[
     var h_act: Optional[HostBuffer[DT]]
     var h_rew: Optional[HostBuffer[DT]]
     var h_td: Optional[HostBuffer[DT]]
+    var h_done: Optional[HostBuffer[DT]]
     var h_acc: Optional[HostBuffer[DT]]
 
     def __init__(out self):
         self.consistency_coef = Scalar[DT](20.0)
         self.reward_coef = Scalar[DT](0.1)
         self.value_coef = Scalar[DT](0.1)
+        self.termination_coef = Scalar[DT](0.0)
         self.rho = Scalar[DT](0.5)
         self.d_obs = None; self.d_act = None; self.d_rew = None
-        self.d_td = None; self.d_carry = None; self.d_zen = None
+        self.d_td = None; self.d_done = None; self.d_carry = None
+        self.d_zen = None
         self.d_out = None; self.d_scratch = None; self.d_seed = None
         self.d_gz = None; self.d_acc = None; self.d_gobs = None
         self.h_obs = None; self.h_act = None; self.h_rew = None
-        self.h_td = None; self.h_acc = None
+        self.h_td = None; self.h_done = None; self.h_acc = None
 
     @staticmethod
     def make[target: StaticString](
         ctx: Optional[DeviceContext] = None,
+        termination_coef: Scalar[DT] = Scalar[DT](0.0),
     ) raises -> Self:
         comptime assert target == "cpu" or target == "gpu", (
             "WMStep: target must be 'cpu' or 'gpu'"
         )
         var s = Self()
+        s.termination_coef = termination_coef
         comptime if target == "gpu":
             var c = ctx.value()
             comptime LAT = Self.LATENT
@@ -224,13 +244,14 @@ struct WMStep[
             s.d_act = c.enqueue_create_buffer[DT](Self.H * Self.B * Self.ACT)
             s.d_rew = c.enqueue_create_buffer[DT](Self.H * Self.B)
             s.d_td = c.enqueue_create_buffer[DT](Self.H * Self.B)
+            s.d_done = c.enqueue_create_buffer[DT](Self.H * Self.B)
             s.d_carry = c.enqueue_create_buffer[DT]((Self.H + 1) * Self.B * LAT)
             s.d_zen = c.enqueue_create_buffer[DT](Self.H * Self.B * LAT)
             s.d_out = c.enqueue_create_buffer[DT](Self.B * OW)
             s.d_scratch = c.enqueue_create_buffer[DT](Self.B * OW)
             s.d_seed = c.enqueue_create_buffer[DT](Self.B * OW)
             s.d_gz = c.enqueue_create_buffer[DT](Self.B * LAT)
-            s.d_acc = c.enqueue_create_buffer[DT](3)
+            s.d_acc = c.enqueue_create_buffer[DT](4)
             s.d_gobs = c.enqueue_create_buffer[DT](Self.B * Self.OBS)
             s.h_obs = c.enqueue_create_host_buffer[DT](
                 (Self.H + 1) * Self.B * Self.OBS
@@ -238,7 +259,8 @@ struct WMStep[
             s.h_act = c.enqueue_create_host_buffer[DT](Self.H * Self.B * Self.ACT)
             s.h_rew = c.enqueue_create_host_buffer[DT](Self.H * Self.B)
             s.h_td = c.enqueue_create_host_buffer[DT](Self.H * Self.B)
-            s.h_acc = c.enqueue_create_host_buffer[DT](3)
+            s.h_done = c.enqueue_create_host_buffer[DT](Self.H * Self.B)
+            s.h_acc = c.enqueue_create_host_buffer[DT](4)
             c.synchronize()
         return s^
 
@@ -249,25 +271,30 @@ struct WMStep[
         mut dyn: Self.DynT,
         mut rew_net: Self.RewT,
         mut q: List[Self.QNetT],
+        mut term_net: Self.TermT,
         mut enc_opt: Adam,
         mut dyn_opt: Adam,
         mut rew_opt: Adam,
         mut q_opt: List[Adam],
+        mut term_opt: Adam,
         obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(H+1),B,OBS] (host)
         act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B,ACT]
         rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B]
         td: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B]
+        done: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [H,B] BCE target
         ctx: Optional[DeviceContext] = None,
     ) raises -> WMLossOut:
         comptime if target == "cpu":
             return self._wm_cpu[target](
-                graph, enc, dyn, rew_net, q,
-                enc_opt, dyn_opt, rew_opt, q_opt, obs, act, rew, td,
+                graph, enc, dyn, rew_net, q, term_net,
+                enc_opt, dyn_opt, rew_opt, q_opt, term_opt,
+                obs, act, rew, td, done,
             )
         else:
             return self._wm_gpu[target](
-                graph, enc, dyn, rew_net, q,
-                enc_opt, dyn_opt, rew_opt, q_opt, obs, act, rew, td,
+                graph, enc, dyn, rew_net, q, term_net,
+                enc_opt, dyn_opt, rew_opt, q_opt, term_opt,
+                obs, act, rew, td, done,
                 ctx.value(),
             )
 
@@ -278,14 +305,17 @@ struct WMStep[
         mut dyn: Self.DynT,
         mut rew_net: Self.RewT,
         mut q: List[Self.QNetT],
+        mut term_net: Self.TermT,
         mut enc_opt: Adam,
         mut dyn_opt: Adam,
         mut rew_opt: Adam,
         mut q_opt: List[Adam],
+        mut term_opt: Adam,
         obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(H+1),B,OBS]
         act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B,ACT]
         rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B]
         td: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B]
+        done: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [H,B] BCE target
     ) raises -> WMLossOut:
         comptime LAT = Self.LATENT
         comptime OW = Self.OUTW
@@ -298,6 +328,7 @@ struct WMStep[
         graph.set_external["q2", Self.QNetT](q[2])
         graph.set_external["q3", Self.QNetT](q[3])
         graph.set_external["q4", Self.QNetT](q[4])
+        graph.set_external["term", Self.TermT](term_net)
 
         var carry = _alloc((Self.H + 1) * Self.B * LAT)
         var zen = _alloc(Self.H * Self.B * LAT)
@@ -324,27 +355,30 @@ struct WMStep[
         var cons_t: Scalar[DT] = 0.0
         var rew_t: Scalar[DT] = 0.0
         var val_t: Scalar[DT] = 0.0
+        var term_t: Scalar[DT] = 0.0
         var rho_t: Scalar[DT] = 1.0
         var inv_b = Scalar[DT](1.0) / Scalar[DT](Self.B)
         var inv_h = Scalar[DT](1.0) / Scalar[DT](Self.H)
         var inv_lat = Scalar[DT](1.0) / Scalar[DT](LAT)
         var inv_nq = Scalar[DT](1.0) / Scalar[DT](NQ)
         for t in range(Self.H):
-            self._set_step_inputs[target](graph, carry, zen, act, rew, td, t)
+            self._set_step_inputs[target](graph, carry, zen, act, rew, td, done, t)
             var ot = TileTensor(out, row_major[Self.B, OW]())
             graph.forward[target, Self.B](ot)
             var nxt = carry + (t + 1) * Self.B * LAT
             for b in range(Self.B):
                 for k in range(LAT):
-                    nxt[b * LAT + k] = out[b * OW + 7 + k]
+                    nxt[b * LAT + k] = out[b * OW + NLOSS + k]
                 var cons = out[b * OW + 0]
                 var rl = out[b * OW + 1]
                 var vl: Scalar[DT] = 0.0
                 for qq in range(NQ):
                     vl += out[b * OW + 2 + qq]
+                var tl = out[b * OW + TERM_COL]
                 cons_t += rho_t * inv_h * self.consistency_coef * inv_b * inv_lat * cons
                 rew_t += rho_t * inv_h * self.reward_coef * inv_b * rl
                 val_t += rho_t * inv_h * self.value_coef * inv_b * inv_nq * vl
+                term_t += rho_t * inv_h * self.termination_coef * inv_b * tl
             rho_t *= self.rho
 
         # ── 4. Zero grads (encoder + all external WM modules). ─────────
@@ -353,6 +387,7 @@ struct WMStep[
         rew_opt.zero_grad[target, Self.RewT](rew_net)
         for i in range(NQ):
             q_opt[i].zero_grad[target, Self.QNetT](q[i])
+        term_opt.zero_grad[target, Self.TermT](term_net)
 
         # ── 5. Reverse-scan BPTT. ──────────────────────────────────────
         var gz = _alloc(Self.B * LAT)
@@ -367,20 +402,22 @@ struct WMStep[
 
         for rev in range(Self.H):
             var t = Self.H - 1 - rev
-            self._set_step_inputs[target](graph, carry, zen, act, rew, td, t)
+            self._set_step_inputs[target](graph, carry, zen, act, rew, td, done, t)
             var sct = TileTensor(scratch, row_major[Self.B, OW]())
             graph.forward[target, Self.B](sct)
 
             var sc_cons = self.consistency_coef * rho_rev * inv_b * inv_lat * inv_h
             var sc_rew = self.reward_coef * rho_rev * inv_b * inv_h
             var sc_val = self.value_coef * rho_rev * inv_b * inv_nq * inv_h
+            var sc_term = self.termination_coef * rho_rev * inv_b * inv_h
             for b in range(Self.B):
                 seed[b * OW + 0] = sc_cons
                 seed[b * OW + 1] = sc_rew
                 for qq in range(NQ):
                     seed[b * OW + 2 + qq] = sc_val
+                seed[b * OW + TERM_COL] = sc_term
                 for k in range(LAT):
-                    seed[b * OW + 7 + k] = gz[b * LAT + k]
+                    seed[b * OW + NLOSS + k] = gz[b * LAT + k]
             graph.vjp[target, Self.B](TileTensor(seed, row_major[Self.B, OW]()))
 
             var gzin = graph.grad_input_ptr["z"]()
@@ -407,10 +444,11 @@ struct WMStep[
         rew_opt.step[target, Self.RewT](rew_net)
         for i in range(NQ):
             q_opt[i].step[target, Self.QNetT](q[i])
+        term_opt.step[target, Self.TermT](term_net)
 
         carry.free(); zen.free(); out.free()
         gz.free(); seed.free(); scratch.free(); gobs.free()
-        return WMLossOut(cons_t, rew_t, val_t)
+        return WMLossOut(cons_t, rew_t, val_t, term_t)
 
     def _wm_gpu[target: StaticString](
         mut self,
@@ -419,14 +457,17 @@ struct WMStep[
         mut dyn: Self.DynT,
         mut rew_net: Self.RewT,
         mut q: List[Self.QNetT],
+        mut term_net: Self.TermT,
         mut enc_opt: Adam,
         mut dyn_opt: Adam,
         mut rew_opt: Adam,
         mut q_opt: List[Adam],
+        mut term_opt: Adam,
         obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(H+1),B,OBS] host
         act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B,ACT] host
         rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B] host
         td: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B] host
+        done: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [H,B] host BCE target
         ctx: DeviceContext,
     ) raises -> WMLossOut:
         comptime LAT = Self.LATENT
@@ -440,6 +481,7 @@ struct WMStep[
         var d_act = self.d_act.value()
         var d_rew = self.d_rew.value()
         var d_td = self.d_td.value()
+        var d_done = self.d_done.value()
         var d_carry = self.d_carry.value()
         var d_zen = self.d_zen.value()
         var d_out = self.d_out.value()
@@ -452,6 +494,7 @@ struct WMStep[
         var ha = self.h_act.value()
         var hr = self.h_rew.value()
         var htd = self.h_td.value()
+        var hdone = self.h_done.value()
         for i in range((Self.H + 1) * BB * OBSD):
             ho.unsafe_ptr()[i] = obs[i]
         for i in range(Self.H * BB * Self.ACT):
@@ -459,10 +502,12 @@ struct WMStep[
         for i in range(Self.H * BB):
             hr.unsafe_ptr()[i] = rew[i]
             htd.unsafe_ptr()[i] = td[i]
+            hdone.unsafe_ptr()[i] = done[i]
         ctx.enqueue_copy(d_obs, ho)
         ctx.enqueue_copy(d_act, ha)
         ctx.enqueue_copy(d_rew, hr)
         ctx.enqueue_copy(d_td, htd)
+        ctx.enqueue_copy(d_done, hdone)
         d_acc.enqueue_fill(0.0)
 
         graph.set_external["znext", Self.DynT](dyn)
@@ -472,6 +517,7 @@ struct WMStep[
         graph.set_external["q2", Self.QNetT](q[2])
         graph.set_external["q3", Self.QNetT](q[3])
         graph.set_external["q4", Self.QNetT](q[4])
+        graph.set_external["term", Self.TermT](term_net)
 
         comptime nb_lat = (BB * LAT + TPB - 1) // TPB
         comptime nb_b = (BB + TPB - 1) // TPB
@@ -506,7 +552,7 @@ struct WMStep[
         for t in range(Self.H):
             self._set_step_inputs[target](
                 graph, _dp(d_carry), _dp(d_zen), _dp(d_act), _dp(d_rew),
-                _dp(d_td), t,
+                _dp(d_td), _dp(d_done), t,
             )
             var ot = TileTensor(_dp(d_out), row_major[BB, OW]())
             graph.forward[target, BB](ot)
@@ -516,10 +562,11 @@ struct WMStep[
                 grid_dim=nb_lat, block_dim=TPB,
             )
             ctx.enqueue_function[acc_k](
-                _lt[BB * OW](_dp(d_out)), _lt[3](_dp(d_acc)),
+                _lt[BB * OW](_dp(d_out)), _lt[4](_dp(d_acc)),
                 self.consistency_coef * rho_t * inv_b * inv_lat * inv_h,
                 self.reward_coef * rho_t * inv_b * inv_h,
                 self.value_coef * rho_t * inv_b * inv_nq * inv_h,
+                self.termination_coef * rho_t * inv_b * inv_h,
                 grid_dim=1, block_dim=1,
             )
             rho_t *= self.rho
@@ -530,6 +577,7 @@ struct WMStep[
         rew_opt.zero_grad[target, Self.RewT](rew_net)
         for i in range(NQ):
             q_opt[i].zero_grad[target, Self.QNetT](q[i])
+        term_opt.zero_grad[target, Self.TermT](term_net)
         d_gz.enqueue_fill(0.0)
 
         # ── 5. reverse-scan BPTT ───────────────────────────────────────
@@ -540,7 +588,7 @@ struct WMStep[
             var t = Self.H - 1 - rev
             self._set_step_inputs[target](
                 graph, _dp(d_carry), _dp(d_zen), _dp(d_act), _dp(d_rew),
-                _dp(d_td), t,
+                _dp(d_td), _dp(d_done), t,
             )
             var sct = TileTensor(_dp(d_scratch), row_major[BB, OW]())
             graph.forward[target, BB](sct)
@@ -549,6 +597,7 @@ struct WMStep[
                 self.consistency_coef * rho_rev * inv_b * inv_lat * inv_h,
                 self.reward_coef * rho_rev * inv_b * inv_h,
                 self.value_coef * rho_rev * inv_b * inv_nq * inv_h,
+                self.termination_coef * rho_rev * inv_b * inv_h,
                 grid_dim=nb_b, block_dim=TPB,
             )
             graph.vjp[target, BB](
@@ -577,12 +626,14 @@ struct WMStep[
         rew_opt.step[target, Self.RewT](rew_net)
         for i in range(NQ):
             q_opt[i].step[target, Self.QNetT](q[i])
+        term_opt.step[target, Self.TermT](term_net)
 
         var h = self.h_acc.value()
         ctx.enqueue_copy(h, d_acc)
         ctx.synchronize()
         return WMLossOut(
-            h.unsafe_ptr()[0], h.unsafe_ptr()[1], h.unsafe_ptr()[2]
+            h.unsafe_ptr()[0], h.unsafe_ptr()[1], h.unsafe_ptr()[2],
+            h.unsafe_ptr()[3],
         )
 
     def _set_step_inputs[target: StaticString](
@@ -593,6 +644,7 @@ struct WMStep[
         act: UnsafePointer[Scalar[DT], MutAnyOrigin],
         rew: UnsafePointer[Scalar[DT], MutAnyOrigin],
         td: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        done: UnsafePointer[Scalar[DT], MutAnyOrigin],
         t: Int,
     ) raises:
         comptime LAT = Self.LATENT
@@ -610,4 +662,7 @@ struct WMStep[
         )
         graph.set_input["td", Self.B](
             TileTensor(td + t * Self.B, row_major[Self.B, 1]())
+        )
+        graph.set_input["done", Self.B](
+            TileTensor(done + t * Self.B, row_major[Self.B, 1]())
         )

@@ -89,6 +89,17 @@ comptime TDMPC2QNet[
     Linear[MLP, BINS],
 ]
 
+# Termination head (item B, §14.2): (z|a) → 1 logit (terminate/continue),
+# trained with BCE vs the real `terminated` flag. Mirrors the reward trunk
+# (predicts the transition's termination from state+action). Always present
+# in the WM graph; its BCE loss coefficient defaults to 0 (non-episodic →
+# bit-identical), so the head trains only when bce_coef > 0.
+comptime TDMPC2Termination[LATENT: Int, ACT: Int, MLP: Int] = Sequential[
+    NormedLinear[LATENT + ACT, MLP],
+    NormedLinear[MLP, MLP],
+    Linear[MLP, 1],
+]
+
 # Policy prior π(z): trunk → Linear(2·ACT) = [mean | log_std], consumed by
 # RSample (tanh-squashed Gaussian). Reference `mlp(latent, 2*[mlp], 2*act)`.
 comptime TDMPC2Policy[LATENT: Int, ACT: Int, MLP: Int] = Sequential[

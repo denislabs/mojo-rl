@@ -79,6 +79,9 @@ trait TDMPC2ConfigT(Copyable, Movable, ImplicitlyDestructible):
     comptime DEF_LEARNING_STARTS: Int
     comptime DEF_ENC_LR_SCALE: Scalar[DT]
     comptime DEF_TEMPERATURE: Scalar[DT]
+    # Termination BCE coefficient (item B): 0 = non-episodic (default,
+    # bit-identical); >0 trains the termination head for episodic envs.
+    comptime DEF_BCE_COEF: Scalar[DT]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -143,6 +146,7 @@ struct TDMPC2Config[
     comptime DEF_LEARNING_STARTS = 1_000
     comptime DEF_ENC_LR_SCALE = Scalar[DT](0.3)
     comptime DEF_TEMPERATURE = Scalar[DT](0.5)
+    comptime DEF_BCE_COEF = Scalar[DT](0.0)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -161,6 +165,7 @@ def agent_from_config[
     learning_starts: Int = CONFIG.DEF_LEARNING_STARTS,
     enc_lr_scale: Scalar[DT] = CONFIG.DEF_ENC_LR_SCALE,
     temperature: Scalar[DT] = CONFIG.DEF_TEMPERATURE,
+    bce_coef: Scalar[DT] = CONFIG.DEF_BCE_COEF,
 ) raises -> TDMPC2Agent[
     CONFIG.TARGET,
     CONFIG.OBS, CONFIG.ENC, CONFIG.ACT, CONFIG.LATENT, CONFIG.MLP,
@@ -186,6 +191,7 @@ def agent_from_config[
         learning_starts=learning_starts,
         enc_lr_scale=enc_lr_scale,
         temperature=temperature,
+        bce_coef=bce_coef,
         ctx=ctx,
     )
 
@@ -244,6 +250,10 @@ def TDMPC2[
         target, OBS, ACT, B, CAP, ENC, LATENT, MLP, BINS, SN, VMIN, VMAX, H,
         NUM_SAMPLES, NUM_PI_TRAJS, NUM_ELITES, NUM_ITERS,
     ].DEF_TEMPERATURE,
+    bce_coef: Scalar[DT] = TDMPC2Config[
+        target, OBS, ACT, B, CAP, ENC, LATENT, MLP, BINS, SN, VMIN, VMAX, H,
+        NUM_SAMPLES, NUM_PI_TRAJS, NUM_ELITES, NUM_ITERS,
+    ].DEF_BCE_COEF,
 ) raises -> TDMPC2Agent[
     target, OBS, ENC, ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, B, H, CAP,
     NUM_SAMPLES, NUM_PI_TRAJS, NUM_ELITES, NUM_ITERS, QP,
@@ -268,4 +278,5 @@ def TDMPC2[
         learning_starts=learning_starts,
         enc_lr_scale=enc_lr_scale,
         temperature=temperature,
+        bce_coef=bce_coef,
     )
