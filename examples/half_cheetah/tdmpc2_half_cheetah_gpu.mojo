@@ -106,7 +106,8 @@ def _greedy_eval(mut ag: Ag, mut env: Env) raises -> Scalar[DT]:
 
 def main() raises:
     print("=" * 70)
-    print("TD-MPC2 (deep_agents2) — HalfCheetah", TARGET, "(MPC-off)")
+    var mode = "MPC" if USE_MPC else "MPC-off"
+    print("TD-MPC2 (deep_agents2) — HalfCheetah", TARGET, "(", mode, ")")
     print("  OBS=", OBS, " ACT=", ACT, " latent=", LATENT, " B=", B, " H=", H)
     print("  lr=", LR, " total=", TOTAL, " learn_start=", LEARN_START)
     print("=" * 70)
