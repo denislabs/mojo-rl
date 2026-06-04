@@ -164,6 +164,13 @@ struct TDMPC2Agent[
     var _rew_acc: Scalar[DT]
     var _val_acc: Scalar[DT]
     var _pi_acc: Scalar[DT]
+    # Q + TD-target diagnostics (means window-averaged; min/max last-step).
+    var _q_mean_acc: Scalar[DT]
+    var _q_min_last: Scalar[DT]
+    var _q_max_last: Scalar[DT]
+    var _td_mean_acc: Scalar[DT]
+    var _td_min_last: Scalar[DT]
+    var _td_max_last: Scalar[DT]
     var _n_diag: Int
     var ctx: Optional[DeviceContext]
     # MPC planner (persistent warm-start; None on CPU). The rollout callback
@@ -236,7 +243,11 @@ struct TDMPC2Agent[
             _last_cons=Scalar[DT](0.0), _last_rew=Scalar[DT](0.0),
             _last_val=Scalar[DT](0.0), _cons_acc=Scalar[DT](0.0),
             _rew_acc=Scalar[DT](0.0), _val_acc=Scalar[DT](0.0),
-            _pi_acc=Scalar[DT](0.0), _n_diag=0,
+            _pi_acc=Scalar[DT](0.0),
+            _q_mean_acc=Scalar[DT](0.0), _q_min_last=Scalar[DT](0.0),
+            _q_max_last=Scalar[DT](0.0), _td_mean_acc=Scalar[DT](0.0),
+            _td_min_last=Scalar[DT](0.0), _td_max_last=Scalar[DT](0.0),
+            _n_diag=0,
             ctx=ctx,
             planner=planner^, temperature=temperature,
         )
@@ -405,6 +416,12 @@ struct TDMPC2Agent[
             wm_loss=(self._cons_acc + self._rew_acc + self._val_acc) * inv,
             pi_loss=self._pi_acc * inv,
             pi_scale=self.pol_step.scale.value,
+            q_mean=self._q_mean_acc * inv,
+            q_min=self._q_min_last,
+            q_max=self._q_max_last,
+            td_target_mean=self._td_mean_acc * inv,
+            td_target_min=self._td_min_last,
+            td_target_max=self._td_max_last,
         )
         if Bool(logger):
             var lg = logger.value()
@@ -418,11 +435,19 @@ struct TDMPC2Agent[
             lg[].log_scalar("wm_loss", Float64(m.wm_loss), step)
             lg[].log_scalar("policy_loss", Float64(m.pi_loss), step)
             lg[].log_scalar("pi_scale", Float64(m.pi_scale), step)
+            lg[].log_scalar("q_mean", Float64(m.q_mean), step)
+            lg[].log_scalar("q_min", Float64(m.q_min), step)
+            lg[].log_scalar("q_max", Float64(m.q_max), step)
+            lg[].log_scalar("td_target_mean", Float64(m.td_target_mean), step)
+            lg[].log_scalar("td_target_min", Float64(m.td_target_min), step)
+            lg[].log_scalar("td_target_max", Float64(m.td_target_max), step)
         # reset the chunk accumulators
         self._cons_acc = Scalar[DT](0.0)
         self._rew_acc = Scalar[DT](0.0)
         self._val_acc = Scalar[DT](0.0)
         self._pi_acc = Scalar[DT](0.0)
+        self._q_mean_acc = Scalar[DT](0.0)
+        self._td_mean_acc = Scalar[DT](0.0)
         self._n_diag = 0
         return m^
 
@@ -624,11 +649,29 @@ struct TDMPC2Agent[
                     self.q[i], self.qt[i], self.tau, ctx=ctx
                 )
 
+        # TD-target stats over the [H*B] targets (host in both paths).
+        var td_sum: Scalar[DT] = 0.0
+        var td_mn = td[0]
+        var td_mx = td[0]
+        for i in range(HH * BB):
+            var v = td[i]
+            td_sum += v
+            if v < td_mn:
+                td_mn = v
+            if v > td_mx:
+                td_mx = v
+
         # diag-window accumulation (drained by flush_metrics).
         self._cons_acc += self._last_cons
         self._rew_acc += self._last_rew
         self._val_acc += self._last_val
         self._pi_acc += self._last_pi
+        self._q_mean_acc += self.pol_step.q_mean
+        self._q_min_last = self.pol_step.q_min
+        self._q_max_last = self.pol_step.q_max
+        self._td_mean_acc += td_sum / Scalar[DT](HH * BB)
+        self._td_min_last = td_mn
+        self._td_max_last = td_mx
         self._n_diag += 1
 
         ob.free(); ab.free(); rb.free(); db.free()

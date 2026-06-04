@@ -72,12 +72,38 @@ struct PolicyStep[
     var rsample: RSample[Self.ACT]
     var scale: RunningScale
     var entropy_coef: Scalar[DT]
+    # last-step Q diagnostics (avg-of-2 decoded Q at the policy's actions).
+    var q_mean: Scalar[DT]
+    var q_min: Scalar[DT]
+    var q_max: Scalar[DT]
 
     def __init__(out self):
         self.graph = Self.GraphT()
         self.rsample = RSample[Self.ACT]()
         self.scale = RunningScale()
         self.entropy_coef = Scalar[DT](1e-4)
+        self.q_mean = Scalar[DT](0.0)
+        self.q_min = Scalar[DT](0.0)
+        self.q_max = Scalar[DT](0.0)
+
+    def _set_q_stats(
+        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int
+    ):
+        if n <= 0:
+            return
+        var s: Scalar[DT] = 0.0
+        var mn = p[0]
+        var mx = p[0]
+        for i in range(n):
+            var v = p[i]
+            s += v
+            if v < mn:
+                mn = v
+            if v > mx:
+                mx = v
+        self.q_mean = s / Scalar[DT](n)
+        self.q_min = mn
+        self.q_max = mx
 
     @staticmethod
     def make[target: StaticString](
@@ -157,6 +183,7 @@ struct PolicyStep[
         for b in range(BB):
             qavg[b] = qsum[b] * Scalar[DT](0.5)
         self.scale.update_from(qavg, BB)
+        self._set_q_stats(qavg, BB)
 
         var grad = alloc[Scalar[DT]](BB)
         seed_grad_inv_batch[target, BB](grad, ctx=None)
@@ -204,10 +231,11 @@ struct PolicyStep[
         for b in range(BB):
             loss_sum += h_loss.unsafe_ptr()[b]
         var loss_mean = loss_sum / Scalar[DT](BB)
-        self.scale.update_from(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](h_qavg.unsafe_ptr()),
-            BB,
+        var qavg_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            h_qavg.unsafe_ptr()
         )
+        self.scale.update_from(qavg_p, BB)
+        self._set_q_stats(qavg_p, BB)
 
         var d_grad = ctx.enqueue_create_buffer[DT](BB)
         seed_grad_inv_batch[target, BB](_dp(d_grad), ctx=ctx)

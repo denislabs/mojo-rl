@@ -59,11 +59,20 @@ def test_metrics() raises:
         " val=", m.value_loss, " wm=", m.wm_loss, " pi=", m.pi_loss,
         " pi_scale=", m.pi_scale,
     )
+    print(
+        "  q_mean=", m.q_mean, " q_min=", m.q_min, " q_max=", m.q_max,
+        " td_mean=", m.td_target_mean, " td_min=", m.td_target_min,
+        " td_max=", m.td_target_max,
+    )
     assert_true(isfinite(m.consistency_loss), "consistency finite")
     assert_true(isfinite(m.reward_loss), "reward finite")
     assert_true(isfinite(m.value_loss), "value finite")
     assert_true(isfinite(m.pi_loss), "pi finite")
     assert_true(m.pi_scale > Scalar[DT](0.0), "pi_scale positive")
+    assert_true(isfinite(m.q_mean), "q_mean finite")
+    assert_true(isfinite(m.td_target_mean), "td_target_mean finite")
+    assert_true(m.q_max >= m.q_min, "q_max >= q_min")
+    assert_true(m.td_target_max >= m.td_target_min, "td_max >= td_min")
     assert_almost_equal(
         m.wm_loss, m.consistency_loss + m.reward_loss + m.value_loss,
         atol=1e-5, msg="wm_loss == cons + rew + val",

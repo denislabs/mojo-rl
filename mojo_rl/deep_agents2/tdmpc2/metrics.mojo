@@ -17,3 +17,11 @@ struct TDMPC2Metrics(Copyable & Movable):
     var wm_loss: Scalar[DT]
     var pi_loss: Scalar[DT]
     var pi_scale: Scalar[DT]
+    # Q-Values group (avg-of-2 decoded Q at the policy's actions).
+    var q_mean: Scalar[DT]
+    var q_min: Scalar[DT]
+    var q_max: Scalar[DT]
+    # TD Targets group (the stop-grad value targets fed to the WM value loss).
+    var td_target_mean: Scalar[DT]
+    var td_target_min: Scalar[DT]
+    var td_target_max: Scalar[DT]
