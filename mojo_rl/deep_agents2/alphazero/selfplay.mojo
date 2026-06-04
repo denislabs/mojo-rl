@@ -137,7 +137,10 @@ def run_alphazero_selfplay[
     var last_loss: Float64 = 0.0
 
     for it in range(iterations):
-        # 1. MCTS search across all envs.
+        # 1. MCTS search across all envs. Net runs in eval mode so any
+        #    BatchNorm (CNN / ResNet torsos) uses running stats during the
+        #    single-position inference of MCTS expansion (no-op for the MLP).
+        net.set_attr["training"](Scalar[DT](0.0))
         var pred = AZPredGPU[OBS, ACT, NET].make(net)
         var env_ad = AZEnvGPU[ENV, STATE, OBS, ACT]()
         var root_obs = LayoutTensor[
@@ -200,8 +203,10 @@ def run_alphazero_selfplay[
         )
         ctx.synchronize()
 
-        # 6. Train.
+        # 6. Train. Net back in train mode so BatchNorm uses batch stats and
+        #    updates its running averages (no-op for the MLP).
         if len(replay) >= BATCH and it >= learning_starts:
+            net.set_attr["training"](Scalar[DT](1.0))
             for _t in range(train_per_iter):
                 replay.sample_batch[BATCH](
                     tb_obs_h.unsafe_ptr(), tb_tgt_h.unsafe_ptr()

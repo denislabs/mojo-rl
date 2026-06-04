@@ -29,8 +29,9 @@ from mojo_rl.deep_agents2.core.checkpoint_helpers import (
 )
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 
+from ..zero.evaluators import GPUEvaluator
 from .selfplay import run_alphazero_selfplay
-from .eval import eval_policy_vs_random, EvalResult
+from .eval import eval_policy_vs_random, eval_policy_vs_opponent, EvalResult
 
 
 @fieldwise_init
@@ -81,6 +82,19 @@ struct AlphaZeroAgent[
         return eval_policy_vs_random[
             Self.ENV, Self.NET, N_EVAL, RESULT_IDX, MAX_PLIES
         ](self.ctx, self.net, agent_player, seed)
+
+    def eval_vs_opponent[
+        OPP: GPUEvaluator, N_EVAL: Int, RESULT_IDX: Int, MAX_PLIES: Int
+    ](
+        mut self, agent_player: Int = 0, seed: UInt64 = 1, open_plies: Int = 0
+    ) raises -> EvalResult:
+        """Greedy net-policy vs an arbitrary `GPUEvaluator` (e.g. minimax).
+
+        `open_plies` randomises the first plies for diverse openings — needed
+        for deterministic opponents (see `eval_policy_vs_opponent`)."""
+        return eval_policy_vs_opponent[
+            Self.ENV, Self.NET, OPP, N_EVAL, RESULT_IDX, MAX_PLIES
+        ](self.ctx, self.net, agent_player, seed, open_plies)
 
     def save(mut self, path: String) raises:
         var body = String("")

@@ -3,6 +3,12 @@
 
 from .mcts_adapters import AZPredGPU, AZEnvGPU
 from .example_replay import MCTSExampleReplay
+from .evaluators import (
+    GPUEvaluator,
+    RandomOpponent,
+    GPUMinimaxTicTacToe,
+    GPUMinimaxConnectFour,
+)
 from .signs import (
     az_value_target,
     zero_sum_sign,
