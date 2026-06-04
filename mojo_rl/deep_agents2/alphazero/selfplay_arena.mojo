@@ -5,10 +5,13 @@ Extends `run_alphazero_selfplay` with the two production pieces:
   * **Best/learner split + Arena gating.** A frozen *best* net generates all
     self-play (MCTS expansion + the policy/value priors); a *learner* net trains
     on that data. Every `arena_every` iterations the learner plays the best in
-    the Arena (`candidate_winrate`, both colors, random openings); if it wins a
-    clear majority of decisive games (`should_promote`) it is copied over the
-    best (`hard_copy_params`) and becomes the new generator. This is the
-    accept/reject loop that stops a transiently-worse learner from poisoning the
+    the Arena (`candidate_winrate_mcts` — both nets at full MCTS strength, both
+    colors, random openings); if it wins a clear majority of decisive games
+    (`should_promote`) it is copied over the best (`hard_copy_params`) and
+    becomes the new generator. The gate runs MCTS (not argmax) because that is
+    the condition the winner is used in — self-play generation is always net+MCTS
+    — and because it exercises the value head, which argmax ignores. This
+    accept/reject loop stops a transiently-worse learner from poisoning the
     self-play distribution.
 
   * **Symmetry augmentation.** Each recorded `(obs, π)` sample is replicated
@@ -47,7 +50,7 @@ from mojo_rl.planners.tree_search import (
 )
 
 from .loss_ops import AZLossOp
-from .arena import candidate_winrate, should_promote
+from .arena import candidate_winrate_mcts, should_promote
 from .eval import eval_mcts_vs_opponent, EvalResult
 from ..zero.mcts_adapters import AZPredGPU, AZEnvGPU
 from ..zero.example_replay import MCTSExampleReplay
@@ -100,7 +103,8 @@ def run_alphazero_selfplay_arena[
     CAP: Int,
     MAX_TRAJ: Int,
     ARENA_GAMES: Int = 32,        # arena games per color (comptime: sizes buffers)
-    RESULT_IDX: Int = 10,
+    RESULT_IDX: Int = 10,         # vestigial (MCTS arena/eval attribute by
+    #                               reward+turn); kept for caller API stability
     MAX_PLIES: Int = 9,
     OPP1: GPUEvaluator = RandomOpponent,   # primary eval opponent (do_eval)
     OPP2: GPUEvaluator = RandomOpponent,   # secondary eval opponent (do_eval2)
@@ -331,8 +335,8 @@ def run_alphazero_selfplay_arena[
             and (it + 1) % arena_every == 0
             and len(replay) >= BATCH
         ):
-            var rec = candidate_winrate[
-                ENV, NET, NET, ARENA_GAMES, RESULT_IDX, MAX_PLIES,
+            var rec = candidate_winrate_mcts[
+                ENV, NET, NET, ARENA_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES,
             ](ctx, learner, net, seed=seed + UInt64(it) * 7 + 1,
               open_plies=arena_open_plies)
             var accepted = should_promote(
@@ -344,7 +348,7 @@ def run_alphazero_selfplay_arena[
             if verbose:
                 print(
                     "  arena @ move", it + 1,
-                    "| learner vs best  W", rec.wins, "D", rec.draws,
+                    "| learner vs best (MCTS)  W", rec.wins, "D", rec.draws,
                     "L", rec.losses,
                     "→ ACCEPTED" if accepted else "→ rejected",
                     "(promotions", promotions, ")",
@@ -423,8 +427,8 @@ def run_alphazero_selfplay_arena[
 
     # Final flush: ensure the returned best is at least as new as the learner if
     # the learner ended clearly ahead (covers runs shorter than arena_every).
-    var final_rec = candidate_winrate[
-        ENV, NET, NET, ARENA_GAMES, RESULT_IDX, MAX_PLIES,
+    var final_rec = candidate_winrate_mcts[
+        ENV, NET, NET, ARENA_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES,
     ](ctx, learner, net, seed=seed + 9991, open_plies=arena_open_plies)
     if should_promote(final_rec, promote_threshold, min_decisive=ARENA_GAMES // 2):
         hard_copy_params["gpu", M=NET](learner, net, ctx)
