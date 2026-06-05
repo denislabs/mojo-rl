@@ -90,10 +90,16 @@ comptime PONG_MAX_STEPS: Int = 5000
 # ============================================================================
 
 
-struct PongEnv[DTYPE: DType](
+struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
     BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv
 ):
     """Native Pong environment — CPU+GPU dual path.
+
+    `HIT_REWARD` is the dense shaping reward granted when the agent's
+    paddle returns the ball (default 0.1). Set it to 0.0 for clean sparse
+    rewards (±1 on points only) — useful when the dense shaping distorts
+    the value scale / C51 support. Back-compatible: existing
+    `PongEnv[dtype]` instantiations keep the 0.1 default.
 
     CPU: Instance methods for evaluation + SDL3 rendering.
     GPU: Static inline methods for batched RL training.
@@ -304,8 +310,8 @@ struct PongEnv[DTYPE: DType](
         elif scored_cpu:
             reward = Scalar[Self.dtype](-1.0)
         elif agent_hit:
-            # Reward for returning the ball
-            reward = Scalar[Self.dtype](0.1)
+            # Dense shaping reward for returning the ball (0.0 disables it).
+            reward = Scalar[Self.dtype](Self.HIT_REWARD)
 
         return (reward, self.done)
 
@@ -833,7 +839,8 @@ struct PongEnv[DTYPE: DType](
         elif scored_cpu:
             rewards[i] = -1.0
         elif agent_hit:
-            rewards[i] = 0.1  # Reward for returning the ball
+            # Dense shaping reward for returning the ball (0.0 disables it).
+            rewards[i] = Scalar[gpu_dtype](Self.HIT_REWARD)
         else:
             rewards[i] = 0.0
 

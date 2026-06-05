@@ -63,9 +63,17 @@ comptime BATCH_SIZE = 64
 comptime N_ENVS = 256  # parallel GPU environments
 
 # Distributional support. C51's [v_min, v_max] must bracket the achievable
-# (discounted, n-step) return; Pong points are ±1 with up to ~21 per game.
-comptime V_MIN = Scalar[DT](-21.0)
-comptime V_MAX = Scalar[DT](21.0)
+# *discounted* return, NOT the raw episode score. With γ=0.99 + sparse rewards
+# the discounted Q lives in roughly ±0.3..±6, so the old [-21, 21] (atom
+# spacing 0.84) wasted nearly all resolution on unreachable values and the
+# argmax couldn't separate the 3 actions. Narrowed to [-2, 2] (spacing 0.08).
+comptime V_MIN = Scalar[DT](-2.0)
+comptime V_MAX = Scalar[DT](2.0)
+
+# Dense ball-return shaping reward (env `HIT_REWARD`). 0.0 = clean sparse ±1
+# rewards on points only; 0.1 = original shaping (pushes Q positive while the
+# agent loses, distorting the value scale). Disabled for this experiment.
+comptime HIT_REWARD = 0.0
 
 # Replay ratio. Each iteration collects N_ENVS transitions and performs
 # GRAD_STEPS gradient updates → ratio = GRAD_STEPS / N_ENVS. 64/256 = 0.25,
@@ -89,7 +97,9 @@ comptime QNET = RainbowNet[OBS_DIM, NUM_ACTIONS, NUM_ATOMS, HIDDEN_DIM]
 comptime RainbowTrainer = C51Trainer[
     "gpu", SAMPLE, QNET, NUM_ATOMS, NUM_ACTIONS, True
 ]
-comptime PongBatched = BatchedGpuDiscreteEnv[PongEnv[DT], N_ENVS, OBS_DIM, 1]
+comptime PongBatched = BatchedGpuDiscreteEnv[
+    PongEnv[DT, HIT_REWARD], N_ENVS, OBS_DIM, 1
+]
 
 
 # =============================================================================
