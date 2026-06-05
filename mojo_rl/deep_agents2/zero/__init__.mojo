@@ -26,3 +26,14 @@ from .signs import (
     RESULT_P1_WINS,
     RESULT_DRAW,
 )
+from .twohot_targets import (
+    mz_scalar_transform,
+    mz_inverse_scalar_transform,
+    mz_two_hot_target_batch,
+    mz_two_hot_target_one,
+    mz_decode_value_batch,
+)
+from .nstep_targets import (
+    compute_nstep_value_targets,
+    extract_reward_targets,
+)
