@@ -51,7 +51,13 @@ comptime NUM_ACTIONS = PongEnv[DType.float64].NUM_ACTIONS  # 3
 # Rainbow architecture / replay hyperparameters.
 comptime HIDDEN_DIM = 128
 comptime NUM_ATOMS = 51
-comptime N_STEP = 3
+# ISOLATION SETTING: N_STEP=1 routes the batched driver through
+# `record_batch_gpu` (direct device PER store), bypassing the device
+# `GPUNStepBuffer` entirely. This separates "env/reward/hyperparameter
+# non-convergence" from "a bug in the batched device n-step accumulation":
+# if Pong learns at N_STEP=1 but not N_STEP>1, the GPUNStepBuffer path is
+# the culprit. Restore to 3 for full Rainbow once isolated.
+comptime N_STEP = 1
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 64
 comptime N_ENVS = 256  # parallel GPU environments
@@ -120,7 +126,11 @@ def main() raises:
 
         print("Environment: Pong (GPU-batched,", N_ENVS, "envs)")
         print("Agent: Rainbow DQN (deep_agents2 C51, GPU)")
-        print("  Components: C51 + Double + PER + Dueling + Noisy + 3-step")
+        print(
+            "  Components: C51 + Double + PER + Dueling + Noisy +",
+            N_STEP,
+            "-step",
+        )
         print("  Observation dim:", OBS_DIM)
         print("  Actions:", NUM_ACTIONS, "(NOOP, UP, DOWN)")
         print("  Hidden dim:", HIDDEN_DIM)
