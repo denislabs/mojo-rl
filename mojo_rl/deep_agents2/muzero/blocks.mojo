@@ -30,9 +30,12 @@ follows. The min-max latent scaling lives inside the nets (`MZRepNet`/`MZDynNet`
 """
 
 from std.memory import alloc
-from layout import TileTensor, row_major
+from std.math import exp, log, sqrt
+from layout import Layout, LayoutTensor, TileTensor, row_major
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.optimizer.adam import Adam
 
@@ -42,6 +45,18 @@ from ..zero.twohot_targets import mz_two_hot_target_batch
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
+
+
+@always_inline
+def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+
+
+@always_inline
+def _lt[N: Int](
+    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
+    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
 
 
 def mz_unroll_train_step_cpu[
@@ -197,4 +212,418 @@ def mz_unroll_train_step_cpu[
     zst.free(); din.free(); dout.free(); pout.free(); gpout.free()
     gdout.free(); gz.free(); gpin.free(); gdin.free(); gobs.free()
     twv.free(); twr.free()
+    return loss / Scalar[DT](B)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GPU unroll — device kernels (mirror the host loops of the CPU step).
+#
+# All flat 1-D over `MutAnyOrigin` device pointers (the validated nn2 GPU
+# marshalling idiom — see `dreamerv3/blocks.mojo` `_bcopy`). Concrete `DT`
+# everywhere, so no `where dtype.is_floating_point()` guard is needed.
+# Bit-for-bit the same arithmetic as `loss_ops` / `twohot_targets` so the
+# CPU↔GPU parity test holds within fp32 noise.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _mz_build_dyn_in_k[
+    B_: Int, LATENT_: Int, ACT_: Int, DYN_IN_: Int,
+](
+    din: LayoutTensor[DT, Layout.row_major(B_ * DYN_IN_), MutAnyOrigin],
+    zk: LayoutTensor[DT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
+    act: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+):
+    """Assemble the dynamics input row `[z_k | onehot(a_k)]` per sample.
+    `act[b]` is the (float-encoded) action index for this unroll step."""
+    var idx = Int(global_idx.x)
+    if idx < B_ * DYN_IN_:
+        var b = idx // DYN_IN_
+        var d = idx % DYN_IN_
+        if d < LATENT_:
+            din[idx] = rebind[Scalar[DT]](zk[b * LATENT_ + d])
+        else:
+            var sel = Int(rebind[Scalar[DT]](act[b]))
+            din[idx] = (
+                Scalar[DT](1.0) if (d - LATENT_) == sel else Scalar[DT](0.0)
+            )
+
+
+def _mz_copy_latent_k[
+    B_: Int, LATENT_: Int, DYN_OUT_: Int,
+](
+    znext: LayoutTensor[DT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
+    dout: LayoutTensor[DT, Layout.row_major(B_ * DYN_OUT_), MutAnyOrigin],
+):
+    """Copy the latent half `dout[:, :LATENT]` → `znext` (the next z_{k+1})."""
+    var idx = Int(global_idx.x)
+    if idx < B_ * LATENT_:
+        var b = idx // LATENT_
+        var i = idx % LATENT_
+        znext[idx] = rebind[Scalar[DT]](dout[b * DYN_OUT_ + i])
+
+
+def _mz_softce_slice_k[
+    B_: Int, ROW_: Int, OFF_: Int, NBINS_: Int,
+](
+    logits: LayoutTensor[DT, Layout.row_major(B_ * ROW_), MutAnyOrigin],
+    target: LayoutTensor[DT, Layout.row_major(B_ * NBINS_), MutAnyOrigin],
+    grad_out: LayoutTensor[DT, Layout.row_major(B_ * ROW_), MutAnyOrigin],
+    loss_buf: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+    grad_scale: Scalar[DT],
+    loss_coef: Scalar[DT],
+):
+    """Soft-CE over the `[OFF, OFF+NBINS)` column slice of a `[B, ROW]` logits
+    tile vs a `[B, NBINS]` soft target. Writes `grad_scale·(softmax − q)` into
+    the same slice of `grad_out` and **accumulates** `loss_coef·(−Σ q·log sm)`
+    into `loss_buf[b]`. One thread per row — mirrors
+    `soft_ce_slice_loss_and_grad` exactly."""
+    var b = Int(global_idx.x)
+    if b < B_:
+        var base = b * ROW_ + OFF_
+        var m = rebind[Scalar[DT]](logits[base])
+        for i in range(1, NBINS_):
+            var v = rebind[Scalar[DT]](logits[base + i])
+            if v > m:
+                m = v
+        var s = Scalar[DT](0.0)
+        for i in range(NBINS_):
+            s += exp(rebind[Scalar[DT]](logits[base + i]) - m)
+        var log_s = log(s)
+        var tb = b * NBINS_
+        var row_loss = Scalar[DT](0.0)
+        for i in range(NBINS_):
+            var q = rebind[Scalar[DT]](target[tb + i])
+            var log_sm = (rebind[Scalar[DT]](logits[base + i]) - m) - log_s
+            row_loss += -q * log_sm
+            var sm = exp(log_sm)
+            grad_out[base + i] = grad_scale * (sm - q)
+        loss_buf[b] = rebind[Scalar[DT]](loss_buf[b]) + loss_coef * row_loss
+
+
+def _mz_twohot_k[
+    B_: Int, NBINS_: Int,
+](
+    tgt: LayoutTensor[DT, Layout.row_major(B_ * NBINS_), MutAnyOrigin],
+    vals: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+    v_min: Scalar[DT],
+    v_max: Scalar[DT],
+):
+    """Two-hot encode raw scalars: apply `h(x)` then two-hot over `NBINS`
+    linear bins in `[v_min, v_max]` (h-space support). Mirrors
+    `mz_two_hot_target_batch` (`mz_scalar_transform` + `two_hot_encode`)."""
+    var b = Int(global_idx.x)
+    if b < B_:
+        var x = rebind[Scalar[DT]](vals[b])
+        # h(x) = sign(x)·(√(|x|+1) − 1) + ε·x   (ε = 0.001)
+        var eps = Scalar[DT](0.001)
+        var sgn = Scalar[DT](1.0) if x >= Scalar[DT](0.0) else Scalar[DT](-1.0)
+        var ax = x if x >= Scalar[DT](0.0) else -x
+        var ht = sgn * (sqrt(ax + Scalar[DT](1.0)) - Scalar[DT](1.0)) + eps * x
+        var base = b * NBINS_
+        for i in range(NBINS_):
+            tgt[base + i] = Scalar[DT](0.0)
+        if NBINS_ == 1:
+            tgt[base] = Scalar[DT](1.0)
+            return
+        # clamp into the bin range, then two-hot over linear bins.
+        if ht < v_min:
+            ht = v_min
+        if ht > v_max:
+            ht = v_max
+        var step = (v_max - v_min) / Scalar[DT](NBINS_ - 1)
+        var kf = (ht - v_min) / step
+        var k = Int(kf)
+        if k >= NBINS_ - 1:
+            k = NBINS_ - 2
+        if k < 0:
+            k = 0
+        var bin_low = v_min + step * Scalar[DT](k)
+        var bin_high = v_min + step * Scalar[DT](k + 1)
+        var width = bin_high - bin_low
+        var upper = (bin_high - ht) / width
+        tgt[base + k] = upper
+        tgt[base + k + 1] = Scalar[DT](1.0) - upper
+
+
+def _mz_set_carry_latent_k[
+    B_: Int, LATENT_: Int, DYN_OUT_: Int,
+](
+    gdout: LayoutTensor[DT, Layout.row_major(B_ * DYN_OUT_), MutAnyOrigin],
+    gz: LayoutTensor[DT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
+):
+    """Seed the latent half of the dynamics output-grad with the carry
+    `∂L/∂z_{k+1}` (the reward kernel fills the `[LATENT, LATENT+BINS)` half)."""
+    var idx = Int(global_idx.x)
+    if idx < B_ * LATENT_:
+        var b = idx // LATENT_
+        var i = idx % LATENT_
+        gdout[b * DYN_OUT_ + i] = rebind[Scalar[DT]](gz[idx])
+
+
+def _mz_accum_half_k[
+    B_: Int, LATENT_: Int, DYN_IN_: Int,
+](
+    gpin: LayoutTensor[DT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
+    gdin: LayoutTensor[DT, Layout.row_major(B_ * DYN_IN_), MutAnyOrigin],
+):
+    """`∂L/∂z_k += ½·(grad into dyn's latent input)` — the MuZero ½ dynamics
+    hidden-input gradient scaling (appendix)."""
+    var idx = Int(global_idx.x)
+    if idx < B_ * LATENT_:
+        var b = idx // LATENT_
+        var i = idx % LATENT_
+        gpin[idx] = rebind[Scalar[DT]](gpin[idx]) + Scalar[DT](0.5) * rebind[
+            Scalar[DT]
+        ](gdin[b * DYN_IN_ + i])
+
+
+def _mz_bcopy_k[N_: Int](
+    src: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
+):
+    """Contiguous device→device copy (carry gz ← gpin)."""
+    var i = Int(global_idx.x)
+    if i < N_:
+        dst[i] = rebind[Scalar[DT]](src[i])
+
+
+def mz_unroll_train_step_gpu[
+    REP: Module,
+    DYN: Module,
+    PRED: Module,
+    B: Int,
+    K: Int,
+    OBS: Int,
+    ACT: Int,
+    LATENT: Int,
+    BINS: Int,
+](
+    ctx: DeviceContext,
+    mut rep: REP,
+    mut dyn: DYN,
+    mut pred: PRED,
+    mut orep: Adam,
+    mut odyn: Adam,
+    mut opred: Adam,
+    obs0: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    v_min: Scalar[DT],
+    v_max: Scalar[DT],
+    value_coef: Scalar[DT] = Scalar[DT](1.0),
+) raises -> Scalar[DT]:
+    """GPU MuZero K-step unroll training step — device mirror of
+    `mz_unroll_train_step_cpu`.
+
+    Takes the same **host** time-major batch slabs (raw value/reward scalars;
+    `h` + two-hot applied on device), H2D-copies them once, runs the forward
+    scan (rep + K dynamics) and reverse scan (pred/dyn vjp with the ½ dynamics
+    gradient + 1/(K+1) loss weight) entirely on the device, and steps the three
+    Adam optimizers in place. Returns the mean total loss (same reduction as
+    the CPU path). Device scratch is allocated **once** (no per-step
+    `enqueue_create_buffer` — that explodes disk on NVIDIA).
+    """
+    comptime PRED_OUT = ACT + BINS
+    comptime DYN_IN = LATENT + ACT
+    comptime DYN_OUT = LATENT + BINS
+
+    var gscale = Scalar[DT](1.0) / Scalar[DT]((K + 1) * B)
+
+    # ── H2D the host batch slabs (once) ──
+    var d_obs0 = ctx.enqueue_create_buffer[DT](B * OBS)
+    var d_act = ctx.enqueue_create_buffer[DT](K * B)
+    var d_pol = ctx.enqueue_create_buffer[DT]((K + 1) * B * ACT)
+    var d_val = ctx.enqueue_create_buffer[DT]((K + 1) * B)
+    var d_rew = ctx.enqueue_create_buffer[DT](K * B)
+    ctx.enqueue_copy(d_obs0, obs0)
+    ctx.enqueue_copy(d_act, actions)
+    ctx.enqueue_copy(d_pol, policy_tgt)
+    ctx.enqueue_copy(d_val, value_tgt)
+    ctx.enqueue_copy(d_rew, reward_tgt)
+
+    # ── device scratch (allocated once) ──
+    var zst = ctx.enqueue_create_buffer[DT]((K + 1) * B * LATENT)
+    var din = ctx.enqueue_create_buffer[DT](B * DYN_IN)
+    var dout = ctx.enqueue_create_buffer[DT](B * DYN_OUT)
+    var pout = ctx.enqueue_create_buffer[DT](B * PRED_OUT)
+    var gpout = ctx.enqueue_create_buffer[DT](B * PRED_OUT)
+    var gdout = ctx.enqueue_create_buffer[DT](B * DYN_OUT)
+    var gz = ctx.enqueue_create_buffer[DT](B * LATENT)
+    var gpin = ctx.enqueue_create_buffer[DT](B * LATENT)
+    var gdin = ctx.enqueue_create_buffer[DT](B * DYN_IN)
+    var gobs = ctx.enqueue_create_buffer[DT](B * OBS)
+    var twv = ctx.enqueue_create_buffer[DT](B * BINS)
+    var twr = ctx.enqueue_create_buffer[DT](B * BINS)
+    var loss_d = ctx.enqueue_create_buffer[DT](B)
+
+    # zero the loss accumulator
+    var zloss = _a(B)
+    for i in range(B):
+        zloss[i] = Scalar[DT](0.0)
+    ctx.enqueue_copy(loss_d, zloss)
+
+    # raw device pointers (MutAnyOrigin) for TileTensor / LayoutTensor views
+    var p_obs0 = _dp(d_obs0)
+    var p_act = _dp(d_act)
+    var p_pol = _dp(d_pol)
+    var p_val = _dp(d_val)
+    var p_rew = _dp(d_rew)
+    var p_zst = _dp(zst)
+    var p_din = _dp(din)
+    var p_dout = _dp(dout)
+    var p_pout = _dp(pout)
+    var p_gpout = _dp(gpout)
+    var p_gdout = _dp(gdout)
+    var p_gz = _dp(gz)
+    var p_gpin = _dp(gpin)
+    var p_gdin = _dp(gdin)
+    var p_gobs = _dp(gobs)
+    var p_twv = _dp(twv)
+    var p_twr = _dp(twr)
+    var p_loss = _dp(loss_d)
+
+    comptime nbDIN = (B * DYN_IN + TPB - 1) // TPB
+    comptime nbLAT = (B * LATENT + TPB - 1) // TPB
+    comptime nbB = (B + TPB - 1) // TPB
+    comptime kBuild = _mz_build_dyn_in_k[B, LATENT, ACT, DYN_IN]
+    comptime kCopyL = _mz_copy_latent_k[B, LATENT, DYN_OUT]
+    comptime kPolCE = _mz_softce_slice_k[B, PRED_OUT, 0, ACT]
+    comptime kValCE = _mz_softce_slice_k[B, PRED_OUT, ACT, BINS]
+    comptime kRewCE = _mz_softce_slice_k[B, DYN_OUT, LATENT, BINS]
+    comptime kTwoHot = _mz_twohot_k[B, BINS]
+    comptime kCarry = _mz_set_carry_latent_k[B, LATENT, DYN_OUT]
+    comptime kHalf = _mz_accum_half_k[B, LATENT, DYN_IN]
+    comptime kBcopy = _mz_bcopy_k[B * LATENT]
+
+    # ── forward scan: z0 = h(obs0); z_{k+1} = g(z_k, a_k).latent ──
+    var z0_t = TileTensor(p_zst, row_major[B, LATENT]())
+    rep.forward["gpu", B](
+        TileTensor(p_obs0, row_major[B, OBS]()), output=z0_t
+    )
+    for k in range(K):
+        var zk = p_zst + k * B * LATENT
+        ctx.enqueue_function[kBuild](
+            _lt[B * DYN_IN](p_din),
+            _lt[B * LATENT](zk),
+            _lt[B](p_act + k * B),
+            grid_dim=nbDIN, block_dim=TPB,
+        )
+        var dout_t = TileTensor(p_dout, row_major[B, DYN_OUT]())
+        dyn.forward["gpu", B](
+            TileTensor(p_din, row_major[B, DYN_IN]()), output=dout_t
+        )
+        var znext = p_zst + (k + 1) * B * LATENT
+        ctx.enqueue_function[kCopyL](
+            _lt[B * LATENT](znext),
+            _lt[B * DYN_OUT](p_dout),
+            grid_dim=nbLAT, block_dim=TPB,
+        )
+
+    # ── reverse scan ──
+    orep.zero_grad["gpu", REP](rep)
+    odyn.zero_grad["gpu", DYN](dyn)
+    opred.zero_grad["gpu", PRED](pred)
+
+    for rk in range(K + 1):
+        var k = K - rk
+        var zk = p_zst + k * B * LATENT
+        var zk_t = TileTensor(zk, row_major[B, LATENT]())
+
+        # (a) prediction head: re-forward (cache), seed grads, vjp → grad z_k
+        var pout_t = TileTensor(p_pout, row_major[B, PRED_OUT]())
+        pred.forward["gpu", B](zk_t, output=pout_t)
+        # policy slice [0, ACT)
+        ctx.enqueue_function[kPolCE](
+            _lt[B * PRED_OUT](p_pout),
+            _lt[B * ACT](p_pol + k * B * ACT),
+            _lt[B * PRED_OUT](p_gpout),
+            _lt[B](p_loss),
+            gscale, Scalar[DT](1.0),
+            grid_dim=nbB, block_dim=TPB,
+        )
+        # value slice [ACT, ACT+BINS): two-hot then soft-CE (scaled by coef)
+        ctx.enqueue_function[kTwoHot](
+            _lt[B * BINS](p_twv), _lt[B](p_val + k * B), v_min, v_max,
+            grid_dim=nbB, block_dim=TPB,
+        )
+        ctx.enqueue_function[kValCE](
+            _lt[B * PRED_OUT](p_pout),
+            _lt[B * BINS](p_twv),
+            _lt[B * PRED_OUT](p_gpout),
+            _lt[B](p_loss),
+            gscale * value_coef, value_coef,
+            grid_dim=nbB, block_dim=TPB,
+        )
+        var gpout_t = TileTensor(p_gpout, row_major[B, PRED_OUT]())
+        var gpin_t = TileTensor(p_gpin, row_major[B, LATENT]())
+        pred.vjp["gpu", B](gpout_t, gpin_t)
+
+        # (b) dynamics: carry grad from z_{k+1} + reward head, ½ on hidden input
+        if k < K:
+            ctx.enqueue_function[kBuild](
+                _lt[B * DYN_IN](p_din),
+                _lt[B * LATENT](zk),
+                _lt[B](p_act + k * B),
+                grid_dim=nbDIN, block_dim=TPB,
+            )
+            var dout_t = TileTensor(p_dout, row_major[B, DYN_OUT]())
+            dyn.forward["gpu", B](
+                TileTensor(p_din, row_major[B, DYN_IN]()), output=dout_t
+            )
+            # grad_dyn_out = [ carry(grad z_{k+1}) | reward grad ]
+            ctx.enqueue_function[kCarry](
+                _lt[B * DYN_OUT](p_gdout),
+                _lt[B * LATENT](p_gz),
+                grid_dim=nbLAT, block_dim=TPB,
+            )
+            ctx.enqueue_function[kTwoHot](
+                _lt[B * BINS](p_twr), _lt[B](p_rew + k * B), v_min, v_max,
+                grid_dim=nbB, block_dim=TPB,
+            )
+            ctx.enqueue_function[kRewCE](
+                _lt[B * DYN_OUT](p_dout),
+                _lt[B * BINS](p_twr),
+                _lt[B * DYN_OUT](p_gdout),
+                _lt[B](p_loss),
+                gscale, Scalar[DT](1.0),
+                grid_dim=nbB, block_dim=TPB,
+            )
+            var gdout_t = TileTensor(p_gdout, row_major[B, DYN_OUT]())
+            var gdin_t = TileTensor(p_gdin, row_major[B, DYN_IN]())
+            dyn.vjp["gpu", B](gdout_t, gdin_t)
+            # ∂L/∂z_k += ½ · (grad into dyn's latent input)
+            ctx.enqueue_function[kHalf](
+                _lt[B * LATENT](p_gpin),
+                _lt[B * DYN_IN](p_gdin),
+                grid_dim=nbLAT, block_dim=TPB,
+            )
+
+        # carry ← full grad wrt z_k for the next (k-1) iteration
+        ctx.enqueue_function[kBcopy](
+            _lt[B * LATENT](p_gpin),
+            _lt[B * LATENT](p_gz),
+            grid_dim=nbLAT, block_dim=TPB,
+        )
+
+    # ── rep: grad wrt z_0 (== carry after the loop) → rep params ──
+    var gz0_t = TileTensor(p_gz, row_major[B, LATENT]())
+    var gobs_t = TileTensor(p_gobs, row_major[B, OBS]())
+    rep.vjp["gpu", B](gz0_t, gobs_t)
+
+    opred.step["gpu", PRED](pred)
+    odyn.step["gpu", DYN](dyn)
+    orep.step["gpu", REP](rep)
+
+    # ── reduce loss (D2H once) ──
+    ctx.synchronize()
+    var hloss = _a(B)
+    ctx.enqueue_copy(hloss, loss_d)
+    ctx.synchronize()
+    var loss = Scalar[DT](0.0)
+    for b in range(B):
+        loss += hloss[b]
+
+    zloss.free(); hloss.free()
     return loss / Scalar[DT](B)
