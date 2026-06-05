@@ -64,6 +64,8 @@ def main() raises:
         seed=7,
         eval_every=600,
         eval_games=20,
+        reanalyze_every=2,      # exercise the reanalyze path
+        reanalyze_batch=2,
         verbose=True,
     )
 

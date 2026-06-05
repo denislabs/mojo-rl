@@ -109,6 +109,7 @@ def run_muzero_selfplay_cpu[
     var e_pol = List[Scalar[DT]]()
     var e_val = List[Scalar[DT]]()
     var e_tp = List[Scalar[DT]]()
+    var e_legal = List[Scalar[DT]]()    # all-legal (single-player); reanalyze ch.
     var ep_len = 0
 
     var rng = seed ^ UInt64(0x123456789)
@@ -145,6 +146,7 @@ def run_muzero_selfplay_cpu[
         e_act.append(Scalar[DT](action))
         for a in range(ACT):
             e_pol.append(Scalar[DT](policy[a]))
+            e_legal.append(Scalar[DT](1.0))     # CartPole: every action legal
         e_val.append(Scalar[DT](root_v))
         e_tp.append(Scalar[DT](0.0))
 
@@ -180,11 +182,14 @@ def run_muzero_selfplay_cpu[
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                     e_tp.unsafe_ptr()
                 ),
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    e_legal.unsafe_ptr()
+                ),
                 ep_len,
             )
             ep_returns.append(ep_return)
             e_obs.clear(); e_act.clear(); e_rew.clear()
-            e_pol.clear(); e_val.clear(); e_tp.clear()
+            e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()
             ep_len = 0
             ep_return = 0.0
             cur = env.reset_obs_list()
@@ -241,7 +246,7 @@ def run_muzero_selfplay_cpu[
             print("  [eval] step", it + 1, "greedy_return", eval_avg)
             # restart a clean training episode (eval clobbered ``env``)
             e_obs.clear(); e_act.clear(); e_rew.clear()
-            e_pol.clear(); e_val.clear(); e_tp.clear()
+            e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()
             ep_len = 0
             ep_return = 0.0
             cur = env.reset_obs_list()

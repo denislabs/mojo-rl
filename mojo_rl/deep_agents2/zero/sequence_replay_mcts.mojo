@@ -45,6 +45,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
     var pol: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP, ACT] visit policy
     var val: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP] root value
     var tp: UnsafePointer[Scalar[DT], MutAnyOrigin]    # [CAP] to_play
+    var legal: UnsafePointer[Scalar[DT], MutAnyOrigin] # [CAP, ACT] legal mask (reanalyze)
 
     var ep_start: List[Int]   # absolute start step of each resident episode
     var ep_len: List[Int]
@@ -59,6 +60,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
         self.pol = _a(Self.CAP * Self.ACT)
         self.val = _a(Self.CAP)
         self.tp = _a(Self.CAP)
+        self.legal = _a(Self.CAP * Self.ACT)
         self.ep_start = List[Int]()
         self.ep_len = List[Int]()
         self.total = 0
@@ -66,7 +68,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
 
     def __del__(deinit self):
         self.obs.free(); self.act.free(); self.rew.free(); self.done.free()
-        self.pol.free(); self.val.free(); self.tp.free()
+        self.pol.free(); self.val.free(); self.tp.free(); self.legal.free()
 
     def _xorshift(mut self) -> UInt64:
         var x = self.rng
@@ -88,6 +90,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
         ep_pol: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L, ACT]
         ep_val: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L]
         ep_tp: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [L]
+        ep_legal: UnsafePointer[Scalar[DT], MutAnyOrigin], # [L, ACT] legal mask
         length: Int,
     ):
         """Append a finished episode of ``length`` steps. The terminal flag is
@@ -100,6 +103,8 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
                 self.obs[slot * Self.OBS + j] = ep_obs[i * Self.OBS + j]
             for a in range(Self.ACT):
                 self.pol[slot * Self.ACT + a] = ep_pol[i * Self.ACT + a]
+            for a in range(Self.ACT):
+                self.legal[slot * Self.ACT + a] = ep_legal[i * Self.ACT + a]
             self.act[slot] = ep_act[i]
             self.rew[slot] = ep_rew[i]
             self.val[slot] = ep_val[i]
@@ -231,3 +236,31 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
         for a in range(Self.ACT):
             self.pol[slot * Self.ACT + a] = new_policy[a]
         self.val[slot] = new_value
+
+    def sample_position(mut self) -> Tuple[Int, Int]:
+        """Pick a uniform random resident (episode, in-episode offset) for
+        reanalyze. Caller guarantees ``num_episodes() > 0``."""
+        var e = Int(self._xorshift() % UInt64(len(self.ep_start)))
+        var o = Int(self._xorshift() % UInt64(self.ep_len[e]))
+        return (e, o)
+
+    def read_obs(
+        self,
+        ep_idx: Int,
+        offset: Int,
+        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [OBS]
+    ):
+        """Copy the stored observation at ``(ep_idx, offset)`` into ``out``.
+        MuZero reanalyze replans from the observation alone (no env state)."""
+        var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
+        for j in range(Self.OBS):
+            out[j] = self.obs[slot * Self.OBS + j]
+
+    def read_legal(self, ep_idx: Int, offset: Int) -> List[Bool]:
+        """The stored root legal-action mask at ``(ep_idx, offset)`` — needed so
+        reanalyze masks the same illegal actions the original search did."""
+        var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
+        var m = List[Bool](capacity=Self.ACT)
+        for a in range(Self.ACT):
+            m.append(self.legal[slot * Self.ACT + a] > Scalar[DT](0.5))
+        return m^

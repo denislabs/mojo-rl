@@ -37,6 +37,7 @@ def _store_const_episode[
     var p = _a(length * ACT)
     var v = _a(length)
     var tp = _a(length)
+    var lg = _a(length * ACT)
     for i in range(length):
         for j in range(OBS):
             o[i * OBS + j] = marker if j == 0 else Scalar[DT](0.0)
@@ -46,8 +47,9 @@ def _store_const_episode[
         tp[i] = Scalar[DT](0.0)
         for k in range(ACT):
             p[i * ACT + k] = Scalar[DT](1.0) if k == 1 else Scalar[DT](0.0)
-    rb.store_episode(o, a, r, p, v, tp, length)
-    o.free(); a.free(); r.free(); p.free(); v.free(); tp.free()
+            lg[i * ACT + k] = Scalar[DT](1.0)
+    rb.store_episode(o, a, r, p, v, tp, lg, length)
+    o.free(); a.free(); r.free(); p.free(); v.free(); tp.free(); lg.free()
 
 
 def main() raises:

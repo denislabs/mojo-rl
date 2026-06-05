@@ -96,6 +96,8 @@ def run_muzero_selfplay_2p_cpu[
     value_coef: Scalar[DT] = Scalar[DT](0.25),
     eval_every: Int = 0,
     eval_games: Int = 50,
+    reanalyze_every: Int = 0,
+    reanalyze_batch: Int = 0,
     verbose: Bool = False,
 ) raises -> Float64:
     # MuZeroPUCT defaults (c_base=19652, c_init=1.25); SelfPlay backup negates V.
@@ -128,7 +130,12 @@ def run_muzero_selfplay_2p_cpu[
     var e_pol = List[Scalar[DT]]()
     var e_val = List[Scalar[DT]]()
     var e_tp = List[Scalar[DT]]()
+    var e_legal = List[Scalar[DT]]()    # [L, ACT] root legal mask (reanalyze)
     var ep_len = 0
+
+    # reanalyze scratch (refresh stale policy/value targets on old positions)
+    var re_obs = _a(OBS)
+    var re_pol = _a(ACT)
 
     var rng = seed ^ UInt64(0x123456789)
     var last_loss = 0.0
@@ -175,6 +182,7 @@ def run_muzero_selfplay_2p_cpu[
         e_act.append(Scalar[DT](action))
         for a in range(ACT):
             e_pol.append(Scalar[DT](policy[a]))
+            e_legal.append(Scalar[DT](1.0) if legal[a] else Scalar[DT](0.0))
         e_val.append(Scalar[DT](root_v))
         e_tp.append(Scalar[DT](to_play))
 
@@ -205,10 +213,13 @@ def run_muzero_selfplay_2p_cpu[
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                     e_tp.unsafe_ptr()
                 ),
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    e_legal.unsafe_ptr()
+                ),
                 ep_len,
             )
             e_obs.clear(); e_act.clear(); e_rew.clear()
-            e_pol.clear(); e_val.clear(); e_tp.clear()
+            e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()
             ep_len = 0
             _ = env.reset()
 
@@ -226,6 +237,34 @@ def run_muzero_selfplay_2p_cpu[
                         t_obs0, t_act, t_pol, t_val, t_rew,
                         v_min, v_max, value_coef,
                     )
+                )
+
+        # ── reanalyze: refresh stale policy/value targets on old positions ──
+        # TTT games are short, so replay fills with early-game positions whose
+        # MCTS targets were computed by a much weaker net. Re-run search (noise
+        # off) from the stored obs with the CURRENT model and overwrite the
+        # stored policy + root value. MuZero replans from the observation alone.
+        if (
+            reanalyze_every > 0
+            and reanalyze_batch > 0
+            and it >= learning_starts
+            and (it + 1) % reanalyze_every == 0
+            and rb.num_episodes() > 0
+        ):
+            for _ in range(reanalyze_batch):
+                var pos = rb.sample_position()
+                rb.read_obs(pos[0], pos[1], re_obs)
+                var rof = List[Float64]()
+                for j in range(OBS):
+                    rof.append(Float64(re_obs[j]))
+                var rlg = rb.read_legal(pos[0], pos[1])
+                var rpol = mcts.search[
+                    type_of(rep_a), type_of(dyn_a), type_of(pred_a)
+                ](rep_a, dyn_a, pred_a, rof, add_noise=False, legal_mask=rlg)
+                for a in range(ACT):
+                    re_pol[a] = Scalar[DT](rpol[a])
+                rb.update_targets(
+                    pos[0], pos[1], re_pol, Scalar[DT](mcts.root_value())
                 )
 
         # ── periodic greedy eval vs OPP (interrupts self-play; reset after) ──
@@ -273,11 +312,12 @@ def run_muzero_selfplay_2p_cpu[
                 )
             _ = env.reset()
             e_obs.clear(); e_act.clear(); e_rew.clear()
-            e_pol.clear(); e_val.clear(); e_tp.clear()
+            e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()
             ep_len = 0
 
         if verbose and (it + 1) % 1000 == 0:
             print("step", it + 1, "loss", last_loss, "eps", rb.num_episodes())
 
     t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
+    re_obs.free(); re_pol.free()
     return last_loss
