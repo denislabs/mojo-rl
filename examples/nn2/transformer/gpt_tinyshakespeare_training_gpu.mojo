@@ -24,11 +24,12 @@ nn2 differences vs the legacy script (simpler, not awkward):
 
 Generation-quality features ported from gen-1 (the full nanoGPT recipe now):
 dropout (`GPTDrop`, p=0.2), `Normal(0,0.02)` init, **LM-head↔embedding weight
-tying** (`TIE_WEIGHTS`), and **1/√(2L) c_proj scaled init** (`SCALED_INIT`,
-applied to each block's attention-out + FFN-out projection). Tying drives the
-step manually so the grad-fold lands between net.vjp and optim.step. Still
-deferred (smallest effect): per-step grad clip (nn2 AdamW has none).
-See docs/NN2_TRANSFORMER_PORT.md.
+tying** (`TIE_WEIGHTS`), **1/√(2L) c_proj scaled init** (`SCALED_INIT`, applied
+to each block's attention-out + FFN-out projection), and a **bias-less LM head**
+(`HEAD_NO_BIAS`, matching nanoGPT's `lm_head bias=False` — frozen at 0 rather
+than a separate Linear variant). Tying drives the step manually so the grad-fold
+lands between net.vjp and optim.step. Still deferred (smallest effect): per-step
+grad clip (nn2 AdamW has none). See docs/NN2_TRANSFORMER_PORT.md.
 
 Default config is sized for NVIDIA. On Apple it OOMs — shrink SEQ→64,
 EMBED→64, LAYERS→2, BATCH→16, TOTAL_ITERS→400 (the prior dev config).
@@ -107,6 +108,13 @@ comptime GPT_TRAINER = Trainer[GPT_MODEL, AdamW, GPT_LOSS, BATCH, target="gpu"]
 # → embedding is child 0, LM head is the last child.
 comptime TIE_WEIGHTS = True
 comptime LM_IDX = GPT_MODEL.N - 1
+
+# nanoGPT's lm_head is `nn.Linear(..., bias=False)`. nn2 Linear always carries
+# a bias, so instead of a bias-less Linear variant (would touch the core
+# primitive used everywhere) we make the head bias-less by freezing it at 0:
+# Normal init sets bias=0, and we zero its gradient every step so the optimizer
+# never moves it (decay is already off for biases). forward = x@W + 0 ≡ no bias.
+comptime HEAD_NO_BIAS = True
 
 
 def _tie_grads_kernel[
@@ -432,6 +440,7 @@ def main() raises:
         + " | dropout_p=" + String(DROPOUT_P)
         + " tie_weights=" + String(TIE_WEIGHTS)
         + " scaled_init=" + String(SCALED_INIT)
+        + " head_no_bias=" + String(HEAD_NO_BIAS)
         + " use_max_attn=" + String(USE_MAX_ATTN)
     )
     print(
@@ -549,6 +558,12 @@ def main() raises:
         trainer.net.vjp["gpu", BATCH](go_tt, gi_tt)
         comptime if TIE_WEIGHTS:
             _tie_grads(trainer, ctx)
+        comptime if HEAD_NO_BIAS:
+            # Freeze the LM-head bias at 0 (≡ bias=False): zero its grad so
+            # the optimizer never moves it from the 0 it was initialized to.
+            trainer.net.children[LM_IDX].inner.bias.grad_dev.value().enqueue_fill(
+                Scalar[DT](0.0)
+            )
         trainer.optim.step["gpu"](trainer.net)
         comptime if TIE_WEIGHTS:
             _tie_params(trainer, ctx)
