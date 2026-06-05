@@ -204,13 +204,13 @@ def _scale_c_proj(mut trainer: GPT_TRAINER, ctx: DeviceContext) raises:
     comptime fb = (FD + TPB - 1) // TPB
     # GPTDrop.children[3] = Repeat; .children[L] = TransformerBlockDrop:
     #   [0]=Residual(LN+MHADrop), [1]=Residual(LN+FFNDrop).
-    # MHADrop  = Seq[Tok[Lin d,3d], Attn, Tok[Lin d,d] (c_proj), Dropout]
-    # FFNDrop  = Seq[Tok[Lin d,ff], GELU, Tok[Lin ff,d] (c_proj), Dropout]
+    # MHADrop  = Seq[Tok[Lin d,3d], QKVToMajor, Attn, Tok[Lin d,d] (c_proj@3), Dropout]
+    # FFNDrop  = Seq[Tok[Lin d,ff], GELU, Tok[Lin ff,d] (c_proj@2), Dropout]
     for L in range(LAYERS):
         var a = LayoutTensor[DT, Layout.row_major(DD), MutAnyOrigin](
             rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 trainer.net.children[3].children[L].children[0].inner
-                .children[1].children[2].inner.weight.value_dev.value()
+                .children[1].children[3].inner.weight.value_dev.value()
                 .unsafe_ptr()
             )
         )

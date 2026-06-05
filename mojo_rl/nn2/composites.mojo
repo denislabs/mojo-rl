@@ -42,6 +42,7 @@ from .combinators.residual import Residual
 from .combinators.projected_residual import ProjectedResidual
 from .combinators.repeat import Repeat
 from .combinators.tokenwise import Tokenwise
+from .primitives.qkv_to_major import QKVToMajor
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -135,15 +136,22 @@ comptime ResBlockDownsampleBN[
 
 
 # MultiHeadAttention: per-token QKV proj → attention → per-token out proj.
-# `use_max` selects the attention GPU path: True (default) = batched-GEMM
-# (USE_MAX_KERNELS, tensor cores, faster); False = portable serial per-(b,h)
-# custom kernels. Both are bit-identical; the flag only affects GPU speed
-# (CPU path ignores it).
+#
+# CRITICAL layout note: ScaledDotProductAttention reads its input qkv-MAJOR —
+# `[all-Q tokens | all-K tokens | all-V tokens]`. The QKV projection
+# `Tokenwise[Linear[dim, 3*dim]]` produces token-MAJOR `[tok0:q,k,v | tok1:q,k,v
+# | …]`. Feeding token-major straight into SDPA scrambles the position axis (the
+# causal mask hits the wrong tokens → future leakage; this was the nn2/gen-1 GPT
+# bug). `QKVToMajor[seq_len, dim]` rearranges token-major → qkv-major in between.
+#
+# `use_max` selects the SDPA GPU path: True (default) = batched-GEMM; False =
+# serial custom kernels (bit-identical; CPU ignores it).
 comptime MultiHeadAttention[
     dim: Int, n_heads: Int, seq_len: Int, causal: Bool = False,
     use_max: Bool = True,
 ] = Sequential[
     Tokenwise[seq_len, Linear[dim, 3 * dim]],
+    QKVToMajor[seq_len, dim],
     ScaledDotProductAttention[dim, n_heads, seq_len, causal, use_max],
     Tokenwise[seq_len, Linear[dim, dim]],
 ]
@@ -270,12 +278,14 @@ comptime ViT[
 # separate aliases so the plain `GPT`/etc. callers are unaffected.
 
 
-# MultiHeadAttentionDrop: MHA + output-projection dropout.
+# MultiHeadAttentionDrop: MHA + output-projection dropout. QKVToMajor fixes the
+# token-major→qkv-major layout (see MultiHeadAttention note above for why).
 comptime MultiHeadAttentionDrop[
     dim: Int, n_heads: Int, seq_len: Int, causal: Bool,
     dropout_p: Float64, seed: UInt64, use_max: Bool = True,
 ] = Sequential[
     Tokenwise[seq_len, Linear[dim, 3 * dim]],
+    QKVToMajor[seq_len, dim],
     ScaledDotProductAttention[dim, n_heads, seq_len, causal, use_max],
     Tokenwise[seq_len, Linear[dim, dim]],
     Dropout[seq_len * dim, dropout_p, seed],
