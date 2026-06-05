@@ -37,11 +37,12 @@ from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 
-from ..zero.evaluators import GPUEvaluator, RandomOpponent
+from ..zero.evaluators import GPUEvaluator, CPUEvaluator, RandomOpponent
 from ..zero.symmetries import BoardAugmenter, IdentityAugmenter
 from .selfplay import run_alphazero_selfplay
 from .selfplay_cpu import run_alphazero_selfplay_cpu
 from .selfplay_arena import run_alphazero_selfplay_arena, ArenaRunResult
+from .selfplay_arena_cpu import run_alphazero_selfplay_arena_cpu
 from .eval import (
     eval_policy_vs_random,
     eval_policy_vs_random_cpu,
@@ -126,8 +127,8 @@ struct AlphaZeroAgent[
 
     def train_arena[
         AUG: BoardAugmenter = IdentityAugmenter,
-        OPP1: GPUEvaluator = RandomOpponent,
-        OPP2: GPUEvaluator = RandomOpponent,
+        OPP1: GPUEvaluator & CPUEvaluator = RandomOpponent,
+        OPP2: GPUEvaluator & CPUEvaluator = RandomOpponent,
         L: Logger = NoOpLogger,
         ARENA_GAMES: Int = 32,
         RESULT_IDX: Int = 10,
@@ -157,41 +158,76 @@ struct AlphaZeroAgent[
         metric flush, mirroring the legacy `train_selfplay_gpu` telemetry. The
         periodic eval plays the agent at **full MCTS strength** (temp=0), not the
         bare policy head — `iterations`/`report_every` are in self-play *moves*.
-        """
-        return run_alphazero_selfplay_arena[
-            Self.ENV,
-            Self.NET,
-            AUG,
-            Self.N_ENVS,
-            Self.NUM_SIMS,
-            Self.MAX_NODES,
-            Self.BATCH,
-            Self.CAP,
-            Self.MAX_TRAJ,
-            ARENA_GAMES,
-            RESULT_IDX,
-            MAX_PLIES,
-            OPP1,
-            OPP2,
-            L,
-            EVAL_GAMES,
-        ](
-            self.ctx.value(),
-            self.net,
-            iterations,
-            learning_starts,
-            train_per_iter,
-            self.lr,
-            seed,
-            arena_every,
-            arena_open_plies,
-            promote_threshold,
-            report_every,
-            do_eval,
-            do_eval2,
-            verbose,
-            logger,
-        )
+        Routes on `TARGET`: GPU runs `N_ENVS` batched games; CPU plays one game
+        at a time. The evaluators conform to both `GPUEvaluator` and
+        `CPUEvaluator`, so the same `OPP1`/`OPP2` work on either path."""
+        comptime if Self.TARGET == "gpu":
+            return run_alphazero_selfplay_arena[
+                Self.ENV,
+                Self.NET,
+                AUG,
+                Self.N_ENVS,
+                Self.NUM_SIMS,
+                Self.MAX_NODES,
+                Self.BATCH,
+                Self.CAP,
+                Self.MAX_TRAJ,
+                ARENA_GAMES,
+                RESULT_IDX,
+                MAX_PLIES,
+                OPP1,
+                OPP2,
+                L,
+                EVAL_GAMES,
+            ](
+                self.ctx.value(),
+                self.net,
+                iterations,
+                learning_starts,
+                train_per_iter,
+                self.lr,
+                seed,
+                arena_every,
+                arena_open_plies,
+                promote_threshold,
+                report_every,
+                do_eval,
+                do_eval2,
+                verbose,
+                logger,
+            )
+        else:
+            return run_alphazero_selfplay_arena_cpu[
+                Self.ENV,
+                Self.NET,
+                AUG,
+                Self.NUM_SIMS,
+                Self.MAX_NODES,
+                Self.BATCH,
+                Self.CAP,
+                Self.MAX_TRAJ,
+                ARENA_GAMES,
+                MAX_PLIES,
+                OPP1,
+                OPP2,
+                L,
+                EVAL_GAMES,
+            ](
+                self.net,
+                iterations,
+                learning_starts,
+                train_per_iter,
+                self.lr,
+                seed,
+                arena_every,
+                arena_open_plies,
+                promote_threshold,
+                report_every,
+                do_eval,
+                do_eval2,
+                verbose,
+                logger,
+            )
 
     def eval_mcts[
         OPP: GPUEvaluator,

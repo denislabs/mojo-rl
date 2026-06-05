@@ -23,9 +23,12 @@ Ported from `deep_agents/muzero/evaluators.mojo` onto `nn2` (`DT`).
 
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
+from std.memory import alloc
 from layout import Layout, LayoutTensor
 
+from mojo_rl.nn.constants import dtype
 from mojo_rl.nn2.constants import DT
+from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -53,6 +56,28 @@ trait GPUEvaluator(RegisterPassable):
         rng_seed: UInt64,
     ) raises:
         """Write a chosen action into `actions_out[e]` for each env `e`."""
+        ...
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CPU Evaluator trait
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+trait CPUEvaluator:
+    """Single-env CPU opponent — selects one action for the env's current
+    player, reading the live env state (board / legal mask) directly. The CPU
+    twin of `GPUEvaluator`; the shipped evaluators conform to both so a single
+    `train_arena[OPP]` routes on `TARGET`."""
+
+    comptime NAME: String
+
+    @staticmethod
+    def select_action_cpu[
+        E: TwoPlayerDiscreteEnv & Saveable
+    ](mut env: E, rng_seed: UInt64) raises -> Int:
+        """Return the chosen action for `env.current_player()` at the env's
+        current state. `rng_seed` is used by stochastic strategies (random)."""
         ...
 
 
@@ -95,10 +120,34 @@ def _random_legal_kernel[
     actions_out[e] = Scalar[DT](0)
 
 
-struct RandomOpponent(GPUEvaluator):
+struct RandomOpponent(GPUEvaluator & CPUEvaluator):
     """Uniform random legal action — the weakest baseline."""
 
     comptime NAME: String = "Random"
+
+    @staticmethod
+    def select_action_cpu[
+        E: TwoPlayerDiscreteEnv & Saveable
+    ](mut env: E, rng_seed: UInt64) raises -> Int:
+        var legal = env.legal_action_mask()
+        var n = 0
+        for a in range(len(legal)):
+            if legal[a]:
+                n += 1
+        if n == 0:
+            return 0
+        var x = rng_seed | 1
+        x ^= x << 13
+        x ^= x >> 7
+        x ^= x << 17
+        var pick = Int(x % UInt64(n))
+        var seen = 0
+        for a in range(len(legal)):
+            if legal[a]:
+                if seen == pick:
+                    return a
+                seen += 1
+        return 0
 
     @staticmethod
     def select_action_gpu[
@@ -271,10 +320,36 @@ def _ttt_minimax_kernel[
     actions_out[e] = Scalar[DT](best_action)
 
 
-struct GPUMinimaxTicTacToe(GPUEvaluator):
+struct GPUMinimaxTicTacToe(GPUEvaluator & CPUEvaluator):
     """Full-depth perfect minimax for TicTacToe (one search per env thread)."""
 
     comptime NAME: String = "Minimax"
+
+    @staticmethod
+    def select_action_cpu[
+        E: TwoPlayerDiscreteEnv & Saveable
+    ](mut env: E, rng_seed: UInt64) raises -> Int:
+        _ = rng_seed
+        var buf = alloc[Scalar[dtype]](E.SAVE_SIZE)
+        env.save_env_state(buf)
+        var board = InlineArray[Int, 9](fill=0)
+        for i in range(9):
+            board[i] = Int(buf[i])
+        var player = Int(buf[9])
+        buf.free()
+        var my_mark = player + 1
+        var best_action = -1
+        var best_score = -2
+        for a in range(9):
+            if board[a] != 0:
+                continue
+            board[a] = my_mark
+            var score = _ttt_minimax_iter(board, my_mark)
+            board[a] = 0
+            if score > best_score:
+                best_score = score
+                best_action = a
+        return best_action if best_action >= 0 else 0
 
     @staticmethod
     def select_action_gpu[
@@ -456,10 +531,46 @@ def _c4_minimax_kernel[
     actions_out[e] = Scalar[DT](best_action)
 
 
-struct GPUMinimaxConnectFour[DEPTH: Int = 5](GPUEvaluator):
+struct GPUMinimaxConnectFour[DEPTH: Int = 5](GPUEvaluator & CPUEvaluator):
     """Depth-limited alpha-beta minimax for ConnectFour (default 5-ply)."""
 
     comptime NAME: String = "Minimax-D5"
+
+    @staticmethod
+    def select_action_cpu[
+        E: TwoPlayerDiscreteEnv & Saveable
+    ](mut env: E, rng_seed: UInt64) raises -> Int:
+        _ = rng_seed
+        comptime ROWS = 6
+        comptime COLS = 7
+        var buf = alloc[Scalar[dtype]](E.SAVE_SIZE)
+        env.save_env_state(buf)
+        var board = InlineArray[Int, 42](fill=0)
+        for i in range(42):
+            board[i] = Int(buf[i])
+        var player = Int(buf[42])
+        buf.free()
+        var my_mark = player + 1
+        var opp_mark = 2 - player
+        var best_score = -300
+        var best_action = -1
+        for col in range(COLS):
+            var row = _c4_find_row(board, col)
+            if row < 0:
+                continue
+            board[col * ROWS + row] = my_mark
+            var score: Int
+            if _c4_check_win(board, col, row, my_mark):
+                score = 200
+            else:
+                score = _c4_minimax_ab(
+                    board, Self.DEPTH - 1, -300, 300, 0, my_mark, opp_mark
+                )
+            board[col * ROWS + row] = 0
+            if score > best_score or best_action < 0:
+                best_score = score
+                best_action = col
+        return best_action if best_action >= 0 else 0
 
     @staticmethod
     def select_action_gpu[

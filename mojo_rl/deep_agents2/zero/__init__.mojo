@@ -6,6 +6,7 @@ from .mcts_adapters_cpu import AZRepCPU, AZDynCPU, AZPredCPU
 from .example_replay import MCTSExampleReplay
 from .evaluators import (
     GPUEvaluator,
+    CPUEvaluator,
     RandomOpponent,
     GPUMinimaxTicTacToe,
     GPUMinimaxConnectFour,

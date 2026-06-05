@@ -30,10 +30,11 @@ from mojo_rl.nn2.core.module import Module
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import (
-    GenericGPUMCTS, AlphaGoPUCT, NoNoise, SelfPlay,
+    GenericGPUMCTS, GenericCPUMCTS, AlphaGoPUCT, NoNoise, SelfPlay,
 )
-from ..zero.evaluators import GPUEvaluator, RandomOpponent
+from ..zero.evaluators import GPUEvaluator, CPUEvaluator, RandomOpponent
 from ..zero.mcts_adapters import AZPredGPU, AZEnvGPU
+from ..zero.mcts_adapters_cpu import AZRepCPU, AZDynCPU, AZPredCPU
 
 
 @always_inline
@@ -260,6 +261,88 @@ def eval_policy_vs_random_cpu[
 
     obs_buf.free()
     pred_buf.free()
+    return EvalResult(wins=wins, draws=draws, losses=losses)
+
+
+def eval_mcts_vs_opponent_cpu[
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    NET: Module,
+    OPP: CPUEvaluator,
+    N_GAMES: Int,
+    NUM_SIMS: Int,
+    MAX_NODES: Int,
+    MAX_PLIES: Int,
+](
+    mut net: NET,
+    agent_player: Int = 0,
+    seed: UInt64 = 1,
+) raises -> EvalResult:
+    """CPU full-strength eval: the agent plays via `GenericCPUMCTS` (temp=0,
+    NoNoise, argmax-visit), the opponent via its `CPUEvaluator`. The CPU twin of
+    `eval_mcts_vs_opponent`; plays `N_GAMES` games sequentially on one env."""
+    comptime OBS = NET.IN_DIMS[0]
+    comptime ACT = NET.OUT_DIM - 1
+    comptime LATENT = ENV.SAVE_SIZE
+    comptime EVAL_MCTS = GenericCPUMCTS[
+        ACT, LATENT, NUM_SIMS, MAX_NODES, AlphaGoPUCT[2.5], NoNoise, SelfPlay,
+    ]
+
+    net.set_attr["training"](Scalar[DT](0.0))
+
+    var env = ENV()
+    var root_save = alloc[Scalar[dtype]](LATENT)
+    var env_ptr = UnsafePointer(to=env)
+    var rep = AZRepCPU[ENV, OBS](env=env_ptr)
+    var dyn = AZDynCPU[ENV, ACT](env=env_ptr)
+    var pred = AZPredCPU[ENV, OBS, ACT, NET](
+        env=env_ptr, net=UnsafePointer(to=net)
+    )
+    var mcts = EVAL_MCTS(gamma=1.0)
+
+    var wins = 0
+    var draws = 0
+    var losses = 0
+    var rng = seed | 1
+
+    for _g in range(N_GAMES):
+        _ = env.reset()
+        var ply = 0
+        while env.game_result() == 0 and ply < MAX_PLIES:
+            var act = 0
+            if env.current_player() == agent_player:
+                env.save_env_state(root_save)
+                var legal = env.legal_action_mask()
+                var root_obs = List[Float64](length=OBS, fill=Float64(0.0))
+                var policy = mcts.search[
+                    AZRepCPU[ENV, OBS],
+                    AZDynCPU[ENV, ACT],
+                    AZPredCPU[ENV, OBS, ACT, NET],
+                ](rep, dyn, pred, root_obs, add_noise=False, legal_mask=legal)
+                env.load_env_state(root_save)
+                var best = -1
+                var bestv = Float64(-1.0)
+                for a in range(ACT):
+                    if a < len(legal) and legal[a] and policy[a] > bestv:
+                        bestv = policy[a]
+                        best = a
+                act = best if best >= 0 else 0
+            else:
+                rng = _xs(rng)
+                act = OPP.select_action_cpu[ENV](env, rng)
+            _ = env.step(env.action_from_index(act))
+            ply += 1
+
+        var gr = env.game_result()
+        var agent_win = agent_player + 1
+        var agent_loss = (1 - agent_player) + 1
+        if gr == agent_win:
+            wins += 1
+        elif gr == agent_loss:
+            losses += 1
+        else:
+            draws += 1
+
+    root_save.free()
     return EvalResult(wins=wins, draws=draws, losses=losses)
 
 

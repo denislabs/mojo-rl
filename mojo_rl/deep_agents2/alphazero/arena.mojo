@@ -24,18 +24,21 @@ diverse positions; counts then reflect relative strength, not one game.
 decisive games).
 """
 
+from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
+from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import (
-    GenericGPUMCTS, AlphaGoPUCT, NoNoise, SelfPlay,
+    GenericGPUMCTS, GenericCPUMCTS, AlphaGoPUCT, NoNoise, SelfPlay,
 )
 from ..zero.evaluators import RandomOpponent
 from ..zero.mcts_adapters import AZPredGPU, AZEnvGPU
+from ..zero.mcts_adapters_cpu import AZRepCPU, AZDynCPU, AZPredCPU
 from .eval import EvalResult
 
 
@@ -51,6 +54,20 @@ def _xs(s: UInt64) -> UInt64:
 @always_inline
 def _mptr(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+
+
+@always_inline
+def _argmax_legal[
+    ACT: Int
+](pol: InlineArray[Float64, ACT], legal: List[Bool]) -> Int:
+    """argmax of a visit-count policy over legal actions (0 fallback)."""
+    var best = -1
+    var bestv = Float64(-1.0)
+    for a in range(ACT):
+        if a < len(legal) and legal[a] and pol[a] > bestv:
+            bestv = pol[a]
+            best = a
+    return best if best >= 0 else 0
 
 
 def arena_match[
@@ -358,6 +375,130 @@ def candidate_winrate_mcts[
     var as_p1 = arena_match_mcts[
         ENV, CAND, BEST, N_PER_COLOR, NUM_SIMS, MAX_NODES, MAX_PLIES
     ](ctx, cand, best, a_player=1, seed=seed + 1, open_plies=open_plies)
+    return EvalResult(
+        wins=as_p0.wins + as_p1.wins,
+        draws=as_p0.draws + as_p1.draws,
+        losses=as_p0.losses + as_p1.losses,
+    )
+
+
+def arena_match_cpu[
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    NETA: Module,
+    NETB: Module,
+    N_GAMES: Int,
+    NUM_SIMS: Int,
+    MAX_NODES: Int,
+    MAX_PLIES: Int,
+](
+    ctx_unused: Int,
+    mut a: NETA,
+    mut b: NETB,
+    a_player: Int = 0,
+    seed: UInt64 = 1,
+    open_plies: Int = 2,
+) raises -> EvalResult:
+    """CPU twin of `arena_match_mcts`: net A vs net B, both at full
+    `GenericCPUMCTS` strength (temp=0, NoNoise), single env, `N_GAMES` games. A
+    plays color `a_player`; `open_plies` random opening moves diversify. Returns
+    A's record. (`ctx_unused` keeps the call shape parallel to the GPU arena —
+    pass 0.)"""
+    comptime OBS = NETA.IN_DIMS[0]
+    comptime ACT = NETA.OUT_DIM - 1
+    comptime LATENT = ENV.SAVE_SIZE
+    comptime AMCTS = GenericCPUMCTS[
+        ACT, LATENT, NUM_SIMS, MAX_NODES, AlphaGoPUCT[2.5], NoNoise, SelfPlay,
+    ]
+    _ = ctx_unused
+    a.set_attr["training"](Scalar[DT](0.0))
+    b.set_attr["training"](Scalar[DT](0.0))
+
+    var env = ENV()
+    var root_save = alloc[Scalar[dtype]](LATENT)
+    var env_ptr = UnsafePointer(to=env)
+    var rep = AZRepCPU[ENV, OBS](env=env_ptr)
+    var dyn = AZDynCPU[ENV, ACT](env=env_ptr)
+    var pred_a = AZPredCPU[ENV, OBS, ACT, NETA](
+        env=env_ptr, net=UnsafePointer(to=a)
+    )
+    var pred_b = AZPredCPU[ENV, OBS, ACT, NETB](
+        env=env_ptr, net=UnsafePointer(to=b)
+    )
+    var mcts = AMCTS(gamma=1.0)
+
+    var wins = 0
+    var draws = 0
+    var losses = 0
+    var rng = seed | 1
+
+    for _g in range(N_GAMES):
+        _ = env.reset()
+        var ply = 0
+        while env.game_result() == 0 and ply < MAX_PLIES:
+            var act = 0
+            var legal = env.legal_action_mask()
+            if ply < open_plies:
+                rng = _xs(rng)
+                act = RandomOpponent.select_action_cpu[ENV](env, rng)
+            elif env.current_player() == a_player:
+                env.save_env_state(root_save)
+                var root_obs = List[Float64](length=OBS, fill=Float64(0.0))
+                var pol = mcts.search[
+                    AZRepCPU[ENV, OBS],
+                    AZDynCPU[ENV, ACT],
+                    AZPredCPU[ENV, OBS, ACT, NETA],
+                ](rep, dyn, pred_a, root_obs, add_noise=False, legal_mask=legal)
+                env.load_env_state(root_save)
+                act = _argmax_legal[ACT](pol, legal)
+            else:
+                env.save_env_state(root_save)
+                var root_obs = List[Float64](length=OBS, fill=Float64(0.0))
+                var pol = mcts.search[
+                    AZRepCPU[ENV, OBS],
+                    AZDynCPU[ENV, ACT],
+                    AZPredCPU[ENV, OBS, ACT, NETB],
+                ](rep, dyn, pred_b, root_obs, add_noise=False, legal_mask=legal)
+                env.load_env_state(root_save)
+                act = _argmax_legal[ACT](pol, legal)
+            _ = env.step(env.action_from_index(act))
+            ply += 1
+
+        var gr = env.game_result()
+        var a_win = a_player + 1
+        var a_loss = (1 - a_player) + 1
+        if gr == a_win:
+            wins += 1
+        elif gr == a_loss:
+            losses += 1
+        else:
+            draws += 1
+
+    root_save.free()
+    return EvalResult(wins=wins, draws=draws, losses=losses)
+
+
+def candidate_winrate_cpu[
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    CAND: Module,
+    BEST: Module,
+    N_PER_COLOR: Int,
+    NUM_SIMS: Int,
+    MAX_NODES: Int,
+    MAX_PLIES: Int,
+](
+    mut cand: CAND,
+    mut best: BEST,
+    seed: UInt64 = 1,
+    open_plies: Int = 2,
+) raises -> EvalResult:
+    """CPU twin of `candidate_winrate_mcts`: candidate vs best, both at full CPU
+    MCTS strength, both colors, aggregated from the candidate's perspective."""
+    var as_p0 = arena_match_cpu[
+        ENV, CAND, BEST, N_PER_COLOR, NUM_SIMS, MAX_NODES, MAX_PLIES
+    ](0, cand, best, a_player=0, seed=seed, open_plies=open_plies)
+    var as_p1 = arena_match_cpu[
+        ENV, CAND, BEST, N_PER_COLOR, NUM_SIMS, MAX_NODES, MAX_PLIES
+    ](0, cand, best, a_player=1, seed=seed + 1, open_plies=open_plies)
     return EvalResult(
         wins=as_p0.wins + as_p1.wins,
         draws=as_p0.draws + as_p1.draws,
