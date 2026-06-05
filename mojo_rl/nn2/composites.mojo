@@ -36,6 +36,7 @@ from .primitives.bias_add import BiasAdd
 from .primitives.transpose_2d import Transpose2D
 from .primitives.token_mean import TokenMean
 from .primitives.attention import ScaledDotProductAttention
+from .primitives.dropout import Dropout
 from .combinators.sequential import Sequential
 from .combinators.residual import Residual
 from .combinators.projected_residual import ProjectedResidual
@@ -248,4 +249,98 @@ comptime ViT[
     Tokenwise[n_patches, LayerNorm[embed_dim]],
     TokenMean[n_patches, embed_dim],
     Linear[embed_dim, n_classes],
+]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Transformer + Dropout variants (nanoGPT-style)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Same shapes as the plain transformer aliases, with the three nanoGPT
+# dropout points: (1) after token+position embedding, (2) after MHA's output
+# projection, (3) after the FFN's output projection. nn2 `Dropout[DIM, p,
+# SEED]` carries a host-side per-forward counter so the mask refreshes each
+# step; toggle eval mode with `net.set_attr["training"](0.0)` (and back to
+# 1.0 for training) — propagates to every Dropout leaf, ignored elsewhere.
+#
+# Within a block MHA-dropout uses seed_base+1, FFN-dropout seed_base+2, input
+# dropout seed_base+0. Repeat reuses one TransformerBlockDrop type, so all
+# layers share these seeds (masks correlated across depth — same as gen-1;
+# the per-step counter still refreshes them each iteration). Defined as
+# separate aliases so the plain `GPT`/etc. callers are unaffected.
+
+
+# MultiHeadAttentionDrop: MHA + output-projection dropout.
+comptime MultiHeadAttentionDrop[
+    dim: Int, n_heads: Int, seq_len: Int, causal: Bool,
+    dropout_p: Float64, seed: UInt64, use_max: Bool = True,
+] = Sequential[
+    Tokenwise[seq_len, Linear[dim, 3 * dim]],
+    ScaledDotProductAttention[dim, n_heads, seq_len, causal, use_max],
+    Tokenwise[seq_len, Linear[dim, dim]],
+    Dropout[seq_len * dim, dropout_p, seed],
+]
+
+
+# TransformerFFNDrop: TransformerFFN + output dropout.
+comptime TransformerFFNDrop[
+    seq_len: Int, dim: Int, ff_dim: Int, dropout_p: Float64, seed: UInt64,
+] = Sequential[
+    Tokenwise[seq_len, Linear[dim, ff_dim]],
+    GELU[seq_len * ff_dim],
+    Tokenwise[seq_len, Linear[ff_dim, dim]],
+    Dropout[seq_len * dim, dropout_p, seed],
+]
+
+
+# TransformerBlockDrop: pre-LN block with MHA + FFN sublayer dropout.
+comptime TransformerBlockDrop[
+    dim: Int, n_heads: Int, seq_len: Int, ff_dim: Int, causal: Bool,
+    dropout_p: Float64, seed_base: UInt64, use_max: Bool = True,
+] = Sequential[
+    Residual[
+        Sequential[
+            Tokenwise[seq_len, LayerNorm[dim]],
+            MultiHeadAttentionDrop[
+                dim, n_heads, seq_len, causal, dropout_p,
+                seed_base + UInt64(1), use_max,
+            ],
+        ]
+    ],
+    Residual[
+        Sequential[
+            Tokenwise[seq_len, LayerNorm[dim]],
+            TransformerFFNDrop[
+                seq_len, dim, ff_dim, dropout_p, seed_base + UInt64(2)
+            ],
+        ]
+    ],
+]
+
+
+# GPTDrop: GPT with the three dropout points (input, MHA-out, FFN-out).
+comptime GPTDrop[
+    vocab: Int,
+    seq_len: Int,
+    embed_dim: Int,
+    n_heads: Int,
+    n_layers: Int,
+    ff_mult: Int = 4,
+    causal: Bool = True,
+    dropout_p: Float64 = 0.2,
+    seed_base: UInt64 = UInt64(0xC0FFEE),
+    use_max: Bool = True,
+] = Sequential[
+    Tokenwise[seq_len, Embedding[vocab, embed_dim]],
+    BiasAdd[seq_len * embed_dim],
+    Dropout[seq_len * embed_dim, dropout_p, seed_base],
+    Repeat[
+        n_layers,
+        TransformerBlockDrop[
+            embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal,
+            dropout_p, seed_base, use_max,
+        ],
+    ],
+    Tokenwise[seq_len, LayerNorm[embed_dim]],
+    Tokenwise[seq_len, Linear[embed_dim, vocab]],
 ]

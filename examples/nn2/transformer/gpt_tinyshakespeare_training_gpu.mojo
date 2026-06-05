@@ -16,17 +16,19 @@ nn2 differences vs the legacy script (simpler, not awkward):
   - The model is *stateful* (owns params); training goes through
     `Trainer.train_step`, eval calls `trainer.net.forward` / `trainer.loss_fn`
     directly. No stateless param/cache/ws view juggling.
-  - nn2 GPT has NO dropout, so eval forward == train forward — no
-    `forward_gpu_no_cache` / train-vs-eval mode toggle is needed.
+  - Eval/generation flip dropout off via `net.set_attr["training"](0.0)`
+    (propagates to every Dropout leaf), restoring 1.0 after — no separate
+    eval-mode model needed.
   - Per-token CE is the `SequenceCrossEntropyLoss[SEQ, VOCAB]` op (used for
     both training and val), instead of reinterpreting + a static CE kernel.
 
-Deferred nn2 gaps vs nanoGPT (convergence refinements, NOT architecture; may
-matter for hitting ≤1.5 nats but not for exercising eval/generation):
-  - init: Kaiming (nn2 has no Normal(0,0.02)) + no 1/√(2L) c_proj scaled init,
-  - no LM-head↔embedding weight tying,
-  - no per-step grad clip (nn2 AdamW has none),
-  - no dropout (GPTDrop not ported).
+Generation-quality features ported from gen-1: dropout (`GPTDrop`, p=0.2) and
+`Normal(0,0.02)` init — these fix the overfitting (val collapsing well below
+~1.5 nats → degenerate generation). Still deferred (harder in nn2's per-leaf
+param model; help the last bit but not the main fix):
+  - LM-head↔embedding weight tying,
+  - 1/√(2L) c_proj scaled init,
+  - per-step grad clip (nn2 AdamW has none).
 See docs/NN2_TRANSFORMER_PORT.md.
 
 Default config is sized for NVIDIA. On Apple it OOMs — shrink SEQ→64,
@@ -47,11 +49,11 @@ from mojo_rl.nn.datasets import (
     CharTokenizer, load_text, train_val_split, make_batch, to_one_hot,
 )
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.composites import GPT
+from mojo_rl.nn2.composites import GPTDrop
 from mojo_rl.nn2.loss import SequenceCrossEntropyLoss
 from mojo_rl.nn2.optimizer import AdamW
 from mojo_rl.nn2.training import Trainer
-from mojo_rl.nn2.initializer import Kaiming
+from mojo_rl.nn2.initializer import Normal
 
 
 # ── Full nanoGPT-class config (NVIDIA) — same budget as the gen-1 script ──
@@ -81,8 +83,13 @@ comptime OUT_DIM = SEQ * VOCAB
 # False → portable serial per-(b,h) custom kernels. Flip to compare timings;
 # the two are bit-identical on Metal (TF32 may widen the gap on NVIDIA).
 comptime USE_MAX_ATTN = True
-comptime GPT_MODEL = GPT[
-    VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True, USE_MAX_ATTN
+# Dropout (nanoGPT char-Shakespeare uses 0.2). Regularizes against overfitting
+# the small corpus — without it val loss collapses (memorization) and greedy
+# generation degenerates. Toggled off for eval/generation via set_attr.
+comptime DROPOUT_P: Float64 = 0.2
+comptime GPT_MODEL = GPTDrop[
+    VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True, DROPOUT_P,
+    UInt64(0xC0FFEE), USE_MAX_ATTN,
 ]
 comptime GPT_LOSS = SequenceCrossEntropyLoss[SEQ, VOCAB]
 comptime GPT_TRAINER = Trainer[GPT_MODEL, AdamW, GPT_LOSS, BATCH, target="gpu"]
@@ -125,14 +132,16 @@ def _eval_val_loss(
     val_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
     out_dev: DeviceBuffer[DT],
 ) raises -> Float64:
+    # Eval mode: dropout off (set_attr propagates to every Dropout leaf).
+    trainer.net.set_attr["training"](Scalar[DT](0.0))
     var total: Float64 = 0.0
     for vb in range(N_VAL_BATCHES):
         var in_tt = TileTensor(val_in + vb * BATCH * IN_DIM, row_major[BATCH, IN_DIM]())
         var out_tt = TileTensor(_mao(out_dev), row_major[BATCH, OUT_DIM]())
-        # No dropout in nn2 GPT → train-forward == eval-forward.
         trainer.net.forward["gpu", BATCH](in_tt, output=out_tt)
         var tgt_tt = TileTensor(val_tgt + vb * BATCH * OUT_DIM, row_major[BATCH, OUT_DIM]())
         total += Float64(trainer.loss_fn.forward["gpu", BATCH](out_tt, tgt_tt))
+    trainer.net.set_attr["training"](Scalar[DT](1.0))
     return total / Float64(N_VAL_BATCHES)
 
 
@@ -145,6 +154,7 @@ def _eval_top1(
     out_host: HostBuffer[DT],
     ctx: DeviceContext,
 ) raises -> Float64:
+    trainer.net.set_attr["training"](Scalar[DT](0.0))  # eval mode
     var correct: Int = 0
     var count: Int = 0
     var oh = out_host.unsafe_ptr()
@@ -168,6 +178,7 @@ def _eval_top1(
                 if best_i == tgt:
                     correct += 1
                 count += 1
+    trainer.net.set_attr["training"](Scalar[DT](1.0))
     return Float64(correct) / Float64(count)
 
 
@@ -238,6 +249,7 @@ def _generate(
     ctx: DeviceContext,
     pad_id: Int = 0,
 ) raises -> String:
+    trainer.net.set_attr["training"](Scalar[DT](0.0))  # eval mode
     var all_ids = tok.encode(prompt)
     var prompt_len = len(all_ids)
     if prompt_len == 0:
@@ -278,6 +290,7 @@ def _generate(
     var gen = List[Int](capacity=n_tokens)
     for i in range(prompt_len, len(all_ids)):
         gen.append(all_ids[i])
+    trainer.net.set_attr["training"](Scalar[DT](1.0))
     return tok.decode(gen)
 
 
@@ -318,7 +331,7 @@ def main() raises:
 
     var ctx = DeviceContext()
     print("[init] building nn2 GPT on GPU...")
-    var net = GPT_MODEL.make["gpu", INIT=Kaiming](ctx)
+    var net = GPT_MODEL.make["gpu", INIT = Normal[0.0, 0.02]](ctx)
     var loss_fn = GPT_LOSS.make["gpu"](ctx)
     var optim = AdamW.make["gpu", M = type_of(net)](net, ctx)
     optim.lr = BASE_LR
