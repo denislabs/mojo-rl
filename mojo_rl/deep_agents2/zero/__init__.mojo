@@ -38,3 +38,4 @@ from .nstep_targets import (
     compute_nstep_value_targets,
     extract_reward_targets,
 )
+from .sequence_replay_mcts import MCTSSequenceReplay
