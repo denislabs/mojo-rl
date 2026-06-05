@@ -22,6 +22,8 @@ consistency at the root), the ``1/BATCH`` mean, and the loss coefficient
 """
 
 from std.math import sqrt
+from std.gpu import global_idx
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn2.constants import DT
 
@@ -67,3 +69,46 @@ def consistency_loss_and_grad[
             var gi = cos * p[base + i] * inv_np2 - t[base + i] * inv_npnt
             grad_p[base + i] = grad_scale * gi
     return total
+
+
+def consistency_loss_grad_k[
+    B_: Int, DIM_: Int,
+](
+    p: LayoutTensor[DT, Layout.row_major(B_ * DIM_), MutAnyOrigin],
+    t: LayoutTensor[DT, Layout.row_major(B_ * DIM_), MutAnyOrigin],
+    grad_p: LayoutTensor[DT, Layout.row_major(B_ * DIM_), MutAnyOrigin],
+    loss_buf: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+    grad_scale: Scalar[DT],
+    loss_coef: Scalar[DT],
+):
+    """GPU per-row SimSiam negative-cosine consistency — device mirror of
+    ``consistency_loss_and_grad``. One thread per row ``b``: computes
+    ``cos(p_b, t_b)``, **accumulates** ``loss_coef·(−cos)`` into ``loss_buf[b]``,
+    and writes ``grad_scale·(cos·p_i/‖p‖² − t_i/(‖p‖·‖t‖))`` into ``grad_p``.
+    ``t`` is the detached target (no gradient produced for it). Math is
+    bit-for-bit the same scalar sequence as the CPU op (parity ≈ reduction
+    order only)."""
+    var b = Int(global_idx.x)
+    if b < B_:
+        var base = b * DIM_
+        var sum_pp = Scalar[DT](0.0)
+        var sum_tt = Scalar[DT](0.0)
+        var dot = Scalar[DT](0.0)
+        for i in range(DIM_):
+            var pi = rebind[Scalar[DT]](p[base + i])
+            var ti = rebind[Scalar[DT]](t[base + i])
+            sum_pp += pi * pi
+            sum_tt += ti * ti
+            dot += pi * ti
+        var np = sqrt(sum_pp + _COS_EPS)
+        var nt = sqrt(sum_tt + _COS_EPS)
+        var cos = dot / (np * nt)
+        loss_buf[b] = rebind[Scalar[DT]](loss_buf[b]) + loss_coef * (-cos)
+        var inv_np2 = Scalar[DT](1.0) / (np * np)
+        var inv_npnt = Scalar[DT](1.0) / (np * nt)
+        for i in range(DIM_):
+            var pi = rebind[Scalar[DT]](p[base + i])
+            var ti = rebind[Scalar[DT]](t[base + i])
+            grad_p[base + i] = grad_scale * (
+                cos * pi * inv_np2 - ti * inv_npnt
+            )
