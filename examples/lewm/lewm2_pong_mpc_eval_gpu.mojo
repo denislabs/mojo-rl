@@ -47,7 +47,7 @@ comptime PRED_HEADS = 2
 comptime PRED_FF = 64
 comptime DEPTH = 6
 comptime PRED_PROJ_H = 256
-comptime SIG_PROJ = 64
+comptime SIG_PROJ = 256       # must match training
 comptime SIG_KNOTS = 5
 comptime B = 16
 comptime MPC_HORIZON = 4          # NEEDED = H + horizon - 1 = 6 == T
