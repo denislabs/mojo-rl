@@ -1,30 +1,47 @@
-"""TinyShakespeare char-GPT training — nn2 GPU (real-dataset parity run).
+"""TinyShakespeare char-GPT training — nn2 GPU (full budget + eval + sampling).
 
-nn2 port of `examples/nn/transformer/gpt_tinyshakespeare_training_gpu.mojo`.
-Trains the nn2 `GPT` composite with the new per-token `SequenceCrossEntropyLoss`
-through the stateful nn2 `Trainer`. Per-iter random-window sampling (matches
-nanoGPT's `get_batch`); periodic mean-per-token val loss in nats.
+nn2 port of `examples/nn/transformer/gpt_tinyshakespeare_training_gpu.mojo`,
+matching its training budget (nanoGPT-class config, 5000 iters, per-iter random
+window sampling) and porting the full eval suite so we can compare nn2's
+generation/eval behaviour against the legacy run:
 
-Config note: the DEFAULT below is a *dev/Apple-smoke* config (small model,
-few iters) so it runs on Apple Metal / CI. For the gen-1 Phase-A parity
-target (val loss ≤ 1.5 nats) flip to the PRODUCTION config in the comment
-block and run on NVIDIA — that config OOMs on an M1.
+  - per-eval mean per-token val loss (nats),
+  - per-token top-1 argmax diagnostic on the val windows (is the loss
+    *consistent* with good next-token prediction, or artifactually low?),
+  - greedy + temperature text generation (ROMEO prompt) and a 250-char
+    long-prompt diagnostic — the legacy generation looked degenerate; this
+    lets us check whether nn2 reproduces that.
 
-Deferred vs gen-1 (convergence refinements, not architecture): weight tying
-(LM head ↔ embedding), `Normal(0,0.02)` + 1/√(2L) c_proj scaled init, and
-dropout (GPTDrop) are not applied here; nn2 uses Kaiming + plain GPT. See
-docs/NN2_TRANSFORMER_PORT.md.
+nn2 differences vs the legacy script (simpler, not awkward):
+  - The model is *stateful* (owns params); training goes through
+    `Trainer.train_step`, eval calls `trainer.net.forward` / `trainer.loss_fn`
+    directly. No stateless param/cache/ws view juggling.
+  - nn2 GPT has NO dropout, so eval forward == train forward — no
+    `forward_gpu_no_cache` / train-vs-eval mode toggle is needed.
+  - Per-token CE is the `SequenceCrossEntropyLoss[SEQ, VOCAB]` op (used for
+    both training and val), instead of reinterpreting + a static CE kernel.
 
-Run:
-    pixi run -e apple  mojo run -I . examples/nn2/transformer/gpt_tinyshakespeare_training_gpu.mojo
+Deferred nn2 gaps vs nanoGPT (convergence refinements, NOT architecture; may
+matter for hitting ≤1.5 nats but not for exercising eval/generation):
+  - init: Kaiming (nn2 has no Normal(0,0.02)) + no 1/√(2L) c_proj scaled init,
+  - no LM-head↔embedding weight tying,
+  - no per-step grad clip (nn2 AdamW has none),
+  - no dropout (GPTDrop not ported).
+See docs/NN2_TRANSFORMER_PORT.md.
+
+Default config is sized for NVIDIA. On Apple it OOMs — shrink SEQ→64,
+EMBED→64, LAYERS→2, BATCH→16, TOTAL_ITERS→400 (the prior dev config).
+
+Run on NVIDIA:
     pixi run -e nvidia mojo run -I . examples/nn2/transformer/gpt_tinyshakespeare_training_gpu.mojo
 """
 
 from std.memory import alloc
-from std.random import seed
+from std.random import seed, random_float64
 from std.math import log, exp, cos
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from layout import row_major, TileTensor
 
 from mojo_rl.nn.datasets import (
     CharTokenizer, load_text, train_val_split, make_batch, to_one_hot,
@@ -37,35 +54,36 @@ from mojo_rl.nn2.training import Trainer
 from mojo_rl.nn2.initializer import Kaiming
 
 
-# ── DEV / Apple-smoke config (runs on M1) ──────────────────────────────
-# PRODUCTION (NVIDIA, ≤1.5 nats target): SEQ=256, EMBED=384, HEADS=6,
-#   LAYERS=6, FF_MULT=4, BATCH=64, TOTAL_ITERS=5000, WARMUP_ITERS=100,
-#   BASE_LR=1e-3, WD=0.1 (+ weight tying + scaled init + dropout — deferred).
+# ── Full nanoGPT-class config (NVIDIA) — same budget as the gen-1 script ──
 comptime VOCAB = 65
-comptime SEQ = 64
-comptime EMBED = 64
-comptime HEADS = 4
-comptime LAYERS = 2
+comptime SEQ = 256
+comptime EMBED = 384
+comptime HEADS = 6
+comptime LAYERS = 6
 comptime FF_MULT = 4
-comptime BATCH = 16
+comptime BATCH = 64
 
-comptime TOTAL_ITERS = 400
-comptime WARMUP_ITERS = 40
-comptime EVAL_INTERVAL = 50
 comptime BASE_LR: Scalar[DT] = 1e-3
-comptime MIN_LR_SCALE: Float64 = 0.1
+comptime BETA2: Scalar[DT] = 0.99
 comptime WD: Scalar[DT] = 0.1
 
-comptime N_VAL_WINDOWS = 4 * BATCH
+comptime TOTAL_ITERS = 5000
+comptime WARMUP_ITERS = 100
+comptime EVAL_INTERVAL = 250
+comptime MIN_LR_SCALE: Float64 = 0.1
+
+comptime N_VAL_WINDOWS = 256
 comptime N_VAL_BATCHES = N_VAL_WINDOWS // BATCH
 comptime IN_DIM = SEQ * VOCAB
 comptime OUT_DIM = SEQ * VOCAB
 
 comptime GPT_MODEL = GPT[VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True]
+comptime GPT_LOSS = SequenceCrossEntropyLoss[SEQ, VOCAB]
+comptime GPT_TRAINER = Trainer[GPT_MODEL, AdamW, GPT_LOSS, BATCH, target="gpu"]
 
 
 def _lr_scale(it: Int) -> Scalar[DT]:
-    """Linear warmup then cosine decay to MIN_LR_SCALE."""
+    """Linear warmup then cosine decay to MIN_LR_SCALE (per-iter)."""
     if it < WARMUP_ITERS:
         return Scalar[DT](Float64(it + 1) / Float64(WARMUP_ITERS))
     var denom = TOTAL_ITERS - WARMUP_ITERS
@@ -78,12 +96,13 @@ def _lr_scale(it: Int) -> Scalar[DT]:
     return Scalar[DT](MIN_LR_SCALE + (1.0 - MIN_LR_SCALE) * c)
 
 
+def _mao(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+
+
 def _host_one_hot_into(
-    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    ids: List[Int],
-    n_rows: Int,
+    dst: UnsafePointer[Scalar[DT], MutAnyOrigin], ids: List[Int], n_rows: Int,
 ):
-    """ids is (n_rows*SEQ) token ids → one-hot (n_rows, SEQ*VOCAB) into dst."""
     for i in range(n_rows * IN_DIM):
         dst[i] = 0.0
     for r in range(n_rows):
@@ -93,33 +112,173 @@ def _host_one_hot_into(
                 dst[r * IN_DIM + t * VOCAB + tid] = 1.0
 
 
-def _seq_ce_host(
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    target_ids: List[Int],
-    base_off: Int,
-) -> Float64:
-    """Mean per-token CE (nats) over one BATCH of (SEQ*VOCAB) logit rows."""
+# ── Eval: device per-token val loss (nats) over the pre-uploaded windows ──
+def _eval_val_loss(
+    mut trainer: GPT_TRAINER,
+    val_in: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    val_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    out_dev: DeviceBuffer[DT],
+) raises -> Float64:
     var total: Float64 = 0.0
-    for b in range(BATCH):
-        for t in range(SEQ):
-            var row = b * OUT_DIM + t * VOCAB
-            var m = Float64(logits[row])
-            for v in range(1, VOCAB):
-                if Float64(logits[row + v]) > m:
-                    m = Float64(logits[row + v])
-            var se: Float64 = 0.0
+    for vb in range(N_VAL_BATCHES):
+        var in_tt = TileTensor(val_in + vb * BATCH * IN_DIM, row_major[BATCH, IN_DIM]())
+        var out_tt = TileTensor(_mao(out_dev), row_major[BATCH, OUT_DIM]())
+        # No dropout in nn2 GPT → train-forward == eval-forward.
+        trainer.net.forward["gpu", BATCH](in_tt, output=out_tt)
+        var tgt_tt = TileTensor(val_tgt + vb * BATCH * OUT_DIM, row_major[BATCH, OUT_DIM]())
+        total += Float64(trainer.loss_fn.forward["gpu", BATCH](out_tt, tgt_tt))
+    return total / Float64(N_VAL_BATCHES)
+
+
+# ── Diagnostic: per-token top-1 argmax accuracy on val windows ──
+def _eval_top1(
+    mut trainer: GPT_TRAINER,
+    val_in: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    target_ids: List[Int],
+    out_dev: DeviceBuffer[DT],
+    out_host: HostBuffer[DT],
+    ctx: DeviceContext,
+) raises -> Float64:
+    var correct: Int = 0
+    var count: Int = 0
+    var oh = out_host.unsafe_ptr()
+    for vb in range(N_VAL_BATCHES):
+        var in_tt = TileTensor(val_in + vb * BATCH * IN_DIM, row_major[BATCH, IN_DIM]())
+        var out_tt = TileTensor(_mao(out_dev), row_major[BATCH, OUT_DIM]())
+        trainer.net.forward["gpu", BATCH](in_tt, output=out_tt)
+        ctx.enqueue_copy(out_host, out_dev)
+        ctx.synchronize()
+        for b in range(BATCH):
+            for t in range(SEQ):
+                var row = b * OUT_DIM + t * VOCAB
+                var best_v = Float64(oh[row])
+                var best_i = 0
+                for v in range(1, VOCAB):
+                    var x = Float64(oh[row + v])
+                    if x > best_v:
+                        best_v = x
+                        best_i = v
+                var tgt = target_ids[vb * BATCH * SEQ + b * SEQ + t]
+                if best_i == tgt:
+                    correct += 1
+                count += 1
+    return Float64(correct) / Float64(count)
+
+
+# ── Sampling (nanoGPT-style; greedy if T<=0, else top-k softmax) ──
+def _sample_token(
+    row: UnsafePointer[Scalar[DT], MutAnyOrigin], temperature: Float64, top_k: Int,
+) -> Int:
+    if temperature <= 0.0:
+        var bv = Float64(row[0])
+        var bi = 0
+        for v in range(1, VOCAB):
+            if Float64(row[v]) > bv:
+                bv = Float64(row[v])
+                bi = v
+        return bi
+    var inv_t = 1.0 / temperature
+    var scaled = List[Float64](capacity=VOCAB)
+    for v in range(VOCAB):
+        scaled.append(Float64(row[v]) * inv_t)
+    var keep = List[Bool](capacity=VOCAB)
+    if top_k > 0 and top_k < VOCAB:
+        for _ in range(VOCAB):
+            keep.append(False)
+        var work = List[Float64](capacity=VOCAB)
+        for v in range(VOCAB):
+            work.append(scaled[v])
+        for _ in range(top_k):
+            var bv: Float64 = -1e30
+            var bi = 0
             for v in range(VOCAB):
-                se += exp(Float64(logits[row + v]) - m)
-            var lse = m + log(se)
-            var tid = target_ids[base_off + b * SEQ + t]
-            total += -(Float64(logits[row + tid]) - lse)
-    return total / Float64(BATCH * SEQ)
+                if work[v] > bv:
+                    bv = work[v]
+                    bi = v
+            keep[bi] = True
+            work[bi] = -1e30
+    else:
+        for _ in range(VOCAB):
+            keep.append(True)
+    var m: Float64 = -1e30
+    for v in range(VOCAB):
+        if keep[v] and scaled[v] > m:
+            m = scaled[v]
+    var se: Float64 = 0.0
+    var exps = List[Float64](capacity=VOCAB)
+    for v in range(VOCAB):
+        if keep[v]:
+            var e = exp(scaled[v] - m)
+            exps.append(e)
+            se += e
+        else:
+            exps.append(0.0)
+    var u = random_float64(0.0, 1.0) * se
+    var acc = 0.0
+    for v in range(VOCAB):
+        acc += exps[v]
+        if u < acc:
+            return v
+    return VOCAB - 1
+
+
+def _generate(
+    mut trainer: GPT_TRAINER,
+    tok: CharTokenizer,
+    prompt: String,
+    n_tokens: Int,
+    temperature: Float64,
+    top_k: Int,
+    ctx: DeviceContext,
+    pad_id: Int = 0,
+) raises -> String:
+    var all_ids = tok.encode(prompt)
+    var prompt_len = len(all_ids)
+    if prompt_len == 0:
+        raise Error("generate: empty prompt")
+
+    var inp_h = ctx.enqueue_create_host_buffer[DT](IN_DIM)
+    var inp_d = ctx.enqueue_create_buffer[DT](IN_DIM)
+    var out_d = ctx.enqueue_create_buffer[DT](OUT_DIM)
+    var out_h = ctx.enqueue_create_host_buffer[DT](OUT_DIM)
+    ctx.synchronize()
+
+    for _gen in range(n_tokens):
+        # Front-anchored window: last min(n_have, SEQ) ids at positions 0.. ,
+        # read logits at read_pos = n_eff - 1 (causal → tail pad is invisible).
+        for i in range(IN_DIM):
+            inp_h.unsafe_ptr()[i] = 0.0
+        var n_have = len(all_ids)
+        var n_eff = n_have if n_have <= SEQ else SEQ
+        var first = 0 if n_have <= SEQ else n_have - SEQ
+        for t in range(SEQ):
+            var tid = all_ids[first + t] if t < n_eff else pad_id
+            if tid >= 0 and tid < VOCAB:
+                inp_h.unsafe_ptr()[t * VOCAB + tid] = 1.0
+        ctx.enqueue_copy(inp_d, inp_h)
+
+        var inp_t = TileTensor(_mao(inp_d), row_major[1, IN_DIM]())
+        var out_t = TileTensor(_mao(out_d), row_major[1, OUT_DIM]())
+        trainer.net.forward["gpu", 1](inp_t, output=out_t)
+        ctx.enqueue_copy(out_h, out_d)
+        ctx.synchronize()
+
+        var read_pos = n_eff - 1
+        var row_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            out_h.unsafe_ptr()
+        ) + read_pos * VOCAB
+        all_ids.append(_sample_token(row_ptr, temperature, top_k))
+
+    var gen = List[Int](capacity=n_tokens)
+    for i in range(prompt_len, len(all_ids)):
+        gen.append(all_ids[i])
+    return tok.decode(gen)
 
 
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("TinyShakespeare GPT training — nn2 GPU")
+    print("TinyShakespeare GPT training — nn2 GPU (full budget + eval)")
     print("=" * 70)
     print(
         "  vocab=" + String(VOCAB) + " seq=" + String(SEQ)
@@ -127,8 +286,14 @@ def main() raises:
         + " layers=" + String(LAYERS)
     )
     print(
-        "  batch=" + String(BATCH) + " iters=" + String(TOTAL_ITERS)
-        + " base_lr=" + String(BASE_LR) + " wd=" + String(WD)
+        "  batch=" + String(BATCH) + " base_lr=" + String(BASE_LR)
+        + " wd=" + String(WD) + " (no grad-clip / tying / scaled-init — nn2 gaps)"
+    )
+    print(
+        "  total_iters=" + String(TOTAL_ITERS)
+        + " warmup=" + String(WARMUP_ITERS)
+        + " eval_interval=" + String(EVAL_INTERVAL)
+        + " n_val_windows=" + String(N_VAL_WINDOWS)
     )
 
     print("\n[data] loading TinyShakespeare...")
@@ -136,8 +301,7 @@ def main() raises:
     var tok = CharTokenizer(text)
     if tok.vocab_size != VOCAB:
         raise Error(
-            "vocab mismatch: tokenizer " + String(tok.vocab_size)
-            + " vs VOCAB=" + String(VOCAB)
+            "vocab mismatch: " + String(tok.vocab_size) + " vs " + String(VOCAB)
         )
     var ids = tok.encode(text)
     var split = train_val_split(ids, 0.1)
@@ -149,81 +313,110 @@ def main() raises:
     var ctx = DeviceContext()
     print("[init] building nn2 GPT on GPU...")
     var net = GPT_MODEL.make["gpu", INIT=Kaiming](ctx)
-    var loss_fn = SequenceCrossEntropyLoss[SEQ, VOCAB].make["gpu"](ctx)
+    var loss_fn = GPT_LOSS.make["gpu"](ctx)
     var optim = AdamW.make["gpu", M = type_of(net)](net, ctx)
     optim.lr = BASE_LR
     optim.weight_decay = WD
-    optim.beta2 = 0.99
+    optim.beta2 = BETA2
+    var trainer = GPT_TRAINER.make_from(net^, optim^, loss_fn^, ctx)
+    print("  in_dim=" + String(GPT_MODEL.IN_DIMS[0]) + " out_dim=" + String(OUT_DIM))
 
-    var trainer = Trainer[
-        type_of(net), type_of(optim), type_of(loss_fn), BATCH, target="gpu",
-    ].make_from(net^, optim^, loss_fn^, ctx)
-
-    # Pre-sample val windows.
+    # ── Pre-sample val windows; upload one-hot input + target once ──
+    print("\n[data] pre-sampling " + String(N_VAL_WINDOWS) + " val windows...")
     var val_batch = make_batch(split.val, N_VAL_WINDOWS, SEQ)
-    var val_in_host = alloc[Scalar[DT]](N_VAL_WINDOWS * IN_DIM)
-    var val_in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](val_in_host)
-    _host_one_hot_into(val_in_p, val_batch.inputs, N_VAL_WINDOWS)
+    var val_in_h = ctx.enqueue_create_host_buffer[DT](N_VAL_WINDOWS * IN_DIM)
+    var val_tgt_h = ctx.enqueue_create_host_buffer[DT](N_VAL_WINDOWS * OUT_DIM)
+    ctx.synchronize()
+    _host_one_hot_into(
+        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](val_in_h.unsafe_ptr()),
+        val_batch.inputs, N_VAL_WINDOWS,
+    )
+    _host_one_hot_into(
+        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](val_tgt_h.unsafe_ptr()),
+        val_batch.targets, N_VAL_WINDOWS,
+    )
+    var val_in_d = ctx.enqueue_create_buffer[DT](N_VAL_WINDOWS * IN_DIM)
+    var val_tgt_d = ctx.enqueue_create_buffer[DT](N_VAL_WINDOWS * OUT_DIM)
+    ctx.enqueue_copy(val_in_d, val_in_h)
+    ctx.enqueue_copy(val_tgt_d, val_tgt_h)
+    var val_in_p = _mao(val_in_d)
+    var val_tgt_p = _mao(val_tgt_d)
 
+    # Eval scratch: a (BATCH, OUT_DIM) device output + host mirror.
+    var eval_out_d = ctx.enqueue_create_buffer[DT](BATCH * OUT_DIM)
+    var eval_out_h = ctx.enqueue_create_host_buffer[DT](BATCH * OUT_DIM)
+    # Per-iter train staging (host one-hot; train_step uploads internally).
     var in_host = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
         alloc[Scalar[DT]](BATCH * IN_DIM)
     )
     var tgt_host = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
         alloc[Scalar[DT]](BATCH * OUT_DIM)
     )
-    var out_host = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](BATCH * OUT_DIM)
+    ctx.synchronize()
+
+    var val_init = _eval_val_loss(trainer, val_in_p, val_tgt_p, eval_out_d)
+    print(
+        "\n[iter 0] val_loss=" + String(val_init)
+        + "  (random ≈ ln(V)=" + String(log(Float64(VOCAB))) + ")"
     )
 
-    print(
-        "\n[iter 0] random baseline ≈ ln(V)=" + String(log(Float64(VOCAB)))
-    )
     print("\n── Training ──")
     var t0 = perf_counter_ns()
-    var first_val: Float64 = 0.0
-    var last_val: Float64 = 0.0
+    var final_train: Float64 = 0.0
     for it in range(TOTAL_ITERS):
         trainer.optim.lr = BASE_LR * _lr_scale(it)
-
         var mb = make_batch(split.train, BATCH, SEQ)
         _host_one_hot_into(in_host, mb.inputs, BATCH)
         _host_one_hot_into(tgt_host, mb.targets, BATCH)
-        var l = Float64(trainer.train_step(in_host, tgt_host))
+        final_train = Float64(trainer.train_step(in_host, tgt_host))
 
-        if (it + 1) % EVAL_INTERVAL == 0 or it == 0 or (it + 1) == TOTAL_ITERS:
-            var vtot: Float64 = 0.0
-            for vb in range(N_VAL_BATCHES):
-                var vptr = val_in_p + vb * BATCH * IN_DIM
-                trainer.predict(vptr, out_host)
-                vtot += _seq_ce_host(
-                    out_host, val_batch.targets, vb * BATCH * SEQ
-                )
-            var v = vtot / Float64(N_VAL_BATCHES)
-            if it == 0:
-                first_val = v
-            last_val = v
+        if (it + 1) % EVAL_INTERVAL == 0 or (it + 1) == TOTAL_ITERS:
+            var v = _eval_val_loss(trainer, val_in_p, val_tgt_p, eval_out_d)
             print(
                 "  iter " + String(it + 1) + "/" + String(TOTAL_ITERS)
-                + "  train=" + String(Float32(l))
+                + "  train=" + String(Float32(final_train))
                 + "  val=" + String(Float32(v))
+                + "  lr_scale=" + String(_lr_scale(it))
             )
 
     var t1 = perf_counter_ns()
-    print("  training time: " + String(Float64(t1 - t0) / 1e9)[byte=:6] + " s")
+    print("\n  training time: " + String(Float64(t1 - t0) / 1e9)[byte=:6] + " s")
 
-    print("\n── Final ──")
-    print("  first_val=" + String(Float32(first_val))
-          + "  last_val=" + String(Float32(last_val)))
+    var val_final = _eval_val_loss(trainer, val_in_p, val_tgt_p, eval_out_d)
+    print("\n[final] val_loss=" + String(val_final) + " (start " + String(val_init) + ")")
+    if val_final < val_init - 0.1:
+        print("  PASS: val loss decreased by > 0.1 nats")
+    else:
+        print("  WARN: val loss did not improve substantially")
+
+    # ── Diagnostic: per-token top-1 (is the loss consistent with prediction?) ──
+    var acc = _eval_top1(
+        trainer, val_in_p, val_batch.targets, eval_out_d, eval_out_h, ctx
+    )
+    print(
+        "[diagnostic] val per-token top-1=" + String(acc * 100.0)[byte=:5]
+        + "%  (random ≈ " + String(100.0 / Float64(VOCAB))[byte=:4]
+        + "%, from loss≈" + String(val_final)[byte=:5]
+        + " expect ~" + String(exp(-val_final) * 100.0)[byte=:5] + "%)"
+    )
+
+    # ── Sampling — compare nn2 generation quality vs the legacy run ──
+    var prompt = String("ROMEO:")
+    print("\n[sample] prompt = " + repr(prompt))
+    print("\n[sample] greedy (T=0.0):")
+    print(prompt + _generate(trainer, tok, prompt, 200, 0.0, 0, ctx))
+    print("\n[sample] temperature (T=0.8, no top-k):")
+    print(prompt + _generate(trainer, tok, prompt, 200, 0.8, 0, ctx))
+
+    var long_prompt = String(text[byte=0:250])
+    print(
+        "\n[sample] long-prompt diagnostic (250 real chars):\n"
+        + "---- prompt ----\n" + long_prompt + "\n---- continuation (greedy) ----"
+    )
+    print(_generate(trainer, tok, long_prompt, 200, 0.0, 0, ctx))
+    print("---- continuation (T=0.8) ----")
+    print(_generate(trainer, tok, long_prompt, 200, 0.8, 0, ctx))
+
     in_host.free()
     tgt_host.free()
-    out_host.free()
-    val_in_host.free()
-
-    print("=" * 70)
-    if last_val < first_val - 0.1:
-        print("PASS — nn2 GPT val loss dropped > 0.1 nats on real data")
-    else:
-        raise Error(
-            "GPT did not improve: first=" + String(first_val)
-            + " last=" + String(last_val)
-        )
+    print("\n" + "=" * 70)
