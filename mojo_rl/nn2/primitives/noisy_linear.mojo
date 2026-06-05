@@ -134,6 +134,17 @@ def _apply_f_noise_kernel[N: Int](
             noise[idx] = -fsqrt(-x)
 
 
+def _scale_inplace_kernel[N: Int](
+    buf: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    s: Scalar[DT],
+):
+    """In-place `buf[k] *= s`. Used to scale the output noise vector by
+    `_noise_scale` (0.0 → deterministic mean weights for eval)."""
+    var idx = Int(global_idx.x)
+    if idx < N:
+        buf[idx] = rebind[Scalar[DT]](buf[idx]) * s
+
+
 def _materialize_w_eff_kernel[IN: Int, OUT: Int](
     mu_w: LayoutTensor[DT, Layout.row_major(IN, OUT), MutAnyOrigin],
     sigma_w: LayoutTensor[DT, Layout.row_major(IN, OUT), MutAnyOrigin],
@@ -267,6 +278,17 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
     var _noise_seed: UInt64
     var _noise_offset_dev: Optional[DeviceBuffer[DType.uint64]]
 
+    # Noise magnitude multiplier (host scalar). 1.0 = normal factorized
+    # noise (training / noisy exploration); 0.0 = mean weights only
+    # (deterministic greedy — used for eval, since for ε=0 Noisy nets the
+    # acting policy is *already* the noisy argmax, so a meaningful eval must
+    # turn the noise off). Toggled via `set_attr["noise_scale"]`, which
+    # `Sequential` broadcasts to every child. Scaling the OUTPUT noise vector
+    # alone scales BOTH W-noise (σ·f(εᵢₙ)·f(εₒᵤₜ)) and b-noise (σ·f(εₒᵤₜ))
+    # linearly. `×1.0` is exact in IEEE float, so the default path is
+    # bit-identical to before.
+    var _noise_scale: Scalar[DT]
+
     # Backward grad_w temporaries (GPU) — see Linear. cacheᵀ[IN, BATCH] (lazy,
     # BATCH-sized) + dW_tmp[IN, OUT] (W_SIZE, fixed). dW = cacheᵀ @ grad_output
     # (one tensor-core max_matmul) is grad_mu_w; grad_sigma_w is the same dW
@@ -289,6 +311,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
         self._cached_input_ptr = None
         self._noise_seed = UInt64(0)
         self._noise_offset_dev = None
+        self._noise_scale = Scalar[DT](1.0)
         self.cacheT_dev = None
         self.cacheT_n = 0
         self.dW_tmp_dev = None
@@ -397,6 +420,14 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
         if self._noise_offset_dev:
             self._noise_offset_dev.value().enqueue_fill(UInt64(0))
 
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Catch the `noise_scale` broadcast (from `Sequential.set_attr`):
+        1.0 = normal noisy exploration, 0.0 = deterministic mean weights
+        (greedy eval). All other attrs are ignored (no-op), matching the
+        `Module` default for param-bearing leaves."""
+        comptime if ATTR == "noise_scale":
+            self._noise_scale = value
+
     def forward[
         target: StaticString,
         BATCH: Int,
@@ -428,6 +459,12 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
             var no_p = self._noise_out.cpu_ptr()
             _sample_factorized_noise(ni_p, Self.IN)
             _sample_factorized_noise(no_p, Self.OUT)
+
+            # Scale the OUTPUT noise by `_noise_scale` (1.0 normal; 0.0 →
+            # deterministic mean weights for eval). Scaling n_out alone
+            # scales both W-noise and b-noise linearly. `×1.0` is exact.
+            for j in range(Self.OUT):
+                no_p[j] = no_p[j] * self._noise_scale
 
             # 2. Materialize W_eff and b_eff.
             var mu_w_p = self.mu_w.value_unsafe_ptr_cpu()
@@ -495,6 +532,15 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
             comptime apply_out = _apply_f_noise_kernel[Self.OUT]
             ctx.enqueue_function[apply_out](
                 no_lt, grid_dim=n_blocks_out, block_dim=TPB,
+            )
+
+            # Scale the OUTPUT noise by `_noise_scale` (1.0 normal; 0.0 →
+            # deterministic mean weights for eval). Scaling n_out alone
+            # scales both W-noise and b-noise linearly. `×1.0` is exact.
+            comptime scale_out = _scale_inplace_kernel[Self.OUT]
+            ctx.enqueue_function[scale_out](
+                no_lt, self._noise_scale,
+                grid_dim=n_blocks_out, block_dim=TPB,
             )
 
             # 2. Materialize W_eff and b_eff on device.

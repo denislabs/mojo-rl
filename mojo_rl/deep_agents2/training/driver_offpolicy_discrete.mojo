@@ -221,6 +221,27 @@ trait OffPolicyDiscreteAgentGpu(OffPolicyDiscreteAgent):
         Keep `NS` aligned with the trainer's target-Y γ^N bootstrap."""
         ...
 
+    # ─── Greedy-eval surface (noise-off deterministic rollout) ────────
+
+    def set_noise_scale(mut self, scale: Scalar[DT]) raises:
+        """Toggle Noisy-net exploration magnitude on the acting net:
+        1.0 = train/explore, 0.0 = deterministic mean weights. Used to
+        bracket a greedy-eval rollout. Default no-op (agents without
+        Noisy layers ignore it)."""
+        pass
+
+    def select_greedy_action_batched[
+        N_ENVS: Int
+    ](
+        mut self,
+        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """Pure greedy action selection for N_ENVS envs — argmax (expected-)Q,
+        no epsilon, no warmup gate. Writes N_ENVS action indices (as
+        Scalar[DT]) into `action_ptr`. Used by the batched greedy eval."""
+        ...
+
 
 # ──────────────────────────────────────────────────────────────────────
 # run_offpolicy_discrete_train — single-env, env_target="cpu".
@@ -530,6 +551,10 @@ def run_offpolicy_discrete_train_gpu_batched[
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
+    eval_env: Optional[UnsafePointer[E, MutAnyOrigin]] = None,
+    eval_every: Int = 0,
+    eval_episodes: Int = 16,
+    eval_max_iters: Int = 20_000,
 ) raises -> List[Scalar[DT]]:
     """GPU-batched discrete off-policy training driver (Tier-3).
 
@@ -619,6 +644,13 @@ def run_offpolicy_discrete_train_gpu_batched[
     var next_diag: Int = diag_every if diag_every > 0 else total_env_steps + 1
     var ckpt_on: Bool = checkpoint_every > 0 and checkpoint_path.byte_length() > 0
     var next_ckpt: Int = checkpoint_every if ckpt_on else total_env_steps + 1
+    # Deterministic greedy-eval cadence. The training `avg_reward` above is
+    # the NOISY rollout (for ε=0 Noisy nets the acting policy IS the noisy
+    # argmax), so it systematically under-reports the learned greedy policy.
+    # When an isolated `eval_env` is supplied, run a noise-off greedy rollout
+    # and log the true policy quality as `eval/mean_return`.
+    var eval_on: Bool = eval_every > 0 and Bool(eval_env)
+    var next_eval: Int = eval_every if eval_on else total_env_steps + 1
 
     while step_idx < total_env_steps:
         # ── 1. Snapshot prev_obs (D→D) from the env's obs buffer.
@@ -742,7 +774,112 @@ def run_offpolicy_discrete_train_gpu_batched[
             trainer.save_state(checkpoint_path)
             next_ckpt += checkpoint_every
 
+        # Deterministic greedy eval on the isolated `eval_env` (noise off).
+        if eval_on and step_idx >= next_eval:
+            var eval_ret = run_offpolicy_discrete_eval_batched[
+                A, E, N_ENVS
+            ](
+                ctx,
+                trainer,
+                eval_env.value()[],
+                eval_episodes,
+                max_iters=eval_max_iters,
+                rng_seed=rng_seed + UInt64(step_idx + 1),
+            )
+            comptime if L.ENABLED:
+                if Bool(logger):
+                    logger.value()[].log_scalar(
+                        "eval/mean_return", Float64(eval_ret), abs_step
+                    )
+                    logger.value()[].flush()
+            if verbose:
+                print(
+                    "[step ", abs_step, "] eval/mean_return = ", eval_ret,
+                )
+            next_eval += eval_every
+
     if ckpt_on:
         trainer.save_state(checkpoint_path)
 
     return ep_returns^
+
+
+# ──────────────────────────────────────────────────────────────────────
+# run_offpolicy_discrete_eval_batched — noise-off greedy GPU rollout.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def run_offpolicy_discrete_eval_batched[
+    A: OffPolicyDiscreteAgentGpu,
+    E: BatchedEnv,
+    N_ENVS: Int,
+](
+    ctx: DeviceContext,
+    mut trainer: A,
+    mut eval_env: E,
+    num_episodes: Int,
+    *,
+    max_iters: Int = 20_000,
+    rng_seed: UInt64 = UInt64(123),
+) raises -> Scalar[DT]:
+    """Deterministic greedy eval over a GPU-batched discrete env.
+
+    Disables Noisy-net exploration (`set_noise_scale(0)`), rolls the
+    greedy policy (`select_greedy_action_batched`) on `N_ENVS` parallel
+    envs until `num_episodes` complete (or `max_iters` iterations elapse),
+    then restores noise. Does NOT touch the trainer's replay, optimizer,
+    or episode tracker — use a SEPARATE env instance from training.
+
+    `max_iters` bounds iterations (each advances all N_ENVS envs one step);
+    set it well above `ceil(num_episodes / N_ENVS) · episode_length`.
+
+    Returns the mean completed-episode return (0 if none completed).
+    """
+    comptime OBS = A.AGENT_OBS_DIM
+    comptime assert E.OBS_DIM == OBS, (
+        "eval_env OBS_DIM must match trainer AGENT_OBS_DIM"
+    )
+
+    trainer.set_noise_scale(Scalar[DT](0.0))  # deterministic mean weights
+
+    eval_env.reset_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed)
+
+    var per_env = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
+    var rew_h = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
+    var done_h = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
+
+    var returns_sum = Scalar[DT](0.0)
+    var n_done: Int = 0
+    var it: Int = 0
+    while n_done < num_episodes and it < max_iters:
+        trainer.select_greedy_action_batched[N_ENVS](
+            eval_env.obs_ptr(), eval_env.action_ptr()
+        )
+        eval_env.step_batch[N_ENVS](
+            ctx=ctx, rng_seed=rng_seed + UInt64(it + 1)
+        )
+        var rv = DeviceBuffer[DT](
+            ctx, eval_env.reward_ptr(), N_ENVS, owning=False
+        )
+        var dv = DeviceBuffer[DT](
+            ctx, eval_env.done_ptr(), N_ENVS, owning=False
+        )
+        ctx.enqueue_copy(rew_h.unsafe_ptr(), rv)
+        ctx.enqueue_copy(done_h.unsafe_ptr(), dv)
+        ctx.synchronize()
+        for e in range(N_ENVS):
+            per_env[e] = per_env[e] + rew_h[e]
+            if done_h[e] > Scalar[DT](0.5):
+                returns_sum = returns_sum + per_env[e]
+                per_env[e] = Scalar[DT](0.0)
+                n_done += 1
+        eval_env.selective_reset_batch[N_ENVS](
+            ctx=ctx, rng_seed=rng_seed + UInt64(it + 1) * UInt64(7)
+        )
+        it += 1
+
+    trainer.set_noise_scale(Scalar[DT](1.0))  # restore noisy exploration
+
+    if n_done == 0:
+        return Scalar[DT](0.0)
+    return returns_sum / Scalar[DT](n_done)

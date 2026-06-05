@@ -721,6 +721,69 @@ struct C51Trainer[
             )
             ctx.enqueue_copy(action_dev, act_h)
 
+    def set_noise_scale(mut self, scale: Scalar[DT]) raises:
+        """Broadcast `noise_scale` to the online (acting) net's NoisyLinear
+        layers: 1.0 = normal noisy exploration, 0.0 = deterministic mean
+        weights. Bracket a greedy-eval rollout with `set_noise_scale(0)` …
+        `set_noise_scale(1)`. No-op if the net has no Noisy layers (their
+        non-overriding siblings ignore the `set_attr` broadcast)."""
+        self.pair.online.set_attr["noise_scale"](scale)
+
+    def select_greedy_action_batched[
+        N_ENVS: Int,
+    ](
+        mut self,
+        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """Pure greedy: one batched forward over N_ENVS obs, expected-Q
+        argmax per env — no epsilon, no warmup gate. Mirrors the policy
+        branch of `select_action_batched` minus exploration. Pair with
+        `set_noise_scale(0)` for a deterministic eval rollout."""
+        comptime NA = Self.NUM_ACTIONS
+        comptime NK = Self.N_ATOMS
+        comptime OBS = Self.OBS_DIM
+        comptime if Self.train_target == "cpu":
+            var q_buf = List[Scalar[DT]](
+                length=N_ENVS * NA * NK, fill=Scalar[DT](0.0),
+            )
+            var q_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                q_buf.unsafe_ptr()
+            )
+            var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
+            var q_t = TileTensor(q_ptr, row_major[N_ENVS, NA * NK]())
+            self.pair.online.forward[Self.train_target, N_ENVS](
+                obs_t, output=q_t,
+            )
+            for i in range(N_ENVS):
+                action_ptr[i] = Scalar[DT](
+                    self._expected_q_argmax(q_ptr + i * NA * NK)
+                )
+        else:
+            var ctx = self.ctx.value()
+            self._ensure_batch_scratch[N_ENVS](ctx)
+            var qdev = self._batch_q_dev.value()
+            var qdev_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                qdev.unsafe_ptr()
+            )
+            var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
+            var q_t = TileTensor(qdev_ptr, row_major[N_ENVS, NA * NK]())
+            self.pair.online.forward[Self.train_target, N_ENVS](
+                obs_t, output=q_t,
+            )
+            var qh = self._batch_q_host.unsafe_ptr()
+            ctx.enqueue_copy(qh, qdev)
+            ctx.synchronize()
+            var act_h = self._batch_act_host.unsafe_ptr()
+            for i in range(N_ENVS):
+                act_h[i] = Scalar[DT](
+                    self._expected_q_argmax(qh + i * NA * NK)
+                )
+            var action_dev = DeviceBuffer[DT](
+                ctx, action_ptr, N_ENVS, owning=False,
+            )
+            ctx.enqueue_copy(action_dev, act_h)
+
     def select_greedy_action(
         mut self,
         ref obs: List[Scalar[DT]],

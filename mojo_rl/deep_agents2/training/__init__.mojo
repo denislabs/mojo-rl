@@ -27,6 +27,7 @@ from .driver_offpolicy_discrete import (
     run_offpolicy_discrete_train,
     run_offpolicy_discrete_eval,
     run_offpolicy_discrete_train_gpu_batched,
+    run_offpolicy_discrete_eval_batched,
 )
 from .driver_onpolicy import (
     OnPolicyAgent,

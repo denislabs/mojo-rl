@@ -140,6 +140,8 @@ def main() raises:
         )
 
         var env = PongPixelBatched(ctx)
+        # Separate env instance for deterministic (noise-off) greedy eval.
+        var eval_env = PongPixelBatched(ctx)
 
         print("Environment: Pong (GPU-batched Pixel,", N_ENVS, "envs)")
         print("Agent: Rainbow DQN CNN (deep_agents2 C51, GPU)")
@@ -208,6 +210,9 @@ def main() raises:
                 nstep_gamma=Scalar[DT](0.99),
                 logger=UnsafePointer(to=logger),
                 diag_every=5_000,
+                eval_env=UnsafePointer(to=eval_env),
+                eval_every=100_000,
+                eval_episodes=10,
             )
 
             var elapsed_s = Float64(perf_counter_ns() - start_time) / 1e9
