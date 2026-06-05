@@ -6,3 +6,4 @@ from .nets import MZRepNet, MZDynNet, MZPredNet
 from .config import MuZeroMLPConfig
 from .agent import MuZeroAgent
 from .selfplay_cpu import run_muzero_selfplay_cpu
+from .selfplay_2p_cpu import run_muzero_selfplay_2p_cpu
