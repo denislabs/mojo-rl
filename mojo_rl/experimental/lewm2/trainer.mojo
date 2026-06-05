@@ -23,6 +23,7 @@ visitors wrap each param's device pointer in a non-owning `DeviceBuffer`
 for D2H (save) / H2D (load).
 """
 
+from std.collections import Dict
 from std.memory import alloc
 from std.gpu import thread_idx
 from std.gpu.primitives import block
@@ -135,6 +136,43 @@ struct _LoadVisitor(ParamVisitor):
             for i in range(n_elems):
                 p[i] = self.vals[self.idx]
                 self.idx += 1
+
+
+# Named export: record each param's name → values (CPU direct / GPU D2H).
+# Feeds LeWMPredictor.sync_from_named for the MPC predictor-from-latents path.
+struct _NamedExportVisitor(ParamVisitor):
+    var d: UnsafePointer[Dict[String, List[Scalar[DT]]], MutAnyOrigin]
+    var ctx: Optional[DeviceContext]
+
+    def __init__(
+        out self,
+        d: UnsafePointer[Dict[String, List[Scalar[DT]]], MutAnyOrigin],
+        ctx: Optional[DeviceContext] = None,
+    ):
+        self.d = d
+        self.ctx = ctx
+
+    def visit(
+        mut self, name: String,
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        n_elems: Int, apply_decay: Bool,
+    ) raises:
+        var p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var vals = List[Scalar[DT]](length=n_elems, fill=Scalar[DT](0.0))
+        if self.ctx:
+            var c = self.ctx.value()
+            var dev = DeviceBuffer[DT](c, p, n_elems, owning=False)
+            c.enqueue_copy(vals.unsafe_ptr(), dev)
+            c.synchronize()
+        else:
+            for i in range(n_elems):
+                vals[i] = p[i]
+        self.d[][name] = vals^
 
 
 struct LeWMTrainer[
@@ -330,6 +368,36 @@ struct LeWMTrainer[
             ctx.enqueue_copy(pred_host, pred_dev)
             ctx.enqueue_copy(tgt_host, tgt_dev)
             ctx.synchronize()
+
+    def read_node_into[
+        name: StaticString,
+    ](
+        mut self,
+        host: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        n: Int,
+    ) raises:
+        """Copy the named graph node's output (n elements) to a host buffer.
+        Valid after a forward (`forward_into`/`train_step`/`eval_loss`) has
+        populated the node buffers. Used by the MPC path to read `emb`."""
+        var src = self.graph.node_out_ptr[name]()
+        comptime if Self.train_target == "cpu":
+            for i in range(n):
+                host[i] = src[i]
+        else:
+            var ctx = self.ts.ctx.value()
+            var dev = DeviceBuffer[DT](ctx, src, n, owning=False)
+            ctx.enqueue_copy(host, dev)
+            ctx.synchronize()
+
+    def export_named_params(mut self) raises -> Dict[String, List[Scalar[DT]]]:
+        """Snapshot all graph params as a name→values dict (CPU/GPU). Feeds
+        `LeWMPredictor.sync_from_named` so the MPC predictor shares the
+        trained encoder-free weights (matched by name)."""
+        var d = Dict[String, List[Scalar[DT]]]()
+        var v = _NamedExportVisitor(UnsafePointer(to=d), ctx=self.ts.ctx)
+        self.graph.for_each_param[Self.train_target, _NamedExportVisitor]("", v)
+        _ = v^
+        return d^
 
     def reset_loss_accum(mut self) raises:
         """Zero the device `(Σmean, count)` loss accumulator (GPU, flush)."""
