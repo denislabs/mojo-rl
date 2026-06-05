@@ -44,16 +44,14 @@ from mojo_rl.envs.humanoid import Humanoid
 comptime EnvT = Humanoid[DT, TERMINATE_ON_UNHEALTHY=True]
 comptime OBS_DIM = EnvT.OBS_DIM  # 45
 comptime ACT_DIM = EnvT.ACTION_DIM  # 17
-# HIDDEN + CHECKPOINT_PATH MUST match the trainer. Currently set for the
-# LN+512 ceiling run; to re-eval the earlier HIDDEN=256 LN checkpoint, set
-# HIDDEN=256 and CHECKPOINT_PATH="sac_humanoid_nn2_ln.ckpt".
-comptime HIDDEN = 512
+# HIDDEN + CHECKPOINT_PATH MUST match the trainer (LayerNorm critic, HIDDEN=256).
+comptime HIDDEN = 256
 comptime BATCH = 256
 # Replay capacity is irrelevant for greedy eval (no replay used) and is NOT in
 # the checkpoint — keep it small to avoid a large CPU allocation.
 comptime REPLAY_CAPACITY = 100_000
 
-comptime CHECKPOINT_PATH = "sac_humanoid_nn2_ln512.ckpt"
+comptime CHECKPOINT_PATH = "sac_humanoid_nn2_ln.ckpt"
 comptime ACTION_SCALE = Scalar[DT](0.4)  # MUST match training
 
 # ─── Nets — identical aliases to the trainer (LayerNorm critic) ────────────
