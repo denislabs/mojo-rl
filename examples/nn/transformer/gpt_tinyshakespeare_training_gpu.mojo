@@ -63,20 +63,20 @@ from layout import Layout, LayoutTensor
 # =============================================================================
 # Hyperparameters — full nanoGPT-class config targeting val loss ≤ 1.5 nats.
 # =============================================================================
-comptime VOCAB = 65          # TinyShakespeare unique chars
-comptime SEQ = 256           # context length
-comptime EMBED = 384         # transformer width (matches nanoGPT char-Shakespeare)
-comptime HEADS = 6           # head_dim = 32
-comptime LAYERS = 6          # transformer blocks
-comptime FF_MULT = 4         # FFN inner dim = 4 * EMBED = 768
+comptime VOCAB = 65  # TinyShakespeare unique chars
+comptime SEQ = 256  # context length
+comptime EMBED = 384  # transformer width (matches nanoGPT char-Shakespeare)
+comptime HEADS = 6  # head_dim = 32
+comptime LAYERS = 6  # transformer blocks
+comptime FF_MULT = 4  # FFN inner dim = 4 * EMBED = 768
 
-comptime BATCH = 64          # nanoGPT char-Shakespeare batch size
+comptime BATCH = 64  # nanoGPT char-Shakespeare batch size
 
-comptime BASE_LR = 1e-3      # nanoGPT char-Shakespeare LR (3.3× our prior 3e-4)
+comptime BASE_LR = 1e-3  # nanoGPT char-Shakespeare LR (3.3× our prior 3e-4)
 comptime BETA1 = 0.9
-comptime BETA2 = 0.99        # nanoGPT char-Shakespeare beta2 (small batch → bigger)
+comptime BETA2 = 0.99  # nanoGPT char-Shakespeare beta2 (small batch → bigger)
 comptime WD = 0.1
-comptime GRAD_CLIP = 1.0     # max-abs clip on params grads each step
+comptime GRAD_CLIP = 1.0  # max-abs clip on params grads each step
 
 # Per-step random window sampling (matches nanoGPT's `get_batch`):
 #   each iter samples a fresh BATCH of random windows from `split.train`,
@@ -87,12 +87,12 @@ comptime GRAD_CLIP = 1.0     # max-abs clip on params grads each step
 # Total examples seen ≈ TOTAL_ITERS × BATCH = 5000 × 64 = 320 000, exact
 # match with nanoGPT's `max_iters=5000, batch_size=64`.
 comptime TOTAL_ITERS = 5000
-comptime WARMUP_ITERS = 100            # nanoGPT default
-comptime EVAL_INTERVAL = 250           # nanoGPT eval_interval
-comptime MIN_LR_SCALE = 0.1            # min_lr / lr = 1e-4 / 1e-3
+comptime WARMUP_ITERS = 100  # nanoGPT default
+comptime EVAL_INTERVAL = 250  # nanoGPT eval_interval
+comptime MIN_LR_SCALE = 0.1  # min_lr / lr = 1e-4 / 1e-3
 
 # Validation kept pre-sampled — cheap and gives a stable per-eval signal.
-comptime N_VAL_WINDOWS = 256           # 4 batches × BATCH=64
+comptime N_VAL_WINDOWS = 256  # 4 batches × BATCH=64
 comptime N_VAL_BATCHES = N_VAL_WINDOWS // BATCH
 
 # Dropout — fixed at 0.2 to match nanoGPT's char-Shakespeare config. The
@@ -215,16 +215,12 @@ def _apply_c_proj_scaled_init(
         # Attention output proj W (Linear[D, D]) — first D² entries of its block.
         var attn_w_off = block_off + OFF_ATTN_OUT
         for i in range(EMBED * EMBED):
-            p[attn_w_off + i] = (
-                rebind[Scalar[dtype]](p[attn_w_off + i]) * scale
-            )
+            p[attn_w_off + i] = rebind[Scalar[dtype]](p[attn_w_off + i]) * scale
 
         # FFN output proj W (Linear[F, D]) — first F*D entries of its block.
         var mlp_w_off = block_off + OFF_FFN2
         for i in range(FFDIM * EMBED):
-            p[mlp_w_off + i] = (
-                rebind[Scalar[dtype]](p[mlp_w_off + i]) * scale
-            )
+            p[mlp_w_off + i] = rebind[Scalar[dtype]](p[mlp_w_off + i]) * scale
 
 
 @always_inline
@@ -235,9 +231,7 @@ def tie_grads_kernel[
     VOCAB_: Int,
     EMBED_: Int,
     dtype: DType,
-](
-    grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
-):
+](grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],):
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= VOCAB_ * EMBED_:
         return
@@ -258,9 +252,7 @@ def tie_params_kernel[
     VOCAB_: Int,
     EMBED_: Int,
     dtype: DType,
-](
-    params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
-):
+](params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],):
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= VOCAB_ * EMBED_:
         return
@@ -271,26 +263,24 @@ def tie_params_kernel[
     params[lm_idx] = rebind[Scalar[dtype]](params[emb_idx])
 
 
-def _tie_grads(ctx: DeviceContext, state: GPUNetworkState[GPT_MODEL, GPT_OPT]) raises:
+def _tie_grads(
+    ctx: DeviceContext, state: GPUNetworkState[GPT_MODEL, GPT_OPT]
+) raises:
     var g = state.grads_view()
     comptime BLOCKS = (TIE_NCELL + TPB - 1) // TPB
     ctx.enqueue_function[
         tie_grads_kernel[
             GPT_MODEL.PARAM_SIZE, EMB_W_OFF, LM_W_OFF, VOCAB, EMBED, dtype
         ],
-        tie_grads_kernel[
-            GPT_MODEL.PARAM_SIZE, EMB_W_OFF, LM_W_OFF, VOCAB, EMBED, dtype
-        ],
     ](g, grid_dim=(BLOCKS,), block_dim=(TPB,))
 
 
-def _tie_params(ctx: DeviceContext, state: GPUNetworkState[GPT_MODEL, GPT_OPT]) raises:
+def _tie_params(
+    ctx: DeviceContext, state: GPUNetworkState[GPT_MODEL, GPT_OPT]
+) raises:
     var p = state.params_view()
     comptime BLOCKS = (TIE_NCELL + TPB - 1) // TPB
     ctx.enqueue_function[
-        tie_params_kernel[
-            GPT_MODEL.PARAM_SIZE, EMB_W_OFF, LM_W_OFF, VOCAB, EMBED, dtype
-        ],
         tie_params_kernel[
             GPT_MODEL.PARAM_SIZE, EMB_W_OFF, LM_W_OFF, VOCAB, EMBED, dtype
         ],
@@ -324,9 +314,9 @@ def _eval_loss_seq_gpu(
     var output_v = LayoutTensor[
         dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
     ](output_buf.unsafe_ptr())
-    var loss_t = LayoutTensor[
-        dtype, Layout.row_major(1), MutAnyOrigin
-    ](loss_buf.unsafe_ptr())
+    var loss_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
+        loss_buf.unsafe_ptr()
+    )
 
     var p_view = state.params_view()
     var s_view = state.model_state_view()
@@ -415,9 +405,7 @@ def _eval_topk_accuracy_gpu(
                     if x > best_v:
                         best_v = x
                         best_idx = v
-                var tgt = val_target_ids[
-                    batch_idx * BATCH * SEQ + b * SEQ + t
-                ]
+                var tgt = val_target_ids[batch_idx * BATCH * SEQ + b * SEQ + t]
                 if best_idx == tgt:
                     total_correct += 1
                 total_count += 1
@@ -598,28 +586,44 @@ def main() raises:
     print("TinyShakespeare GPT training (GPU)")
     print("=" * 70)
     print(
-        "  vocab=" + String(VOCAB)
-        + " seq=" + String(SEQ)
-        + " embed=" + String(EMBED)
-        + " heads=" + String(HEADS)
-        + " layers=" + String(LAYERS)
+        "  vocab="
+        + String(VOCAB)
+        + " seq="
+        + String(SEQ)
+        + " embed="
+        + String(EMBED)
+        + " heads="
+        + String(HEADS)
+        + " layers="
+        + String(LAYERS)
     )
     print(
-        "  batch=" + String(BATCH)
-        + " base_lr=" + String(BASE_LR)
-        + " wd=" + String(WD)
-        + " grad_clip=" + String(GRAD_CLIP)
+        "  batch="
+        + String(BATCH)
+        + " base_lr="
+        + String(BASE_LR)
+        + " wd="
+        + String(WD)
+        + " grad_clip="
+        + String(GRAD_CLIP)
     )
     print(
-        "  total_iters=" + String(TOTAL_ITERS)
-        + " warmup_iters=" + String(WARMUP_ITERS)
-        + " eval_interval=" + String(EVAL_INTERVAL)
-        + " n_val_windows=" + String(N_VAL_WINDOWS)
+        "  total_iters="
+        + String(TOTAL_ITERS)
+        + " warmup_iters="
+        + String(WARMUP_ITERS)
+        + " eval_interval="
+        + String(EVAL_INTERVAL)
+        + " n_val_windows="
+        + String(N_VAL_WINDOWS)
     )
     print(
-        "  PARAM_SIZE=" + String(GPT_MODEL.PARAM_SIZE)
-        + " CACHE/sample=" + String(GPT_MODEL.CACHE_SIZE)
-        + " WS/sample=" + String(GPT_MODEL.WORKSPACE_SIZE_PER_SAMPLE)
+        "  PARAM_SIZE="
+        + String(GPT_MODEL.PARAM_SIZE)
+        + " CACHE/sample="
+        + String(GPT_MODEL.CACHE_SIZE)
+        + " WS/sample="
+        + String(GPT_MODEL.WORKSPACE_SIZE_PER_SAMPLE)
     )
 
     # ---------- Data ----------
@@ -636,23 +640,24 @@ def main() raises:
     var ids = tok.encode(text)
     var split = train_val_split(ids, 0.1)
     print(
-        "  total tokens=" + String(len(ids))
-        + " train=" + String(len(split.train))
-        + " val=" + String(len(split.val))
+        "  total tokens="
+        + String(len(ids))
+        + " train="
+        + String(len(split.train))
+        + " val="
+        + String(len(split.val))
     )
 
     # ---------- Pre-sample val windows; train sampled per-iter ----------
     print(
-        "\n[data] pre-sampling " + String(N_VAL_WINDOWS) + " val windows"
+        "\n[data] pre-sampling "
+        + String(N_VAL_WINDOWS)
+        + " val windows"
         + " (train resampled per iter)..."
     )
     var val_batch = make_batch(split.val, N_VAL_WINDOWS, SEQ)
-    var val_inp_data = to_one_hot(
-        val_batch.inputs, VOCAB, N_VAL_WINDOWS, SEQ
-    )
-    var val_tgt_data = to_one_hot(
-        val_batch.targets, VOCAB, N_VAL_WINDOWS, SEQ
-    )
+    var val_inp_data = to_one_hot(val_batch.inputs, VOCAB, N_VAL_WINDOWS, SEQ)
+    var val_tgt_data = to_one_hot(val_batch.targets, VOCAB, N_VAL_WINDOWS, SEQ)
 
     # ---------- Device + state ----------
     var ctx = DeviceContext()
@@ -718,15 +723,11 @@ def main() raises:
     ](train_tgt_buf.unsafe_ptr())
 
     # ---------- Per-batch training scratch (allocated once, reused) ----------
-    var output_buf = ctx.enqueue_create_buffer[dtype](
-        BATCH * GPT_MODEL.OUT_DIM
-    )
+    var output_buf = ctx.enqueue_create_buffer[dtype](BATCH * GPT_MODEL.OUT_DIM)
     var cache_buf = ctx.enqueue_create_buffer[dtype](
         BATCH * GPT_MODEL.CACHE_SIZE
     )
-    var grad_in_buf = ctx.enqueue_create_buffer[dtype](
-        BATCH * GPT_MODEL.IN_DIM
-    )
+    var grad_in_buf = ctx.enqueue_create_buffer[dtype](BATCH * GPT_MODEL.IN_DIM)
     var grad_out_buf = ctx.enqueue_create_buffer[dtype](
         BATCH * GPT_MODEL.OUT_DIM
     )
@@ -754,18 +755,28 @@ def main() raises:
     var grad_out_v = LayoutTensor[
         dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
     ](grad_out_buf.unsafe_ptr())
-    var loss_t = LayoutTensor[
-        dtype, Layout.row_major(1), MutAnyOrigin
-    ](loss_buf.unsafe_ptr())
+    var loss_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
+        loss_buf.unsafe_ptr()
+    )
 
     # ---------- Initial val loss ----------
     var val_init = _eval_loss_seq_gpu(
-        ctx, state, val_inp_lt, val_tgt_lt,
-        output_buf, cache_buf, ws_buf, loss_buf, loss_host,
+        ctx,
+        state,
+        val_inp_lt,
+        val_tgt_lt,
+        output_buf,
+        cache_buf,
+        ws_buf,
+        loss_buf,
+        loss_host,
     )
     print(
-        "\n[iter 0] initial val_loss=" + String(val_init)
-        + "  (random ≈ ln(V)=" + String(log(Float64(VOCAB))) + ")"
+        "\n[iter 0] initial val_loss="
+        + String(val_init)
+        + "  (random ≈ ln(V)="
+        + String(log(Float64(VOCAB)))
+        + ")"
     )
 
     # ---------- Per-iter loop: sample → forward → backward → step ----------
@@ -802,8 +813,14 @@ def main() raises:
         state.zero_grads(ctx)
         var grads_view = state.grads_view()
         GPT_MODEL.backward_gpu[BATCH, dtype](
-            ctx, grad_in_t, grad_out_t, p_view, s_view, cache_t,
-            grads_view, ws_buf,
+            ctx,
+            grad_in_t,
+            grad_out_t,
+            p_view,
+            s_view,
+            cache_t,
+            grads_view,
+            ws_buf,
         )
         # Weight tying — fold lm_head W grad (transposed) into embedding W
         # grad and zero the lm_head W grad slot. Must run before clip+step.
@@ -824,14 +841,27 @@ def main() raises:
             ctx.synchronize()
             final_loss = Float64(loss_host[0])
             var v = _eval_loss_seq_gpu(
-                ctx, state, val_inp_lt, val_tgt_lt,
-                output_buf, cache_buf, ws_buf, loss_buf, loss_host,
+                ctx,
+                state,
+                val_inp_lt,
+                val_tgt_lt,
+                output_buf,
+                cache_buf,
+                ws_buf,
+                loss_buf,
+                loss_host,
             )
             print(
-                "  iter " + String(iter + 1) + "/" + String(TOTAL_ITERS)
-                + "  train_loss=" + String(Float32(final_loss))
-                + "  val_loss=" + String(v)
-                + "  lr_scale=" + String(lr_s)
+                "  iter "
+                + String(iter + 1)
+                + "/"
+                + String(TOTAL_ITERS)
+                + "  train_loss="
+                + String(Float32(final_loss))
+                + "  val_loss="
+                + String(v)
+                + "  lr_scale="
+                + String(lr_s)
             )
 
     var t_end = perf_counter_ns()
@@ -843,12 +873,22 @@ def main() raises:
 
     # ---------- Final eval ----------
     var val_final = _eval_loss_seq_gpu(
-        ctx, state, val_inp_lt, val_tgt_lt,
-        output_buf, cache_buf, ws_buf, loss_buf, loss_host,
+        ctx,
+        state,
+        val_inp_lt,
+        val_tgt_lt,
+        output_buf,
+        cache_buf,
+        ws_buf,
+        loss_buf,
+        loss_host,
     )
     print(
-        "\n[final] val_loss=" + String(val_final)
-        + " (start " + String(val_init) + ")"
+        "\n[final] val_loss="
+        + String(val_final)
+        + " (start "
+        + String(val_init)
+        + ")"
     )
     if val_final < val_init - 0.1:
         print("  PASS: validation loss decreased by > 0.1 nats")
@@ -864,8 +904,13 @@ def main() raises:
     #   genuine model     → ~55–65 % top-1 (e^-0.55 ≈ 58 %)
     #   leak/cheat        → ~5–15 % top-1 (loss decoupled from prediction)
     var val_acc = _eval_topk_accuracy_gpu(
-        ctx, state, val_inp_lt, val_batch.targets,
-        output_buf, cache_buf, ws_buf,
+        ctx,
+        state,
+        val_inp_lt,
+        val_batch.targets,
+        output_buf,
+        cache_buf,
+        ws_buf,
     )
     print(
         "[diagnostic] val per-token top-1 accuracy="
@@ -884,17 +929,13 @@ def main() raises:
     print("\n[sample] prompt = " + repr(prompt))
 
     print("\n[sample] greedy (T=0.0):")
-    var greedy = _generate_text_gpu(
-        ctx, state, tok, prompt, 200, 0.0, top_k=0
-    )
+    var greedy = _generate_text_gpu(ctx, state, tok, prompt, 200, 0.0, top_k=0)
     print(prompt + greedy)
 
     # top_k=0 → no filter, sample from the full softmax (matches nanoGPT
     # `sample.py` default top_k=200 with vocab=65, i.e. effectively no filter).
     print("\n[sample] temperature (T=0.8, no top-k):")
-    var temp = _generate_text_gpu(
-        ctx, state, tok, prompt, 200, 0.8, top_k=0
-    )
+    var temp = _generate_text_gpu(ctx, state, tok, prompt, 200, 0.8, top_k=0)
     print(prompt + temp)
 
     # Diagnostic: long-prompt sampling.
@@ -912,7 +953,9 @@ def main() raises:
     var long_prompt = String(text[byte=0:250])
     print(
         "\n[sample] long prompt diagnostic (250 real Shakespeare chars):\n"
-        + "---- prompt ----\n" + long_prompt + "\n---- continuation (greedy) ----"
+        + "---- prompt ----\n"
+        + long_prompt
+        + "\n---- continuation (greedy) ----"
     )
     var long_cont = _generate_text_gpu(
         ctx, state, tok, long_prompt, 200, 0.0, top_k=0
