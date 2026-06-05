@@ -138,3 +138,40 @@ struct MZPredGPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
         var in_t = TileTensor(hidden.ptr, row_major[B, Self.NET.IN_DIMS[0]]())
         var out_t = TileTensor(pred_out.ptr, row_major[B, Self.NET.OUT_DIM]())
         self.net[].forward["gpu", B](in_t, output=out_t)
+
+
+@fieldwise_init
+struct MZContPredGPU[LATENT: Int, ACT_DIM: Int, BINS: Int, NET: Module](
+    Movable, ImplicitlyDestructible, PredictionGPU
+):
+    """Continuous-EZv2 f adapter: ``hidden (B, LATENT) → [μ_raw | σ_raw | value]
+    (B, 2·ACT_DIM + BINS)``. ``NET`` is `EZContPredNet`. The leading
+    ``2·ACT_DIM`` are the squashed-Gaussian policy parameters (decoded by the
+    `SampledGumbelGPUMCTS` sampler), the trailing ``BINS`` the categorical
+    value. ``PRED_OUT_DIM = 2·ACT_DIM + BINS`` matches the planner's
+    `PredictionGPU` contract for sampled continuous actions — the continuous
+    twin of `MZPredGPU` (which emits categorical policy logits)."""
+
+    comptime LATENT_DIM: Int = Self.LATENT
+    comptime ACTION_DIM: Int = Self.ACT_DIM
+    comptime PRED_OUT_DIM: Int = 2 * Self.ACT_DIM + Self.BINS
+
+    var net: UnsafePointer[Self.NET, MutAnyOrigin]
+
+    @staticmethod
+    def make(mut net: Self.NET) -> Self:
+        return Self(net=UnsafePointer(to=net))
+
+    def predict_gpu[B: Int](
+        mut self,
+        ctx: DeviceContext,
+        hidden: LayoutTensor[
+            dtype, Layout.row_major(B, Self.LATENT_DIM), MutAnyOrigin
+        ],
+        mut pred_out: LayoutTensor[
+            dtype, Layout.row_major(B, Self.PRED_OUT_DIM), MutAnyOrigin
+        ],
+    ) raises:
+        var in_t = TileTensor(hidden.ptr, row_major[B, Self.NET.IN_DIMS[0]]())
+        var out_t = TileTensor(pred_out.ptr, row_major[B, Self.NET.OUT_DIM]())
+        self.net[].forward["gpu", B](in_t, output=out_t)

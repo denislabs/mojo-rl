@@ -16,9 +16,19 @@ from .nets import (
     EZProjectorNet,
     EZPredictorNet,
 )
+from .nets_continuous import EZContPredNet
 from .loss_ops import consistency_loss_and_grad, consistency_loss_grad_k
+from .loss_ops_continuous import (
+    continuous_policy_loss_and_grad,
+    continuous_policy_loss_grad_k,
+)
 from .blocks import ezv2_unroll_train_step_cpu, ezv2_unroll_train_step_gpu
+from .blocks_continuous import (
+    ezv2_unroll_train_step_continuous_cpu,
+    ezv2_unroll_train_step_continuous_gpu,
+)
 from .selfplay_cpu import run_ezv2_selfplay_cpu
 from .selfplay_gpu import run_ezv2_gumbel_selfplay_gpu
+from .selfplay_gpu_continuous import run_ezv2_sampled_selfplay_gpu
 from .config import EZV2DiscreteMLPConfig
 from .agent import EZv2DiscreteAgent

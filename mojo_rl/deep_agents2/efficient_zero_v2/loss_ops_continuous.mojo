@@ -32,6 +32,8 @@ Gradchecked vs finite differences in
 """
 
 from std.math import log, exp, tanh, sqrt
+from std.gpu import global_idx
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn2.constants import DT
 
@@ -115,3 +117,76 @@ def continuous_policy_loss_and_grad[
             grad_musig[mbase + d] = grad_scale * dmu_raw
             grad_musig[mbase + ACT_DIM + d] = grad_scale * dsig_raw
     return total
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GPU device mirror — slice-write into a PRED_OUT-strided grad buffer
+# ──────────────────────────────────────────────────────────────────────
+
+
+def continuous_policy_loss_grad_k[
+    B_: Int, ACT_DIM_: Int, PRED_OUT_: Int,
+](
+    pout: LayoutTensor[DT, Layout.row_major(B_ * PRED_OUT_), MutAnyOrigin],
+    target_act: LayoutTensor[DT, Layout.row_major(B_ * ACT_DIM_), MutAnyOrigin],
+    grad_pout: LayoutTensor[DT, Layout.row_major(B_ * PRED_OUT_), MutAnyOrigin],
+    loss_buf: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+    grad_scale: Scalar[DT],
+    loss_coef: Scalar[DT],
+    max_action: Scalar[DT],
+    min_std: Scalar[DT],
+    soft_clamp: Scalar[DT],
+    init_std: Scalar[DT],
+    ent_scale: Scalar[DT],
+):
+    """GPU per-row squashed-Gaussian policy NLL — device mirror of
+    ``continuous_policy_loss_and_grad``. One thread per row ``b``: reads the
+    ``[μ_raw | σ_raw]`` slice (the leading ``2·ACT_DIM`` of the ``PRED_OUT``-wide
+    ``pout`` row), **accumulates** ``loss_coef·Σ_d (nlp_d − ent_scale·H_d)`` into
+    ``loss_buf[b]``, and writes ``grad_scale·∂loss/∂μ_raw`` /
+    ``grad_scale·∂loss/∂σ_raw`` into the same slice of ``grad_pout``. The value
+    slice ``[2·ACT_DIM, 2·ACT_DIM+BINS)`` is written by the value soft-CE kernel
+    (disjoint), so no zeroing is required. Math is the same scalar sequence as
+    the CPU op (parity ≈ reduction order only)."""
+    var b = Int(global_idx.x)
+    if b < B_:
+        var mbase = b * PRED_OUT_       # μ_raw at [mbase + d], σ_raw at [mbase + ACT_DIM_ + d]
+        var abase = b * ACT_DIM_
+        var row = Scalar[DT](0.0)
+        for d in range(ACT_DIM_):
+            var mu_raw = rebind[Scalar[DT]](pout[mbase + d])
+            var sig_raw = rebind[Scalar[DT]](pout[mbase + ACT_DIM_ + d])
+            var th = tanh(mu_raw / soft_clamp)
+            var mu = soft_clamp * th
+            var sp_in = sig_raw + init_std
+            var sp = sp_in if sp_in > Scalar[DT](20.0) else log(
+                Scalar[DT](1.0) + exp(sp_in)
+            )
+            var sig = sp + min_std
+            var c = rebind[Scalar[DT]](target_act[abase + d]) / max_action
+            if c > Scalar[DT](0.999):
+                c = Scalar[DT](0.999)
+            if c < Scalar[DT](-0.999):
+                c = Scalar[DT](-0.999)
+            var ustar = Scalar[DT](0.5) * log(
+                (Scalar[DT](1.0) + c) / (Scalar[DT](1.0) - c)
+            )
+            var eta = (ustar - mu) / sig
+            var nlp = (
+                Scalar[DT](0.5) * eta * eta
+                + log(sig)
+                + Scalar[DT](0.5) * _LOG2PI
+                + log(Scalar[DT](1.0) - c * c)
+            )
+            var ent = log(sig) + Scalar[DT](0.5) * _LOG2PIE
+            row += nlp - ent_scale * ent
+            var dmu = -eta / sig
+            var dsig = (Scalar[DT](1.0) - eta * eta - ent_scale) / sig
+            var dmu_raw = dmu * (Scalar[DT](1.0) - th * th)
+            var sig_part = Scalar[DT](1.0) / (
+                Scalar[DT](1.0) + exp(-(sig_raw + init_std))
+            )
+            var dsig_raw = dsig * sig_part
+            grad_pout[mbase + d] = grad_scale * dmu_raw
+            grad_pout[mbase + ACT_DIM_ + d] = grad_scale * dsig_raw
+        loss_buf[b] = rebind[Scalar[DT]](loss_buf[b]) + loss_coef * row
