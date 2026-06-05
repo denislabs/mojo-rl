@@ -37,10 +37,15 @@ def main() raises:
     comptime PROJ = 128
     comptime PROJ_HID = 128
     comptime BOTTLENECK = 64
-    comptime NUM_SIMS = 64        # 64 sims over 8 root candidates ≈ 8 visits each
+    # NOTE: the 64-sim / K_ROOT=8 "tuned" variant REGRESSED (greedy flat ~-1450
+    # vs reanalyze-only's descent to -920) — halving root candidates starved the
+    # continuous sampler of action diversity and amplified the policy collapse.
+    # Reverted to the known-good reanalyze config; root diversity (K_ROOT=16)
+    # matters more here than visits-per-candidate.
+    comptime NUM_SIMS = 32
     comptime MAX_NODES = 128
-    comptime K_ROOT = 8
-    comptime K_NON_ROOT = 4
+    comptime K_ROOT = 16
+    comptime K_NON_ROOT = 8
     comptime CAP = 50000
     comptime B = 128
     comptime K = 5
@@ -81,16 +86,13 @@ def main() raises:
     ](
         ctx, env, rep, dyn, pred, proj, predh,
         orep, odyn, opred, oproj, opredh,
-        iterations=30000,
+        # the -920 run was still descending at 30k → give it room to converge.
+        iterations=60000,
         learning_starts=2000,
         train_per_iter=1,
         gamma=Scalar[DT](0.99),
-        # value/reward two-hot support in h-space. Pendulum n-step targets (N=5)
-        # live in ~h[-17, 0]; the old [-50, 2] wasted >80% of the 51 bins, so
-        # tighten to [-20, 1] for ~2.5x finer value resolution (margin avoids
-        # clipping the most-negative bootstrap tail ≈ h(-313) ≈ -16.7).
-        v_min=Scalar[DT](-20.0),
-        v_max=Scalar[DT](1.0),
+        v_min=Scalar[DT](-50.0),
+        v_max=Scalar[DT](2.0),
         max_action=Scalar[DT](2.0),
         min_std=Scalar[DT](0.5),
         std_magnification=Scalar[DT](3.0),
