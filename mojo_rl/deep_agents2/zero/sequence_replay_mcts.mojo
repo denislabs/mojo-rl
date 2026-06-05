@@ -218,6 +218,86 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
 
         w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
 
+    def sample_training_batch_seq[
+        B: Int, K: Int, N: Int,
+    ](
+        mut self,
+        gamma: Scalar[DT],
+        mut obs_seq: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K+1, B, OBS]
+        mut actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K, B]
+        mut policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K+1, B, ACT]
+        mut value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K+1, B]
+        mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K, B]
+    ):
+        """EZv2 variant of ``sample_training_batch``: identical targets, but the
+        observation output is the **full time-major sequence** ``obs_seq[K+1, B,
+        OBS]`` (``obs_seq[0]`` is the root obs) so the SimSiam consistency loss
+        can encode the real future observations. Past an episode's terminal the
+        obs read is **obs-repeat absorbing** (offset clamped to ``L−1``), matching
+        the legacy consistency handling. Caller guarantees ``num_episodes() > 0``.
+        """
+        comptime HV = K + N + 1
+        comptime HR = K + N
+        var w_rew = _a(HR)
+        var w_done = _a(HR)
+        var w_val = _a(HV)
+        var w_tp = _a(HV)
+        var w_vt = _a(K + 1)
+
+        for b in range(B):
+            var e = Int(self._xorshift() % UInt64(len(self.ep_start)))
+            var L = self.ep_len[e]
+            var s = Int(self._xorshift() % UInt64(L))
+
+            # obs sequence: obs at s+k for k=0..K (obs-repeat absorbing).
+            for k in range(K + 1):
+                var off = s + k
+                if off >= L:
+                    off = L - 1
+                var slot = (self.ep_start[e] + off) % Self.CAP
+                var ob = k * B * Self.OBS + b * Self.OBS
+                for j in range(Self.OBS):
+                    obs_seq[ob + j] = self.obs[slot * Self.OBS + j]
+
+            for h in range(HR):
+                self._read_step[1](self.rew, e, s + h, w_rew, h)
+                if s + h >= L:
+                    w_done[h] = Scalar[DT](1.0)
+                else:
+                    self._read_step[1](self.done, e, s + h, w_done, h)
+            for h in range(HV):
+                if s + h >= L:
+                    w_val[h] = Scalar[DT](0.0)
+                    w_tp[h] = Scalar[DT](0.0)
+                else:
+                    self._read_step[1](self.val, e, s + h, w_val, h)
+                    self._read_step[1](self.tp, e, s + h, w_tp, h)
+
+            compute_nstep_value_targets[K, N](
+                w_rew, w_done, w_val, w_tp, gamma, w_vt
+            )
+
+            for k in range(K + 1):
+                value_tgt[k * B + b] = w_vt[k]
+                var pbase = k * B * Self.ACT + b * Self.ACT
+                if s + k >= L:
+                    var u = Scalar[DT](1.0) / Scalar[DT](Self.ACT)
+                    for a in range(Self.ACT):
+                        policy_tgt[pbase + a] = u
+                else:
+                    var slot = (self.ep_start[e] + s + k) % Self.CAP
+                    for a in range(Self.ACT):
+                        policy_tgt[pbase + a] = self.pol[slot * Self.ACT + a]
+            for k in range(K):
+                if s + k >= L:
+                    actions[k * B + b] = Scalar[DT](0.0)
+                else:
+                    var slot = (self.ep_start[e] + s + k) % Self.CAP
+                    actions[k * B + b] = self.act[slot]
+                reward_tgt[k * B + b] = w_rew[k]
+
+        w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
+
     def update_targets(
         mut self,
         ep_idx: Int,

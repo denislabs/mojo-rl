@@ -17,3 +17,7 @@ from .nets import (
     EZPredictorNet,
 )
 from .loss_ops import consistency_loss_and_grad
+from .blocks import ezv2_unroll_train_step_cpu
+from .selfplay_cpu import run_ezv2_selfplay_cpu
+from .config import EZV2DiscreteMLPConfig
+from .agent import EZv2DiscreteAgent
