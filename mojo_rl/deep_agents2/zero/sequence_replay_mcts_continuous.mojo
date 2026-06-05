@@ -204,3 +204,46 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
                 reward_tgt[k * B + b] = w_rew[k]
 
         w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
+
+    # ──────────────────────────────────────────────────────────────────
+    # Reanalyze hooks — refresh stale targets with a fresher (target) model
+    # ──────────────────────────────────────────────────────────────────
+
+    def sample_position(mut self) -> Tuple[Int, Int]:
+        """Pick a uniform random resident (episode, in-episode offset) for
+        reanalyze. Caller guarantees ``num_episodes() > 0``."""
+        var e = Int(self._xorshift() % UInt64(len(self.ep_start)))
+        var o = Int(self._xorshift() % UInt64(self.ep_len[e]))
+        return (e, o)
+
+    def read_obs(
+        self,
+        ep_idx: Int,
+        offset: Int,
+        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [OBS]
+    ):
+        """Copy the stored observation at ``(ep_idx, offset)`` into ``out`` — the
+        root obs for a reanalyze search."""
+        var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
+        for j in range(Self.OBS):
+            out[j] = self.obs[slot * Self.OBS + j]
+
+    def update_targets(
+        mut self,
+        ep_idx: Int,
+        offset: Int,
+        new_action: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [ACT_DIM]
+        new_value: Scalar[DT],
+    ):
+        """Reanalyze hook: overwrite a stored step's chosen action **vector**
+        (the behavior-clone policy target *and* the dynamics input) and its root
+        value with fresh search outputs from a lagging/target network. Pure
+        in-place data refresh — timing is the driver's."""
+        if ep_idx < 0 or ep_idx >= len(self.ep_start):
+            return
+        if offset < 0 or offset >= self.ep_len[ep_idx]:
+            return
+        var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
+        for d in range(Self.ACT_DIM):
+            self.act[slot * Self.ACT_DIM + d] = new_action[d]
+        self.val[slot] = new_value

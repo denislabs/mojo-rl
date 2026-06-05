@@ -93,6 +93,11 @@ def main() raises:
         value_coef=Scalar[DT](0.25),
         consistency_coef=Scalar[DT](2.0),
         ent_scale=Scalar[DT](0.05),
+        # exercise the target-net sync + reanalyze paths within the budget
+        target_sync_interval=100,
+        reanalyze_interval=50,
+        reanalyze_warmup=120,
+        reanalyze_batch=2,
         verbose=True,
     )
 

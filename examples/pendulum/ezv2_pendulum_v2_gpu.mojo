@@ -94,6 +94,12 @@ def main() raises:
         max_ep_steps=200,
         value_coef=Scalar[DT](0.25),
         consistency_coef=Scalar[DT](2.0),
+        # stale-target fix: lagging target net + reanalyze refresh (~2 stored
+        # positions re-searched per train step once warmed up).
+        target_sync_interval=200,
+        reanalyze_interval=1,
+        reanalyze_warmup=500,
+        reanalyze_batch=2,
         eval_every=2000,
         eval_episodes=5,
         seed=42,

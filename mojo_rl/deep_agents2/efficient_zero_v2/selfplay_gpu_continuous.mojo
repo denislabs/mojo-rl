@@ -29,6 +29,8 @@ from mojo_rl.nn.constants import dtype
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.optimizer.adam import Adam
+from mojo_rl.nn2.core.map_params import hard_copy_params
+from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from mojo_rl.planners.tree_search import SampledGumbelGPUMCTS, SinglePlayer
 
@@ -92,6 +94,10 @@ def run_ezv2_sampled_selfplay_gpu[
     ent_scale: Scalar[DT] = Scalar[DT](0.05),
     c_visit: Scalar[DT] = Scalar[DT](50.0),
     c_scale: Scalar[DT] = Scalar[DT](0.1),
+    target_sync_interval: Int = 200,
+    reanalyze_interval: Int = 1,
+    reanalyze_warmup: Int = 500,
+    reanalyze_batch: Int = 4,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     verbose: Bool = False,
@@ -122,6 +128,18 @@ def run_ezv2_sampled_selfplay_gpu[
     var dyn_a = MZDynGPU[LATENT, ACT_DIM, BINS, DYN].make(dyn)
     var pred_a = MZContPredGPU[LATENT, ACT_DIM, BINS, PRED].make(pred)
 
+    # ── lagging target nets (rep/dyn/pred only — proj/predh are consistency-
+    #    only, never used in search) + their adapters, for stable reanalyze.
+    var rep_t = REP.make["gpu", INIT=Kaiming](ctx)
+    var dyn_t = DYN.make["gpu", INIT=Kaiming](ctx)
+    var pred_t = PRED.make["gpu", INIT=Kaiming](ctx)
+    hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
+    hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
+    hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
+    var rep_ta = MZRepGPU[OBS, LATENT, REP].make(rep_t)
+    var dyn_ta = MZDynGPU[LATENT, ACT_DIM, BINS, DYN].make(dyn_t)
+    var pred_ta = MZContPredGPU[LATENT, ACT_DIM, BINS, PRED].make(pred_t)
+
     var rb = MCTSContSequenceReplay[OBS, ACT_DIM, CAP](
         seed=seed ^ UInt64(0xABCDEF)
     )
@@ -131,6 +149,11 @@ def run_ezv2_sampled_selfplay_gpu[
     var h_obs = _a(N_ENVS * OBS)
     var h_act = _a(N_ENVS * ACT_DIM)
     var h_val = _a(N_ENVS)
+    # reanalyze scratch (root obs read from replay → device → fresh target search)
+    var h_ra_obs = _a(N_ENVS * OBS)
+    var h_ra_act = _a(N_ENVS * ACT_DIM)
+    var h_ra_val = _a(N_ENVS)
+    var train_steps = 0
 
     # ── training batch slabs (time-major), obs is full [K+1, B, OBS] ──
     var t_obs_seq = _a((K + 1) * B * OBS)
@@ -238,6 +261,45 @@ def run_ezv2_sampled_selfplay_gpu[
                         init_std, ent_scale,
                     )
                 )
+                train_steps += 1
+
+                # ── sync lagging target nets ──
+                if train_steps % target_sync_interval == 0:
+                    hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
+                    hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
+                    hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
+
+                # ── reanalyze: refresh stale (action, value) targets on old
+                #    positions with a fresh TARGET-net search (post-warmup). ──
+                if (
+                    train_steps >= reanalyze_warmup
+                    and train_steps % reanalyze_interval == 0
+                    and rb.num_episodes() > 0
+                ):
+                    for _ra in range(reanalyze_batch):
+                        var pos = rb.sample_position()
+                        rb.read_obs(pos[0], pos[1], h_ra_obs)
+                        ctx.enqueue_copy(d_obs, h_ra_obs)
+                        var ra_obs_t = LayoutTensor[
+                            dtype, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
+                        ](rebind[
+                            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+                        ](d_obs.unsafe_ptr()))
+                        planner.search_gpu[
+                            MZRepGPU[OBS, LATENT, REP],
+                            MZDynGPU[LATENT, ACT_DIM, BINS, DYN],
+                            MZContPredGPU[LATENT, ACT_DIM, BINS, PRED],
+                        ](ctx, rep_ta, dyn_ta, pred_ta, ra_obs_t,
+                          deterministic=False, rng_seed=mcts_seed)
+                        mcts_seed += UInt32(1)
+                        ctx.enqueue_copy(
+                            h_ra_act, planner.chosen_actions_view()
+                        )
+                        ctx.enqueue_copy(h_ra_val, planner.root_value_view())
+                        ctx.synchronize()
+                        rb.update_targets(
+                            pos[0], pos[1], h_ra_act, h_ra_val[0]
+                        )
 
         # ── greedy eval (deterministic argmax-visit candidate) ──
         if eval_every > 0 and (it + 1) % eval_every == 0:
@@ -304,4 +366,10 @@ def run_ezv2_sampled_selfplay_gpu[
 
     t_obs_seq.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     h_obs.free(); h_act.free(); h_val.free()
+    h_ra_obs.free(); h_ra_act.free(); h_ra_val.free()
+    # keep the target nets (held only via UnsafePointer in the adapters) alive
+    # through the whole rollout — the analyzer can't see the indirection.
+    _ = rep_t^
+    _ = dyn_t^
+    _ = pred_t^
     return last_loss
