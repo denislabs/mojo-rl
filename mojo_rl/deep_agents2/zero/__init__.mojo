@@ -2,6 +2,7 @@
 # nn2 + the planners.tree_search MCTS. Built incrementally during Phase A.
 
 from .mcts_adapters import AZPredGPU, AZEnvGPU
+from .mcts_adapters_cpu import AZRepCPU, AZDynCPU, AZPredCPU
 from .example_replay import MCTSExampleReplay
 from .evaluators import (
     GPUEvaluator,

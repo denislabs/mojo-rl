@@ -27,6 +27,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
+from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import (
     GenericGPUMCTS, AlphaGoPUCT, NoNoise, SelfPlay,
@@ -169,6 +170,96 @@ def eval_policy_vs_random[
             losses += 1
         else:
             draws += 1
+    return EvalResult(wins=wins, draws=draws, losses=losses)
+
+
+def eval_policy_vs_random_cpu[
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    NET: Module,
+    N_GAMES: Int,
+    MAX_PLIES: Int,
+](
+    mut net: NET,
+    agent_player: Int = 0,
+    seed: UInt64 = 1,
+) raises -> EvalResult:
+    """CPU counterpart to `eval_policy_vs_random`: play `N_GAMES` games on a
+    single CPU env where the agent picks ``argmax`` of its (CPU) policy head over
+    legal moves and the opponent plays a uniform random legal move. Pure-policy
+    (no MCTS) — tests what the network learned. Returns the agent's record."""
+    comptime IN = NET.IN_DIMS[0]
+    comptime ACT = NET.OUT_DIM - 1
+    comptime OUT = NET.OUT_DIM
+
+    net.set_attr["training"](Scalar[DT](0.0))
+
+    var env = ENV()
+    var obs_buf = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        alloc[Scalar[DT]](IN)
+    )
+    var pred_buf = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        alloc[Scalar[DT]](OUT)
+    )
+    var obs_t = TileTensor(obs_buf, row_major[1, IN]())
+    var pred_t = TileTensor(pred_buf, row_major[1, OUT]())
+
+    var wins = 0
+    var draws = 0
+    var losses = 0
+    var rng = seed | 1
+
+    for _g in range(N_GAMES):
+        _ = env.reset()
+        for _ply in range(MAX_PLIES):
+            if env.game_result() != 0:
+                break
+            var legal = env.legal_action_mask()
+            var act = 0
+            if env.current_player() == agent_player:
+                var obs_raw = env.get_obs_list()
+                for i in range(IN):
+                    obs_buf[i] = Scalar[DT](obs_raw[i]) if i < len(
+                        obs_raw
+                    ) else Scalar[DT](0.0)
+                net.forward["cpu", 1](obs_t, output=pred_t)
+                var best = -1
+                var bestv = Float64(-1e30)
+                for a in range(ACT):
+                    if a < len(legal) and legal[a]:
+                        var v = Float64(pred_buf[a])
+                        if v > bestv:
+                            bestv = v
+                            best = a
+                act = best if best >= 0 else 0
+            else:
+                var cnt = 0
+                for a in range(ACT):
+                    if a < len(legal) and legal[a]:
+                        cnt += 1
+                if cnt > 0:
+                    rng = _xs(rng)
+                    var pick = Int(rng % UInt64(cnt))
+                    var seen = 0
+                    for a in range(ACT):
+                        if a < len(legal) and legal[a]:
+                            if seen == pick:
+                                act = a
+                                break
+                            seen += 1
+            _ = env.step(env.action_from_index(act))
+
+        var gr = env.game_result()
+        var agent_win = agent_player + 1
+        var agent_loss = (1 - agent_player) + 1
+        if gr == agent_win:
+            wins += 1
+        elif gr == agent_loss:
+            losses += 1
+        else:
+            draws += 1
+
+    obs_buf.free()
+    pred_buf.free()
     return EvalResult(wins=wins, draws=draws, losses=losses)
 
 

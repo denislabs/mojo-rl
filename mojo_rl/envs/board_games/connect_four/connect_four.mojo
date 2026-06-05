@@ -70,6 +70,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     & GPUTwoPlayerDiscreteEnv
     & RenderableEnv
     & Saveable
+    & Defaultable
 ):
     """ConnectFour environment — CPU+GPU dual path."""
 

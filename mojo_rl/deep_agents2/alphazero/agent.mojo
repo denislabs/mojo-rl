@@ -1,14 +1,17 @@
 """AlphaZeroAgent — facade over the self-play driver + eval + checkpointing.
 
-Owns the (GPU-resident) prediction net and a device context, and packages the
-loose functions into a usable API:
+Parameterized on `TARGET` ("cpu" / "gpu"), mirroring the SAC dual-path pattern:
+construct with a `DeviceContext` for "gpu" (or `None` for "cpu"); the net is
+built host- or device-resident via `NET.make[TARGET]`, and `train` routes to the
+matching driver. Packages the loose functions into a usable API:
 
-  * `make`              — build a fresh agent (Kaiming-init net).
-  * `train(iterations)` — run a self-play training session, return last loss.
-  * `eval_vs_random`    — greedy-policy win/draw/loss vs a random opponent.
-  * `save` / `load`     — one-file `nn2-ckpt v2` checkpoint of the net (the
-                          GPU saver is byte-identical to the CPU one, so a
-                          GPU-trained model reloads anywhere).
+  * `__init__(ctx, lr)`  — build a fresh agent (Kaiming-init net on `TARGET`).
+  * `train(iterations)`  — self-play training; "gpu" runs `N_ENVS` batched games
+                           through `GenericGPUMCTS`, "cpu" plays one game at a
+                           time through `GenericCPUMCTS` (true-rules adapters).
+  * `train_arena(...)`   — full-AlphaZero arena gating + telemetry (GPU).
+  * `eval_vs_random` / `eval_vs_random_cpu` / `eval_mcts` — strength checks.
+  * `save` / `load`      — one-file `nn2-ckpt v2` checkpoint of the net.
 
 The net's params persist across `train` calls (training continues from the
 current weights); the optimizer + replay are session-local (recreated per
@@ -22,27 +25,36 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.core.checkpoint import (
-    save_state_v2_body_gpu, load_state_v2_body_gpu,
+    save_state_v2_body_gpu,
+    load_state_v2_body_gpu,
 )
 from mojo_rl.deep_agents2.core.checkpoint_helpers import (
-    split_lines_v2, read_file_v2, expect_v2_header,
+    split_lines_v2,
+    read_file_v2,
+    expect_v2_header,
 )
+from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 
 from ..zero.evaluators import GPUEvaluator, RandomOpponent
 from ..zero.symmetries import BoardAugmenter, IdentityAugmenter
 from .selfplay import run_alphazero_selfplay
+from .selfplay_cpu import run_alphazero_selfplay_cpu
 from .selfplay_arena import run_alphazero_selfplay_arena, ArenaRunResult
 from .eval import (
-    eval_policy_vs_random, eval_policy_vs_opponent, eval_mcts_vs_opponent,
+    eval_policy_vs_random,
+    eval_policy_vs_random_cpu,
+    eval_policy_vs_opponent,
+    eval_mcts_vs_opponent,
     EvalResult,
 )
 
 
 @fieldwise_init
 struct AlphaZeroAgent[
-    ENV: GPUTwoPlayerDiscreteEnv,
+    TARGET: StaticString,
+    ENV: GPUTwoPlayerDiscreteEnv & TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
     NET: Module,
     N_ENVS: Int,
     NUM_SIMS: Int,
@@ -50,20 +62,19 @@ struct AlphaZeroAgent[
     BATCH: Int,
     CAP: Int,
     MAX_TRAJ: Int,
-](Movable, ImplicitlyDestructible):
-    var ctx: DeviceContext
+](ImplicitlyDestructible, Movable):
+    var ctx: Optional[DeviceContext]
     var net: Self.NET
     var lr: Scalar[DT]
 
-    @staticmethod
-    def make(
-        ctx: DeviceContext, lr: Scalar[DT] = Scalar[DT](0.01)
-    ) raises -> Self:
-        return Self(
-            ctx=ctx,
-            net=Self.NET.make["gpu", INIT=Kaiming](ctx=ctx),
-            lr=lr,
-        )
+    def __init__(
+        out self,
+        ctx: Optional[DeviceContext],
+        lr: Scalar[DT] = Scalar[DT](0.01),
+    ) raises:
+        self.ctx = ctx
+        self.net = Self.NET.make[Self.TARGET, INIT=Kaiming](ctx=ctx)
+        self.lr = lr
 
     def train(
         mut self,
@@ -72,13 +83,46 @@ struct AlphaZeroAgent[
         train_per_iter: Int = 2,
         seed: UInt64 = 0,
     ) raises -> Float64:
-        return run_alphazero_selfplay[
-            Self.ENV, Self.NET, Self.N_ENVS, Self.NUM_SIMS, Self.MAX_NODES,
-            Self.BATCH, Self.CAP, Self.MAX_TRAJ,
-        ](
-            self.ctx, self.net, iterations, learning_starts, train_per_iter,
-            self.lr, seed,
-        )
+        """Self-play training. Routes on `TARGET`: the GPU path runs `N_ENVS`
+        batched games through `GenericGPUMCTS`; the CPU path plays a single game
+        at a time through `GenericCPUMCTS` (true-rules adapters). Both share the
+        AZ loss graph, replay, and value-target convention."""
+        comptime if Self.TARGET == "gpu":
+            return run_alphazero_selfplay[
+                Self.ENV,
+                Self.NET,
+                Self.N_ENVS,
+                Self.NUM_SIMS,
+                Self.MAX_NODES,
+                Self.BATCH,
+                Self.CAP,
+                Self.MAX_TRAJ,
+            ](
+                self.ctx.value(),
+                self.net,
+                iterations,
+                learning_starts,
+                train_per_iter,
+                self.lr,
+                seed,
+            )
+        else:
+            return run_alphazero_selfplay_cpu[
+                Self.ENV,
+                Self.NET,
+                Self.NUM_SIMS,
+                Self.MAX_NODES,
+                Self.BATCH,
+                Self.CAP,
+                Self.MAX_TRAJ,
+            ](
+                self.net,
+                iterations,
+                learning_starts,
+                train_per_iter,
+                self.lr,
+                seed,
+            )
 
     def train_arena[
         AUG: BoardAugmenter = IdentityAugmenter,
@@ -112,39 +156,80 @@ struct AlphaZeroAgent[
         `OPP1=GPUMinimaxTicTacToe`, `do_eval2=True`) for per-report eval+print+
         metric flush, mirroring the legacy `train_selfplay_gpu` telemetry. The
         periodic eval plays the agent at **full MCTS strength** (temp=0), not the
-        bare policy head — `iterations`/`report_every` are in self-play *moves*."""
+        bare policy head — `iterations`/`report_every` are in self-play *moves*.
+        """
         return run_alphazero_selfplay_arena[
-            Self.ENV, Self.NET, AUG, Self.N_ENVS, Self.NUM_SIMS, Self.MAX_NODES,
-            Self.BATCH, Self.CAP, Self.MAX_TRAJ,
-            ARENA_GAMES, RESULT_IDX, MAX_PLIES, OPP1, OPP2, L, EVAL_GAMES,
+            Self.ENV,
+            Self.NET,
+            AUG,
+            Self.N_ENVS,
+            Self.NUM_SIMS,
+            Self.MAX_NODES,
+            Self.BATCH,
+            Self.CAP,
+            Self.MAX_TRAJ,
+            ARENA_GAMES,
+            RESULT_IDX,
+            MAX_PLIES,
+            OPP1,
+            OPP2,
+            L,
+            EVAL_GAMES,
         ](
-            self.ctx, self.net, iterations, learning_starts, train_per_iter,
-            self.lr, seed, arena_every, arena_open_plies, promote_threshold,
-            report_every, do_eval, do_eval2, verbose, logger,
+            self.ctx.value(),
+            self.net,
+            iterations,
+            learning_starts,
+            train_per_iter,
+            self.lr,
+            seed,
+            arena_every,
+            arena_open_plies,
+            promote_threshold,
+            report_every,
+            do_eval,
+            do_eval2,
+            verbose,
+            logger,
         )
 
     def eval_mcts[
-        OPP: GPUEvaluator, N_EVAL: Int, NUM_SIMS: Int, MAX_NODES: Int,
+        OPP: GPUEvaluator,
+        N_EVAL: Int,
+        NUM_SIMS_EVAL: Int,
+        MAX_NODES_EVAL: Int,
         MAX_PLIES: Int,
-    ](
-        mut self, agent_player: Int = 0, seed: UInt64 = 1
-    ) raises -> EvalResult:
+    ](mut self, agent_player: Int = 0, seed: UInt64 = 1) raises -> EvalResult:
         """Full-strength eval: agent plays via MCTS (temp=0) vs `OPP`. This is
         the deployed-agent metric — the policy head alone cannot draw perfect
         minimax, MCTS on top can. Pass the agent's own `Self.NUM_SIMS` /
         `Self.MAX_NODES` for parity with training-time search."""
         return eval_mcts_vs_opponent[
-            Self.ENV, Self.NET, OPP, N_EVAL, NUM_SIMS, MAX_NODES, MAX_PLIES
-        ](self.ctx, self.net, agent_player, seed)
+            Self.ENV,
+            Self.NET,
+            OPP,
+            N_EVAL,
+            NUM_SIMS_EVAL,
+            MAX_NODES_EVAL,
+            MAX_PLIES,
+        ](self.ctx.value(), self.net, agent_player, seed)
 
     def eval_vs_random[
         N_EVAL: Int, RESULT_IDX: Int, MAX_PLIES: Int
-    ](
-        mut self, agent_player: Int = 0, seed: UInt64 = 1
-    ) raises -> EvalResult:
+    ](mut self, agent_player: Int = 0, seed: UInt64 = 1) raises -> EvalResult:
         return eval_policy_vs_random[
             Self.ENV, Self.NET, N_EVAL, RESULT_IDX, MAX_PLIES
-        ](self.ctx, self.net, agent_player, seed)
+        ](self.ctx.value(), self.net, agent_player, seed)
+
+    def eval_vs_random_cpu[
+        N_EVAL: Int, MAX_PLIES: Int
+    ](mut self, agent_player: Int = 0, seed: UInt64 = 1) raises -> EvalResult:
+        """CPU greedy-policy eval vs a random opponent (single CPU env). The CPU
+        counterpart to `eval_vs_random` for `TARGET="cpu"` agents whose net is
+        host-resident."""
+        return eval_policy_vs_random_cpu[
+            Self.ENV, Self.NET, N_EVAL, MAX_PLIES
+        ](self.net, agent_player, seed)
 
     def eval_vs_opponent[
         OPP: GPUEvaluator, N_EVAL: Int, RESULT_IDX: Int, MAX_PLIES: Int
@@ -157,11 +242,11 @@ struct AlphaZeroAgent[
         for deterministic opponents (see `eval_policy_vs_opponent`)."""
         return eval_policy_vs_opponent[
             Self.ENV, Self.NET, OPP, N_EVAL, RESULT_IDX, MAX_PLIES
-        ](self.ctx, self.net, agent_player, seed, open_plies)
+        ](self.ctx.value(), self.net, agent_player, seed, open_plies)
 
     def save(mut self, path: String) raises:
         var body = String("")
-        save_state_v2_body_gpu(self.net, body, String("net"), self.ctx)
+        save_state_v2_body_gpu(self.net, body, String("net"), self.ctx.value())
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
@@ -171,4 +256,6 @@ struct AlphaZeroAgent[
         var lines = split_lines_v2(content)
         expect_v2_header(lines)
         var idx = 1
-        load_state_v2_body_gpu(self.net, lines, idx, String("net"), self.ctx)
+        load_state_v2_body_gpu(
+            self.net, lines, idx, String("net"), self.ctx.value()
+        )

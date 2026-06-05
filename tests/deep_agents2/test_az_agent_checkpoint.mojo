@@ -22,7 +22,7 @@ def main() raises:
     comptime H = 64
     comptime Net = AZMLPNet[OBS, ACT, H]
     comptime Env = TicTacToeEnv[DType.float64]
-    comptime Agent = AlphaZeroAgent[Env, Net, 16, 16, 64, 32, 4096, 16]
+    comptime Agent = AlphaZeroAgent["gpu", Env, Net, 16, 16, 64, 32, 4096, 16]
     comptime N_EVAL = 200
     comptime RESULT_IDX = 10
     comptime MAX_PLIES = 9
@@ -30,16 +30,20 @@ def main() raises:
 
     var ctx = DeviceContext()
 
-    var agent = Agent.make(ctx, lr=0.01)
-    _ = agent.train(iterations=300, learning_starts=20, train_per_iter=2, seed=7)
+    var agent = Agent(ctx, lr=0.01)
+    _ = agent.train(
+        iterations=300, learning_starts=20, train_per_iter=2, seed=7
+    )
     var e1 = agent.eval_vs_random[N_EVAL, RESULT_IDX, MAX_PLIES](
         agent_player=0, seed=12345
     )
-    print("trained agent  win=", e1.wins, " draw=", e1.draws, " loss=", e1.losses)
+    print(
+        "trained agent  win=", e1.wins, " draw=", e1.draws, " loss=", e1.losses
+    )
     agent.save(CKPT)
 
     # Fresh agent (different random init) → load → must match e1 exactly.
-    var agent2 = Agent.make(ctx, lr=0.01)
+    var agent2 = Agent(ctx, lr=0.01)
     var e0 = agent2.eval_vs_random[N_EVAL, RESULT_IDX, MAX_PLIES](
         agent_player=0, seed=12345
     )
@@ -47,7 +51,9 @@ def main() raises:
     var e2 = agent2.eval_vs_random[N_EVAL, RESULT_IDX, MAX_PLIES](
         agent_player=0, seed=12345
     )
-    print("reloaded agent win=", e2.wins, " draw=", e2.draws, " loss=", e2.losses)
+    print(
+        "reloaded agent win=", e2.wins, " draw=", e2.draws, " loss=", e2.losses
+    )
 
     assert_equal(e1.wins, e2.wins, "checkpoint round-trip changed wins")
     assert_equal(e1.draws, e2.draws, "checkpoint round-trip changed draws")

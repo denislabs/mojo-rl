@@ -22,7 +22,8 @@ from mojo_rl.deep_agents2.alphazero.nets import AZMLPNet
 from mojo_rl.deep_agents2.alphazero.agent import AlphaZeroAgent
 from mojo_rl.deep_agents2.zero.symmetries import D4SquareAugmenter
 from mojo_rl.deep_agents2.zero.evaluators import (
-    RandomOpponent, GPUMinimaxTicTacToe,
+    RandomOpponent,
+    GPUMinimaxTicTacToe,
 )
 from mojo_rl.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
 
@@ -39,9 +40,16 @@ def main() raises:
 
     var ctx = DeviceContext()
     var agent = AlphaZeroAgent[
-        Env, Net, N_ENVS=16, NUM_SIMS=24, MAX_NODES=64,
-        BATCH=64, CAP=16384, MAX_TRAJ=16,
-    ].make(ctx, lr=0.01)
+        "gpu",
+        Env,
+        Net,
+        N_ENVS=16,
+        NUM_SIMS=24,
+        MAX_NODES=64,
+        BATCH=64,
+        CAP=16384,
+        MAX_TRAJ=16,
+    ](ctx, lr=0.01)
 
     var csv_path = String("logs/az_telemetry_test.csv")
     var logger = CsvLogger(csv_path, buffer_size=4)
@@ -74,7 +82,9 @@ def main() raises:
     )
     logger.close()
 
-    print("train_arena  last_loss=", res.last_loss, " promotions=", res.promotions)
+    print(
+        "train_arena  last_loss=", res.last_loss, " promotions=", res.promotions
+    )
     print("csv logged rows:", logger.total_logged())
 
     # The run must have produced finite loss and reached the report cadence at

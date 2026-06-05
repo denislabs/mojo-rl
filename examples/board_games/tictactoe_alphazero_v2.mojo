@@ -62,9 +62,9 @@ def main() raises:
 
     var ctx = DeviceContext()
     var agent = AlphaZeroAgent[
-        Env, Net, N_ENVS=32, NUM_SIMS=50, MAX_NODES=128,
+        "gpu", Env, Net, N_ENVS=32, NUM_SIMS=50, MAX_NODES=128,
         BATCH=64, CAP=80000, MAX_TRAJ=16,
-    ].make(ctx, lr=0.005)
+    ](ctx, lr=0.005)
 
     # Full AlphaZero: best/learner Arena gating + D4 augmentation, evaluated
     # every 200 self-play iterations vs minimax (primary) and random
