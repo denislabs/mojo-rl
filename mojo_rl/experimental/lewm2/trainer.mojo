@@ -288,6 +288,49 @@ struct LeWMTrainer[
                 m += self.loss_host[b]
         return m / Scalar[DT](Self.BATCH)
 
+    def forward_into[
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        pix: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        act: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        pred_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        tgt_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """Forward-only readout for eval/planning: run the graph over
+        (pix, act) and copy the predicted latents (`pred` node) and the
+        encoded target latents (`tgt` node) — both (BATCH, H·EMB) — to the
+        caller's host buffers. `tgt` is action-independent (the encoded
+        real future), so it's the fixed goal a planner scores against;
+        `pred` is the action-conditioned prediction. No grad / no step."""
+        assert_tag_for["LeWMTrainer", Self.train_target](self.ts.target_tag)
+        comptime HE = Self.H * Self.EMB
+        self.graph.set_input["pixels", Self.BATCH](pix)
+        self.graph.set_input["actions", Self.BATCH](act)
+        var loss_p = self._loss_out.target_ptr[Self.train_target]()
+        var loss_t = TileTensor(loss_p, row_major[Self.BATCH, 1]())
+        self.graph.forward[Self.train_target, Self.BATCH, POLICY](loss_t)
+        var pred_src = self.graph.node_out_ptr["pred"]()
+        var tgt_src = self.graph.node_out_ptr["tgt"]()
+        comptime N = Self.BATCH * HE
+        comptime if Self.train_target == "cpu":
+            for i in range(N):
+                pred_host[i] = pred_src[i]
+                tgt_host[i] = tgt_src[i]
+        else:
+            var ctx = self.ts.ctx.value()
+            var pred_dev = DeviceBuffer[DT](ctx, pred_src, N, owning=False)
+            var tgt_dev = DeviceBuffer[DT](ctx, tgt_src, N, owning=False)
+            ctx.enqueue_copy(pred_host, pred_dev)
+            ctx.enqueue_copy(tgt_host, tgt_dev)
+            ctx.synchronize()
+
     def reset_loss_accum(mut self) raises:
         """Zero the device `(Σmean, count)` loss accumulator (GPU, flush)."""
         comptime if Self.train_target == "gpu":
