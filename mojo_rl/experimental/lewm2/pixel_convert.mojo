@@ -36,6 +36,48 @@ def _u8_hwc_to_chw_kernel[C: Int, H: Int, W: Int, BATCH: Int](
     dst[idx] = src[src_idx].cast[DT]() / Scalar[DT](255.0)
 
 
+def _u8_norm_kernel[N: Int](
+    src: LayoutTensor[DType.uint8, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx < N:
+        dst[idx] = src[idx].cast[DT]() / Scalar[DT](255.0)
+
+
+def u8_to_fp32_norm[
+    target: StaticString,
+    N: Int,
+](
+    src: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
+    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """Layout-preserving uint8 → fp32 ÷255 over `N` elements. Use when the
+    source is already in the encoder's channel-major (CHW) layout — e.g.
+    Pong frames (`PongOfflineBuffer.INPUT_LAYOUT_HWC == False`), so no
+    permute is needed, only the normalise. `ctx` required for target='gpu'."""
+    comptime assert target == "cpu" or target == "gpu", (
+        "u8_to_fp32_norm: target must be 'cpu' or 'gpu'"
+    )
+    comptime if target == "cpu":
+        for i in range(N):
+            dst[i] = src[i].cast[DT]() / Scalar[DT](255.0)
+    else:
+        if not ctx:
+            raise Error("u8_to_fp32_norm[target='gpu']: ctx required")
+        var c = ctx.value()
+        var src_lt = LayoutTensor[
+            DType.uint8, Layout.row_major(N), MutAnyOrigin
+        ](src)
+        var dst_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](dst)
+        comptime n_blocks = (N + TPB - 1) // TPB
+        comptime kernel = _u8_norm_kernel[N]
+        c.enqueue_function[kernel](
+            src_lt, dst_lt, grid_dim=n_blocks, block_dim=TPB,
+        )
+
+
 def u8_hwc_to_chw_norm[
     target: StaticString,
     C: Int, H: Int, W: Int, BATCH: Int,

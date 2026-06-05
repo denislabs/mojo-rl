@@ -11,7 +11,10 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.experimental.lewm2.pixel_convert import u8_hwc_to_chw_norm
+from mojo_rl.experimental.lewm2.pixel_convert import (
+    u8_hwc_to_chw_norm,
+    u8_to_fp32_norm,
+)
 
 
 comptime C = 4
@@ -84,6 +87,30 @@ def main() raises:
     assert_true(maxd < Scalar[DT](1e-7), "GPU bitwise-matches CPU")
 
     cpu_dst.free()
+
+    # ── layout-preserving u8_to_fp32_norm (the CHW Pong path) ──────────
+    print("u8_to_fp32_norm (layout-preserving) CPU↔GPU ...")
+    var lp_cpu: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    u8_to_fp32_norm["cpu", N](src_host_ptr, lp_cpu)
+    var lp_dst_d = ctx.enqueue_create_buffer[DT](N)
+    u8_to_fp32_norm["gpu", N](_u8p(src_d), _fp(lp_dst_d), ctx=ctx)
+    var lp_gpu_h = ctx.enqueue_create_host_buffer[DT](N)
+    ctx.enqueue_copy(lp_gpu_h, lp_dst_d)
+    ctx.synchronize()
+    var lp_maxd: Scalar[DT] = 0.0
+    var lp_oracle_ok = True
+    for k in range(N):
+        var d = (lp_gpu_h.unsafe_ptr()[k] - lp_cpu[k]).__abs__()
+        if d > lp_maxd:
+            lp_maxd = d
+        var want = Scalar[DT](Float64(Int(src_h.unsafe_ptr()[k]))) / 255.0
+        if (lp_cpu[k] - want).__abs__() > Scalar[DT](1e-7):
+            lp_oracle_ok = False
+    print("   max|gpu - cpu| =", lp_maxd)
+    assert_true(lp_maxd < Scalar[DT](1e-7), "u8_to_fp32_norm GPU==CPU")
+    assert_true(lp_oracle_ok, "u8_to_fp32_norm == x/255 elementwise")
+    lp_cpu.free()
+
     print("=" * 70)
     print("ALL PASSED")
     print("=" * 70)
