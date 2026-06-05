@@ -22,11 +22,11 @@ nn2 differences vs the legacy script (simpler, not awkward):
   - Per-token CE is the `SequenceCrossEntropyLoss[SEQ, VOCAB]` op (used for
     both training and val), instead of reinterpreting + a static CE kernel.
 
-Generation-quality features ported from gen-1: dropout (`GPTDrop`, p=0.2) and
-`Normal(0,0.02)` init — these fix the overfitting (val collapsing well below
-~1.5 nats → degenerate generation). Still deferred (harder in nn2's per-leaf
-param model; help the last bit but not the main fix):
-  - LM-head↔embedding weight tying,
+Generation-quality features ported from gen-1: dropout (`GPTDrop`, p=0.2),
+`Normal(0,0.02)` init, and **LM-head↔embedding weight tying** (`TIE_WEIGHTS`,
+the key fix for degenerate generation — see the tying block below). Weight
+tying drives the step manually so the grad-fold lands between net.vjp and
+optim.step. Still deferred (smaller effect):
   - 1/√(2L) c_proj scaled init,
   - per-step grad clip (nn2 AdamW has none).
 See docs/NN2_TRANSFORMER_PORT.md.
@@ -42,13 +42,14 @@ from std.memory import alloc
 from std.random import seed, random_float64
 from std.math import log, exp, cos
 from std.time import perf_counter_ns
+from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from layout import row_major, TileTensor
+from layout import row_major, TileTensor, Layout, LayoutTensor
 
 from mojo_rl.nn.datasets import (
     CharTokenizer, load_text, train_val_split, make_batch, to_one_hot,
 )
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.composites import GPTDrop
 from mojo_rl.nn2.loss import SequenceCrossEntropyLoss
 from mojo_rl.nn2.optimizer import AdamW
@@ -93,6 +94,84 @@ comptime GPT_MODEL = GPTDrop[
 ]
 comptime GPT_LOSS = SequenceCrossEntropyLoss[SEQ, VOCAB]
 comptime GPT_TRAINER = Trainer[GPT_MODEL, AdamW, GPT_LOSS, BATCH, target="gpu"]
+
+# Weight tying: LM-head W shares the embedding W (transposed) — nanoGPT's
+# `lm_head.weight = wte.weight`. In your nn experience this was the key fix
+# for degenerate generation (val collapsing low while greedy decodes "the the
+# the"). Each step we fold the LM-head W grad (transposed) into the embedding
+# W grad + zero the LM-head's, step, then copy emb→lm so the two stay tied.
+# Requires the manual training pipeline (the grad-fold lands between net.vjp
+# and optim.step, which the packaged train_step does atomically).
+#   Embedding W : (VOCAB, EMBED) row-major → v*EMBED + e
+#   LM-head  W  : (EMBED, VOCAB) row-major → e*VOCAB + v   ⇒ tie lm[e,v]=emb[v,e]
+# GPTDrop children: [Tok[Embed], BiasAdd, Dropout, Repeat, Tok[LN], Tok[LMHead]]
+# → embedding is child 0, LM head is the last child.
+comptime TIE_WEIGHTS = True
+comptime LM_IDX = GPT_MODEL.N - 1
+
+
+def _tie_grads_kernel[
+    VOCAB_: Int, EMBED_: Int
+](
+    emb_g: LayoutTensor[DT, Layout.row_major(VOCAB_ * EMBED_), MutAnyOrigin],
+    lm_g: LayoutTensor[DT, Layout.row_major(EMBED_ * VOCAB_), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx >= VOCAB_ * EMBED_:
+        return
+    var v = idx // EMBED_
+    var e = idx % EMBED_
+    var lm_i = e * VOCAB_ + v
+    emb_g[idx] = rebind[Scalar[DT]](emb_g[idx]) + rebind[Scalar[DT]](lm_g[lm_i])
+    lm_g[lm_i] = Scalar[DT](0)
+
+
+def _tie_params_kernel[
+    VOCAB_: Int, EMBED_: Int
+](
+    emb_v: LayoutTensor[DT, Layout.row_major(VOCAB_ * EMBED_), MutAnyOrigin],
+    lm_v: LayoutTensor[DT, Layout.row_major(EMBED_ * VOCAB_), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx >= VOCAB_ * EMBED_:
+        return
+    var v = idx // EMBED_
+    var e = idx % EMBED_
+    lm_v[e * VOCAB_ + v] = rebind[Scalar[DT]](emb_v[idx])
+
+
+def _tie_grads(mut trainer: GPT_TRAINER, ctx: DeviceContext) raises:
+    var eg = LayoutTensor[DT, Layout.row_major(VOCAB * EMBED), MutAnyOrigin](
+        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            trainer.net.children[0].inner.weight.grad_dev.value().unsafe_ptr()
+        )
+    )
+    var lg = LayoutTensor[DT, Layout.row_major(EMBED * VOCAB), MutAnyOrigin](
+        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            trainer.net.children[LM_IDX].inner.weight.grad_dev.value().unsafe_ptr()
+        )
+    )
+    comptime nb = (VOCAB * EMBED + TPB - 1) // TPB
+    ctx.enqueue_function[_tie_grads_kernel[VOCAB, EMBED]](
+        eg, lg, grid_dim=nb, block_dim=TPB
+    )
+
+
+def _tie_params(mut trainer: GPT_TRAINER, ctx: DeviceContext) raises:
+    var ev = LayoutTensor[DT, Layout.row_major(VOCAB * EMBED), MutAnyOrigin](
+        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            trainer.net.children[0].inner.weight.value_dev.value().unsafe_ptr()
+        )
+    )
+    var lv = LayoutTensor[DT, Layout.row_major(EMBED * VOCAB), MutAnyOrigin](
+        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            trainer.net.children[LM_IDX].inner.weight.value_dev.value().unsafe_ptr()
+        )
+    )
+    comptime nb = (VOCAB * EMBED + TPB - 1) // TPB
+    ctx.enqueue_function[_tie_params_kernel[VOCAB, EMBED]](
+        ev, lv, grid_dim=nb, block_dim=TPB
+    )
 
 
 def _lr_scale(it: Int) -> Scalar[DT]:
@@ -364,14 +443,28 @@ def main() raises:
     # Eval scratch: a (BATCH, OUT_DIM) device output + host mirror.
     var eval_out_d = ctx.enqueue_create_buffer[DT](BATCH * OUT_DIM)
     var eval_out_h = ctx.enqueue_create_host_buffer[DT](BATCH * OUT_DIM)
-    # Per-iter train staging (host one-hot; train_step uploads internally).
-    var in_host = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](BATCH * IN_DIM)
+    # Per-iter train staging + the manual-pipeline device buffers (weight tying
+    # needs the grad-fold between net.vjp and optim.step, so we drive the step
+    # ourselves instead of trainer.train_step).
+    var in_host = ctx.enqueue_create_host_buffer[DT](BATCH * IN_DIM)
+    var tgt_host = ctx.enqueue_create_host_buffer[DT](BATCH * OUT_DIM)
+    var in_d = ctx.enqueue_create_buffer[DT](BATCH * IN_DIM)
+    var tgt_d = ctx.enqueue_create_buffer[DT](BATCH * OUT_DIM)
+    var out_d = ctx.enqueue_create_buffer[DT](BATCH * OUT_DIM)
+    var go_d = ctx.enqueue_create_buffer[DT](BATCH * OUT_DIM)
+    var gi_d = ctx.enqueue_create_buffer[DT](BATCH * IN_DIM)
+    var in_hp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        in_host.unsafe_ptr()
     )
-    var tgt_host = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](BATCH * OUT_DIM)
+    var tgt_hp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        tgt_host.unsafe_ptr()
     )
     ctx.synchronize()
+
+    # Tie LM-head W to the embedding W at init so step 0 sees a coherent pair.
+    comptime if TIE_WEIGHTS:
+        _tie_params(trainer, ctx)
+        ctx.synchronize()
 
     var val_init = _eval_val_loss(trainer, val_in_p, val_tgt_p, eval_out_d)
     print(
@@ -385,9 +478,28 @@ def main() raises:
     for it in range(TOTAL_ITERS):
         trainer.optim.lr = BASE_LR * _lr_scale(it)
         var mb = make_batch(split.train, BATCH, SEQ)
-        _host_one_hot_into(in_host, mb.inputs, BATCH)
-        _host_one_hot_into(tgt_host, mb.targets, BATCH)
-        final_train = Float64(trainer.train_step(in_host, tgt_host))
+        _host_one_hot_into(in_hp, mb.inputs, BATCH)
+        _host_one_hot_into(tgt_hp, mb.targets, BATCH)
+        ctx.enqueue_copy(in_d, in_host)
+        ctx.enqueue_copy(tgt_d, tgt_host)
+
+        # Manual train step (= trainer.train_step) with the tying grad-fold
+        # injected between net.vjp and optim.step.
+        var in_tt = TileTensor(_mao(in_d), row_major[BATCH, IN_DIM]())
+        var tgt_tt = TileTensor(_mao(tgt_d), row_major[BATCH, OUT_DIM]())
+        var out_tt = TileTensor(_mao(out_d), row_major[BATCH, OUT_DIM]())
+        var go_tt = TileTensor(_mao(go_d), row_major[BATCH, OUT_DIM]())
+        var gi_tt = TileTensor(_mao(gi_d), row_major[BATCH, IN_DIM]())
+        trainer.optim.zero_grad["gpu"](trainer.net)
+        trainer.net.forward["gpu", BATCH](in_tt, output=out_tt)
+        final_train = Float64(trainer.loss_fn.forward["gpu", BATCH](out_tt, tgt_tt))
+        trainer.loss_fn.vjp["gpu", BATCH](tgt_tt, go_tt)
+        trainer.net.vjp["gpu", BATCH](go_tt, gi_tt)
+        comptime if TIE_WEIGHTS:
+            _tie_grads(trainer, ctx)
+        trainer.optim.step["gpu"](trainer.net)
+        comptime if TIE_WEIGHTS:
+            _tie_params(trainer, ctx)
 
         if (it + 1) % EVAL_INTERVAL == 0 or (it + 1) == TOTAL_ITERS:
             var v = _eval_val_loss(trainer, val_in_p, val_tgt_p, eval_out_d)
@@ -435,7 +547,4 @@ def main() raises:
     print(_generate(trainer, tok, long_prompt, 200, 0.0, 0, ctx))
     print("---- continuation (T=0.8) ----")
     print(_generate(trainer, tok, long_prompt, 200, 0.8, 0, ctx))
-
-    in_host.free()
-    tgt_host.free()
     print("\n" + "=" * 70)
