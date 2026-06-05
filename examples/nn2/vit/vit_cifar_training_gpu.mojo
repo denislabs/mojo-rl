@@ -6,10 +6,10 @@ LayerNorm → TokenMean → head) on CIFAR-10 via the stateful nn2
 `Trainer.train_gpu` (on-device shuffle + CIFAR10CropFlipAugmenter +
 WarmupCosineSchedule + per-epoch top-1 eval).
 
-Config note: the DEFAULT below is a *dev/Apple-smoke* config (small model,
-few epochs) so the script runs end-to-end on Apple Metal and on CI. For the
-gen-1 Phase-B parity target (≥70% top-1) flip to the PRODUCTION config in the
-comment block and run on NVIDIA — that config OOMs on an M1.
+Config note: the DEFAULT below is the *production* config (≥70% top-1 target,
+NVIDIA) — larger model, 100 epochs, BATCH=128 — and OOMs on an M1. For Apple
+Metal / CI smoke runs, flip to the DEV config in the comment block (small
+model, 8 epochs).
 
 Deferred vs gen-1 (convergence refinements, not architecture): nanoGPT-style
 `Normal(0,0.02)` init + 1/√(2L) c_proj scaled-init are not applied (nn2 uses
@@ -37,23 +37,23 @@ from mojo_rl.nn2.training.augmenter import CIFAR10CropFlipAugmenter
 from mojo_rl.nn2.initializer import Kaiming
 
 
-# ── DEV / Apple-smoke config (runs on M1) ──────────────────────────────
-# PRODUCTION (NVIDIA, ≥70% target): PATCH=4, N_PATCHES=64, EMBED=192,
-#   HEADS=6, LAYERS=6, FF_MULT=4, BATCH=128, EPOCHS=100, WARMUP=5.
+# ── PRODUCTION config (NVIDIA, ≥70% target) ────────────────────────────
+# DEV / Apple-smoke (runs on M1): PATCH=8, N_PATCHES=16, EMBED=64, HEADS=4,
+#   LAYERS=3, FF_MULT=2, BATCH=64, EPOCHS=8, WARMUP=2.
 comptime IN_CHANNELS = 3
 comptime IMG_H = 32
 comptime IMG_W = 32
-comptime PATCH = 8                              # 4×4 = 16 patches
+comptime PATCH = 4                              # 8×8 = 64 patches
 comptime N_PATCHES = (IMG_H // PATCH) * (IMG_W // PATCH)
-comptime EMBED = 64
-comptime HEADS = 4                              # head_dim = 16
-comptime LAYERS = 3
-comptime FF_MULT = 2
+comptime EMBED = 192
+comptime HEADS = 6                              # head_dim = 32
+comptime LAYERS = 6
+comptime FF_MULT = 4
 comptime N_CLASSES = 10
 
-comptime BATCH = 64
-comptime EPOCHS = 8
-comptime WARMUP_EPOCHS = 2
+comptime BATCH = 128
+comptime EPOCHS = 100
+comptime WARMUP_EPOCHS = 5
 
 comptime BASE_LR: Scalar[DT] = 3e-4
 comptime WD: Scalar[DT] = 0.05
@@ -156,8 +156,10 @@ def main() raises:
     test_lbl.free()
 
     print("=" * 70)
-    # Smoke threshold: the dev config should comfortably beat random (10%).
-    if final_top1 >= 0.30:
-        print("PASS — nn2 ViT learns CIFAR-10 (top1 ≥ 30% on dev config)")
+    # Production target: from-scratch ViT + crop/flip aug + cosine should reach
+    # ~70% on this config. Threshold set at 60% to tolerate seed variance.
+    # (For the dev/Apple-smoke config, ≥30% is the right floor.)
+    if final_top1 >= 0.60:
+        print("PASS — nn2 ViT CIFAR-10 (top1 ≥ 60%, production config)")
     else:
-        raise Error("ViT did not learn: top1=" + String(final_top1))
+        raise Error("ViT under target: top1=" + String(final_top1))
