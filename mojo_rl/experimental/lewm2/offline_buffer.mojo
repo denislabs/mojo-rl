@@ -11,6 +11,7 @@ frames) is the same.
 from std.memory import alloc
 
 from ...nn2.constants import DT
+from .pixel_convert import u8_hwc_to_chw_norm
 
 
 struct OfflineWindowBuffer[IMG_DIM: Int, ACT: Int, T: Int](
@@ -54,6 +55,22 @@ struct OfflineWindowBuffer[IMG_DIM: Int, ACT: Int, T: Int](
                     self.frames[idx] = Self._det(
                         n * 131 + t * 7 + d + 1, 1.0
                     )
+
+    def set_frame_u8_hwc[
+        C: Int, FH: Int, FW: Int,
+    ](
+        mut self, traj: Int, t: Int,
+        hwc: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
+    ) raises:
+        """Ingest one real `uint8` HWC frame at `(traj, t)`, converting to
+        CHW/÷255 fp32 in place (host path of `u8_hwc_to_chw_norm`). Asserts
+        `C·FH·FW == IMG_DIM`. The sampling protocol is unchanged — once
+        frames are stored, `sample_into` slices windows as before."""
+        comptime assert C * FH * FW == Self.IMG_DIM, (
+            "set_frame_u8_hwc: C·FH·FW must equal IMG_DIM"
+        )
+        var dst = self.frames + (traj * self.traj_len + t) * Self.IMG_DIM
+        u8_hwc_to_chw_norm["cpu", C, FH, FW, 1](hwc, dst)
 
     def _next(mut self) -> UInt64:
         # xorshift64*
