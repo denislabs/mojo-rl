@@ -141,6 +141,40 @@ def _action_clamp_kernel[
     action_out[env, j] = a
 
 
+def _greedy_action_kernel[
+    N_ENVS: Int, ACT: Int
+](
+    ao: LayoutTensor[
+        DT,
+        Layout.row_major(N_ENVS, 2 * ACT),
+        MutAnyOrigin,
+    ],
+    action_out: LayoutTensor[
+        DT,
+        Layout.row_major(N_ENVS, ACT),
+        MutAnyOrigin,
+    ],
+    action_scale: Scalar[DT],
+):
+    """Greedy (deterministic) action: take the actor MEAN (the first ACT
+    lanes of the `[mu | log_std]` output), squash with tanh, scale, clamp.
+    No sampling — the eval counterpart of `_action_clamp_kernel` (which
+    clamps an already-sampled action). Used by `select_greedy_action_batched`.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = N_ENVS * ACT
+    if i >= total:
+        return
+    var env = i // ACT
+    var j = i % ACT
+    var a = ftanh(ao[env, j]) * action_scale
+    if a > action_scale:
+        a = action_scale
+    elif a < -action_scale:
+        a = -action_scale
+    action_out[env, j] = a
+
+
 struct SACTrainer[
     train_target: StaticString,
     SAMPLE: SampleBlock,
@@ -900,6 +934,66 @@ struct SACTrainer[
             elif a < -self.action_scale:
                 a = -self.action_scale
             action_out[j] = a
+
+    # ─── select_greedy_action_batched — fast batched greedy override ──
+    #
+    # Overrides the OffPolicyAgent per-env default with ONE batched actor
+    # forward + a greedy extraction (mean → tanh → scale → clamp), mirroring
+    # `select_action_batched`'s policy branch minus the rsample. Pointer
+    # contract is target-side (host for CPU, device for GPU), same as
+    # `select_action_batched`. `ao_scratch_ptr` is N_ENVS*2*ACT actor-output
+    # scratch. Drives `run_offpolicy_eval_batched`'s GPU-parallel eval.
+    def select_greedy_action_batched[
+        N_ENVS: Int,
+    ](
+        mut self,
+        ctx: Optional[DeviceContext],
+        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ao_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+        _ = ctx  # GPU path uses self.ctx (same context); kept for trait parity
+        comptime ACT = Self.ACT_DIM
+        comptime OBS = Self.OBS_DIM
+
+        var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
+        var ao_t = TileTensor(ao_scratch_ptr, row_major[N_ENVS, 2 * ACT]())
+        self.actor.forward[Self.train_target, N_ENVS](obs_t, output=ao_t)
+
+        comptime if Self.train_target == "cpu":
+            for env in range(N_ENVS):
+                var src = ao_scratch_ptr + env * (2 * ACT)
+                var dst = action_ptr + env * ACT
+                for j in range(ACT):
+                    var a = ftanh(src[j]) * self.action_scale
+                    if a > self.action_scale:
+                        a = self.action_scale
+                    elif a < -self.action_scale:
+                        a = -self.action_scale
+                    dst[j] = a
+        else:
+            var ao_lt = LayoutTensor[
+                DT,
+                Layout.row_major(N_ENVS, 2 * ACT),
+                MutAnyOrigin,
+            ](ao_scratch_ptr)
+            var action_lt = LayoutTensor[
+                DT,
+                Layout.row_major(N_ENVS, ACT),
+                MutAnyOrigin,
+            ](action_ptr)
+            comptime total = N_ENVS * ACT
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime greedy_kernel = _greedy_action_kernel[N_ENVS, ACT]
+            var c = self.ctx.value()
+            c.enqueue_function[greedy_kernel](
+                ao_lt,
+                action_lt,
+                self.action_scale,
+                grid_dim=n_blocks,
+                block_dim=TPB,
+            )
 
     # ─── select_action_batched — single batched entry point ──────────
     #

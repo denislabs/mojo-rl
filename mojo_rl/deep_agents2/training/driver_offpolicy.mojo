@@ -104,6 +104,52 @@ trait OffPolicyAgent(Movable, ImplicitlyDestructible):
         `run_offpolicy_eval`."""
         ...
 
+    def select_greedy_action_batched[
+        N_ENVS: Int,
+    ](
+        mut self,
+        ctx: Optional[DeviceContext],
+        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ao_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """Batched deterministic (greedy) action selection for GPU-parallel
+        eval (`run_offpolicy_eval_batched`). Pointer contract is target-side
+        (host for CPU trainers, device for GPU); `ao_scratch_ptr` is a
+        N_ENVS*2*ACT actor-output scratch.
+
+        DEFAULT = a correct-but-serial per-env fallback that loops
+        `select_greedy_action` (which handles its own H2D/D2H at N=1), so
+        every off-policy trainer conforms with no extra code. SACTrainer
+        OVERRIDES this with a single batched actor forward + greedy kernel."""
+        comptime OBS = Self.AGENT_OBS_DIM
+        comptime ACT = Self.AGENT_ACT_DIM
+        _ = ao_scratch_ptr  # the per-env fallback uses select_greedy_action's
+        #                      own N=1 scratch; no batched scratch needed.
+        var obs_h = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+        var act_h = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+        comptime if Self.AGENT_TRAIN_TARGET == "cpu":
+            for e in range(N_ENVS):
+                for d in range(OBS):
+                    obs_h[d] = obs_ptr[e * OBS + d]
+                self.select_greedy_action(obs_h, act_h)
+                for j in range(ACT):
+                    action_ptr[e * ACT + j] = act_h[j]
+        else:
+            var c = ctx.value()
+            for e in range(N_ENVS):
+                var obs_view = DeviceBuffer[DT](
+                    c, obs_ptr + e * OBS, OBS, owning=False,
+                )
+                c.enqueue_copy(obs_h.unsafe_ptr(), obs_view)
+                c.synchronize()
+                self.select_greedy_action(obs_h, act_h)
+                var act_view = DeviceBuffer[DT](
+                    c, action_ptr + e * ACT, ACT, owning=False,
+                )
+                c.enqueue_copy(act_view, act_h.unsafe_ptr())
+            c.synchronize()
+
     def record(
         mut self,
         ref obs: List[Scalar[DT]],
@@ -527,6 +573,106 @@ def run_offpolicy_train[
 
 
 # ──────────────────────────────────────────────────────────────────────
+# run_offpolicy_eval_batched — GPU-parallel deterministic eval.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def run_offpolicy_eval_batched[
+    A: OffPolicyAgentGpu,
+    EE: BatchedEnv,
+    EVAL_ENVS: Int,
+](
+    ctx: Optional[DeviceContext],
+    mut trainer: A,
+    mut eval_env: EE,
+    num_episodes: Int,
+    *,
+    max_steps: Int = 1_000,
+    rng_seed: UInt64 = UInt64(123_457),
+) raises -> Scalar[DT]:
+    """Non-mutating GPU-parallel greedy eval. Drives `eval_env` (an ISOLATED
+    BatchedEnv — never the training env) with deterministic actions from
+    `trainer.select_greedy_action_batched` (the actor MEAN → tanh → scale, no
+    sampling), accumulating per-env returns and auto-resetting on done. Touches
+    NO replay buffer / optimizer / episode tracker — it only reads actor weights.
+
+    Runs up to `max_steps` parallel steps, collecting every completed episode,
+    and returns the mean over completed episodes (0.0 if none finished). With
+    EVAL_ENVS parallel envs, ~EVAL_ENVS full-length episodes complete per
+    `max_steps` window, so pass `num_episodes <= EVAL_ENVS` to be satisfied in
+    one window.
+
+    `EVAL_ENVS` must equal the eval env's struct `N_ENVS`. It is independent of
+    the training driver's `N_ENVS`, so a smaller eval batch can cap VRAM.
+    Same-target only (eval env's `ENV_TARGET` == trainer's `AGENT_TRAIN_TARGET`).
+    """
+    comptime ACT = A.AGENT_ACT_DIM
+    comptime target = A.AGENT_TRAIN_TARGET
+
+    # Actor-output (mean|log_std) scratch on the train target.
+    var ao = DriverScratch["eval_ao", EVAL_ENVS, 2 * ACT].make[target](ctx=ctx)
+
+    eval_env.reset_batch[EVAL_ENVS](ctx=ctx, rng_seed=rng_seed)
+
+    var per_env = List[Scalar[DT]](length=EVAL_ENVS, fill=Scalar[DT](0.0))
+    var returns = List[Scalar[DT]]()
+    # Persistent host staging for the per-step reward/done D2H (GPU env only).
+    var rew_h = List[Scalar[DT]](length=EVAL_ENVS, fill=Scalar[DT](0.0))
+    var done_h = List[Scalar[DT]](length=EVAL_ENVS, fill=Scalar[DT](0.0))
+
+    var step = 0
+    while len(returns) < num_episodes and step < max_steps:
+        # Greedy action → eval_env.action_ptr() (target-side pointer).
+        trainer.select_greedy_action_batched[EVAL_ENVS](
+            ctx,
+            eval_env.obs_ptr(),
+            eval_env.action_ptr(),
+            ao.target_ptr[target](),
+        )
+        eval_env.step_batch[EVAL_ENVS](
+            ctx=ctx, rng_seed=rng_seed + UInt64(step + 1),
+        )
+
+        # Read reward + done host-side, accumulate, record on episode end.
+        comptime if EE.ENV_TARGET == "cpu":
+            var rp = eval_env.reward_ptr()
+            var dp = eval_env.done_ptr()
+            for e in range(EVAL_ENVS):
+                per_env[e] = per_env[e] + rp[e]
+                if dp[e] > Scalar[DT](0.5):
+                    returns.append(per_env[e])
+                    per_env[e] = Scalar[DT](0.0)
+        else:
+            var c = ctx.value()
+            var rew_view = DeviceBuffer[DT](
+                c, eval_env.reward_ptr(), EVAL_ENVS, owning=False,
+            )
+            var done_view = DeviceBuffer[DT](
+                c, eval_env.done_ptr(), EVAL_ENVS, owning=False,
+            )
+            c.enqueue_copy(rew_h.unsafe_ptr(), rew_view)
+            c.enqueue_copy(done_h.unsafe_ptr(), done_view)
+            c.synchronize()
+            for e in range(EVAL_ENVS):
+                per_env[e] = per_env[e] + rew_h[e]
+                if done_h[e] > Scalar[DT](0.5):
+                    returns.append(per_env[e])
+                    per_env[e] = Scalar[DT](0.0)
+
+        eval_env.selective_reset_batch[EVAL_ENVS](
+            ctx=ctx, rng_seed=rng_seed + UInt64(step + 1) * UInt64(7),
+        )
+        step += 1
+
+    if len(returns) == 0:
+        return Scalar[DT](0.0)
+    var tot = Scalar[DT](0.0)
+    for i in range(len(returns)):
+        tot = tot + returns[i]
+    return tot / Scalar[DT](len(returns))
+
+
+# ──────────────────────────────────────────────────────────────────────
 # run_offpolicy_train_batched — Tier-3: ONE driver for all
 #   (env_target, train_target, N_ENVS) combos via BatchedEnv.
 # ──────────────────────────────────────────────────────────────────────
@@ -540,6 +686,8 @@ def run_offpolicy_train_batched[
     L: Logger = NoOpLogger,
     USE_TRAIN_CUDA_GRAPH: Bool = False,
     USE_ENV_CUDA_GRAPH: Bool = False,
+    EE: BatchedEnv = E,
+    EVAL_ENVS: Int = N_ENVS,
 ](
     ctx: Optional[DeviceContext],
     mut trainer: A,
@@ -557,6 +705,10 @@ def run_offpolicy_train_batched[
     episode_sync_every: Int = 1,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
+    eval_env: Optional[UnsafePointer[EE, MutAnyOrigin]] = None,
+    eval_every: Int = 0,
+    eval_episodes: Int = 16,
+    eval_max_steps: Int = 1_000,
 ) raises -> List[Scalar[DT]]:
     """Tier-3 off-policy driver covering same-target combinations.
 
@@ -752,6 +904,11 @@ def run_offpolicy_train_batched[
     # checkpoint_every == 0 or checkpoint_path is empty.
     var ckpt_on: Bool = checkpoint_every > 0 and checkpoint_path.byte_length() > 0
     var next_ckpt: Int = checkpoint_every if ckpt_on else total_env_steps + 1
+    # Deterministic-eval cadence — armed only when both `eval_every > 0` and an
+    # isolated `eval_env` is supplied. First eval fires at `eval_every` (not at
+    # step 0, where the policy is random).
+    var eval_on: Bool = eval_every > 0 and Bool(eval_env)
+    var next_eval: Int = eval_every if eval_on else total_env_steps + 1
 
     while step_idx < total_env_steps:
         # ── 1. Snapshot prev_obs from env.obs_ptr().
@@ -1090,6 +1247,39 @@ def run_offpolicy_train_batched[
                     checkpoint_path,
                 )
             next_ckpt += checkpoint_every
+
+        # ── Deterministic eval cadence. `avg_reward` above is a STOCHASTIC
+        # rollout signal — for SAC the entropy/exploration noise inflates the
+        # failure rate, so it systematically under-reports the learned policy.
+        # When an isolated `eval_env` is supplied, run a GPU-parallel greedy
+        # rollout (no sampling, no replay/optimizer touch) and log the true
+        # policy quality as `eval/mean_return`. Runs in host code between
+        # iterations (capture-safe, like the checkpoint block).
+        if eval_on and step_idx >= next_eval:
+            var eval_ret = run_offpolicy_eval_batched[A, EE, EVAL_ENVS](
+                ctx,
+                trainer,
+                eval_env.value()[],
+                eval_episodes,
+                max_steps=eval_max_steps,
+                rng_seed=rng_seed + UInt64(step_idx + 1),
+            )
+            comptime if L.ENABLED:
+                if Bool(logger):
+                    logger.value()[].log_scalar(
+                        "eval/mean_return",
+                        Float64(eval_ret),
+                        base_step + step_idx,
+                    )
+                    logger.value()[].flush()
+            if verbose:
+                print(
+                    "[step ",
+                    base_step + step_idx,
+                    "] eval/mean_return = ",
+                    eval_ret,
+                )
+            next_eval += eval_every
 
     # Always overwrite the final checkpoint at end so resume gets the
     # freshest weights regardless of cadence alignment.

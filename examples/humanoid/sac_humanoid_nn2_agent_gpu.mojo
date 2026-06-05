@@ -66,7 +66,7 @@ from mojo_rl.envs.humanoid import Humanoid
 comptime EnvT = Humanoid[DT, TERMINATE_ON_UNHEALTHY=True]
 comptime OBS_DIM = EnvT.OBS_DIM  # 45
 comptime ACT_DIM = EnvT.ACTION_DIM  # 17
-comptime HIDDEN = 256
+comptime HIDDEN = 512
 
 # Off-policy GPU training parameters (mirror the legacy GPU script).
 comptime BATCH = 256
@@ -78,7 +78,10 @@ comptime REPLAY_CAPACITY = 1_000_000
 comptime N_ENVS = 32
 
 # Training duration. Drop NUM_STEPS to ~50_000 for a smoke run.
-comptime NUM_STEPS = 3_000_000
+# LN+512 ceiling run: the stable LayerNorm critic + wider nets should keep
+# climbing well past the 3M/HIDDEN=256 result (~5700 greedy), so we extend to
+# 10M env-steps (replay stays CAP-bound at 1M → no extra VRAM vs the 3M run).
+comptime NUM_STEPS = 10_000_000
 comptime WARMUP_STEPS = 25_000
 comptime PRINT_EVERY = 50_000
 comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
@@ -87,10 +90,22 @@ comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
 # The LayerNorm critic changes PARAM_SIZE, so this checkpoint is NOT loadable
 # by the preset-based eval script — it preserves the 6006-reward baseline ckpt
 # and needs an eval harness built with the same LayerNorm critic to render.
-comptime CHECKPOINT_PATH = "sac_humanoid_nn2_ln.ckpt"
+comptime CHECKPOINT_PATH = "sac_humanoid_nn2_ln512.ckpt"
+
+# Periodic DETERMINISTIC eval (greedy, no exploration noise) on an isolated set
+# of `EVAL_ENVS` parallel envs — the deployable-policy signal. The always-on
+# `avg_reward` is a STOCHASTIC rollout that under-reports SAC by the entropy
+# term (training showed ~2655 stochastic vs ~5700 greedy), so `eval/mean_return`
+# is the curve to trust. Eval runs GPU-parallel and touches no replay/optimizer
+# state. VRAM: a 2nd BatchedGpuEnv adds EVAL_ENVS more per-env RK4 workspaces
+# (NV=23) — kept at 16 (< N_ENVS) to stay within headroom; drop if OOM.
+comptime EVAL_ENVS = 16
+comptime EVAL_EVERY = 250_000  # env-steps between eval passes (~40 over 10M)
+comptime EVAL_EPISODES = 16  # <= EVAL_ENVS → completes in one eval window
 
 
 comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
+comptime EvalEnvT = BatchedGpuEnv[EnvT, EVAL_ENVS, OBS_DIM, ACT_DIM]
 
 # ─── Nets ────────────────────────────────────────────────────────────────
 # Actor: the preset's canonical fused-`LinearReLU` `SACActorNet` (unchanged).
@@ -139,7 +154,7 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="SAC Humanoid NN2 (GPU, LayerNorm critic)",
+            run_name="SAC Humanoid NN2 (GPU, LayerNorm critic, H512, 10M)",
             buffer_size=64,
             api_key=api_key,
         )
@@ -175,6 +190,10 @@ def main() raises:
             initial_episode_fill=0.0,
         )
         var env = BatchedEnvT(ctx)
+        # Isolated eval env (greedy deterministic rollouts; never touches the
+        # training env's state or the replay buffer).
+        var eval_env = EvalEnvT(ctx)
+        var eval_env_ptr = UnsafePointer(to=eval_env)
 
         # ─── Single train() call — batched GPU off-policy driver ─────────
         print("Starting GPU training...")
@@ -186,6 +205,8 @@ def main() raises:
             L=RemoteLogger,
             USE_TRAIN_CUDA_GRAPH=True,
             USE_ENV_CUDA_GRAPH=True,
+            EE=EvalEnvT,
+            EVAL_ENVS=EVAL_ENVS,
         ](
             env,
             NUM_STEPS,
@@ -198,7 +219,12 @@ def main() raises:
             episode_sync_every=32,
             checkpoint_every=CHECKPOINT_EVERY,
             checkpoint_path=CHECKPOINT_PATH,
+            eval_env=eval_env_ptr,
+            eval_every=EVAL_EVERY,
+            eval_episodes=EVAL_EPISODES,
+            eval_max_steps=1000,
         )
+        _ = eval_env  # lifetime extender for eval_env_ptr
         var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
         logger.close()
         _ = logger  # lifetime extender for logger_ptr

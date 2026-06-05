@@ -142,6 +142,8 @@ struct SACAgent[
         L: Logger = NoOpLogger,
         USE_TRAIN_CUDA_GRAPH: Bool = False,
         USE_ENV_CUDA_GRAPH: Bool = False,
+        EE: BatchedEnv = E,
+        EVAL_ENVS: Int = N_ENVS,
     ](
         mut self,
         mut env: E,
@@ -157,6 +159,10 @@ struct SACAgent[
         episode_sync_every: Int = 1,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
+        eval_env: Optional[UnsafePointer[EE, MutAnyOrigin]] = None,
+        eval_every: Int = 0,
+        eval_episodes: Int = 16,
+        eval_max_steps: Int = 1_000,
     ) raises -> List[Scalar[DT]]:
         """Off-policy training via `run_offpolicy_train_batched`.
 
@@ -191,7 +197,17 @@ struct SACAgent[
         `train_single`'s checkpoint cadence. The save runs in host code
         between iterations (D2H of live params on the GPU target) so it is
         CUDA-graph-capture safe. The replay buffer / episode tracker are NOT
-        persisted, so resume starts with a fresh replay."""
+        persisted, so resume starts with a fresh replay.
+
+        Set `eval_every > 0` AND pass an ISOLATED `eval_env` (a second
+        `BatchedGpuEnv[..., EVAL_ENVS, ...]` — NOT the training env) to run a
+        periodic GPU-parallel DETERMINISTIC (greedy, no exploration noise)
+        eval every `eval_every` env-steps and log the true policy quality as
+        `eval/mean_return`. This is the deployable-policy signal; the always-on
+        `avg_reward` is a stochastic rollout that under-reports SAC by the
+        entropy term. `EVAL_ENVS` (comptime, default N_ENVS) must equal the
+        eval env's struct batch size; `eval_episodes <= EVAL_ENVS` completes in
+        one `eval_max_steps` window. Eval touches no replay/optimizer state."""
         var ctx = self.trainer.ctx
         return run_offpolicy_train_batched[
             SACTrainer[
@@ -206,6 +222,8 @@ struct SACAgent[
             L,
             USE_TRAIN_CUDA_GRAPH,
             USE_ENV_CUDA_GRAPH,
+            EE,
+            EVAL_ENVS,
         ](
             ctx,
             self.trainer,
@@ -221,6 +239,10 @@ struct SACAgent[
             episode_sync_every=episode_sync_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            eval_env=eval_env,
+            eval_every=eval_every,
+            eval_episodes=eval_episodes,
+            eval_max_steps=eval_max_steps,
         )
 
     def train_single[
