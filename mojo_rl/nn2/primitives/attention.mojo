@@ -22,9 +22,11 @@ A future fused rewrite must preserve that property or reintroduce the trap.
 each query i's key loop to j ≤ i. Softmax is computed in fp32 with the
 standard max-shift for stability (CPU accumulates in Float64).
 
-Status: CPU forward + vjp implemented (Wave C 6a/6b). GPU path is the
-custom per-(b,h) kernel set (Wave C 6c); the MAX-bmm fast path behind
-USE_MAX_KERNELS (6d) is deferred. Docs: docs/NN2_TRANSFORMER_PORT.md.
+GPU path: `USE_MAX_KERNELS=True` (default) → batched-GEMM attention (Wave C
+6d, tensor cores); `False` → serial per-(b,h) custom kernels (6c). The two
+are bit-identical (see tests/nn2/test_attention_bmm_parity.mojo); the flag
+only changes speed. CPU path (forward + 3-pass vjp, 6a/6b) ignores the flag.
+Docs: docs/NN2_TRANSFORMER_PORT.md.
 """
 
 from std.math import exp, sqrt
@@ -579,7 +581,7 @@ struct ScaledDotProductAttention[
     N_HEADS: Int,
     SEQ_LEN: Int,
     CAUSAL: Bool = False,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ](Module):
     comptime ARITY: Int = 1
     comptime HEAD_DIM: Int = Self.DIM // Self.N_HEADS

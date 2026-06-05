@@ -134,11 +134,13 @@ comptime ResBlockDownsampleBN[
 
 
 # MultiHeadAttention: per-token QKV proj → attention → per-token out proj.
-# `use_max=True` selects the batched-GEMM attention path (USE_MAX_KERNELS) —
-# faster on NVIDIA; default False keeps the portable custom-kernel path.
+# `use_max` selects the attention GPU path: True (default) = batched-GEMM
+# (USE_MAX_KERNELS, tensor cores, faster); False = portable serial per-(b,h)
+# custom kernels. Both are bit-identical; the flag only affects GPU speed
+# (CPU path ignores it).
 comptime MultiHeadAttention[
     dim: Int, n_heads: Int, seq_len: Int, causal: Bool = False,
-    use_max: Bool = False,
+    use_max: Bool = True,
 ] = Sequential[
     Tokenwise[seq_len, Linear[dim, 3 * dim]],
     ScaledDotProductAttention[dim, n_heads, seq_len, causal, use_max],
@@ -160,7 +162,7 @@ comptime TransformerFFN[seq_len: Int, dim: Int, ff_dim: Int] = Sequential[
 #   y = x + MHA(LN(x));  z = y + FFN(LN(y)).  IN_DIM == OUT_DIM == seq_len*dim.
 comptime TransformerBlock[
     dim: Int, n_heads: Int, seq_len: Int, ff_dim: Int, causal: Bool = False,
-    use_max: Bool = False,
+    use_max: Bool = True,
 ] = Sequential[
     Residual[
         Sequential[
@@ -188,7 +190,7 @@ comptime GPT[
     n_layers: Int,
     ff_mult: Int = 4,
     causal: Bool = True,
-    use_max: Bool = False,
+    use_max: Bool = True,
 ] = Sequential[
     Tokenwise[seq_len, Embedding[vocab, embed_dim]],
     BiasAdd[seq_len * embed_dim],
@@ -233,7 +235,7 @@ comptime ViT[
     n_patches: Int,
     n_classes: Int,
     ff_mult: Int = 4,
-    use_max: Bool = False,
+    use_max: Bool = True,
 ] = Sequential[
     PatchEmbed[in_channels, img_h, img_w, patch_size, embed_dim, n_patches],
     BiasAdd[n_patches * embed_dim],
