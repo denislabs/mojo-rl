@@ -23,8 +23,10 @@ from .driver_offpolicy import (
 )
 from .driver_offpolicy_discrete import (
     OffPolicyDiscreteAgent,
+    OffPolicyDiscreteAgentGpu,
     run_offpolicy_discrete_train,
     run_offpolicy_discrete_eval,
+    run_offpolicy_discrete_train_gpu_batched,
 )
 from .driver_onpolicy import (
     OnPolicyAgent,
@@ -32,4 +34,9 @@ from .driver_onpolicy import (
     run_onpolicy_train,
     run_onpolicy_train_batched,
 )
-from .batched_env import BatchedEnv, BatchedCpuEnv, BatchedGpuEnv
+from .batched_env import (
+    BatchedEnv,
+    BatchedCpuEnv,
+    BatchedGpuEnv,
+    BatchedGpuDiscreteEnv,
+)

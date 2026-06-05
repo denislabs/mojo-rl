@@ -49,8 +49,12 @@ from ..core.online_target_pair import OnlineTargetPair
 from ..training.episode_tracker import EpisodeTracker
 from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
-from ..training.driver_offpolicy_discrete import OffPolicyDiscreteAgent
+from ..training.driver_offpolicy_discrete import (
+    OffPolicyDiscreteAgent,
+    OffPolicyDiscreteAgentGpu,
+)
 from ..training.blocks import SampleBlock, SinglePolyakStep
+from ..data.n_step_replay import GPUNStepBuffer
 from .blocks.target_y_step import C51TargetYStep
 from .blocks.q_update_step import C51QUpdateStep
 from .metrics import C51Metrics
@@ -105,7 +109,7 @@ struct C51Trainer[
     N_ATOMS: Int = 51,
     NUM_ACTIONS: Int = 2,
     DOUBLE: Bool = False,
-](OffPolicyDiscreteAgent):
+](OffPolicyDiscreteAgentGpu):
     """Q_NET.OUT_DIM must equal NUM_ACTIONS · N_ATOMS (per-atom logits).
     Standard Rainbow defaults: N_ATOMS=51, V_min=-10, V_max=+10."""
 
@@ -115,6 +119,7 @@ struct C51Trainer[
 
     comptime AGENT_TRAIN_TARGET: StaticString = Self.train_target
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
+    comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
     comptime AGENT_NUM_ACTIONS: Int = Self.NUM_ACTIONS
 
     comptime _T_SAMPLE = 0
@@ -157,6 +162,15 @@ struct C51Trainer[
     var learning_starts: Int
 
     var _action_list: List[Scalar[DT]]
+
+    # Lazily-sized scratch for the GPU batched action path (N_ENVS is a
+    # method-comptime param, unknown at construction). Allocated once on the
+    # first `select_action_batched[N_ENVS]` call with N_ENVS>1 and reused —
+    # avoids the per-step `enqueue_create_buffer` that explodes disk on NVIDIA.
+    var _batch_q_dev: Optional[DeviceBuffer[DT]]
+    var _batch_q_host: List[Scalar[DT]]
+    var _batch_act_host: List[Scalar[DT]]
+    var _batch_n: Int
 
     var _loss_accum: Scalar[DT]
     # Per-batch distributional diagnostic accumulators (CPU-only diag walk;
@@ -222,6 +236,10 @@ struct C51Trainer[
         self.epsilon_min = Scalar[DT](0.01)
         self.learning_starts = 1_000
         self._action_list = List[Scalar[DT]](length=1, fill=Scalar[DT](0.0))
+        self._batch_q_dev = None
+        self._batch_q_host = List[Scalar[DT]]()
+        self._batch_act_host = List[Scalar[DT]]()
+        self._batch_n = 0
         self._loss_accum = Scalar[DT](0.0)
         self._q_accum = Scalar[DT](0.0)
         self._target_accum = Scalar[DT](0.0)
@@ -511,7 +529,75 @@ struct C51Trainer[
                 done_ptr[env_idx], ctx=self.ctx,
             )
 
+    # ─── Batched device record (GPU-batched-env driver) ──────────────
+
+    def record_batch_gpu[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        """1-step batched device record — forwards N_ENVS device
+        transitions to the sample block's `add_batch_gpu`. The block
+        (GPU uniform / PER) writes them directly into device replay; no
+        host round trip. `done_dev` carries `terminated`."""
+        self.sample_blk.add_batch_gpu[N_ENVS](
+            ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
+        )
+
+    def record_batch_gpu_nstep[
+        N_ENVS: Int, NS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut nstep_buf: GPUNStepBuffer[
+            NS, Self.AGENT_OBS_DIM, Self.AGENT_ACT_DIM, N_ENVS
+        ],
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        """N-step batched device record (Rainbow). The driver-owned
+        `GPUNStepBuffer` ring-updates all N_ENVS lanes (per-env
+        accumulators — no cross-env mixing) and emits compressed n-step
+        transitions, which the sample block routes through its device
+        replay. Keep `NS` aligned with the target-Y γ^N bootstrap (the
+        Rainbow preset wires both from the same `NSTEP`)."""
+        nstep_buf.process(
+            ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
+        )
+        self.sample_blk.store_via_block_gpu[N_ENVS, NS](ctx, nstep_buf)
+
     # ─── Action selection (expected-Q argmax over softmax·z) ─────────
+
+    def _ensure_batch_scratch[
+        N_ENVS: Int
+    ](mut self, ctx: DeviceContext) raises:
+        """Lazily (re)allocate the GPU batched-action scratch for N_ENVS:
+        a device `[N_ENVS·NA·NK]` logits buffer + host mirrors for the
+        D2H logits readback and the H2D action indices. One allocation per
+        distinct N_ENVS (cached via `_batch_n`)."""
+        comptime NA = Self.NUM_ACTIONS
+        comptime NK = Self.N_ATOMS
+        if self._batch_n == N_ENVS:
+            return
+        self._batch_q_dev = Optional(
+            ctx.enqueue_create_buffer[DT](N_ENVS * NA * NK)
+        )
+        self._batch_q_host = List[Scalar[DT]](
+            length=N_ENVS * NA * NK, fill=Scalar[DT](0.0)
+        )
+        self._batch_act_host = List[Scalar[DT]](
+            length=N_ENVS, fill=Scalar[DT](0.0)
+        )
+        self._batch_n = N_ENVS
 
     def _expected_q_argmax(
         mut self, q_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -560,18 +646,19 @@ struct C51Trainer[
                     var r = random_float64()
                     action_ptr[i] = Scalar[DT](Int(r * Float64(NA)))
             else:
-                comptime assert (
-                    N_ENVS == 1
-                ), "GPU C51 select_action_batched warmup: N_ENVS>1 not yet supported"
+                # GPU warmup: draw N_ENVS uniform action indices on the host
+                # and H2D them into the (device) action buffer. At N_ENVS=1
+                # this consumes exactly one `random_float64` draw, matching the
+                # legacy single-env path's RNG order.
                 var ctx = self.ctx.value()
-                var r = random_float64()
-                self._q_logits.cpu_ptr()[0] = Scalar[DT](
-                    Int(r * Float64(NA))
-                )
+                self._ensure_batch_scratch[N_ENVS](ctx)
+                var act_h = self._batch_act_host.unsafe_ptr()
+                for i in range(N_ENVS):
+                    act_h[i] = Scalar[DT](Int(random_float64() * Float64(NA)))
                 var action_dev = DeviceBuffer[DT](
-                    ctx, action_ptr, 1, owning=False,
+                    ctx, action_ptr, N_ENVS, owning=False,
                 )
-                ctx.enqueue_copy(action_dev, self._q_logits.cpu_ptr())
+                ctx.enqueue_copy(action_dev, act_h)
             return
 
         comptime if Self.train_target == "cpu":
@@ -598,34 +685,41 @@ struct C51Trainer[
                         self._expected_q_argmax(q_ptr + i * NA * NK)
                     )
         else:
-            comptime assert (
-                N_ENVS == 1
-            ), "GPU C51 select_action_batched: N_ENVS>1 not yet supported"
+            # GPU policy: ONE batched device forward over all N_ENVS obs,
+            # then D2H the [N_ENVS, NA·NK] logits and run the expected-Q
+            # argmax (Σ_k softmax(logits[a])_k · z_k) per env on the host —
+            # there is no batched device argmax kernel, and the readback is
+            # tiny (N_ENVS·NA·NK floats). At N_ENVS=1 this reproduces the
+            # legacy single-env behaviour (one forward, one host argmax).
             var ctx = self.ctx.value()
-            var obs_t = TileTensor(obs_ptr, row_major[1, OBS]())
-            var q_t = TileTensor(
-                self._q_logits.dev_ptr(), row_major[1, NA * NK](),
+            self._ensure_batch_scratch[N_ENVS](ctx)
+            var qdev = self._batch_q_dev.value()
+            var qdev_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                qdev.unsafe_ptr()
             )
-            self.pair.online.forward[Self.train_target, 1](
+            var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
+            var q_t = TileTensor(
+                qdev_ptr, row_major[N_ENVS, NA * NK](),
+            )
+            self.pair.online.forward[Self.train_target, N_ENVS](
                 obs_t, output=q_t,
             )
-            ctx.enqueue_copy(
-                self._q_logits.cpu_ptr(), self._q_logits.dev.value(),
-            )
+            var qh = self._batch_q_host.unsafe_ptr()
+            ctx.enqueue_copy(qh, qdev)
             ctx.synchronize()
-            var r = random_float64()
-            var act: Scalar[DT]
-            if r < Float64(self.epsilon):
-                act = Scalar[DT](Int(random_float64() * Float64(NA)))
-            else:
-                act = Scalar[DT](
-                    self._expected_q_argmax(self._q_logits.cpu_ptr())
-                )
-            self._q_logits.cpu_ptr()[0] = act
+            var act_h = self._batch_act_host.unsafe_ptr()
+            for i in range(N_ENVS):
+                var r = random_float64()
+                if r < Float64(self.epsilon):
+                    act_h[i] = Scalar[DT](Int(random_float64() * Float64(NA)))
+                else:
+                    act_h[i] = Scalar[DT](
+                        self._expected_q_argmax(qh + i * NA * NK)
+                    )
             var action_dev = DeviceBuffer[DT](
-                ctx, action_ptr, 1, owning=False,
+                ctx, action_ptr, N_ENVS, owning=False,
             )
-            ctx.enqueue_copy(action_dev, self._q_logits.cpu_ptr())
+            ctx.enqueue_copy(action_dev, act_h)
 
     def select_greedy_action(
         mut self,

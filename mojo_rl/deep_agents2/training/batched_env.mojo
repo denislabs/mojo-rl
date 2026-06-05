@@ -45,7 +45,11 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.core.env_traits import BoxContinuousActionEnv, GPUContinuousEnv
+from mojo_rl.core.env_traits import (
+    BoxContinuousActionEnv,
+    GPUContinuousEnv,
+    GPUDiscreteEnv,
+)
 
 
 def _increment_env_rng_kernel(
@@ -502,6 +506,210 @@ struct BatchedGpuEnv[
     def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         # `_terminated` is written by `step_kernel_gpu` (1.0 iff natural
         # termination, NOT truncation) — see GPUContinuousEnv.step_kernel_gpu.
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._terminated.unsafe_ptr()
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BatchedGpuDiscreteEnv[E, N_ENVS, OBS_DIM, ACT_DIM] — GPU discrete env.
+# ──────────────────────────────────────────────────────────────────────
+
+
+struct BatchedGpuDiscreteEnv[
+    E: GPUDiscreteEnv,
+    N_ENVS: Int,
+    OBS_DIM_: Int,
+    ACT_DIM_: Int = 1,
+](BatchedEnv):
+    """Discrete-action sibling of `BatchedGpuEnv`. Wraps a
+    `GPUDiscreteEnv` (Pong, Breakout, SpaceInvaders, CartPole-GPU, …) and
+    owns the per-step device buffers, dispatching the env's static
+    `*_kernel_gpu` methods.
+
+    Differences from the continuous `BatchedGpuEnv`:
+
+      - `E` is bound on `GPUDiscreteEnv`, whose `step_kernel_gpu` takes
+        THREE comptime params `[N_ENVS, STATE_SIZE, OBS_DIM]` (no
+        `ACTION_DIM`) and reads `_action` as `[N_ENVS]` integer indices
+        stored as `Scalar[DT]`. `ACT_DIM_` defaults to 1 (one action
+        index per env) and exists only so the buffer/trait dimensions
+        line up with the discrete trainer (`SAMPLE.ACT == 1`).
+
+      - Obs seeding after reset: the trait-default `extract_obs_kernel_gpu`
+        copies `obs[e] = state[e][0:OBS_DIM]`, which is valid only when
+        `OBS_DIM <= STATE_SIZE` (clean-obs envs whose observation is a
+        state prefix). For pixel envs (`OBS_DIM = 4·84·84 ≫ STATE_SIZE`)
+        that would read out of bounds, so we comptime-skip it and
+        zero-fill `_obs` instead — `step_kernel_gpu` renders the real
+        pixel observation on the first step (frame-stack warmup
+        convention). The very first `prev_obs` per episode is therefore a
+        zero / raw-prefix frame; negligible over multi-thousand-step Pong
+        episodes and entirely inside the random-action warmup window.
+
+    Construction:
+        var ctx = DeviceContext()
+        var env = BatchedGpuDiscreteEnv[PongEnv[DT], 256, 6, 1](ctx)
+    """
+
+    comptime ENV_TARGET: StaticString = "gpu"
+    comptime OBS_DIM: Int = Self.OBS_DIM_
+    comptime ACT_DIM: Int = Self.ACT_DIM_
+    comptime STATE_SIZE: Int = Self.E.STATE_SIZE
+    # True when the trait-default state-prefix obs extraction is safe.
+    comptime _OBS_IS_STATE_PREFIX: Bool = Self.OBS_DIM_ <= Self.E.STATE_SIZE
+
+    var _states: DeviceBuffer[DT]
+    var _obs: DeviceBuffer[DT]
+    var _action: DeviceBuffer[DT]
+    var _reward: DeviceBuffer[DT]
+    var _done: DeviceBuffer[DT]
+    var _terminated: DeviceBuffer[DT]
+    # Persistent step workspace (e.g. PongPixelEnv frame stacks /
+    # framebuffers). Allocated + initialized ONCE; passed to every
+    # `step_kernel_gpu` / `selective_reset_kernel_gpu` — see
+    # `BatchedGpuEnv` for the per-step-alloc / capture rationale.
+    var _workspace: DeviceBuffer[DT]
+    var _env_rng_counter: DeviceBuffer[DType.uint64]
+
+    def __init__(out self, ctx: DeviceContext) raises:
+        self._states = ctx.enqueue_create_buffer[DT](
+            Self.N_ENVS * Self.STATE_SIZE
+        )
+        self._obs = ctx.enqueue_create_buffer[DT](
+            Self.N_ENVS * Self.OBS_DIM
+        )
+        self._action = ctx.enqueue_create_buffer[DT](
+            Self.N_ENVS * Self.ACT_DIM
+        )
+        self._reward = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
+        self._done = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
+        self._terminated = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
+        ctx.enqueue_memset(self._obs, 0)
+        ctx.enqueue_memset(self._action, 0)
+        ctx.enqueue_memset(self._reward, 0)
+        ctx.enqueue_memset(self._done, 0)
+        ctx.enqueue_memset(self._terminated, 0)
+        comptime WS_TOTAL = (
+            Self.E.STEP_WS_SHARED + Self.N_ENVS * Self.E.STEP_WS_PER_ENV
+        )
+        self._workspace = ctx.enqueue_create_buffer[DT](
+            WS_TOTAL if WS_TOTAL > 0 else 1
+        )
+        comptime if WS_TOTAL > 0:
+            Self.E.init_step_workspace_gpu[Self.N_ENVS](ctx, self._workspace)
+        self._env_rng_counter = ctx.enqueue_create_buffer[DType.uint64](1)
+        self._env_rng_counter.enqueue_fill(UInt64(42))
+
+    def _seed_obs(mut self, c: DeviceContext) raises:
+        """Seed `_obs` after a (selective) reset. Clean-obs envs use the
+        trait-default state-prefix extraction; pixel envs zero-fill and
+        let the next `step_batch` render."""
+        comptime if Self._OBS_IS_STATE_PREFIX:
+            Self.E.extract_obs_kernel_gpu[
+                Self.N_ENVS, Self.STATE_SIZE, Self.OBS_DIM
+            ](c, self._states, self._obs)
+        else:
+            c.enqueue_memset(self._obs, 0)
+
+    def reset_batch[BATCH: Int](
+        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
+    ) raises:
+        comptime assert BATCH == Self.N_ENVS, (
+            "BatchedGpuDiscreteEnv: reset_batch BATCH must match struct param"
+        )
+        if not ctx:
+            raise Error("BatchedGpuDiscreteEnv.reset_batch: ctx required")
+        var c = ctx.value()
+        Self.E.reset_kernel_gpu[Self.N_ENVS, Self.STATE_SIZE](
+            c, self._states, rng_seed=rng_seed,
+        )
+        self._seed_obs(c)
+
+    def step_batch[BATCH: Int](
+        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
+    ) raises:
+        comptime assert BATCH == Self.N_ENVS, (
+            "BatchedGpuDiscreteEnv: step_batch BATCH must match struct param"
+        )
+        if not ctx:
+            raise Error("BatchedGpuDiscreteEnv.step_batch: ctx required")
+        var c = ctx.value()
+        # Discrete `step_kernel_gpu`: THREE comptime params (no ACTION_DIM).
+        # Reads `_action` as [N_ENVS] integer indices; writes obs/reward/
+        # done/terminated in place.
+        Self.E.step_kernel_gpu[
+            Self.N_ENVS, Self.STATE_SIZE, Self.OBS_DIM
+        ](
+            c,
+            self._states,
+            self._action,
+            self._reward,
+            self._done,
+            self._terminated,
+            self._obs,
+            rng_seed=rng_seed,
+            workspace_ptr=rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._workspace.unsafe_ptr()
+            ),
+        )
+
+    def selective_reset_batch[BATCH: Int](
+        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
+    ) raises:
+        comptime assert BATCH == Self.N_ENVS, (
+            "BatchedGpuDiscreteEnv: selective_reset_batch BATCH must match"
+            " struct param"
+        )
+        if not ctx:
+            raise Error(
+                "BatchedGpuDiscreteEnv.selective_reset_batch: ctx required"
+            )
+        var c = ctx.value()
+        _ = rng_seed
+        var cnt_t = LayoutTensor[
+            DType.uint64, Layout.row_major(1), MutAnyOrigin
+        ](self._env_rng_counter.unsafe_ptr())
+        c.enqueue_function[_increment_env_rng_kernel](
+            cnt_t, grid_dim=(1,), block_dim=(1,)
+        )
+        Self.E.selective_reset_kernel_gpu[
+            Self.N_ENVS, Self.STATE_SIZE
+        ](
+            c,
+            self._states,
+            self._done,
+            rng_seed=rng_seed,
+            workspace_ptr=rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self._workspace.unsafe_ptr()
+            ),
+            rng_counter_ptr=rebind[
+                UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            ](self._env_rng_counter.unsafe_ptr()),
+        )
+        self._seed_obs(c)
+
+    def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._obs.unsafe_ptr()
+        )
+
+    def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._action.unsafe_ptr()
+        )
+
+    def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._reward.unsafe_ptr()
+        )
+
+    def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self._done.unsafe_ptr()
+        )
+
+    def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             self._terminated.unsafe_ptr()
         )
