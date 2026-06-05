@@ -13,20 +13,25 @@ GPU successor of `sac_humanoid_nn2_agent.mojo` and counterpart of the legacy
 
 `updates_per_step=N_ENVS` keeps the effective UTD = 1 per collected transition.
 
-CRITIC: this variant swaps the preset's plain `LinearReLU` critic for a
-pre-activation **LayerNorm** critic (`Linear → LayerNorm → ReLU`, repeated) —
-the REDQ/SR-SAC stability fix proven on the HalfCheetah MBPO/SAC harnesses.
-It targets the late critic-loss explosion (~1.45M steps) that capped the
-plain-critic baseline at ~6000 reward. Everything else (fused actor, tuned
-scalars, uniform replay) matches the `SAC[...]` preset, so the critic is the
-only change.
+SAMPLING: this variant enables **ERE** (Emphasizing Recent Experience,
+Wang & Ross 2019) via `use_ere=True` — each successive gradient step in an
+update burst samples from a progressively shrinking window of the most recent
+transitions (window decays by `ere_eta` per update toward `ere_c_min`), so
+learning emphasizes fresh on-policy data without abandoning the full buffer.
+It is a SAMPLING change only — the nets are the preset's plain fused
+`LinearReLU` critic (same architecture as the 6006-reward baseline), so the
+checkpoint stays loadable by the preset-based eval/render script.
+
+EVAL: a periodic GPU-parallel DETERMINISTIC eval logs `eval/mean_return` (the
+deployable-policy signal) — the always-on stochastic `avg_reward` under-reports
+SAC by the entropy term.
 
 NOTE on checkpointing: the batched `train` entry point auto-saves the SAC
 weights+optimizers (one-file `nn2-ckpt v2`) every `CHECKPOINT_EVERY` env-steps
 and once at the end (a host-side D2H between iterations, safe with the CUDA-
-graph capture). The LayerNorm critic changes `PARAM_SIZE`, so this checkpoint
-(`sac_humanoid_nn2_ln.ckpt`) is NOT loadable by the preset-based eval script —
-it needs an eval harness built with the SAME LayerNorm critic to render.
+graph capture). The agent is the shared `SAC[...]` preset, so this checkpoint
+(`sac_humanoid_nn2_ere.ckpt`) loads directly into `sac_humanoid_nn2_eval_cpu.mojo`
+for rendering.
 
 Humanoid (Phyics3dEnv, MuJoCo-style):
   * 45D observation (qpos[2:24] + qvel[0:23])
@@ -48,13 +53,7 @@ from std.time import perf_counter_ns
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.combinators.sequential import Sequential
-from mojo_rl.nn2.primitives.linear import Linear
-from mojo_rl.nn2.primitives.relu import ReLU
-from mojo_rl.nn2.primitives.layer_norm import LayerNorm
-from mojo_rl.deep_agents2.sac import SACAgent, SACActorNet
-from mojo_rl.deep_agents2.training.blocks import ReplaySampleStep
-from mojo_rl.deep_agents2.data.any_replay import AnyReplay
+from mojo_rl.deep_agents2.sac import SAC
 from mojo_rl.deep_agents2.training.batched_env import BatchedGpuEnv
 from mojo_rl.envs.humanoid import Humanoid
 
@@ -66,10 +65,10 @@ from mojo_rl.envs.humanoid import Humanoid
 comptime EnvT = Humanoid[DT, TERMINATE_ON_UNHEALTHY=True]
 comptime OBS_DIM = EnvT.OBS_DIM  # 45
 comptime ACT_DIM = EnvT.ACTION_DIM  # 17
-comptime HIDDEN = 512
+comptime HIDDEN = 256
 
 # Off-policy GPU training parameters (mirror the legacy GPU script).
-comptime BATCH = 256
+comptime BATCH = 512
 comptime REPLAY_CAPACITY = 1_000_000
 # Humanoid physics (NV=23) is the heaviest model here — its per-env RK4
 # workspace (mass matrix ∝ NV² + contacts) is replicated across all N_ENVS.
@@ -78,19 +77,15 @@ comptime REPLAY_CAPACITY = 1_000_000
 comptime N_ENVS = 32
 
 # Training duration. Drop NUM_STEPS to ~50_000 for a smoke run.
-# LN+512 ceiling run: the stable LayerNorm critic + wider nets should keep
-# climbing well past the 3M/HIDDEN=256 result (~5700 greedy), so we extend to
-# 10M env-steps (replay stays CAP-bound at 1M → no extra VRAM vs the 3M run).
-comptime NUM_STEPS = 10_000_000
+comptime NUM_STEPS = 3_000_000
 comptime WARMUP_STEPS = 25_000
 comptime PRINT_EVERY = 50_000
 comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
-# NOTE: distinct path from the plain-critic baseline `sac_humanoid_nn2.ckpt`.
-# The LayerNorm critic changes PARAM_SIZE, so this checkpoint is NOT loadable
-# by the preset-based eval script — it preserves the 6006-reward baseline ckpt
-# and needs an eval harness built with the same LayerNorm critic to render.
-comptime CHECKPOINT_PATH = "sac_humanoid_nn2_ln512.ckpt"
+# Plain-critic preset (same arch as the 6006 baseline `sac_humanoid_nn2.ckpt`),
+# so this checkpoint IS loadable by the preset-based eval script. Distinct path
+# to preserve the baseline ckpt while testing the ERE variant.
+comptime CHECKPOINT_PATH = "sac_humanoid_nn2_ere.ckpt"
 
 # Periodic DETERMINISTIC eval (greedy, no exploration noise) on an isolated set
 # of `EVAL_ENVS` parallel envs — the deployable-policy signal. The always-on
@@ -107,27 +102,11 @@ comptime EVAL_EPISODES = 16  # <= EVAL_ENVS → completes in one eval window
 comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
 comptime EvalEnvT = BatchedGpuEnv[EnvT, EVAL_ENVS, OBS_DIM, ACT_DIM]
 
-# ─── Nets ────────────────────────────────────────────────────────────────
-# Actor: the preset's canonical fused-`LinearReLU` `SACActorNet` (unchanged).
-# Critic: SWAPPED to a pre-activation LayerNorm MLP (`Linear → LayerNorm →
-# ReLU`, repeated) — the REDQ/SR-SAC stability fix proven on the MBPO/SAC
-# HalfCheetah harnesses (`examples/half_cheetah/sac_hc_nn2_parity.mojo`).
-# This is the ONLY change vs the 6006-reward baseline; it targets the
-# critic-loss explosion (~1.45M steps) that was capping the run.
-comptime ActorNet = SACActorNet[OBS_DIM, ACT_DIM, HIDDEN]
-comptime CriticNetLN = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    LayerNorm[HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    LayerNorm[HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, 1],
-]
-# Same uniform 1-step replay as the `SAC[...]` preset (target-generic block).
-comptime SampleT = ReplaySampleStep[
-    AnyReplay["gpu", OBS_DIM, ACT_DIM, REPLAY_CAPACITY], BATCH
-]
+# Actor + twin critics come from the `SAC[...]` preset (canonical fused
+# `LinearReLU` nets at HIDDEN=256) — the same architecture as the 6006-reward
+# baseline. The experiment here is ERE (Emphasizing Recent Experience), not an
+# architecture change, so the checkpoint stays portable to the preset-based
+# eval/render script.
 
 
 def main() raises:
@@ -154,7 +133,7 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="SAC Humanoid NN2 (GPU, LayerNorm critic, H512, 10M)",
+            run_name="SAC Humanoid NN2 (GPU, ERE, H256, 3M)",
             buffer_size=64,
             api_key=api_key,
         )
@@ -169,25 +148,27 @@ def main() raises:
         var logger_ptr = UnsafePointer(to=logger)
 
         # ─── Agent + batched GPU env ─────────────────────────────────────
-        # Built from the `SACAgent[...]` primitive (not the `SAC[...]` preset)
-        # so we can inject the LayerNorm critic. All scalars below are the
-        # preset's tuned defaults (lr=3e-4, gamma=0.99, tau=0.005,
-        # init_alpha=0.2, target_entropy=-ACT) so the critic architecture is
-        # the ONLY difference vs the 6006-reward baseline. Humanoid keeps
-        # action_scale=0.4 + the example-specific warmup/window knobs.
-        var agent = SACAgent["gpu", SampleT, ActorNet, CriticNetLN](
+        # `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN]` builds the SACAgent with
+        # the fused default nets + SAC's tuned defaults (lr=3e-4, gamma=0.99,
+        # tau=0.005, init_alpha=0.2, target_entropy=-ACT). Humanoid overrides
+        # action_scale=0.4 + warmup/window knobs. THIS RUN: `use_ere=True`
+        # enables ERE (Emphasizing Recent Experience) — each gradient step
+        # samples from a shrinking recent-history window (size decays by
+        # `ere_eta` per update down to `ere_c_min`), biasing learning toward
+        # fresh transitions. It's a sampling change only (no architecture /
+        # checkpoint change vs the plain-critic baseline).
+        var agent = SAC[
+            "gpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN
+        ](
             ctx=ctx,
-            actor_lr=3e-4,
-            critic_lr=3e-4,
-            alpha_lr=3e-4,
-            gamma=0.99,
-            tau=0.005,
             action_scale=0.4,  # match legacy Humanoid SAC runs
-            init_alpha=0.2,
-            target_entropy=Scalar[DT](-Float64(ACT_DIM)),
             learning_starts=WARMUP_STEPS,
             window_size=100,
             initial_episode_fill=0.0,
+            use_ere=True,
+            ere_eta=0.996,  # standard ERE recency-decay (Wang & Ross 2019)
+            ere_c_min=1,
+            ere_k_max=1000,
         )
         var env = BatchedEnvT(ctx)
         # Isolated eval env (greedy deterministic rollouts; never touches the

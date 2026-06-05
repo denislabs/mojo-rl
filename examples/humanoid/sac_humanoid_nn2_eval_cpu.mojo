@@ -45,7 +45,9 @@ comptime BATCH = 256
 # the checkpoint — keep it small to avoid a large CPU allocation.
 comptime REPLAY_CAPACITY = 100_000
 
-comptime CHECKPOINT_PATH = "sac_humanoid_nn2.ckpt"
+# Points at the ERE run's checkpoint (plain-critic preset → loads natively).
+# Set back to "sac_humanoid_nn2.ckpt" to render the original 6006 baseline.
+comptime CHECKPOINT_PATH = "sac_humanoid_nn2_ere.ckpt"
 comptime ACTION_SCALE = Scalar[DT](0.4)  # MUST match training
 
 # Evaluation settings
