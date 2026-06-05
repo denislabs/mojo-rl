@@ -4,6 +4,7 @@
 from .mcts_adapters import AZPredGPU, AZEnvGPU
 from .mcts_adapters_cpu import AZRepCPU, AZDynCPU, AZPredCPU
 from .mcts_adapters_mz import MZRepGPU, MZDynGPU, MZPredGPU
+from .mcts_adapters_mz_cpu import MZRepCPU, MZDynCPU, MZPredCPU
 from .example_replay import MCTSExampleReplay
 from .evaluators import (
     GPUEvaluator,
