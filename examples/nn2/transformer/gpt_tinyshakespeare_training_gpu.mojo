@@ -385,7 +385,10 @@ def main() raises:
     )
     print(
         "  batch=" + String(BATCH) + " base_lr=" + String(BASE_LR)
-        + " wd=" + String(WD) + " (no grad-clip / tying / scaled-init — nn2 gaps)"
+        + " wd=" + String(WD)
+        + " | dropout_p=" + String(DROPOUT_P)
+        + " tie_weights=" + String(TIE_WEIGHTS)
+        + " use_max_attn=" + String(USE_MAX_ATTN)
     )
     print(
         "  total_iters=" + String(TOTAL_ITERS)
