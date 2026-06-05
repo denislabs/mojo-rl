@@ -52,6 +52,8 @@ def run_muzero_selfplay_cpu[
     B: Int,
     K: Int,
     N: Int,
+    BATCH_SIMS: Int = 8,
+    VIRTUAL_LOSS: Int = 3,
 ](
     mut env: ENV,
     mut rep: REP,
@@ -69,11 +71,19 @@ def run_muzero_selfplay_cpu[
     seed: UInt64 = 0,
     max_ep_steps: Int = 500,
     value_coef: Scalar[DT] = Scalar[DT](0.25),
+    eval_every: Int = 0,
+    eval_episodes: Int = 5,
     verbose: Bool = False,
 ) raises -> Float64:
+    # PUCT defaults (c_base=19652, c_init=1.25) — matches legacy
+    # MuZeroMLPConfig.PUCT. NOTE: ``MuZeroPUCT[1.25]`` would bind c_base=1.25
+    # (the *first* positional param), not c_init, badly distorting exploration.
+    # BATCH_SIMS=8 + VIRTUAL_LOSS=3 diversify root exploration to counter the
+    # spiky DirichletNoise[0.25,0.25] prior (legacy batch_sims=8 / virtual_loss=3).
     var mcts = GenericCPUMCTS[
         ACT, LATENT, NUM_SIMS, MAX_NODES,
-        MuZeroPUCT[1.25], DirichletNoise[0.25, 0.25], SinglePlayer,
+        MuZeroPUCT[19652.0, 1.25], DirichletNoise[0.25, 0.25], SinglePlayer,
+        BATCH_SIMS, VIRTUAL_LOSS,
     ](gamma=Float64(gamma))
     var rb = MCTSSequenceReplay[OBS, ACT, CAP](seed=seed ^ UInt64(0xABCDEF))
 
@@ -197,6 +207,47 @@ def run_muzero_selfplay_cpu[
                         v_min, v_max, value_coef,
                     )
                 )
+
+        # ── periodic GREEDY eval (noise off, argmax visits) ──
+        # Training return above is exploratory (∝-visit sampling + root
+        # Dirichlet noise) and understates the policy. This measures the
+        # deterministic policy. Interrupts the in-progress training episode,
+        # so keep ``eval_every`` large.
+        if eval_every > 0 and (it + 1) % eval_every == 0:
+            var eval_sum = 0.0
+            for _ in range(eval_episodes):
+                var eo = env.reset_obs_list()
+                var eo_f = List[Float64]()
+                for j in range(OBS):
+                    eo_f.append(Float64(eo[j]))
+                var eret = 0.0
+                for _step in range(max_ep_steps):
+                    var ep = mcts.search[
+                        type_of(rep_a), type_of(dyn_a), type_of(pred_a)
+                    ](rep_a, dyn_a, pred_a, eo_f, add_noise=False)
+                    var best = 0
+                    for a in range(1, ACT):
+                        if ep[a] > ep[best]:
+                            best = a
+                    var es = env.step_obs(best)
+                    eret += Float64(es[1])
+                    eo_f = List[Float64]()
+                    for j in range(OBS):
+                        eo_f.append(Float64(es[0][j]))
+                    if es[2]:
+                        break
+                eval_sum += eret
+            var eval_avg = eval_sum / Float64(eval_episodes)
+            print("  [eval] step", it + 1, "greedy_return", eval_avg)
+            # restart a clean training episode (eval clobbered ``env``)
+            e_obs.clear(); e_act.clear(); e_rew.clear()
+            e_pol.clear(); e_val.clear(); e_tp.clear()
+            ep_len = 0
+            ep_return = 0.0
+            cur = env.reset_obs_list()
+            cur_f = List[Float64]()
+            for j in range(OBS):
+                cur_f.append(Float64(cur[j]))
 
         if verbose and (it + 1) % 500 == 0:
             var avg = 0.0
