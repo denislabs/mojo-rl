@@ -22,13 +22,12 @@ nn2 differences vs the legacy script (simpler, not awkward):
   - Per-token CE is the `SequenceCrossEntropyLoss[SEQ, VOCAB]` op (used for
     both training and val), instead of reinterpreting + a static CE kernel.
 
-Generation-quality features ported from gen-1: dropout (`GPTDrop`, p=0.2),
-`Normal(0,0.02)` init, and **LM-head↔embedding weight tying** (`TIE_WEIGHTS`,
-the key fix for degenerate generation — see the tying block below). Weight
-tying drives the step manually so the grad-fold lands between net.vjp and
-optim.step. Still deferred (smaller effect):
-  - 1/√(2L) c_proj scaled init,
-  - per-step grad clip (nn2 AdamW has none).
+Generation-quality features ported from gen-1 (the full nanoGPT recipe now):
+dropout (`GPTDrop`, p=0.2), `Normal(0,0.02)` init, **LM-head↔embedding weight
+tying** (`TIE_WEIGHTS`), and **1/√(2L) c_proj scaled init** (`SCALED_INIT`,
+applied to each block's attention-out + FFN-out projection). Tying drives the
+step manually so the grad-fold lands between net.vjp and optim.step. Still
+deferred (smallest effect): per-step grad clip (nn2 AdamW has none).
 See docs/NN2_TRANSFORMER_PORT.md.
 
 Default config is sized for NVIDIA. On Apple it OOMs — shrink SEQ→64,
@@ -40,7 +39,7 @@ Run on NVIDIA:
 
 from std.memory import alloc
 from std.random import seed, random_float64
-from std.math import log, exp, cos
+from std.math import log, exp, cos, sqrt
 from std.time import perf_counter_ns
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -172,6 +171,50 @@ def _tie_params(mut trainer: GPT_TRAINER, ctx: DeviceContext) raises:
     ctx.enqueue_function[_tie_params_kernel[VOCAB, EMBED]](
         ev, lv, grid_dim=nb, block_dim=TPB
     )
+
+
+# nanoGPT/GPT-2 scaled init: divide each residual output projection
+# (attention-out and FFN-out) weight by 1/√(2L) after Normal init, keeping the
+# residual-stream variance bounded as depth grows. Reached through the GPTDrop
+# child tree (per-block, deeply nested — see the chain below).
+comptime SCALED_INIT = True
+
+
+def _scale_kernel[
+    N: Int
+](buf: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin], s: Scalar[DT]):
+    var idx = Int(global_idx.x)
+    if idx < N:
+        buf[idx] = rebind[Scalar[DT]](buf[idx]) * s
+
+
+def _scale_c_proj(mut trainer: GPT_TRAINER, ctx: DeviceContext) raises:
+    var s = Scalar[DT](1.0 / sqrt(Float64(2 * LAYERS)))
+    comptime DD = EMBED * EMBED                 # attn-out Linear[D, D]
+    comptime FD = (FF_MULT * EMBED) * EMBED      # FFN-out  Linear[F, D]
+    comptime db = (DD + TPB - 1) // TPB
+    comptime fb = (FD + TPB - 1) // TPB
+    # GPTDrop.children[3] = Repeat; .children[L] = TransformerBlockDrop:
+    #   [0]=Residual(LN+MHADrop), [1]=Residual(LN+FFNDrop).
+    # MHADrop  = Seq[Tok[Lin d,3d], Attn, Tok[Lin d,d] (c_proj), Dropout]
+    # FFNDrop  = Seq[Tok[Lin d,ff], GELU, Tok[Lin ff,d] (c_proj), Dropout]
+    for L in range(LAYERS):
+        var a = LayoutTensor[DT, Layout.row_major(DD), MutAnyOrigin](
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                trainer.net.children[3].children[L].children[0].inner
+                .children[1].children[2].inner.weight.value_dev.value()
+                .unsafe_ptr()
+            )
+        )
+        ctx.enqueue_function[_scale_kernel[DD]](a, s, grid_dim=db, block_dim=TPB)
+        var f = LayoutTensor[DT, Layout.row_major(FD), MutAnyOrigin](
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                trainer.net.children[3].children[L].children[1].inner
+                .children[1].children[2].inner.weight.value_dev.value()
+                .unsafe_ptr()
+            )
+        )
+        ctx.enqueue_function[_scale_kernel[FD]](f, s, grid_dim=fb, block_dim=TPB)
 
 
 def _lr_scale(it: Int) -> Scalar[DT]:
@@ -388,6 +431,7 @@ def main() raises:
         + " wd=" + String(WD)
         + " | dropout_p=" + String(DROPOUT_P)
         + " tie_weights=" + String(TIE_WEIGHTS)
+        + " scaled_init=" + String(SCALED_INIT)
         + " use_max_attn=" + String(USE_MAX_ATTN)
     )
     print(
@@ -463,6 +507,11 @@ def main() raises:
         tgt_host.unsafe_ptr()
     )
     ctx.synchronize()
+
+    # nanoGPT scaled init on residual c_proj weights (after Normal init).
+    comptime if SCALED_INIT:
+        _scale_c_proj(trainer, ctx)
+        ctx.synchronize()
 
     # Tie LM-head W to the embedding W at init so step 0 sees a coherent pair.
     comptime if TIE_WEIGHTS:
