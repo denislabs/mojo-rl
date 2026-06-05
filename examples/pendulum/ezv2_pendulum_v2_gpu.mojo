@@ -37,10 +37,10 @@ def main() raises:
     comptime PROJ = 128
     comptime PROJ_HID = 128
     comptime BOTTLENECK = 64
-    comptime NUM_SIMS = 32
+    comptime NUM_SIMS = 64        # 64 sims over 8 root candidates ≈ 8 visits each
     comptime MAX_NODES = 128
-    comptime K_ROOT = 16
-    comptime K_NON_ROOT = 8
+    comptime K_ROOT = 8
+    comptime K_NON_ROOT = 4
     comptime CAP = 50000
     comptime B = 128
     comptime K = 5
@@ -85,8 +85,12 @@ def main() raises:
         learning_starts=2000,
         train_per_iter=1,
         gamma=Scalar[DT](0.99),
-        v_min=Scalar[DT](-50.0),
-        v_max=Scalar[DT](2.0),
+        # value/reward two-hot support in h-space. Pendulum n-step targets (N=5)
+        # live in ~h[-17, 0]; the old [-50, 2] wasted >80% of the 51 bins, so
+        # tighten to [-20, 1] for ~2.5x finer value resolution (margin avoids
+        # clipping the most-negative bootstrap tail ≈ h(-313) ≈ -16.7).
+        v_min=Scalar[DT](-20.0),
+        v_max=Scalar[DT](1.0),
         max_action=Scalar[DT](2.0),
         min_std=Scalar[DT](0.5),
         std_magnification=Scalar[DT](3.0),
