@@ -134,11 +134,14 @@ comptime ResBlockDownsampleBN[
 
 
 # MultiHeadAttention: per-token QKV proj → attention → per-token out proj.
+# `use_max=True` selects the batched-GEMM attention path (USE_MAX_KERNELS) —
+# faster on NVIDIA; default False keeps the portable custom-kernel path.
 comptime MultiHeadAttention[
-    dim: Int, n_heads: Int, seq_len: Int, causal: Bool = False
+    dim: Int, n_heads: Int, seq_len: Int, causal: Bool = False,
+    use_max: Bool = False,
 ] = Sequential[
     Tokenwise[seq_len, Linear[dim, 3 * dim]],
-    ScaledDotProductAttention[dim, n_heads, seq_len, causal],
+    ScaledDotProductAttention[dim, n_heads, seq_len, causal, use_max],
     Tokenwise[seq_len, Linear[dim, dim]],
 ]
 
@@ -156,12 +159,13 @@ comptime TransformerFFN[seq_len: Int, dim: Int, ff_dim: Int] = Sequential[
 # TransformerBlock: pre-LN encoder/decoder layer.
 #   y = x + MHA(LN(x));  z = y + FFN(LN(y)).  IN_DIM == OUT_DIM == seq_len*dim.
 comptime TransformerBlock[
-    dim: Int, n_heads: Int, seq_len: Int, ff_dim: Int, causal: Bool = False
+    dim: Int, n_heads: Int, seq_len: Int, ff_dim: Int, causal: Bool = False,
+    use_max: Bool = False,
 ] = Sequential[
     Residual[
         Sequential[
             Tokenwise[seq_len, LayerNorm[dim]],
-            MultiHeadAttention[dim, n_heads, seq_len, causal],
+            MultiHeadAttention[dim, n_heads, seq_len, causal, use_max],
         ]
     ],
     Residual[
@@ -184,13 +188,14 @@ comptime GPT[
     n_layers: Int,
     ff_mult: Int = 4,
     causal: Bool = True,
+    use_max: Bool = False,
 ] = Sequential[
     Tokenwise[seq_len, Embedding[vocab, embed_dim]],
     BiasAdd[seq_len * embed_dim],
     Repeat[
         n_layers,
         TransformerBlock[
-            embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal
+            embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal, use_max
         ],
     ],
     Tokenwise[seq_len, LayerNorm[embed_dim]],
@@ -228,13 +233,14 @@ comptime ViT[
     n_patches: Int,
     n_classes: Int,
     ff_mult: Int = 4,
+    use_max: Bool = False,
 ] = Sequential[
     PatchEmbed[in_channels, img_h, img_w, patch_size, embed_dim, n_patches],
     BiasAdd[n_patches * embed_dim],
     Repeat[
         n_layers,
         TransformerBlock[
-            embed_dim, n_heads, n_patches, ff_mult * embed_dim, False
+            embed_dim, n_heads, n_patches, ff_mult * embed_dim, False, use_max
         ],
     ],
     Tokenwise[n_patches, LayerNorm[embed_dim]],

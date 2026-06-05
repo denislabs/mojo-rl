@@ -77,7 +77,13 @@ comptime N_VAL_BATCHES = N_VAL_WINDOWS // BATCH
 comptime IN_DIM = SEQ * VOCAB
 comptime OUT_DIM = SEQ * VOCAB
 
-comptime GPT_MODEL = GPT[VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True]
+# Attention kernel path: True → batched-GEMM (USE_MAX_KERNELS, fast on NVIDIA);
+# False → portable serial per-(b,h) custom kernels. Flip to compare timings;
+# the two are bit-identical on Metal (TF32 may widen the gap on NVIDIA).
+comptime USE_MAX_ATTN = True
+comptime GPT_MODEL = GPT[
+    VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True, USE_MAX_ATTN
+]
 comptime GPT_LOSS = SequenceCrossEntropyLoss[SEQ, VOCAB]
 comptime GPT_TRAINER = Trainer[GPT_MODEL, AdamW, GPT_LOSS, BATCH, target="gpu"]
 
