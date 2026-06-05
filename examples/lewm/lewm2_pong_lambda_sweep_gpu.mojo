@@ -100,9 +100,11 @@ def main() raises:
     print("buffer n_frames =", buf.n_frames, "  steps/λ =", STEPS)
     var src = Source.make(buf^, ctx=ctx)
 
-    var lambdas = List[Scalar[DT]](
-        Scalar[DT](0.09), Scalar[DT](0.3), Scalar[DT](1.0), Scalar[DT](3.0)
-    )
+    var lambdas = List[Scalar[DT]]()
+    lambdas.append(Scalar[DT](0.09))
+    lambdas.append(Scalar[DT](0.3))
+    lambdas.append(Scalar[DT](1.0))
+    lambdas.append(Scalar[DT](3.0))
     print()
     print("   λ        loss        var_min     gram_off    healthy?")
     print("   " + "-" * 56)
