@@ -85,3 +85,40 @@ def soft_ce_loss_and_grad[
             var sm = exp(log_sm)
             grad_logits[base + i] = grad_scale * (sm - q)
     return total
+
+
+def soft_ce_slice_loss_and_grad[
+    BATCH: Int, ROW: Int, OFF: Int, NBINS: Int,
+](
+    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    target: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    grad_scale: Scalar[DT],
+    mut grad_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+) -> Scalar[DT]:
+    """Soft-CE over the ``[OFF, OFF+NBINS)`` column slice of a ``[BATCH, ROW]``
+    logit tile (the MuZero heads pack policy / value / reward as adjacent slices
+    of one network-output row). ``target`` is a contiguous ``[BATCH, NBINS]``
+    distribution. Writes grad into the same ``[OFF, OFF+NBINS)`` slice of
+    ``grad_out``; other columns of ``grad_out`` are left untouched (the caller
+    fills the rest, e.g. the dynamics latent slice with the carry gradient).
+    """
+    var total = Scalar[DT](0.0)
+    for b in range(BATCH):
+        var base = b * ROW + OFF
+        var m = logits[base]
+        for i in range(1, NBINS):
+            var v = logits[base + i]
+            if v > m:
+                m = v
+        var s = Scalar[DT](0.0)
+        for i in range(NBINS):
+            s += exp(logits[base + i] - m)
+        var log_s = log(s)
+        var tb = b * NBINS
+        for i in range(NBINS):
+            var q = target[tb + i]
+            var log_sm = (logits[base + i] - m) - log_s
+            total += -q * log_sm
+            var sm = exp(log_sm)
+            grad_out[base + i] = grad_scale * (sm - q)
+    return total
