@@ -25,8 +25,8 @@ def main() raises:
     comptime LATENT = 64
     comptime BINS = 51
     comptime H = 128
-    comptime NUM_SIMS = 48
-    comptime MAX_NODES = 128
+    comptime NUM_SIMS = 25
+    comptime MAX_NODES = 96
     comptime CAP = 4000     # small window → recent (non-stale) policy targets
     comptime B = 64
     comptime K = 5
@@ -47,7 +47,7 @@ def main() raises:
     odyn.lr = Scalar[DT](2e-3)
     opred.lr = Scalar[DT](2e-3)
 
-    print("MuZero TicTacToe convergence (v2, CPU) — eval vs perfect minimax")
+    print("MuZero TicTacToe convergence (v2, CPU) — reanalyze on, eval vs random")
     print("  LATENT", LATENT, "H", H, "sims", NUM_SIMS, "K", K, "N", N, "B", B)
 
     var loss = run_muzero_selfplay_2p_cpu[
@@ -56,7 +56,7 @@ def main() raises:
         RandomOpponent,
     ](
         env, rep, dyn, pred, orep, odyn, opred,
-        iterations=40000,
+        iterations=20000,
         learning_starts=500,
         gamma=Scalar[DT](1.0),
         v_min=Scalar[DT](-1.0),
@@ -65,6 +65,8 @@ def main() raises:
         seed=42,
         eval_every=2000,
         eval_games=40,
+        reanalyze_every=1,      # refresh stale targets every step
+        reanalyze_batch=2,      # 2 old positions replanned per step (~3x MCTS)
         verbose=True,
     )
 
