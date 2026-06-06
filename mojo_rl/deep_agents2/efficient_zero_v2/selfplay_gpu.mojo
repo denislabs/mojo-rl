@@ -30,6 +30,7 @@ from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.planners.tree_search import GumbelGPUMCTS, SinglePlayer
 
 from .blocks import ezv2_unroll_train_step_gpu
+from .unroll_scratch import EZV2UnrollScratch
 from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZPredGPU
 from ..zero.sequence_replay_mcts import MCTSSequenceReplay
 
@@ -109,6 +110,11 @@ def run_ezv2_gumbel_selfplay_gpu[
     var t_pol = _a((K + 1) * B * ACT)
     var t_val = _a((K + 1) * B)
     var t_rew = _a(K * B)
+
+    # ── persistent GPU train-step scratch (allocated once, reused per step) ──
+    var train_scratch = EZV2UnrollScratch[
+        B, K, OBS, ACT, LATENT, BINS, PROJM.OUT_DIM
+    ].make(ctx)
 
     var e_obs = List[Scalar[DT]]()
     var e_act = List[Scalar[DT]]()
@@ -222,7 +228,7 @@ def run_ezv2_gumbel_selfplay_gpu[
                         REP, DYN, PRED, PROJM, PREDH,
                         B, K, OBS, ACT, LATENT, BINS,
                     ](
-                        ctx, rep, dyn, pred, proj, predh,
+                        ctx, train_scratch, rep, dyn, pred, proj, predh,
                         orep, odyn, opred, oproj, opredh,
                         t_obs_seq, t_act, t_pol, t_val, t_rew,
                         v_min, v_max, value_coef, consistency_coef,

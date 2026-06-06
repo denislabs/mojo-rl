@@ -11,7 +11,7 @@ from std.memory import alloc
 from std.math import min
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.initializer import Zero
@@ -19,7 +19,7 @@ from mojo_rl.deep_agents2.primitives.rsample import RSample
 
 from .nets_mt import TDMPC2EncoderMT, TDMPC2PolicyMT, TDMPC2QNetMT
 from .losses import TwoHotDecode
-from .td_target_step import _dp, _lt, _upload, _td_combine_k, _alloc
+from .td_target_step import _dp, _lt, _td_combine_k, _alloc
 from .task_embedding import TaskEmbedding
 
 
@@ -93,9 +93,41 @@ struct TDTargetStepMT[
     var rsample: RSample[Self.MAX_ACT]
     var decode: TwoHotDecode[Self.BINS, Self.VMIN, Self.VMAX]
 
+    # Persistent GPU scratch (allocated once in `make`, reused every step —
+    # per-step `enqueue_create_buffer` explodes disk on NVIDIA).
+    var d_obs: Optional[DeviceBuffer[DT]]
+    var d_rew: Optional[DeviceBuffer[DT]]
+    var d_done: Optional[DeviceBuffer[DT]]
+    var d_tids: Optional[DeviceBuffer[DT]]
+    var d_td: Optional[DeviceBuffer[DT]]
+    var d_tem: Optional[DeviceBuffer[DT]]
+    var d_ein: Optional[DeviceBuffer[DT]]
+    var d_nz: Optional[DeviceBuffer[DT]]
+    var d_pin: Optional[DeviceBuffer[DT]]
+    var d_pio: Optional[DeviceBuffer[DT]]
+    var d_alp: Optional[DeviceBuffer[DT]]
+    var d_za: Optional[DeviceBuffer[DT]]
+    var d_q1: Optional[DeviceBuffer[DT]]
+    var d_q2: Optional[DeviceBuffer[DT]]
+    var d_qa: Optional[DeviceBuffer[DT]]
+    var d_qb: Optional[DeviceBuffer[DT]]
+    var h_obs: Optional[HostBuffer[DT]]
+    var h_rew: Optional[HostBuffer[DT]]
+    var h_done: Optional[HostBuffer[DT]]
+    var h_tids: Optional[HostBuffer[DT]]
+    var h_td: Optional[HostBuffer[DT]]
+
     def __init__(out self):
         self.rsample = RSample[Self.MAX_ACT]()
         self.decode = TwoHotDecode[Self.BINS, Self.VMIN, Self.VMAX]()
+        self.d_obs = None; self.d_rew = None; self.d_done = None
+        self.d_tids = None; self.d_td = None; self.d_tem = None
+        self.d_ein = None; self.d_nz = None; self.d_pin = None
+        self.d_pio = None; self.d_alp = None; self.d_za = None
+        self.d_q1 = None; self.d_q2 = None; self.d_qa = None
+        self.d_qb = None
+        self.h_obs = None; self.h_rew = None; self.h_done = None
+        self.h_tids = None; self.h_td = None
 
     @staticmethod
     def make[target: StaticString](
@@ -109,6 +141,39 @@ struct TDTargetStepMT[
         s.decode = TwoHotDecode[
             Self.BINS, Self.VMIN, Self.VMAX
         ].make[target, INIT=Zero](ctx=ctx)
+        comptime if target == "gpu":
+            var c = ctx.value()
+            comptime LAT = Self.LATENT
+            comptime A = Self.MAX_ACT
+            comptime MO = Self.MAX_OBS
+            comptime EMB = Self.TASK_EMB
+            comptime AOBS = Self.AOBS
+            comptime PIN = Self.PIN
+            comptime ZA = Self.ZA
+            comptime ALP = A + 1
+            comptime BB = Self.B
+            s.d_obs = c.enqueue_create_buffer[DT]((Self.H + 1) * BB * MO)
+            s.d_rew = c.enqueue_create_buffer[DT](Self.H * BB)
+            s.d_done = c.enqueue_create_buffer[DT](Self.H * BB)
+            s.d_tids = c.enqueue_create_buffer[DT](BB)
+            s.d_td = c.enqueue_create_buffer[DT](Self.H * BB)
+            s.d_tem = c.enqueue_create_buffer[DT](BB * EMB)
+            s.d_ein = c.enqueue_create_buffer[DT](BB * AOBS)
+            s.d_nz = c.enqueue_create_buffer[DT](BB * LAT)
+            s.d_pin = c.enqueue_create_buffer[DT](BB * PIN)
+            s.d_pio = c.enqueue_create_buffer[DT](BB * 2 * A)
+            s.d_alp = c.enqueue_create_buffer[DT](BB * ALP)
+            s.d_za = c.enqueue_create_buffer[DT](BB * ZA)
+            s.d_q1 = c.enqueue_create_buffer[DT](BB * Self.BINS)
+            s.d_q2 = c.enqueue_create_buffer[DT](BB * Self.BINS)
+            s.d_qa = c.enqueue_create_buffer[DT](BB)
+            s.d_qb = c.enqueue_create_buffer[DT](BB)
+            s.h_obs = c.enqueue_create_host_buffer[DT]((Self.H + 1) * BB * MO)
+            s.h_rew = c.enqueue_create_host_buffer[DT](Self.H * BB)
+            s.h_done = c.enqueue_create_host_buffer[DT](Self.H * BB)
+            s.h_tids = c.enqueue_create_host_buffer[DT](BB)
+            s.h_td = c.enqueue_create_host_buffer[DT](Self.H * BB)
+            c.synchronize()
         return s^
 
     def step[target: StaticString](
@@ -252,25 +317,43 @@ struct TDTargetStepMT[
         comptime ALP = A + 1
         comptime BB = Self.B
 
-        var d_obs = _upload(ctx, obs, (Self.H + 1) * BB * MO)
-        var d_rew = _upload(ctx, reward, Self.H * BB)
-        var d_done = _upload(ctx, done, Self.H * BB)
-        var d_tids = _upload(ctx, task_ids, BB)
-        var d_td = ctx.enqueue_create_buffer[DT](Self.H * BB)
+        # Reuse persistent scratch (allocated once in `make`). Upload host
+        # inputs through the cached pinned host buffers.
+        var d_obs = self.d_obs.value()
+        var d_rew = self.d_rew.value()
+        var d_done = self.d_done.value()
+        var d_tids = self.d_tids.value()
+        var d_td = self.d_td.value()
+        var d_tem = self.d_tem.value()
+        var d_ein = self.d_ein.value()
+        var d_nz = self.d_nz.value()
+        var d_pin = self.d_pin.value()
+        var d_pio = self.d_pio.value()
+        var d_alp = self.d_alp.value()
+        var d_za = self.d_za.value()
+        var d_q1 = self.d_q1.value()
+        var d_q2 = self.d_q2.value()
+        var d_qa = self.d_qa.value()
+        var d_qb = self.d_qb.value()
+        var h_obs = self.h_obs.value()
+        var h_rew = self.h_rew.value()
+        var h_done = self.h_done.value()
+        var h_tids = self.h_tids.value()
 
-        var d_tem = ctx.enqueue_create_buffer[DT](BB * EMB)
+        var n_obs = (Self.H + 1) * BB * MO
+        for i in range(n_obs):
+            h_obs.unsafe_ptr()[i] = obs[i]
+        for i in range(Self.H * BB):
+            h_rew.unsafe_ptr()[i] = reward[i]
+            h_done.unsafe_ptr()[i] = done[i]
+        for i in range(BB):
+            h_tids.unsafe_ptr()[i] = task_ids[i]
+        ctx.enqueue_copy(d_obs, h_obs)
+        ctx.enqueue_copy(d_rew, h_rew)
+        ctx.enqueue_copy(d_done, h_done)
+        ctx.enqueue_copy(d_tids, h_tids)
+
         task_emb.gather[target, BB](_dp(d_tids), _dp(d_tem), ctx=ctx)
-
-        var d_ein = ctx.enqueue_create_buffer[DT](BB * AOBS)
-        var d_nz = ctx.enqueue_create_buffer[DT](BB * LAT)
-        var d_pin = ctx.enqueue_create_buffer[DT](BB * PIN)
-        var d_pio = ctx.enqueue_create_buffer[DT](BB * 2 * A)
-        var d_alp = ctx.enqueue_create_buffer[DT](BB * ALP)
-        var d_za = ctx.enqueue_create_buffer[DT](BB * ZA)
-        var d_q1 = ctx.enqueue_create_buffer[DT](BB * Self.BINS)
-        var d_q2 = ctx.enqueue_create_buffer[DT](BB * Self.BINS)
-        var d_qa = ctx.enqueue_create_buffer[DT](BB)
-        var d_qb = ctx.enqueue_create_buffer[DT](BB)
 
         comptime nb_ein = (BB * AOBS + TPB - 1) // TPB
         comptime nb_pin = (BB * PIN + TPB - 1) // TPB
@@ -324,8 +407,8 @@ struct TDTargetStepMT[
                 gamma, grid_dim=nb_b, block_dim=TPB,
             )
 
-        var h = ctx.enqueue_create_host_buffer[DT](Self.H * BB)
-        ctx.enqueue_copy(h, d_td)
+        var h_td = self.h_td.value()
+        ctx.enqueue_copy(h_td, d_td)
         ctx.synchronize()
         for i in range(Self.H * BB):
-            td_out[i] = h.unsafe_ptr()[i]
+            td_out[i] = h_td.unsafe_ptr()[i]

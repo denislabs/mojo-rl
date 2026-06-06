@@ -22,6 +22,7 @@ from .loss_ops_continuous import (
     continuous_policy_loss_and_grad,
     continuous_policy_loss_grad_k,
 )
+from .unroll_scratch import EZV2UnrollScratch, EZV2UnrollContScratch
 from .blocks import ezv2_unroll_train_step_cpu, ezv2_unroll_train_step_gpu
 from .blocks_continuous import (
     ezv2_unroll_train_step_continuous_cpu,

@@ -17,7 +17,7 @@ heterogeneous-action multi-task suite) — same spirit as the QP-dropout caveats
 from std.memory import alloc
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.initializer import Zero
@@ -64,6 +64,14 @@ struct PolicyStepMT[
     var q_mean: Scalar[DT]
     var q_min: Scalar[DT]
     var q_max: Scalar[DT]
+    # Persistent GPU scratch (allocated once in `make`, reused every step —
+    # per-step `enqueue_create_buffer` explodes disk on NVIDIA).
+    var d_tem: Optional[DeviceBuffer[DT]]
+    var d_loss: Optional[DeviceBuffer[DT]]
+    var d_qavg: Optional[DeviceBuffer[DT]]
+    var d_grad: Optional[DeviceBuffer[DT]]
+    var h_loss: Optional[HostBuffer[DT]]
+    var h_qavg: Optional[HostBuffer[DT]]
 
     def __init__(out self):
         self.graph = Self.GraphT()
@@ -73,6 +81,8 @@ struct PolicyStepMT[
         self.q_mean = Scalar[DT](0.0)
         self.q_min = Scalar[DT](0.0)
         self.q_max = Scalar[DT](0.0)
+        self.d_tem = None; self.d_loss = None; self.d_qavg = None
+        self.d_grad = None; self.h_loss = None; self.h_qavg = None
 
     def _set_q_stats(
         mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int
@@ -103,6 +113,15 @@ struct PolicyStepMT[
         var s = Self()
         s.graph = Self.GraphT.make[target, INIT=Zero](ctx=ctx)
         s.rsample = RSample[Self.MAX_ACT].make[target, INIT=Zero](ctx=ctx)
+        comptime if target == "gpu":
+            var c = ctx.value()
+            s.d_tem = c.enqueue_create_buffer[DT](Self.B * Self.TASK_EMB)
+            s.d_loss = c.enqueue_create_buffer[DT](Self.B)
+            s.d_qavg = c.enqueue_create_buffer[DT](Self.B)
+            s.d_grad = c.enqueue_create_buffer[DT](Self.B)
+            s.h_loss = c.enqueue_create_host_buffer[DT](Self.B)
+            s.h_qavg = c.enqueue_create_host_buffer[DT](Self.B)
+            c.synchronize()
         return s^
 
     def _bind[target: StaticString](
@@ -214,16 +233,16 @@ struct PolicyStepMT[
     ) raises -> Scalar[DT]:
         comptime BB = Self.B
         comptime EMB = Self.TASK_EMB
-        var d_tem = ctx.enqueue_create_buffer[DT](BB * EMB)
+        var d_tem = self.d_tem.value()
         task_emb.gather[target, BB](task_ids, _dp(d_tem), ctx=ctx)
         self._bind[target](policy, q, qi, qj, z, _dp(d_tem))
         pi_opt.zero_grad[target, Self.PolicyT](policy)
 
-        var d_loss = ctx.enqueue_create_buffer[DT](BB)
+        var d_loss = self.d_loss.value()
         var loss_t = TileTensor(_dp(d_loss), row_major[BB, 1]())
         self.graph.forward[target, BB](loss_t)
 
-        var d_qavg = ctx.enqueue_create_buffer[DT](BB)
+        var d_qavg = self.d_qavg.value()
         comptime sck = _scale_copy_k[BB]
         comptime nb = (BB + TPB - 1) // TPB
         ctx.enqueue_function[sck](
@@ -232,8 +251,8 @@ struct PolicyStepMT[
             Scalar[DT](0.5),
             grid_dim=nb, block_dim=TPB,
         )
-        var h_loss = ctx.enqueue_create_host_buffer[DT](BB)
-        var h_qavg = ctx.enqueue_create_host_buffer[DT](BB)
+        var h_loss = self.h_loss.value()
+        var h_qavg = self.h_qavg.value()
         ctx.enqueue_copy(h_loss, d_loss)
         ctx.enqueue_copy(h_qavg, d_qavg)
         ctx.synchronize()
@@ -247,7 +266,7 @@ struct PolicyStepMT[
         self.scale.update_from(qavg_p, BB)
         self._set_q_stats(qavg_p, BB)
 
-        var d_grad = ctx.enqueue_create_buffer[DT](BB)
+        var d_grad = self.d_grad.value()
         seed_grad_inv_batch[target, BB](_dp(d_grad), ctx=ctx)
         var grad_t = TileTensor(_dp(d_grad), row_major[BB, 1]())
         self.graph.vjp[target, BB](grad_t)

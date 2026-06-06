@@ -33,7 +33,7 @@ from std.memory import alloc
 from std.math import exp, log, sqrt
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.module import Module
@@ -57,6 +57,88 @@ def _lt[N: Int](
     p: UnsafePointer[Scalar[DT], MutAnyOrigin]
 ) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
     return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
+
+
+struct MZScratch[
+    B: Int,
+    K: Int,
+    OBS: Int,
+    ACT: Int,
+    LATENT: Int,
+    BINS: Int,
+](Movable & ImplicitlyDestructible):
+    """Persistent device + host scratch for `mz_unroll_train_step_gpu`.
+
+    Allocated **once** via `make` and reused every training step — per-step
+    `enqueue_create_buffer` in the hot loop explodes disk on NVIDIA and adds
+    allocation latency. Every buffer is fully overwritten each step before it
+    is read (H2D copies of the batch slabs; the forward/reverse scans rewrite
+    all scratch; `loss_d` is re-zeroed each step), so reuse is safe.
+    """
+
+    comptime PRED_OUT = Self.ACT + Self.BINS
+    comptime DYN_IN = Self.LATENT + Self.ACT
+    comptime DYN_OUT = Self.LATENT + Self.BINS
+
+    var d_obs0: Optional[DeviceBuffer[DT]]
+    var d_act: Optional[DeviceBuffer[DT]]
+    var d_pol: Optional[DeviceBuffer[DT]]
+    var d_val: Optional[DeviceBuffer[DT]]
+    var d_rew: Optional[DeviceBuffer[DT]]
+    var zst: Optional[DeviceBuffer[DT]]
+    var din: Optional[DeviceBuffer[DT]]
+    var dout: Optional[DeviceBuffer[DT]]
+    var pout: Optional[DeviceBuffer[DT]]
+    var gpout: Optional[DeviceBuffer[DT]]
+    var gdout: Optional[DeviceBuffer[DT]]
+    var gz: Optional[DeviceBuffer[DT]]
+    var gpin: Optional[DeviceBuffer[DT]]
+    var gdin: Optional[DeviceBuffer[DT]]
+    var gobs: Optional[DeviceBuffer[DT]]
+    var twv: Optional[DeviceBuffer[DT]]
+    var twr: Optional[DeviceBuffer[DT]]
+    var loss_d: Optional[DeviceBuffer[DT]]
+    var h_zloss: Optional[HostBuffer[DT]]
+    var h_loss: Optional[HostBuffer[DT]]
+
+    def __init__(out self):
+        self.d_obs0 = None; self.d_act = None; self.d_pol = None
+        self.d_val = None; self.d_rew = None; self.zst = None
+        self.din = None; self.dout = None; self.pout = None
+        self.gpout = None; self.gdout = None; self.gz = None
+        self.gpin = None; self.gdin = None; self.gobs = None
+        self.twv = None; self.twr = None; self.loss_d = None
+        self.h_zloss = None; self.h_loss = None
+
+    @staticmethod
+    def make(ctx: DeviceContext) raises -> Self:
+        comptime PO = Self.PRED_OUT
+        comptime DI = Self.DYN_IN
+        comptime DO = Self.DYN_OUT
+        comptime BB = Self.B
+        var s = Self()
+        s.d_obs0 = ctx.enqueue_create_buffer[DT](BB * Self.OBS)
+        s.d_act = ctx.enqueue_create_buffer[DT](Self.K * BB)
+        s.d_pol = ctx.enqueue_create_buffer[DT]((Self.K + 1) * BB * Self.ACT)
+        s.d_val = ctx.enqueue_create_buffer[DT]((Self.K + 1) * BB)
+        s.d_rew = ctx.enqueue_create_buffer[DT](Self.K * BB)
+        s.zst = ctx.enqueue_create_buffer[DT]((Self.K + 1) * BB * Self.LATENT)
+        s.din = ctx.enqueue_create_buffer[DT](BB * DI)
+        s.dout = ctx.enqueue_create_buffer[DT](BB * DO)
+        s.pout = ctx.enqueue_create_buffer[DT](BB * PO)
+        s.gpout = ctx.enqueue_create_buffer[DT](BB * PO)
+        s.gdout = ctx.enqueue_create_buffer[DT](BB * DO)
+        s.gz = ctx.enqueue_create_buffer[DT](BB * Self.LATENT)
+        s.gpin = ctx.enqueue_create_buffer[DT](BB * Self.LATENT)
+        s.gdin = ctx.enqueue_create_buffer[DT](BB * DI)
+        s.gobs = ctx.enqueue_create_buffer[DT](BB * Self.OBS)
+        s.twv = ctx.enqueue_create_buffer[DT](BB * Self.BINS)
+        s.twr = ctx.enqueue_create_buffer[DT](BB * Self.BINS)
+        s.loss_d = ctx.enqueue_create_buffer[DT](BB)
+        s.h_zloss = ctx.enqueue_create_host_buffer[DT](BB)
+        s.h_loss = ctx.enqueue_create_host_buffer[DT](BB)
+        ctx.synchronize()
+        return s^
 
 
 def mz_unroll_train_step_cpu[
@@ -405,6 +487,7 @@ def mz_unroll_train_step_gpu[
     mut orep: Adam,
     mut odyn: Adam,
     mut opred: Adam,
+    mut scratch: MZScratch[B, K, OBS, ACT, LATENT, BINS],
     obs0: UnsafePointer[Scalar[DT], MutAnyOrigin],
     actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
     policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -422,8 +505,10 @@ def mz_unroll_train_step_gpu[
     scan (rep + K dynamics) and reverse scan (pred/dyn vjp with the ½ dynamics
     gradient + 1/(K+1) loss weight) entirely on the device, and steps the three
     Adam optimizers in place. Returns the mean total loss (same reduction as
-    the CPU path). Device scratch is allocated **once** (no per-step
-    `enqueue_create_buffer` — that explodes disk on NVIDIA).
+    the CPU path). Device + host scratch is supplied by a persistent
+    `MZScratch` (allocated once in `make`, reused every step) — this
+    function performs **no** `enqueue_create_buffer` of its own, which would
+    explode disk on NVIDIA when called in the per-step hot loop.
     """
     comptime PRED_OUT = ACT + BINS
     comptime DYN_IN = LATENT + ACT
@@ -431,37 +516,39 @@ def mz_unroll_train_step_gpu[
 
     var gscale = Scalar[DT](1.0) / Scalar[DT]((K + 1) * B)
 
-    # ── H2D the host batch slabs (once) ──
-    var d_obs0 = ctx.enqueue_create_buffer[DT](B * OBS)
-    var d_act = ctx.enqueue_create_buffer[DT](K * B)
-    var d_pol = ctx.enqueue_create_buffer[DT]((K + 1) * B * ACT)
-    var d_val = ctx.enqueue_create_buffer[DT]((K + 1) * B)
-    var d_rew = ctx.enqueue_create_buffer[DT](K * B)
+    # ── reuse persistent scratch (allocated once in `MZScratch.make`) ──
+    var d_obs0 = scratch.d_obs0.value()
+    var d_act = scratch.d_act.value()
+    var d_pol = scratch.d_pol.value()
+    var d_val = scratch.d_val.value()
+    var d_rew = scratch.d_rew.value()
+
+    # ── H2D the host batch slabs (fully overwrites the cached buffers) ──
     ctx.enqueue_copy(d_obs0, obs0)
     ctx.enqueue_copy(d_act, actions)
     ctx.enqueue_copy(d_pol, policy_tgt)
     ctx.enqueue_copy(d_val, value_tgt)
     ctx.enqueue_copy(d_rew, reward_tgt)
 
-    # ── device scratch (allocated once) ──
-    var zst = ctx.enqueue_create_buffer[DT]((K + 1) * B * LATENT)
-    var din = ctx.enqueue_create_buffer[DT](B * DYN_IN)
-    var dout = ctx.enqueue_create_buffer[DT](B * DYN_OUT)
-    var pout = ctx.enqueue_create_buffer[DT](B * PRED_OUT)
-    var gpout = ctx.enqueue_create_buffer[DT](B * PRED_OUT)
-    var gdout = ctx.enqueue_create_buffer[DT](B * DYN_OUT)
-    var gz = ctx.enqueue_create_buffer[DT](B * LATENT)
-    var gpin = ctx.enqueue_create_buffer[DT](B * LATENT)
-    var gdin = ctx.enqueue_create_buffer[DT](B * DYN_IN)
-    var gobs = ctx.enqueue_create_buffer[DT](B * OBS)
-    var twv = ctx.enqueue_create_buffer[DT](B * BINS)
-    var twr = ctx.enqueue_create_buffer[DT](B * BINS)
-    var loss_d = ctx.enqueue_create_buffer[DT](B)
+    # ── device scratch (reused) ──
+    var zst = scratch.zst.value()
+    var din = scratch.din.value()
+    var dout = scratch.dout.value()
+    var pout = scratch.pout.value()
+    var gpout = scratch.gpout.value()
+    var gdout = scratch.gdout.value()
+    var gz = scratch.gz.value()
+    var gpin = scratch.gpin.value()
+    var gdin = scratch.gdin.value()
+    var gobs = scratch.gobs.value()
+    var twv = scratch.twv.value()
+    var twr = scratch.twr.value()
+    var loss_d = scratch.loss_d.value()
 
-    # zero the loss accumulator
-    var zloss = _a(B)
+    # zero the loss accumulator (re-zero the cached buffer each step)
+    var zloss = scratch.h_zloss.value()
     for i in range(B):
-        zloss[i] = Scalar[DT](0.0)
+        zloss.unsafe_ptr()[i] = Scalar[DT](0.0)
     ctx.enqueue_copy(loss_d, zloss)
 
     # raw device pointers (MutAnyOrigin) for TileTensor / LayoutTensor views
@@ -618,12 +705,11 @@ def mz_unroll_train_step_gpu[
 
     # ── reduce loss (D2H once) ──
     ctx.synchronize()
-    var hloss = _a(B)
+    var hloss = scratch.h_loss.value()
     ctx.enqueue_copy(hloss, loss_d)
     ctx.synchronize()
     var loss = Scalar[DT](0.0)
     for b in range(B):
-        loss += hloss[b]
+        loss += hloss.unsafe_ptr()[b]
 
-    zloss.free(); hloss.free()
     return loss / Scalar[DT](B)

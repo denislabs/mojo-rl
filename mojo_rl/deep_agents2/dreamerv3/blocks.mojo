@@ -25,7 +25,7 @@ from std.math import tanh, exp, sqrt
 from std.random import random_float64
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.primitives.ops.swish_op import SwishOp
@@ -277,15 +277,54 @@ struct WMStep[
     var rep_scale: Scalar[DT]
     var horizon: Scalar[DT]   # contdisc continue target = (1-term)·(1-1/horizon)
 
+    # Persistent GPU scratch (allocated once in `make`, reused every step —
+    # per-step `enqueue_create_buffer` explodes disk on NVIDIA). None on CPU.
+    var d_outbuf: Optional[DeviceBuffer[DT]]
+    var d_dl: Optional[DeviceBuffer[DT]]
+    var d_seed: Optional[DeviceBuffer[DT]]
+    var d_gcd: Optional[DeviceBuffer[DT]]
+    var d_gcs: Optional[DeviceBuffer[DT]]
+    var d_ones1: Optional[DeviceBuffer[DT]]
+    var d_gobs: Optional[DeviceBuffer[DT]]
+    var d_tokscr: Optional[DeviceBuffer[DT]]
+    var d_cin_d: Optional[DeviceBuffer[DT]]
+    var d_cin_s: Optional[DeviceBuffer[DT]]
+    var d_dmask: Optional[DeviceBuffer[DT]]
+
     @staticmethod
     def make[target: StaticString](ctx: Optional[DeviceContext] = None) raises -> Self:
         # Finding 2: reference loss_scales are dyn=0.5, rep=0.1 (paper Eq. 2:
         # β_dyn=0.5, β_rep=0.1). Was 1.0 here, over-weighting the dynamics-KL
         # gradient 2×.
-        return Self(
+        var s = Self(
             dyn_scale=Scalar[DT](0.5), rep_scale=Scalar[DT](0.1),
             horizon=Scalar[DT](333.0),
+            d_outbuf=None, d_dl=None, d_seed=None, d_gcd=None, d_gcs=None,
+            d_ones1=None, d_gobs=None, d_tokscr=None, d_cin_d=None,
+            d_cin_s=None, d_dmask=None,
         )
+        comptime if target == "gpu":
+            var c = ctx.value()
+            comptime D = Self.DETER
+            comptime SCl = Self.SC
+            comptime TOK = Self.TOKEN
+            comptime CARRYl = Self.CARRY
+            comptime OBSD = Self.OBS
+            comptime BV = Self.B
+            comptime TV = Self.T
+            s.d_outbuf = c.enqueue_create_buffer[DT](BV * CARRYl)
+            s.d_dl = c.enqueue_create_buffer[DT](BV)
+            s.d_seed = c.enqueue_create_buffer[DT](BV * CARRYl)
+            s.d_gcd = c.enqueue_create_buffer[DT](BV * D)
+            s.d_gcs = c.enqueue_create_buffer[DT](BV * SCl)
+            s.d_ones1 = c.enqueue_create_buffer[DT](BV)
+            s.d_gobs = c.enqueue_create_buffer[DT](BV * OBSD)
+            s.d_tokscr = c.enqueue_create_buffer[DT](BV * TOK)
+            s.d_cin_d = c.enqueue_create_buffer[DT](BV * D)
+            s.d_cin_s = c.enqueue_create_buffer[DT](BV * SCl)
+            s.d_dmask = c.enqueue_create_buffer[DT](TV * BV)
+            c.synchronize()
+        return s^
 
     def step[
         target: StaticString, T_IMAG: Int,
@@ -664,19 +703,19 @@ struct WMStep[
             zs[i] = 0.0
         ctx.enqueue_copy(st.d_cstoch.value(), zs)
 
-        # working device buffers (allocated once per step)
-        var outbuf = ctx.enqueue_create_buffer[DT](BV * CARRYl)
-        var dl = ctx.enqueue_create_buffer[DT](BV)
-        var seed = ctx.enqueue_create_buffer[DT](BV * CARRYl)
-        var gcd = ctx.enqueue_create_buffer[DT](BV * D)
-        var gcs = ctx.enqueue_create_buffer[DT](BV * SCl)
-        var ones1 = ctx.enqueue_create_buffer[DT](BV)
-        var gobs = ctx.enqueue_create_buffer[DT](BV * OBSD)
-        var tokscr = ctx.enqueue_create_buffer[DT](BV * TOK)
+        # working device buffers — reused (allocated once in make)
+        var outbuf = self.d_outbuf.value()
+        var dl = self.d_dl.value()
+        var seed = self.d_seed.value()
+        var gcd = self.d_gcd.value()
+        var gcs = self.d_gcs.value()
+        var ones1 = self.d_ones1.value()
+        var gobs = self.d_gobs.value()
+        var tokscr = self.d_tokscr.value()
         # Finding 3: masked carry-input scratch + device keep-mask.
-        var cin_d = ctx.enqueue_create_buffer[DT](BV * D)
-        var cin_s = ctx.enqueue_create_buffer[DT](BV * SCl)
-        var dmask = ctx.enqueue_create_buffer[DT](TV * BV)
+        var cin_d = self.d_cin_d.value()
+        var cin_s = self.d_cin_s.value()
+        var dmask = self.d_dmask.value()
         ctx.enqueue_copy(dmask, hmask)
         var ho = _alloc(BV)                 # head-loss readback
         var hcarry = _alloc(BV * CARRYl)    # dyn/rep readback
@@ -898,6 +937,30 @@ struct ACStep[
     var repval_scale: Scalar[DT]   # loss_scales.repval (reference 0.3)
     var slowtar: Bool              # λ-return bootstrap from slowvalue (EMA)?
 
+    # Persistent GPU scratch (allocated once in `make`, reused every step —
+    # per-step `enqueue_create_buffer` explodes disk on NVIDIA). None on CPU.
+    var d_cd: Optional[DeviceBuffer[DT]]
+    var d_cs: Optional[DeviceBuffer[DT]]
+    var d_fb: Optional[DeviceBuffer[DT]]
+    var d_pb: Optional[DeviceBuffer[DT]]
+    var d_vb: Optional[DeviceBuffer[DT]]
+    var d_svb: Optional[DeviceBuffer[DT]]
+    var d_at: Optional[DeviceBuffer[DT]]
+    var d_feats: Optional[DeviceBuffer[DT]]
+    var d_dummy1: Optional[DeviceBuffer[DT]]
+    var d_rl: Optional[DeviceBuffer[DT]]
+    var d_cl: Optional[DeviceBuffer[DT]]
+    var d_gv: Optional[DeviceBuffer[DT]]
+    var d_polg: Optional[DeviceBuffer[DT]]
+    var d_gfeat: Optional[DeviceBuffer[DT]]
+    var d_vscr: Optional[DeviceBuffer[DT]]
+    var d_pscr: Optional[DeviceBuffer[DT]]
+    var d_feat_bt: Optional[DeviceBuffer[DT]]
+    var d_vlr: Optional[DeviceBuffer[DT]]
+    var d_svlr: Optional[DeviceBuffer[DT]]
+    var d_g_vlr: Optional[DeviceBuffer[DT]]
+    var d_grf: Optional[DeviceBuffer[DT]]
+
     @staticmethod
     def make[target: StaticString](
         ctx: Optional[DeviceContext] = None,
@@ -911,12 +974,49 @@ struct ACStep[
         # value→return→value self-feedback loop that diverges at higher lr
         # (probed on Pendulum: online bootstrap ran val_m away). Default False
         # keeps the JAX PR5a fixture convention.
-        return Self(
+        var s = Self(
             minstd=Scalar[DT](0.1), maxstd=Scalar[DT](1.0), lam=Scalar[DT](0.95),
             actent=actent, slowreg=Scalar[DT](1.0),
             slow_rate=Scalar[DT](0.02), horizon=Scalar[DT](333.0),
             repval_scale=Scalar[DT](0.3), slowtar=slowtar,
+            d_cd=None, d_cs=None, d_fb=None, d_pb=None, d_vb=None, d_svb=None,
+            d_at=None, d_feats=None, d_dummy1=None, d_rl=None, d_cl=None,
+            d_gv=None, d_polg=None, d_gfeat=None, d_vscr=None, d_pscr=None,
+            d_feat_bt=None, d_vlr=None, d_svlr=None, d_g_vlr=None, d_grf=None,
         )
+        comptime if target == "gpu":
+            var c = ctx.value()
+            comptime D = Self.DETER
+            comptime SCl = Self.SC
+            comptime FEATl = Self.FEAT
+            comptime ACTD = Self.ACT
+            comptime BINSl = Self.BINS
+            comptime TI = Self.T_IMAG
+            comptime NS = Self.T * Self.B
+            comptime BT = Self.B * Self.T          # == NS
+            s.d_cd = c.enqueue_create_buffer[DT](NS * D)
+            s.d_cs = c.enqueue_create_buffer[DT](NS * SCl)
+            s.d_fb = c.enqueue_create_buffer[DT](NS * FEATl)
+            s.d_pb = c.enqueue_create_buffer[DT](NS * 2 * ACTD)
+            s.d_vb = c.enqueue_create_buffer[DT](NS * BINSl)
+            s.d_svb = c.enqueue_create_buffer[DT](NS * BINSl)
+            s.d_at = c.enqueue_create_buffer[DT](NS * ACTD)
+            s.d_feats = c.enqueue_create_buffer[DT](NS * TI * FEATl)
+            s.d_dummy1 = c.enqueue_create_buffer[DT](NS)
+            s.d_rl = c.enqueue_create_buffer[DT](NS * BINSl)
+            s.d_cl = c.enqueue_create_buffer[DT](NS)
+            s.d_gv = c.enqueue_create_buffer[DT](NS * BINSl)
+            s.d_polg = c.enqueue_create_buffer[DT](NS * 2 * ACTD)
+            s.d_gfeat = c.enqueue_create_buffer[DT](NS * FEATl)
+            s.d_vscr = c.enqueue_create_buffer[DT](NS * BINSl)
+            s.d_pscr = c.enqueue_create_buffer[DT](NS * 2 * ACTD)
+            s.d_feat_bt = c.enqueue_create_buffer[DT](BT * FEATl)
+            s.d_vlr = c.enqueue_create_buffer[DT](BT * BINSl)
+            s.d_svlr = c.enqueue_create_buffer[DT](BT * BINSl)
+            s.d_g_vlr = c.enqueue_create_buffer[DT](BT * BINSl)
+            s.d_grf = c.enqueue_create_buffer[DT](BT * FEATl)
+            c.synchronize()
+        return s^
 
     def step[target: StaticString](
         mut self,
@@ -1287,23 +1387,23 @@ struct ACStep[
         comptime cpBINS = _bcopy[NS * BINSl]
         comptime cpB1 = _bcopy[NS]
 
-        # device working buffers (NS-wide)
-        var cd = ctx.enqueue_create_buffer[DT](NS * D)
-        var cs = ctx.enqueue_create_buffer[DT](NS * SCl)
-        var fb = ctx.enqueue_create_buffer[DT](NS * FEATl)
-        var pb = ctx.enqueue_create_buffer[DT](NS * 2 * ACTD)
-        var vb = ctx.enqueue_create_buffer[DT](NS * BINSl)
-        var svb = ctx.enqueue_create_buffer[DT](NS * BINSl)
-        var at_d = ctx.enqueue_create_buffer[DT](NS * ACTD)
-        var feats_d = ctx.enqueue_create_buffer[DT](NS * TI * FEATl)
-        var dummy1 = ctx.enqueue_create_buffer[DT](NS)
-        var rl_d = ctx.enqueue_create_buffer[DT](NS * BINSl)
-        var cl_d = ctx.enqueue_create_buffer[DT](NS)
-        var gv_d = ctx.enqueue_create_buffer[DT](NS * BINSl)
-        var polg_d = ctx.enqueue_create_buffer[DT](NS * 2 * ACTD)
-        var gfeat_d = ctx.enqueue_create_buffer[DT](NS * FEATl)
-        var vscr = ctx.enqueue_create_buffer[DT](NS * BINSl)
-        var pscr = ctx.enqueue_create_buffer[DT](NS * 2 * ACTD)
+        # device working buffers (NS-wide) — reused (allocated once in make)
+        var cd = self.d_cd.value()
+        var cs = self.d_cs.value()
+        var fb = self.d_fb.value()
+        var pb = self.d_pb.value()
+        var vb = self.d_vb.value()
+        var svb = self.d_svb.value()
+        var at_d = self.d_at.value()
+        var feats_d = self.d_feats.value()
+        var dummy1 = self.d_dummy1.value()
+        var rl_d = self.d_rl.value()
+        var cl_d = self.d_cl.value()
+        var gv_d = self.d_gv.value()
+        var polg_d = self.d_polg.value()
+        var gfeat_d = self.d_gfeat.value()
+        var vscr = self.d_vscr.value()
+        var pscr = self.d_pscr.value()
 
         # host arrays for the connective math + imag_loss
         var acts = _alloc(NS * TI * ACTD)
@@ -1511,11 +1611,11 @@ struct ACStep[
         # forward value/slowvalue on device, repl_loss_backward on host, then
         # value.vjp accumulates into the SAME value grad before oval.step.
         comptime BT = Self.B * Self.T          # == NS
-        var d_feat_bt = ctx.enqueue_create_buffer[DT](BT * FEATl)
-        var d_vlr = ctx.enqueue_create_buffer[DT](BT * BINSl)
-        var d_svlr = ctx.enqueue_create_buffer[DT](BT * BINSl)
-        var d_g_vlr = ctx.enqueue_create_buffer[DT](BT * BINSl)
-        var d_grf = ctx.enqueue_create_buffer[DT](BT * FEATl)
+        var d_feat_bt = self.d_feat_bt.value()
+        var d_vlr = self.d_vlr.value()
+        var d_svlr = self.d_svlr.value()
+        var d_g_vlr = self.d_g_vlr.value()
+        var d_grf = self.d_grf.value()
         # D2H sizes by the SOURCE DeviceBuffer → host dst must cover the WHOLE
         # feats_d; the imagination-START (t=0) block is its first NS*FEATl elems.
         var hfeat0 = _alloc(NS * TI * FEATl)

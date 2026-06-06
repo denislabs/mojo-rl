@@ -39,6 +39,9 @@ from mojo_rl.deep_agents2.efficient_zero_v2.blocks import (
     ezv2_unroll_train_step_cpu,
     ezv2_unroll_train_step_gpu,
 )
+from mojo_rl.deep_agents2.efficient_zero_v2.unroll_scratch import (
+    EZV2UnrollScratch,
+)
 
 
 comptime OBS = 4
@@ -183,10 +186,13 @@ def main() raises:
         obs_seq, actions, policy_tgt, value_tgt, reward_tgt,
         VMIN, VMAX, VCOEF, CCOEF,
     )
+    var gscratch = EZV2UnrollScratch[
+        B, K, OBS, ACT, LATENT, BINS, PROJ
+    ].make(ctx)
     var lg = ezv2_unroll_train_step_gpu[
         Rep, Dyn, Pred, Proj, Predh, B, K, OBS, ACT, LATENT, BINS
     ](
-        ctx, grep, gdyn, gpred, gproj, gpredh,
+        ctx, gscratch, grep, gdyn, gpred, gproj, gpredh,
         gorep, godyn, gopred, goproj, gopredh,
         obs_seq, actions, policy_tgt, value_tgt, reward_tgt,
         VMIN, VMAX, VCOEF, CCOEF,

@@ -41,7 +41,7 @@ from mojo_rl.planners.tree_search import (
 )
 from std.gpu.host import DeviceContext
 
-from .blocks import mz_unroll_train_step_gpu
+from .blocks import mz_unroll_train_step_gpu, MZScratch
 from ..zero.mcts_adapters_mz_cpu import MZRepCPU, MZDynCPU, MZPredCPU
 from ..zero.sequence_replay_mcts import MCTSSequenceReplay
 
@@ -133,6 +133,10 @@ def run_muzero_selfplay_gpu[
     var t_pol = _a((K + 1) * B * ACT)
     var t_val = _a((K + 1) * B)
     var t_rew = _a(K * B)
+
+    # persistent GPU unroll scratch — allocated once, reused every train step
+    # (per-step `enqueue_create_buffer` in the hot loop explodes disk on NVIDIA)
+    var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
 
     # episode accumulation buffers
     var e_obs = List[Scalar[DT]]()
@@ -240,6 +244,7 @@ def run_muzero_selfplay_gpu[
                         REP, DYN, PRED, B, K, OBS, ACT, LATENT, BINS
                     ](
                         ctx, rep, dyn, pred, orep, odyn, opred,
+                        scratch,
                         t_obs0, t_act, t_pol, t_val, t_rew,
                         v_min, v_max, value_coef,
                     )

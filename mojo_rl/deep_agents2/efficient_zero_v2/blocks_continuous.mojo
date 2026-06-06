@@ -21,7 +21,7 @@ actions the policy clones), ``value_tgt[K+1,B]``, ``reward_tgt[K,B]`` (raw).
 from std.memory import alloc
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.module import Module
@@ -33,6 +33,7 @@ from .loss_ops_continuous import (
     continuous_policy_loss_grad_k,
 )
 from .blocks import _ez_accum_latent_k
+from .unroll_scratch import EZV2UnrollContScratch
 from ..muzero.loss_ops import soft_ce_slice_loss_and_grad
 from ..muzero.blocks import (
     _dp,
@@ -301,6 +302,7 @@ def _ez_build_dyn_in_cont_k[
             din[idx] = rebind[Scalar[DT]](act[b * ACT_DIM_ + (d - LATENT_)])
 
 
+
 def ezv2_unroll_train_step_continuous_gpu[
     REP: Module,
     DYN: Module,
@@ -315,6 +317,9 @@ def ezv2_unroll_train_step_continuous_gpu[
     BINS: Int,
 ](
     ctx: DeviceContext,
+    mut scratch: EZV2UnrollContScratch[
+        B, K, OBS, ACT_DIM, LATENT, BINS, PROJM.OUT_DIM
+    ],
     mut rep: REP,
     mut dyn: DYN,
     mut pred: PRED,
@@ -346,8 +351,11 @@ def ezv2_unroll_train_step_continuous_gpu[
     + squashed-Gaussian policy NLL). Same host time-major batch slabs as the CPU
     path: ``obs_seq[K+1,B,OBS]``, ``actions[K,B,ACT_DIM]`` (action **vectors**),
     ``policy_act_tgt[K+1,B,ACT_DIM]`` (search-selected target actions),
-    ``value_tgt[K+1,B]``, ``reward_tgt[K,B]``. Device scratch allocated **once**.
-    Returns the mean total loss."""
+    ``value_tgt[K+1,B]``, ``reward_tgt[K,B]``. Device + host scratch is supplied
+    by the caller via a persistent ``EZV2UnrollContScratch`` (allocated **once**
+    in ``make`` and reused every step — the old per-step
+    ``enqueue_create_buffer`` exploded disk on NVIDIA). Returns the mean total
+    loss."""
     comptime MU2 = 2 * ACT_DIM
     comptime PRED_OUT = MU2 + BINS
     comptime DYN_IN = LATENT + ACT_DIM
@@ -358,46 +366,45 @@ def ezv2_unroll_train_step_continuous_gpu[
     var cscale = consistency_coef / Scalar[DT](K * B)
     var pscale = policy_coef / Scalar[DT]((K + 1) * B)
 
+    # ── reuse persistent scratch (allocated once in make) ──
+    var d_obs = scratch.d_obs.value()
+    var d_act = scratch.d_act.value()
+    var d_pol = scratch.d_pol.value()
+    var d_val = scratch.d_val.value()
+    var d_rew = scratch.d_rew.value()
     # ── H2D the host batch slabs (once) ──
-    var d_obs = ctx.enqueue_create_buffer[DT]((K + 1) * B * OBS)
-    var d_act = ctx.enqueue_create_buffer[DT](K * B * ACT_DIM)
-    var d_pol = ctx.enqueue_create_buffer[DT]((K + 1) * B * ACT_DIM)
-    var d_val = ctx.enqueue_create_buffer[DT]((K + 1) * B)
-    var d_rew = ctx.enqueue_create_buffer[DT](K * B)
     ctx.enqueue_copy(d_obs, obs_seq)
     ctx.enqueue_copy(d_act, actions)
     ctx.enqueue_copy(d_pol, policy_act_tgt)
     ctx.enqueue_copy(d_val, value_tgt)
     ctx.enqueue_copy(d_rew, reward_tgt)
 
-    # ── device scratch (allocated once) ──
-    var zst = ctx.enqueue_create_buffer[DT]((K + 1) * B * LATENT)
-    var din = ctx.enqueue_create_buffer[DT](B * DYN_IN)
-    var dout = ctx.enqueue_create_buffer[DT](B * DYN_OUT)
-    var pout = ctx.enqueue_create_buffer[DT](B * PRED_OUT)
-    var gpout = ctx.enqueue_create_buffer[DT](B * PRED_OUT)
-    var gdout = ctx.enqueue_create_buffer[DT](B * DYN_OUT)
-    var gz = ctx.enqueue_create_buffer[DT](B * LATENT)
-    var gpin = ctx.enqueue_create_buffer[DT](B * LATENT)
-    var gdin = ctx.enqueue_create_buffer[DT](B * DYN_IN)
-    var gobs = ctx.enqueue_create_buffer[DT](B * OBS)
-    var twv = ctx.enqueue_create_buffer[DT](B * BINS)
-    var twr = ctx.enqueue_create_buffer[DT](B * BINS)
-    var loss_d = ctx.enqueue_create_buffer[DT](B)
-    # consistency scratch
-    var tstore = ctx.enqueue_create_buffer[DT](K * B * PROJ)
-    var ztmp = ctx.enqueue_create_buffer[DT](B * LATENT)
-    var projo = ctx.enqueue_create_buffer[DT](B * PROJ)
-    var pk = ctx.enqueue_create_buffer[DT](B * PROJ)
-    var gpk = ctx.enqueue_create_buffer[DT](B * PROJ)
-    var gproj = ctx.enqueue_create_buffer[DT](B * PROJ)
-    var gzcons = ctx.enqueue_create_buffer[DT](B * LATENT)
+    var zst = scratch.d_zst.value()
+    var din = scratch.d_din.value()
+    var dout = scratch.d_dout.value()
+    var pout = scratch.d_pout.value()
+    var gpout = scratch.d_gpout.value()
+    var gdout = scratch.d_gdout.value()
+    var gz = scratch.d_gz.value()
+    var gpin = scratch.d_gpin.value()
+    var gdin = scratch.d_gdin.value()
+    var gobs = scratch.d_gobs.value()
+    var twv = scratch.d_twv.value()
+    var twr = scratch.d_twr.value()
+    var loss_d = scratch.d_loss.value()
+    var tstore = scratch.d_tstore.value()
+    var ztmp = scratch.d_ztmp.value()
+    var projo = scratch.d_projo.value()
+    var pk = scratch.d_pk.value()
+    var gpk = scratch.d_gpk.value()
+    var gproj = scratch.d_gproj.value()
+    var gzcons = scratch.d_gzcons.value()
+    var h_loss = scratch.h_loss.value()
 
-    # zero the loss accumulator
-    var zloss = _a(B)
+    # zero the loss accumulator (into the reused buffer each step)
     for i in range(B):
-        zloss[i] = Scalar[DT](0.0)
-    ctx.enqueue_copy(loss_d, zloss)
+        h_loss.unsafe_ptr()[i] = Scalar[DT](0.0)
+    ctx.enqueue_copy(loss_d, h_loss)
 
     var p_obs = _dp(d_obs)
     var p_act = _dp(d_act)
@@ -603,14 +610,12 @@ def ezv2_unroll_train_step_continuous_gpu[
     oproj.step["gpu", PROJM](proj)
     opredh.step["gpu", PREDH](predh)
 
-    # ── reduce loss (D2H once) ──
+    # ── reduce loss (D2H once into the reused host mirror) ──
     ctx.synchronize()
-    var hloss = _a(B)
-    ctx.enqueue_copy(hloss, loss_d)
+    ctx.enqueue_copy(h_loss, loss_d)
     ctx.synchronize()
     var loss = Scalar[DT](0.0)
     for b in range(B):
-        loss += hloss[b]
+        loss += h_loss.unsafe_ptr()[b]
 
-    zloss.free(); hloss.free()
     return loss / Scalar[DT](B)

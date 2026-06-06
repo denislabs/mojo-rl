@@ -41,6 +41,9 @@ from mojo_rl.deep_agents2.efficient_zero_v2.blocks_continuous import (
     ezv2_unroll_train_step_continuous_cpu,
     ezv2_unroll_train_step_continuous_gpu,
 )
+from mojo_rl.deep_agents2.efficient_zero_v2.unroll_scratch import (
+    EZV2UnrollContScratch,
+)
 
 
 comptime OBS = 3       # Pendulum
@@ -178,10 +181,13 @@ def main() raises:
         obs_seq, actions, policy_act_tgt, value_tgt, reward_tgt,
         VMIN, VMAX, VCOEF, CCOEF,
     )
+    var gscratch = EZV2UnrollContScratch[
+        B, K, OBS, ACT_DIM, LATENT, BINS, PROJ
+    ].make(ctx)
     var lg = ezv2_unroll_train_step_continuous_gpu[
         Rep, Dyn, Pred, Proj, Predh, B, K, OBS, ACT_DIM, LATENT, BINS
     ](
-        ctx, grep, gdyn, gpred, gproj, gpredh,
+        ctx, gscratch, grep, gdyn, gpred, gproj, gpredh,
         gorep, godyn, gopred, goproj, gopredh,
         obs_seq, actions, policy_act_tgt, value_tgt, reward_tgt,
         VMIN, VMAX, VCOEF, CCOEF,

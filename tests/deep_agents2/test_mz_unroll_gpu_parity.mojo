@@ -33,6 +33,7 @@ from mojo_rl.deep_agents2.muzero.nets import MZRepNet, MZDynNet, MZPredNet
 from mojo_rl.deep_agents2.muzero.blocks import (
     mz_unroll_train_step_cpu,
     mz_unroll_train_step_gpu,
+    MZScratch,
 )
 
 
@@ -161,10 +162,12 @@ def main() raises:
         obs0, actions, policy_tgt, value_tgt, reward_tgt,
         VMIN, VMAX, VCOEF,
     )
+    var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
     var lg = mz_unroll_train_step_gpu[
         Rep, Dyn, Pred, B, K, OBS, ACT, LATENT, BINS
     ](
         ctx, grep, gdyn, gpred, gorep, godyn, gopred,
+        scratch,
         obs0, actions, policy_tgt, value_tgt, reward_tgt,
         VMIN, VMAX, VCOEF,
     )
