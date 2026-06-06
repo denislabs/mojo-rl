@@ -44,8 +44,15 @@ Backward (BinaryModule, mode-aware):
     d_h = [d_hr | d_hz | d_hn] · W_hh^T + dh' ⊙ z   # last term: direct h
                                                        path through `z·h`
 
-CPU only in this revision — the GPU port mirrors the pattern of `Linear`
-+ `Tanh` once needed by DreamerV3.
+CPU-only — intentional, not a gap. There is no GPU consumer of GRUCell:
+the DreamerV3 GPU world-model uses bespoke fused RSSM ops (rssm_ops),
+not this generic cell, and nothing else in nn2/deep_agents2 instantiates
+it on device. Porting the 4 matmuls + gates to GPU would be ~6 kernels
+of surface that no path exercises (only a smoke could touch it). The
+sibling `LSTMCell` already carries the full 6-kernel GPU implementation,
+so if a GPU GRU consumer ever lands, that file is the template to mirror
+(`Linear` + `Tanh` + gate-fusion pattern). Until then, `make[target=
+'gpu']` raises deliberately.
 """
 
 from std.math import exp, tanh
@@ -138,12 +145,17 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
     ](
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        """Unified factory. CPU-only for now; GPU path not implemented."""
+        """Unified factory. CPU-only by design (no GPU consumer exists —
+        see the module docstring); `target='gpu'` raises deliberately."""
         comptime assert target == "cpu" or target == "gpu", (
             "GRUCell: target must be 'cpu' or 'gpu'"
         )
         comptime if target == "gpu":
-            raise Error("GRUCell.make[target='gpu'] not implemented yet")
+            raise Error(
+                "GRUCell is CPU-only by design (no GPU consumer; the"
+                " DreamerV3 GPU world-model uses bespoke RSSM ops). Mirror"
+                " LSTMCell's 6-kernel GPU path if a GPU GRU is ever needed."
+            )
         var g = Self()
         g.ts = TargetStorage.make_cpu()
         g.W_ih = Param["W_ih", True,  Self.W_IH_SIZE].make_cpu()
