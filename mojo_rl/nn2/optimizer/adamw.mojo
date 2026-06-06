@@ -14,13 +14,25 @@ capture friendly. CPU path keeps host-side scalars.
 """
 
 from std.math import sqrt
+from std.sys import has_nvidia_gpu_accelerator
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
-from ..constants import DT, CPU_SIMD_W, TPB
+from ..constants import DT, CPU_SIMD_W, TPB, USE_GROUPED_GPU_OPTIMIZER
 from ..core import ParamVisitor
+# Grouped multi-tensor helpers shared with Adam (NVIDIA-only path). The
+# descriptor collector + flat-index helper + uploaders are algorithm-
+# agnostic; only the per-element update kernel differs (AdamW folds in the
+# decoupled weight-decay term), so it lives here.
+from .adam import (
+    _find_param,
+    _grouped_zero_kernel,
+    _upload_u64,
+    _upload_i32,
+    _MTDescriptorCollector,
+)
 from ..core.module import Module
 from ..core.optimizer import Optimizer
 from ..core.saveable import Saveable
@@ -89,6 +101,70 @@ def _zero_fill_kernel(
     var i = Int(global_idx.x)
     if i < n_elems:
         ptr[i] = 0.0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Multi-tensor ("grouped") GPU update kernel — NVIDIA only.
+#
+# AdamW counterpart of `adam._grouped_adam_update_kernel`: ONE launch
+# updates every param tensor via a 1-D grid over the dense moment slab.
+# Each flat element maps back to its param `p` (and local offset) via
+# `_find_param` over the dense prefix-sum offset table, then dereferences
+# the host-captured device address `param_addrs[p]` / `grad_addrs[p]`. The
+# ONLY difference vs the Adam grouped kernel is the decoupled weight-decay
+# term, gated per-param by `apply_decay_arr[p]` (Linear weight=1, bias=0,
+# LayerNorm/BN γ/β=0). Math is identical to the per-tensor
+# `_adamw_update_kernel`, so the grouped path is bit-identical to it on
+# the same inputs.
+#
+# NVIDIA-only: dereferencing a host-captured device address in-kernel is
+# valid on CUDA but silently dropped on Apple Metal — the caller gates
+# this under `has_nvidia_gpu_accelerator()` and Apple keeps the per-tensor
+# `_AdamWGPUStepVisitor` path.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _grouped_adamw_update_kernel(
+    param_addrs: UnsafePointer[UInt64, MutAnyOrigin],
+    grad_addrs: UnsafePointer[UInt64, MutAnyOrigin],
+    moment_offs: UnsafePointer[Int32, MutAnyOrigin],
+    apply_decay_arr: UnsafePointer[Int32, MutAnyOrigin],
+    n_params: Int,
+    total: Int,
+    m_base: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    v_base: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    lr: Scalar[DT],
+    beta1: Scalar[DT],
+    beta2: Scalar[DT],
+    eps: Scalar[DT],
+    weight_decay: Scalar[DT],
+):
+    var flat = Int(global_idx.x)
+    if flat < total:
+        var p = _find_param(moment_offs, n_params, flat)
+        var local = flat - Int(moment_offs[p])
+        var param = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=Int(param_addrs[p])
+        )
+        var grad = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=Int(grad_addrs[p])
+        )
+        var one: Scalar[DT] = 1.0
+        var bc1 = bc_ptr[2]
+        var bc2 = bc_ptr[3]
+        var g = grad[local]
+        var m_new = beta1 * m_base[flat] + (one - beta1) * g
+        var v_new = beta2 * v_base[flat] + (one - beta2) * g * g
+        m_base[flat] = m_new
+        v_base[flat] = v_new
+        var m_hat = m_new / bc1
+        var v_hat = v_new / bc2
+        var pv = param[local]
+        var update = lr * m_hat / (sqrt(v_hat) + eps)
+        if Int(apply_decay_arr[p]) != 0:
+            update = update + lr * weight_decay * pv
+        param[local] = pv - update
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -346,6 +422,19 @@ struct AdamW(Optimizer, Saveable):
     var eps: Scalar[DT]
     var weight_decay: Scalar[DT]
 
+    # Multi-tensor ("grouped") GPU optimizer descriptors. Built ONCE in
+    # `make[target='gpu']` on NVIDIA only (Apple Metal can't deref
+    # host-captured device addresses in-kernel → keeps the per-tensor
+    # path). The grouped update / zero kernels read these device-resident
+    # arrays to update every param tensor in ONE launch. `_mt_apply_decay`
+    # is the per-param 1/0 decay flag (AdamW-specific). None / 0 on
+    # CPU + Apple.
+    var _mt_param_addrs: Optional[DeviceBuffer[DType.uint64]]
+    var _mt_grad_addrs: Optional[DeviceBuffer[DType.uint64]]
+    var _mt_moment_offs: Optional[DeviceBuffer[DType.int32]]
+    var _mt_apply_decay: Optional[DeviceBuffer[DType.int32]]
+    var _mt_n_params: Int
+
     var ts: TargetStorage
 
     def __init__(out self):
@@ -366,6 +455,11 @@ struct AdamW(Optimizer, Saveable):
         self.beta2 = Scalar[DT](0.999)
         self.eps = Scalar[DT](1e-8)
         self.weight_decay = Scalar[DT](0.01)
+        self._mt_param_addrs = None
+        self._mt_grad_addrs = None
+        self._mt_moment_offs = None
+        self._mt_apply_decay = None
+        self._mt_n_params = 0
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -421,6 +515,36 @@ struct AdamW(Optimizer, Saveable):
             opt.step_dev = step_real^
             opt.bc_dev = bc_real^
             opt.ts = TargetStorage.make_gpu(ctx_v)
+            # Build the multi-tensor descriptor arrays (NVIDIA only). On
+            # Apple these stay None and step/zero_grad take the per-tensor
+            # path (Metal can't deref host-captured device addresses
+            # in-kernel). Mirrors `Adam.make`, plus the per-param decay
+            # flags collected by the init visitor above.
+            comptime if has_nvidia_gpu_accelerator() and USE_GROUPED_GPU_OPTIMIZER:
+                var pa = List[UInt64]()
+                var ga = List[UInt64]()
+                var coll = _MTDescriptorCollector(
+                    param_addrs_ptr=UnsafePointer(to=pa),
+                    grad_addrs_ptr=UnsafePointer(to=ga),
+                )
+                model.for_each_param[target, _MTDescriptorCollector](
+                    String(""), coll
+                )
+                # Moment offsets = the init walker's dense per-param prefix
+                # sums (same walk order), narrowed to int32; apply_decay
+                # flags narrowed to 1/0 int32 (same walk order).
+                var mo = List[Int32]()
+                for i in range(len(opt.offsets)):
+                    mo.append(Int32(opt.offsets[i]))
+                var ad = List[Int32]()
+                for i in range(len(opt.apply_decay)):
+                    ad.append(Int32(1) if opt.apply_decay[i] else Int32(0))
+                opt._mt_n_params = len(pa)
+                if opt._mt_n_params > 0:
+                    opt._mt_param_addrs = _upload_u64(ctx_v, pa)
+                    opt._mt_grad_addrs = _upload_u64(ctx_v, ga)
+                    opt._mt_moment_offs = _upload_i32(ctx_v, mo)
+                    opt._mt_apply_decay = _upload_i32(ctx_v, ad)
         return opt^
 
     def set_lr(mut self, lr: Scalar[DT]):
@@ -438,8 +562,27 @@ struct AdamW(Optimizer, Saveable):
             var v = _ZeroGradCPUVisitor()
             model.for_each_param[target, _ZeroGradCPUVisitor](String(""), v)
         else:
-            var v = _ZeroGradGPUVisitor(ctx=self.ts.ctx.value())
-            model.for_each_param[target, _ZeroGradGPUVisitor](String(""), v)
+            var ctx = self.ts.ctx.value()
+            comptime if has_nvidia_gpu_accelerator() and USE_GROUPED_GPU_OPTIMIZER:
+                # Grouped: one launch zeros every grad tensor (shares Adam's
+                # zero kernel). (`_mt_n_params == 0` → no params, no-op.)
+                if self._mt_n_params > 0:
+                    var n_blocks = (self.total_size + TPB - 1) // TPB
+                    ctx.enqueue_function[_grouped_zero_kernel](
+                        rebind[UnsafePointer[UInt64, MutAnyOrigin]](
+                            self._mt_grad_addrs.value().unsafe_ptr()
+                        ),
+                        rebind[UnsafePointer[Int32, MutAnyOrigin]](
+                            self._mt_moment_offs.value().unsafe_ptr()
+                        ),
+                        self._mt_n_params,
+                        self.total_size,
+                        grid_dim=n_blocks,
+                        block_dim=TPB,
+                    )
+            else:
+                var v = _ZeroGradGPUVisitor(ctx=ctx)
+                model.for_each_param[target, _ZeroGradGPUVisitor](String(""), v)
 
     def step[
         target: StaticString,
@@ -475,18 +618,57 @@ struct AdamW(Optimizer, Saveable):
                 step_ptr, bc_ptr, self.beta1, self.beta2,
                 grid_dim=1, block_dim=1,
             )
-            var visitor = _AdamWGPUStepVisitor(
-                ctx=ctx,
-                m_base=self.m_dev.value().unsafe_ptr(),
-                v_base=self.v_dev.value().unsafe_ptr(),
-                bc_base=bc_ptr,
-                offsets_ptr=UnsafePointer(to=self.offsets),
-                apply_decay_ptr=UnsafePointer(to=self.apply_decay),
-                idx=0,
-                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
-                weight_decay=self.weight_decay,
-            )
-            model.for_each_param[target, _AdamWGPUStepVisitor](String(""), visitor)
+            comptime if has_nvidia_gpu_accelerator() and USE_GROUPED_GPU_OPTIMIZER:
+                # Grouped: ONE launch updates every param tensor, reading
+                # the device-resident descriptor arrays + device bias-
+                # correction (bc_ptr). Bit-identical to the per-tensor path
+                # (same m_dev/v_dev dense layout, same math + decay term).
+                # (`_mt_n_params == 0` → no params, no-op.)
+                if self._mt_n_params > 0:
+                    var n_blocks = (self.total_size + TPB - 1) // TPB
+                    ctx.enqueue_function[_grouped_adamw_update_kernel](
+                        rebind[UnsafePointer[UInt64, MutAnyOrigin]](
+                            self._mt_param_addrs.value().unsafe_ptr()
+                        ),
+                        rebind[UnsafePointer[UInt64, MutAnyOrigin]](
+                            self._mt_grad_addrs.value().unsafe_ptr()
+                        ),
+                        rebind[UnsafePointer[Int32, MutAnyOrigin]](
+                            self._mt_moment_offs.value().unsafe_ptr()
+                        ),
+                        rebind[UnsafePointer[Int32, MutAnyOrigin]](
+                            self._mt_apply_decay.value().unsafe_ptr()
+                        ),
+                        self._mt_n_params,
+                        self.total_size,
+                        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                            self.m_dev.value().unsafe_ptr()
+                        ),
+                        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                            self.v_dev.value().unsafe_ptr()
+                        ),
+                        bc_ptr,
+                        self.lr, self.beta1, self.beta2, self.eps,
+                        self.weight_decay,
+                        grid_dim=n_blocks,
+                        block_dim=TPB,
+                    )
+            else:
+                var visitor = _AdamWGPUStepVisitor(
+                    ctx=ctx,
+                    m_base=self.m_dev.value().unsafe_ptr(),
+                    v_base=self.v_dev.value().unsafe_ptr(),
+                    bc_base=bc_ptr,
+                    offsets_ptr=UnsafePointer(to=self.offsets),
+                    apply_decay_ptr=UnsafePointer(to=self.apply_decay),
+                    idx=0,
+                    lr=self.lr, beta1=self.beta1, beta2=self.beta2,
+                    eps=self.eps,
+                    weight_decay=self.weight_decay,
+                )
+                model.for_each_param[target, _AdamWGPUStepVisitor](
+                    String(""), visitor
+                )
 
     # ─────────────────────────── Saveable (CPU only) ───────────────────────────
     # Same envelope as `Adam` plus a `<prefix>.weight_decay=<float>` line.
