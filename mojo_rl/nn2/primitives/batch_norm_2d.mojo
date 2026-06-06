@@ -2,8 +2,11 @@
 
 Phase 5 of `nn2/PORTING_PLAN.md`. Mirrors `batch_norm_1d.mojo`'s
 surface — γ/β as `Param`s with `decay=False`, running_mean/var as
-side-channel `List[Scalar[DT]]`, per-instance `training: Bool`,
-`cache_is_training` flag, same checkpoint-follow-up note.
+decay-exempt zero-grad `Param`s too (M1 — they ride the `for_each_param`
+walk into the v2 checkpoint envelope; the optimizer visits them but BN
+backward never writes their grad, so they stay BIT-EXACT and evolve only
+via the forward EMA), per-instance `training: Bool`, `cache_is_training`
+flag.
 
 The only structural difference vs BN1D is the reduction axis: stats
 are reduced over batch *and* spatial position (H·W), giving
@@ -242,10 +245,10 @@ struct BatchNorm2D[
 
     var gamma: Param["gamma", False, Self.C]
     var beta:  Param["beta",  False, Self.C]
-    var running_mean: List[Scalar[DT]]
-    var running_var:  List[Scalar[DT]]
-    var running_mean_dev: Optional[DeviceBuffer[DT]]
-    var running_var_dev:  Optional[DeviceBuffer[DT]]
+    # Running stats — decay-exempt, zero-grad Params (M1); walked by
+    # for_each_param into the v2 checkpoint, never moved by the optimizer.
+    var running_mean: Param["running_mean", False, Self.C]
+    var running_var:  Param["running_var",  False, Self.C]
     var cache_xhat: List[Scalar[DT]]     # [BATCH, C, H, W] flat
     var cache_inv_std: List[Scalar[DT]]  # [C]
     var cache_xhat_dev: Optional[DeviceBuffer[DT]]
@@ -258,10 +261,8 @@ struct BatchNorm2D[
     def __init__(out self):
         self.gamma = Param["gamma", False, Self.C]()
         self.beta  = Param["beta",  False, Self.C]()
-        self.running_mean = List[Scalar[DT]]()
-        self.running_var  = List[Scalar[DT]]()
-        self.running_mean_dev = None
-        self.running_var_dev  = None
+        self.running_mean = Param["running_mean", False, Self.C]()
+        self.running_var  = Param["running_var",  False, Self.C]()
         self.cache_xhat = List[Scalar[DT]]()
         self.cache_inv_std = List[Scalar[DT]]()
         self.cache_xhat_dev = None
@@ -293,12 +294,12 @@ struct BatchNorm2D[
             var g_ptr = bn.gamma.value_unsafe_ptr_cpu()
             for k in range(Self.C):
                 g_ptr[k] = Scalar[DT](1.0)
-            bn.running_mean = List[Scalar[DT]](
-                length=Self.C, fill=Scalar[DT](0.0),
-            )
-            bn.running_var = List[Scalar[DT]](
-                length=Self.C, fill=Scalar[DT](1.0),
-            )
+            bn.running_mean = Param["running_mean", False, Self.C].make_cpu()
+            bn.running_var  = Param["running_var",  False, Self.C].make_cpu()
+            # make_cpu zero-fills value → running_mean already 0; set var←1.
+            var rv_ptr = bn.running_var.value_unsafe_ptr_cpu()
+            for k in range(Self.C):
+                rv_ptr[k] = Scalar[DT](1.0)
             bn.ts = TargetStorage.make_cpu()
         else:
             if not ctx:
@@ -308,12 +309,14 @@ struct BatchNorm2D[
             bn.beta  = Param["beta",  False, Self.C].make_gpu(ctx_v)
             bn.gamma.value_dev.value().enqueue_fill(1.0)
             bn.beta.value_dev.value().enqueue_fill(0.0)
-            var rm_dev = ctx_v.enqueue_create_buffer[DT](Self.C)
-            var rv_dev = ctx_v.enqueue_create_buffer[DT](Self.C)
-            rm_dev.enqueue_fill(0.0)
-            rv_dev.enqueue_fill(1.0)
-            bn.running_mean_dev = rm_dev^
-            bn.running_var_dev  = rv_dev^
+            bn.running_mean = Param["running_mean", False, Self.C].make_gpu(
+                ctx_v
+            )
+            bn.running_var = Param["running_var", False, Self.C].make_gpu(
+                ctx_v
+            )
+            bn.running_mean.value_dev.value().enqueue_fill(0.0)
+            bn.running_var.value_dev.value().enqueue_fill(1.0)
             bn.cache_xhat_dev    = ctx_v.enqueue_create_buffer[DT](1)
             bn.cache_inv_std_dev = ctx_v.enqueue_create_buffer[DT](Self.C)
             bn.cache_n_batch = 0
@@ -358,8 +361,8 @@ struct BatchNorm2D[
             )
             var g_p = self.gamma.value_unsafe_ptr_cpu()
             var b_p = self.bias_unsafe_ptr_cpu()
-            var rm_v = TileTensor(self.running_mean, row_major[Self.C]())
-            var rv_v = TileTensor(self.running_var,  row_major[Self.C]())
+            var rm_v = TileTensor(self.running_mean.value, row_major[Self.C]())
+            var rv_v = TileTensor(self.running_var.value,  row_major[Self.C]())
             var eps = Scalar[DT](Self.EPSILON)
             var n_eff = Scalar[DT](Float64(BATCH * Self.SPATIAL))
             var inv_n = Scalar[DT](1.0) / n_eff
@@ -440,10 +443,10 @@ struct BatchNorm2D[
                 self.beta.value_dev.value()
             )
             var rm_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.running_mean_dev.value()
+                self.running_mean.value_dev.value()
             )
             var rv_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.running_var_dev.value()
+                self.running_var.value_dev.value()
             )
             var ctx = self.ts.ctx.value()
             if self.training:

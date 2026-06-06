@@ -118,8 +118,8 @@ def test_running_stats_converge() raises:
             var d = x[b * DIM + f] - true_mean
             true_var += d * d
         true_var = true_var / Scalar[DT](Float64(BATCH))
-        var rm = bn.running_mean[f]
-        var rv = bn.running_var[f]
+        var rm = bn.running_mean.value[f]
+        var rv = bn.running_var.value[f]
         var dm = rm - true_mean
         var adm = dm if dm >= Scalar[DT](0) else -dm
         var dv = rv - true_var
@@ -149,8 +149,10 @@ def test_eval_uses_running_stats() raises:
     comptime N = BATCH * DIM
     var bn = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
     # Set running stats explicitly so the math is deterministic.
-    bn.running_mean[0] = Scalar[DT](1.0); bn.running_mean[1] = Scalar[DT](-2.0)
-    bn.running_var[0]  = Scalar[DT](4.0); bn.running_var[1]  = Scalar[DT](0.25)
+    bn.running_mean.value[0] = Scalar[DT](1.0)
+    bn.running_mean.value[1] = Scalar[DT](-2.0)
+    bn.running_var.value[0]  = Scalar[DT](4.0)
+    bn.running_var.value[1]  = Scalar[DT](0.25)
     bn.training = False
 
     var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
@@ -184,7 +186,7 @@ def test_eval_uses_running_stats() raises:
     )
     # Running stats should not have moved (eval mode).
     assert_true(
-        bn.running_mean[0] == Scalar[DT](1.0),
+        bn.running_mean.value[0] == Scalar[DT](1.0),
         "Eval mode must not update running_mean",
     )
     print("  ok")

@@ -7,12 +7,19 @@ question for any future EMA-like layer:
     optimizer and `for_each_param` like LayerNorm's. Bit-identical
     surface to LayerNorm.
 
-  - Running mean / running var are stored as plain `List[Scalar[DT]]`
-    side-channel fields (CPU) plus `DeviceBuffer[DT]` (GPU). They are
-    NOT walked by the param visitor (the optimizer ignores them), and
-    at landing they are NOT checkpointed (no Saveable wrapper). A
-    consumer that needs them in checkpoints will trip a follow-up task;
-    see PORTING_PLAN.md Phase 4 follow-up note.
+  - Running mean / running var are decay-exempt, zero-grad `Param`s
+    (M1). Storing them as Params means they ride the existing
+    `for_each_param` walk straight into the v2 checkpoint envelope (and
+    the GPU device↔host save/load path) with NO bespoke buffer plumbing
+    — `Sequential` already recurses `for_each_param` into children, so
+    a BN nested anywhere in a net is checkpointed for free. The
+    optimizer also visits them, but BN backward never writes their grad
+    (only gamma/beta), and `zero_grad` clears it, so the grad is ≡ 0:
+    every gradient optimizer (SGD/Adam/AdamW/RMSprop) leaves them
+    BIT-EXACT untouched. They evolve ONLY via the forward EMA update.
+    Before M1 these were side-channel `List`/`DeviceBuffer` fields that
+    were silently dropped from checkpoints → eval-mode inference after
+    save/load used the default 0/1 stats.
 
   - `training: Bool` is a per-instance runtime field (same pattern as
     `dropout.mojo`). `set_attr["training"](v > 0.5)` flips it.
@@ -240,11 +247,11 @@ struct BatchNorm1D[
     # Gradient-tracked params (walked by for_each_param_auto).
     var gamma: Param["gamma", False, Self.DIM]
     var beta:  Param["beta",  False, Self.DIM]
-    # Running stats — side-channel, not walked by ParamVisitor.
-    var running_mean: List[Scalar[DT]]
-    var running_var:  List[Scalar[DT]]
-    var running_mean_dev: Optional[DeviceBuffer[DT]]
-    var running_var_dev:  Optional[DeviceBuffer[DT]]
+    # Running stats — decay-exempt, zero-grad Params (M1). Walked by
+    # for_each_param so they ride the v2 checkpoint envelope; never
+    # updated by the optimizer (grad ≡ 0), only by the forward EMA.
+    var running_mean: Param["running_mean", False, Self.DIM]
+    var running_var:  Param["running_var",  False, Self.DIM]
     # Training-only cache (output-caching).
     var cache_xhat: List[Scalar[DT]]      # [BATCH, DIM]
     var cache_inv_std: List[Scalar[DT]]   # [DIM]
@@ -259,10 +266,8 @@ struct BatchNorm1D[
     def __init__(out self):
         self.gamma = Param["gamma", False, Self.DIM]()
         self.beta  = Param["beta",  False, Self.DIM]()
-        self.running_mean = List[Scalar[DT]]()
-        self.running_var  = List[Scalar[DT]]()
-        self.running_mean_dev = None
-        self.running_var_dev  = None
+        self.running_mean = Param["running_mean", False, Self.DIM]()
+        self.running_var  = Param["running_var",  False, Self.DIM]()
         self.cache_xhat = List[Scalar[DT]]()
         self.cache_inv_std = List[Scalar[DT]]()
         self.cache_xhat_dev = None
@@ -293,12 +298,12 @@ struct BatchNorm1D[
             var g_ptr = bn.gamma.value_unsafe_ptr_cpu()
             for k in range(Self.DIM):
                 g_ptr[k] = Scalar[DT](1.0)
-            bn.running_mean = List[Scalar[DT]](
-                length=Self.DIM, fill=Scalar[DT](0.0),
-            )
-            bn.running_var = List[Scalar[DT]](
-                length=Self.DIM, fill=Scalar[DT](1.0),
-            )
+            bn.running_mean = Param["running_mean", False, Self.DIM].make_cpu()
+            bn.running_var  = Param["running_var",  False, Self.DIM].make_cpu()
+            # make_cpu zero-fills value → running_mean already 0; set var←1.
+            var rv_ptr = bn.running_var.value_unsafe_ptr_cpu()
+            for k in range(Self.DIM):
+                rv_ptr[k] = Scalar[DT](1.0)
             bn.ts = TargetStorage.make_cpu()
         else:
             if not ctx:
@@ -308,12 +313,14 @@ struct BatchNorm1D[
             bn.beta  = Param["beta",  False, Self.DIM].make_gpu(ctx_v)
             bn.gamma.value_dev.value().enqueue_fill(1.0)
             bn.beta.value_dev.value().enqueue_fill(0.0)
-            var rm_dev = ctx_v.enqueue_create_buffer[DT](Self.DIM)
-            var rv_dev = ctx_v.enqueue_create_buffer[DT](Self.DIM)
-            rm_dev.enqueue_fill(0.0)
-            rv_dev.enqueue_fill(1.0)
-            bn.running_mean_dev = rm_dev^
-            bn.running_var_dev  = rv_dev^
+            bn.running_mean = Param["running_mean", False, Self.DIM].make_gpu(
+                ctx_v
+            )
+            bn.running_var = Param["running_var", False, Self.DIM].make_gpu(
+                ctx_v
+            )
+            bn.running_mean.value_dev.value().enqueue_fill(0.0)
+            bn.running_var.value_dev.value().enqueue_fill(1.0)
             bn.cache_xhat_dev    = ctx_v.enqueue_create_buffer[DT](1)
             bn.cache_inv_std_dev = ctx_v.enqueue_create_buffer[DT](Self.DIM)
             bn.cache_n_batch = 0
@@ -352,8 +359,8 @@ struct BatchNorm1D[
         comptime if target == "cpu":
             var gamma_v = TileTensor(self.gamma.value, row_major[Self.DIM]())
             var beta_v  = TileTensor(self.beta.value,  row_major[Self.DIM]())
-            var rm_v = TileTensor(self.running_mean, row_major[Self.DIM]())
-            var rv_v = TileTensor(self.running_var,  row_major[Self.DIM]())
+            var rm_v = TileTensor(self.running_mean.value, row_major[Self.DIM]())
+            var rv_v = TileTensor(self.running_var.value,  row_major[Self.DIM]())
             var eps = Scalar[DT](Self.EPSILON)
             if self.training:
                 ensure_cpu_buffer(self.cache_xhat,    BATCH * Self.DIM)
@@ -420,10 +427,10 @@ struct BatchNorm1D[
                 self.beta.value_dev.value()
             )
             var rm_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                self.running_mean_dev.value()
+                self.running_mean.value_dev.value()
             )
             var rv_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                self.running_var_dev.value()
+                self.running_var.value_dev.value()
             )
             var ctx = self.ts.ctx.value()
             if self.training:

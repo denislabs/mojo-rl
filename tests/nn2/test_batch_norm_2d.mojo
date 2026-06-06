@@ -108,14 +108,14 @@ def test_running_stats_converge() raises:
                 var d = x[b * FLAT + c * (HH * WW) + s] - true_mean
                 true_var += d * d
         true_var = true_var / n_eff
-        var dm = bn.running_mean[c] - true_mean
+        var dm = bn.running_mean.value[c] - true_mean
         var adm = dm if dm >= Scalar[DT](0) else -dm
-        var dv = bn.running_var[c] - true_var
+        var dv = bn.running_var.value[c] - true_var
         var adv = dv if dv >= Scalar[DT](0) else -dv
         print(
             "  ch ", c,
-            ": μ run=", bn.running_mean[c], " true=", true_mean,
-            "  σ² run=", bn.running_var[c], " true=", true_var,
+            ": μ run=", bn.running_mean.value[c], " true=", true_mean,
+            "  σ² run=", bn.running_var.value[c], " true=", true_var,
         )
         assert_true(
             adm < Scalar[DT](1e-3),
