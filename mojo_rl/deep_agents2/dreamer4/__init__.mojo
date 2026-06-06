@@ -14,4 +14,6 @@ from .blocks import (
     Dreamer4Block,
     Dreamer4BlockNoTime,
     Dreamer4Stack,
+    Dreamer4Decoder,
 )
+from .encoder import Dreamer4Encoder

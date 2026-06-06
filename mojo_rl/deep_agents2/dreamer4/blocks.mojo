@@ -27,6 +27,11 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.rms_norm import RMSNorm
 from mojo_rl.nn2.primitives.qkv_to_major import QKVToMajor
 from mojo_rl.nn2.primitives.swiglu import SwiGLU
+from mojo_rl.nn2.primitives.tanh import Tanh
+from mojo_rl.nn2.primitives.sigmoid import Sigmoid
+from mojo_rl.nn2.primitives.slice import Slice
+from mojo_rl.nn2.primitives.learned_tokens import LearnedTokens
+from mojo_rl.nn2.primitives.sinusoidal_pos_bt import SinusoidalPosAddBT
 from mojo_rl.nn2.primitives.modality_space_attention import ModalitySpaceAttention
 from mojo_rl.nn2.primitives.time_attention_latents import TimeAttentionLatents
 
@@ -90,3 +95,28 @@ comptime Dreamer4Stack[
     D: Int, NH: Int, T: Int, S: Int, L: Int, HID: Int, DEPTH: Int,
     MODE: StaticString, USE_MAX: Bool = True,
 ] = Repeat[DEPTH, Dreamer4Block[D, NH, T, S, L, HID, MODE, USE_MAX]]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Tokenizer decoder (model.py:Decoder). Input is the per-frame bottleneck
+# z (L latents × D_BOT); output is the reconstructed patch tokens (NP × DP)
+# in [0, 1]. With S = L + NP this is a near-pure Sequential — the learned
+# patch queries are `LearnedTokens` (append), the latent→patch read-out is a
+# `Slice` of the transformer output. Runs at nn2-BATCH = B·T.
+#
+#   up_proj(tanh) → append patch queries → +positions → decoder transformer
+#   → slice patch tokens → patch_head → sigmoid
+# ──────────────────────────────────────────────────────────────────────
+comptime Dreamer4Decoder[
+    D_BOT: Int, D: Int, NH: Int, T: Int, L: Int, NP: Int, DP: Int,
+    HID: Int, DEPTH: Int, USE_MAX: Bool = True,
+] = Sequential[
+    Tokenwise[L, Linear[D_BOT, D]],                 # up_proj
+    Tanh[L * D],
+    LearnedTokens[L, NP, D, False],                 # append patch queries → S=L+NP
+    SinusoidalPosAddBT[T, L + NP, D],
+    Dreamer4Stack[D, NH, T, L + NP, L, HID, DEPTH, "decoder", USE_MAX],
+    Slice[(L + NP) * D, L * D, (L + NP) * D],        # patch tokens → NP·D
+    Tokenwise[NP, Linear[D, DP]],                    # patch_head
+    Sigmoid[NP * DP],
+]
