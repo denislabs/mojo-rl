@@ -11,11 +11,12 @@ The hand-written `Symlog[DIM]` math is mirrored exactly so
 `Elementwise[DIM, SymlogOp]` is bit-identical.
 """
 
-from std.math import log
 from std.math import abs as math_abs
 
 from ...constants import DT
 from ...core.element_op import ElementOp
+from .symlog_math import symlog_simd
+from .symlog_math import symlog as _symlog_scalar
 
 
 struct SymlogOp(ElementOp):
@@ -29,25 +30,16 @@ struct SymlogOp(ElementOp):
 
     @staticmethod
     def forward_scalar(x: Scalar[DT]) -> Scalar[DT]:
-        var zero: Scalar[DT] = 0.0
-        var one: Scalar[DT] = 1.0
-        var abs_x = x if x >= zero else -x
-        var sgn: Scalar[DT] = one if x >= zero else -one
-        return sgn * log(one + abs_x)
+        return _symlog_scalar(x)
 
     @staticmethod
     def forward_simd[W: Int](x: SIMD[DT, W]) -> SIMD[DT, W]:
-        var zero_v = SIMD[DT, W](0)
-        var one_v = SIMD[DT, W](1)
-        var pos_v = SIMD[DT, W](1)
-        var neg_v = SIMD[DT, W](-1)
-        var abs_x = math_abs(x)
-        var sgn = x.ge(zero_v).select(pos_v, neg_v)
-        return sgn * log(one_v + abs_x)
+        return symlog_simd[W](x)
 
     @staticmethod
     def backward_scalar(c: Scalar[DT], go: Scalar[DT]) -> Scalar[DT]:
-        # c is the cached INPUT (x). dy/dx = 1 / (1 + |x|).
+        # c is the cached INPUT (x). dy/dx = 1 / (1 + |x|). Kept as an
+        # explicit division (not go * reciprocal) to stay bit-identical.
         var one: Scalar[DT] = 1.0
         var abs_x = c if c >= Scalar[DT](0) else -c
         return go / (one + abs_x)

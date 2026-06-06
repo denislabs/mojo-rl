@@ -24,26 +24,10 @@ from std.math import abs as math_abs
 
 from ..constants import DT
 
-
-# ──────────────────────────────────────────────────────────────────────
-# Scalar symlog / symexp.
-# ──────────────────────────────────────────────────────────────────────
-
-
-@always_inline
-def symlog(x: Scalar[DT]) -> Scalar[DT]:
-    """Symmetric log: `sign(x) * ln(1 + |x|)`."""
-    if x >= 0:
-        return log(Scalar[DT](1) + x)
-    return -log(Scalar[DT](1) - x)
-
-
-@always_inline
-def symexp(x: Scalar[DT]) -> Scalar[DT]:
-    """Inverse of symlog: `sign(x) * (exp(|x|) - 1)`."""
-    if x >= 0:
-        return exp(x) - Scalar[DT](1)
-    return -(exp(-x) - Scalar[DT](1))
+# Scalar symlog / symexp now live in the canonical math helper (audit L4)
+# and are re-exported here so legacy `from ...loss.two_hot import symlog`
+# call-sites keep working.
+from ..primitives.ops.symlog_math import symlog, symexp
 
 
 # ──────────────────────────────────────────────────────────────────────
