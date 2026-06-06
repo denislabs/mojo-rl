@@ -281,6 +281,13 @@ struct AlphaZeroAgent[
         ](self.ctx.value(), self.net, agent_player, seed, open_plies)
 
     def save(mut self, path: String) raises:
+        """Weights-only snapshot of the policy/value net (`nn2-ckpt v2`
+        envelope, section `net`). Uses the `save`/`load` surface shared by
+        every agent facade. NOTE: optimizers are session-local — rebuilt
+        fresh inside each `train_*` call — so there is no persistent
+        optimizer state to checkpoint; this is the inference / self-play
+        artifact, not a training-resume checkpoint. Self-play buffers are
+        not included."""
         var body = String("")
         save_state_v2_body_gpu(self.net, body, String("net"), self.ctx.value())
         var content = String("nn2-ckpt v2\n") + body
@@ -288,6 +295,8 @@ struct AlphaZeroAgent[
             f.write(content)
 
     def load(mut self, path: String) raises:
+        """Inverse of `save` — restores the net weights. See `save` for why
+        optimizer state is not part of the checkpoint."""
         var content = read_file_v2(path)
         var lines = split_lines_v2(content)
         expect_v2_header(lines)

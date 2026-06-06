@@ -194,6 +194,12 @@ struct EZv2DiscreteAgent[
         return total / Float64(episodes)
 
     def save(mut self, path: String) raises:
+        """Weights-only snapshot of the five EZv2 nets (rep / dyn / pred /
+        proj / predh) in the `nn2-ckpt v2` envelope. Uses the `save`/`load`
+        surface shared by every agent facade. NOTE: optimizers are
+        session-local — rebuilt per `train_*` call — so only weights
+        persist; this is the inference / self-play artifact, not a
+        training-resume checkpoint."""
         var body = String("")
         save_state_v2_body(self.rep, body, String("rep"))
         save_state_v2_body(self.dyn, body, String("dyn"))
@@ -205,6 +211,8 @@ struct EZv2DiscreteAgent[
             f.write(content)
 
     def load(mut self, path: String) raises:
+        """Inverse of `save` — restores all five net weights. Optimizer
+        state is not checkpointed (session-local; see `save`)."""
         var content = read_file_v2(path)
         var lines = split_lines_v2(content)
         expect_v2_header(lines)

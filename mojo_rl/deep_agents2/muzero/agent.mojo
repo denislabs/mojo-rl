@@ -287,6 +287,12 @@ struct MuZeroAgent[
             return result
 
     def save(mut self, path: String) raises:
+        """Weights-only snapshot of the three learned-model nets (rep / dyn
+        / pred) in the `nn2-ckpt v2` envelope. Uses the `save`/`load`
+        surface shared by every agent facade. NOTE: optimizers are
+        session-local — rebuilt per `train_*` call — so only weights
+        persist; this is the inference / self-play artifact, not a
+        training-resume checkpoint. Byte-identical CPU vs GPU."""
         var body = String("")
         comptime if Self.TARGET == "cpu":
             save_state_v2_body(self.rep, body, String("rep"))
@@ -302,6 +308,8 @@ struct MuZeroAgent[
             f.write(content)
 
     def load(mut self, path: String) raises:
+        """Inverse of `save` — restores rep / dyn / pred weights. Optimizer
+        state is not checkpointed (session-local; see `save`)."""
         var content = read_file_v2(path)
         var lines = split_lines_v2(content)
         expect_v2_header(lines)
