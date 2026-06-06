@@ -51,13 +51,15 @@ comptime NUM_ACTIONS = PongEnv[DType.float64].NUM_ACTIONS  # 3
 # Rainbow architecture / replay hyperparameters.
 comptime HIDDEN_DIM = 128
 comptime NUM_ATOMS = 51
-# ISOLATION SETTING: N_STEP=1 routes the batched driver through
-# `record_batch_gpu` (direct device PER store), bypassing the device
-# `GPUNStepBuffer` entirely. This separates "env/reward/hyperparameter
-# non-convergence" from "a bug in the batched device n-step accumulation":
-# if Pong learns at N_STEP=1 but not N_STEP>1, the GPUNStepBuffer path is
-# the culprit. Restore to 3 for full Rainbow once isolated.
-comptime N_STEP = 1
+# Full Rainbow N-step. N_STEP=1 is CONFIRMED converged at scale (NVIDIA, 256
+# envs: eval −18 → +21, loss off ln(51), TD targets propagating) after the
+# obs-corruption fix (extract_obs_kernel_gpu normalization + pixel selective-
+# reset). N_STEP>1 routes the batched driver through `record_batch_gpu_nstep`
+# → the device `GPUNStepBuffer` (per-env n-step reward accumulation + compressed
+# transitions), a SEPARATE store path not exercised at N_STEP=1. This run tests
+# it: if N_STEP=3 fails to converge while N_STEP=1 did, the GPUNStepBuffer path
+# is the suspect (obs is already validated correct). Drop back to 1 to isolate.
+comptime N_STEP = 3
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 64
 comptime N_ENVS = 256  # parallel GPU environments
