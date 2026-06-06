@@ -39,6 +39,7 @@ Use in Noisy DQN: replace the last `Linear[H, NA]` in the Q-net with
 """
 
 from std.math import sqrt as fsqrt, log as flog, cos as fcos, pi
+from std.memory import alloc
 from std.random import random_float64
 from std.gpu import global_idx, thread_idx, block_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -481,13 +482,18 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
             for j in range(Self.OUT):
                 b_eff_p[j] = mu_b_p[j] + sg_b_p[j] * no_p[j]
 
-            # 3. Standard linear: output = x @ W_eff + b_eff.
+            # 3. output = x @ W_eff + b_eff. The matmul runs through BLAS
+            #    (Apple Accelerate) like Linear's CPU path — previously a
+            #    naive BATCH·IN·OUT scalar loop, which was THE Rainbow CPU
+            #    bottleneck (SAC is fast on CPU because Linear was already
+            #    ported; NoisyLinear had been missed).
+            var w_eff_tt = TileTensor(w_eff_p, row_major[Self.IN, Self.OUT]())
+            max_matmul[target="cpu"](output_v, input_v, w_eff_tt, None)
             for b in range(BATCH):
                 for j in range(Self.OUT):
-                    var s: Scalar[DT] = 0.0
-                    for i in range(Self.IN):
-                        s = s + in_p[b * Self.IN + i] * w_eff_p[i * Self.OUT + j]
-                    out_p[b * Self.OUT + j] = s + b_eff_p[j]
+                    out_p[b * Self.OUT + j] = (
+                        out_p[b * Self.OUT + j] + b_eff_p[j]
+                    )
         else:
             var ctx = self.ts.ctx.value()
             var ni_p = self._noise_in.dev_ptr()
@@ -643,38 +649,46 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
                 var g_sg_w = self.sigma_w.grad_unsafe_ptr_cpu()
                 var g_mu_b = self.mu_b.grad_unsafe_ptr_cpu()
                 var g_sg_b = self.sigma_b.grad_unsafe_ptr_cpu()
+                # grad_b — cheap O(BATCH·OUT) reduction; keep scalar.
                 for j in range(Self.OUT):
                     var sb: Scalar[DT] = 0.0
                     for b in range(BATCH):
                         sb = sb + go_p[b * Self.OUT + j]
                     g_mu_b[j] = g_mu_b[j] + sb
                     g_sg_b[j] = g_sg_b[j] + sb * no_p[j]
+                # grad_w: dW = xᵀ @ grad_output via BLAS (Apple Accelerate),
+                # mirroring Linear's CPU backward — was a naive BATCH·IN·OUT
+                # scalar loop. Transpose x into cT FIRST: that consumes the
+                # read of `x_p` before grad_x clobbers the aliased input slab
+                # (the leaf backward-order invariant). grad_mu_w += dW,
+                # grad_sigma_w += dW · f(ε_in[i]) · f(ε_out[j]).
+                var cT_buf = alloc[Scalar[DT]](BATCH * Self.IN)
+                var dW_buf = alloc[Scalar[DT]](Self.IN * Self.OUT)
+                for b in range(BATCH):
+                    for i in range(Self.IN):
+                        cT_buf[i * BATCH + b] = x_p[b * Self.IN + i]
+                var cT_tt = TileTensor(cT_buf, row_major[Self.IN, BATCH]())
+                var dW_tt = TileTensor(
+                    dW_buf, row_major[Self.IN, Self.OUT]()
+                )
+                max_matmul[target="cpu"](dW_tt, cT_tt, grad_out_v, None)
                 for i in range(Self.IN):
                     var ni = ni_p[i]
                     for j in range(Self.OUT):
-                        var s: Scalar[DT] = 0.0
-                        for b in range(BATCH):
-                            s = (
-                                s
-                                + x_p[b * Self.IN + i]
-                                * go_p[b * Self.OUT + j]
-                            )
                         var idx = i * Self.OUT + j
-                        g_mu_w[idx] = g_mu_w[idx] + s
-                        g_sg_w[idx] = g_sg_w[idx] + s * ni * no_p[j]
+                        var dw = dW_buf[idx]
+                        g_mu_w[idx] = g_mu_w[idx] + dw
+                        g_sg_w[idx] = g_sg_w[idx] + dw * ni * no_p[j]
+                dW_buf.free()
+                cT_buf.free()
 
-            # 2. grad_x = grad_output @ W_eff^T  (after step 1; clobbers the
-            #    input slab `x_p` aliases).
-            for b in range(BATCH):
-                for i in range(Self.IN):
-                    var s: Scalar[DT] = 0.0
-                    for j in range(Self.OUT):
-                        s = (
-                            s
-                            + go_p[b * Self.OUT + j]
-                            * w_eff_p[i * Self.OUT + j]
-                        )
-                    gi_p[b * Self.IN + i] = s
+            # 2. grad_x = grad_output @ W_effᵀ via BLAS (was a naive
+            #    BATCH·IN·OUT scalar loop). After step 1's read of `x_p`;
+            #    this write clobbers the input slab `x_p` aliases.
+            var w_eff_tt = TileTensor(w_eff_p, row_major[Self.IN, Self.OUT]())
+            max_matmul[transpose_b=True, target="cpu"](
+                grad_in_v, grad_out_v, w_eff_tt, None
+            )
         else:
             var ctx = self.ts.ctx.value()
             var ni_p = self._noise_in.dev_ptr()
