@@ -60,6 +60,8 @@ CPU/GPU parity completeness, exercised by the parity test.
 """
 
 from std.math import exp, tanh
+from std.memory import alloc
+from linalg.matmul import matmul as max_matmul
 from std.gpu import thread_idx, block_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -563,60 +565,54 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         var n_c = self._n_cache.unsafe_ptr()
         var hn_c = self._hn_pre.unsafe_ptr()
 
-        # For each row b:
-        #   1. compute ix_j = sum_k x[b,k]*W_ih[k,j] + b_ih[j]  for j in [0, 3H)
-        #   2. compute hx_j = sum_k h[b,k]*W_hh[k,j] + b_hh[j]  for j in [0, 3H)
-        #   3. r = σ(ix[0:H]  + hx[0:H])
-        #      z = σ(ix[H:2H] + hx[H:2H])
-        #      hn_pre = hx[2H:3H]
-        #      n = tanh(ix[2H:3H] + r ⊙ hn_pre)
-        #      h' = (1-z)*n + z*h
+        # Gate pre-activations via BLAS (Apple Accelerate), like Linear /
+        # NoisyLinear — previously naive per-(b,col) BATCH·IN·3H scalar
+        # dot-products. The nonlinear gate logic (σ/tanh, r⊙hn coupling,
+        # h'=(1-z)n+zh) stays scalar (O(BATCH·H)).
+        #   ix = x @ W_ih  → [BATCH, 3H]   (bias added below)
+        #   hx = h @ W_hh  → [BATCH, 3H]
+        var x_tt = TileTensor(x_p, row_major[BATCH, Self.IN0_DIM]())
+        var h_tt = TileTensor(h_p, row_major[BATCH, H]())
+        var W_ih_tt = TileTensor(W_ih_p, row_major[Self.IN0_DIM, THREE_H]())
+        var W_hh_tt = TileTensor(W_hh_p, row_major[H, THREE_H]())
+        var ix_buf = alloc[Scalar[DT]](BATCH * THREE_H)
+        var hx_buf = alloc[Scalar[DT]](BATCH * THREE_H)
+        var ix_tt = TileTensor(ix_buf, row_major[BATCH, THREE_H]())
+        var hx_tt = TileTensor(hx_buf, row_major[BATCH, THREE_H]())
+        max_matmul[target="cpu"](ix_tt, x_tt, W_ih_tt, None)
+        max_matmul[target="cpu"](hx_tt, h_tt, W_hh_tt, None)
+
         for b in range(BATCH):
-            var x_off = b * Self.IN0_DIM
+            var g_off = b * THREE_H
             var h_off = b * H
             var out_off = b * H
             var c_off = b * H
-
-            # Slot scratch on stack via inline loops (no large temporaries).
             for col in range(H):
-                # ir + hr
-                var ir: Scalar[DT] = b_ih_p[col]
-                var hr: Scalar[DT] = b_hh_p[col]
-                for k in range(Self.IN0_DIM):
-                    ir += x_p[x_off + k] * W_ih_p[k * THREE_H + col]
-                for k in range(H):
-                    hr += h_p[h_off + k] * W_hh_p[k * THREE_H + col]
-                var rg = _sigmoid(ir + hr)
+                var rg = _sigmoid(
+                    ix_buf[g_off + col] + b_ih_p[col]
+                    + hx_buf[g_off + col] + b_hh_p[col]
+                )
                 r_c[c_off + col] = rg
 
-                # iz + hz
-                var iz: Scalar[DT] = b_ih_p[H + col]
-                var hz: Scalar[DT] = b_hh_p[H + col]
-                for k in range(Self.IN0_DIM):
-                    iz += x_p[x_off + k] * W_ih_p[k * THREE_H + H + col]
-                for k in range(H):
-                    hz += h_p[h_off + k] * W_hh_p[k * THREE_H + H + col]
-                var zg = _sigmoid(iz + hz)
+                var zg = _sigmoid(
+                    ix_buf[g_off + H + col] + b_ih_p[H + col]
+                    + hx_buf[g_off + H + col] + b_hh_p[H + col]
+                )
                 z_c[c_off + col] = zg
 
-                # in_pre = sum + b_in (only x-side part)
-                var in_pre: Scalar[DT] = b_ih_p[2 * H + col]
-                for k in range(Self.IN0_DIM):
-                    in_pre += x_p[x_off + k] * W_ih_p[k * THREE_H + 2 * H + col]
-                # hn_pre = sum + b_hn (h-side part — full pre-activation
-                # for the n branch, before the r gate).
-                var hn_p: Scalar[DT] = b_hh_p[2 * H + col]
-                for k in range(H):
-                    hn_p += h_p[h_off + k] * W_hh_p[k * THREE_H + 2 * H + col]
+                var in_pre = ix_buf[g_off + 2 * H + col] + b_ih_p[2 * H + col]
+                # hn_pre = full h-side pre-activation for the n branch.
+                var hn_p = hx_buf[g_off + 2 * H + col] + b_hh_p[2 * H + col]
                 hn_c[c_off + col] = hn_p
 
                 var ng = tanh(in_pre + rg * hn_p)
                 n_c[c_off + col] = ng
 
-                # h' = (1 − z) * n + z * h
                 out_p[out_off + col] = (
                     (Scalar[DT](1.0) - zg) * ng + zg * h_p[h_off + col]
                 )
+        ix_buf.free()
+        hx_buf.free()
 
     # ------------------------------------------------------------------
     # Backward.
@@ -744,87 +740,90 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         # the per-row d_pre_* signals (not from x, h directly), it's safe
         # to interleave per-row.
 
-        # Initialize grad inputs to zero (we accumulate into them per element).
+        # Phase 1 — per-(b,col) gate gradients (scalar, O(BATCH·H)). Write the
+        # input-side grads d_ix = [d_ir | d_iz | d_in_g] and hidden-side grads
+        # d_hx = [d_hr_g | d_hz_g | d_hn_g] into [BATCH, 3H] buffers; accumulate
+        # the bias grads. Reads caches + cached h only (NOT the dx/dh slabs).
+        var W_ih_tt = TileTensor(W_ih_p, row_major[Self.IN0_DIM, THREE_H]())
+        var W_hh_tt = TileTensor(W_hh_p, row_major[H, THREE_H]())
+        var d_ix_buf = alloc[Scalar[DT]](BATCH * THREE_H)
+        var d_hx_buf = alloc[Scalar[DT]](BATCH * THREE_H)
         for b in range(BATCH):
-            for k in range(Self.IN0_DIM):
-                dx_p[b * Self.IN0_DIM + k] = 0.0
-            for k in range(H):
-                dh_p[b * H + k] = 0.0
-
-        for b in range(BATCH):
-            var x_off = b * Self.IN0_DIM
-            var h_off = b * H
             var c_off = b * H
-
+            var g_off = b * THREE_H
             for col in range(H):
                 var dh_now = go_p[c_off + col]
                 var rg = r_c[c_off + col]
                 var zg = z_c[c_off + col]
                 var ng = n_c[c_off + col]
                 var hn_v = hn_c[c_off + col]
-                var h_val = h_p[h_off + col]
+                var h_val = h_p[c_off + col]
 
-                # Gate / candidate gradients.
                 var dz = dh_now * (h_val - ng)
                 var dn = dh_now * (Scalar[DT](1.0) - zg)
                 var d_pre_n = dn * (Scalar[DT](1.0) - ng * ng)  # tanh'
-
-                # Split d_pre_n across input-projection (d_in_n) and
-                # `r * hn` summand.
                 var d_in_n = d_pre_n
-                var dr_x_hn = d_pre_n
-                var dr = dr_x_hn * hn_v          # gradient on r
-                var d_hn = dr_x_hn * rg          # gradient on hn_pre
-
+                var dr = d_pre_n * hn_v          # gradient on r
+                var d_hn = d_pre_n * rg          # gradient on hn_pre
                 var d_pre_r = dr * rg * (Scalar[DT](1.0) - rg)  # sigmoid'
                 var d_pre_z = dz * zg * (Scalar[DT](1.0) - zg)  # sigmoid'
 
-                # Combined d-vectors per gate index.
-                var d_ir = d_pre_r
-                var d_iz = d_pre_z
-                var d_in_g = d_in_n
-                var d_hr_g = d_pre_r
-                var d_hz_g = d_pre_z
-                var d_hn_g = d_hn
+                d_ix_buf[g_off + col]         = d_pre_r
+                d_ix_buf[g_off + H + col]     = d_pre_z
+                d_ix_buf[g_off + 2 * H + col] = d_in_n
+                d_hx_buf[g_off + col]         = d_pre_r
+                d_hx_buf[g_off + H + col]     = d_pre_z
+                d_hx_buf[g_off + 2 * H + col] = d_hn
 
-                # ----- Param grads (mode == "all" only) -----
                 comptime if mode == "all":
-                    # b_ih: sum across batch
-                    db_ih_p[col]         += d_ir
-                    db_ih_p[H + col]     += d_iz
-                    db_ih_p[2 * H + col] += d_in_g
-                    db_hh_p[col]         += d_hr_g
-                    db_hh_p[H + col]     += d_hz_g
-                    db_hh_p[2 * H + col] += d_hn_g
+                    db_ih_p[col]         += d_pre_r
+                    db_ih_p[H + col]     += d_pre_z
+                    db_ih_p[2 * H + col] += d_in_n
+                    db_hh_p[col]         += d_pre_r
+                    db_hh_p[H + col]     += d_pre_z
+                    db_hh_p[2 * H + col] += d_hn
 
-                    # W_ih [IN, 3H] += x^T · d_ix
-                    for k in range(Self.IN0_DIM):
-                        var xv = x_p[x_off + k]
-                        dW_ih_p[k * THREE_H + col]         += xv * d_ir
-                        dW_ih_p[k * THREE_H + H + col]     += xv * d_iz
-                        dW_ih_p[k * THREE_H + 2 * H + col] += xv * d_in_g
-                    # W_hh [H, 3H] += h^T · d_hx
-                    for k in range(H):
-                        var hv = h_p[h_off + k]
-                        dW_hh_p[k * THREE_H + col]         += hv * d_hr_g
-                        dW_hh_p[k * THREE_H + H + col]     += hv * d_hz_g
-                        dW_hh_p[k * THREE_H + 2 * H + col] += hv * d_hn_g
+        var d_ix_tt = TileTensor(d_ix_buf, row_major[BATCH, THREE_H]())
+        var d_hx_tt = TileTensor(d_hx_buf, row_major[BATCH, THREE_H]())
 
-                # ----- Input grads -----
-                # d_x[k] += d_ir·W_ih[k, col] + d_iz·W_ih[k, H+col] + d_in_g·W_ih[k, 2H+col]
+        # Phase 2 (mode=="all") — dW_ih += xᵀ @ d_ix, dW_hh += hᵀ @ d_hx via
+        # BLAS. Transpose x/h FIRST: that consumes the reads of x_p/h_p BEFORE
+        # the dx/dh writes below clobber the aliased input slabs.
+        comptime if mode == "all":
+            var xT_buf = alloc[Scalar[DT]](Self.IN0_DIM * BATCH)
+            var hT_buf = alloc[Scalar[DT]](H * BATCH)
+            for b in range(BATCH):
                 for k in range(Self.IN0_DIM):
-                    dx_p[x_off + k] += (
-                        d_ir   * W_ih_p[k * THREE_H + col]
-                        + d_iz * W_ih_p[k * THREE_H + H + col]
-                        + d_in_g * W_ih_p[k * THREE_H + 2 * H + col]
-                    )
-                # d_h[k] += d_hr_g·W_hh[k, col] + d_hz_g·W_hh[k, H+col] + d_hn_g·W_hh[k, 2H+col]
-                # Plus the direct path through `z · h` — only for k = col.
+                    xT_buf[k * BATCH + b] = x_p[b * Self.IN0_DIM + k]
                 for k in range(H):
-                    dh_p[h_off + k] += (
-                        d_hr_g   * W_hh_p[k * THREE_H + col]
-                        + d_hz_g * W_hh_p[k * THREE_H + H + col]
-                        + d_hn_g * W_hh_p[k * THREE_H + 2 * H + col]
-                    )
-                # Direct path: ∂h'/∂h_col = z_col
-                dh_p[h_off + col] += dh_now * zg
+                    hT_buf[k * BATCH + b] = h_p[b * H + k]
+            var xT_tt = TileTensor(xT_buf, row_major[Self.IN0_DIM, BATCH]())
+            var hT_tt = TileTensor(hT_buf, row_major[H, BATCH]())
+            var dWih_buf = alloc[Scalar[DT]](Self.IN0_DIM * THREE_H)
+            var dWhh_buf = alloc[Scalar[DT]](H * THREE_H)
+            var dWih_tt = TileTensor(dWih_buf, row_major[Self.IN0_DIM, THREE_H]())
+            var dWhh_tt = TileTensor(dWhh_buf, row_major[H, THREE_H]())
+            max_matmul[target="cpu"](dWih_tt, xT_tt, d_ix_tt, None)
+            max_matmul[target="cpu"](dWhh_tt, hT_tt, d_hx_tt, None)
+            for i in range(Self.IN0_DIM * THREE_H):
+                dW_ih_p[i] += dWih_buf[i]
+            for i in range(H * THREE_H):
+                dW_hh_p[i] += dWhh_buf[i]
+            xT_buf.free()
+            hT_buf.free()
+            dWih_buf.free()
+            dWhh_buf.free()
+
+        # Phase 3 — input grads (write dx/dh, which alias x/h → run LAST).
+        #   dx = d_ix @ W_ihᵀ ; dh = d_hx @ W_hhᵀ  (transpose_b matmul,
+        #   overwrite), then add the direct ∂h'/∂h_col = z_col path.
+        var dx_tt = TileTensor(dx_p, row_major[BATCH, Self.IN0_DIM]())
+        var dh_tt = TileTensor(dh_p, row_major[BATCH, H]())
+        max_matmul[transpose_b=True, target="cpu"](dx_tt, d_ix_tt, W_ih_tt, None)
+        max_matmul[transpose_b=True, target="cpu"](dh_tt, d_hx_tt, W_hh_tt, None)
+        for b in range(BATCH):
+            var c_off = b * H
+            for col in range(H):
+                dh_p[c_off + col] += go_p[c_off + col] * z_c[c_off + col]
+        d_ix_buf.free()
+        d_hx_buf.free()
