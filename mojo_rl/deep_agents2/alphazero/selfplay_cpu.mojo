@@ -18,7 +18,6 @@ value-target convention with the GPU driver, so a CPU-trained net is a faithful
 from std.memory import alloc, UnsafePointer
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.constants import dtype
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.optimizer import Adam
@@ -91,7 +90,7 @@ def run_alphazero_selfplay_cpu[
         alloc[Scalar[DT]](MAX_TRAJ * ACT)
     )
     var tmp_tgt = alloc[Scalar[DT]](W)
-    var root_save = alloc[Scalar[dtype]](LATENT)
+    var root_save = alloc[Scalar[DT]](LATENT)
     var traj_len = 0
 
     # ── Train-batch host buffers + graph IO tiles ──

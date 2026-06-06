@@ -13,7 +13,6 @@ the periodic eval/print/flush, mirroring the GPU driver's telemetry.
 
 from std.memory import alloc, UnsafePointer
 
-from mojo_rl.nn.constants import dtype
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.optimizer import Adam
@@ -142,7 +141,7 @@ def run_alphazero_selfplay_arena_cpu[
         alloc[Scalar[DT]](ACT)
     )
     var tmp_tgt = alloc[Scalar[DT]](W)
-    var root_save = alloc[Scalar[dtype]](LATENT)
+    var root_save = alloc[Scalar[DT]](LATENT)
     var traj_len = 0
 
     # ── Train-batch host buffers + graph IO tiles ──

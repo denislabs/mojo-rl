@@ -28,7 +28,6 @@ from std.memory import alloc
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import dtype
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.initializer import Kaiming
@@ -254,8 +253,8 @@ struct EZv2ContinuousAgent[
                     h_obs[j] = Scalar[DT](eo_f[j])
                 self.ctx.enqueue_copy(d_obs, h_obs)
                 var obs_t = LayoutTensor[
-                    dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
-                ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                    DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
+                ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                     d_obs.unsafe_ptr()))
                 planner.search_gpu[
                     MZRepGPU[Self.OBS, Self.LATENT, Self.REP],

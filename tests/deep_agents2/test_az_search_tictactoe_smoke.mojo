@@ -20,7 +20,7 @@ from std.gpu.host import DeviceContext
 from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.deep_agents2.alphazero.nets import AZMLPNet
 from mojo_rl.deep_agents2.zero.mcts_adapters import AZPredGPU, AZEnvGPU
@@ -59,18 +59,18 @@ def main() raises:
     var mcts = MCTS(ctx, gamma=1.0, v_min=-1.0, v_max=1.0)
 
     # ── Set up N_ENVS fresh TicTacToe boards on device ──
-    var states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE)
-    var obs = ctx.enqueue_create_buffer[dtype](N_ENVS * OBS)
-    var legal = ctx.enqueue_create_buffer[dtype](N_ENVS * ACT)
+    var states = ctx.enqueue_create_buffer[DT](N_ENVS * STATE)
+    var obs = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
+    var legal = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
     Env.reset_kernel_gpu[N_ENVS, STATE](ctx, states)
     Env.extract_obs_kernel_gpu[N_ENVS, STATE, OBS](ctx, states, obs, legal)
     ctx.synchronize()
 
     var root_obs = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
+        DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
     ](obs.unsafe_ptr())
     var root_legal = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+        DT, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
     ](legal.unsafe_ptr())
 
     # ── Run the full AlphaZero MCTS search ──
@@ -80,10 +80,10 @@ def main() raises:
     ctx.synchronize()
 
     # ── Read results to host ──
-    var act_host = ctx.enqueue_create_host_buffer[dtype](N_ENVS)
-    var pol_host = ctx.enqueue_create_host_buffer[dtype](N_ENVS * ACT)
-    var rv_host = ctx.enqueue_create_host_buffer[dtype](N_ENVS)
-    var legal_host = ctx.enqueue_create_host_buffer[dtype](N_ENVS * ACT)
+    var act_host = ctx.enqueue_create_host_buffer[DT](N_ENVS)
+    var pol_host = ctx.enqueue_create_host_buffer[DT](N_ENVS * ACT)
+    var rv_host = ctx.enqueue_create_host_buffer[DT](N_ENVS)
+    var legal_host = ctx.enqueue_create_host_buffer[DT](N_ENVS * ACT)
     ctx.enqueue_copy(act_host, mcts.actions_out)
     ctx.enqueue_copy(pol_host, mcts.policies_out)
     ctx.enqueue_copy(rv_host, mcts.root_value_out)

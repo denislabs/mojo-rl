@@ -35,7 +35,6 @@ from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn.constants import dtype
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.optimizer import Adam
@@ -243,10 +242,10 @@ def run_alphazero_selfplay_arena[
         var pred = AZPredGPU[OBS, ACT, NET].make(net)
         var env_ad = AZEnvGPU[ENV, STATE, OBS, ACT]()
         var root_obs = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
+            DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
         ](obs_dev.unsafe_ptr())
         var root_legal = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+            DT, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
         ](legal_dev.unsafe_ptr())
         mcts.search_gpu_alphazero[type_of(pred), type_of(env_ad)](
             ctx, pred, env_ad, root_obs, states, root_legal,

@@ -22,7 +22,6 @@ from std.memory import alloc
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn.constants import dtype
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.optimizer.adam import Adam
@@ -141,8 +140,8 @@ def run_ezv2_gumbel_selfplay_gpu[
         for j in range(OBS):
             h_obs[j] = Scalar[DT](cur_f[j])
         ctx.enqueue_copy(d_obs, h_obs)
-        var obs_t = LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS),
-            MutAnyOrigin](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+        var obs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
+            MutAnyOrigin](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 d_obs.unsafe_ptr()))
         planner.search_gpu[
             MZRepGPU[OBS, LATENT, REP],
@@ -248,9 +247,9 @@ def run_ezv2_gumbel_selfplay_gpu[
                     for j in range(OBS):
                         h_obs[j] = Scalar[DT](eo_f[j])
                     ctx.enqueue_copy(d_obs, h_obs)
-                    var eobs_t = LayoutTensor[dtype,
+                    var eobs_t = LayoutTensor[DT,
                         Layout.row_major(N_ENVS, OBS), MutAnyOrigin](
-                            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                                 d_obs.unsafe_ptr()))
                     planner.search_gpu[
                         MZRepGPU[OBS, LATENT, REP],

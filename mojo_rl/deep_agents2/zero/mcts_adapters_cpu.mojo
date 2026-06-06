@@ -26,7 +26,6 @@ from std.math import exp
 from std.memory import alloc, UnsafePointer
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.constants import dtype
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
@@ -52,7 +51,7 @@ struct AZRepCPU[
         mut self, obs: List[Float64], mut hidden_out: List[Float64]
     ) raises:
         _ = obs  # unused — read env state directly
-        var tmp = alloc[Scalar[dtype]](Self.E.SAVE_SIZE)
+        var tmp = alloc[Scalar[DT]](Self.E.SAVE_SIZE)
         self.env[].save_env_state(tmp)
         for i in range(Self.E.SAVE_SIZE):
             hidden_out[i] = Float64(tmp[i])
@@ -78,9 +77,9 @@ struct AZDynCPU[
         action: Int,
         mut hidden_out: List[Float64],
     ) raises -> Float64:
-        var tmp = alloc[Scalar[dtype]](Self.E.SAVE_SIZE)
+        var tmp = alloc[Scalar[DT]](Self.E.SAVE_SIZE)
         for i in range(Self.E.SAVE_SIZE):
-            tmp[i] = Scalar[dtype](hidden_in[i])
+            tmp[i] = Scalar[DT](hidden_in[i])
         self.env[].load_env_state(tmp)
         _ = self.env[].step(self.env[].action_from_index(action))
         self.env[].save_env_state(tmp)
@@ -113,9 +112,9 @@ struct AZPredCPU[
     def predict_cpu(
         mut self, hidden: List[Float64], mut policy_out: List[Float64]
     ) raises -> Float64:
-        var tmp = alloc[Scalar[dtype]](Self.E.SAVE_SIZE)
+        var tmp = alloc[Scalar[DT]](Self.E.SAVE_SIZE)
         for i in range(Self.E.SAVE_SIZE):
-            tmp[i] = Scalar[dtype](hidden[i])
+            tmp[i] = Scalar[DT](hidden[i])
         self.env[].load_env_state(tmp)
         tmp.free()
 

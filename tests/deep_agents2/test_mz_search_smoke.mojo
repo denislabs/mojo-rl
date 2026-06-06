@@ -23,7 +23,6 @@ from std.gpu.host import DeviceContext
 from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.deep_agents2.muzero.nets import MZRepNet, MZDynNet, MZPredNet
@@ -69,19 +68,19 @@ def main() raises:
     var mcts = MCTS(ctx, gamma=0.997, v_min=-10.0, v_max=10.0)
 
     # ── A batch of arbitrary root observations ──
-    var obs = ctx.enqueue_create_buffer[dtype](N_ENVS * OBS)
-    var obs_h = ctx.enqueue_create_host_buffer[dtype](N_ENVS * OBS)
+    var obs = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
+    var obs_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * OBS)
     ctx.synchronize()
     for e in range(N_ENVS):
-        obs_h.unsafe_ptr()[e * OBS + 0] = Scalar[dtype](0.02) * Scalar[dtype](e)
-        obs_h.unsafe_ptr()[e * OBS + 1] = Scalar[dtype](-0.1)
-        obs_h.unsafe_ptr()[e * OBS + 2] = Scalar[dtype](0.05) * Scalar[dtype](e)
-        obs_h.unsafe_ptr()[e * OBS + 3] = Scalar[dtype](0.0)
+        obs_h.unsafe_ptr()[e * OBS + 0] = Scalar[DT](0.02) * Scalar[DT](e)
+        obs_h.unsafe_ptr()[e * OBS + 1] = Scalar[DT](-0.1)
+        obs_h.unsafe_ptr()[e * OBS + 2] = Scalar[DT](0.05) * Scalar[DT](e)
+        obs_h.unsafe_ptr()[e * OBS + 3] = Scalar[DT](0.0)
     ctx.enqueue_copy(obs, obs_h)
     ctx.synchronize()
 
     var root_obs = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
+        DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
     ](obs.unsafe_ptr())
 
     # ── Run the full MuZero learned-dynamics MCTS search ──
@@ -90,9 +89,9 @@ def main() raises:
     )
     ctx.synchronize()
 
-    var act_host = ctx.enqueue_create_host_buffer[dtype](N_ENVS)
-    var pol_host = ctx.enqueue_create_host_buffer[dtype](N_ENVS * ACT)
-    var rv_host = ctx.enqueue_create_host_buffer[dtype](N_ENVS)
+    var act_host = ctx.enqueue_create_host_buffer[DT](N_ENVS)
+    var pol_host = ctx.enqueue_create_host_buffer[DT](N_ENVS * ACT)
+    var rv_host = ctx.enqueue_create_host_buffer[DT](N_ENVS)
     ctx.enqueue_copy(act_host, mcts.actions_out)
     ctx.enqueue_copy(pol_host, mcts.policies_out)
     ctx.enqueue_copy(rv_host, mcts.root_value_out)

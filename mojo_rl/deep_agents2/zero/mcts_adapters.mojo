@@ -9,11 +9,12 @@ old ``nn.training.Network`` and threaded params/state/workspace by hand), nn2
 modules are self-contained — params live inside the module — so the adapter is
 one ``forward`` call deep.
 
-Note on dtype: the planner trait signatures speak ``mojo_rl.nn.constants.dtype``
-while nn2 forwards speak ``mojo_rl.nn2.constants.DT``. Both are
-``DType.float32`` (same type), so the LayoutTensor↔TileTensor bridge is a plain
-pointer reinterpret — we import ``dtype`` to match the trait signature exactly
-and feed the same pointer into the nn2 ``TileTensor``.
+Note on dtype: the legacy planner trait signatures speak
+``mojo_rl.nn.constants.dtype`` while nn2 forwards speak
+``mojo_rl.nn2.constants.DT``. Both alias the identical ``DType.float32`` comptime
+value, so the LayoutTensor↔TileTensor bridge is a plain pointer reinterpret and
+the adapter — written in terms of ``DT`` — conforms to the trait's ``dtype``
+surface with no conversion.
 
 Phase A scope: ``AZPredGPU`` (AlphaZero prediction: obs → ``[policy | value]``).
 The ``EnvStepGPU`` board adapter is env-agnostic and reused from the legacy
@@ -23,7 +24,7 @@ module; MuZero's representation/dynamics adapters land in Phase B.
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import PredictionGPU, EnvStepGPU
@@ -60,10 +61,10 @@ struct AZPredGPU[OBS: Int, ACT: Int, NET: Module](
         mut self,
         ctx: DeviceContext,
         hidden: LayoutTensor[
-            dtype, Layout.row_major(B, Self.LATENT_DIM), MutAnyOrigin
+            DT, Layout.row_major(B, Self.LATENT_DIM), MutAnyOrigin
         ],
         mut pred_out: LayoutTensor[
-            dtype, Layout.row_major(B, Self.PRED_OUT_DIM), MutAnyOrigin
+            DT, Layout.row_major(B, Self.PRED_OUT_DIM), MutAnyOrigin
         ],
     ) raises:
         # Rebuild TileTensors against the net's own comptime dims so the
@@ -87,8 +88,8 @@ struct AZEnvGPU[
     Stateless wrapper over the env's static ``step_kernel_gpu``. The planner
     (``search_gpu_alphazero``) stages each pending (parent_state, action) pair,
     calls ``step_gpu`` to play it, and feeds the post-step obs into the
-    prediction net. ``board_dtype == dtype == DT == float32`` so the
-    ``DeviceBuffer[dtype]`` surface bridges the env's ``board_dtype`` buffers
+    prediction net. ``board_dtype == DT == float32`` so the
+    ``DeviceBuffer[DT]`` surface bridges the env's ``board_dtype`` buffers
     with no conversion. Env-agnostic — reused unchanged for Connect4 / Go.
     """
 
@@ -99,13 +100,13 @@ struct AZEnvGPU[
     def step_gpu[B: Int](
         mut self,
         ctx: DeviceContext,
-        mut states: DeviceBuffer[dtype],
-        actions: DeviceBuffer[dtype],
-        mut rewards_out: DeviceBuffer[dtype],
-        mut dones_out: DeviceBuffer[dtype],
-        mut terminated_out: DeviceBuffer[dtype],
-        mut obs_out: DeviceBuffer[dtype],
-        mut legal_masks_out: DeviceBuffer[dtype],
+        mut states: DeviceBuffer[DT],
+        actions: DeviceBuffer[DT],
+        mut rewards_out: DeviceBuffer[DT],
+        mut dones_out: DeviceBuffer[DT],
+        mut terminated_out: DeviceBuffer[DT],
+        mut obs_out: DeviceBuffer[DT],
+        mut legal_masks_out: DeviceBuffer[DT],
         rng_seed: UInt64,
     ) raises:
         Self.E.step_kernel_gpu[B, Self.STATE_SIZE, Self.OBS_DIM](

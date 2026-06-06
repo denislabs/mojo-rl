@@ -26,7 +26,6 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import alloc
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
 from mojo_rl.nn2.constants import DT
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 
@@ -330,7 +329,7 @@ struct GPUMinimaxTicTacToe(GPUEvaluator & CPUEvaluator):
         E: TwoPlayerDiscreteEnv & Saveable
     ](mut env: E, rng_seed: UInt64) raises -> Int:
         _ = rng_seed
-        var buf = alloc[Scalar[dtype]](E.SAVE_SIZE)
+        var buf = alloc[Scalar[DT]](E.SAVE_SIZE)
         env.save_env_state(buf)
         var board = InlineArray[Int, 9](fill=0)
         for i in range(9):
@@ -543,7 +542,7 @@ struct GPUMinimaxConnectFour[DEPTH: Int = 5](GPUEvaluator & CPUEvaluator):
         _ = rng_seed
         comptime ROWS = 6
         comptime COLS = 7
-        var buf = alloc[Scalar[dtype]](E.SAVE_SIZE)
+        var buf = alloc[Scalar[DT]](E.SAVE_SIZE)
         env.save_env_state(buf)
         var board = InlineArray[Int, 42](fill=0)
         for i in range(42):
