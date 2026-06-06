@@ -838,6 +838,11 @@ struct ScaledDotProductAttention[
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
+        # BLAS path: mirror the GPU bmm forward (pack → QKᵀ bmm → scalar
+        # softmax+mask → attn·V bmm → unpack) but with target="cpu"
+        # (Apple-Accelerate). The 2 GEMMs are BLAS; softmax + causal mask
+        # stay scalar. Cache layout [Q|K|V|scores] is identical to the GPU
+        # path, so backward reads it the same way.
         ensure_cpu_buffer(self.cache, BATCH * Self.CACHE_SIZE)
         var ip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
         var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
@@ -850,78 +855,104 @@ struct ScaledDotProductAttention[
         comptime OUT = Self.OUT_DIM
         comptime C = Self.CACHE_SIZE
         comptime SD = Self.SEQ_LEN * Self.DIM
-        var scale = 1.0 / sqrt(Float64(Self.HEAD_DIM))
+        comptime BH = BATCH * Self.N_HEADS
+        comptime PACKED = BATCH * Self.SEQ_LEN * Self.DIM
+        comptime SCORES = BH * Self.SEQ_LEN * Self.SEQ_LEN
+        var scale = Scalar[DT](Float32(1.0) / sqrt(Float32(Self.HEAD_DIM)))
 
+        # Local scratch: pq | pk | pv | pout (PACKED each) + scores (SCORES).
+        var scratch = List[Scalar[DT]](
+            length=4 * PACKED + SCORES, fill=Scalar[DT](0)
+        )
+        var sb = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            scratch.unsafe_ptr()
+        )
+        var pq = sb + 0 * PACKED
+        var pk = sb + 1 * PACKED
+        var pv = sb + 2 * PACKED
+        var pout = sb + 3 * PACKED
+        var sc = sb + 4 * PACKED
+
+        # 1. Cache Q/K/V and pack into (BH, SEQ, HEAD_DIM).
         for b in range(BATCH):
-            # Cache Q, K, V (same per-token layout as input).
             for i in range(SD):
                 cp[b * C + i] = ip[b * IN + i]
                 cp[b * C + Self.K_OFF + i] = ip[b * IN + Self.K_OFF + i]
                 cp[b * C + Self.V_OFF + i] = ip[b * IN + Self.V_OFF + i]
-
             for h in range(Self.N_HEADS):
+                var bh = b * Self.N_HEADS + h
                 var h_off = h * Self.HEAD_DIM
+                for t in range(Self.SEQ_LEN):
+                    for d in range(Self.HEAD_DIM):
+                        var col = h_off + d
+                        var pidx = bh * Self.SEQ_LEN * Self.HEAD_DIM + t * Self.HEAD_DIM + d
+                        pq[pidx] = ip[b * IN + t * Self.DIM + col]
+                        pk[pidx] = ip[b * IN + Self.K_OFF + t * Self.DIM + col]
+                        pv[pidx] = ip[b * IN + Self.V_OFF + t * Self.DIM + col]
+
+        # 2. scores = Q @ Kᵀ  (BH, SEQ, SEQ).
+        var scores_tt = TileTensor(
+            sc, row_major[BH, Self.SEQ_LEN, Self.SEQ_LEN]()
+        )
+        var pq_tt = TileTensor(pq, row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]())
+        var pk_tt = TileTensor(pk, row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]())
+        batched_matmul[transpose_b=True, target="cpu"](
+            scores_tt, pq_tt, pk_tt
+        )
+
+        # 3. scale + stable softmax (scalar); mirror weights into cache.attn
+        #    and the `sc` scores buffer (zeroed in the causal upper triangle).
+        for b in range(BATCH):
+            for h in range(Self.N_HEADS):
+                var bh = b * Self.N_HEADS + h
+                var sc_base = bh * Self.SEQ_LEN * Self.SEQ_LEN
+                var cache_base = (
+                    b * C + Self.ATTN_OFF + h * Self.SEQ_LEN * Self.SEQ_LEN
+                )
                 for i in range(Self.SEQ_LEN):
                     var j_end = Self.SEQ_LEN
                     comptime if Self.CAUSAL:
                         j_end = i + 1
-
-                    var max_score: Float64 = -1e30
+                    var row = sc_base + i * Self.SEQ_LEN
+                    var crow = cache_base + i * Self.SEQ_LEN
+                    var mx = Scalar[DT](-1e30)
                     for j in range(j_end):
-                        var score: Float64 = 0.0
-                        for d in range(Self.HEAD_DIM):
-                            var q = Float64(ip[b * IN + i * Self.DIM + h_off + d])
-                            var k = Float64(
-                                ip[
-                                    b * IN + Self.K_OFF + j * Self.DIM + h_off + d
-                                ]
-                            )
-                            score += q * k
-                        score *= scale
-                        var ai = (
-                            b * C + Self.ATTN_OFF
-                            + h * Self.SEQ_LEN * Self.SEQ_LEN
-                            + i * Self.SEQ_LEN + j
-                        )
-                        cp[ai] = Scalar[DT](score)
-                        if score > max_score:
-                            max_score = score
-
-                    var sum_exp: Float64 = 0.0
+                        var s = sc[row + j] * scale
+                        sc[row + j] = s
+                        if s > mx:
+                            mx = s
+                    var se = Scalar[DT](0)
                     for j in range(j_end):
-                        var ai = (
-                            b * C + Self.ATTN_OFF
-                            + h * Self.SEQ_LEN * Self.SEQ_LEN
-                            + i * Self.SEQ_LEN + j
-                        )
-                        var e = exp(Float64(cp[ai]) - max_score)
-                        cp[ai] = Scalar[DT](e)
-                        sum_exp += e
-
-                    var inv = 1.0 / sum_exp
+                        var e = exp(sc[row + j] - mx)
+                        sc[row + j] = e
+                        se += e
+                    var inv = Scalar[DT](1) / se
                     for j in range(j_end):
-                        var ai = (
-                            b * C + Self.ATTN_OFF
-                            + h * Self.SEQ_LEN * Self.SEQ_LEN
-                            + i * Self.SEQ_LEN + j
-                        )
-                        cp[ai] = Scalar[DT](Float64(cp[ai]) * inv)
+                        var w = sc[row + j] * inv
+                        sc[row + j] = w
+                        cp[crow + j] = w
+                    comptime if Self.CAUSAL:
+                        for j in range(i + 1, Self.SEQ_LEN):
+                            sc[row + j] = Scalar[DT](0)
+                            cp[crow + j] = Scalar[DT](0)
 
+        # 4. packed_out = attn @ V  (BH, SEQ, HEAD_DIM).
+        var pout_tt = TileTensor(
+            pout, row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]()
+        )
+        var pv_tt = TileTensor(pv, row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]())
+        batched_matmul[target="cpu"](pout_tt, scores_tt, pv_tt)
+
+        # 5. unpack packed_out → output.
+        for b in range(BATCH):
+            for h in range(Self.N_HEADS):
+                var bh = b * Self.N_HEADS + h
+                var h_off = h * Self.HEAD_DIM
+                for t in range(Self.SEQ_LEN):
                     for d in range(Self.HEAD_DIM):
-                        var acc: Float64 = 0.0
-                        for j in range(j_end):
-                            var ai = (
-                                b * C + Self.ATTN_OFF
-                                + h * Self.SEQ_LEN * Self.SEQ_LEN
-                                + i * Self.SEQ_LEN + j
-                            )
-                            var v = Float64(
-                                ip[
-                                    b * IN + Self.V_OFF + j * Self.DIM + h_off + d
-                                ]
-                            )
-                            acc += Float64(cp[ai]) * v
-                        op[b * OUT + i * Self.DIM + h_off + d] = Scalar[DT](acc)
+                        var pidx = bh * Self.SEQ_LEN * Self.HEAD_DIM + t * Self.HEAD_DIM + d
+                        op[b * OUT + t * Self.DIM + h_off + d] = pout[pidx]
+        _ = scratch^
 
     # ----- Backward --------------------------------------------------------
 
@@ -1153,6 +1184,12 @@ struct ScaledDotProductAttention[
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
+        # BLAS path: mirror the GPU bmm backward (pack → dattn=dout·Vᵀ bmm →
+        # scalar softmax-JVP → transposes → dV/dK/dQ bmms → unpack) with
+        # target="cpu". The 4 GEMMs are BLAS; the softmax-JVP and causal mask
+        # stay scalar. grad_input is leaf-external (not the cache), so there is
+        # no param-grad-before-grad_input aliasing constraint; we still write
+        # grads only after all cache reads, matching the GPU ordering.
         var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             grad_output_v.ptr
         )
@@ -1165,89 +1202,110 @@ struct ScaledDotProductAttention[
         comptime IN = Self.IN_DIMS[0]
         comptime OUT = Self.OUT_DIM
         comptime C = Self.CACHE_SIZE
-        var scale = 1.0 / sqrt(Float64(Self.HEAD_DIM))
+        comptime SL = Self.SEQ_LEN
+        comptime HD = Self.HEAD_DIM
+        comptime BH = BATCH * Self.N_HEADS
+        comptime PACKED = BATCH * SL * Self.DIM
+        comptime SCORES = BH * SL * SL
+        var scale = Scalar[DT](Float32(1.0) / sqrt(Float32(Self.HEAD_DIM)))
 
-        for i in range(BATCH * IN):
-            gip[i] = 0.0
+        # Local scratch:
+        #   pdout | pq | pk | pv  (PACKED each)
+        #   dattn | dscore | attn_T | dscore_T  (SCORES each)
+        #   dV | dK | dQ  (PACKED each)
+        var scratch = List[Scalar[DT]](
+            length=7 * PACKED + 4 * SCORES, fill=Scalar[DT](0)
+        )
+        var sb = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            scratch.unsafe_ptr()
+        )
+        var pdout = sb + 0 * PACKED
+        var pq = sb + 1 * PACKED
+        var pk = sb + 2 * PACKED
+        var pv = sb + 3 * PACKED
+        var dV = sb + 4 * PACKED
+        var dK = sb + 5 * PACKED
+        var dQ = sb + 6 * PACKED
+        var so = sb + 7 * PACKED
+        var dattn = so + 0 * SCORES
+        var dscore = so + 1 * SCORES
+        var attn_T = so + 2 * SCORES
+        var dscore_T = so + 3 * SCORES
 
+        # 1. pack dout + cache Q/K/V → (BH, SEQ, HEAD_DIM).
         for b in range(BATCH):
             for h in range(Self.N_HEADS):
-                var h_off = h * Self.HEAD_DIM
+                var bh = b * Self.N_HEADS + h
+                var h_off = h * HD
+                for t in range(SL):
+                    for d in range(HD):
+                        var col = h_off + d
+                        var pidx = bh * SL * HD + t * HD + d
+                        pdout[pidx] = gop[b * OUT + t * Self.DIM + col]
+                        pq[pidx] = cp[b * C + t * Self.DIM + col]
+                        pk[pidx] = cp[b * C + Self.K_OFF + t * Self.DIM + col]
+                        pv[pidx] = cp[b * C + Self.V_OFF + t * Self.DIM + col]
 
-                # Step 1: dV[j] += attn[i,j] * grad_out[i].
-                for i in range(Self.SEQ_LEN):
-                    var j_end = Self.SEQ_LEN
-                    comptime if Self.CAUSAL:
-                        j_end = i + 1
-                    for j in range(j_end):
-                        var ai = (
-                            b * C + Self.ATTN_OFF
-                            + h * Self.SEQ_LEN * Self.SEQ_LEN
-                            + i * Self.SEQ_LEN + j
-                        )
-                        var attn_w = Float64(cp[ai])
-                        for d in range(Self.HEAD_DIM):
-                            var go = Float64(
-                                gop[b * OUT + i * Self.DIM + h_off + d]
-                            )
-                            var dv_idx = (
-                                b * IN + Self.V_OFF + j * Self.DIM + h_off + d
-                            )
-                            gip[dv_idx] = gip[dv_idx] + Scalar[DT](attn_w * go)
+        # 2. dattn = dout @ Vᵀ  (BH, SEQ, SEQ).
+        var dattn_tt = TileTensor(dattn, row_major[BH, SL, SL]())
+        var pdout_tt = TileTensor(pdout, row_major[BH, SL, HD]())
+        var pv_tt = TileTensor(pv, row_major[BH, SL, HD]())
+        batched_matmul[transpose_b=True, target="cpu"](
+            dattn_tt, pdout_tt, pv_tt
+        )
 
-                # Step 2: softmax backward → dQ, dK.
-                for i in range(Self.SEQ_LEN):
-                    var j_end = Self.SEQ_LEN
-                    comptime if Self.CAUSAL:
-                        j_end = i + 1
+        # 3. softmax jvp (scalar): dscore = scale*a*(dattn - Σ_k a_k*dattn_k).
+        #    a is cache.attn (causal upper-triangle already zeroed) → dscore is
+        #    automatically zero where masked. Also build attn_T (transpose of
+        #    cache.attn) here for the dV gemm.
+        for b in range(BATCH):
+            for h in range(Self.N_HEADS):
+                var bh = b * Self.N_HEADS + h
+                var sc_base = bh * SL * SL
+                var cache_base = b * C + Self.ATTN_OFF + h * SL * SL
+                for i in range(SL):
+                    var row = sc_base + i * SL
+                    var crow = cache_base + i * SL
+                    var s = Scalar[DT](0)
+                    for j in range(SL):
+                        s += cp[crow + j] * dattn[row + j]
+                    for j in range(SL):
+                        var a = cp[crow + j]
+                        dscore[row + j] = scale * a * (dattn[row + j] - s)
+                        # attn_T[j,i] = a[i,j].
+                        attn_T[sc_base + j * SL + i] = a
+                        # dscore_T[j,i] = dscore[i,j].
+                        dscore_T[sc_base + j * SL + i] = dscore[row + j]
 
-                    # Pass 1: dot_sum = Σ_j attn[i,j] * (grad_out[i]·V[j]).
-                    var dot_sum: Float64 = 0.0
-                    for j in range(j_end):
-                        var d_attn: Float64 = 0.0
-                        for d in range(Self.HEAD_DIM):
-                            var go = Float64(
-                                gop[b * OUT + i * Self.DIM + h_off + d]
-                            )
-                            var v = Float64(
-                                cp[b * C + Self.V_OFF + j * Self.DIM + h_off + d]
-                            )
-                            d_attn += go * v
-                        var ai = (
-                            b * C + Self.ATTN_OFF
-                            + h * Self.SEQ_LEN * Self.SEQ_LEN
-                            + i * Self.SEQ_LEN + j
-                        )
-                        dot_sum += d_attn * Float64(cp[ai])
+        # 4. dV = attn_T @ dout.
+        var attnT_tt = TileTensor(attn_T, row_major[BH, SL, SL]())
+        var dV_tt = TileTensor(dV, row_major[BH, SL, HD]())
+        batched_matmul[target="cpu"](dV_tt, attnT_tt, pdout_tt)
 
-                    # Pass 2: d_score and propagate to dQ, dK.
-                    for j in range(j_end):
-                        var d_attn: Float64 = 0.0
-                        for d in range(Self.HEAD_DIM):
-                            var go = Float64(
-                                gop[b * OUT + i * Self.DIM + h_off + d]
-                            )
-                            var v = Float64(
-                                cp[b * C + Self.V_OFF + j * Self.DIM + h_off + d]
-                            )
-                            d_attn += go * v
-                        var ai = (
-                            b * C + Self.ATTN_OFF
-                            + h * Self.SEQ_LEN * Self.SEQ_LEN
-                            + i * Self.SEQ_LEN + j
-                        )
-                        var attn_w = Float64(cp[ai])
-                        var d_score = attn_w * (d_attn - dot_sum) * scale
-                        for d in range(Self.HEAD_DIM):
-                            var q = Float64(
-                                cp[b * C + i * Self.DIM + h_off + d]
-                            )
-                            var k = Float64(
-                                cp[b * C + Self.K_OFF + j * Self.DIM + h_off + d]
-                            )
-                            var dq_idx = b * IN + i * Self.DIM + h_off + d
-                            gip[dq_idx] = gip[dq_idx] + Scalar[DT](d_score * k)
-                            var dk_idx = (
-                                b * IN + Self.K_OFF + j * Self.DIM + h_off + d
-                            )
-                            gip[dk_idx] = gip[dk_idx] + Scalar[DT](d_score * q)
+        # 5. dK = dscore_T @ Q.
+        var dscoreT_tt = TileTensor(dscore_T, row_major[BH, SL, SL]())
+        var pq_tt = TileTensor(pq, row_major[BH, SL, HD]())
+        var dK_tt = TileTensor(dK, row_major[BH, SL, HD]())
+        batched_matmul[target="cpu"](dK_tt, dscoreT_tt, pq_tt)
+
+        # 6. dQ = dscore @ K.
+        var dscore_tt = TileTensor(dscore, row_major[BH, SL, SL]())
+        var pk_tt = TileTensor(pk, row_major[BH, SL, HD]())
+        var dQ_tt = TileTensor(dQ, row_major[BH, SL, HD]())
+        batched_matmul[target="cpu"](dQ_tt, dscore_tt, pk_tt)
+
+        # 7. unpack dQ/dK/dV → grad_input.
+        for i in range(BATCH * IN):
+            gip[i] = 0.0
+        for b in range(BATCH):
+            for h in range(Self.N_HEADS):
+                var bh = b * Self.N_HEADS + h
+                var h_off = h * HD
+                for t in range(SL):
+                    for d in range(HD):
+                        var col = h_off + d
+                        var pidx = bh * SL * HD + t * HD + d
+                        gip[b * IN + t * Self.DIM + col] = dQ[pidx]
+                        gip[b * IN + Self.K_OFF + t * Self.DIM + col] = dK[pidx]
+                        gip[b * IN + Self.V_OFF + t * Self.DIM + col] = dV[pidx]
+        _ = scratch^
