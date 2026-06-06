@@ -11,7 +11,7 @@ Mirrors the validated `tests/nn2/spike_wm_bptt.mojo` methodology
 (loss-decrease smoke, no fixture — this is orchestration + grad-flow, not
 new pointwise math).
 
-Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_wm_bptt.mojo`
+Run: `pixi run mojo run -I . tests/deep_agents2/test_tdmpc2_wm_bptt.mojo`
 """
 
 from std.memory import alloc

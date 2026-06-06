@@ -6,7 +6,7 @@ this runs in minutes and is the decisive check that the GPU agent CONVERGES
 If this rots while CPU solves, suspect TF32 accumulation (see
 docs/TDMPC2_NVIDIA_GRADIENT_INVESTIGATION).
 
-Run: `pixi run -e nvidia mojo run -I . tests/deep_agents/test_tdmpc2_pendulum_gpu_convergence.mojo`
+Run: `pixi run -e nvidia mojo run -I . tests/deep_agents2/test_tdmpc2_pendulum_gpu_convergence.mojo`
 """
 
 from std.memory import alloc

@@ -5,7 +5,7 @@ B=256 — to see whether the GPU path is fixed-overhead-bound (per-step
 allocs / D2H syncs → bigger B amortizes) or compute-bound. Not a pass/fail
 gate; prints ms/step + samples/sec.
 
-Run: `pixi run -e apple mojo run -I . tests/deep_agents/test_tdmpc2_perf.mojo`
+Run: `pixi run -e apple mojo run -I . tests/deep_agents2/test_tdmpc2_perf.mojo`
 """
 
 from std.memory import alloc

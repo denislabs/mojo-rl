@@ -10,7 +10,7 @@ P2 gate. Two checks:
 
 2. `test_running_scale`: the percentile-range EMA tracks Q magnitude.
 
-Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_policy.mojo`
+Run: `pixi run mojo run -I . tests/deep_agents2/test_tdmpc2_policy.mojo`
 """
 
 from std.memory import alloc

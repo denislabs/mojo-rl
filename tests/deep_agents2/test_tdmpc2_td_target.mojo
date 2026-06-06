@@ -4,7 +4,7 @@ Forward-only arithmetic: td[t] = reward[t] + γ·(1−done[t])·min(Q_a, Q_b).
 Checks: output finite; bootstrap dropped when done=1 (td == reward);
 td responds to reward (monotone shift).
 
-Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_td_target.mojo`
+Run: `pixi run mojo run -I . tests/deep_agents2/test_tdmpc2_td_target.mojo`
 """
 
 from std.memory import alloc

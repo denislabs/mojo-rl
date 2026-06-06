@@ -7,7 +7,7 @@ callback bridge (List[Float64] ↔ nn2 forward, two-hot reward/Q decode,
 action scaling); the planner's optimization itself is covered by its own
 stub-model tests.
 
-Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_mppi_cpu.mojo`
+Run: `pixi run mojo run -I . tests/deep_agents2/test_tdmpc2_mppi_cpu.mojo`
 """
 
 from std.math import isfinite

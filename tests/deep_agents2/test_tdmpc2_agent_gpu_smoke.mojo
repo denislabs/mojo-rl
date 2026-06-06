@@ -5,7 +5,7 @@ TD-target (gpu) → WM BPTT (gpu) → policy update (gpu) → Polyak (gpu), with
 MPC-off policy acting on device. Gate: actions in range, WM loss finite +
 decreases, greedy eval finite. (Full GPU convergence is a separate run.)
 
-Run: `pixi run -e apple mojo run -I . tests/deep_agents/test_tdmpc2_agent_gpu_smoke.mojo`
+Run: `pixi run -e apple mojo run -I . tests/deep_agents2/test_tdmpc2_agent_gpu_smoke.mojo`
 """
 
 from std.memory import alloc

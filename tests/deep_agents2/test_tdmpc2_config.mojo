@@ -7,7 +7,7 @@ planning overrides, and returns a working `TDMPC2Agent`. Runs a few train
 steps on Pendulum and checks the WM loss is finite + decreases — i.e. the
 facade wires the real learning stack, not a stub.
 
-Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_config.mojo`
+Run: `pixi run mojo run -I . tests/deep_agents2/test_tdmpc2_config.mojo`
 """
 
 from std.memory import alloc

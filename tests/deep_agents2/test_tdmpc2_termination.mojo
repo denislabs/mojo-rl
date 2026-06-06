@@ -14,7 +14,7 @@ Pendulum (CPU) supplies `done=1` at each episode boundary, so the BCE target
 has both classes. This checks the path is wired + learns, not Hopper-level
 convergence (that's the long lighthouse run).
 
-Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_termination.mojo`
+Run: `pixi run mojo run -I . tests/deep_agents2/test_tdmpc2_termination.mojo`
 """
 
 from std.memory import alloc

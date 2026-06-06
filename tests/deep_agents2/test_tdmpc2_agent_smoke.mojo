@@ -6,7 +6,7 @@ Gate: actions in range, WM loss finite + decreases, greedy eval finite.
 (Convergence tuning is a separate effort; this proves the pipeline runs
 and the world model learns.)
 
-Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_agent_smoke.mojo`
+Run: `pixi run mojo run -I . tests/deep_agents2/test_tdmpc2_agent_smoke.mojo`
 """
 
 from std.memory import alloc

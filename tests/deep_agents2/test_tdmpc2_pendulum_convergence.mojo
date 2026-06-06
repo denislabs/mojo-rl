@@ -7,7 +7,7 @@ treating truncation as terminal corrupts the value targets).
 
 Solved-ish Pendulum return is roughly ≥ −300 (random ≈ −1200..−1600).
 
-Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_pendulum_convergence.mojo`
+Run: `pixi run mojo run -I . tests/deep_agents2/test_tdmpc2_pendulum_convergence.mojo`
 """
 
 from std.memory import alloc

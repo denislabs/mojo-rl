@@ -6,7 +6,7 @@ action is finite and in [-action_scale, action_scale]. Validates the full
 agent MPC wiring (encode → callback → plan_gpu → D2H + persistent planner
 warm-start). Launch-bound on Metal (slow); fast on NVIDIA.
 
-Run: `pixi run -e apple mojo run -I . tests/deep_agents/test_tdmpc2_agent_mpc_gpu.mojo`
+Run: `pixi run -e apple mojo run -I . tests/deep_agents2/test_tdmpc2_agent_mpc_gpu.mojo`
 """
 
 from std.memory import alloc

@@ -5,7 +5,7 @@ action) loads A's checkpoint and must reproduce A's greedy action
 dimension-by-dimension. Validates save_state/load_state restores every
 module (encoder/dynamics/reward/online+target Q/policy) exactly.
 
-Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_checkpoint.mojo`
+Run: `pixi run mojo run -I . tests/deep_agents2/test_tdmpc2_checkpoint.mojo`
 """
 
 from std.memory import alloc

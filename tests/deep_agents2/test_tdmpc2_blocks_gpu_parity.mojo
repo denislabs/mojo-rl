@@ -8,7 +8,7 @@ machinery is therefore validated elsewhere; here we only smoke that the
 GPU actor-update + TD-target run and produce finite, in-range results.
 End-to-end GPU correctness is gated by the GPU Pendulum convergence run.
 
-Run: `pixi run -e apple mojo run -I . tests/deep_agents/test_tdmpc2_blocks_gpu_parity.mojo`
+Run: `pixi run -e apple mojo run -I . tests/deep_agents2/test_tdmpc2_blocks_gpu_parity.mojo`
 """
 
 from std.memory import alloc

@@ -6,7 +6,7 @@ consistency + reward + value; flush resets the window (a second flush with
 no training in between yields the same wm_loss components averaged over the
 prior window vs a fresh window).
 
-Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_metrics.mojo`
+Run: `pixi run mojo run -I . tests/deep_agents2/test_tdmpc2_metrics.mojo`
 """
 
 from std.memory import alloc

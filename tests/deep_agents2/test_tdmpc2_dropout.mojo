@@ -13,7 +13,7 @@ WM reverse-scan recomputes a fresh mask per step (grad mask ≠ loss mask) —
 see nets.mojo. This test only checks the path is wired + learns, not
 reference-faithful dropout semantics.
 
-Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_dropout.mojo`
+Run: `pixi run mojo run -I . tests/deep_agents2/test_tdmpc2_dropout.mojo`
 """
 
 from std.memory import alloc

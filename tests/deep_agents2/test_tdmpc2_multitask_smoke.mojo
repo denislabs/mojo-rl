@@ -7,7 +7,7 @@ uses all 4 dims (InvertedPendulum-shaped). Checks the WM loss is finite and
 decreases (the BPTT + task-conditioning learning stack is wired), and that the
 embedding table moved from its init (gradient flowed into it).
 
-Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_multitask_smoke.mojo`
+Run: `pixi run mojo run -I . tests/deep_agents2/test_tdmpc2_multitask_smoke.mojo`
 """
 
 from std.memory import alloc

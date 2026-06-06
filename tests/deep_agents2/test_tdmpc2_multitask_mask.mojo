@@ -9,7 +9,7 @@ the per-task action masking applied at acting/record time (env wrapper +
 `agent_mt.select_action`); in-graph masking is deferred-experimental (see
 `policy_step_mt.mojo`).
 
-Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_multitask_mask.mojo`
+Run: `pixi run mojo run -I . tests/deep_agents2/test_tdmpc2_multitask_mask.mojo`
 """
 
 from std.memory import alloc

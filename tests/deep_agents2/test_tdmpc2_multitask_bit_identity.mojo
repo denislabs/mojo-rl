@@ -9,7 +9,7 @@ the item-C work, proving no regression leaked into the single-task path.
 
 Anchor (seed 7, 56 train steps): 0.81461537 -> 0.21972585.
 
-Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_multitask_bit_identity.mojo`
+Run: `pixi run mojo run -I . tests/deep_agents2/test_tdmpc2_multitask_bit_identity.mojo`
 """
 
 from std.memory import alloc

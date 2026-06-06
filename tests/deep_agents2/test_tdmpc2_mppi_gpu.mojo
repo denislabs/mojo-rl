@@ -7,7 +7,7 @@ policy/dynamics/reward/Q forwards + build-za / extract-mean / decode / avg-2
 kernels + Philox Q-pair). On Apple this is launch-bound (slow) but correct;
 the practical fast path is NVIDIA.
 
-Run: `pixi run -e apple mojo run -I . tests/deep_agents/test_tdmpc2_mppi_gpu.mojo`
+Run: `pixi run -e apple mojo run -I . tests/deep_agents2/test_tdmpc2_mppi_gpu.mojo`
 """
 
 from std.random import seed
