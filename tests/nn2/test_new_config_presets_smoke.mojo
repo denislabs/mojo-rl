@@ -1,4 +1,4 @@
-"""Construction smoke for the new Design-F presets (SAC/PPO/A2C/MBPO).
+"""Construction smoke for the new Design-F presets (SAC/DDPG/TD3/PPO/A2C/MBPO).
 
 Builds each capitalized preset on the CPU target and runs a greedy/act
 probe where cheap — enough to typecheck the whole config → agent type
@@ -7,6 +7,8 @@ graph and confirm the fused default nets instantiate.
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.deep_agents2.sac import SAC
+from mojo_rl.deep_agents2.ddpg import DDPG
+from mojo_rl.deep_agents2.td3 import TD3
 from mojo_rl.deep_agents2.ppo import PPO
 from mojo_rl.deep_agents2.ppo_discrete import PPODiscrete
 from mojo_rl.deep_agents2.a2c import A2C, A2CDiscrete
@@ -26,6 +28,14 @@ def main() raises:
     var sac = SAC["cpu", OBS, ACT, 32, 1024]()
     _ = sac
     print("  SAC          built OK")
+
+    var ddpg = DDPG["cpu", OBS, ACT, 32, 1024]()
+    _ = ddpg
+    print("  DDPG         built OK")
+
+    var td3 = TD3["cpu", OBS, ACT, 32, 1024]()
+    _ = td3
+    print("  TD3          built OK")
 
     var ppo = PPO["cpu", OBS, ACT, ROLLOUT, MB, EPOCHS]()
     _ = ppo
