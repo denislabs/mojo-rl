@@ -198,6 +198,7 @@ def _resize_and_push[
 
 struct PongPixelEnv[
     DTYPE: DType,
+    HIT_REWARD: Float64 = 0.1,
     FRAME_SKIP: Int = 1,
 ](BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv):
     """Native Pong with pixel observations for CNN-based training.
@@ -207,6 +208,10 @@ struct PongPixelEnv[
 
     Parameters:
         DTYPE: Floating point type (float32 recommended for GPU).
+        HIT_REWARD: Dense ball-return shaping reward (default 0.1, forwarded
+            to the inner PongEnv). Set 0.0 for clean sparse ±1 rewards — note
+            FRAME_SKIP accumulates this across skipped frames, so shaping
+            distorts the value scale even more here than in the clean-obs env.
         FRAME_SKIP: Number of physics steps per action (default 1).
             With FRAME_SKIP=4, each action is repeated 4 times before
             rendering and observing. Rewards are summed across skipped frames.
@@ -228,7 +233,7 @@ struct PongPixelEnv[
     comptime STEP_WS_PER_ENV: Int = PIXEL_WS_PER_ENV  # 36625
 
     # Delegate to PongEnv for physics + rendering
-    var inner: PongEnv[Self.DTYPE]
+    var inner: PongEnv[Self.DTYPE, Self.HIT_REWARD]
 
     # CPU pixel observation buffers
     var _frame_buf: UnsafePointer[UInt8, MutAnyOrigin]  # 160×210 grayscale
@@ -236,7 +241,7 @@ struct PongPixelEnv[
     var _frame_idx: Int
 
     def __init__(out self):
-        self.inner = PongEnv[Self.DTYPE]()
+        self.inner = PongEnv[Self.DTYPE, Self.HIT_REWARD]()
         self._frame_buf = alloc[UInt8](SCREEN_W * SCREEN_H)
         self._frame_stack = alloc[Scalar[Self.DTYPE]](PIXEL_OBS_DIM)
         self._frame_idx = 0
@@ -466,7 +471,9 @@ struct PongPixelEnv[
             rng_seed: Scalar[DType.uint64],
         ):
             # First physics step (action applied normally)
-            PongEnv[DType.float32].step_kernel[BATCH_SIZE, STATE_SIZE](
+            PongEnv[DType.float32, Self.HIT_REWARD].step_kernel[
+                BATCH_SIZE, STATE_SIZE
+            ](
                 states, actions, rewards, dones, rng_seed
             )
 
@@ -481,7 +488,9 @@ struct PongPixelEnv[
                     0.5
                 ):
                     var prev_reward = rebind[Scalar[gpu_dtype]](rewards[idx])
-                    PongEnv[DType.float32].step_kernel[BATCH_SIZE, STATE_SIZE](
+                    PongEnv[DType.float32, Self.HIT_REWARD].step_kernel[
+                        BATCH_SIZE, STATE_SIZE
+                    ](
                         states, actions, rewards, dones, rng_seed
                     )
                     # Accumulate reward

@@ -68,16 +68,28 @@ comptime FRAMES = 4
 
 comptime NUM_ATOMS = 51
 comptime HIDDEN = 512
-comptime N_STEP = 3
+# N_STEP=1 mirrors the converged clean-obs run (the value-config fix below was
+# validated at N_STEP=1). Bump to 3 for full Rainbow once a pixel run confirms
+# convergence.
+comptime N_STEP = 1
 
 # GPU-resident replay → capacity is VRAM-bound (obs + next_obs per slot).
 comptime BUFFER_CAPACITY = 12_000
 comptime BATCH_SIZE = 32
 comptime N_ENVS = 64  # fewer envs — each owns a pixel render/frame-stack workspace
 
-# Distributional support — Pong points are ±1, up to ~21 per game.
-comptime V_MIN = Scalar[DT](-21.0)
-comptime V_MAX = Scalar[DT](21.0)
+# Distributional support — must bracket the DISCOUNTED return (≈ ±0.3..±6 with
+# γ=0.99 + sparse ±1 rewards), NOT the raw ±21 episode score. [-2, 2] → atom
+# spacing 0.08 (vs 0.84 at [-21, 21], too coarse to separate the 3 actions).
+# This is the lever that made the clean-obs run converge (-19 → +21 perfect
+# game); legacy Rainbow's [-21, 21] never got off the floor.
+comptime V_MIN = Scalar[DT](-2.0)
+comptime V_MAX = Scalar[DT](2.0)
+
+# Dense ball-return shaping (env `HIT_REWARD`): 0.0 = clean sparse ±1 rewards;
+# 0.1 = original shaping (distorts the value scale, worse here since FRAME_SKIP
+# accumulates it). Disabled to match the converged clean-obs config.
+comptime HIT_REWARD = 0.0
 
 # Replay ratio = GRAD_STEPS / N_ENVS = 16/64 = 0.25 (CleanRL train_freq=4).
 comptime GRAD_STEPS = 16
@@ -105,7 +117,7 @@ comptime RainbowTrainer = C51Trainer[
     "gpu", SAMPLE, RainbowCNNNet, NUM_ATOMS, NUM_ACTIONS, True
 ]
 comptime PongPixelBatched = BatchedGpuDiscreteEnv[
-    PongPixelEnv[DT], N_ENVS, OBS_DIM, 1
+    PongPixelEnv[DT, HIT_REWARD], N_ENVS, OBS_DIM, 1
 ]
 
 
@@ -145,11 +157,16 @@ def main() raises:
 
         print("Environment: Pong (GPU-batched Pixel,", N_ENVS, "envs)")
         print("Agent: Rainbow DQN CNN (deep_agents2 C51, GPU)")
-        print("  Components: C51 + Double + PER + Dueling + Noisy + 3-step")
+        print(
+            "  Components: C51 + Double + PER + Dueling + Noisy +",
+            N_STEP,
+            "-step",
+        )
         print("  Observation: 4 × 84 × 84 =", OBS_DIM)
         print("  Actions:", NUM_ACTIONS, "(NOOP, UP, DOWN)")
         print("  Network: Nature CNN + Noisy Dueling Distributional heads")
         print("  Atoms:", NUM_ATOMS, "support [", V_MIN, ",", V_MAX, "]")
+        print("  Hit-reward shaping:", HIT_REWARD)
         print("  N-step:", N_STEP)
         print("  N envs (parallel):", N_ENVS)
         print("  Buffer capacity:", BUFFER_CAPACITY, "(GPU-resident)")
@@ -184,6 +201,9 @@ def main() raises:
         logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
         logger.set_config("n_step", String(N_STEP))
         logger.set_config("num_atoms", String(NUM_ATOMS))
+        logger.set_config("v_min", String(V_MIN))
+        logger.set_config("v_max", String(V_MAX))
+        logger.set_config("hit_reward", String(HIT_REWARD))
         logger.set_config("grad_steps", String(GRAD_STEPS))
 
         # =====================================================================
