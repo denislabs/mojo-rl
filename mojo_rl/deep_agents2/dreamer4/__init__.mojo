@@ -18,6 +18,9 @@ from .blocks import (
 )
 from .encoder import Dreamer4Encoder
 from .tokenizer import Dreamer4Tokenizer
+from .dynamics import Dreamer4Dynamics
+from .shortcut_loss import dynamics_pretrain_loss, ShortcutDynamics
+from .ode_sampler import sample_one_timestep
 from .recon_loss import (
     masked_recon_loss, full_recon_psnr, masked_recon_grad_gpu,
 )
