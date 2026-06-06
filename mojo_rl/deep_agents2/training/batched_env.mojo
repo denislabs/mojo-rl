@@ -331,6 +331,12 @@ struct BatchedGpuEnv[
     comptime OBS_DIM: Int = Self.OBS_DIM_
     comptime ACT_DIM: Int = Self.ACT_DIM_
     comptime STATE_SIZE: Int = Self.E.STATE_SIZE
+    # True when state-prefix obs extraction is safe. False (e.g. a future
+    # pixel-obs continuous env) → don't re-extract obs on selective_reset, or
+    # the raw trait default would clobber the stepped obs (see the discrete
+    # `BatchedGpuDiscreteEnv` for the bug this guards against). No live env
+    # hits the False branch today; this is a defensive symmetric guard.
+    comptime _OBS_IS_STATE_PREFIX: Bool = Self.OBS_DIM_ <= Self.E.STATE_SIZE
 
     var _states: DeviceBuffer[DT]
     var _obs: DeviceBuffer[DT]
@@ -479,9 +485,15 @@ struct BatchedGpuEnv[
                 UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
             ](self._env_rng_counter.unsafe_ptr()),
         )
-        Self.E.extract_obs_kernel_gpu[
-            Self.N_ENVS, Self.STATE_SIZE, Self.OBS_DIM
-        ](c, self._states, self._obs)
+        # Re-derive obs from the (post-step / post-reset) state — correct for
+        # state-prefix / derived clean-obs envs (all continuous envs today).
+        # Gated so a future pixel-obs continuous env (OBS_DIM > STATE_SIZE)
+        # would NOT have its stepped obs clobbered by the raw state-prefix
+        # default every iteration (the bug fixed in BatchedGpuDiscreteEnv).
+        comptime if Self._OBS_IS_STATE_PREFIX:
+            Self.E.extract_obs_kernel_gpu[
+                Self.N_ENVS, Self.STATE_SIZE, Self.OBS_DIM
+            ](c, self._states, self._obs)
 
     def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
