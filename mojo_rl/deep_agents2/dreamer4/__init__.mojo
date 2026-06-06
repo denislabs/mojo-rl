@@ -17,3 +17,5 @@ from .blocks import (
     Dreamer4Decoder,
 )
 from .encoder import Dreamer4Encoder
+from .tokenizer import Dreamer4Tokenizer
+from .recon_loss import masked_recon_loss
