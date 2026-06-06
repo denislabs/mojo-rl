@@ -28,7 +28,6 @@ from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn.constants import dtype
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
@@ -250,10 +249,10 @@ def arena_match_mcts[
             var pred = AZPredGPU[OBS, ACT, NETA].make(a)
             var env_ad = AZEnvGPU[ENV, STATE, OBS, ACT]()
             var root_obs = LayoutTensor[
-                dtype, Layout.row_major(N_GAMES, OBS), MutAnyOrigin
+                DT, Layout.row_major(N_GAMES, OBS), MutAnyOrigin
             ](obs_dev.unsafe_ptr())
             var root_legal = LayoutTensor[
-                dtype, Layout.row_major(N_GAMES * ACT), MutAnyOrigin
+                DT, Layout.row_major(N_GAMES * ACT), MutAnyOrigin
             ](legal_dev.unsafe_ptr())
             mcts.search_gpu_alphazero[type_of(pred), type_of(env_ad)](
                 ctx, pred, env_ad, root_obs, states, root_legal,
@@ -264,10 +263,10 @@ def arena_match_mcts[
             var pred = AZPredGPU[OBS, ACT, NETB].make(b)
             var env_ad = AZEnvGPU[ENV, STATE, OBS, ACT]()
             var root_obs = LayoutTensor[
-                dtype, Layout.row_major(N_GAMES, OBS), MutAnyOrigin
+                DT, Layout.row_major(N_GAMES, OBS), MutAnyOrigin
             ](obs_dev.unsafe_ptr())
             var root_legal = LayoutTensor[
-                dtype, Layout.row_major(N_GAMES * ACT), MutAnyOrigin
+                DT, Layout.row_major(N_GAMES * ACT), MutAnyOrigin
             ](legal_dev.unsafe_ptr())
             mcts.search_gpu_alphazero[type_of(pred), type_of(env_ad)](
                 ctx, pred, env_ad, root_obs, states, root_legal,
@@ -401,8 +400,8 @@ def arena_match_cpu[
     """CPU twin of `arena_match_mcts`: net A vs net B, both at full
     `GenericCPUMCTS` strength (temp=0, NoNoise), single env, `N_GAMES` games. A
     plays color `a_player`; `open_plies` random opening moves diversify. Returns
-    A's record. (`ctx_unused` keeps the call shape parallel to the GPU arena —
-    pass 0.)"""
+    A's record. `ctx_unused` keeps the call shape parallel to the GPU arena —
+    pass 0."""
     comptime OBS = NETA.IN_DIMS[0]
     comptime ACT = NETA.OUT_DIM - 1
     comptime LATENT = ENV.SAVE_SIZE
@@ -414,7 +413,7 @@ def arena_match_cpu[
     b.set_attr["training"](Scalar[DT](0.0))
 
     var env = ENV()
-    var root_save = alloc[Scalar[dtype]](LATENT)
+    var root_save = alloc[Scalar[DT]](LATENT)
     var env_ptr = UnsafePointer(to=env)
     var rep = AZRepCPU[ENV, OBS](env=env_ptr)
     var dyn = AZDynCPU[ENV, ACT](env=env_ptr)

@@ -56,7 +56,7 @@ def _mz_decode_one[BINS: Int](
 struct MZRepCPU[OBS: Int, LATENT: Int, NET: Module](
     Movable, ImplicitlyDestructible, Representation
 ):
-    """h: ``obs → z`` (latent min-max scaled by the net's tail)."""
+    """H: ``obs → z`` (latent min-max scaled by the net's tail)."""
 
     comptime OBS_DIM: Int = Self.OBS
     comptime LATENT_DIM: Int = Self.LATENT
@@ -89,7 +89,7 @@ struct MZRepCPU[OBS: Int, LATENT: Int, NET: Module](
 struct MZDynCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
     Movable, ImplicitlyDestructible, Dynamics
 ):
-    """g: ``[z ⊕ onehot(a)] → (z', reward)``; reward decoded from BINS bins."""
+    """G: ``[z ⊕ onehot(a)] → (z', reward)``; reward decoded from BINS bins."""
 
     comptime LATENT_DIM: Int = Self.LATENT
     comptime ACTION_DIM: Int = Self.ACT
@@ -134,7 +134,7 @@ struct MZDynCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
 struct MZPredCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
     Movable, ImplicitlyDestructible, Prediction
 ):
-    """f: ``z → (softmax policy, value)``; value decoded from BINS bins.
+    """F: ``z → (softmax policy, value)``; value decoded from BINS bins.
     Single-player — all actions legal, softmax over the full policy slice."""
 
     comptime LATENT_DIM: Int = Self.LATENT

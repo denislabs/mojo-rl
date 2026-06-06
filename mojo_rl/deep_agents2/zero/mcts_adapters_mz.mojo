@@ -19,8 +19,9 @@ are pure forward shims, identical in spirit to ``AZPredGPU``.
 
 Lifetime: construct via ``MZ*GPU[...].make(net)`` while the net is live; the
 caller keeps the net alive for the adapter's lifetime
-(``feedback_mojo_set_external_lifetime``). dtype bridge: the trait speaks
-``mojo_rl.nn.constants.dtype``, nn2 speaks ``DT`` — both ``float32``, so the
+(``feedback_mojo_set_external_lifetime``). dtype bridge: the legacy planner
+trait speaks ``mojo_rl.nn.constants.dtype``, nn2 speaks ``DT`` — both alias the
+identical ``DType.float32`` comptime value, so the
 LayoutTensor→TileTensor hand-off is a plain pointer reinterpret (rebuilding the
 TileTensor against the net's own comptime dims keeps the forward template
 binding to a single consistent expression).
@@ -29,7 +30,7 @@ binding to a single consistent expression).
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.planners.tree_search import (
     RepresentationGPU,
@@ -42,7 +43,7 @@ from mojo_rl.planners.tree_search import (
 struct MZRepGPU[OBS: Int, LATENT: Int, NET: Module](
     Movable, ImplicitlyDestructible, RepresentationGPU
 ):
-    """h adapter: ``obs (B, OBS) → hidden (B, LATENT)``. ``NET`` is `MZRepNet`
+    """H adapter: ``obs (B, OBS) → hidden (B, LATENT)``. ``NET`` is `MZRepNet`
     (``IN_DIMS[0] == OBS``, ``OUT_DIM == LATENT``). The latent is min-max scaled
     by the net's ``MinMaxNorm`` tail; the orchestrator's scale kernel is then a
     no-op (idempotent)."""
@@ -60,10 +61,10 @@ struct MZRepGPU[OBS: Int, LATENT: Int, NET: Module](
         mut self,
         ctx: DeviceContext,
         obs: LayoutTensor[
-            dtype, Layout.row_major(B, Self.OBS_DIM), MutAnyOrigin
+            DT, Layout.row_major(B, Self.OBS_DIM), MutAnyOrigin
         ],
         mut hidden_out: LayoutTensor[
-            dtype, Layout.row_major(B, Self.LATENT_DIM), MutAnyOrigin
+            DT, Layout.row_major(B, Self.LATENT_DIM), MutAnyOrigin
         ],
     ) raises:
         var in_t = TileTensor(obs.ptr, row_major[B, Self.NET.IN_DIMS[0]]())
@@ -77,7 +78,7 @@ struct MZRepGPU[OBS: Int, LATENT: Int, NET: Module](
 struct MZDynGPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
     Movable, ImplicitlyDestructible, DynamicsGPU
 ):
-    """g adapter: ``[hidden ⊕ onehot(a)] (B, LATENT+ACT) → [hidden' | reward_logits]
+    """G adapter: ``[hidden ⊕ onehot(a)] (B, LATENT+ACT) → [hidden' | reward_logits]
     (B, LATENT+BINS)``. ``NET`` is `MZDynNet`. The reward bins are raw categorical
     logits; the expand kernel decodes them (softmax · linear bins → ``h⁻¹``)."""
 
@@ -96,10 +97,10 @@ struct MZDynGPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
         mut self,
         ctx: DeviceContext,
         dyn_in: LayoutTensor[
-            dtype, Layout.row_major(B, Self.DYN_IN_DIM), MutAnyOrigin
+            DT, Layout.row_major(B, Self.DYN_IN_DIM), MutAnyOrigin
         ],
         mut dyn_out: LayoutTensor[
-            dtype, Layout.row_major(B, Self.DYN_OUT_DIM), MutAnyOrigin
+            DT, Layout.row_major(B, Self.DYN_OUT_DIM), MutAnyOrigin
         ],
     ) raises:
         var in_t = TileTensor(dyn_in.ptr, row_major[B, Self.NET.IN_DIMS[0]]())
@@ -111,7 +112,7 @@ struct MZDynGPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
 struct MZPredGPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
     Movable, ImplicitlyDestructible, PredictionGPU
 ):
-    """f adapter: ``hidden (B, LATENT) → [policy_logits | value_logits]
+    """F adapter: ``hidden (B, LATENT) → [policy_logits | value_logits]
     (B, ACT+BINS)``. ``NET`` is `MZPredNet`. Value is categorical (``BINS`` bins),
     decoded by the MCTS kernels — unlike AlphaZero's scalar tanh value."""
 
@@ -129,10 +130,10 @@ struct MZPredGPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
         mut self,
         ctx: DeviceContext,
         hidden: LayoutTensor[
-            dtype, Layout.row_major(B, Self.LATENT_DIM), MutAnyOrigin
+            DT, Layout.row_major(B, Self.LATENT_DIM), MutAnyOrigin
         ],
         mut pred_out: LayoutTensor[
-            dtype, Layout.row_major(B, Self.PRED_OUT_DIM), MutAnyOrigin
+            DT, Layout.row_major(B, Self.PRED_OUT_DIM), MutAnyOrigin
         ],
     ) raises:
         var in_t = TileTensor(hidden.ptr, row_major[B, Self.NET.IN_DIMS[0]]())
@@ -166,10 +167,10 @@ struct MZContPredGPU[LATENT: Int, ACT_DIM: Int, BINS: Int, NET: Module](
         mut self,
         ctx: DeviceContext,
         hidden: LayoutTensor[
-            dtype, Layout.row_major(B, Self.LATENT_DIM), MutAnyOrigin
+            DT, Layout.row_major(B, Self.LATENT_DIM), MutAnyOrigin
         ],
         mut pred_out: LayoutTensor[
-            dtype, Layout.row_major(B, Self.PRED_OUT_DIM), MutAnyOrigin
+            DT, Layout.row_major(B, Self.PRED_OUT_DIM), MutAnyOrigin
         ],
     ) raises:
         var in_t = TileTensor(hidden.ptr, row_major[B, Self.NET.IN_DIMS[0]]())

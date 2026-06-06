@@ -218,7 +218,7 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
         dst: UnsafePointer[Scalar[DT], MutAnyOrigin],        # [NROWS, TASK_EMB]
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        """dst[row] = param[task_ids[row]]. CPU pointers / GPU device pointers."""
+        """`dst[row] = param[task_ids[row]]`. CPU pointers / GPU device pointers."""
         comptime EMB = Self.TASK_EMB
         comptime if target == "cpu":
             for row in range(NROWS):
@@ -240,7 +240,7 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
         grad_wide: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [NROWS, ROWW]
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        """grad_table[task_ids[row]] += grad_wide[row, COFF : COFF+TASK_EMB].
+        """`grad_table[task_ids[row]] += grad_wide[row, COFF : COFF+TASK_EMB]`.
         `ROWW`/`COFF` let one impl serve both the graph slot grad (ROWW=TASK_EMB,
         COFF=0) and the encoder input-grad tail (ROWW=MAX_OBS+TASK_EMB,
         COFF=MAX_OBS)."""
