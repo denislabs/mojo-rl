@@ -50,6 +50,7 @@ Architectural notes
 
 from std.math import exp as fexp, tanh as ftanh
 from std.random import random_float64
+from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
@@ -67,6 +68,7 @@ from mojo_rl.nn2.core.scratch import Scratch
 from mojo_rl.nn2.initializer import Xavier
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.optimizer.scalar_adam import ScalarAdam
+from mojo_rl.nn2.training.timer import Timer
 
 from ..redq.trainer import (
     _redq_warmup_uniform_kernel,
@@ -165,6 +167,17 @@ struct REDQOFETrainer[
     comptime AGENT_ACT_DIM: Int = Self.ACT
     comptime PHI_SA_DIM = Self.AB.OUT_DIM
 
+    # Timer section indices. Order matches the `add_section` calls in
+    # `__init__`. (REDQ-OFE adds `feature` + `aux` over the REDQ set.)
+    comptime _T_SAMPLE = 0
+    comptime _T_FEATURE = 1
+    comptime _T_TARGET_Y = 2
+    comptime _T_CRITIC = 3
+    comptime _T_POLYAK = 4
+    comptime _T_ACTOR = 5
+    comptime _T_ALPHA = 6
+    comptime _T_AUX = 7
+
     # ── Owned networks ────────────────────────────────────────────────
     var actor: Self.ACTOR
     var state_branch: Self.SB
@@ -231,6 +244,7 @@ struct REDQOFETrainer[
     # ── Trainer state ─────────────────────────────────────────────────
     var state: TrainerState[Self.OBS, Self.ACT, Self.BATCH]
     var tracker: EpisodeTracker
+    var timer: Timer
 
     # DeviceContext: None on CPU, Some(ctx) on GPU. The ctx threads
     # through every block call so per-leaf DeviceContext() creation
@@ -366,6 +380,16 @@ struct REDQOFETrainer[
             ep_count=0,
         )
         self.ctx = None
+        self.timer = Timer.new()
+        # Order must match the `_T_*` aliases.
+        self.timer.add_section("sample")
+        self.timer.add_section("feature")
+        self.timer.add_section("target_y")
+        self.timer.add_section("critic")
+        self.timer.add_section("polyak")
+        self.timer.add_section("actor")
+        self.timer.add_section("alpha")
+        self.timer.add_section("aux")
         self._ob1 = Scratch["ob1", Self.OBS, True]()
         self._phi_s1 = Scratch["phi_s1", Self.PHI_S_DIM, True]()
         self._ao1 = Scratch["ao1", 2 * Self.ACT, True]()
@@ -648,13 +672,16 @@ struct REDQOFETrainer[
         var mb_y_p = self.state.mb_y.target_ptr[Self.train_target]()
 
         # (1) Feature pre-pass.
+        var t_feat = perf_counter_ns()
         self.feat_blk.step[Self.train_target](
             self.state_branch, self.state,
         )
+        self.timer.accumulate(Self._T_FEATURE, t_feat)
         var phi_s_p = self.feat_blk.phi_s_ptr[Self.train_target]()
         var phi_sp_p = self.feat_blk.phi_sp_ptr[Self.train_target]()
 
         # (2) Target y.
+        var t_ty = perf_counter_ns()
         self.target_y_blk.step[Self.train_target](
             self.actor,
             self.action_branch,
@@ -665,8 +692,10 @@ struct REDQOFETrainer[
             alpha_val,
             mb_y_p,
         )
+        self.timer.accumulate(Self._T_TARGET_Y, t_ty)
 
         # (3) Critic update.
+        var t_crit = perf_counter_ns()
         var cl = self.critic_blk.step[Self.train_target](
             self.action_branch,
             self.ensemble,
@@ -674,17 +703,21 @@ struct REDQOFETrainer[
             mb_a_p,
             mb_y_p,
         )
+        self.timer.accumulate(Self._T_CRITIC, t_crit)
 
         # (4) Polyak every inner tick (paper-faithful).
+        var t_pol = perf_counter_ns()
         self.polyak_blk.step[Self.train_target](
             self.state, self.ensemble,
         )
+        self.timer.accumulate(Self._T_POLYAK, t_pol)
 
         # (5) Actor + α every POLICY_DELAY.
         var did_actor: Bool = False
         var actor_loss: Scalar[DT] = Scalar[DT](0.0)
         var lp_mean: Scalar[DT] = Scalar[DT](0.0)
         if self._inner_count % Self.POLICY_DELAY == 0:
+            var t_act = perf_counter_ns()
             var res = self.actor_blk.forward_backward[Self.train_target](
                 self.actor,
                 self.actor_opt,
@@ -698,10 +731,13 @@ struct REDQOFETrainer[
             actor_loss = res.loss
             lp_mean = res.log_prob_mean
             did_actor = True
+            self.timer.accumulate(Self._T_ACTOR, t_act)
             # α stays a host scalar — `state.log_prob_mean` is host-
             # populated by the actor-step's host-side reduction on
             # both CPU and GPU.
+            var t_alp = perf_counter_ns()
             self.alpha_blk.step["cpu"](self.state, self.alpha_opt)
+            self.timer.accumulate(Self._T_ALPHA, t_alp)
 
         return (cl, did_actor, actor_loss, lp_mean)
 
@@ -711,7 +747,8 @@ struct REDQOFETrainer[
         """One aux loss step on the CURRENT `state.mb_*`. Forward+vjp
         on SB+AB+PRED is atomic so prior RL forwards clobbering caches
         is harmless. Returns the MSE loss."""
-        return self.aux_blk.step[Self.train_target](
+        var t_aux = perf_counter_ns()
+        var aux_loss = self.aux_blk.step[Self.train_target](
             self.state_branch,
             self.action_branch,
             self.predictor,
@@ -720,6 +757,8 @@ struct REDQOFETrainer[
             self.pred_opt,
             self.state,
         )
+        self.timer.accumulate(Self._T_AUX, t_aux)
+        return aux_loss
 
     def train_step_inner[
         POLICY: AMPPolicy = NoAMP
@@ -789,7 +828,9 @@ struct REDQOFETrainer[
         self.state.ctx = self.ctx
 
         # First sample gates warmup + buffer readiness.
+        var t_s0 = perf_counter_ns()
         self.sample_blk.step(self.state)
+        self.timer.accumulate(Self._T_SAMPLE, t_s0)
         if not self.state.did_step:
             return False
 
@@ -811,7 +852,9 @@ struct REDQOFETrainer[
         # Inner ticks 2..UTD — fresh sample per tick.
         for _ in range(Self.UTD - 1):
             self.state.did_step = True
+            var t_s = perf_counter_ns()
             self.sample_blk.step(self.state)
+            self.timer.accumulate(Self._T_SAMPLE, t_s)
             if not self.state.did_step:
                 break  # buffer drained mid-iter (single-env: never)
             var tick = self._one_inner_tick[NoAMP]()
@@ -1045,6 +1088,14 @@ struct REDQOFETrainer[
             lg[].log_scalar(
                 "n_actor_updates", Float64(m.n_actor_updates), step
             )
+
+    def flush_timer_log(mut self) -> String:
+        """Per-section wall-time report (sample / feature / target_y /
+        critic / polyak / actor / alpha / aux) and reset the
+        accumulators. Matches the `redq/trainer.mojo` convention."""
+        var report = self.timer.format_report()
+        self.timer.reset()
+        return report
 
     # ──────────────────────────────────────────────────────────────────
     # OffPolicyAgent trait methods — batched action surface + per-lane
