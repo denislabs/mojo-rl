@@ -232,3 +232,9 @@ CLAUDE.md
 
 .DS_Store
 **/.DS_Store
+
+
+logs/
+gifs/
+skills-lock.json
+.agents/
