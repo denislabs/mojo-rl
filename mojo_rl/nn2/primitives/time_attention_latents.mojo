@@ -24,15 +24,61 @@ batch B·L. Params (qkv/out projections) are owned by that inner module;
 PHASE 1: CPU forward + vjp (gather → inner MHA → scatter). GPU follows.
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT
+from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for, ensure_cpu_buffer
 from ..composites import MultiHeadAttention
+
+
+# Gather full (B·T, S·D) latent tokens → packed (B·L, T·D); same index map is
+# reused for the forward input and the backward grad_output.
+def _tal_gather_kernel[
+    B: Int, T: Int, S: Int, L: Int, D: Int
+](
+    src: LayoutTensor[DT, Layout.row_major(B * T * S * D), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(B * L * T * D), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx >= B * L * T * D:
+        return
+    var d = idx % D
+    var rem = idx // D
+    var t = rem % T
+    var rem2 = rem // T
+    var l = rem2 % L
+    var b = rem2 // L
+    dst.ptr[idx] = rebind[Scalar[DT]](src.ptr[((b * T + t) * S + l) * D + d])
+
+
+# Scatter packed (B·L, T·D) → full (B·T, S·D), zeroing non-latent (s≥L)
+# positions. Reused for the forward output and the backward grad_input.
+def _tal_scatter_kernel[
+    B: Int, T: Int, S: Int, L: Int, D: Int
+](
+    packed: LayoutTensor[DT, Layout.row_major(B * L * T * D), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(B * T * S * D), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx >= B * T * S * D:
+        return
+    var d = idx % D
+    var rem = idx // D
+    var s = rem % S
+    var rem2 = rem // S
+    var t = rem2 % T
+    var b = rem2 // T
+    if s < L:
+        dst.ptr[idx] = rebind[Scalar[DT]](
+            packed.ptr[(b * L + s) * T * D + t * D + d]
+        )
+    else:
+        dst.ptr[idx] = Scalar[DT](0.0)
 
 
 struct TimeAttentionLatents[
@@ -44,10 +90,14 @@ struct TimeAttentionLatents[
     comptime MHA = MultiHeadAttention[Self.D, Self.N_HEADS, Self.T, True]
 
     var mha: Self.MHA
-    var packed_in: List[Scalar[DT]]    # [B*L, T*D]
+    var packed_in: List[Scalar[DT]]    # CPU scratch [B*L, T*D]
     var packed_out: List[Scalar[DT]]
     var grad_pout: List[Scalar[DT]]
     var grad_pin: List[Scalar[DT]]
+    # GPU scratch: two reused packed buffers (gather→A, MHA A→B, scatter B).
+    var pa_dev: Optional[DeviceBuffer[DT]]
+    var pb_dev: Optional[DeviceBuffer[DT]]
+    var scratch_n: Int
     var ts: TargetStorage
 
     def __init__(out self):
@@ -56,19 +106,34 @@ struct TimeAttentionLatents[
         self.packed_out = List[Scalar[DT]]()
         self.grad_pout = List[Scalar[DT]]()
         self.grad_pin = List[Scalar[DT]]()
+        self.pa_dev = None
+        self.pb_dev = None
+        self.scratch_n = 0
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu", (
-            "TimeAttentionLatents: PHASE 1 is CPU-only for now"
+        comptime assert target == "cpu" or target == "gpu", (
+            "TimeAttentionLatents: target must be 'cpu' or 'gpu'"
         )
         var m = Self()
         m.mha = Self.MHA.make[target=target, INIT=INIT](ctx)
-        m.ts = TargetStorage.make_cpu()
+        comptime if target == "cpu":
+            m.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("TimeAttentionLatents.make[gpu]: ctx required")
+            m.ts = TargetStorage.make_gpu(ctx.value())
         return m^
+
+    def _ensure_scratch_gpu(mut self, packed_n: Int) raises:
+        if self.scratch_n < packed_n:
+            var ctx = self.ts.ctx.value()
+            self.pa_dev = ctx.enqueue_create_buffer[DT](packed_n)
+            self.pb_dev = ctx.enqueue_create_buffer[DT](packed_n)
+            self.scratch_n = packed_n
 
     @staticmethod
     def display_label() -> String:
@@ -99,41 +164,75 @@ struct TimeAttentionLatents[
         var inp = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
-        ensure_cpu_buffer(self.packed_in, BL * TD)
-        ensure_cpu_buffer(self.packed_out, BL * TD)
-        var pin = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.packed_in.unsafe_ptr()
-            ),
-            row_major[BL, TD](),
-        )
-
-        # gather latents: packed_in[b,l,t,d] = input[b,t,s=l,d]
-        for b in range(B):
-            for l in range(Self.N_LATENTS):
+        comptime if target == "cpu":
+            ensure_cpu_buffer(self.packed_in, BL * TD)
+            ensure_cpu_buffer(self.packed_out, BL * TD)
+            var pin = TileTensor(
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    self.packed_in.unsafe_ptr()
+                ),
+                row_major[BL, TD](),
+            )
+            # gather latents: packed_in[b,l,t,d] = input[b,t,s=l,d]
+            for b in range(B):
+                for l in range(Self.N_LATENTS):
+                    for t in range(Self.T):
+                        for d in range(Self.D):
+                            pin[b * Self.N_LATENTS + l, t * Self.D + d] = inp[
+                                b * Self.T + t, l * Self.D + d
+                            ]
+            var pout = TileTensor(
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    self.packed_out.unsafe_ptr()
+                ),
+                row_major[BL, TD](),
+            )
+            self.mha.forward[target, BL, POLICY=POLICY](pin, output=pout)
+            # scatter: out[b,t,s,d] = packed_out[b,s,t,d] if s<L else 0
+            for b in range(B):
                 for t in range(Self.T):
-                    for d in range(Self.D):
-                        pin[b * Self.N_LATENTS + l, t * Self.D + d] = inp[
-                            b * Self.T + t, l * Self.D + d
-                        ]
-
-        var pout = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.packed_out.unsafe_ptr()
-            ),
-            row_major[BL, TD](),
-        )
-        self.mha.forward[target, BL, POLICY=POLICY](pin, output=pout)
-
-        # scatter: out[b,t,s,d] = packed_out[b,s,t,d] if s<L else 0
-        for b in range(B):
-            for t in range(Self.T):
-                for s in range(Self.S):
-                    for d in range(Self.D):
-                        var v = Scalar[DT](0.0)
-                        if s < Self.N_LATENTS:
-                            v = pout[b * Self.N_LATENTS + s, t * Self.D + d]
-                        out[b * Self.T + t, s * Self.D + d] = v
+                    for s in range(Self.S):
+                        for d in range(Self.D):
+                            var v = Scalar[DT](0.0)
+                            if s < Self.N_LATENTS:
+                                v = pout[b * Self.N_LATENTS + s, t * Self.D + d]
+                            out[b * Self.T + t, s * Self.D + d] = v
+        else:
+            comptime PACKED = BL * TD
+            comptime FULL = BATCH * Self.S * Self.D
+            self._ensure_scratch_gpu(PACKED)
+            var ctx = self.ts.ctx.value()
+            var a = self.pa_dev.value()
+            var b = self.pb_dev.value()
+            var in_flat = LayoutTensor[DT, Layout.row_major(FULL), MutAnyOrigin](
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inp.ptr)
+            )
+            var out_flat = LayoutTensor[DT, Layout.row_major(FULL), MutAnyOrigin](
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr)
+            )
+            var a_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](a)
+            var b_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](b)
+            comptime gk = _tal_gather_kernel[
+                B, Self.T, Self.S, Self.N_LATENTS, Self.D
+            ]
+            ctx.enqueue_function[gk](
+                in_flat, a_lt, grid_dim=(PACKED + TPB - 1) // TPB, block_dim=TPB
+            )
+            var a_tile = TileTensor(
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](a.unsafe_ptr()),
+                row_major[BL, TD](),
+            )
+            var b_tile = TileTensor(
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr()),
+                row_major[BL, TD](),
+            )
+            self.mha.forward[target, BL, POLICY=POLICY](a_tile, output=b_tile)
+            comptime sk = _tal_scatter_kernel[
+                B, Self.T, Self.S, Self.N_LATENTS, Self.D
+            ]
+            ctx.enqueue_function[sk](
+                b_lt, out_flat, grid_dim=(FULL + TPB - 1) // TPB, block_dim=TPB
+            )
 
     def vjp[
         target: StaticString,
@@ -158,41 +257,75 @@ struct TimeAttentionLatents[
         var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
         var gi = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
-        ensure_cpu_buffer(self.grad_pout, BL * TD)
-        ensure_cpu_buffer(self.grad_pin, BL * TD)
-        var gpout = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.grad_pout.unsafe_ptr()
-            ),
-            row_major[BL, TD](),
-        )
-
-        # gather grad_output latents (non-latent outputs were 0 → no grad)
-        for b in range(B):
-            for l in range(Self.N_LATENTS):
+        comptime if target == "cpu":
+            ensure_cpu_buffer(self.grad_pout, BL * TD)
+            ensure_cpu_buffer(self.grad_pin, BL * TD)
+            var gpout = TileTensor(
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    self.grad_pout.unsafe_ptr()
+                ),
+                row_major[BL, TD](),
+            )
+            # gather grad_output latents (non-latent outputs were 0 → no grad)
+            for b in range(B):
+                for l in range(Self.N_LATENTS):
+                    for t in range(Self.T):
+                        for d in range(Self.D):
+                            gpout[b * Self.N_LATENTS + l, t * Self.D + d] = go[
+                                b * Self.T + t, l * Self.D + d
+                            ]
+            var gpin = TileTensor(
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    self.grad_pin.unsafe_ptr()
+                ),
+                row_major[BL, TD](),
+            )
+            self.mha.vjp[target, BL, POLICY=POLICY, mode=mode](gpout, gpin)
+            # scatter grad to latent input positions; non-latents get 0
+            for b in range(B):
                 for t in range(Self.T):
-                    for d in range(Self.D):
-                        gpout[b * Self.N_LATENTS + l, t * Self.D + d] = go[
-                            b * Self.T + t, l * Self.D + d
-                        ]
-
-        var gpin = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.grad_pin.unsafe_ptr()
-            ),
-            row_major[BL, TD](),
-        )
-        self.mha.vjp[target, BL, POLICY=POLICY, mode=mode](gpout, gpin)
-
-        # scatter grad to latent input positions; non-latents get 0
-        for b in range(B):
-            for t in range(Self.T):
-                for s in range(Self.S):
-                    for d in range(Self.D):
-                        var v = Scalar[DT](0.0)
-                        if s < Self.N_LATENTS:
-                            v = gpin[b * Self.N_LATENTS + s, t * Self.D + d]
-                        gi[b * Self.T + t, s * Self.D + d] = v
+                    for s in range(Self.S):
+                        for d in range(Self.D):
+                            var v = Scalar[DT](0.0)
+                            if s < Self.N_LATENTS:
+                                v = gpin[b * Self.N_LATENTS + s, t * Self.D + d]
+                            gi[b * Self.T + t, s * Self.D + d] = v
+        else:
+            comptime PACKED = BL * TD
+            comptime FULL = BATCH * Self.S * Self.D
+            self._ensure_scratch_gpu(PACKED)
+            var ctx = self.ts.ctx.value()
+            var a = self.pa_dev.value()
+            var b = self.pb_dev.value()
+            var go_flat = LayoutTensor[DT, Layout.row_major(FULL), MutAnyOrigin](
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go.ptr)
+            )
+            var gi_flat = LayoutTensor[DT, Layout.row_major(FULL), MutAnyOrigin](
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi.ptr)
+            )
+            var a_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](a)
+            var b_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](b)
+            comptime gk = _tal_gather_kernel[
+                B, Self.T, Self.S, Self.N_LATENTS, Self.D
+            ]
+            ctx.enqueue_function[gk](
+                go_flat, a_lt, grid_dim=(PACKED + TPB - 1) // TPB, block_dim=TPB
+            )
+            var a_tile = TileTensor(
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](a.unsafe_ptr()),
+                row_major[BL, TD](),
+            )
+            var b_tile = TileTensor(
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr()),
+                row_major[BL, TD](),
+            )
+            self.mha.vjp[target, BL, POLICY=POLICY, mode=mode](a_tile, b_tile)
+            comptime sk = _tal_scatter_kernel[
+                B, Self.T, Self.S, Self.N_LATENTS, Self.D
+            ]
+            ctx.enqueue_function[sk](
+                b_lt, gi_flat, grid_dim=(FULL + TPB - 1) // TPB, block_dim=TPB
+            )
 
     def for_each_param[
         target: StaticString, V: ParamVisitor

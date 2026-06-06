@@ -10,26 +10,80 @@ shared across the whole B·T batch (every frame gets the same learned tokens):
 
 IN_DIM = N_IN·D, OUT_DIM = (N_IN+N_NEW)·D, param = N_NEW·D. The param grad is
 batch-reduced (the tokens are shared): grad_tokens[k] = Σ_bt grad_out[bt, new+k].
-
-PHASE 1: CPU forward + vjp (param leaf, `Param` + auto visitors). GPU follows.
+CPU + GPU.
 """
 
+from std.gpu import global_idx, thread_idx, block_idx
+from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT
+from ..constants import DT, TPB
 from ..core import (
-    Initializer,
-    AMPPolicy,
-    NoAMP,
-    Param,
-    ParamVisitor,
-    for_each_param_auto,
-    zero_grad_auto,
+    Initializer, AMPPolicy, NoAMP, Param, ParamVisitor,
+    for_each_param_auto, zero_grad_auto,
 )
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import TargetStorage, assert_tag_for
+
+
+comptime LT_RTPB = 64  # reduction block size for the param-grad batch sum
+
+
+def _lt_forward_kernel[
+    BATCH: Int, IN_N: Int, NEW_N: Int, OUT_DIM: Int, NEW_OFF: Int, IN_OFF: Int
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, IN_N), MutAnyOrigin],
+    param: LayoutTensor[DT, Layout.row_major(NEW_N), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * OUT_DIM:
+        return
+    var bt = idx // OUT_DIM
+    var pos = idx % OUT_DIM
+    if pos >= NEW_OFF and pos < NEW_OFF + NEW_N:
+        output.ptr[idx] = rebind[Scalar[DT]](param.ptr[pos - NEW_OFF])
+    else:
+        output.ptr[idx] = rebind[Scalar[DT]](input.ptr[bt * IN_N + (pos - IN_OFF)])
+
+
+def _lt_grad_input_kernel[
+    BATCH: Int, IN_N: Int, OUT_DIM: Int, IN_OFF: Int
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_N), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * IN_N:
+        return
+    var bt = idx // IN_N
+    var k = idx % IN_N
+    grad_input.ptr[idx] = rebind[Scalar[DT]](
+        grad_output.ptr[bt * OUT_DIM + IN_OFF + k]
+    )
+
+
+def _lt_grad_param_kernel[
+    BATCH: Int, NEW_N: Int, OUT_DIM: Int, NEW_OFF: Int
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+    grad_param: LayoutTensor[DT, Layout.row_major(NEW_N), MutAnyOrigin],
+):
+    # One block per param element; threads reduce over the batch.
+    var col = Int(block_idx.x)
+    if col >= NEW_N:
+        return
+    var t = Int(thread_idx.x)
+    var acc: Scalar[DT] = 0.0
+    var bi = t
+    while bi < BATCH:
+        acc += rebind[Scalar[DT]](grad_output.ptr[bi * OUT_DIM + NEW_OFF + col])
+        bi += LT_RTPB
+    var total = block.sum[block_size=LT_RTPB, broadcast=False](val=acc)
+    if t == 0:
+        grad_param.ptr[col] = rebind[Scalar[DT]](grad_param.ptr[col]) + total[0]
 
 
 struct LearnedTokens[N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool](Module):
@@ -52,13 +106,27 @@ struct LearnedTokens[N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool](Module):
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu", "LearnedTokens: PHASE 1 is CPU-only"
-        var m = Self()
-        m.tokens = Param["tokens", False, Self.NEW_N].make_cpu()
-        INIT.init_weight(
-            m.tokens.value_unsafe_ptr_cpu(), Self.NEW_N, Self.N_NEW, Self.D
+        comptime assert target == "cpu" or target == "gpu", (
+            "LearnedTokens: target must be 'cpu' or 'gpu'"
         )
-        m.ts = TargetStorage.make_cpu()
+        var m = Self()
+        comptime if target == "cpu":
+            m.tokens = Param["tokens", False, Self.NEW_N].make_cpu()
+            INIT.init_weight(
+                m.tokens.value_unsafe_ptr_cpu(), Self.NEW_N, Self.N_NEW, Self.D
+            )
+            m.ts = TargetStorage.make_cpu()
+        else:
+            if not ctx:
+                raise Error("LearnedTokens.make[gpu]: ctx required")
+            var ctx_v = ctx.value()
+            m.tokens = Param["tokens", False, Self.NEW_N].make_gpu(ctx_v)
+            var host = ctx_v.enqueue_create_host_buffer[DT](Self.NEW_N)
+            ctx_v.synchronize()
+            INIT.init_weight(host.unsafe_ptr(), Self.NEW_N, Self.N_NEW, Self.D)
+            ctx_v.enqueue_copy(m.tokens.value_dev.value(), host)
+            ctx_v.synchronize()
+            m.ts = TargetStorage.make_gpu(ctx_v)
         return m^
 
     @staticmethod
@@ -83,12 +151,31 @@ struct LearnedTokens[N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool](Module):
         assert_tag_for["LearnedTokens", target](self.ts.target_tag)
         var inp = typed_view[BATCH, Self.IN_N](inputs[0])
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
-        var tok = TileTensor(self.tokens.value, row_major[Self.NEW_N]())
-        for bt in range(BATCH):
-            for k in range(Self.NEW_N):
-                out[bt, Self.NEW_OFF + k] = tok[k]
-            for k in range(Self.IN_N):
-                out[bt, Self.IN_OFF + k] = inp[bt, k]
+        comptime if target == "cpu":
+            var tok = TileTensor(self.tokens.value, row_major[Self.NEW_N]())
+            for bt in range(BATCH):
+                for k in range(Self.NEW_N):
+                    out[bt, Self.NEW_OFF + k] = tok[k]
+                for k in range(Self.IN_N):
+                    out[bt, Self.IN_OFF + k] = inp[bt, k]
+        else:
+            var in_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.IN_N), MutAnyOrigin
+            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inp.ptr))
+            var o_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr))
+            var p_lt = LayoutTensor[
+                DT, Layout.row_major(Self.NEW_N), MutAnyOrigin
+            ](self.tokens.value_dev.value())
+            comptime n_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
+            comptime kernel = _lt_forward_kernel[
+                BATCH, Self.IN_N, Self.NEW_N, Self.OUT_DIM,
+                Self.NEW_OFF, Self.IN_OFF,
+            ]
+            self.ts.ctx.value().enqueue_function[kernel](
+                in_lt, p_lt, o_lt, grid_dim=n_blocks, block_dim=TPB
+            )
 
     def vjp[
         target: StaticString,
@@ -112,14 +199,40 @@ struct LearnedTokens[N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool](Module):
         assert_tag_for["LearnedTokens", target](self.ts.target_tag)
         var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
         var gi = typed_view_mut[BATCH, Self.IN_N](grad_inputs[0])
-        for bt in range(BATCH):
-            for k in range(Self.IN_N):
-                gi[bt, k] = go[bt, Self.IN_OFF + k]
-        comptime if mode == "all":
-            var gtok = TileTensor(self.tokens.grad, row_major[Self.NEW_N]())
+        comptime if target == "cpu":
             for bt in range(BATCH):
-                for k in range(Self.NEW_N):
-                    gtok[k] += go[bt, Self.NEW_OFF + k]
+                for k in range(Self.IN_N):
+                    gi[bt, k] = go[bt, Self.IN_OFF + k]
+            comptime if mode == "all":
+                var gtok = TileTensor(self.tokens.grad, row_major[Self.NEW_N]())
+                for bt in range(BATCH):
+                    for k in range(Self.NEW_N):
+                        gtok[k] += go[bt, Self.NEW_OFF + k]
+        else:
+            var ctx = self.ts.ctx.value()
+            var go_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go.ptr))
+            var gi_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.IN_N), MutAnyOrigin
+            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi.ptr))
+            comptime gin_blocks = (BATCH * Self.IN_N + TPB - 1) // TPB
+            comptime gik = _lt_grad_input_kernel[
+                BATCH, Self.IN_N, Self.OUT_DIM, Self.IN_OFF
+            ]
+            ctx.enqueue_function[gik](
+                go_lt, gi_lt, grid_dim=gin_blocks, block_dim=TPB
+            )
+            comptime if mode == "all":
+                var gp_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.NEW_N), MutAnyOrigin
+                ](self.tokens.grad_dev.value())
+                comptime gpk = _lt_grad_param_kernel[
+                    BATCH, Self.NEW_N, Self.OUT_DIM, Self.NEW_OFF
+                ]
+                ctx.enqueue_function[gpk](
+                    go_lt, gp_lt, grid_dim=Self.NEW_N, block_dim=LT_RTPB
+                )
 
     def for_each_param[
         target: StaticString, V: ParamVisitor
