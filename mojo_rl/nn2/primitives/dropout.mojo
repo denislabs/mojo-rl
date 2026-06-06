@@ -15,8 +15,17 @@ Phase 2 train/eval section):
     forward to give each call a unique PhiloxRandom offset. Mirrors
     the legacy `STATE_SIZE=1` GPU counter slot, just on the host —
     the GPU kernel reads it as a scalar arg instead of a device buffer
-    (nn2 doesn't do CUDA-graph capture, so the host-side counter is
-    fine; same pattern `box_muller.mojo` uses for SAC noise).
+    (same pattern `box_muller.mojo` uses for SAC noise).
+
+    ⚠️ CUDA-graph footgun: this host-bumped counter is baked into the
+    captured kernel args, so under a captured train step (deep_agents2
+    SAC *does* capture — see docs/CUDA_GRAPH_TRAIN_STEP.md) the offset
+    would FREEZE and every replay would reuse the same dropout mask.
+    There is no current overlap (SAC has no Dropout layer), but any
+    future captured path that includes Dropout must move this counter
+    into a device buffer (the legacy `STATE_SIZE=1` slot) first. SAC's
+    own RNG counters (replay/rsample/noisy) were device-promoted for
+    exactly this reason.
 
 Math (inverted dropout, identical to PyTorch):
     training:  mask ~ Bernoulli(1 - p), y = x · mask / (1 - p)
