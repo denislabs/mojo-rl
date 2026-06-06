@@ -158,6 +158,13 @@ trait OffPolicyDiscreteAgent(ImplicitlyDestructible, Movable):
     def save_state(mut self, path: String) raises:
         pass
 
+    def set_noise_scale(mut self, scale: Scalar[DT]) raises:
+        """Toggle Noisy-net exploration magnitude on the acting net:
+        1.0 = train/explore, 0.0 = deterministic mean weights. Used to
+        bracket a greedy-eval rollout (CPU single-env or GPU batched).
+        Default no-op — agents without Noisy layers ignore it."""
+        pass
+
 
 # ──────────────────────────────────────────────────────────────────────
 # OffPolicyDiscreteAgentGpu — discrete sibling of `OffPolicyAgentGpu`.
@@ -221,14 +228,7 @@ trait OffPolicyDiscreteAgentGpu(OffPolicyDiscreteAgent):
         Keep `NS` aligned with the trainer's target-Y γ^N bootstrap."""
         ...
 
-    # ─── Greedy-eval surface (noise-off deterministic rollout) ────────
-
-    def set_noise_scale(mut self, scale: Scalar[DT]) raises:
-        """Toggle Noisy-net exploration magnitude on the acting net:
-        1.0 = train/explore, 0.0 = deterministic mean weights. Used to
-        bracket a greedy-eval rollout. Default no-op (agents without
-        Noisy layers ignore it)."""
-        pass
+    # ─── Greedy-eval surface (batched, noise-off deterministic rollout) ──
 
     def select_greedy_action_batched[
         N_ENVS: Int
@@ -265,6 +265,10 @@ def run_offpolicy_discrete_train[
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
     base_step: Int = 0,
+    eval_env: Optional[UnsafePointer[E, MutAnyOrigin]] = None,
+    eval_every: Int = 0,
+    eval_episodes: Int = 10,
+    eval_max_steps: Int = 20_000,
 ) raises -> List[Scalar[DT]]:
     """Single-env discrete off-policy training driver.
 
@@ -438,6 +442,35 @@ def run_offpolicy_discrete_train[
         ):
             trainer.save_state(checkpoint_path)
 
+        # `eval_every` — deterministic (noise-off) greedy eval on a SEPARATE
+        # env. For ε=0 Noisy nets the training rollout IS the noisy argmax, so
+        # `avg_reward` under-reports the learned policy; bracket a greedy
+        # rollout with set_noise_scale(0)/(1) to log the true policy quality.
+        if (
+            eval_every > 0
+            and Bool(eval_env)
+            and abs_step % eval_every == 0
+        ):
+            trainer.set_noise_scale(Scalar[DT](0.0))
+            var eval_ret = run_offpolicy_discrete_eval[A, E](
+                trainer,
+                eval_env.value()[],
+                eval_episodes,
+                max_steps_per_episode=eval_max_steps,
+                verbose=False,
+            )
+            trainer.set_noise_scale(Scalar[DT](1.0))
+            if verbose:
+                print(
+                    "[step ", abs_step, "] eval/mean_return = ", eval_ret,
+                )
+            comptime if L.ENABLED:
+                if Bool(logger):
+                    logger.value()[].log_scalar(
+                        "eval/mean_return", Float64(eval_ret), abs_step
+                    )
+                    logger.value()[].flush()
+
     # Always overwrite the final checkpoint at end so resume gets the
     # freshest weights regardless of cadence alignment.
     if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
@@ -587,9 +620,18 @@ def run_offpolicy_discrete_train_gpu_batched[
         rng_seed: Base seed for env step/reset RNG streams.
         updates_per_step: Gradient updates per env iteration (replay ratio
             ≈ updates_per_step / N_ENVS).
+        print_every: Env-step cadence for progress prints.
+        verbose: Whether to print progress lines.
         nstep_gamma: Discount for the device n-step accumulator (NS>1).
-        diag_every / checkpoint_every / checkpoint_path: cadences, mirror
-            the single-env driver.
+        logger: Optional logger to flush metrics through.
+        base_step: Cumulative env-step offset (threaded across chunked calls).
+        diag_every: Diagnostics flush cadence (env steps; 0 disables).
+        checkpoint_every: Checkpoint cadence (env steps; 0 disables).
+        checkpoint_path: Destination path for periodic checkpoints.
+        eval_env: Optional separate env used for greedy evaluation.
+        eval_every: Greedy-eval cadence (env steps; 0 disables).
+        eval_episodes: Episodes per greedy-eval pass.
+        eval_max_iters: Max env iterations per eval episode (safety cap).
 
     Returns:
         List of `trainer.mean_return()` snapshots at episode boundaries.
