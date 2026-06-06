@@ -104,6 +104,16 @@ struct DQNTrainer[
     var _ob1: Scratch["ob1", Self.OBS_DIM, True]
     var _q_select: Scratch["q_select", Self.NUM_ACTIONS, True]
 
+    # Lazily-sized scratch for the GPU batched action path (N_ENVS is a
+    # method-comptime param, unknown at construction). Allocated once on the
+    # first `select_action_batched[N_ENVS]` call and reused — avoids the
+    # per-step `enqueue_create_buffer` that explodes disk on NVIDIA. Mirrors
+    # the proven C51 pattern (`c51/trainer.mojo::_ensure_batch_scratch`).
+    var _batch_q_dev: Optional[DeviceBuffer[DT]]
+    var _batch_q_host: List[Scalar[DT]]
+    var _batch_act_host: List[Scalar[DT]]
+    var _batch_n: Int
+
     var tracker: EpisodeTracker
     var ctx: Optional[DeviceContext]
 
@@ -154,6 +164,10 @@ struct DQNTrainer[
         ]()
         self._ob1 = Scratch["ob1", Self.OBS_DIM, True]()
         self._q_select = Scratch["q_select", Self.NUM_ACTIONS, True]()
+        self._batch_q_dev = None
+        self._batch_q_host = List[Scalar[DT]]()
+        self._batch_act_host = List[Scalar[DT]]()
+        self._batch_n = 0
         self.tracker = EpisodeTracker(
             window=List[Scalar[DT]](),
             window_size=0,
@@ -423,6 +437,41 @@ struct DQNTrainer[
 
     # ─── Action selection ────────────────────────────────────────────
 
+    def _ensure_batch_scratch[
+        N_ENVS: Int
+    ](mut self, ctx: DeviceContext) raises:
+        """Lazily (re)allocate the GPU batched-action scratch for N_ENVS:
+        a device `[N_ENVS·NA]` Q buffer + host mirrors for the D2H Q
+        readback and the H2D action indices. One allocation per distinct
+        N_ENVS (cached via `_batch_n`). Mirrors
+        `c51/trainer.mojo::_ensure_batch_scratch`."""
+        comptime NA = Self.NUM_ACTIONS
+        if self._batch_n == N_ENVS:
+            return
+        self._batch_q_dev = Optional(
+            ctx.enqueue_create_buffer[DT](N_ENVS * NA)
+        )
+        self._batch_q_host = List[Scalar[DT]](
+            length=N_ENVS * NA, fill=Scalar[DT](0.0)
+        )
+        self._batch_act_host = List[Scalar[DT]](
+            length=N_ENVS, fill=Scalar[DT](0.0)
+        )
+        self._batch_n = N_ENVS
+
+    def _q_argmax(
+        self, q_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) -> Int:
+        """argmax_a q_p[a] over a flat NUM_ACTIONS row (single sample)."""
+        comptime NA = Self.NUM_ACTIONS
+        var best_a = 0
+        var best_q = q_p[0]
+        for a in range(1, NA):
+            if q_p[a] > best_q:
+                best_q = q_p[a]
+                best_a = a
+        return best_a
+
     def select_action_batched[
         N_ENVS: Int,
     ](
@@ -435,7 +484,7 @@ struct DQNTrainer[
         comptime OBS = Self.OBS_DIM
 
         # Warmup path (random action). CPU writes action_ptr directly;
-        # GPU stages through _q_select.cpu_ptr() then H2D (action_ptr is
+        # GPU stages through a host buffer then H2D (action_ptr is
         # device-side, a CPU write to it is UB / Metal crash).
         if step_idx < self.learning_starts:
             comptime if Self.train_target == "cpu":
@@ -443,18 +492,19 @@ struct DQNTrainer[
                     var r = random_float64()
                     action_ptr[i] = Scalar[DT](Int(r * Float64(NA)))
             else:
-                comptime assert (
-                    N_ENVS == 1
-                ), "GPU select_action_batched warmup: N_ENVS>1 not yet supported"
+                # GPU warmup: draw N_ENVS uniform action indices on the host
+                # and H2D them. At N_ENVS=1 this consumes exactly one
+                # random_float64 draw, matching the legacy single-env path's
+                # RNG order.
                 var ctx = self.ctx.value()
-                var r = random_float64()
-                self._q_select.cpu_ptr()[0] = Scalar[DT](
-                    Int(r * Float64(NA))
-                )
+                self._ensure_batch_scratch[N_ENVS](ctx)
+                var act_h = self._batch_act_host.unsafe_ptr()
+                for i in range(N_ENVS):
+                    act_h[i] = Scalar[DT](Int(random_float64() * Float64(NA)))
                 var action_dev = DeviceBuffer[DT](
-                    ctx, action_ptr, 1, owning=False,
+                    ctx, action_ptr, N_ENVS, owning=False,
                 )
-                ctx.enqueue_copy(action_dev, self._q_select.cpu_ptr())
+                ctx.enqueue_copy(action_dev, act_h)
             return
 
         comptime if Self.train_target == "cpu":
@@ -485,36 +535,37 @@ struct DQNTrainer[
                             best_a = a
                     action_ptr[i] = Scalar[DT](best_a)
         else:
-            comptime assert (
-                N_ENVS == 1
-            ), "GPU select_action_batched: N_ENVS>1 not yet supported"
+            # GPU policy: ONE batched device forward over all N_ENVS obs,
+            # then D2H the [N_ENVS, NA] Q values and run epsilon-greedy
+            # argmax per env on the host — there is no batched device argmax
+            # kernel, and the readback is tiny (N_ENVS·NA floats). At
+            # N_ENVS=1 this reproduces the legacy single-env behaviour (one
+            # forward, one host argmax) bit-for-bit, including RNG order.
             var ctx = self.ctx.value()
-            var obs_t = TileTensor(obs_ptr, row_major[1, OBS]())
-            var q_t = TileTensor(self._q_select.dev_ptr(), row_major[1, NA]())
-            self.pair.online.forward[Self.train_target, 1](obs_t, output=q_t)
-            ctx.enqueue_copy(
-                self._q_select.cpu_ptr(), self._q_select.dev.value(),
+            self._ensure_batch_scratch[N_ENVS](ctx)
+            var qdev = self._batch_q_dev.value()
+            var qdev_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                qdev.unsafe_ptr()
             )
+            var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
+            var q_t = TileTensor(qdev_ptr, row_major[N_ENVS, NA]())
+            self.pair.online.forward[Self.train_target, N_ENVS](
+                obs_t, output=q_t,
+            )
+            var qh = self._batch_q_host.unsafe_ptr()
+            ctx.enqueue_copy(qh, qdev)
             ctx.synchronize()
-            var qp = self._q_select.cpu_ptr()
-            var r = random_float64()
-            var act: Scalar[DT]
-            if r < Float64(self.epsilon):
-                act = Scalar[DT](Int(random_float64() * Float64(NA)))
-            else:
-                var best_a = 0
-                var best_q = qp[0]
-                for a in range(1, NA):
-                    var q = qp[a]
-                    if q > best_q:
-                        best_q = q
-                        best_a = a
-                act = Scalar[DT](best_a)
-            self._q_select.cpu_ptr()[0] = act
+            var act_h = self._batch_act_host.unsafe_ptr()
+            for i in range(N_ENVS):
+                var r = random_float64()
+                if r < Float64(self.epsilon):
+                    act_h[i] = Scalar[DT](Int(random_float64() * Float64(NA)))
+                else:
+                    act_h[i] = Scalar[DT](self._q_argmax(qh + i * NA))
             var action_dev = DeviceBuffer[DT](
-                ctx, action_ptr, 1, owning=False,
+                ctx, action_ptr, N_ENVS, owning=False,
             )
-            ctx.enqueue_copy(action_dev, self._q_select.cpu_ptr())
+            ctx.enqueue_copy(action_dev, act_h)
 
     def select_greedy_action(
         mut self,
