@@ -33,6 +33,7 @@ from mojo_rl.nn2.primitives.slice import Slice
 from mojo_rl.nn2.primitives.learned_tokens import LearnedTokens
 from mojo_rl.nn2.primitives.sinusoidal_pos_bt import SinusoidalPosAddBT
 from mojo_rl.nn2.primitives.modality_space_attention import ModalitySpaceAttention
+from mojo_rl.nn2.primitives.dynamics_space_attention import DynamicsSpaceAttention
 from mojo_rl.nn2.primitives.time_attention_latents import TimeAttentionLatents
 
 
@@ -95,6 +96,51 @@ comptime Dreamer4Stack[
     D: Int, NH: Int, T: Int, S: Int, L: Int, HID: Int, DEPTH: Int,
     MODE: StaticString, USE_MAX: Bool = True,
 ] = Repeat[DEPTH, Dreamer4Block[D, NH, T, S, L, HID, MODE, USE_MAX]]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Dynamics-transformer blocks (model.py:Dynamics). Same sublayer structure as
+# the generic block, but the SPACE attention uses `DynamicsSpaceAttention` so
+# the modality mask follows the real per-frame dynamics layout
+#   [ action | signal | step | spatial×NSP | register×NREG | agent×NAGENT ]
+# (S = 3 + NSP + NREG + NAGENT). The TIME attention runs over ALL S token
+# positions (L = S): time attention is position-wise across frames, so agent
+# tokens never leak into other positions through it — the space mask alone
+# enforces agent isolation. With NAGENT = 0 the `wm_agent_bc` mask collapses to
+# full mixing (no token carries the agent id), so this is bit-identical to the
+# unconditional `Dreamer4Stack[..., L=S, "wm_agent"]` path.
+comptime Dreamer4DynSpaceSub[
+    D: Int, NH: Int, NSP: Int, NREG: Int, NAGENT: Int,
+    MODE: StaticString, USE_MAX: Bool = True,
+] = Residual[
+    Sequential[
+        Tokenwise[3 + NSP + NREG + NAGENT, RMSNorm[D]],
+        Tokenwise[3 + NSP + NREG + NAGENT, Linear[D, 3 * D]],
+        QKVToMajor[3 + NSP + NREG + NAGENT, D],
+        DynamicsSpaceAttention[D, NH, NSP, NREG, NAGENT, MODE, USE_MAX],
+        Tokenwise[3 + NSP + NREG + NAGENT, Linear[D, D]],
+    ]
+]
+
+
+comptime Dreamer4DynBlock[
+    D: Int, NH: Int, T: Int, NSP: Int, NREG: Int, NAGENT: Int, HID: Int,
+    MODE: StaticString, USE_MAX: Bool = True,
+] = Sequential[
+    Dreamer4DynSpaceSub[D, NH, NSP, NREG, NAGENT, MODE, USE_MAX],
+    Dreamer4TimeSub[
+        D, NH, T, 3 + NSP + NREG + NAGENT, 3 + NSP + NREG + NAGENT
+    ],
+    Dreamer4FFNSub[D, 3 + NSP + NREG + NAGENT, HID],
+]
+
+
+comptime Dreamer4DynStack[
+    D: Int, NH: Int, T: Int, NSP: Int, NREG: Int, NAGENT: Int, HID: Int,
+    DEPTH: Int, MODE: StaticString, USE_MAX: Bool = True,
+] = Repeat[
+    DEPTH, Dreamer4DynBlock[D, NH, T, NSP, NREG, NAGENT, HID, MODE, USE_MAX]
+]
 
 
 # ──────────────────────────────────────────────────────────────────────

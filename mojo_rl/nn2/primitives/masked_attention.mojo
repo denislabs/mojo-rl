@@ -360,36 +360,55 @@ def all_allow_mask(seq_len: Int) -> List[Scalar[DT]]:
 
 def build_modality_mask[
     mode: StaticString
-](modality_ids: List[Int], n_latents: Int) -> List[Scalar[DT]]:
+](
+    modality_ids: List[Int], n_latents: Int, agent_mod_in: Int = -1
+) -> List[Scalar[DT]]:
     """Port of `model.py:SpaceSelfAttentionModality._build_allow` (Dreamer 4).
 
     `modality_ids[k]` is the modality of token k; the first `n_latents` tokens
     are latent register tokens. Returns the additive `SEQ*SEQ` mask:
     allowed→0.0, disallowed→NEG.
 
-    Modes:
+    Modes (the `wm_*` modes treat the highest modality id as the AGENT modality
+    and are only meaningful when agent tokens are present; they ignore
+    `n_latents`):
       - "encoder": latents attend to all; non-latents only within own modality.
       - "decoder": latents attend only to latents; non-latents attend to
         latents + own modality.
-      - "wm_agent": like encoder, but agent tokens (highest modality id) may
-        attend to all; others may NOT attend back to agent tokens.
-      - "wm_agent_isolated": same as wm_agent for visibility, and additionally
-        nothing (not even latents) attends back to agent tokens — the world
-        model can't be contaminated by the task (paper §3.3).
+      - "wm_agent": full mixing — every token attends to every token
+        (model.py `wm_agent` returns all-ones).
+      - "wm_agent_isolated": non-agent queries attend to all NON-agent keys;
+        agent queries attend ONLY to agent keys (model.py `wm_agent_isolated`,
+        which keeps agent tokens inert during world-model pretraining).
+      - "wm_agent_bc": non-agent queries attend to all NON-agent keys; agent
+        queries attend to ALL keys (every modality + themselves). This is the
+        paper §3.3 imagination/BC mask: agent tokens read the full world state
+        to predict actions/rewards, while nothing attends back to them so the
+        world model cannot be contaminated by the task. (No reference code —
+        the public reference implements pretraining only; ported from the
+        paper.)
     """
     comptime assert (
         mode == "encoder"
         or mode == "decoder"
         or mode == "wm_agent"
         or mode == "wm_agent_isolated"
+        or mode == "wm_agent_bc"
     ), "build_modality_mask: unknown mode"
 
     var S = len(modality_ids)
-    # Agent modality = max id (agent tokens are the last modality inserted).
-    var agent_mod = 0
-    for k in range(S):
-        if modality_ids[k] > agent_mod:
-            agent_mod = modality_ids[k]
+    # Agent modality. With `agent_mod_in >= 0` it is FIXED to that id (so a
+    # layout with zero agent tokens — no token carries the id — yields full
+    # mixing under the wm_* modes, since `k_is_agent`/`q_is_agent` are always
+    # False). With the default -1 it is inferred as the max id present (the
+    # agent tokens are the last modality inserted) — back-compat for callers
+    # that always have agent tokens.
+    var agent_mod = agent_mod_in
+    if agent_mod < 0:
+        agent_mod = 0
+        for k in range(S):
+            if modality_ids[k] > agent_mod:
+                agent_mod = modality_ids[k]
 
     var m = List[Scalar[DT]]()
     for i in range(S):
@@ -410,24 +429,23 @@ def build_modality_mask[
                     allow = is_k_lat
                 else:
                     allow = is_k_lat or same_mod
-            else:
-                # wm_agent / wm_agent_isolated.
+            elif mode == "wm_agent":
+                # Full mixing (model.py: returns all-ones).
+                allow = True
+            elif mode == "wm_agent_isolated":
+                # Non-agent q → all non-agent keys; agent q → only agent keys
+                # (inert agent tokens during world-model pretraining).
                 if q_is_agent:
-                    allow = True  # agent reads everything
-                elif is_q_lat:
+                    allow = k_is_agent
+                else:
+                    allow = not k_is_agent
+            else:
+                # "wm_agent_bc" — paper §3.3: agent q → all keys; non-agent q →
+                # all non-agent keys (nothing attends back to agent tokens).
+                if q_is_agent:
                     allow = True
                 else:
-                    allow = same_mod
-                # Nobody attends back to agent tokens (both wm_agent variants
-                # here; the "isolated" variant additionally forbids latents,
-                # which the q_is_agent/is_q_lat branches above already permit
-                # — so enforce the cut on the key side for non-agent queries).
-                if k_is_agent and not q_is_agent:
-                    comptime if mode == "wm_agent_isolated":
-                        allow = False
-                    else:
-                        # plain wm_agent: latents may still read agent tokens.
-                        allow = is_q_lat
+                    allow = not k_is_agent
 
             m.append(Scalar[DT](0.0) if allow else Scalar[DT](MASK_NEG))
     return m^
