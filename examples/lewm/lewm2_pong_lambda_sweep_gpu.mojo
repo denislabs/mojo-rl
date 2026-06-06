@@ -18,7 +18,7 @@ from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.experimental.lewm2.trainer import LeWMTrainer
-from mojo_rl.experimental.lewm2.pong_data import PongWindowSource
+from mojo_rl.experimental.lewm2.pong_data import WindowSource
 from mojo_rl.envs.arcade_games.pong.offline_buffer import (
     PongOfflineBuffer,
     PONG_FRAME_BYTES,
@@ -63,7 +63,7 @@ comptime Trainer = LeWMTrainer[
     ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS, PRED_FF,
     DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu",
 ]
-comptime Source = PongWindowSource[IMG_DIM, ACT, T, B, "gpu"]
+comptime Source = WindowSource[IMG_DIM, ACT, T, B, "gpu"]
 
 
 def _p(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:

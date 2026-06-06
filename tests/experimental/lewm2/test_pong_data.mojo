@@ -1,8 +1,8 @@
-"""PongWindowSource bridge test (CPU, no neural net).
+"""WindowSource bridge test (CPU, no neural net).
 
 Builds a tiny in-memory `PongOfflineBuffer` with known frame bytes + a
 mid-buffer episode boundary, samples (B, T) windows through
-`PongWindowSource`, and checks the bridge contract WITHOUT running the
+`WindowSource`, and checks the bridge contract WITHOUT running the
 (expensive 84×84) model:
   1. sampled fp32 pixels == stored uint8 / 255 exactly,
   2. actions are valid one-hot rows (exactly one 1.0, rest 0.0),
@@ -16,7 +16,7 @@ from std.random import seed
 from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.experimental.lewm2.pong_data import PongWindowSource
+from mojo_rl.experimental.lewm2.pong_data import WindowSource
 from mojo_rl.envs.arcade_games.pong.offline_buffer import (
     PongOfflineBuffer,
     PONG_FRAME_BYTES,
@@ -34,7 +34,7 @@ comptime BOUNDARY = 17                 # dones[BOUNDARY] = 1
 
 def main() raises:
     print("=" * 70)
-    print("PongWindowSource bridge test (CPU)")
+    print("WindowSource bridge test (CPU)")
     print("=" * 70)
     seed(123)
 
@@ -47,7 +47,7 @@ def main() raises:
         buf.dones[n] = UInt8(1) if n == BOUNDARY else UInt8(0)
     buf.n_frames = N_FRAMES
 
-    var src = PongWindowSource[IMG_DIM, ACT, T, B, "cpu"].make(buf^)
+    var src = WindowSource[IMG_DIM, ACT, T, B, "cpu"].make(buf^)
 
     comptime ROUNDS = 30
     var checked = 0

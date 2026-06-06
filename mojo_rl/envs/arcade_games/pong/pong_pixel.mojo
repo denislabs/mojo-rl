@@ -200,7 +200,7 @@ struct PongPixelEnv[
     DTYPE: DType,
     HIT_REWARD: Float64 = 0.1,
     FRAME_SKIP: Int = 1,
-](BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv):
+](BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv & Movable):
     """Native Pong with pixel observations for CNN-based training.
 
     Uses the same physics as PongEnv but produces 4×84×84 pixel observations

@@ -1,19 +1,27 @@
-"""LeWM (nn2) — train the JEPA world model on real Pong pixels (GPU).
+"""LeWM (nn2) — train the JEPA world model on Pong pixels (GPU).
 
-End-to-end real-data driver for the nn2 LeWM port. Loads a Pong offline
-buffer (collect it first with `examples/lewm/lewm_pong_collect_buffer.mojo`),
-streams length-T windows through `PongWindowSource` into `LeWMTrainer` at the
-§10.7 Pong-ViT recipe, and prints the loss + representation-collapse probes.
+End-to-end driver for the nn2 LeWM port. Streams length-T windows through the
+generic `WindowSource` into `LeWMTrainer` at the §10.7 Pong-ViT recipe, and
+prints the loss + representation-collapse probes. The data source is swappable
+at compile time via `USE_ONLINE`:
 
-Pipeline (all real, no synthetic data):
-  PongPixelEnv → PongOfflineBuffer (uint8 CHW + actions + dones, on disk)
-    → PongWindowSource (sample window → H2D → uint8→fp32 ÷255)
-    → LeWMTrainer.train_step (JEPA graph: encoder → AR predictor → MSE + SIGReg)
+  OFFLINE (USE_ONLINE = False) — replay a pre-collected on-disk buffer:
+    PongOfflineBuffer.load (collect with lewm_pong_collect_buffer.mojo)
+      → WindowSource (sample window → H2D → uint8→fp32 ÷255) → train_step
+
+  ONLINE  (USE_ONLINE = True)  — generate windows live from the simulator,
+  no dataset, no recording:
+    OnlinePongSampler (step PongPixelEnv pool under a scripted policy)
+      → WindowSource (H2D → uint8→fp32 ÷255) → train_step
+    (CPU env-step × GPU train hybrid; env stepping is the throughput floor.)
+
+Both paths feed byte-identical (B, T·IMG_DIM) fp32 CHW pixels + (B, T·ACT)
+one-hot actions, so the training loop (`_train_loop`) is shared verbatim.
 
 Recipe (LeWMPongViTConfig[batch=16, t=6, depth=6, hidden=128, emb=128]):
   84×84×4 frames, patch=14 → 36 patches, H=3 context, EMB=128, DEPTH=6.
 
-Run (after collecting the buffer):
+Run:
   pixi run -e nvidia mojo run -I . examples/lewm/lewm2_pong_train_gpu.mojo
 
 Watch for: loss falling smoothly, var_min rising > 0.1, gram_off < 0.5
@@ -25,12 +33,17 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.core.offline_buffer import OfflineBuffer
 from mojo_rl.experimental.lewm2.trainer import LeWMTrainer
-from mojo_rl.experimental.lewm2.pong_data import PongWindowSource
+from mojo_rl.experimental.lewm2.pong_data import WindowSource
 from mojo_rl.envs.arcade_games.pong.offline_buffer import (
     PongOfflineBuffer,
     PONG_FRAME_BYTES,
     PONG_NUM_ACTIONS,
+)
+from mojo_rl.envs.arcade_games.pong.online_sampler import (
+    OnlinePongSampler,
+    ScriptedPongPolicy,
 )
 
 
@@ -65,6 +78,10 @@ comptime PIX = T * IMG_DIM
 comptime ACTIN = T * ACT
 
 # ── run config ──────────────────────────────────────────────────────────
+# Data source: False = replay offline buffer, True = live simulator windows.
+comptime USE_ONLINE: Bool = False
+comptime ONLINE_EPS: Float64 = 0.3    # scripted-policy exploration (online)
+
 comptime BUFFER_PATH: String = "/tmp/lewm_pong_buffer.bin"
 comptime STEPS: Int = 2000
 comptime LOG_EVERY: Int = 50
@@ -77,32 +94,20 @@ comptime Trainer = LeWMTrainer[
     ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS, PRED_FF,
     DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu",
 ]
-comptime Source = PongWindowSource[IMG_DIM, ACT, T, B, "gpu"]
+comptime OnlineBuf = OnlinePongSampler[ScriptedPongPolicy, B, T]
 
 
 def _p(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
 
 
-def main() raises:
-    print("=" * 70)
-    print("LeWM nn2 — Pong JEPA world model training (GPU, real pixels)")
-    print("=" * 70)
-    print("recipe: 84x84x4, patch=14, EMB=", EMB, " DEPTH=", DEPTH,
-          " B=", B, " T=", T)
-    print("buffer:", BUFFER_PATH)
-    print()
-
-    var ctx = DeviceContext()
-
-    print("loading offline buffer ...")
-    var buf = PongOfflineBuffer.load(BUFFER_PATH)
-    print("   n_frames =", buf.n_frames)
-
-    var src = Source.make(buf^, ctx=ctx)
-    var tr = Trainer.make(lam=LAM, lr=LR, ctx=ctx)
-
-    print("training", STEPS, "steps ...")
+def _train_loop[
+    BUF: OfflineBuffer
+](
+    var src: WindowSource[IMG_DIM, ACT, T, B, "gpu", BUF],
+    mut tr: Trainer,
+) raises:
+    """Shared GPU training loop — identical for offline and online sources."""
     tr.reset_loss_accum()
     for s in range(STEPS):
         src.next_batch()
@@ -116,12 +121,39 @@ def main() raises:
             print("   step", s + 1, "/", STEPS,
                   " loss=", wl, " var_min=", probes[0],
                   " gram_off=", probes[1])
+    _ = src^
+
+
+def main() raises:
+    print("=" * 70)
+    print("LeWM nn2 — Pong JEPA world model training (GPU)")
+    print("=" * 70)
+    print("recipe: 84x84x4, patch=14, EMB=", EMB, " DEPTH=", DEPTH,
+          " B=", B, " T=", T)
+    print("data:", "ONLINE (live sim)" if USE_ONLINE else "OFFLINE (buffer)")
+    print()
+
+    var ctx = DeviceContext()
+    var tr = Trainer.make(lam=LAM, lr=LR, ctx=ctx)
+
+    print("training", STEPS, "steps ...")
+    comptime if USE_ONLINE:
+        print("   source: OnlinePongSampler eps=", ONLINE_EPS)
+        var src = WindowSource[IMG_DIM, ACT, T, B, "gpu", OnlineBuf].make(
+            OnlineBuf.make(ScriptedPongPolicy(eps=ONLINE_EPS)), ctx=ctx
+        )
+        _train_loop[OnlineBuf](src^, tr)
+    else:
+        print("   source: offline buffer", BUFFER_PATH)
+        var buf = PongOfflineBuffer.load(BUFFER_PATH)
+        print("   n_frames =", buf.n_frames)
+        var src = WindowSource[IMG_DIM, ACT, T, B, "gpu"].make(buf^, ctx=ctx)
+        _train_loop[PongOfflineBuffer](src^, tr)
 
     print()
     print("saving world-model checkpoint →", CKPT_PATH)
     tr.save_params(CKPT_PATH)
 
-    _ = src^
     _ = tr^
     print("=" * 70)
     print("DONE")

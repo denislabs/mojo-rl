@@ -91,7 +91,7 @@ comptime PONG_MAX_STEPS: Int = 5000
 
 
 struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
-    BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv
+    BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv & Movable
 ):
     """Native Pong environment — CPU+GPU dual path.
 

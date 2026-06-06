@@ -1,17 +1,20 @@
-"""PongWindowSource — bridge a `PongOfflineBuffer` to the LeWM nn2 trainer.
+"""WindowSource — bridge any `OfflineBuffer` to the LeWM nn2 trainer.
 
-The Pong data pipeline already exists and is reusable as-is:
-  - collection: `examples/lewm/lewm_pong_collect_buffer.mojo` (scripted +
-    random follow-the-ball policy over `PongPixelEnv`) → `PongOfflineBuffer`
-    (uint8 CHW [N,4,84,84] + action idx + done markers) saved as LWMP v1.
-This struct is the only missing piece: it samples length-T windows from a
-loaded buffer and hands the trainer exactly what `train_step` consumes —
-fp32 pixels `(B, T·IMG_DIM)` (CHW, ÷255) and fp32 one-hot actions
-`(B, T·ACT)` — on the chosen target.
+Generic over the data source: it samples length-T windows from any
+`mojo_rl.core.offline_buffer.OfflineBuffer` (a loaded `PongOfflineBuffer`,
+the live `OnlinePongSampler`, …) and hands the trainer exactly what
+`train_step` consumes — fp32 pixels `(B, T·IMG_DIM)` (CHW, ÷255) and fp32
+one-hot actions `(B, T·ACT)` — on the chosen target.
 
-Frames are stored CHW (`PongOfflineBuffer.INPUT_LAYOUT_HWC == False`), the
-same channel-major layout `PatchEmbed`'s `Conv2D` expects, so the bridge
-only normalises (`u8_to_fp32_norm`, layout-preserving) — no permute.
+The `BUF` parameter defaults to `PongOfflineBuffer`, so existing positional
+call sites (`WindowSource[IMG_DIM, ACT, T, B, "gpu"]`) are unchanged; pass
+`BUF=OnlinePongSampler[…]` to stream live simulator windows with no other
+change to the trainer / convert kernel / loop.
+
+**CHW only (for now).** The bridge normalises in place via
+`u8_to_fp32_norm` (layout-preserving), so it requires
+`BUF.INPUT_LAYOUT_HWC == False` (enforced by a comptime assert). HWC buffers
+(e.g. PushT) need the `u8_hwc_to_chw_norm` permute branch — a small TODO.
 
 Flow per batch:
   buf.sample_batch_uint8 → host uint8 pix + host fp32 one-hot act
@@ -25,20 +28,22 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ...nn2.constants import DT
 from .pixel_convert import u8_to_fp32_norm
-from mojo_rl.envs.arcade_games.pong.offline_buffer import (
-    PongOfflineBuffer,
-    PONG_FRAME_BYTES,
-    PONG_NUM_ACTIONS,
-)
+from mojo_rl.core.offline_buffer import OfflineBuffer
+from mojo_rl.envs.arcade_games.pong.offline_buffer import PongOfflineBuffer
 
 
-struct PongWindowSource[
-    IMG_DIM: Int, ACT: Int, T: Int, B: Int, target: StaticString = "cpu",
+struct WindowSource[
+    IMG_DIM: Int,
+    ACT: Int,
+    T: Int,
+    B: Int,
+    target: StaticString = "cpu",
+    BUF: OfflineBuffer = PongOfflineBuffer,
 ](Movable & ImplicitlyDestructible):
     comptime NPIX = Self.B * Self.T * Self.IMG_DIM
     comptime NACT = Self.B * Self.T * Self.ACT
 
-    var buf: PongOfflineBuffer
+    var buf: Self.BUF
     # Host staging (always): sampled uint8 pixels + fp32 one-hot actions.
     var pix_u8_host: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]
     var act_host: UnsafePointer[Scalar[DT], MutAnyOrigin]
@@ -49,12 +54,11 @@ struct PongWindowSource[
     var act_dev: Optional[DeviceBuffer[DT]]
     var ctx: Optional[DeviceContext]
 
-    def __init__(out self, var buf: PongOfflineBuffer):
-        comptime assert Self.IMG_DIM == PONG_FRAME_BYTES, (
-            "PongWindowSource: IMG_DIM must equal PONG_FRAME_BYTES (28224)"
-        )
-        comptime assert Self.ACT == PONG_NUM_ACTIONS, (
-            "PongWindowSource: ACT must equal PONG_NUM_ACTIONS (3)"
+    def __init__(out self, var buf: Self.BUF):
+        comptime assert not Self.BUF.INPUT_LAYOUT_HWC, (
+            "WindowSource: only CHW buffers (INPUT_LAYOUT_HWC=False) are"
+            " supported — the in-place u8_to_fp32_norm does no permute. HWC"
+            " buffers (e.g. PushT) need the u8_hwc_to_chw_norm branch (TODO)."
         )
         self.buf = buf^
         self.pix_u8_host = alloc[Scalar[DType.uint8]](Self.NPIX)
@@ -72,14 +76,14 @@ struct PongWindowSource[
 
     @staticmethod
     def make(
-        var buf: PongOfflineBuffer,
+        var buf: Self.BUF,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
         var s = Self(buf^)
         s.ctx = ctx
         comptime if Self.target == "gpu":
             if not ctx:
-                raise Error("PongWindowSource.make[gpu]: ctx required")
+                raise Error("WindowSource.make[gpu]: ctx required")
             var c = ctx.value()
             s.pix_u8_dev = c.enqueue_create_buffer[DType.uint8](Self.NPIX)
             s.pix_fp32_dev = c.enqueue_create_buffer[DT](Self.NPIX)

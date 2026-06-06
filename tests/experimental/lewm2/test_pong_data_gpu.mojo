@@ -1,4 +1,4 @@
-"""PongWindowSource GPU bridge smoke (no neural net — cheap).
+"""WindowSource GPU bridge smoke (no neural net — cheap).
 
 Validates the GPU target path of the bridge — sample uint8 window → H2D →
 device uint8→fp32 ÷255 — by D2H-ing the result and checking it equals the
@@ -14,7 +14,7 @@ from std.random import seed
 from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.experimental.lewm2.pong_data import PongWindowSource
+from mojo_rl.experimental.lewm2.pong_data import WindowSource
 from mojo_rl.envs.arcade_games.pong.offline_buffer import (
     PongOfflineBuffer,
     PONG_FRAME_BYTES,
@@ -33,7 +33,7 @@ comptime NACT = B * T * ACT
 
 def main() raises:
     print("=" * 70)
-    print("PongWindowSource GPU bridge smoke")
+    print("WindowSource GPU bridge smoke")
     print("=" * 70)
     seed(7)
     var ctx = DeviceContext()
@@ -46,7 +46,7 @@ def main() raises:
         buf.dones[n] = UInt8(0)
     buf.n_frames = N_FRAMES
 
-    var src = PongWindowSource[IMG_DIM, ACT, T, B, "gpu"].make(buf^, ctx=ctx)
+    var src = WindowSource[IMG_DIM, ACT, T, B, "gpu"].make(buf^, ctx=ctx)
     src.next_batch()
 
     # D2H the device fp32 pixels + actions and validate against /255.
