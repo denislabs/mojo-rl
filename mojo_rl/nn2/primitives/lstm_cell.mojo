@@ -32,11 +32,13 @@ Cache (per timestep, BATCH-major): [i | f | g | o | tanh(c_t)], 5·H wide.
 """
 
 from std.math import exp, tanh
+from std.memory import alloc
 from std.gpu import thread_idx, block_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
+from linalg.matmul import matmul as max_matmul
 
 from ..constants import DT, TPB
 from ..core import (
@@ -474,13 +476,23 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             var W_ih_p = self.W_ih.value_unsafe_ptr_cpu()
             var W_hh_p = self.W_hh.value_unsafe_ptr_cpu()
             var b_p = self.b.value_unsafe_ptr_cpu()
+            # Gate pre-activations via BLAS (Apple Accelerate), mirroring
+            # Linear's CPU path — was naive BATCH·(IN+H)·4H scalar dots.
+            #   ix = x @ W_ih  [BATCH, 4H],  hx = h_prev @ W_hh  [BATCH, 4H].
+            # The gate nonlinearities below stay scalar (O(BATCH·H)).
+            var ix_buf = alloc[Scalar[DT]](BATCH * FOURH)
+            var hx_buf = alloc[Scalar[DT]](BATCH * FOURH)
+            var ix_tt = TileTensor(ix_buf, row_major[BATCH, FOURH]())
+            var hx_tt = TileTensor(hx_buf, row_major[BATCH, FOURH]())
+            var Wih_tt = TileTensor(W_ih_p, row_major[Self.IN_, FOURH]())
+            var Whh_tt = TileTensor(W_hh_p, row_major[Self.HIDDEN, FOURH]())
+            max_matmul[target="cpu"](ix_tt, xv, Wih_tt, None)
+            max_matmul[target="cpu"](hx_tt, hp, Whh_tt, None)
             for bi in range(BATCH):
                 for k in range(FOURH):
-                    var pre: Scalar[DT] = b_p[k]
-                    for j in range(Self.IN_):
-                        pre += xv[bi, j] * W_ih_p[j * FOURH + k]
-                    for j in range(H):
-                        pre += hp[bi, j] * W_hh_p[j * FOURH + k]
+                    var pre: Scalar[DT] = (
+                        ix_buf[bi * FOURH + k] + hx_buf[bi * FOURH + k] + b_p[k]
+                    )
                     var act: Scalar[DT]
                     if k < 3 * H:
                         act = _sigmoid(pre) if k < 2 * H else tanh(pre)
@@ -497,6 +509,8 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
                     ct[bi, j] = c_new
                     ht[bi, j] = o_v * tc
                     cc[bi, 4 * H + j] = tc
+            hx_buf.free()
+            ix_buf.free()
         else:
             var ctx = self.ts.ctx.value()
             var x_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.IN_), MutAnyOrigin](
@@ -563,14 +577,21 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             var W_ih_p = self.W_ih.value_unsafe_ptr_cpu()
             var W_hh_p = self.W_hh.value_unsafe_ptr_cpu()
             var b_p = self.b.value_unsafe_ptr_cpu()
+            # BLAS gate pre-activations (see step_forward).
+            var ix_buf = alloc[Scalar[DT]](BATCH * FOURH)
+            var hx_buf = alloc[Scalar[DT]](BATCH * FOURH)
+            var ix_tt = TileTensor(ix_buf, row_major[BATCH, FOURH]())
+            var hx_tt = TileTensor(hx_buf, row_major[BATCH, FOURH]())
+            var Wih_tt = TileTensor(W_ih_p, row_major[Self.IN_, FOURH]())
+            var Whh_tt = TileTensor(W_hh_p, row_major[Self.HIDDEN, FOURH]())
+            max_matmul[target="cpu"](ix_tt, xv, Wih_tt, None)
+            max_matmul[target="cpu"](hx_tt, hp, Whh_tt, None)
             for bi in range(BATCH):
                 var gates = InlineArray[Scalar[DT], 4 * Self.HIDDEN](fill=0.0)
                 for k in range(FOURH):
-                    var pre: Scalar[DT] = b_p[k]
-                    for j in range(Self.IN_):
-                        pre += xv[bi, j] * W_ih_p[j * FOURH + k]
-                    for j in range(H):
-                        pre += hp[bi, j] * W_hh_p[j * FOURH + k]
+                    var pre: Scalar[DT] = (
+                        ix_buf[bi * FOURH + k] + hx_buf[bi * FOURH + k] + b_p[k]
+                    )
                     if k < 3 * H:
                         gates[k] = _sigmoid(pre) if k < 2 * H else tanh(pre)
                     else:
@@ -579,6 +600,8 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
                     var c_new = gates[H + j] * cp[bi, j] + gates[j] * gates[2 * H + j]
                     ct[bi, j] = c_new
                     ht[bi, j] = gates[3 * H + j] * tanh(c_new)
+            hx_buf.free()
+            ix_buf.free()
         else:
             var ctx = self.ts.ctx.value()
             var x_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.IN_), MutAnyOrigin](
@@ -671,8 +694,13 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             var dW_ih_p = self.W_ih.grad_unsafe_ptr_cpu()
             var dW_hh_p = self.W_hh.grad_unsafe_ptr_cpu()
             var db_p = self.b.grad_unsafe_ptr_cpu()
+            # Gate-grad math (unchanged) produces the combined per-(b,k) preact
+            # gradient. Write it into a [BATCH, 4H] buffer `d_pre` so the dW /
+            # dx / dh_prev work below can run through BLAS like Linear's CPU
+            # backward (was naive BATCH·(IN+H)·4H scalar loops). The cell-state
+            # grad path `dcp = dc_total ⊙ f` stays scalar (O(BATCH·H)).
+            var dpre_buf = alloc[Scalar[DT]](BATCH * FOURH)
             for bi in range(BATCH):
-                var d_comb = InlineArray[Scalar[DT], 4 * Self.HIDDEN](fill=0.0)
                 for j in range(H):
                     var i_v = cc[bi, j]
                     var f_v = cc[bi, H + j]
@@ -687,30 +715,56 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
                     var di_post = dc_total * g_v
                     var dg_post = dc_total * i_v
                     dcp[bi, j] = dc_total * f_v
-                    d_comb[j]         = di_post * i_v * (Scalar[DT](1.0) - i_v)
-                    d_comb[H + j]     = df_post * f_v * (Scalar[DT](1.0) - f_v)
-                    d_comb[2 * H + j] = dg_post * (Scalar[DT](1.0) - g_v * g_v)
-                    d_comb[3 * H + j] = do_post * o_v * (Scalar[DT](1.0) - o_v)
+                    var base = bi * FOURH
+                    dpre_buf[base + j]         = di_post * i_v * (Scalar[DT](1.0) - i_v)
+                    dpre_buf[base + H + j]     = df_post * f_v * (Scalar[DT](1.0) - f_v)
+                    dpre_buf[base + 2 * H + j] = dg_post * (Scalar[DT](1.0) - g_v * g_v)
+                    dpre_buf[base + 3 * H + j] = do_post * o_v * (Scalar[DT](1.0) - o_v)
+            var dpre_tt = TileTensor(dpre_buf, row_major[BATCH, FOURH]())
+
+            # ── dW_ih += xᵀ @ d_pre, dW_hh += h_prevᵀ @ d_pre, db += Σ_b d_pre.
+            # Transpose x / h_prev into contiguous [IN, BATCH] / [H, BATCH]
+            # FIRST — this reads the cached x / h_prev BEFORE the dx / dh_prev
+            # matmuls below clobber the aliased input slabs (leaf
+            # backward-order invariant). Matmul into a temp then accumulate.
+            var xT_buf = alloc[Scalar[DT]](Self.IN_ * BATCH)
+            for bi in range(BATCH):
                 for j in range(Self.IN_):
-                    var xvj = xv[bi, j]
-                    for k in range(FOURH):
-                        dW_ih_p[j * FOURH + k] += xvj * d_comb[k]
+                    xT_buf[j * BATCH + bi] = xv[bi, j]
+            var hT_buf = alloc[Scalar[DT]](Self.HIDDEN * BATCH)
+            for bi in range(BATCH):
                 for j in range(H):
-                    var hvj = hp[bi, j]
-                    for k in range(FOURH):
-                        dW_hh_p[j * FOURH + k] += hvj * d_comb[k]
-                for k in range(FOURH):
-                    db_p[k] += d_comb[k]
-                for j in range(Self.IN_):
-                    var acc: Scalar[DT] = 0.0
-                    for k in range(FOURH):
-                        acc += d_comb[k] * W_ih_p[j * FOURH + k]
-                    dxv[bi, j] = acc
-                for j in range(H):
-                    var acc: Scalar[DT] = 0.0
-                    for k in range(FOURH):
-                        acc += d_comb[k] * W_hh_p[j * FOURH + k]
-                    dhp[bi, j] = acc
+                    hT_buf[j * BATCH + bi] = hp[bi, j]
+            var dWih_tmp = alloc[Scalar[DT]](Self.IN_ * FOURH)
+            var dWhh_tmp = alloc[Scalar[DT]](Self.HIDDEN * FOURH)
+            var xT_tt = TileTensor(xT_buf, row_major[Self.IN_, BATCH]())
+            var hT_tt = TileTensor(hT_buf, row_major[Self.HIDDEN, BATCH]())
+            var dWih_tmp_tt = TileTensor(dWih_tmp, row_major[Self.IN_, FOURH]())
+            var dWhh_tmp_tt = TileTensor(dWhh_tmp, row_major[Self.HIDDEN, FOURH]())
+            max_matmul[target="cpu"](dWih_tmp_tt, xT_tt, dpre_tt, None)
+            max_matmul[target="cpu"](dWhh_tmp_tt, hT_tt, dpre_tt, None)
+            for idx in range(Self.IN_ * FOURH):
+                dW_ih_p[idx] += dWih_tmp[idx]
+            for idx in range(Self.HIDDEN * FOURH):
+                dW_hh_p[idx] += dWhh_tmp[idx]
+            # db — cheap O(BATCH·4H) reduction; keep scalar.
+            for k in range(FOURH):
+                var sb: Scalar[DT] = 0.0
+                for bi in range(BATCH):
+                    sb += dpre_buf[bi * FOURH + k]
+                db_p[k] += sb
+            dWhh_tmp.free()
+            dWih_tmp.free()
+            hT_buf.free()
+            xT_buf.free()
+
+            # ── dx = d_pre @ W_ihᵀ, dh_prev = d_pre @ W_hhᵀ via BLAS. These
+            # WRITE the slabs that x / h_prev alias — safe now (dW reads done).
+            var Wih_tt = TileTensor(W_ih_p, row_major[Self.IN_, FOURH]())
+            var Whh_tt = TileTensor(W_hh_p, row_major[Self.HIDDEN, FOURH]())
+            max_matmul[transpose_b=True, target="cpu"](dxv, dpre_tt, Wih_tt, None)
+            max_matmul[transpose_b=True, target="cpu"](dhp, dpre_tt, Whh_tt, None)
+            dpre_buf.free()
         else:
             var ctx = self.ts.ctx.value()
             self._ensure_dcomb_gpu(BATCH)

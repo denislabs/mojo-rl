@@ -30,10 +30,12 @@ weight init (trunc_normal scaled) is deferred to the consumer PR; `make`
 forwards the supplied `INIT` (treated like a dense layer of fan IN→OUT).
 """
 
+from std.memory import alloc
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
+from linalg.matmul import matmul as max_matmul
 
 from ..constants import DT, TPB
 from ..core import (
@@ -242,16 +244,54 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
         comptime if target == "cpu":
             var w_p = self.weight.value_unsafe_ptr_cpu()
             var b_p = self.bias.value_unsafe_ptr_cpu()
-            for b in range(BATCH):
+            comptime if Self.BLOCKS == 1:
+                # Plain dense matmul — input/output blocks ARE the full
+                # contiguous [BATCH, IN]/[BATCH, OUT] tiles, no gather needed.
+                var w_tt = TileTensor(
+                    self.weight.value, row_major[Self.IN, Self.OUT](),
+                )
+                max_matmul[target="cpu"](output_v, input_v, w_tt, None)
+                for b in range(BATCH):
+                    var out_base = b * Self.OUT
+                    for o in range(Self.OUT):
+                        out_p[out_base + o] = out_p[out_base + o] + b_p[o]
+            else:
+                # BLOCKS independent matmuls. The block's input/output columns
+                # are STRIDED slices of [BATCH, IN]/[BATCH, OUT], so gather each
+                # x_block into a contiguous [BATCH, IPB] tile, run BLAS (Apple
+                # Accelerate) `xblk @ kernel[k]`, then scatter + add bias.
+                # kernel[k] = w_p[w_blk + i*OPB + o] is already a row-major
+                # [IPB, OPB] tile at offset w_blk. Scratch reused per block.
+                var xblk_buf = alloc[Scalar[DT]](BATCH * Self.IPB)
+                var oblk_buf = alloc[Scalar[DT]](BATCH * Self.OPB)
                 for k in range(Self.BLOCKS):
-                    var x_base = b * Self.IN + k * Self.IPB
-                    var w_blk = k * Self.IPB * Self.OPB
-                    var out_base = b * Self.OUT + k * Self.OPB
-                    for o in range(Self.OPB):
-                        var acc = b_p[k * Self.OPB + o]
+                    var in_col0 = k * Self.IPB
+                    for b in range(BATCH):
+                        var xb_base = b * Self.IPB
+                        var src_base = b * Self.IN + in_col0
                         for i in range(Self.IPB):
-                            acc += w_p[w_blk + i * Self.OPB + o] * in_p[x_base + i]
-                        out_p[out_base + o] = acc
+                            xblk_buf[xb_base + i] = in_p[src_base + i]
+                    var w_blk = k * Self.IPB * Self.OPB
+                    var xblk_tt = TileTensor(
+                        xblk_buf, row_major[BATCH, Self.IPB](),
+                    )
+                    var kernel_k_tt = TileTensor(
+                        w_p + w_blk, row_major[Self.IPB, Self.OPB](),
+                    )
+                    var oblk_tt = TileTensor(
+                        oblk_buf, row_major[BATCH, Self.OPB](),
+                    )
+                    max_matmul[target="cpu"](oblk_tt, xblk_tt, kernel_k_tt, None)
+                    var out_col0 = k * Self.OPB
+                    for b in range(BATCH):
+                        var ob_base = b * Self.OPB
+                        var dst_base = b * Self.OUT + out_col0
+                        for o in range(Self.OPB):
+                            out_p[dst_base + o] = (
+                                oblk_buf[ob_base + o] + b_p[out_col0 + o]
+                            )
+                oblk_buf.free()
+                xblk_buf.free()
         else:
             var ctx = self.ts.ctx.value()
             var w_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
@@ -300,41 +340,121 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
         )
 
         comptime if target == "cpu":
-            # Param grads FIRST — they read `_cached_input_ptr`, which
-            # aliases the input slab that grad_input is about to clobber.
+            # ── LOOP 1: param grads FIRST ──────────────────────────────
+            # They read `_cached_input_ptr` (the cached input x), which
+            # aliases the input slab grad_input is about to clobber — so ALL
+            # grad_weight gathers/matmuls happen before any grad_x write.
             comptime if mode == "all":
                 var gw_p = self.weight.grad_unsafe_ptr_cpu()
                 var gb_p = self.bias.grad_unsafe_ptr_cpu()
                 var x_p = self._cached_input_ptr.value()
-                for k in range(Self.BLOCKS):
-                    var w_blk = k * Self.IPB * Self.OPB
-                    for i in range(Self.IPB):
-                        var in_col = k * Self.IPB + i
-                        for o in range(Self.OPB):
-                            var out_col = k * Self.OPB + o
-                            var acc: Scalar[DT] = 0.0
-                            for b in range(BATCH):
-                                acc += (
-                                    x_p[b * Self.IN + in_col]
-                                    * go_p[b * Self.OUT + out_col]
-                                )
-                            gw_p[w_blk + i * Self.OPB + o] += acc
+                # grad_bias[j] += Σ_b go[b,j] — cheap, keep scalar.
                 for j in range(Self.OUT):
                     var accb: Scalar[DT] = 0.0
                     for b in range(BATCH):
                         accb += go_p[b * Self.OUT + j]
                     gb_p[j] += accb
-            # grad_x last.
+                # grad_weight[k] += x_block^T @ go_block, via BLAS (Apple
+                # Accelerate). x_block/go_block are strided column-slices →
+                # gather x_blockᵀ [IPB, BATCH] (transpose during gather) and
+                # go_block [BATCH, OPB], matmul into a [IPB, OPB] temp, then
+                # ADD into grad_weight[k] at offset w_blk. Scratch reused.
+                comptime if Self.BLOCKS == 1:
+                    # Dense: x is already contiguous [BATCH, IN]; transpose
+                    # into cT [IN, BATCH] and matmul straight into the temp.
+                    var cT_buf = alloc[Scalar[DT]](BATCH * Self.IN)
+                    var dW_buf = alloc[Scalar[DT]](Self.IN * Self.OUT)
+                    for b in range(BATCH):
+                        for i in range(Self.IN):
+                            cT_buf[i * BATCH + b] = x_p[b * Self.IN + i]
+                    var cT_tt = TileTensor(
+                        cT_buf, row_major[Self.IN, BATCH](),
+                    )
+                    var dW_tt = TileTensor(
+                        dW_buf, row_major[Self.IN, Self.OUT](),
+                    )
+                    max_matmul[target="cpu"](dW_tt, cT_tt, grad_output_v, None)
+                    for idx in range(Self.IN * Self.OUT):
+                        gw_p[idx] = gw_p[idx] + dW_buf[idx]
+                    dW_buf.free()
+                    cT_buf.free()
+                else:
+                    var xT_buf = alloc[Scalar[DT]](Self.IPB * BATCH)
+                    var gob_buf = alloc[Scalar[DT]](BATCH * Self.OPB)
+                    var dW_buf = alloc[Scalar[DT]](Self.IPB * Self.OPB)
+                    for k in range(Self.BLOCKS):
+                        var in_col0 = k * Self.IPB
+                        var out_col0 = k * Self.OPB
+                        # Gather x_blockᵀ [IPB, BATCH] and go_block [BATCH, OPB].
+                        for b in range(BATCH):
+                            var x_src = b * Self.IN + in_col0
+                            for i in range(Self.IPB):
+                                xT_buf[i * BATCH + b] = x_p[x_src + i]
+                            var go_src = b * Self.OUT + out_col0
+                            var gob_dst = b * Self.OPB
+                            for o in range(Self.OPB):
+                                gob_buf[gob_dst + o] = go_p[go_src + o]
+                        var xT_tt = TileTensor(
+                            xT_buf, row_major[Self.IPB, BATCH](),
+                        )
+                        var gob_tt = TileTensor(
+                            gob_buf, row_major[BATCH, Self.OPB](),
+                        )
+                        var dW_tt = TileTensor(
+                            dW_buf, row_major[Self.IPB, Self.OPB](),
+                        )
+                        max_matmul[target="cpu"](dW_tt, xT_tt, gob_tt, None)
+                        var w_blk = k * Self.IPB * Self.OPB
+                        for idx in range(Self.IPB * Self.OPB):
+                            gw_p[w_blk + idx] = gw_p[w_blk + idx] + dW_buf[idx]
+                    dW_buf.free()
+                    gob_buf.free()
+                    xT_buf.free()
+
+            # ── LOOP 2: grad_x last (clobbers the aliased input slab) ──
+            # grad_x_block = go_block @ kernel[k]ᵀ, [BATCH,OPB]@[OPB,IPB], via
+            # transpose_b BLAS. kernel[k] is row-major [IPB, OPB] at w_blk, so
+            # transpose_b gives go_block @ kernelᵀ → [BATCH, IPB]. Gather
+            # go_block contiguous, matmul into a temp, scatter into grad_x.
             var w_p = self.weight.value_unsafe_ptr_cpu()
-            for b in range(BATCH):
+            comptime if Self.BLOCKS == 1:
+                var w_tt = TileTensor(
+                    self.weight.value, row_major[Self.IN, Self.OUT](),
+                )
+                max_matmul[transpose_b=True, target="cpu"](
+                    grad_input_v, grad_output_v, w_tt, None,
+                )
+            else:
+                var gob_buf2 = alloc[Scalar[DT]](BATCH * Self.OPB)
+                var gxb_buf = alloc[Scalar[DT]](BATCH * Self.IPB)
                 for k in range(Self.BLOCKS):
-                    var w_blk = k * Self.IPB * Self.OPB
-                    var go_base = b * Self.OUT + k * Self.OPB
-                    for i in range(Self.IPB):
-                        var acc: Scalar[DT] = 0.0
+                    var out_col0 = k * Self.OPB
+                    for b in range(BATCH):
+                        var go_src = b * Self.OUT + out_col0
+                        var gob_dst = b * Self.OPB
                         for o in range(Self.OPB):
-                            acc += go_p[go_base + o] * w_p[w_blk + i * Self.OPB + o]
-                        gi_p[b * Self.IN + k * Self.IPB + i] = acc
+                            gob_buf2[gob_dst + o] = go_p[go_src + o]
+                    var w_blk = k * Self.IPB * Self.OPB
+                    var gob_tt = TileTensor(
+                        gob_buf2, row_major[BATCH, Self.OPB](),
+                    )
+                    var kernel_k_tt = TileTensor(
+                        w_p + w_blk, row_major[Self.IPB, Self.OPB](),
+                    )
+                    var gxb_tt = TileTensor(
+                        gxb_buf, row_major[BATCH, Self.IPB](),
+                    )
+                    max_matmul[transpose_b=True, target="cpu"](
+                        gxb_tt, gob_tt, kernel_k_tt, None,
+                    )
+                    var in_col0 = k * Self.IPB
+                    for b in range(BATCH):
+                        var gxb_src = b * Self.IPB
+                        var dst = b * Self.IN + in_col0
+                        for i in range(Self.IPB):
+                            gi_p[dst + i] = gxb_buf[gxb_src + i]
+                gxb_buf.free()
+                gob_buf2.free()
         else:
             var ctx = self.ts.ctx.value()
             var w_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
