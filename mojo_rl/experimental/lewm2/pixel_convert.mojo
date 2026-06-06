@@ -1,4 +1,4 @@
-"""uint8 HWC → fp32 CHW/÷255 pixel conversion (LeWM real-data path).
+"""Uint8 HWC → fp32 CHW/÷255 pixel conversion (LeWM real-data path).
 
 Environments hand frames as `uint8` in HWC (height, width, channel)
 layout; the encoder's `PatchEmbed` expects `fp32` CHW normalised to
