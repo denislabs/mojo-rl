@@ -687,7 +687,19 @@ struct BatchedGpuDiscreteEnv[
                 UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
             ](self._env_rng_counter.unsafe_ptr()),
         )
-        self._seed_obs(c)
+        # Re-seed obs ONLY for state-prefix (clean-obs) envs, where extraction
+        # reproduces the current obs from state — harmless for non-done envs,
+        # correct (reset-start obs) for done envs. For PIXEL envs `_seed_obs`
+        # MEMSETS `_obs` to 0; running it here every iteration would zero the
+        # driver's `prev_obs` snapshot on the next loop top, corrupting every
+        # transition (prev_obs all-zero vs the normalized rendered next_obs)
+        # → uniform collapse. Pixel obs already lives in the workspace frame
+        # stack and is rewritten by the next `step_batch`, so leave `_obs` as
+        # the just-stepped observation. (Done pixel envs carry ~FRAME_STACK
+        # stale frames into the new episode — a minor boundary effect, not a
+        # training-killer.)
+        comptime if Self._OBS_IS_STATE_PREFIX:
+            self._seed_obs(c)
 
     def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
