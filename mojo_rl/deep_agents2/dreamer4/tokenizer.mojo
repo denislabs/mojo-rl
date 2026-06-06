@@ -8,7 +8,7 @@ one Module lets a single optimizer cover all params via `for_each_param`.
     patches (NP·DP) → encoder → z (L·D_BOT) → decoder → pred (NP·DP)
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
@@ -25,6 +25,17 @@ from .encoder import Dreamer4Encoder
 def _mao_tile[
     BATCH: Int, N: Int
 ](mut buf: List[Scalar[DT]]) -> TileTensor[
+    DT, type_of(row_major[BATCH, N]()), MutAnyOrigin
+]:
+    return TileTensor(
+        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](buf.unsafe_ptr()),
+        row_major[BATCH, N](),
+    )
+
+
+def _dev_tile[
+    BATCH: Int, N: Int
+](buf: DeviceBuffer[DT]) -> TileTensor[
     DT, type_of(row_major[BATCH, N]()), MutAnyOrigin
 ]:
     return TileTensor(
@@ -56,6 +67,9 @@ struct Dreamer4Tokenizer[
     var dec: Self.DEC
     var z: List[Scalar[DT]]
     var grad_z: List[Scalar[DT]]
+    var z_dev: Optional[DeviceBuffer[DT]]
+    var gz_dev: Optional[DeviceBuffer[DT]]
+    var scratch_n: Int
     var ts: TargetStorage
 
     def __init__(out self):
@@ -63,17 +77,32 @@ struct Dreamer4Tokenizer[
         self.dec = Self.DEC()
         self.z = List[Scalar[DT]]()
         self.grad_z = List[Scalar[DT]]()
+        self.z_dev = None
+        self.gz_dev = None
+        self.scratch_n = 0
         self.ts = TargetStorage.make_uninit()
+
+    def _ensure_scratch_gpu(mut self, n: Int) raises:
+        if self.scratch_n < n:
+            var ctx = self.ts.ctx.value()
+            self.z_dev = ctx.enqueue_create_buffer[DT](n)
+            self.gz_dev = ctx.enqueue_create_buffer[DT](n)
+            self.scratch_n = n
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu", "Dreamer4Tokenizer: PHASE 1 is CPU-only"
+        comptime assert target == "cpu" or target == "gpu", (
+            "Dreamer4Tokenizer: target must be 'cpu' or 'gpu'"
+        )
         var m = Self()
         m.enc = Self.ENC.make[target=target, INIT=INIT](ctx)
         m.dec = Self.DEC.make[target=target, INIT=INIT](ctx)
-        m.ts = TargetStorage.make_cpu()
+        comptime if target == "cpu":
+            m.ts = TargetStorage.make_cpu()
+        else:
+            m.ts = TargetStorage.make_gpu(ctx.value())
         return m^
 
     @staticmethod
@@ -107,8 +136,14 @@ struct Dreamer4Tokenizer[
         assert_tag_for["Dreamer4Tokenizer", target](self.ts.target_tag)
         var inp = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
-        ensure_cpu_buffer(self.z, BATCH * Self.ZN)
-        var zt = _mao_tile[BATCH, Self.ZN](self.z)
+        comptime LAY = type_of(row_major[BATCH, Self.ZN]())
+        var zt: TileTensor[DT, LAY, MutAnyOrigin]
+        comptime if target == "cpu":
+            ensure_cpu_buffer(self.z, BATCH * Self.ZN)
+            zt = _mao_tile[BATCH, Self.ZN](self.z)
+        else:
+            self._ensure_scratch_gpu(BATCH * Self.ZN)
+            zt = _dev_tile[BATCH, Self.ZN](self.z_dev.value())
         self.enc.forward[target, BATCH, POLICY=POLICY](inp, output=zt)
         self.dec.forward[target, BATCH, POLICY=POLICY](zt, output=out)
 
@@ -131,8 +166,14 @@ struct Dreamer4Tokenizer[
         assert_tag_for["Dreamer4Tokenizer", target](self.ts.target_tag)
         var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
         var gin = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
-        ensure_cpu_buffer(self.grad_z, BATCH * Self.ZN)
-        var gzt = _mao_tile[BATCH, Self.ZN](self.grad_z)
+        comptime LAY = type_of(row_major[BATCH, Self.ZN]())
+        var gzt: TileTensor[DT, LAY, MutAnyOrigin]
+        comptime if target == "cpu":
+            ensure_cpu_buffer(self.grad_z, BATCH * Self.ZN)
+            gzt = _mao_tile[BATCH, Self.ZN](self.grad_z)
+        else:
+            self._ensure_scratch_gpu(BATCH * Self.ZN)
+            gzt = _dev_tile[BATCH, Self.ZN](self.gz_dev.value())
         self.dec.vjp[target, BATCH, POLICY=POLICY, mode=mode](go, gzt)
         self.enc.vjp[target, BATCH, POLICY=POLICY, mode=mode](gzt, gin)
 

@@ -14,7 +14,7 @@ children — `proj`, `mae`, `body` — and delegates param/grad visiting to all
 three; `mae_mask_ptr()` / `advance_rng()` forward to the MAE leaf.
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
@@ -37,6 +37,17 @@ from .blocks import Dreamer4Stack
 def _mao_tile[
     BATCH: Int, N: Int
 ](mut buf: List[Scalar[DT]]) -> TileTensor[
+    DT, type_of(row_major[BATCH, N]()), MutAnyOrigin
+]:
+    return TileTensor(
+        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](buf.unsafe_ptr()),
+        row_major[BATCH, N](),
+    )
+
+
+def _dev_tile[
+    BATCH: Int, N: Int
+](buf: DeviceBuffer[DT]) -> TileTensor[
     DT, type_of(row_major[BATCH, N]()), MutAnyOrigin
 ]:
     return TileTensor(
@@ -73,10 +84,15 @@ struct Dreamer4Encoder[
     var proj: Self.PROJ
     var mae: Self.MAE
     var body: Self.BODY
-    var proj_out: List[Scalar[DT]]      # [BATCH*NP*D]
+    var proj_out: List[Scalar[DT]]      # CPU scratch [BATCH*NP*D]
     var masked: List[Scalar[DT]]
     var grad_masked: List[Scalar[DT]]
     var grad_proj: List[Scalar[DT]]
+    var po_dev: Optional[DeviceBuffer[DT]]     # GPU scratch
+    var mk_dev: Optional[DeviceBuffer[DT]]
+    var gmk_dev: Optional[DeviceBuffer[DT]]
+    var gpo_dev: Optional[DeviceBuffer[DT]]
+    var scratch_n: Int
     var ts: TargetStorage
 
     def __init__(out self):
@@ -87,18 +103,37 @@ struct Dreamer4Encoder[
         self.masked = List[Scalar[DT]]()
         self.grad_masked = List[Scalar[DT]]()
         self.grad_proj = List[Scalar[DT]]()
+        self.po_dev = None
+        self.mk_dev = None
+        self.gmk_dev = None
+        self.gpo_dev = None
+        self.scratch_n = 0
         self.ts = TargetStorage.make_uninit()
+
+    def _ensure_scratch_gpu(mut self, n: Int) raises:
+        if self.scratch_n < n:
+            var ctx = self.ts.ctx.value()
+            self.po_dev = ctx.enqueue_create_buffer[DT](n)
+            self.mk_dev = ctx.enqueue_create_buffer[DT](n)
+            self.gmk_dev = ctx.enqueue_create_buffer[DT](n)
+            self.gpo_dev = ctx.enqueue_create_buffer[DT](n)
+            self.scratch_n = n
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu", "Dreamer4Encoder: PHASE 1 is CPU-only"
+        comptime assert target == "cpu" or target == "gpu", (
+            "Dreamer4Encoder: target must be 'cpu' or 'gpu'"
+        )
         var m = Self()
         m.proj = Self.PROJ.make[target=target, INIT=INIT](ctx)
         m.mae = Self.MAE.make[target=target, INIT=INIT](ctx)
         m.body = Self.BODY.make[target=target, INIT=INIT](ctx)
-        m.ts = TargetStorage.make_cpu()
+        comptime if target == "cpu":
+            m.ts = TargetStorage.make_cpu()
+        else:
+            m.ts = TargetStorage.make_gpu(ctx.value())
         return m^
 
     @staticmethod
@@ -133,10 +168,18 @@ struct Dreamer4Encoder[
         assert_tag_for["Dreamer4Encoder", target](self.ts.target_tag)
         var inp = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
-        ensure_cpu_buffer(self.proj_out, BATCH * Self.ND)
-        ensure_cpu_buffer(self.masked, BATCH * Self.ND)
-        var po = _mao_tile[BATCH, Self.ND](self.proj_out)
-        var mk = _mao_tile[BATCH, Self.ND](self.masked)
+        comptime LAY = type_of(row_major[BATCH, Self.ND]())
+        var po: TileTensor[DT, LAY, MutAnyOrigin]
+        var mk: TileTensor[DT, LAY, MutAnyOrigin]
+        comptime if target == "cpu":
+            ensure_cpu_buffer(self.proj_out, BATCH * Self.ND)
+            ensure_cpu_buffer(self.masked, BATCH * Self.ND)
+            po = _mao_tile[BATCH, Self.ND](self.proj_out)
+            mk = _mao_tile[BATCH, Self.ND](self.masked)
+        else:
+            self._ensure_scratch_gpu(BATCH * Self.ND)
+            po = _dev_tile[BATCH, Self.ND](self.po_dev.value())
+            mk = _dev_tile[BATCH, Self.ND](self.mk_dev.value())
         self.proj.forward[target, BATCH, POLICY=POLICY](inp, output=po)
         self.mae.forward[target, BATCH, POLICY=POLICY](po, output=mk)
         self.body.forward[target, BATCH, POLICY=POLICY](mk, output=out)
@@ -160,10 +203,18 @@ struct Dreamer4Encoder[
         assert_tag_for["Dreamer4Encoder", target](self.ts.target_tag)
         var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
         var gin = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
-        ensure_cpu_buffer(self.grad_masked, BATCH * Self.ND)
-        ensure_cpu_buffer(self.grad_proj, BATCH * Self.ND)
-        var gmk = _mao_tile[BATCH, Self.ND](self.grad_masked)
-        var gpo = _mao_tile[BATCH, Self.ND](self.grad_proj)
+        comptime LAY = type_of(row_major[BATCH, Self.ND]())
+        var gmk: TileTensor[DT, LAY, MutAnyOrigin]
+        var gpo: TileTensor[DT, LAY, MutAnyOrigin]
+        comptime if target == "cpu":
+            ensure_cpu_buffer(self.grad_masked, BATCH * Self.ND)
+            ensure_cpu_buffer(self.grad_proj, BATCH * Self.ND)
+            gmk = _mao_tile[BATCH, Self.ND](self.grad_masked)
+            gpo = _mao_tile[BATCH, Self.ND](self.grad_proj)
+        else:
+            self._ensure_scratch_gpu(BATCH * Self.ND)
+            gmk = _dev_tile[BATCH, Self.ND](self.gmk_dev.value())
+            gpo = _dev_tile[BATCH, Self.ND](self.gpo_dev.value())
         self.body.vjp[target, BATCH, POLICY=POLICY, mode=mode](go, gmk)
         self.mae.vjp[target, BATCH, POLICY=POLICY, mode=mode](gmk, gpo)
         self.proj.vjp[target, BATCH, POLICY=POLICY, mode=mode](gpo, gin)
