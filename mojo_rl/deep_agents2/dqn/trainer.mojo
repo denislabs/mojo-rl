@@ -45,6 +45,7 @@ from mojo_rl.nn2.training.timer import Timer
 from ..core.checkpoint_helpers import (
     save_optimizer_v2_body, load_optimizer_v2_body,
     save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
+    save_counter_v2_body, load_counter_v2_body,
     split_lines_v2, read_file_v2, expect_v2_header,
 )
 from ..core.online_target_pair import OnlineTargetPair
@@ -696,6 +697,7 @@ struct DQNTrainer[
         SaveScalar[DT](self.epsilon).save(body, "eps.epsilon")
         SaveScalar[DT](self.epsilon_decay).save(body, "eps.epsilon_decay")
         SaveScalar[DT](self.epsilon_min).save(body, "eps.epsilon_min")
+        save_counter_v2_body(self._total_train_steps, body, "_total_train_steps")
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
@@ -725,6 +727,9 @@ struct DQNTrainer[
         var eps_min_w = SaveScalar[DT](self.epsilon_min)
         eps_min_w.load(lines, idx, "eps.epsilon_min")
         self.epsilon_min = eps_min_w.v
+        load_counter_v2_body(
+            self._total_train_steps, lines, idx, "_total_train_steps"
+        )
         hard_copy_params[Self.train_target, M=Self.Q_NET](
             self.pair.online, self.pair.target_net, self.ctx,
         )

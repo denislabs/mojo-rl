@@ -242,6 +242,37 @@ def load_scalar_adam_v2_body(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Scalar Int counter section — one `<prefix>=<value>` line.
+#
+# Used for cumulative trainer counters (e.g. `_total_train_steps`) that
+# must survive save/resume. PER β-anneal schedules key on this counter,
+# so dropping it restarts β annealing on every resume.
+#
+# `load` is TOLERANT of absence: a checkpoint written before the counter
+# section existed simply leaves `value` unchanged (idx not advanced).
+# The counter section is therefore always appended LAST in each envelope
+# so older checkpoints still parse cleanly.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def save_counter_v2_body(value: Int, mut out: String, prefix: String):
+    """Append a single `<prefix>=<value>` counter line to `out`."""
+    out += prefix + "=" + String(value) + "\n"
+
+
+def load_counter_v2_body(
+    mut value: Int, lines: List[String], mut idx: Int, prefix: String,
+) raises:
+    """Consume a `<prefix>=<value>` counter line from `lines[idx:]`,
+    advancing `idx`. If the stream is exhausted (older checkpoint with no
+    counter section) `value` is left unchanged and `idx` is not advanced."""
+    if idx >= len(lines):
+        return
+    value = atol(_expect_kv_line(lines, idx, prefix))
+    idx += 1
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Single-section convenience wrappers — one Saveable per file.
 # ──────────────────────────────────────────────────────────────────────
 

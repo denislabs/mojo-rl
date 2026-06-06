@@ -45,6 +45,7 @@ from mojo_rl.nn2.core.metric import LogScalar
 from ..core.checkpoint_helpers import (
     save_optimizer_v2_body, load_optimizer_v2_body,
     save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
+    save_counter_v2_body, load_counter_v2_body,
     split_lines_v2, read_file_v2, expect_v2_header,
 )
 from ..core.online_target_pair import OnlineTargetPair
@@ -789,6 +790,7 @@ struct TD3Trainer[
             save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
             save_optimizer_v2_body(self.critic1_opt, body, "critic1_opt")
             save_optimizer_v2_body(self.critic2_opt, body, "critic2_opt")
+        save_counter_v2_body(self._total_train_steps, body, "_total_train_steps")
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
@@ -833,6 +835,9 @@ struct TD3Trainer[
             hard_copy_params["cpu", M=Self.CRITIC](
                 self.pair2.online, self.pair2.target_net, None,
             )
+        load_counter_v2_body(
+            self._total_train_steps, lines, idx, "_total_train_steps"
+        )
 
     def flush_timer_log(mut self) -> String:
         """Per-section wall-time report (sample / target_y / critic /

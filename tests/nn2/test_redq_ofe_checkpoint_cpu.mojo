@@ -161,7 +161,21 @@ def test_redq_ofe_checkpoint_round_trip() raises:
         "fresh trainer (pre-load) should differ from original — gate sanity",
     )
 
+    # Sanity: fresh trainer ran no train steps, so its cumulative counter
+    # is 0 before load (gate that the round-trip assertion below is real).
+    assert_true(
+        fresh.total_train_steps() == 0,
+        "fresh trainer should have 0 train steps before load",
+    )
+
     fresh.load_state(path)
+    # M4: cumulative _total_train_steps must survive save/resume (PER
+    # β-anneal schedules key on it). The byte-identical gate (6) below
+    # also covers this, but assert it directly for a clear failure.
+    assert_true(
+        fresh.total_train_steps() == trainer.total_train_steps(),
+        "loaded trainer must restore the cumulative _total_train_steps",
+    )
     var act_loaded = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
     fresh.select_greedy_action(probe, act_loaded)
     print("  greedy[loaded] =", act_loaded[0])

@@ -53,6 +53,8 @@ from ..core.checkpoint_helpers import (
     load_optimizer_v2_body_gpu,
     save_scalar_adam_v2_body,
     load_scalar_adam_v2_body,
+    save_counter_v2_body,
+    load_counter_v2_body,
     split_lines_v2,
     read_file_v2,
     expect_v2_header,
@@ -1128,6 +1130,7 @@ struct REDQTrainer[
             # the CPU serializer here — the GPU variants would try
             # to `sync_to_host()` an unallocated `state_dev`.
             save_scalar_adam_v2_body(self.alpha_opt, body, "alpha_opt")
+        save_counter_v2_body(self._total_train_steps, body, "_total_train_steps")
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
@@ -1203,6 +1206,9 @@ struct REDQTrainer[
                 idx,
                 "alpha_opt",
             )
+        load_counter_v2_body(
+            self._total_train_steps, lines, idx, "_total_train_steps"
+        )
         # Re-sync every target net from its just-restored online twin.
         for i in range(Self.N):
             hard_copy_params[Self.train_target, M=Self.CRITIC](

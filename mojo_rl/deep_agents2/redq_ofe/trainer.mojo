@@ -80,6 +80,8 @@ from ..core.checkpoint_helpers import (
     load_optimizer_v2_body_gpu,
     save_scalar_adam_v2_body,
     load_scalar_adam_v2_body,
+    save_counter_v2_body,
+    load_counter_v2_body,
     split_lines_v2,
     read_file_v2,
     expect_v2_header,
@@ -1280,6 +1282,7 @@ struct REDQOFETrainer[
         # ScalarAdam: REDQ-OFE uses ScalarAdam.new (host-only), so
         # the CPU serializer applies regardless of train_target.
         save_scalar_adam_v2_body(self.alpha_opt, body, "alpha_opt")
+        save_counter_v2_body(self._total_train_steps, body, "_total_train_steps")
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
@@ -1352,6 +1355,9 @@ struct REDQOFETrainer[
             )
         load_scalar_adam_v2_body(
             self.alpha_opt, lines, idx, "alpha_opt",
+        )
+        load_counter_v2_body(
+            self._total_train_steps, lines, idx, "_total_train_steps"
         )
         # Re-sync every target net from its just-restored online twin.
         for i in range(Self.N):

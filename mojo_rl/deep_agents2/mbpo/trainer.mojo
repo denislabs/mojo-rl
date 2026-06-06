@@ -48,6 +48,7 @@ from ..core.checkpoint_helpers import (
     save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
     save_scalar_adam_v2_body, load_scalar_adam_v2_body,
     save_scalar_adam_v2_body_gpu, load_scalar_adam_v2_body_gpu,
+    save_counter_v2_body, load_counter_v2_body,
     split_lines_v2, read_file_v2, expect_v2_header,
 )
 from ..core.online_target_pair import OnlineTargetPair
@@ -1189,6 +1190,7 @@ struct MBPOTrainer[
                 body, "dyn_elite" + String(i)
             )
         SaveI(self.rollout_length).save(body, "dyn_rollout_length")
+        save_counter_v2_body(self._total_train_steps, body, "_total_train_steps")
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
@@ -1253,6 +1255,9 @@ struct MBPOTrainer[
         var rl_w = SaveI(0)
         rl_w.load(lines, idx, "dyn_rollout_length")
         self.rollout_length = rl_w.v
+        load_counter_v2_body(
+            self._total_train_steps, lines, idx, "_total_train_steps"
+        )
 
     def flush_timer_log(mut self) -> String:
         var report = self.timer.format_report()

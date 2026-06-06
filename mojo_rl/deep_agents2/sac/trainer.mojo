@@ -60,6 +60,7 @@ from ..core.checkpoint_helpers import (
     save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
     save_scalar_adam_v2_body, load_scalar_adam_v2_body,
     save_scalar_adam_v2_body_gpu, load_scalar_adam_v2_body_gpu,
+    save_counter_v2_body, load_counter_v2_body,
     split_lines_v2, read_file_v2, expect_v2_header,
 )
 from ..core.online_target_pair import OnlineTargetPair
@@ -1410,6 +1411,7 @@ struct SACTrainer[
             save_optimizer_v2_body_gpu(self.critic1_opt, body, "critic1_opt")
             save_optimizer_v2_body_gpu(self.critic2_opt, body, "critic2_opt")
             save_scalar_adam_v2_body_gpu(self.alpha_opt, body, "alpha_opt")
+        save_counter_v2_body(self._total_train_steps, body, "_total_train_steps")
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
@@ -1442,6 +1444,9 @@ struct SACTrainer[
                 self.critic2_opt, lines, idx, "critic2_opt"
             )
             load_scalar_adam_v2_body_gpu(self.alpha_opt, lines, idx, "alpha_opt")
+        load_counter_v2_body(
+            self._total_train_steps, lines, idx, "_total_train_steps"
+        )
         hard_copy_params[Self.train_target, M=Self.CRITIC](
             self.pair1.online, self.pair1.target_net, self.ctx,
         )
