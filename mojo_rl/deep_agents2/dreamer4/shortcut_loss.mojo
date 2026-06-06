@@ -37,6 +37,7 @@ PHASE 2.3: CPU. GPU follows in Phase 2.4.
 from std.memory import alloc
 from std.math import max
 from layout import TileTensor, row_major
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
@@ -68,9 +69,54 @@ def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
 
 
+def _run_fwd[
+    M: ShortcutDynamics, FWD: StaticString, BATCH: Int, ND: Int
+](
+    mut dyn: M,
+    in_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    out_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ctx: Optional[DeviceContext],
+    dev_in: Optional[DeviceBuffer[DT]],
+    dev_out: Optional[DeviceBuffer[DT]],
+    h_in: Optional[HostBuffer[DT]],
+    h_out: Optional[HostBuffer[DT]],
+) raises:
+    """Run one dynamics forward. FWD="cpu": host tiles in place. FWD="gpu":
+    upload in_host→device, forward on GPU, download→out_host. The loss's
+    element-wise arithmetic stays on host either way (tiny latent buffers);
+    only the transformer forward (the heavy compute) runs on device."""
+    comptime if FWD == "cpu":
+        var it = TileTensor(in_host, row_major[BATCH, ND]())
+        var ot = TileTensor(out_host, row_major[BATCH, ND]())
+        dyn.forward["cpu", BATCH](it, output=ot)
+    else:
+        var c = ctx.value()
+        var hi = h_in.value()
+        var ho = h_out.value()
+        var di = dev_in.value()
+        var do_out = dev_out.value()
+        for i in range(BATCH * ND):
+            hi.unsafe_ptr()[i] = in_host[i]
+        c.enqueue_copy(di, hi)
+        var it = TileTensor(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](di.unsafe_ptr()),
+            row_major[BATCH, ND](),
+        )
+        var ot = TileTensor(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](do_out.unsafe_ptr()),
+            row_major[BATCH, ND](),
+        )
+        dyn.forward["gpu", BATCH](it, output=ot)
+        c.enqueue_copy(ho, do_out)
+        c.synchronize()
+        for i in range(BATCH * ND):
+            out_host[i] = ho.unsafe_ptr()[i]
+
+
 def dynamics_pretrain_loss[
     M: ShortcutDynamics,
     B: Int, T: Int, B_SELF: Int, NSP: Int, DSP: Int, KMAX: Int,
+    FWD: StaticString = "cpu",
 ](
     mut dyn: M,
     z1: UnsafePointer[Scalar[DT], MutAnyOrigin],         # [BF, ND] clean targets
@@ -81,7 +127,17 @@ def dynamics_pretrain_loss[
     do_boot: Bool,
     grad_zhat: UnsafePointer[Scalar[DT], MutAnyOrigin],  # OUT [BF, ND]  dL/dẑ
     zhat: UnsafePointer[Scalar[DT], MutAnyOrigin],       # OUT [BF, ND] main pred
+    ctx: Optional[DeviceContext] = None,                 # FWD="gpu" only
+    dev_in: Optional[DeviceBuffer[DT]] = None,           # device scratch [BF*ND]
+    dev_out: Optional[DeviceBuffer[DT]] = None,
+    h_in: Optional[HostBuffer[DT]] = None,               # host staging [BF*ND]
+    h_out: Optional[HostBuffer[DT]] = None,
 ) raises -> Float64:
+    """Shortcut-forcing loss. FWD="cpu" (default): all on host. FWD="gpu": the
+    dynamics forwards run on device (caller provides ctx + [BF*ND]-sized
+    dev_in/dev_out/h_in/h_out scratch); the element-wise loss arithmetic stays
+    on host (tiny latent buffers), so the GPU path is bit-identical to CPU."""
+    comptime assert FWD == "cpu" or FWD == "gpu", "FWD must be 'cpu' or 'gpu'"
     comptime BF = B * T
     comptime BS = B_SELF * T
     comptime B_EMP = B - B_SELF
@@ -137,9 +193,9 @@ def dynamics_pretrain_loss[
 
         # half1: ẑ1_half1 = dyn(z̃_self; σ_idx, step+1) ; b′ ; z′
         dyn.set_indices(sig_self, step_half, BS)
-        var zts_t = TileTensor(zts, row_major[BS, ND]())
-        var zh1_t = TileTensor(zh1, row_major[BS, ND]())
-        dyn.forward["cpu", BS](zts_t, output=zh1_t)
+        _run_fwd[M, FWD, BS, ND](
+            dyn, zts, zh1, ctx, dev_in, dev_out, h_in, h_out
+        )
         for j in range(BS):
             var denom = max(1.0 - sig_self_val[j], 1e-6)
             for i in range(ND):
@@ -150,9 +206,9 @@ def dynamics_pretrain_loss[
 
         # half2: ẑ1_half2 = dyn(z′; σ_idx+Δ, step+1) ; b″ ; v̄ = (b′+b″)/2
         dyn.set_indices(sig_plus, step_half, BS)
-        var zp_t = TileTensor(zprime, row_major[BS, ND]())
-        var zh2_t = TileTensor(zh2, row_major[BS, ND]())
-        dyn.forward["cpu", BS](zp_t, output=zh2_t)
+        _run_fwd[M, FWD, BS, ND](
+            dyn, zprime, zh2, ctx, dev_in, dev_out, h_in, h_out
+        )
         for j in range(BS):
             var denom = max(1.0 - sig_plus_val[j], 1e-6)
             for i in range(ND):
@@ -169,9 +225,9 @@ def dynamics_pretrain_loss[
 
     # ── MAIN forward (LAST forward → caches valid for the caller's vjp) ──
     dyn.set_indices(sigma_idx, step_idx, BF)
-    var ztil_t = TileTensor(ztil, row_major[BF, ND]())
-    var zhat_t = TileTensor(zhat, row_major[BF, ND]())
-    dyn.forward["cpu", BF](ztil_t, output=zhat_t)
+    _run_fwd[M, FWD, BF, ND](
+        dyn, ztil, zhat, ctx, dev_in, dev_out, h_in, h_out
+    )
 
     # ── losses + grad_zhat (= dL/dẑ for the main pass) ──────────────────
     # Both terms share a 1/(B*T) prefactor after the (B_emp/B)·(1/(B_emp·T))
