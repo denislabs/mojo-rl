@@ -1,0 +1,205 @@
+"""TimeAttentionLatents[D, N_HEADS, T, S, N_LATENTS] — causal time attention
+over the latent tokens of a (T, S, D) grid.
+
+Dreamer 4's block-causal transformer factorizes attention into space layers
+(over S tokens per frame) and a time layer every few blocks (causal over the
+T frames). The space layers run at effective batch B·T (one frame per sample,
+sequence S) via plain `Sequential` leaves. The time layer needs the *other*
+grouping — causal attention over T per token — which no per-sample leaf can
+express on the B·T layout. This leaf bridges that: it reads the full B·T
+batch, regroups the **latent** tokens to (B·L, T) and runs a causal
+`MultiHeadAttention` over T, then scatters back.
+
+I/O (per the B·T layout): IN_DIM == OUT_DIM == S·D. Sample `bt = b*T + t`,
+token `s`, channel `d` lives at `((b*T+t)*S + s)*D + d`. Only the first
+`N_LATENTS` tokens are time-attended; non-latent outputs are **0** so the
+enclosing `Residual` leaves them unchanged (the clean variant — the reference
+`TimeSelfAttention` instead leaks norm(x) into non-latents via the residual,
+which we treat as a bug and do not replicate).
+
+Internally wraps `MultiHeadAttention[D, N_HEADS, T, causal=True]` driven at
+batch B·L. Params (qkv/out projections) are owned by that inner module;
+`for_each_param` / `zero_grad` delegate to it.
+
+PHASE 1: CPU forward + vjp (gather → inner MHA → scatter). GPU follows.
+"""
+
+from std.gpu.host import DeviceContext
+from std.gpu.memory import AddressSpace
+from layout import TileTensor, row_major
+
+from ..constants import DT
+from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
+from ..core.module import Module, typed_view, typed_view_mut
+from ..core.target_storage import TargetStorage, assert_tag_for, ensure_cpu_buffer
+from ..composites import MultiHeadAttention
+
+
+struct TimeAttentionLatents[
+    D: Int, N_HEADS: Int, T: Int, S: Int, N_LATENTS: Int
+](Module):
+    comptime ARITY: Int = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.S * Self.D)
+    comptime OUT_DIM = Self.S * Self.D
+    comptime MHA = MultiHeadAttention[Self.D, Self.N_HEADS, Self.T, True]
+
+    var mha: Self.MHA
+    var packed_in: List[Scalar[DT]]    # [B*L, T*D]
+    var packed_out: List[Scalar[DT]]
+    var grad_pout: List[Scalar[DT]]
+    var grad_pin: List[Scalar[DT]]
+    var ts: TargetStorage
+
+    def __init__(out self):
+        self.mha = Self.MHA()
+        self.packed_in = List[Scalar[DT]]()
+        self.packed_out = List[Scalar[DT]]()
+        self.grad_pout = List[Scalar[DT]]()
+        self.grad_pin = List[Scalar[DT]]()
+        self.ts = TargetStorage.make_uninit()
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        comptime assert target == "cpu", (
+            "TimeAttentionLatents: PHASE 1 is CPU-only for now"
+        )
+        var m = Self()
+        m.mha = Self.MHA.make[target=target, INIT=INIT](ctx)
+        m.ts = TargetStorage.make_cpu()
+        return m^
+
+    @staticmethod
+    def display_label() -> String:
+        return String("TimeAttentionLatents")
+
+    def forward[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        var *inputs: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        mut output: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        assert_tag_for["TimeAttentionLatents", target](self.ts.target_tag)
+        comptime assert BATCH % Self.T == 0, (
+            "TimeAttentionLatents: BATCH (=B*T) must be divisible by T"
+        )
+        comptime B = BATCH // Self.T
+        comptime BL = B * Self.N_LATENTS
+        comptime TD = Self.T * Self.D
+        var inp = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
+
+        ensure_cpu_buffer(self.packed_in, BL * TD)
+        ensure_cpu_buffer(self.packed_out, BL * TD)
+        var pin = TileTensor(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.packed_in.unsafe_ptr()
+            ),
+            row_major[BL, TD](),
+        )
+
+        # gather latents: packed_in[b,l,t,d] = input[b,t,s=l,d]
+        for b in range(B):
+            for l in range(Self.N_LATENTS):
+                for t in range(Self.T):
+                    for d in range(Self.D):
+                        pin[b * Self.N_LATENTS + l, t * Self.D + d] = inp[
+                            b * Self.T + t, l * Self.D + d
+                        ]
+
+        var pout = TileTensor(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.packed_out.unsafe_ptr()
+            ),
+            row_major[BL, TD](),
+        )
+        self.mha.forward[target, BL, POLICY=POLICY](pin, output=pout)
+
+        # scatter: out[b,t,s,d] = packed_out[b,s,t,d] if s<L else 0
+        for b in range(B):
+            for t in range(Self.T):
+                for s in range(Self.S):
+                    for d in range(Self.D):
+                        var v = Scalar[DT](0.0)
+                        if s < Self.N_LATENTS:
+                            v = pout[b * Self.N_LATENTS + s, t * Self.D + d]
+                        out[b * Self.T + t, s * Self.D + d] = v
+
+    def vjp[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        mut *grad_inputs: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        assert_tag_for["TimeAttentionLatents", target](self.ts.target_tag)
+        comptime B = BATCH // Self.T
+        comptime BL = B * Self.N_LATENTS
+        comptime TD = Self.T * Self.D
+        var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var gi = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+
+        ensure_cpu_buffer(self.grad_pout, BL * TD)
+        ensure_cpu_buffer(self.grad_pin, BL * TD)
+        var gpout = TileTensor(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.grad_pout.unsafe_ptr()
+            ),
+            row_major[BL, TD](),
+        )
+
+        # gather grad_output latents (non-latent outputs were 0 → no grad)
+        for b in range(B):
+            for l in range(Self.N_LATENTS):
+                for t in range(Self.T):
+                    for d in range(Self.D):
+                        gpout[b * Self.N_LATENTS + l, t * Self.D + d] = go[
+                            b * Self.T + t, l * Self.D + d
+                        ]
+
+        var gpin = TileTensor(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.grad_pin.unsafe_ptr()
+            ),
+            row_major[BL, TD](),
+        )
+        self.mha.vjp[target, BL, POLICY=POLICY, mode=mode](gpout, gpin)
+
+        # scatter grad to latent input positions; non-latents get 0
+        for b in range(B):
+            for t in range(Self.T):
+                for s in range(Self.S):
+                    for d in range(Self.D):
+                        var v = Scalar[DT](0.0)
+                        if s < Self.N_LATENTS:
+                            v = gpin[b * Self.N_LATENTS + s, t * Self.D + d]
+                        gi[b * Self.T + t, s * Self.D + d] = v
+
+    def for_each_param[
+        target: StaticString, V: ParamVisitor
+    ](mut self, prefix: String, mut visitor: V) raises:
+        assert_tag_for["TimeAttentionLatents", target](self.ts.target_tag)
+        self.mha.for_each_param[target, V](prefix, visitor)
+
+    def zero_grad[target: StaticString](mut self) raises:
+        assert_tag_for["TimeAttentionLatents", target](self.ts.target_tag)
+        self.mha.zero_grad[target]()
