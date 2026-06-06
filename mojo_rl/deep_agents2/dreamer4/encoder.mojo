@@ -108,6 +108,9 @@ struct Dreamer4Encoder[
     def advance_rng(mut self):
         self.mae.advance_rng()
 
+    def set_mae_p(mut self, p_min: Float64, p_max: Float64):
+        self.mae.set_p(p_min, p_max)
+
     def mae_mask_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         """Per-patch `keep` flags ([BATCH*NP], 1.0=kept); masked = 1 - keep."""
         return self.mae.mae_mask_ptr()

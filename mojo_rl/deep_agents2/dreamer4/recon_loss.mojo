@@ -13,7 +13,7 @@ Operates at nn2-BATCH = B·T with per-frame patch tokens (NP × DP). `keep` is
 arithmetic; returns the scalar loss and fills `grad_pred`.
 """
 
-from std.math import max
+from std.math import max, log10
 
 from mojo_rl.nn2.constants import DT
 
@@ -46,3 +46,23 @@ def masked_recon_loss[
                 else:
                     grad_pred[idx] = Scalar[DT](0.0)
     return loss / denom
+
+
+def full_recon_psnr[
+    NP: Int, DP: Int, BATCH: Int
+](
+    pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    target: UnsafePointer[Scalar[DT], MutAnyOrigin],
+) raises -> Float64:
+    """Full-frame reconstruction PSNR over ALL patches (eval; run with MAE
+    p=0). Assumes pixels in [0,1] (peak = 1): PSNR = -10·log10(MSE)."""
+    from std.math import log10
+    comptime n = BATCH * NP * DP
+    var sse: Float64 = 0.0
+    for i in range(n):
+        var d = Float64(pred[i]) - Float64(target[i])
+        sse += d * d
+    var mse = sse / Float64(n)
+    if mse <= 1e-12:
+        return 120.0
+    return -10.0 * log10(mse)

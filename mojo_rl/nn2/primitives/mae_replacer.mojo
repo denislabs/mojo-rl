@@ -49,12 +49,16 @@ struct MAEReplacer[
     var mask_token: Param["mask_token", False, Self.D]
     var keep: List[Scalar[DT]]      # [BATCH*NP] 1.0 kept / 0.0 dropped
     var rng_step: UInt64
+    var p_min_rt: Float64           # runtime drop-rate range (init from comptime)
+    var p_max_rt: Float64
     var ts: TargetStorage
 
     def __init__(out self):
         self.mask_token = Param["mask_token", False, Self.D]()
         self.keep = List[Scalar[DT]]()
         self.rng_step = 0
+        self.p_min_rt = Self.P_MIN
+        self.p_max_rt = Self.P_MAX
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -71,6 +75,12 @@ struct MAEReplacer[
     @staticmethod
     def display_label() -> String:
         return String("MAEReplacer")
+
+    def set_p(mut self, p_min: Float64, p_max: Float64):
+        """Override the drop-rate range at runtime (e.g. p=0 for full-frame
+        reconstruction at eval). With p_max == 0 nothing is dropped."""
+        self.p_min_rt = p_min
+        self.p_max_rt = p_max
 
     def advance_rng(mut self):
         """Bump the RNG step (call once per training iteration)."""
@@ -105,11 +115,11 @@ struct MAEReplacer[
         var mt = self.mask_token.value_unsafe_ptr_cpu()
         comptime STRIDE = UInt64(BATCH * (1 + Self.NP))
         var base = self.rng_step * STRIDE
-        var span = Float64(Self.P_MAX - Self.P_MIN)
+        var span = self.p_max_rt - self.p_min_rt
 
         for bt in range(BATCH):
             var rp = PhiloxRandom(seed=Self.SEED, offset=base + UInt64(bt))
-            var p_bt = Self.P_MIN + span * Float64(rp.step_uniform()[0])
+            var p_bt = self.p_min_rt + span * Float64(rp.step_uniform()[0])
             var keep_prob = 1.0 - p_bt
             for i in range(Self.NP):
                 var ri = PhiloxRandom(

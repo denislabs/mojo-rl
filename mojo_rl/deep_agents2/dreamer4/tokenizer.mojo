@@ -83,6 +83,9 @@ struct Dreamer4Tokenizer[
     def advance_rng(mut self):
         self.enc.advance_rng()
 
+    def set_mae_p(mut self, p_min: Float64, p_max: Float64):
+        self.enc.set_mae_p(p_min, p_max)
+
     def mae_mask_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         return self.enc.mae_mask_ptr()
 
