@@ -19,7 +19,7 @@ from std.random import seed
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.datasets import MNIST
+from mojo_rl.nn2.datasets import MNIST
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.primitives.conv2d import Conv2D
 from mojo_rl.nn2.primitives.flatten import Flatten

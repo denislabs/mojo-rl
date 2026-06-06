@@ -39,7 +39,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model import LSTMCell
 from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.datasets import (
+from mojo_rl.nn2.datasets import (
     CharTokenizer,
     load_text,
     train_val_split,

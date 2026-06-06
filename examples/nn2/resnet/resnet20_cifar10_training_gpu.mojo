@@ -30,7 +30,7 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.datasets import CIFAR10
+from mojo_rl.nn2.datasets import CIFAR10
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.composites import Conv2DBatchNormReLU, ResBlockConv2DBN, ResBlockDownsampleBN
 from mojo_rl.nn2.primitives.avg_pool_2d import AvgPool2D

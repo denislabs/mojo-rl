@@ -14,7 +14,7 @@ Setup:
 
 from std.python import Python, PythonObject
 from std.testing import assert_equal, assert_true
-from mojo_rl.nn.datasets import LewmPushTExpert, LewmPushTWindow
+from mojo_rl.nn2.datasets import LewmPushTExpert, LewmPushTWindow
 
 
 comptime FIXTURE_PATH = "/tmp/mojo_rl_hdf5_fixture.h5"

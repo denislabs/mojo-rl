@@ -46,7 +46,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import row_major, TileTensor, Layout, LayoutTensor
 
-from mojo_rl.nn.datasets import (
+from mojo_rl.nn2.datasets import (
     CharTokenizer, load_text, train_val_split, make_batch, to_one_hot,
 )
 from mojo_rl.nn2.constants import DT, TPB

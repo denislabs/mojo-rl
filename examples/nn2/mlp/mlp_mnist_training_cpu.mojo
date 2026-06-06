@@ -5,7 +5,7 @@ Port of `examples/nn/mlp/mlp_mnist_training_cpu.mojo` to the nn2 framework.
 Architecture: Linear(784→256) → ReLU → Linear(256→128) → ReLU → Linear(128→10)
 Loss:         CrossEntropyLoss[10] on one-hot targets
 Optimizer:    Adam (lr=1e-3)
-Data:         MNIST via `mojo_rl.nn.datasets.MNIST` (framework-agnostic loader)
+Data:         MNIST via `mojo_rl.nn2.datasets.MNIST` (framework-agnostic loader)
 
 Run:
     pixi run mojo run -I . examples/nn2/mlp/mlp_mnist_training_cpu.mojo
@@ -16,7 +16,7 @@ from std.random import seed
 from std.testing import assert_true
 from std.time import perf_counter_ns
 
-from mojo_rl.nn.datasets import MNIST
+from mojo_rl.nn2.datasets import MNIST
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU

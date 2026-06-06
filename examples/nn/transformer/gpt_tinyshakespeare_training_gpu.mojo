@@ -50,7 +50,7 @@ from mojo_rl.nn.training import (
 from mojo_rl.nn.optimizer import AdamW
 from mojo_rl.nn.loss import CrossEntropyLoss
 from mojo_rl.nn.initializer import Normal
-from mojo_rl.nn.datasets import (
+from mojo_rl.nn2.datasets import (
     CharTokenizer,
     load_text,
     train_val_split,

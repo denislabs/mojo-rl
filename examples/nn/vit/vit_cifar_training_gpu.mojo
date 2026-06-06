@@ -39,7 +39,7 @@ from mojo_rl.nn.training import (
 from mojo_rl.nn.optimizer import AdamW
 from mojo_rl.nn.loss import CrossEntropyLoss
 from mojo_rl.nn.initializer import Normal
-from mojo_rl.nn.datasets import CIFAR10, CIFAR10CropFlipAugmenter
+from mojo_rl.nn2.datasets import CIFAR10, CIFAR10CropFlipAugmenter
 from layout import Layout, LayoutTensor
 
 

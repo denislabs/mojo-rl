@@ -25,7 +25,7 @@ This example passes at ≥85% — the 6% margin covers framework-vs-PyTorch
 recipe differences (Adam vs SGD+momentum, no LR schedule, fewer epochs).
 
 Uses `Trainer.train_gpu_minibatch_full` with `CIFAR10CropFlipAugmenter`
-(centralized in `mojo_rl.nn.datasets`) for the full training loop and
+(centralized in `mojo_rl.nn2.datasets`) for the full training loop and
 on-device per-epoch eval.
 
 Run:
@@ -53,7 +53,7 @@ from mojo_rl.nn.loss.cross_entropy import CrossEntropyLoss
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.training import Trainer
 from mojo_rl.nn.initializer.initializers import Kaiming
-from mojo_rl.nn.datasets import CIFAR10, CIFAR10CropFlipAugmenter
+from mojo_rl.nn2.datasets import CIFAR10, CIFAR10CropFlipAugmenter
 
 
 comptime BATCH = 128

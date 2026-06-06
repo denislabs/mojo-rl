@@ -19,7 +19,7 @@ Vocab size is typically ~65 (printable ASCII + newline).
 
 from std.python import Python, PythonObject
 from std.random import random_si64
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn2.constants import DT
 
 
 comptime _SHAKESPEARE_URL = (
@@ -228,7 +228,7 @@ def make_batch(
 # =============================================================================
 def to_one_hot(
     token_ids: List[Int], vocab_size: Int, batch_size: Int, seq_len: Int
-) raises -> List[Scalar[dtype]]:
+) raises -> List[Scalar[DT]]:
     """Convert a flat (BATCH * seq_len) list of token ids into a flat
     (BATCH * seq_len * vocab_size) one-hot tensor laid out row-major
     outer-batch-then-token-then-vocab — exactly what GPT.IN_DIM expects.
@@ -241,7 +241,7 @@ def to_one_hot(
             + String(len(token_ids))
         )
     var total = batch_size * seq_len * vocab_size
-    var oh = List[Scalar[dtype]](capacity=total)
+    var oh = List[Scalar[DT]](capacity=total)
     for _ in range(total):
         oh.append(0)
     for b in range(batch_size):
@@ -250,5 +250,5 @@ def to_one_hot(
             if tid < 0 or tid >= vocab_size:
                 continue
             var off = (b * seq_len + t) * vocab_size + tid
-            oh[off] = Scalar[dtype](1.0)
+            oh[off] = Scalar[DT](1.0)
     return oh^

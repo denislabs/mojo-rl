@@ -23,7 +23,7 @@ from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.datasets import MNIST
+from mojo_rl.nn2.datasets import MNIST
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.linear_relu import LinearReLU

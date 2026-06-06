@@ -34,7 +34,7 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.loss import CrossEntropyLoss
 from mojo_rl.nn2.optimizer import Adam
 from mojo_rl.nn2.initializer import Xavier
-from mojo_rl.nn.datasets import (
+from mojo_rl.nn2.datasets import (
     CharTokenizer,
     load_text,
     train_val_split,
