@@ -54,7 +54,10 @@ def _ilog2(n: Int) -> Int:
 
 trait ShortcutDynamics(Module):
     """A dynamics module whose per-sample signal/step indices are pushed via
-    `set_indices` before each forward (Dreamer4Dynamics)."""
+    `set_indices` before each forward (Dreamer4Dynamics). Optionally also
+    accepts per-sample actions via `set_actions` for conditioned (labeled)
+    dynamics pretrain — modules without action conditioning inherit the no-op
+    default."""
 
     def set_indices(
         mut self,
@@ -63,6 +66,16 @@ trait ShortcutDynamics(Module):
         batch: Int,
     ):
         ...
+
+    def set_actions(
+        mut self,
+        actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        act_mask: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        batch: Int,
+    ):
+        """Default: unconditional (ignore actions). Conditioned dynamics
+        (Dreamer4Dynamics with ADIM>0) override this."""
+        pass
 
 
 def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -117,6 +130,7 @@ def dynamics_pretrain_loss[
     M: ShortcutDynamics,
     B: Int, T: Int, B_SELF: Int, NSP: Int, DSP: Int, KMAX: Int,
     FWD: StaticString = "cpu",
+    ADIM: Int = 0,
 ](
     mut dyn: M,
     z1: UnsafePointer[Scalar[DT], MutAnyOrigin],         # [BF, ND] clean targets
@@ -132,17 +146,26 @@ def dynamics_pretrain_loss[
     dev_out: Optional[DeviceBuffer[DT]] = None,
     h_in: Optional[HostBuffer[DT]] = None,               # host staging [BF*ND]
     h_out: Optional[HostBuffer[DT]] = None,
+    actions: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,  # [BF,ADIM]
+    act_mask: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,  # [ADIM]
 ) raises -> Float64:
     """Shortcut-forcing loss. FWD="cpu" (default): all on host. FWD="gpu": the
     dynamics forwards run on device (caller provides ctx + [BF*ND]-sized
     dev_in/dev_out/h_in/h_out scratch); the element-wise loss arithmetic stays
-    on host (tiny latent buffers), so the GPU path is bit-identical to CPU."""
+    on host (tiny latent buffers), so the GPU path is bit-identical to CPU.
+
+    CONDITIONED pretrain: with `ADIM>0` and `actions` (+`act_mask`) provided,
+    each forward is preceded by `dyn.set_actions(...)` — the two half passes
+    use the self-row subset (matching the reference's `actions[B_emp:]`), the
+    main pass the full batch. `ADIM=0` / `actions=None` is unconditional and
+    byte-for-byte the original loss."""
     comptime assert FWD == "cpu" or FWD == "gpu", "FWD must be 'cpu' or 'gpu'"
     comptime BF = B * T
     comptime BS = B_SELF * T
     comptime B_EMP = B - B_SELF
     comptime ND = NSP * DSP
     comptime EMAX = _ilog2(KMAX)
+    comptime COND = ADIM > 0
 
     # ── corrupt: z̃ = (1−σ)·z0 + σ·z1 ────────────────────────────────────
     var ztil = _alloc(BF * ND)
@@ -192,7 +215,14 @@ def dynamics_pretrain_loss[
             )
 
         # half1: ẑ1_half1 = dyn(z̃_self; σ_idx, step+1) ; b′ ; z′
+        # (conditioned: self-row actions = the reference's actions[B_emp:])
         dyn.set_indices(sig_self, step_half, BS)
+        comptime if COND:
+            if actions:
+                dyn.set_actions(
+                    actions.value() + (B_EMP * T) * ADIM,
+                    act_mask.value(), BS,
+                )
         _run_fwd[M, FWD, BS, ND](
             dyn, zts, zh1, ctx, dev_in, dev_out, h_in, h_out
         )
@@ -206,6 +236,12 @@ def dynamics_pretrain_loss[
 
         # half2: ẑ1_half2 = dyn(z′; σ_idx+Δ, step+1) ; b″ ; v̄ = (b′+b″)/2
         dyn.set_indices(sig_plus, step_half, BS)
+        comptime if COND:
+            if actions:
+                dyn.set_actions(
+                    actions.value() + (B_EMP * T) * ADIM,
+                    act_mask.value(), BS,
+                )
         _run_fwd[M, FWD, BS, ND](
             dyn, zprime, zh2, ctx, dev_in, dev_out, h_in, h_out
         )
@@ -225,6 +261,9 @@ def dynamics_pretrain_loss[
 
     # ── MAIN forward (LAST forward → caches valid for the caller's vjp) ──
     dyn.set_indices(sigma_idx, step_idx, BF)
+    comptime if COND:
+        if actions:
+            dyn.set_actions(actions.value(), act_mask.value(), BF)
     _run_fwd[M, FWD, BF, ND](
         dyn, ztil, zhat, ctx, dev_in, dev_out, h_in, h_out
     )

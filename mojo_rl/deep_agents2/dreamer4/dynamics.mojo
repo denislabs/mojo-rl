@@ -28,11 +28,20 @@ heterogeneous tensor inputs:
     forward(input=z̃)                  z̃        : [B·T, n_spatial·d_spatial]
     output = x̂1 (x-prediction)         [B·T, n_spatial·d_spatial]
 
-ACTION CONDITIONING: this first cut is **unconditional** (the reference's
-`actions is None` path — a single learned base token), which still yields a
-valid video world model and isolates the shortcut-forcing novelty. The
-continuous-action MLP encoder (`ActionEncoder`) is a follow-up; it only
-changes the action token, not the loss or backbone.
+ACTION CONDITIONING (model.py:ActionEncoder): gated by the `ADIM` comptime
+param. ADIM=0 (default) = **unconditional** — the action token is the learned
+`action_base` only (reference's `actions is None` path); everything is
+byte-for-byte the original dynamics. ADIM>0 adds an action token
+`action_base + act_mlp(clamp(act_mask ⊙ a, -1, 1))`, where
+`act_mlp = Linear[ADIM,AHID] → SiLU → ZeroLinear[AHID,D]`. The ZeroLinear
+second layer makes the action contribution start EXACTLY 0, so at init a
+conditioned model equals the unconditional one (the reference approximates
+this with fc2 std=1e-3; ZeroLinear is exact). Actions are pushed via
+`set_actions(actions, act_mask, batch)` (a host/device control input like
+`set_indices`, since they're data — the clamp/mask carry no gradient and the
+act-MLP's grad_input is discarded). CPU + GPU; the act token grad (= the
+action_base grad) is the act-MLP's grad_output. Only the action token changes
+— the loss and backbone are untouched.
 
 PHASE 2: CPU forward + vjp (2.2). GPU forward + vjp (2.4) — the tail
 (Sequential) is already GPU-capable; the bespoke front-end gets device
@@ -58,6 +67,7 @@ from mojo_rl.nn2.core.target_storage import (
 )
 from mojo_rl.nn2.combinators import Sequential, Tokenwise
 from mojo_rl.nn2.primitives.linear import Linear
+from mojo_rl.nn2.primitives.silu import SiLU
 from mojo_rl.nn2.primitives.slice import Slice
 from mojo_rl.nn2.primitives.zero_linear import ZeroLinear
 from mojo_rl.nn2.primitives.sinusoidal_pos_bt import SinusoidalPosAddBT
@@ -72,6 +82,12 @@ def _ilog2(n: Int) -> Int:
         v //= 2
         k += 1
     return k
+
+
+def _pos(a: Int, fallback: Int) -> Int:
+    """Comptime helper: `a` if positive else `fallback` (avoids the
+    conditional-type-alias footgun by keeping the ternary at Int level)."""
+    return a if a > 0 else fallback
 
 
 def _dev_tile[
@@ -218,6 +234,37 @@ def _dyn_grad_step_kernel[BT: Int, S: Int, D: Int, NSTEP: Int](
     gstep.ptr[e] = rebind[Scalar[DT]](gstep.ptr[e]) + acc
 
 
+# action conditioning: add the act-MLP output into the action token (col [0,D))
+# of the assembled grid — fires only when ACOND (one thread per (bt,d)).
+def _dyn_add_act_kernel[BT: Int, S: Int, D: Int](
+    aout: LayoutTensor[DT, Layout.row_major(BT * D), MutAnyOrigin],
+    grid: LayoutTensor[DT, Layout.row_major(BT * S * D), MutAnyOrigin],
+):
+    var e = Int(global_idx.x)
+    if e >= BT * D:
+        return
+    var bt = e // D
+    var d = e % D
+    grid.ptr[bt * (S * D) + d] = (
+        rebind[Scalar[DT]](grid.ptr[bt * (S * D) + d])
+        + rebind[Scalar[DT]](aout.ptr[e])
+    )
+
+
+# action conditioning vjp: extract the action-token grad (col [0,D)) into a
+# packed [BT, D] buffer = the act-MLP's grad_output (same grad as action_base).
+def _dyn_extract_token0_kernel[BT: Int, S: Int, D: Int](
+    ggrid: LayoutTensor[DT, Layout.row_major(BT * S * D), MutAnyOrigin],
+    gaout: LayoutTensor[DT, Layout.row_major(BT * D), MutAnyOrigin],
+):
+    var e = Int(global_idx.x)
+    if e >= BT * D:
+        return
+    var bt = e // D
+    var d = e % D
+    gaout.ptr[e] = rebind[Scalar[DT]](ggrid.ptr[bt * (S * D) + d])
+
+
 struct Dreamer4Dynamics[
     DSP: Int,      # d_spatial (packed bottleneck width per spatial token)
     NSP: Int,      # n_spatial
@@ -229,6 +276,8 @@ struct Dreamer4Dynamics[
     DEPTH: Int,    # transformer depth
     KMAX: Int,     # k_max (max integration steps; power of two)
     USE_MAX: Bool = True,
+    ADIM: Int = 0,   # action dim (0 ⇒ unconditional: learned base token only)
+    AHID: Int = 0,   # action-MLP hidden (0 ⇒ derive 2·D, matching the reference)
 ](ShortcutDynamics):
     comptime ARITY: Int = 1
     comptime S: Int = 3 + Self.NSP + Self.NREG          # tokens per frame
@@ -239,6 +288,22 @@ struct Dreamer4Dynamics[
     comptime REG_OFF: Int = (3 + Self.NSP) * Self.D     # register col start
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.NSP * Self.DSP)
     comptime OUT_DIM = Self.NSP * Self.DSP
+
+    # Action conditioning (model.py:ActionEncoder). ACOND gates the whole
+    # path; when off (ADIM=0) the action token is exactly `action_base` and
+    # everything below is byte-for-byte the unconditional dynamics. ADIM_EFF
+    # keeps the act-MLP type valid (IN≥1) even when unused. The MLP's second
+    # layer is a ZeroLinear so the action contribution starts EXACTLY 0 ⇒ at
+    # init a conditioned model equals the unconditional one (the reference
+    # approximates this with fc2 std=1e-3; ZeroLinear makes it exact).
+    comptime ACOND: Bool = Self.ADIM > 0
+    comptime ADIM_EFF: Int = _pos(Self.ADIM, 1)
+    comptime AHID_EFF: Int = _pos(Self.AHID, 2 * Self.D)
+    comptime ACT_MLP = Sequential[
+        Linear[Self.ADIM_EFF, Self.AHID_EFF],
+        SiLU[Self.AHID_EFF],
+        ZeroLinear[Self.AHID_EFF, Self.D],
+    ]
 
     comptime PROJ = Tokenwise[Self.NSP, Linear[Self.DSP, Self.D]]
     comptime TAIL = Sequential[
@@ -253,6 +318,7 @@ struct Dreamer4Dynamics[
 
     var proj: Self.PROJ
     var tail: Self.TAIL
+    var act_mlp: Self.ACT_MLP             # action encoder (used iff ACOND)
     var action_base: Param["action_base", False, Self.D]
     var signal_table: Param["signal_table", True, Self.NSIG * Self.D]
     var step_table: Param["step_table", True, Self.NSTEP * Self.D]
@@ -265,6 +331,10 @@ struct Dreamer4Dynamics[
     var grad_proj_out: List[Scalar[DT]]
     var cache_sig: List[Int]              # [BATCH] signal index per sample
     var cache_step: List[Int]             # [BATCH] step index per sample
+    var cache_act: List[Scalar[DT]]       # [BATCH, ADIM] clamped/masked actions
+    var act_out: List[Scalar[DT]]         # [BATCH, D] act-MLP output
+    var grad_act_out: List[Scalar[DT]]    # [BATCH, D] grad into the act token
+    var grad_act_in: List[Scalar[DT]]     # [BATCH, ADIM] (discarded; data input)
     # GPU scratch
     var grid_dev: Optional[DeviceBuffer[DT]]
     var ggrid_dev: Optional[DeviceBuffer[DT]]
@@ -274,12 +344,18 @@ struct Dreamer4Dynamics[
     var step_dev: Optional[DeviceBuffer[DT]]
     var sig_hbuf: Optional[HostBuffer[DT]]       # host staging for upload
     var step_hbuf: Optional[HostBuffer[DT]]
+    var act_dev: Optional[DeviceBuffer[DT]]      # [BATCH, ADIM] uploaded actions
+    var act_hbuf: Optional[HostBuffer[DT]]       # host staging for actions
+    var aout_dev: Optional[DeviceBuffer[DT]]     # [BATCH, D] act-MLP output
+    var gaout_dev: Optional[DeviceBuffer[DT]]    # [BATCH, D] grad into act token
+    var gain_dev: Optional[DeviceBuffer[DT]]     # [BATCH, ADIM] (discarded)
     var scratch_batch: Int
     var ts: TargetStorage
 
     def __init__(out self):
         self.proj = Self.PROJ()
         self.tail = Self.TAIL()
+        self.act_mlp = Self.ACT_MLP()
         self.action_base = Param["action_base", False, Self.D]()
         self.signal_table = Param["signal_table", True, Self.NSIG * Self.D]()
         self.step_table = Param["step_table", True, Self.NSTEP * Self.D]()
@@ -290,6 +366,10 @@ struct Dreamer4Dynamics[
         self.grad_proj_out = List[Scalar[DT]]()
         self.cache_sig = List[Int]()
         self.cache_step = List[Int]()
+        self.cache_act = List[Scalar[DT]]()
+        self.act_out = List[Scalar[DT]]()
+        self.grad_act_out = List[Scalar[DT]]()
+        self.grad_act_in = List[Scalar[DT]]()
         self.grid_dev = None
         self.ggrid_dev = None
         self.po_dev = None
@@ -298,6 +378,11 @@ struct Dreamer4Dynamics[
         self.step_dev = None
         self.sig_hbuf = None
         self.step_hbuf = None
+        self.act_dev = None
+        self.act_hbuf = None
+        self.aout_dev = None
+        self.gaout_dev = None
+        self.gain_dev = None
         self.scratch_batch = 0
         self.ts = TargetStorage.make_uninit()
 
@@ -312,6 +397,14 @@ struct Dreamer4Dynamics[
             self.step_dev = ctx.enqueue_create_buffer[DT](batch)
             self.sig_hbuf = ctx.enqueue_create_host_buffer[DT](batch)
             self.step_hbuf = ctx.enqueue_create_host_buffer[DT](batch)
+            comptime if Self.ACOND:
+                self.act_dev = ctx.enqueue_create_buffer[DT](batch * Self.ADIM)
+                self.act_hbuf = ctx.enqueue_create_host_buffer[DT](
+                    batch * Self.ADIM
+                )
+                self.aout_dev = ctx.enqueue_create_buffer[DT](batch * Self.D)
+                self.gaout_dev = ctx.enqueue_create_buffer[DT](batch * Self.D)
+                self.gain_dev = ctx.enqueue_create_buffer[DT](batch * Self.ADIM)
             ctx.synchronize()
             self.scratch_batch = batch
 
@@ -325,6 +418,7 @@ struct Dreamer4Dynamics[
         var m = Self()
         m.proj = Self.PROJ.make[target=target, INIT=INIT](ctx)
         m.tail = Self.TAIL.make[target=target, INIT=INIT](ctx)
+        m.act_mlp = Self.ACT_MLP.make[target=target, INIT=INIT](ctx)
         comptime NS = Self.NSIG * Self.D
         comptime NT = Self.NSTEP * Self.D
         comptime NR = Self.NREG * Self.D
@@ -386,6 +480,33 @@ struct Dreamer4Dynamics[
             self.cache_sig[bt] = Int(Float64(sig[bt]) + 0.5)
             self.cache_step[bt] = Int(Float64(step[bt]) + 0.5)
 
+    def set_actions(
+        mut self,
+        actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        act_mask: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        batch: Int,
+    ):
+        """Push per-sample actions for the next forward/vjp (ACOND only;
+        no-op otherwise). Caches the reference's preprocessed input
+        `clamp(act_mask ⊙ a, -1, 1)` (model.py:ActionEncoder.forward) so the
+        act-MLP sees data only — the clamp/mask carry no param gradient. Per
+        the loss contract, the MAIN forward (last) leaves `cache_act` holding
+        its actions, so the act-MLP's vjp reads the correct input.
+
+        `actions` is [batch, ADIM] row-major; `act_mask` is [ADIM] (pass all
+        ones for no masking)."""
+        comptime if Self.ACOND:
+            if len(self.cache_act) < batch * Self.ADIM:
+                self.cache_act.resize(batch * Self.ADIM, Scalar[DT](0.0))
+            for bt in range(batch):
+                for a in range(Self.ADIM):
+                    var v = actions[bt * Self.ADIM + a] * act_mask[a]
+                    if v > Scalar[DT](1.0):
+                        v = Scalar[DT](1.0)
+                    elif v < Scalar[DT](-1.0):
+                        v = Scalar[DT](-1.0)
+                    self.cache_act[bt * Self.ADIM + a] = v
+
     def forward[
         target: StaticString,
         BATCH: Int,
@@ -432,11 +553,31 @@ struct Dreamer4Dynamics[
             var reg = TileTensor(
                 self.register.value, row_major[Self.NREG * Self.D]()
             )
+            # action conditioning: act token = action_base + act_mlp(actions)
+            comptime if Self.ACOND:
+                ensure_cpu_buffer(self.act_out, BATCH * Self.D)
+                var ain = TileTensor(
+                    rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                        self.cache_act.unsafe_ptr()
+                    ),
+                    row_major[BATCH, Self.ADIM](),
+                )
+                var aout_t = TileTensor(
+                    rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                        self.act_out.unsafe_ptr()
+                    ),
+                    row_major[BATCH, Self.D](),
+                )
+                self.act_mlp.forward[target, BATCH, POLICY=POLICY](
+                    ain, output=aout_t
+                )
             for bt in range(BATCH):
                 var si = self.cache_sig[bt]   # set via set_indices()
                 var pi = self.cache_step[bt]
                 for d in range(Self.D):
                     grid[bt, d] = ab[d]                          # action
+                    comptime if Self.ACOND:
+                        grid[bt, d] += self.act_out[bt * Self.D + d]
                     grid[bt, Self.D + d] = sigt[si * Self.D + d]  # signal
                     grid[bt, 2 * Self.D + d] = stpt[pi * Self.D + d]  # step
                 for k in range(Self.NSP * Self.D):
@@ -456,6 +597,11 @@ struct Dreamer4Dynamics[
                 th.unsafe_ptr()[bt] = Scalar[DT](Float64(self.cache_step[bt]))
             ctx.enqueue_copy(self.sig_dev.value(), sh)
             ctx.enqueue_copy(self.step_dev.value(), th)
+            comptime if Self.ACOND:
+                var ah = self.act_hbuf.value()
+                for i in range(BATCH * Self.ADIM):
+                    ah.unsafe_ptr()[i] = self.cache_act[i]
+                ctx.enqueue_copy(self.act_dev.value(), ah)
 
             var po = _dev_tile[BATCH, Self.NSP * Self.D](self.po_dev.value())
             self.proj.forward[target, BATCH, POLICY=POLICY](packed, output=po)
@@ -493,6 +639,21 @@ struct Dreamer4Dynamics[
                 proj_lt, ab_lt, sg_lt, st_lt, rg_lt, si_lt, sp_lt, grid_lt,
                 grid_dim=(AN + TPB - 1) // TPB, block_dim=TPB,
             )
+            # action conditioning: act token += act_mlp(actions)
+            comptime if Self.ACOND:
+                var ain_t = _dev_tile[BATCH, Self.ADIM](self.act_dev.value())
+                var aout_t = _dev_tile[BATCH, Self.D](self.aout_dev.value())
+                self.act_mlp.forward[target, BATCH, POLICY=POLICY](
+                    ain_t, output=aout_t
+                )
+                var aout_lt = LayoutTensor[
+                    DT, Layout.row_major(BATCH * Self.D), MutAnyOrigin
+                ](self.aout_dev.value())
+                comptime addk = _dyn_add_act_kernel[BATCH, Self.S, Self.D]
+                ctx.enqueue_function[addk](
+                    aout_lt, grid_lt,
+                    grid_dim=(BATCH * Self.D + TPB - 1) // TPB, block_dim=TPB,
+                )
             var grid_t = _dev_tile[BATCH, Self.SD](self.grid_dev.value())
             self.tail.forward[target, BATCH, POLICY=POLICY](grid_t, output=out)
 
@@ -559,6 +720,32 @@ struct Dreamer4Dynamics[
                         gstp[pi * Self.D + d] += ggrid[bt, 2 * Self.D + d]
                     for k in range(Self.NREG * Self.D):
                         greg[k] += ggrid[bt, Self.REG_OFF + k]
+
+                # action MLP: token = action_base + act_mlp(actions), so the
+                # act token's grad (ggrid[:, 0:D]) — the same grad accumulated
+                # into action_base above — is the act-MLP's grad_output. Its
+                # grad_input (wrt actions) is data ⇒ discarded.
+                comptime if Self.ACOND:
+                    ensure_cpu_buffer(self.grad_act_out, BATCH * Self.D)
+                    ensure_cpu_buffer(self.grad_act_in, BATCH * Self.ADIM)
+                    for bt in range(BATCH):
+                        for d in range(Self.D):
+                            self.grad_act_out[bt * Self.D + d] = ggrid[bt, d]
+                    var gao = TileTensor(
+                        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                            self.grad_act_out.unsafe_ptr()
+                        ),
+                        row_major[BATCH, Self.D](),
+                    )
+                    var gai = TileTensor(
+                        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                            self.grad_act_in.unsafe_ptr()
+                        ),
+                        row_major[BATCH, Self.ADIM](),
+                    )
+                    self.act_mlp.vjp[target, BATCH, POLICY=POLICY, mode="all"](
+                        gao, gai
+                    )
         else:
             self._ensure_scratch_gpu(BATCH)
             var ctx = self.ts.ctx.value()
@@ -628,6 +815,24 @@ struct Dreamer4Dynamics[
                     grid_dim=(Self.NSTEP * Self.D + TPB - 1) // TPB,
                     block_dim=TPB,
                 )
+                # action MLP grad: act-token grad (ggrid col [0,D)) → act_mlp.vjp
+                comptime if Self.ACOND:
+                    var gaout_lt = LayoutTensor[
+                        DT, Layout.row_major(BATCH * Self.D), MutAnyOrigin
+                    ](self.gaout_dev.value())
+                    comptime xk = _dyn_extract_token0_kernel[
+                        BATCH, Self.S, Self.D
+                    ]
+                    ctx.enqueue_function[xk](
+                        ggrid_lt, gaout_lt,
+                        grid_dim=(BATCH * Self.D + TPB - 1) // TPB,
+                        block_dim=TPB,
+                    )
+                    var gaout_t = _dev_tile[BATCH, Self.D](self.gaout_dev.value())
+                    var gain_t = _dev_tile[BATCH, Self.ADIM](self.gain_dev.value())
+                    self.act_mlp.vjp[target, BATCH, POLICY=POLICY, mode="all"](
+                        gaout_t, gain_t
+                    )
 
     def for_each_param[
         target: StaticString, V: ParamVisitor
@@ -638,9 +843,13 @@ struct Dreamer4Dynamics[
         # child modules
         self.proj.for_each_param[target, V](prefix + ".proj", visitor)
         self.tail.for_each_param[target, V](prefix + ".tail", visitor)
+        comptime if Self.ACOND:
+            self.act_mlp.for_each_param[target, V](prefix + ".act_mlp", visitor)
 
     def zero_grad[target: StaticString](mut self) raises:
         assert_tag_for["Dreamer4Dynamics", target](self.ts.target_tag)
         zero_grad_auto[Self, target](self)
         self.proj.zero_grad[target]()
         self.tail.zero_grad[target]()
+        comptime if Self.ACOND:
+            self.act_mlp.zero_grad[target]()
