@@ -107,26 +107,27 @@ struct Trainer[
     # ------------------------------------------------------------------
 
     @staticmethod
-    def make[INIT: Initializer]() raises -> Self:
-        """CPU one-call factory. Builds net + optim + loss internally."""
-        comptime assert (
-            Self.target == "cpu"
-        ), "Trainer.make[INIT]() is CPU-only; pass ctx for GPU"
-        var net = Self.NET.make[Self.target, INIT]()
-        var loss = Self.LOSS.make[Self.target]()
-        var optim = Self.OPT.make[Self.target](net)
-        return Self.make_from(net^, optim^, loss^)
-
-    @staticmethod
-    def make[INIT: Initializer](ctx: DeviceContext) raises -> Self:
-        """GPU one-call factory."""
-        comptime assert (
-            Self.target == "gpu"
-        ), "Trainer.make[INIT](ctx) requires target='gpu'"
-        var net = Self.NET.make[Self.target, INIT](ctx)
-        var loss = Self.LOSS.make[Self.target](ctx)
-        var optim = Self.OPT.make[Self.target](net, ctx)
-        return Self.make_from(net^, optim^, loss^, ctx)
+    def make[INIT: Initializer](
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Self:
+        """Unified one-call factory (matches the nn2 `make[...](ctx:
+        Optional[DeviceContext]=None)` convention). Builds net + optim +
+        loss internally. `ctx=None` on CPU; required on GPU."""
+        comptime if Self.target == "cpu":
+            var net = Self.NET.make[Self.target, INIT]()
+            var loss = Self.LOSS.make[Self.target]()
+            var optim = Self.OPT.make[Self.target](net)
+            return Self.make_from(net^, optim^, loss^)
+        else:
+            if not ctx:
+                raise Error(
+                    "Trainer.make[INIT](): target='gpu' requires a ctx"
+                )
+            var ctx_v = ctx.value()
+            var net = Self.NET.make[Self.target, INIT](ctx_v)
+            var loss = Self.LOSS.make[Self.target](ctx_v)
+            var optim = Self.OPT.make[Self.target](net, ctx_v)
+            return Self.make_from(net^, optim^, loss^, ctx_v)
 
     @staticmethod
     def make_from(
