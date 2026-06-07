@@ -21,6 +21,10 @@ from .tokenizer import Dreamer4Tokenizer
 from .dynamics import Dreamer4Dynamics
 from .shortcut_loss import dynamics_pretrain_loss, ShortcutDynamics
 from .ode_sampler import sample_one_timestep
+from .task_embedder import TaskEmbedder
+from .heads import Dreamer4PolicyHead, Dreamer4RewardHead
+from .bc_loss import bc_mtp_loss, bc_n_valid
+from .agent import Dreamer4Agent
 from .recon_loss import (
     masked_recon_loss, full_recon_psnr, masked_recon_grad_gpu,
 )

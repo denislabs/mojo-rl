@@ -77,6 +77,17 @@ trait ShortcutDynamics(Module):
         (Dreamer4Dynamics with ADIM>0) override this."""
         pass
 
+    def set_agent_in(
+        mut self,
+        agent_in: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        batch: Int,
+    ):
+        """Default: no agent tokens (ignore). Agent-capable dynamics
+        (Dreamer4Dynamics with NAGENT>0) override this — used by the BC agent
+        to inject the per-sequence task embedding into every forward so the
+        MAIN pass produces the task output embeddings h_t."""
+        pass
+
 
 def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
@@ -131,6 +142,7 @@ def dynamics_pretrain_loss[
     B: Int, T: Int, B_SELF: Int, NSP: Int, DSP: Int, KMAX: Int,
     FWD: StaticString = "cpu",
     ADIM: Int = 0,
+    AGDIM: Int = 0,
 ](
     mut dyn: M,
     z1: UnsafePointer[Scalar[DT], MutAnyOrigin],         # [BF, ND] clean targets
@@ -148,6 +160,7 @@ def dynamics_pretrain_loss[
     h_out: Optional[HostBuffer[DT]] = None,
     actions: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,  # [BF,ADIM]
     act_mask: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,  # [ADIM]
+    agent_in: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,  # [BF,AGDIM]
 ) raises -> Float64:
     """Shortcut-forcing loss. FWD="cpu" (default): all on host. FWD="gpu": the
     dynamics forwards run on device (caller provides ctx + [BF*ND]-sized
@@ -166,6 +179,7 @@ def dynamics_pretrain_loss[
     comptime ND = NSP * DSP
     comptime EMAX = _ilog2(KMAX)
     comptime COND = ADIM > 0
+    comptime AGCOND = AGDIM > 0
 
     # ── corrupt: z̃ = (1−σ)·z0 + σ·z1 ────────────────────────────────────
     var ztil = _alloc(BF * ND)
@@ -223,6 +237,9 @@ def dynamics_pretrain_loss[
                     actions.value() + (B_EMP * T) * ADIM,
                     act_mask.value(), BS,
                 )
+        comptime if AGCOND:
+            if agent_in:
+                dyn.set_agent_in(agent_in.value() + (B_EMP * T) * AGDIM, BS)
         _run_fwd[M, FWD, BS, ND](
             dyn, zts, zh1, ctx, dev_in, dev_out, h_in, h_out
         )
@@ -242,6 +259,9 @@ def dynamics_pretrain_loss[
                     actions.value() + (B_EMP * T) * ADIM,
                     act_mask.value(), BS,
                 )
+        comptime if AGCOND:
+            if agent_in:
+                dyn.set_agent_in(agent_in.value() + (B_EMP * T) * AGDIM, BS)
         _run_fwd[M, FWD, BS, ND](
             dyn, zprime, zh2, ctx, dev_in, dev_out, h_in, h_out
         )
@@ -264,6 +284,9 @@ def dynamics_pretrain_loss[
     comptime if COND:
         if actions:
             dyn.set_actions(actions.value(), act_mask.value(), BF)
+    comptime if AGCOND:
+        if agent_in:
+            dyn.set_agent_in(agent_in.value(), BF)
     _run_fwd[M, FWD, BF, ND](
         dyn, ztil, zhat, ctx, dev_in, dev_out, h_in, h_out
     )
