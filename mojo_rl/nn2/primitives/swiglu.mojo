@@ -26,7 +26,7 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
+from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for, ensure_cpu_buffer
 
@@ -82,19 +82,13 @@ struct SwiGLU[HIDDEN: Int](Module):
     comptime IN_DIMS = InlineArray[Int, 1](fill=2 * Self.HIDDEN)
     comptime OUT_DIM = Self.HIDDEN
 
-    var cache_u: List[Scalar[DT]]
-    var cache_v: List[Scalar[DT]]
-    var cache_u_dev: Optional[DeviceBuffer[DT]]
-    var cache_v_dev: Optional[DeviceBuffer[DT]]
-    var cache_n_batch: Int
+    var cache_u: Cache["cache_u"]
+    var cache_v: Cache["cache_v"]
     var ts: TargetStorage
 
     def __init__(out self):
-        self.cache_u = List[Scalar[DT]]()
-        self.cache_v = List[Scalar[DT]]()
-        self.cache_u_dev = None
-        self.cache_v_dev = None
-        self.cache_n_batch = 0
+        self.cache_u = Cache["cache_u"]()
+        self.cache_v = Cache["cache_v"]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -109,20 +103,13 @@ struct SwiGLU[HIDDEN: Int](Module):
             m.ts = TargetStorage.make_cpu()
         else:
             var ctx_v = require_ctx["SwiGLU.make[target='gpu']"](ctx)
-            m.cache_u_dev = ctx_v.enqueue_create_buffer[DT](1)
-            m.cache_v_dev = ctx_v.enqueue_create_buffer[DT](1)
-            m.cache_n_batch = 0
             m.ts = TargetStorage.make_gpu(ctx_v)
         return m^
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:
-        if self.cache_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.cache_u_dev = ctx.enqueue_create_buffer[DT](batch * Self.HIDDEN)
-            self.cache_v_dev = ctx.enqueue_create_buffer[DT](batch * Self.HIDDEN)
-            self.cache_n_batch = batch
-
-    @staticmethod
+        var ctx = self.ts.ctx.value()
+        self.cache_u.ensure_gpu(ctx, batch * Self.HIDDEN)
+        self.cache_v.ensure_gpu(ctx, batch * Self.HIDDEN)
     def display_label() -> String:
         return String("SwiGLU")
 
@@ -146,10 +133,10 @@ struct SwiGLU[HIDDEN: Int](Module):
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.cache_u, BATCH * Self.HIDDEN)
-            ensure_cpu_buffer(self.cache_v, BATCH * Self.HIDDEN)
-            var cu = TileTensor(self.cache_u, row_major[BATCH, Self.HIDDEN]())
-            var cv = TileTensor(self.cache_v, row_major[BATCH, Self.HIDDEN]())
+            self.cache_u.ensure_cpu(BATCH * Self.HIDDEN)
+            self.cache_v.ensure_cpu(BATCH * Self.HIDDEN)
+            var cu = TileTensor(self.cache_u.cpu, row_major[BATCH, Self.HIDDEN]())
+            var cv = TileTensor(self.cache_v.cpu, row_major[BATCH, Self.HIDDEN]())
             for b in range(BATCH):
                 for k in range(Self.HIDDEN):
                     var u = inp[b, k]
@@ -169,10 +156,10 @@ struct SwiGLU[HIDDEN: Int](Module):
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr)
             )
             var cu_lt = LayoutTensor[DT, lout, MutAnyOrigin](
-                self.cache_u_dev.value()
+                self.cache_u.dev.value()
             )
             var cv_lt = LayoutTensor[DT, lout, MutAnyOrigin](
-                self.cache_v_dev.value()
+                self.cache_v.dev.value()
             )
             comptime n_blocks = (BATCH * Self.HIDDEN + TPB - 1) // TPB
             comptime kernel = _swiglu_forward_kernel[BATCH, Self.HIDDEN]
@@ -204,8 +191,8 @@ struct SwiGLU[HIDDEN: Int](Module):
         var gi = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
-            var cu = TileTensor(self.cache_u, row_major[BATCH, Self.HIDDEN]())
-            var cv = TileTensor(self.cache_v, row_major[BATCH, Self.HIDDEN]())
+            var cu = TileTensor(self.cache_u.cpu, row_major[BATCH, Self.HIDDEN]())
+            var cv = TileTensor(self.cache_v.cpu, row_major[BATCH, Self.HIDDEN]())
             for b in range(BATCH):
                 for k in range(Self.HIDDEN):
                     var g = go[b, k]
@@ -226,10 +213,10 @@ struct SwiGLU[HIDDEN: Int](Module):
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi.ptr)
             )
             var cu_lt = LayoutTensor[DT, lout, MutAnyOrigin](
-                self.cache_u_dev.value()
+                self.cache_u.dev.value()
             )
             var cv_lt = LayoutTensor[DT, lout, MutAnyOrigin](
-                self.cache_v_dev.value()
+                self.cache_v.dev.value()
             )
             comptime n_blocks = (BATCH * Self.HIDDEN + TPB - 1) // TPB
             comptime kernel = _swiglu_backward_kernel[BATCH, Self.HIDDEN]

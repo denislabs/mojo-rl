@@ -47,13 +47,12 @@ from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
+from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
     require_ctx,
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
 )
 
 
@@ -119,17 +118,13 @@ struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
     var training: Bool
     var call_counter: UInt64
     # Mask cache [BATCH, DIM] — scaled (0 or 1/(1-p)).
-    var cache_mask: List[Scalar[DT]]
-    var cache_mask_dev: Optional[DeviceBuffer[DT]]
-    var cache_n_batch: Int
+    var cache_mask: Cache["cache_mask"]
     var ts: TargetStorage
 
     def __init__(out self):
         self.training = True
         self.call_counter = 0
-        self.cache_mask = List[Scalar[DT]]()
-        self.cache_mask_dev = None
-        self.cache_n_batch = 0
+        self.cache_mask = Cache["cache_mask"]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -150,19 +145,12 @@ struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
             d.ts = TargetStorage.make_cpu()
         else:
             var ctx_v = require_ctx["Dropout.make[target='gpu']"](ctx)
-            d.cache_mask_dev = ctx_v.enqueue_create_buffer[DT](1)
-            d.cache_n_batch = 0
             d.ts = TargetStorage.make_gpu(ctx_v)
         return d^
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:
-        if self.cache_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.cache_mask_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.DIM
-            )
-            self.cache_n_batch = batch
-
+        var ctx = self.ts.ctx.value()
+        self.cache_mask.ensure_gpu(ctx, batch * Self.DIM)
     def forward[
         target: StaticString,
         BATCH: Int,
@@ -190,9 +178,9 @@ struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
                 # Eval pass doesn't bump the counter — keeps training
                 # determinism cleanly separated from eval calls.
                 return
-            ensure_cpu_buffer(self.cache_mask, BATCH * Self.DIM)
+            self.cache_mask.ensure_cpu(BATCH * Self.DIM)
             var cache_v = TileTensor(
-                self.cache_mask, row_major[BATCH, Self.DIM](),
+                self.cache_mask.cpu, row_major[BATCH, Self.DIM](),
             )
             var scale = Scalar[DT](1.0 / (1.0 - Self.p))
             var threshold = Scalar[DT](Self.p)
@@ -235,7 +223,7 @@ struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
             self._ensure_cache_gpu(BATCH)
             var cache_lt = LayoutTensor[
                 DT, Layout.row_major(N), MutAnyOrigin,
-            ](self.cache_mask_dev.value())
+            ](self.cache_mask.dev.value())
             var scale = Scalar[DT](1.0 / (1.0 - Self.p))
             var threshold = Scalar[DT](Self.p)
             var base_offset = self.call_counter * UInt64(N)
@@ -280,7 +268,7 @@ struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
                         grad_input_v[b, i] = grad_output_v[b, i]
                 return
             var cache_v = TileTensor(
-                self.cache_mask, row_major[BATCH, Self.DIM](),
+                self.cache_mask.cpu, row_major[BATCH, Self.DIM](),
             )
             for b in range(BATCH):
                 for i in range(Self.DIM):
@@ -311,7 +299,7 @@ struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
                 return
             var cache_lt = LayoutTensor[
                 DT, Layout.row_major(N), MutAnyOrigin,
-            ](self.cache_mask_dev.value())
+            ](self.cache_mask.dev.value())
             comptime back_kernel = _dropout_train_backward_kernel[N]
             self.ts.ctx.value().enqueue_function[back_kernel](
                 go_lt, cache_lt, gi_lt,

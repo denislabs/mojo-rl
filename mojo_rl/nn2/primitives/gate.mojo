@@ -23,13 +23,12 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
+from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
     require_ctx,
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
 )
 
 
@@ -88,19 +87,13 @@ struct Gate[DIM: Int](Module):
     def display_label() -> String:
         return String("Gate")
 
-    var cache_gate: List[Scalar[DT]]
-    var cache_branch: List[Scalar[DT]]
-    var cache_gate_dev: Optional[DeviceBuffer[DT]]
-    var cache_branch_dev: Optional[DeviceBuffer[DT]]
-    var cache_n_batch: Int
+    var cache_gate: Cache["cache_gate"]
+    var cache_branch: Cache["cache_branch"]
     var ts: TargetStorage
 
     def __init__(out self):
-        self.cache_gate = List[Scalar[DT]]()
-        self.cache_branch = List[Scalar[DT]]()
-        self.cache_gate_dev = None
-        self.cache_branch_dev = None
-        self.cache_n_batch = 0
+        self.cache_gate = Cache["cache_gate"]()
+        self.cache_branch = Cache["cache_branch"]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -115,23 +108,13 @@ struct Gate[DIM: Int](Module):
             m.ts = TargetStorage.make_cpu()
         else:
             var ctx_v = require_ctx["Gate.make[target='gpu']"](ctx)
-            m.cache_gate_dev = ctx_v.enqueue_create_buffer[DT](1)
-            m.cache_branch_dev = ctx_v.enqueue_create_buffer[DT](1)
-            m.cache_n_batch = 0
             m.ts = TargetStorage.make_gpu(ctx_v)
         return m^
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:
-        if self.cache_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.cache_gate_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.DIM
-            )
-            self.cache_branch_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.DIM
-            )
-            self.cache_n_batch = batch
-
+        var ctx = self.ts.ctx.value()
+        self.cache_gate.ensure_gpu(ctx, batch * Self.DIM)
+        self.cache_branch.ensure_gpu(ctx, batch * Self.DIM)
     def forward[
         target: StaticString,
         BATCH: Int,
@@ -154,10 +137,10 @@ struct Gate[DIM: Int](Module):
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.cache_gate, BATCH * Self.DIM)
-            ensure_cpu_buffer(self.cache_branch, BATCH * Self.DIM)
-            var cg = TileTensor(self.cache_gate, row_major[BATCH, Self.DIM]())
-            var cb = TileTensor(self.cache_branch, row_major[BATCH, Self.DIM]())
+            self.cache_gate.ensure_cpu(BATCH * Self.DIM)
+            self.cache_branch.ensure_cpu(BATCH * Self.DIM)
+            var cg = TileTensor(self.cache_gate.cpu, row_major[BATCH, Self.DIM]())
+            var cb = TileTensor(self.cache_branch.cpu, row_major[BATCH, Self.DIM]())
             for b in range(BATCH):
                 for i in range(Self.DIM):
                     var gv = gate[b, i]
@@ -181,10 +164,10 @@ struct Gate[DIM: Int](Module):
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr)
             )
             var cg_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                self.cache_gate_dev.value()
+                self.cache_gate.dev.value()
             )
             var cb_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                self.cache_branch_dev.value()
+                self.cache_branch.dev.value()
             )
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
             comptime kernel = _gate_forward_kernel[BATCH, Self.DIM]
@@ -219,8 +202,8 @@ struct Gate[DIM: Int](Module):
         var gbr = typed_view_mut[BATCH, Self.IN_DIMS[2]](grad_inputs[2])
 
         comptime if target == "cpu":
-            var cg = TileTensor(self.cache_gate, row_major[BATCH, Self.DIM]())
-            var cb = TileTensor(self.cache_branch, row_major[BATCH, Self.DIM]())
+            var cg = TileTensor(self.cache_gate.cpu, row_major[BATCH, Self.DIM]())
+            var cb = TileTensor(self.cache_branch.cpu, row_major[BATCH, Self.DIM]())
             for b in range(BATCH):
                 for i in range(Self.DIM):
                     var g = go[b, i]
@@ -242,10 +225,10 @@ struct Gate[DIM: Int](Module):
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gbr.ptr)
             )
             var cg_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                self.cache_gate_dev.value()
+                self.cache_gate.dev.value()
             )
             var cb_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                self.cache_branch_dev.value()
+                self.cache_branch.dev.value()
             )
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
             comptime kernel = _gate_backward_kernel[BATCH, Self.DIM]

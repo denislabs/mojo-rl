@@ -27,13 +27,12 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
+from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
     require_ctx,
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
 )
 
 
@@ -110,15 +109,11 @@ struct SimNorm[DIM: Int, GROUPS: Int](Module):
     comptime GROUP_SIZE: Int = Self.DIM // Self.GROUPS
 
     # Cache holds softmax outputs `[BATCH, DIM]` for backward.
-    var cache_y: List[Scalar[DT]]
-    var cache_y_dev: Optional[DeviceBuffer[DT]]
-    var cache_n_batch: Int
+    var cache_y: Cache["cache_y"]
     var ts: TargetStorage
 
     def __init__(out self):
-        self.cache_y = List[Scalar[DT]]()
-        self.cache_y_dev = None
-        self.cache_n_batch = 0
+        self.cache_y = Cache["cache_y"]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -142,19 +137,12 @@ struct SimNorm[DIM: Int, GROUPS: Int](Module):
         else:
             var ctx_v = require_ctx["SimNorm.make[target='gpu']"](ctx)
             # Placeholder device buffer — real size set on first forward.
-            s.cache_y_dev = ctx_v.enqueue_create_buffer[DT](1)
-            s.cache_n_batch = 0
             s.ts = TargetStorage.make_gpu(ctx_v)
         return s^
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:
-        if self.cache_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.cache_y_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.DIM
-            )
-            self.cache_n_batch = batch
-
+        var ctx = self.ts.ctx.value()
+        self.cache_y.ensure_gpu(ctx, batch * Self.DIM)
     def forward[
         target: StaticString,
         BATCH: Int,
@@ -175,9 +163,9 @@ struct SimNorm[DIM: Int, GROUPS: Int](Module):
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.cache_y, BATCH * Self.DIM)
+            self.cache_y.ensure_cpu(BATCH * Self.DIM)
             var cache_v = TileTensor(
-                self.cache_y, row_major[BATCH, Self.DIM](),
+                self.cache_y.cpu, row_major[BATCH, Self.DIM](),
             )
             for b in range(BATCH):
                 for g in range(Self.GROUPS):
@@ -207,7 +195,7 @@ struct SimNorm[DIM: Int, GROUPS: Int](Module):
             var in_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p)
             var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p)
             var cache_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_y_dev.value()
+                self.cache_y.dev.value()
             )
             comptime total = BATCH * Self.GROUPS
             comptime n_blocks = (total + TPB - 1) // TPB
@@ -246,7 +234,7 @@ struct SimNorm[DIM: Int, GROUPS: Int](Module):
 
         comptime if target == "cpu":
             var cache_v = TileTensor(
-                self.cache_y, row_major[BATCH, Self.DIM](),
+                self.cache_y.cpu, row_major[BATCH, Self.DIM](),
             )
             for b in range(BATCH):
                 for g in range(Self.GROUPS):
@@ -272,7 +260,7 @@ struct SimNorm[DIM: Int, GROUPS: Int](Module):
             var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
             var cache_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_y_dev.value()
+                self.cache_y.dev.value()
             )
             comptime total = BATCH * Self.GROUPS
             comptime n_blocks = (total + TPB - 1) // TPB

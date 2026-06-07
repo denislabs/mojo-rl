@@ -37,13 +37,12 @@ from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
+from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
     require_ctx,
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
 )
 
 
@@ -57,18 +56,14 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
         return String("SIGReg")
 
     # cache_z [BATCH, T*P] — leaf-owned, reused by backward.
-    var cache_z: List[Scalar[DT]]
-    var cache_z_dev: Optional[DeviceBuffer[DT]]
+    var cache_z: Cache["cache_z"]
     # workspace (GPU) — A/cm/sm/partials/scalar/dLdz, allocated once per batch.
     var ws_dev: Optional[DeviceBuffer[DT]]
-    var cache_n_batch: Int
     var ts: TargetStorage
 
     def __init__(out self):
-        self.cache_z = List[Scalar[DT]]()
-        self.cache_z_dev = None
+        self.cache_z = Cache["cache_z"]()
         self.ws_dev = None
-        self.cache_n_batch = 0
         self.ts = TargetStorage.make_uninit()
 
     # ── comptime knot grid / weights ──────────────────────────────────
@@ -176,24 +171,14 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             m.ts = TargetStorage.make_cpu()
         else:
             var ctx_v = require_ctx["SIGReg.make[target='gpu']"](ctx)
-            m.cache_z_dev = ctx_v.enqueue_create_buffer[DT](1)
             m.ws_dev = ctx_v.enqueue_create_buffer[DT](1)
-            m.cache_n_batch = 0
             m.ts = TargetStorage.make_gpu(ctx_v)
         return m^
 
     def _ensure_gpu(mut self, batch: Int) raises:
-        if self.cache_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.cache_z_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.SEQ_LEN * Self.NUM_PROJ
-            )
-            var ws_size = (
-                Self._ws_off_dLdz() + batch * Self.SEQ_LEN * Self.NUM_PROJ
-            )
-            self.ws_dev = ctx.enqueue_create_buffer[DT](ws_size)
-            self.cache_n_batch = batch
-
+        var ctx = self.ts.ctx.value()
+        self.cache_z.ensure_gpu(ctx, batch * Self.SEQ_LEN * Self.NUM_PROJ)
+        self.ws.ensure_gpu(ctx, ws_size)
     # ── forward ───────────────────────────────────────────────────────
     def forward[
         target: StaticString,
@@ -219,9 +204,9 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
         var output_v = typed_view_mut[BATCH, 1](output)
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.cache_z, BATCH * T * P)
-            var cache = TileTensor(self.cache_z, row_major[BATCH, T * P]())
-            var seed = UInt64(Int(self.cache_z.unsafe_ptr()))
+            self.cache_z.ensure_cpu(BATCH * T * P)
+            var cache = TileTensor(self.cache_z.cpu, row_major[BATCH, T * P]())
+            var seed = UInt64(Int(self.cache_z.cpu_ptr()))
             var a = InlineArray[Scalar[DT], D * P](uninitialized=True)
             Self._generate_a_cpu(seed, a.unsafe_ptr())
 
@@ -272,7 +257,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
                 self.ws_dev.value().unsafe_ptr()
             )
             var cache_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.cache_z_dev.value().unsafe_ptr()
+                self.cache_z.dev.value().unsafe_ptr()
             )
             var a_t = LayoutTensor[DT, Layout.row_major(D, P), MutAnyOrigin](
                 ws + Self._ws_off_a()
@@ -347,8 +332,8 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
         var gi = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
-            var cache = TileTensor(self.cache_z, row_major[BATCH, T * P]())
-            var seed = UInt64(Int(self.cache_z.unsafe_ptr()))
+            var cache = TileTensor(self.cache_z.cpu, row_major[BATCH, T * P]())
+            var seed = UInt64(Int(self.cache_z.cpu_ptr()))
             var a = InlineArray[Scalar[DT], D * P](uninitialized=True)
             Self._generate_a_cpu(seed, a.unsafe_ptr())
 
@@ -405,7 +390,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
                 self.ws_dev.value().unsafe_ptr()
             )
             var cache_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.cache_z_dev.value().unsafe_ptr()
+                self.cache_z.dev.value().unsafe_ptr()
             )
             var a_t = LayoutTensor[DT, Layout.row_major(D, P), MutAnyOrigin](
                 ws + Self._ws_off_a()

@@ -17,7 +17,7 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
+from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
     require_ctx,
@@ -68,15 +68,11 @@ struct MSEPerSample[DIM: Int](Module):
     def display_label() -> String:
         return String("MSEPerSample")
 
-    var cache_diff: List[Scalar[DT]]
-    var cache_diff_dev: Optional[DeviceBuffer[DT]]
-    var cache_n: Int
+    var cache_diff: Cache["cache_diff"]
     var ts: TargetStorage
 
     def __init__(out self):
-        self.cache_diff = List[Scalar[DT]]()
-        self.cache_diff_dev = None
-        self.cache_n = 0
+        self.cache_diff = Cache["cache_diff"]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -88,17 +84,11 @@ struct MSEPerSample[DIM: Int](Module):
             m.ts = TargetStorage.make_cpu()
         else:
             var ctx_v = require_ctx["MSEPerSample.make[gpu]"](ctx)
-            m.cache_diff_dev = ctx_v.enqueue_create_buffer[DT](1)
             m.ts = TargetStorage.make_gpu(ctx_v)
         return m^
 
     def _ensure_gpu(mut self, batch: Int) raises:
-        if self.cache_n < batch:
-            self.cache_diff_dev = self.ts.ctx.value().enqueue_create_buffer[DT](
-                batch * Self.DIM
-            )
-            self.cache_n = batch
-
+        var ctx = self.ts.ctx.value()
     def forward[
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
     ](
@@ -118,8 +108,8 @@ struct MSEPerSample[DIM: Int](Module):
         var out = typed_view_mut[BATCH, 1](output)
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.cache_diff, BATCH * Self.DIM)
-            var diff = TileTensor(self.cache_diff, row_major[BATCH, Self.DIM]())
+            self.cache_diff.ensure_cpu(BATCH * Self.DIM)
+            var diff = TileTensor(self.cache_diff.cpu, row_major[BATCH, Self.DIM]())
             for r in range(BATCH):
                 var s = Scalar[DT](0)
                 for i in range(Self.DIM):
@@ -141,7 +131,7 @@ struct MSEPerSample[DIM: Int](Module):
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr)
             )
             var d_lt = LayoutTensor[DT, lay2, MutAnyOrigin](
-                self.cache_diff_dev.value()
+                self.cache_diff.dev.value()
             )
             comptime n_blocks = (BATCH + TPB - 1) // TPB
             self.ts.ctx.value().enqueue_function[
@@ -168,7 +158,7 @@ struct MSEPerSample[DIM: Int](Module):
         var gb = typed_view_mut[BATCH, Self.DIM](grad_inputs[1])
 
         comptime if target == "cpu":
-            var diff = TileTensor(self.cache_diff, row_major[BATCH, Self.DIM]())
+            var diff = TileTensor(self.cache_diff.cpu, row_major[BATCH, Self.DIM]())
             for r in range(BATCH):
                 var c = go[r, 0] * Scalar[DT](2.0 / Float64(Self.DIM))
                 for i in range(Self.DIM):
@@ -188,7 +178,7 @@ struct MSEPerSample[DIM: Int](Module):
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gb.ptr)
             )
             var d_lt = LayoutTensor[DT, lay2, MutAnyOrigin](
-                self.cache_diff_dev.value()
+                self.cache_diff.dev.value()
             )
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
             self.ts.ctx.value().enqueue_function[

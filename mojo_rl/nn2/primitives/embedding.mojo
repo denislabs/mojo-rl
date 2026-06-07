@@ -29,6 +29,7 @@ from ..core import (
     Initializer,
     AMPPolicy,
     NoAMP,
+    Cache,
     Param,
     ParamVisitor,
     for_each_param_auto,
@@ -39,7 +40,6 @@ from ..core.target_storage import (
     require_ctx,
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
 )
 
 
@@ -127,17 +127,13 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
     var weight: Param["weight", True, Self.VOCAB * Self.EMBED_DIM]
 
     # Cache (leaf-owned): the one-hot input.
-    var cache_in: List[Scalar[DT]]                 # [BATCH, VOCAB]
-    var cache_in_dev: Optional[DeviceBuffer[DT]]
-    var cache_n_batch: Int
+    var cache_in: Cache["cache_in"]
 
     var ts: TargetStorage
 
     def __init__(out self):
         self.weight = Param["weight", True, Self.VOCAB * Self.EMBED_DIM]()
-        self.cache_in = List[Scalar[DT]]()
-        self.cache_in_dev = None
-        self.cache_n_batch = 0
+        self.cache_in = Cache["cache_in"]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -171,19 +167,12 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
             )
             ctx_v.enqueue_copy(e.weight.val.dev.value(), w_host)
             ctx_v.synchronize()
-            e.cache_in_dev = ctx_v.enqueue_create_buffer[DT](1)
-            e.cache_n_batch = 0
             e.ts = TargetStorage.make_gpu(ctx_v)
         return e^
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:
-        if self.cache_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.cache_in_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.VOCAB
-            )
-            self.cache_n_batch = batch
-
+        var ctx = self.ts.ctx.value()
+        self.cache_in.ensure_gpu(ctx, batch * Self.VOCAB)
     def forward[
         target: StaticString,
         BATCH: Int,
@@ -204,12 +193,12 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.cache_in, BATCH * Self.VOCAB)
+            self.cache_in.ensure_cpu(BATCH * Self.VOCAB)
             var w_v = TileTensor(
                 self.weight.val.cpu, row_major[Self.VOCAB, Self.EMBED_DIM]()
             )
             var cin = TileTensor(
-                self.cache_in, row_major[BATCH, Self.VOCAB]()
+                self.cache_in.cpu, row_major[BATCH, Self.VOCAB]()
             )
             for b in range(BATCH):
                 for v in range(Self.VOCAB):
@@ -234,7 +223,7 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
                 self.weight.val.dev.value()
             )
             var cin_lt = LayoutTensor[DT, lay_bv, MutAnyOrigin](
-                self.cache_in_dev.value()
+                self.cache_in.dev.value()
             )
             comptime total = BATCH * Self.EMBED_DIM
             comptime n_blocks = (total + TPB - 1) // TPB
@@ -286,7 +275,7 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
                     self.weight.grd.cpu, row_major[Self.VOCAB, Self.EMBED_DIM]()
                 )
                 var cin = TileTensor(
-                    self.cache_in, row_major[BATCH, Self.VOCAB]()
+                    self.cache_in.cpu, row_major[BATCH, Self.VOCAB]()
                 )
                 for v in range(Self.VOCAB):
                     for j in range(Self.EMBED_DIM):
@@ -320,7 +309,7 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
             )
             comptime if mode == "all":
                 var cin_lt = LayoutTensor[DT, lay_bv, MutAnyOrigin](
-                    self.cache_in_dev.value()
+                    self.cache_in.dev.value()
                 )
                 var gw_lt = LayoutTensor[DT, lay_w, MutAnyOrigin](
                     self.weight.grd.dev.value()

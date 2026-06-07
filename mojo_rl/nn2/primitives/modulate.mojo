@@ -24,13 +24,12 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
+from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
     require_ctx,
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
 )
 
 
@@ -89,19 +88,13 @@ struct Modulate[DIM: Int](Module):
     def display_label() -> String:
         return String("Modulate")
 
-    var cache_x: List[Scalar[DT]]
-    var cache_scale: List[Scalar[DT]]
-    var cache_x_dev: Optional[DeviceBuffer[DT]]
-    var cache_scale_dev: Optional[DeviceBuffer[DT]]
-    var cache_n_batch: Int
+    var cache_x: Cache["cache_x"]
+    var cache_scale: Cache["cache_scale"]
     var ts: TargetStorage
 
     def __init__(out self):
-        self.cache_x = List[Scalar[DT]]()
-        self.cache_scale = List[Scalar[DT]]()
-        self.cache_x_dev = None
-        self.cache_scale_dev = None
-        self.cache_n_batch = 0
+        self.cache_x = Cache["cache_x"]()
+        self.cache_scale = Cache["cache_scale"]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -116,21 +109,13 @@ struct Modulate[DIM: Int](Module):
             m.ts = TargetStorage.make_cpu()
         else:
             var ctx_v = require_ctx["Modulate.make[target='gpu']"](ctx)
-            m.cache_x_dev = ctx_v.enqueue_create_buffer[DT](1)
-            m.cache_scale_dev = ctx_v.enqueue_create_buffer[DT](1)
-            m.cache_n_batch = 0
             m.ts = TargetStorage.make_gpu(ctx_v)
         return m^
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:
-        if self.cache_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.cache_x_dev = ctx.enqueue_create_buffer[DT](batch * Self.DIM)
-            self.cache_scale_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.DIM
-            )
-            self.cache_n_batch = batch
-
+        var ctx = self.ts.ctx.value()
+        self.cache_x.ensure_gpu(ctx, batch * Self.DIM)
+        self.cache_scale.ensure_gpu(ctx, batch * Self.DIM)
     def forward[
         target: StaticString,
         BATCH: Int,
@@ -153,10 +138,10 @@ struct Modulate[DIM: Int](Module):
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.cache_x, BATCH * Self.DIM)
-            ensure_cpu_buffer(self.cache_scale, BATCH * Self.DIM)
-            var cx = TileTensor(self.cache_x, row_major[BATCH, Self.DIM]())
-            var cs = TileTensor(self.cache_scale, row_major[BATCH, Self.DIM]())
+            self.cache_x.ensure_cpu(BATCH * Self.DIM)
+            self.cache_scale.ensure_cpu(BATCH * Self.DIM)
+            var cx = TileTensor(self.cache_x.cpu, row_major[BATCH, Self.DIM]())
+            var cs = TileTensor(self.cache_scale.cpu, row_major[BATCH, Self.DIM]())
             for b in range(BATCH):
                 for i in range(Self.DIM):
                     var xv = x[b, i]
@@ -180,10 +165,10 @@ struct Modulate[DIM: Int](Module):
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr)
             )
             var cx_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                self.cache_x_dev.value()
+                self.cache_x.dev.value()
             )
             var cs_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                self.cache_scale_dev.value()
+                self.cache_scale.dev.value()
             )
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
             comptime kernel = _modulate_forward_kernel[BATCH, Self.DIM]
@@ -218,8 +203,8 @@ struct Modulate[DIM: Int](Module):
         var gsh = typed_view_mut[BATCH, Self.IN_DIMS[2]](grad_inputs[2])
 
         comptime if target == "cpu":
-            var cx = TileTensor(self.cache_x, row_major[BATCH, Self.DIM]())
-            var cs = TileTensor(self.cache_scale, row_major[BATCH, Self.DIM]())
+            var cx = TileTensor(self.cache_x.cpu, row_major[BATCH, Self.DIM]())
+            var cs = TileTensor(self.cache_scale.cpu, row_major[BATCH, Self.DIM]())
             for b in range(BATCH):
                 for i in range(Self.DIM):
                     var g = go[b, i]
@@ -241,10 +226,10 @@ struct Modulate[DIM: Int](Module):
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gsh.ptr)
             )
             var cx_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                self.cache_x_dev.value()
+                self.cache_x.dev.value()
             )
             var cs_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                self.cache_scale_dev.value()
+                self.cache_scale.dev.value()
             )
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
             comptime kernel = _modulate_backward_kernel[BATCH, Self.DIM]

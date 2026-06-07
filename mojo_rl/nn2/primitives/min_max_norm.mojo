@@ -33,13 +33,12 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
-from ..core import Initializer, AMPPolicy, NoAMP
+from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
     require_ctx,
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
 )
 
 
@@ -191,15 +190,11 @@ struct MinMaxNorm[DIM: Int](Module):
 
     # Cache: per-sample copy of x, re-scanned for min/max/argmin/argmax
     # in vjp. Cheaper than caching indices (no int-as-float fragility).
-    var cache_x: List[Scalar[DT]]
-    var cache_x_dev: Optional[DeviceBuffer[DT]]
-    var cache_n_batch: Int
+    var cache_x: Cache["cache_x"]
     var ts: TargetStorage
 
     def __init__(out self):
-        self.cache_x = List[Scalar[DT]]()
-        self.cache_x_dev = None
-        self.cache_n_batch = 0
+        self.cache_x = Cache["cache_x"]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -218,19 +213,12 @@ struct MinMaxNorm[DIM: Int](Module):
             n.ts = TargetStorage.make_cpu()
         else:
             var ctx_v = require_ctx["MinMaxNorm.make[target='gpu']"](ctx)
-            n.cache_x_dev = ctx_v.enqueue_create_buffer[DT](1)
-            n.cache_n_batch = 0
             n.ts = TargetStorage.make_gpu(ctx_v)
         return n^
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:
-        if self.cache_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.cache_x_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.DIM
-            )
-            self.cache_n_batch = batch
-
+        var ctx = self.ts.ctx.value()
+        self.cache_x.ensure_gpu(ctx, batch * Self.DIM)
     def forward[
         target: StaticString,
         BATCH: Int,
@@ -251,9 +239,9 @@ struct MinMaxNorm[DIM: Int](Module):
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.cache_x, BATCH * Self.DIM)
+            self.cache_x.ensure_cpu(BATCH * Self.DIM)
             var cache_v = TileTensor(
-                self.cache_x, row_major[BATCH, Self.DIM](),
+                self.cache_x.cpu, row_major[BATCH, Self.DIM](),
             )
             for b in range(BATCH):
                 var x0: Scalar[DT] = input[b, 0]
@@ -285,7 +273,7 @@ struct MinMaxNorm[DIM: Int](Module):
             var in_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p)
             var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p)
             var cache_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_x_dev.value()
+                self.cache_x.dev.value()
             )
             comptime kernel = _min_max_norm_forward_kernel[BATCH, Self.DIM]
             self.ts.ctx.value().enqueue_function[kernel](
@@ -320,7 +308,7 @@ struct MinMaxNorm[DIM: Int](Module):
 
         comptime if target == "cpu":
             var cache_v = TileTensor(
-                self.cache_x, row_major[BATCH, Self.DIM](),
+                self.cache_x.cpu, row_major[BATCH, Self.DIM](),
             )
             for b in range(BATCH):
                 var x0: Scalar[DT] = cache_v[b, 0]
@@ -375,7 +363,7 @@ struct MinMaxNorm[DIM: Int](Module):
             var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
             var cache_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_x_dev.value()
+                self.cache_x.dev.value()
             )
             comptime kernel = _min_max_norm_backward_kernel[BATCH, Self.DIM]
             self.ts.ctx.value().enqueue_function[kernel](
