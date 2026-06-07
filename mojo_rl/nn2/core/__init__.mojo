@@ -21,7 +21,8 @@ from .walkers import for_each_param_auto, zero_grad_auto
 from .grad_clip import clip_grads_auto, clip_grads_auto_gpu, GradClipState
 from .element_op import ElementOp
 from .reduce_op import ReduceOp
-from .scratch import Scratch, IsScratch
+from .tensor import Tensor, IsScratch, IsState
+from .scratch import Scratch, Cache
 from .scratch_walkers import init_scratch_auto
 from .checkpoint import save_params, load_params, save_state_v2, load_state_v2
 from .saveable import Saveable
