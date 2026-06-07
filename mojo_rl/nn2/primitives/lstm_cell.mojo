@@ -409,6 +409,30 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             "(see examples/nn2/lstm), not Module.vjp"
         )
 
+    def vjp_param_grads[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """LSTMCell does not participate in the S7 two-phase trait vjp:
+        it is recurrent and its backward is the bespoke `step_backward`
+        (caller-owned h/c; not orchestrator-driven), which enforces the
+        read-before-write order internally. Override the default no-op
+        param phase to RAISE so an accidental orchestrator drive fails
+        fast on phase 1 too (the `vjp` / `vjp_grad_input` paths already
+        raise)."""
+        raise Error(
+            "LSTMCell is recurrent — use step_backward "
+            "(see examples/nn2/lstm), not Module.vjp_param_grads"
+        )
+
     # ------------------------------------------------------------------
     # GPU scratch.
     # ------------------------------------------------------------------

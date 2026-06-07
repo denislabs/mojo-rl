@@ -608,6 +608,37 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
+        """Combined backward (S7) — the two phases in fixed order. Single
+        source of truth for direct callers; the recurrent unroll + any
+        orchestrator that calls the phases directly gets the
+        param-before-input order structurally."""
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        self.vjp_param_grads[target, BATCH, POLICY=POLICY, mode=mode](
+            grad_output
+        )
+        self.vjp_grad_input[target, BATCH, POLICY=POLICY, mode=mode](
+            grad_output, *grad_inputs
+        )
+
+    def vjp_param_grads[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Phase 1 (S7): dW_ih / dW_hh / db (mode=all). Reads cached x/h
+        BEFORE `vjp_grad_input` clobbers their slabs. GPU: the gate kernel
+        fills the persistent `_dcomb` ALWAYS (phase 2's input kernel reads
+        it), then the dW/db kernels (mode=all). CPU: nothing to do under
+        input_only (the gate grads are recomputed in phase 2)."""
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
@@ -628,31 +659,22 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, H), MutAnyOrigin
             ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr))
-            var dx_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.IN0_DIM), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[0].ptr))
-            var dh_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, H), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[1].ptr))
             var cc = LayoutTensor[
                 DT, Layout.row_major(BATCH, 4 * H), MutAnyOrigin
             ](self._cache.dev.value())
             var dcomb = LayoutTensor[
                 DT, Layout.row_major(BATCH, 6 * H), MutAnyOrigin
             ](self._dcomb.dev.value())
-            var wih = LayoutTensor[
-                DT, Layout.row_major(Self.IN0_DIM, THREE_H), MutAnyOrigin
-            ](self.W_ih.val.dev.value())
-            var whh = LayoutTensor[
-                DT, Layout.row_major(H, THREE_H), MutAnyOrigin
-            ](self.W_hh.val.dev.value())
 
-            # 1. Gate kernel → d_comb (reads cache, h_prev, go).
+            # Gate kernel → d_comb (reads cache, h_prev, go). ALWAYS — it
+            # is shared preprocessing that phase 2's input kernel reads
+            # out of the persistent `_dcomb`.
             comptime gk = _gru_bwd_gate_kernel[BATCH, H]
             ctx.enqueue_function[gk](
                 go_lt, cc, h_lt, dcomb, grid_dim=(BATCH,), block_dim=(TPB,),
             )
-            # 2-4. Param grads (read x / h_prev) — BEFORE dx/dh writes.
+            # Param grads (read x / h_prev) — enqueued here so they
+            # precede dx/dh (phase 2), which clobber the aliased slabs.
             comptime if mode == "all":
                 var dwih = LayoutTensor[
                     DT, Layout.row_major(Self.IN0_DIM, THREE_H), MutAnyOrigin
@@ -681,7 +703,149 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
                     dcomb, dbih, dbhh,
                     grid_dim=(6 * H,), block_dim=(TPB,),
                 )
-            # 5. Input grads (write dx/dh — may alias x/h, so run LAST).
+            return
+
+        comptime if mode == "all":
+            var x_p = self._x_ptr.value()
+            var h_p = self._h_ptr.value()
+            var dW_ih_p = self.W_ih.grad_unsafe_ptr_cpu()
+            var dW_hh_p = self.W_hh.grad_unsafe_ptr_cpu()
+            var db_ih_p = self.b_ih.grad_unsafe_ptr_cpu()
+            var db_hh_p = self.b_hh.grad_unsafe_ptr_cpu()
+            var r_c = self._r_cache.unsafe_ptr()
+            var z_c = self._z_cache.unsafe_ptr()
+            var n_c = self._n_cache.unsafe_ptr()
+            var hn_c = self._hn_pre.unsafe_ptr()
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+
+            # Per-(b,col) gate gradients (scalar, O(BATCH·H)) → d_ix/d_hx
+            # [BATCH, 3H] + bias accumulate. Reads caches + cached h only
+            # (NOT the dx/dh slabs). d_ix/d_hx are local — phase 2
+            # recomputes them (the loop is cheap vs the matmuls).
+            var d_ix_buf = alloc[Scalar[DT]](BATCH * THREE_H)
+            var d_hx_buf = alloc[Scalar[DT]](BATCH * THREE_H)
+            for b in range(BATCH):
+                var c_off = b * H
+                var g_off = b * THREE_H
+                for col in range(H):
+                    var dh_now = go_p[c_off + col]
+                    var rg = r_c[c_off + col]
+                    var zg = z_c[c_off + col]
+                    var ng = n_c[c_off + col]
+                    var hn_v = hn_c[c_off + col]
+                    var h_val = h_p[c_off + col]
+
+                    var dz = dh_now * (h_val - ng)
+                    var dn = dh_now * (Scalar[DT](1.0) - zg)
+                    var d_pre_n = dn * (Scalar[DT](1.0) - ng * ng)  # tanh'
+                    var d_in_n = d_pre_n
+                    var dr = d_pre_n * hn_v          # gradient on r
+                    var d_hn = d_pre_n * rg          # gradient on hn_pre
+                    var d_pre_r = dr * rg * (Scalar[DT](1.0) - rg)  # sigmoid'
+                    var d_pre_z = dz * zg * (Scalar[DT](1.0) - zg)  # sigmoid'
+
+                    d_ix_buf[g_off + col]         = d_pre_r
+                    d_ix_buf[g_off + H + col]     = d_pre_z
+                    d_ix_buf[g_off + 2 * H + col] = d_in_n
+                    d_hx_buf[g_off + col]         = d_pre_r
+                    d_hx_buf[g_off + H + col]     = d_pre_z
+                    d_hx_buf[g_off + 2 * H + col] = d_hn
+
+                    db_ih_p[col]         += d_pre_r
+                    db_ih_p[H + col]     += d_pre_z
+                    db_ih_p[2 * H + col] += d_in_n
+                    db_hh_p[col]         += d_pre_r
+                    db_hh_p[H + col]     += d_pre_z
+                    db_hh_p[2 * H + col] += d_hn
+
+            var d_ix_tt = TileTensor(d_ix_buf, row_major[BATCH, THREE_H]())
+            var d_hx_tt = TileTensor(d_hx_buf, row_major[BATCH, THREE_H]())
+
+            # dW_ih += xᵀ @ d_ix, dW_hh += hᵀ @ d_hx via BLAS. Transpose
+            # x/h FIRST: that consumes the reads of x_p/h_p before phase 2
+            # clobbers the aliased input slabs.
+            var xT_buf = alloc[Scalar[DT]](Self.IN0_DIM * BATCH)
+            var hT_buf = alloc[Scalar[DT]](H * BATCH)
+            for b in range(BATCH):
+                for k in range(Self.IN0_DIM):
+                    xT_buf[k * BATCH + b] = x_p[b * Self.IN0_DIM + k]
+                for k in range(H):
+                    hT_buf[k * BATCH + b] = h_p[b * H + k]
+            var xT_tt = TileTensor(xT_buf, row_major[Self.IN0_DIM, BATCH]())
+            var hT_tt = TileTensor(hT_buf, row_major[H, BATCH]())
+            var dWih_buf = alloc[Scalar[DT]](Self.IN0_DIM * THREE_H)
+            var dWhh_buf = alloc[Scalar[DT]](H * THREE_H)
+            var dWih_tt = TileTensor(dWih_buf, row_major[Self.IN0_DIM, THREE_H]())
+            var dWhh_tt = TileTensor(dWhh_buf, row_major[H, THREE_H]())
+            max_matmul[target="cpu"](dWih_tt, xT_tt, d_ix_tt, None)
+            max_matmul[target="cpu"](dWhh_tt, hT_tt, d_hx_tt, None)
+            for i in range(Self.IN0_DIM * THREE_H):
+                dW_ih_p[i] += dWih_buf[i]
+            for i in range(H * THREE_H):
+                dW_hh_p[i] += dWhh_buf[i]
+            xT_buf.free()
+            hT_buf.free()
+            dWih_buf.free()
+            dWhh_buf.free()
+            d_ix_buf.free()
+            d_hx_buf.free()
+
+    def vjp_grad_input[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        mut *grad_inputs: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Phase 2 (S7): dx = d_ix @ W_ihᵀ, dh = d_hx @ W_hhᵀ + z-path.
+        Writes grad_inputs[0]/[1] (alias the cached x/h — safe after phase
+        1's reads). GPU reads the persistent `_dcomb` filled by phase 1;
+        CPU RECOMPUTES the gate grads (cheap scalar loop; reads only
+        persistent caches + cached h + grad_output → bit-identical) so the
+        phases need no shared CPU scratch. Runs in both modes."""
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        assert_tag_for["GRUCell", target](self.ts.target_tag)
+
+        comptime H = Self.HIDDEN
+        comptime THREE_H = 3 * Self.HIDDEN
+
+        comptime if target == "gpu":
+            self._ensure_dcomb_gpu(BATCH)
+            var ctx = self.ts.ctx.value()
+            var go_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, H), MutAnyOrigin
+            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr))
+            var dx_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, Self.IN0_DIM), MutAnyOrigin
+            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[0].ptr))
+            var dh_lt = LayoutTensor[
+                DT, Layout.row_major(BATCH, H), MutAnyOrigin
+            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[1].ptr))
+            var cc = LayoutTensor[
+                DT, Layout.row_major(BATCH, 4 * H), MutAnyOrigin
+            ](self._cache.dev.value())
+            var dcomb = LayoutTensor[
+                DT, Layout.row_major(BATCH, 6 * H), MutAnyOrigin
+            ](self._dcomb.dev.value())
+            var wih = LayoutTensor[
+                DT, Layout.row_major(Self.IN0_DIM, THREE_H), MutAnyOrigin
+            ](self.W_ih.val.dev.value())
+            var whh = LayoutTensor[
+                DT, Layout.row_major(H, THREE_H), MutAnyOrigin
+            ](self.W_hh.val.dev.value())
+
+            # Input grads (write dx/dh) — reads `_dcomb` filled in phase 1.
             comptime ik = _gru_bwd_input_kernel[BATCH, Self.IN0_DIM, H]
             ctx.enqueue_function[ik](
                 dcomb, wih, whh, go_lt, cc, dx_lt, dh_lt,
@@ -689,14 +853,9 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             )
             return
 
-        var x_p = self._x_ptr.value()
         var h_p = self._h_ptr.value()
         var W_ih_p = self.W_ih.value_unsafe_ptr_cpu()
         var W_hh_p = self.W_hh.value_unsafe_ptr_cpu()
-        var dW_ih_p = self.W_ih.grad_unsafe_ptr_cpu()
-        var dW_hh_p = self.W_hh.grad_unsafe_ptr_cpu()
-        var db_ih_p = self.b_ih.grad_unsafe_ptr_cpu()
-        var db_hh_p = self.b_hh.grad_unsafe_ptr_cpu()
         var r_c = self._r_cache.unsafe_ptr()
         var z_c = self._z_cache.unsafe_ptr()
         var n_c = self._n_cache.unsafe_ptr()
@@ -706,20 +865,13 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         var dx_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[0].ptr)
         var dh_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[1].ptr)
 
-        # PARAM-GRAD-FIRST INVARIANT: like Linear, x_p and h_p MAY alias
-        # the orchestrator's input slabs that dx_p / dh_p write to. We
-        # compute all parameter grads (which read x, h) and the input
-        # grads (which read W) into stack scratch first, then write
-        # dx, dh as the final step. Since dx and dh are produced from
-        # the per-row d_pre_* signals (not from x, h directly), it's safe
-        # to interleave per-row.
-
-        # Phase 1 — per-(b,col) gate gradients (scalar, O(BATCH·H)). Write the
-        # input-side grads d_ix = [d_ir | d_iz | d_in_g] and hidden-side grads
-        # d_hx = [d_hr_g | d_hz_g | d_hn_g] into [BATCH, 3H] buffers; accumulate
-        # the bias grads. Reads caches + cached h only (NOT the dx/dh slabs).
         var W_ih_tt = TileTensor(W_ih_p, row_major[Self.IN0_DIM, THREE_H]())
         var W_hh_tt = TileTensor(W_hh_p, row_major[H, THREE_H]())
+
+        # Recompute the per-(b,col) gate gradients into d_ix/d_hx (NO bias
+        # accumulation — that was phase 1). Reads caches + cached h; this
+        # read precedes the dx/dh writes below that clobber the aliased
+        # slabs.
         var d_ix_buf = alloc[Scalar[DT]](BATCH * THREE_H)
         var d_hx_buf = alloc[Scalar[DT]](BATCH * THREE_H)
         for b in range(BATCH):
@@ -749,48 +901,12 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
                 d_hx_buf[g_off + H + col]     = d_pre_z
                 d_hx_buf[g_off + 2 * H + col] = d_hn
 
-                comptime if mode == "all":
-                    db_ih_p[col]         += d_pre_r
-                    db_ih_p[H + col]     += d_pre_z
-                    db_ih_p[2 * H + col] += d_in_n
-                    db_hh_p[col]         += d_pre_r
-                    db_hh_p[H + col]     += d_pre_z
-                    db_hh_p[2 * H + col] += d_hn
-
         var d_ix_tt = TileTensor(d_ix_buf, row_major[BATCH, THREE_H]())
         var d_hx_tt = TileTensor(d_hx_buf, row_major[BATCH, THREE_H]())
 
-        # Phase 2 (mode=="all") — dW_ih += xᵀ @ d_ix, dW_hh += hᵀ @ d_hx via
-        # BLAS. Transpose x/h FIRST: that consumes the reads of x_p/h_p BEFORE
-        # the dx/dh writes below clobber the aliased input slabs.
-        comptime if mode == "all":
-            var xT_buf = alloc[Scalar[DT]](Self.IN0_DIM * BATCH)
-            var hT_buf = alloc[Scalar[DT]](H * BATCH)
-            for b in range(BATCH):
-                for k in range(Self.IN0_DIM):
-                    xT_buf[k * BATCH + b] = x_p[b * Self.IN0_DIM + k]
-                for k in range(H):
-                    hT_buf[k * BATCH + b] = h_p[b * H + k]
-            var xT_tt = TileTensor(xT_buf, row_major[Self.IN0_DIM, BATCH]())
-            var hT_tt = TileTensor(hT_buf, row_major[H, BATCH]())
-            var dWih_buf = alloc[Scalar[DT]](Self.IN0_DIM * THREE_H)
-            var dWhh_buf = alloc[Scalar[DT]](H * THREE_H)
-            var dWih_tt = TileTensor(dWih_buf, row_major[Self.IN0_DIM, THREE_H]())
-            var dWhh_tt = TileTensor(dWhh_buf, row_major[H, THREE_H]())
-            max_matmul[target="cpu"](dWih_tt, xT_tt, d_ix_tt, None)
-            max_matmul[target="cpu"](dWhh_tt, hT_tt, d_hx_tt, None)
-            for i in range(Self.IN0_DIM * THREE_H):
-                dW_ih_p[i] += dWih_buf[i]
-            for i in range(H * THREE_H):
-                dW_hh_p[i] += dWhh_buf[i]
-            xT_buf.free()
-            hT_buf.free()
-            dWih_buf.free()
-            dWhh_buf.free()
-
-        # Phase 3 — input grads (write dx/dh, which alias x/h → run LAST).
-        #   dx = d_ix @ W_ihᵀ ; dh = d_hx @ W_hhᵀ  (transpose_b matmul,
-        #   overwrite), then add the direct ∂h'/∂h_col = z_col path.
+        # Input grads (write dx/dh, which alias x/h → after the reads
+        # above). dx = d_ix @ W_ihᵀ ; dh = d_hx @ W_hhᵀ (transpose_b
+        # matmul, overwrite), then add the direct ∂h'/∂h_col = z_col path.
         var dx_tt = TileTensor(dx_p, row_major[BATCH, Self.IN0_DIM]())
         var dh_tt = TileTensor(dh_p, row_major[BATCH, H]())
         max_matmul[transpose_b=True, target="cpu"](dx_tt, d_ix_tt, W_ih_tt, None)
