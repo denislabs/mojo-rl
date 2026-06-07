@@ -34,6 +34,7 @@ from ..core import (
     AMPPolicy,
     NoAMP,
     Param,
+    Cache,
     ParamVisitor,
     for_each_param_auto,
     zero_grad_auto,
@@ -43,7 +44,6 @@ from ..core.target_storage import (
     require_ctx,
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
 )
 
 
@@ -204,22 +204,18 @@ struct LayerNorm[DIM: Int](Module):
     var beta:  Param["beta",  False, Self.DIM]
 
     # Cache (leaf-owned, output-caching).
-    var cache_xhat: List[Scalar[DT]]                # [BATCH, DIM]
-    var cache_inv_std: List[Scalar[DT]]             # [BATCH]
-    var cache_xhat_dev: Optional[DeviceBuffer[DT]]
-    var cache_inv_std_dev: Optional[DeviceBuffer[DT]]
-    var cache_n_batch: Int
+    # S5 dynamic Cache role — lazy-grown at forward (was List + Optional
+    # DeviceBuffer ×2 + a shared cache_n_batch capacity Int).
+    var cache_xhat: Cache["ln_xhat"]                # [BATCH, DIM]
+    var cache_inv_std: Cache["ln_inv_std"]          # [BATCH]
 
     var ts: TargetStorage
 
     def __init__(out self):
         self.gamma = Param["gamma", False, Self.DIM]()
         self.beta  = Param["beta",  False, Self.DIM]()
-        self.cache_xhat = List[Scalar[DT]]()
-        self.cache_inv_std = List[Scalar[DT]]()
-        self.cache_xhat_dev = None
-        self.cache_inv_std_dev = None
-        self.cache_n_batch = 0
+        self.cache_xhat = Cache["ln_xhat"]()
+        self.cache_inv_std = Cache["ln_inv_std"]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -248,21 +244,14 @@ struct LayerNorm[DIM: Int](Module):
             ln.beta  = Param["beta",  False, Self.DIM].make_gpu(ctx_v)
             ln.gamma.val.dev.value().enqueue_fill(1.0)
             ln.beta.val.dev.value().enqueue_fill(0.0)
-            # Tiny placeholder cache buffers — actual sizes set on first forward.
-            ln.cache_xhat_dev    = ctx_v.enqueue_create_buffer[DT](1)
-            ln.cache_inv_std_dev = ctx_v.enqueue_create_buffer[DT](1)
-            ln.cache_n_batch = 0
+            # cache is lazy (S5 Cache) — grown at forward via ensure_gpu.
             ln.ts = TargetStorage.make_gpu(ctx_v)
         return ln^
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:
-        if self.cache_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.cache_xhat_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.DIM
-            )
-            self.cache_inv_std_dev = ctx.enqueue_create_buffer[DT](batch)
-            self.cache_n_batch = batch
+        var ctx = self.ts.ctx.value()
+        self.cache_xhat.ensure_gpu(ctx, batch * Self.DIM)
+        self.cache_inv_std.ensure_gpu(ctx, batch)
 
     # ----- Forward ---------------------------------------------------------
 
@@ -286,15 +275,15 @@ struct LayerNorm[DIM: Int](Module):
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.cache_xhat,    BATCH * Self.DIM)
-            ensure_cpu_buffer(self.cache_inv_std, BATCH)
+            self.cache_xhat.ensure_cpu(BATCH * Self.DIM)
+            self.cache_inv_std.ensure_cpu(BATCH)
             var gamma_v = TileTensor(self.gamma.val.cpu, row_major[Self.DIM]())
             var beta_v  = TileTensor(self.beta.val.cpu,  row_major[Self.DIM]())
             var xhat_v  = TileTensor(
-                self.cache_xhat, row_major[BATCH, Self.DIM](),
+                self.cache_xhat.cpu, row_major[BATCH, Self.DIM](),
             )
             var inv_v   = TileTensor(
-                self.cache_inv_std, row_major[BATCH](),
+                self.cache_inv_std.cpu, row_major[BATCH](),
             )
             var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
             for b in range(BATCH):
@@ -329,10 +318,10 @@ struct LayerNorm[DIM: Int](Module):
                 self.beta.val.dev.value()
             )
             var xh_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_xhat_dev.value()
+                self.cache_xhat.dev.value()
             )
             var is_lt  = LayoutTensor[DT, layout_b, MutAnyOrigin](
-                self.cache_inv_std_dev.value()
+                self.cache_inv_std.dev.value()
             )
             comptime kernel = _layer_norm_forward_kernel[BATCH, Self.DIM]
             self.ts.ctx.value().enqueue_function[kernel](
@@ -371,10 +360,10 @@ struct LayerNorm[DIM: Int](Module):
             var grad_gamma_v  = TileTensor(self.gamma.grd.cpu,  row_major[Self.DIM]())
             var grad_beta_v   = TileTensor(self.beta.grd.cpu,   row_major[Self.DIM]())
             var xhat_v        = TileTensor(
-                self.cache_xhat, row_major[BATCH, Self.DIM](),
+                self.cache_xhat.cpu, row_major[BATCH, Self.DIM](),
             )
             var inv_v         = TileTensor(
-                self.cache_inv_std, row_major[BATCH](),
+                self.cache_inv_std.cpu, row_major[BATCH](),
             )
             var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
             for b in range(BATCH):
@@ -408,10 +397,10 @@ struct LayerNorm[DIM: Int](Module):
                 self.gamma.val.dev.value()
             )
             var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_xhat_dev.value()
+                self.cache_xhat.dev.value()
             )
             var is_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](
-                self.cache_inv_std_dev.value()
+                self.cache_inv_std.dev.value()
             )
             # dx kernel: one block per sample.
             comptime dx_kernel = _layer_norm_backward_dx_kernel[BATCH, Self.DIM]
