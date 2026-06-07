@@ -40,6 +40,7 @@ NOTE: this requires an action-conditioned, agent-capable dynamics
 from std.memory import alloc
 from std.math import max
 from layout import TileTensor, row_major
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
@@ -50,8 +51,14 @@ from ..dreamerv3.twohot import twohot_pred
 
 # Module-level helpers (nested `def`s can't capture mutable outer state in
 # Mojo nightly — "could not infer capture convention"; pass everything in).
+#
+# One dynamics forward over the window. The frozen transformer is the heavy
+# compute, so FWD="gpu" runs it on device (upload packed → forward[gpu] →
+# download zhat + the agent tokens h); the small head + loss arithmetic stays on
+# host — the same split as `shortcut_loss._run_fwd`. Either way `h_host` is
+# filled with h_t [BF, AGD] for the host-side heads.
 def _fwd_window[
-    M: AgentDynamics, BF: Int, ND: Int
+    M: AgentDynamics, FWD: StaticString, BF: Int, ND: Int, AGD: Int
 ](
     mut dyn: M,
     sig_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -61,21 +68,59 @@ def _fwd_window[
     agent_in: UnsafePointer[Scalar[DT], MutAnyOrigin],
     packed_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
     zhat_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    h_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ctx: Optional[DeviceContext],
+    dev_in: Optional[DeviceBuffer[DT]],
+    dev_out: Optional[DeviceBuffer[DT]],
+    h_in: Optional[HostBuffer[DT]],
+    h_out: Optional[HostBuffer[DT]],
+    h_ag: Optional[HostBuffer[DT]],
 ) raises:
     dyn.set_indices(sig_p, step_p, BF)
     dyn.set_actions(act_p, mask_p, BF)
     dyn.set_agent_in(agent_in, BF)
-    var packed_t = TileTensor(packed_p, row_major[BF, ND]())
-    var zhat_t = TileTensor(zhat_p, row_major[BF, ND]())
-    dyn.forward["cpu", BF](packed_t, output=zhat_t)
+    comptime if FWD == "cpu":
+        var packed_t = TileTensor(packed_p, row_major[BF, ND]())
+        var zhat_t = TileTensor(zhat_p, row_major[BF, ND]())
+        dyn.forward["cpu", BF](packed_t, output=zhat_t)
+        var ao = dyn.agent_out_ptr_cpu()
+        for i in range(BF * AGD):
+            h_host[i] = ao[i]
+    else:
+        var c = ctx.value()
+        var di = dev_in.value()
+        var do_ = dev_out.value()
+        var hi = h_in.value()
+        var ho = h_out.value()
+        var hb = h_ag.value()
+        for i in range(BF * ND):
+            hi.unsafe_ptr()[i] = packed_p[i]
+        c.enqueue_copy(di, hi)
+        var it = TileTensor(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](di.unsafe_ptr()),
+            row_major[BF, ND](),
+        )
+        var ot = TileTensor(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](do_.unsafe_ptr()),
+            row_major[BF, ND](),
+        )
+        dyn.forward["gpu", BF](it, output=ot)
+        c.enqueue_copy(ho, do_)
+        c.enqueue_copy(hb, dyn.agent_out_dev())
+        c.synchronize()
+        for i in range(BF * ND):
+            zhat_p[i] = ho.unsafe_ptr()[i]
+        for i in range(BF * AGD):
+            h_host[i] = hb.unsafe_ptr()[i]
 
 
 def _annotate[
-    M: AgentDynamics, PH: Module, VH: Module, RH: Module,
+    PH: Module, VH: Module, RH: Module,
     B: Int, T: Int, AGD: Int, PLOG: Int, NBINS: Int, RLOG: Int,
 ](
-    mut dyn: M, mut ph: PH, mut vh: VH, mut rh: RH,
+    mut ph: PH, mut vh: VH, mut rh: RH,
     state_i: Int,
+    h_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
     hg: UnsafePointer[Scalar[DT], MutAnyOrigin],
     pl: UnsafePointer[Scalar[DT], MutAnyOrigin],
     vl: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -85,14 +130,14 @@ def _annotate[
     out_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],
     out_val: UnsafePointer[Scalar[DT], MutAnyOrigin],
 ) raises:
-    """Gather h_state_i for all B, run the heads, store out_h/out_rew/out_val
-    and leave the policy logits in `pl` for sampling."""
-    var ao = dyn.agent_out_ptr_cpu()
+    """Gather h_state_i (from the host-side `h_host` produced by `_fwd_window`)
+    for all B, run the heads, store out_h/out_rew/out_val and leave the policy
+    logits in `pl` for sampling."""
     for b in range(B):
         var src = (b * T + state_i) * AGD
         for k in range(AGD):
-            hg[b * AGD + k] = ao[src + k]
-            out_h[(b * T + state_i) * AGD + k] = ao[src + k]
+            hg[b * AGD + k] = h_host[src + k]
+            out_h[(b * T + state_i) * AGD + k] = h_host[src + k]
     var hg_t = TileTensor(hg, row_major[B, AGD]())
     var pl_t = TileTensor(pl, row_major[B, PLOG]())
     var vl_t = TileTensor(vl, row_major[B, NBINS]())
@@ -112,6 +157,7 @@ def imagine_rollout[
     RH: Module,
     B: Int, T: Int, NSP: Int, DSP: Int, KMAX: Int, K: Int, NCTX: Int,
     AGD: Int, NACT: Int, NBINS: Int, NMTP: Int,
+    FWD: StaticString = "cpu",
 ](
     mut dyn: M,
     mut ph: PH,
@@ -126,7 +172,14 @@ def imagine_rollout[
     out_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # OUT [B, T-1] class ids
     out_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # OUT [B, T]
     out_val: UnsafePointer[Scalar[DT], MutAnyOrigin],   # OUT [B, T]
+    dctx: Optional[DeviceContext] = None,               # FWD="gpu": the device
 ) raises:
+    """FWD="gpu" runs the (frozen) dynamics transformer forward on `dctx` — the
+    heavy compute — while the heads and all rollout orchestration stay on host
+    (the dynamics is forward-only here, so no GPU vjp is needed). The heads are
+    plain host modules either way. CPU↔GPU parity is validated in
+    `test_dreamer4_imag_rollout_gpu`."""
+    comptime assert FWD == "cpu" or FWD == "gpu", "FWD must be 'cpu' or 'gpu'"
     comptime ND = NSP * DSP
     comptime BF = B * T
     comptime EMAX = _ilog2(KMAX)
@@ -142,6 +195,22 @@ def imagine_rollout[
     packed.resize(BF * ND, 0.0)
     var zhat = List[Scalar[DT]]()
     zhat.resize(BF * ND, 0.0)
+    var h_host = List[Scalar[DT]]()            # h_t [BF, AGD] (host mirror)
+    h_host.resize(BF * AGD, 0.0)
+
+    # GPU forward scratch (device packed/zhat + host staging for packed/zhat/h)
+    var dev_in = Optional[DeviceBuffer[DT]](None)
+    var dev_out = Optional[DeviceBuffer[DT]](None)
+    var h_in = Optional[HostBuffer[DT]](None)
+    var h_out = Optional[HostBuffer[DT]](None)
+    var h_ag = Optional[HostBuffer[DT]](None)
+    comptime if FWD == "gpu":
+        var c = dctx.value()
+        dev_in = c.enqueue_create_buffer[DT](BF * ND)
+        dev_out = c.enqueue_create_buffer[DT](BF * ND)
+        h_in = c.enqueue_create_host_buffer[DT](BF * ND)
+        h_out = c.enqueue_create_host_buffer[DT](BF * ND)
+        h_ag = c.enqueue_create_host_buffer[DT](BF * AGD)
     var act_oh = List[Scalar[DT]]()
     act_oh.resize(BF * ADIM, 0.0)
     var act_mask = List[Scalar[DT]]()
@@ -191,16 +260,20 @@ def imagine_rollout[
     var pl = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](plog.unsafe_ptr())
     var vl = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](vlog.unsafe_ptr())
     var rl = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](rlog.unsafe_ptr())
+    var hh_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        h_host.unsafe_ptr()
+    )
 
     # ── autoregressive generation ───────────────────────────────────────
     for tgt in range(NCTX, T):
         var state_i = tgt - 1
         # 1+3. read h_state_i (frames 0..state_i clean) and annotate r/v
-        _fwd_window[M, BF, ND](
-            dyn, sig_p, step_p, act_p, mask_p, agent_in, packed_p, zhat_p
+        _fwd_window[M, FWD, BF, ND, AGD](
+            dyn, sig_p, step_p, act_p, mask_p, agent_in, packed_p, zhat_p,
+            hh_p, dctx, dev_in, dev_out, h_in, h_out, h_ag,
         )
-        _annotate[M, PH, VH, RH, B, T, AGD, PLOG, NBINS, RLOG](
-            dyn, ph, vh, rh, state_i, hg_p, pl, vl, rl, bins,
+        _annotate[PH, VH, RH, B, T, AGD, PLOG, NBINS, RLOG](
+            ph, vh, rh, state_i, hh_p, hg_p, pl, vl, rl, bins,
             out_h, out_rew, out_val,
         )
         # 2. sample action a_state_i from the dist-0 policy block
@@ -223,8 +296,9 @@ def imagine_rollout[
             var sig_i = isub * SCALE
             for b in range(B):
                 sig[b * T + tgt] = Scalar[DT](Float64(sig_i))
-            _fwd_window[M, BF, ND](
-                dyn, sig_p, step_p, act_p, mask_p, agent_in, packed_p, zhat_p
+            _fwd_window[M, FWD, BF, ND, AGD](
+                dyn, sig_p, step_p, act_p, mask_p, agent_in, packed_p, zhat_p,
+                hh_p, dctx, dev_in, dev_out, h_in, h_out, h_ag,
             )
             var denom = max(1e-4, 1.0 - tau)
             for b in range(B):
@@ -239,10 +313,11 @@ def imagine_rollout[
             step[b * T + tgt] = Scalar[DT](Float64(EMAX))
 
     # ── final state T-1: read h, annotate (bootstrap value/reward) ──────
-    _fwd_window[M, BF, ND](
-        dyn, sig_p, step_p, act_p, mask_p, agent_in, packed_p, zhat_p
+    _fwd_window[M, FWD, BF, ND, AGD](
+        dyn, sig_p, step_p, act_p, mask_p, agent_in, packed_p, zhat_p,
+        hh_p, dctx, dev_in, dev_out, h_in, h_out, h_ag,
     )
-    _annotate[M, PH, VH, RH, B, T, AGD, PLOG, NBINS, RLOG](
-        dyn, ph, vh, rh, T - 1, hg_p, pl, vl, rl, bins,
+    _annotate[PH, VH, RH, B, T, AGD, PLOG, NBINS, RLOG](
+        ph, vh, rh, T - 1, hh_p, hg_p, pl, vl, rl, bins,
         out_h, out_rew, out_val,
     )

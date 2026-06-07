@@ -99,6 +99,9 @@ trait AgentDynamics(ShortcutDynamics):
     def agent_out_ptr_cpu(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         ...
 
+    def agent_out_dev(self) -> DeviceBuffer[DT]:
+        ...
+
 
 def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
