@@ -37,12 +37,11 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.bmm import batched_matmul
 
 from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
+from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
 )
 
 
@@ -605,13 +604,9 @@ struct ScaledDotProductAttention[
     )
 
     # Cache (leaf-owned, output-caching).
-    var cache: List[Scalar[DT]]                 # [BATCH, CACHE_SIZE]
-    var cache_dev: Optional[DeviceBuffer[DT]]
-    var cache_n_batch: Int
-
-    # BMM scratch (reused across steps; lazily sized to BATCH).
-    var scratch_dev: Optional[DeviceBuffer[DT]]
-    var scratch_n_batch: Int
+    var cache: Cache["attn_cache"]   # [BATCH, CACHE_SIZE] (lazy)
+    # BMM scratch (device-only, reused across steps; lazily sized to BATCH).
+    var scratch: Cache["attn_scratch"]
 
     var ts: TargetStorage
 
@@ -619,11 +614,8 @@ struct ScaledDotProductAttention[
         comptime assert (
             Self.DIM % Self.N_HEADS == 0
         ), "ScaledDotProductAttention: DIM must be divisible by N_HEADS"
-        self.cache = List[Scalar[DT]]()
-        self.cache_dev = None
-        self.cache_n_batch = 0
-        self.scratch_dev = None
-        self.scratch_n_batch = 0
+        self.cache = Cache["attn_cache"]()
+        self.scratch = Cache["attn_scratch"]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -644,26 +636,14 @@ struct ScaledDotProductAttention[
                     "ScaledDotProductAttention.make[target='gpu']: ctx required"
                 )
             var ctx_v = ctx.value()
-            a.cache_dev = ctx_v.enqueue_create_buffer[DT](1)
-            a.cache_n_batch = 0
             a.ts = TargetStorage.make_gpu(ctx_v)
         return a^
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:
-        if self.cache_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.cache_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.CACHE_SIZE
-            )
-            self.cache_n_batch = batch
+        self.cache.ensure_gpu(self.ts.ctx.value(), batch * Self.CACHE_SIZE)
 
     def _ensure_scratch_gpu(mut self, batch: Int) raises:
-        if self.scratch_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.scratch_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.SCRATCH_UNIT
-            )
-            self.scratch_n_batch = batch
+        self.scratch.ensure_gpu(self.ts.ctx.value(), batch * Self.SCRATCH_UNIT)
 
     @staticmethod
     def display_label() -> String:
@@ -724,7 +704,7 @@ struct ScaledDotProductAttention[
         var in_lt = LayoutTensor[DT, lay_in, MutAnyOrigin](in_p)
         var out_lt = LayoutTensor[DT, lay_out, MutAnyOrigin](out_p)
         var c_lt = LayoutTensor[DT, lay_c, MutAnyOrigin](
-            self.cache_dev.value()
+            self.cache.dev.value()
         )
         comptime kernel = _attn_fwd_kernel[
             BATCH, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
@@ -758,7 +738,7 @@ struct ScaledDotProductAttention[
         # Slice the reused scratch buffer: 4 packed slots [0..3] then 2 scores
         # slots at 4*PACKED. Forward uses pq/pk/pv/pout + 1 scores.
         var sb = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.scratch_dev.value().unsafe_ptr()
+            self.scratch.dev.value().unsafe_ptr()
         )
         var pq = sb + 0 * PACKED
         var pk = sb + 1 * PACKED
@@ -773,7 +753,7 @@ struct ScaledDotProductAttention[
         ](in_p)
         var c_lt = LayoutTensor[
             DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
-        ](self.cache_dev.value())
+        ](self.cache.dev.value())
 
         # 1. pack QKV → (BH, SEQ, HEAD_DIM) + write cache.
         comptime pelems = BATCH * Self.SEQ_LEN * Self.DIM
@@ -843,13 +823,13 @@ struct ScaledDotProductAttention[
         # (Apple-Accelerate). The 2 GEMMs are BLAS; softmax + causal mask
         # stay scalar. Cache layout [Q|K|V|scores] is identical to the GPU
         # path, so backward reads it the same way.
-        ensure_cpu_buffer(self.cache, BATCH * Self.CACHE_SIZE)
+        self.cache.ensure_cpu(BATCH * Self.CACHE_SIZE)
         var ip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
         var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             output_v.ptr
         )
         var cp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.cache.unsafe_ptr()
+            self.cache.cpu_ptr()
         )
         comptime IN = Self.IN_DIMS[0]
         comptime OUT = Self.OUT_DIM
@@ -1017,7 +997,7 @@ struct ScaledDotProductAttention[
         var go_lt = LayoutTensor[DT, lay_out, MutAnyOrigin](go_p)
         var gi_lt = LayoutTensor[DT, lay_in, MutAnyOrigin](gi_p)
         var c_lt = LayoutTensor[DT, lay_c, MutAnyOrigin](
-            self.cache_dev.value()
+            self.cache.dev.value()
         )
         comptime grid_bh = BATCH * Self.N_HEADS
         # 1) zero grad_input.
@@ -1081,7 +1061,7 @@ struct ScaledDotProductAttention[
         #   s0: dattn  → (step4) attn_T → (step6) dscore_T
         #   s1: dscore
         var sb = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.scratch_dev.value().unsafe_ptr()
+            self.scratch.dev.value().unsafe_ptr()
         )
         var p0 = sb + 0 * PACKED
         var p1 = sb + 1 * PACKED
@@ -1095,7 +1075,7 @@ struct ScaledDotProductAttention[
         var go_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin](go_p)
         var gi_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.IN_DIMS[0]), MutAnyOrigin](gi_p)
         var c_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin](
-            self.cache_dev.value()
+            self.cache.dev.value()
         )
 
         comptime pelems = BATCH * SL * Self.DIM
@@ -1197,7 +1177,7 @@ struct ScaledDotProductAttention[
             grad_input_v.ptr
         )
         var cp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.cache.unsafe_ptr()
+            self.cache.cpu_ptr()
         )
         comptime IN = Self.IN_DIMS[0]
         comptime OUT = Self.OUT_DIM

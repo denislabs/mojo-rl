@@ -36,9 +36,9 @@ from std.gpu.memory import AddressSpace
 from linalg.bmm import batched_matmul
 
 from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
+from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for, ensure_cpu_buffer
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 # The BMM fast path reuses attention.mojo's pack/unpack/transpose/jvp kernels
 # verbatim (they are mask-agnostic); only the softmax differs (adds the mask),
@@ -476,26 +476,20 @@ struct MaskedAttention[
         + 2 * Self.N_HEADS * Self.SEQ_LEN * Self.SEQ_LEN
     )
 
-    var cache: List[Scalar[DT]]          # [BATCH, CACHE_SIZE]
+    var cache: Cache["mattn_cache"]      # [BATCH, CACHE_SIZE] (lazy)
     var mask: List[Scalar[DT]]           # [SEQ_LEN*SEQ_LEN] additive bias (CPU)
-    var cache_dev: Optional[DeviceBuffer[DT]]
-    var cache_n_batch: Int
     var mask_dev: Optional[DeviceBuffer[DT]]   # [SEQ_LEN*SEQ_LEN] (GPU)
-    var scratch_dev: Optional[DeviceBuffer[DT]]
-    var scratch_n_batch: Int
+    var scratch: Cache["mattn_scratch"]  # device-only BMM scratch (lazy)
     var ts: TargetStorage
 
     def __init__(out self):
         comptime assert (
             Self.DIM % Self.N_HEADS == 0
         ), "MaskedAttention: DIM must be divisible by N_HEADS"
-        self.cache = List[Scalar[DT]]()
+        self.cache = Cache["mattn_cache"]()
         self.mask = List[Scalar[DT]]()
-        self.cache_dev = None
-        self.cache_n_batch = 0
         self.mask_dev = None
-        self.scratch_dev = None
-        self.scratch_n_batch = 0
+        self.scratch = Cache["mattn_scratch"]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -512,8 +506,6 @@ struct MaskedAttention[
             a.ts = TargetStorage.make_cpu()
         else:
             var ctx_v = require_ctx["MaskedAttention.make[target='gpu']"](ctx)
-            a.cache_dev = ctx_v.enqueue_create_buffer[DT](1)
-            a.cache_n_batch = 0
             a.ts = TargetStorage.make_gpu(ctx_v)
             a._upload_mask_gpu()
         return a^
@@ -538,20 +530,10 @@ struct MaskedAttention[
             self._upload_mask_gpu()
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:
-        if self.cache_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.cache_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.CACHE_SIZE
-            )
-            self.cache_n_batch = batch
+        self.cache.ensure_gpu(self.ts.ctx.value(), batch * Self.CACHE_SIZE)
 
     def _ensure_scratch_gpu(mut self, batch: Int) raises:
-        if self.scratch_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.scratch_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.SCRATCH_UNIT
-            )
-            self.scratch_n_batch = batch
+        self.scratch.ensure_gpu(self.ts.ctx.value(), batch * Self.SCRATCH_UNIT)
 
     @staticmethod
     def display_label() -> String:
@@ -599,11 +581,11 @@ struct MaskedAttention[
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
-        ensure_cpu_buffer(self.cache, BATCH * Self.CACHE_SIZE)
+        self.cache.ensure_cpu(BATCH * Self.CACHE_SIZE)
         var ip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
         var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
         var cp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.cache.unsafe_ptr()
+            self.cache.cpu_ptr()
         )
         var mp = self.mask.unsafe_ptr()
         comptime IN = Self.IN_DIMS[0]
@@ -732,7 +714,7 @@ struct MaskedAttention[
         var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
         var in_lt = LayoutTensor[DT, lay_in, MutAnyOrigin](in_p)
         var out_lt = LayoutTensor[DT, lay_out, MutAnyOrigin](out_p)
-        var c_lt = LayoutTensor[DT, lay_c, MutAnyOrigin](self.cache_dev.value())
+        var c_lt = LayoutTensor[DT, lay_c, MutAnyOrigin](self.cache.dev.value())
         var m_lt = LayoutTensor[DT, lay_m, MutAnyOrigin](self.mask_dev.value())
         comptime kernel = _masked_fwd_kernel[
             BATCH, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
@@ -765,7 +747,7 @@ struct MaskedAttention[
         var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
         var go_lt = LayoutTensor[DT, lay_out, MutAnyOrigin](go_p)
         var gi_lt = LayoutTensor[DT, lay_in, MutAnyOrigin](gi_p)
-        var c_lt = LayoutTensor[DT, lay_c, MutAnyOrigin](self.cache_dev.value())
+        var c_lt = LayoutTensor[DT, lay_c, MutAnyOrigin](self.cache.dev.value())
         comptime grid_bh = BATCH * Self.N_HEADS
 
         # 1) zero grad_input.
@@ -815,7 +797,7 @@ struct MaskedAttention[
         self._ensure_scratch_gpu(BATCH)
 
         var sb = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.scratch_dev.value().unsafe_ptr()
+            self.scratch.dev.value().unsafe_ptr()
         )
         var pq = sb + 0 * PACKED
         var pk = sb + 1 * PACKED
@@ -830,7 +812,7 @@ struct MaskedAttention[
         ](in_p)
         var c_lt = LayoutTensor[
             DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
-        ](self.cache_dev.value())
+        ](self.cache.dev.value())
         var m_lt = LayoutTensor[
             DT, Layout.row_major(Self.SEQ_LEN * Self.SEQ_LEN), MutAnyOrigin
         ](self.mask_dev.value())
@@ -912,7 +894,7 @@ struct MaskedAttention[
 
         # Same slot-recycling aliasing map as attention.mojo's _vjp_gpu_bmm.
         var sb = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.scratch_dev.value().unsafe_ptr()
+            self.scratch.dev.value().unsafe_ptr()
         )
         var p0 = sb + 0 * PACKED
         var p1 = sb + 1 * PACKED
@@ -931,7 +913,7 @@ struct MaskedAttention[
         ](gi_p)
         var c_lt = LayoutTensor[
             DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
-        ](self.cache_dev.value())
+        ](self.cache.dev.value())
 
         comptime pelems = BATCH * SL * Self.DIM
         comptime pblocks = (pelems + TPB - 1) // TPB
@@ -1033,7 +1015,7 @@ struct MaskedAttention[
             grad_input_v.ptr
         )
         var cp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.cache.unsafe_ptr()
+            self.cache.cpu_ptr()
         )
         comptime IN = Self.IN_DIMS[0]
         comptime OUT = Self.OUT_DIM

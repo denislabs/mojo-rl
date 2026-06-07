@@ -74,6 +74,7 @@ from ..core import (
     AMPPolicy,
     NoAMP,
     Param,
+    Cache,
     ParamVisitor,
 )
 from ..core.module import Module, typed_view, typed_view_mut
@@ -337,10 +338,8 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
     var _cache_batch: Int
 
     # GPU scratch (packed): cache [B, 4H], d_comb [B, 6H].
-    var _cache_dev: Optional[DeviceBuffer[DT]]
-    var _cache_dev_n: Int
-    var _dcomb_dev: Optional[DeviceBuffer[DT]]
-    var _dcomb_dev_n: Int
+    var _cache: Cache["gru_cache"]   # [B, 4H] (device-only, lazy)
+    var _dcomb: Cache["gru_dcomb"]   # [B, 6H] (device-only, lazy)
 
     # ------------------------------------------------------------------
     # Defaultable + factories.
@@ -359,10 +358,8 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         self._x_ptr = None
         self._h_ptr = None
         self._cache_batch = 0
-        self._cache_dev = None
-        self._cache_dev_n = 0
-        self._dcomb_dev = None
-        self._dcomb_dev_n = 0
+        self._cache = Cache["gru_cache"]()
+        self._dcomb = Cache["gru_dcomb"]()
 
     @staticmethod
     def make[
@@ -410,8 +407,6 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             Self._gpu_init_param[Self.B_IH_SIZE, 0, 0, INIT](
                 ctx_v, g.b_hh.val.dev.value(), is_bias=True
             )
-            g._cache_dev = ctx_v.enqueue_create_buffer[DT](1)
-            g._dcomb_dev = ctx_v.enqueue_create_buffer[DT](1)
         return g^
 
     @staticmethod
@@ -434,20 +429,10 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         ctx.synchronize()
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:
-        var needed = batch * 4 * Self.HIDDEN
-        if self._cache_dev_n < needed:
-            self._cache_dev = self.ts.ctx.value().enqueue_create_buffer[DT](
-                needed
-            )
-            self._cache_dev_n = needed
+        self._cache.ensure_gpu(self.ts.ctx.value(), batch * 4 * Self.HIDDEN)
 
     def _ensure_dcomb_gpu(mut self, batch: Int) raises:
-        var needed = batch * 6 * Self.HIDDEN
-        if self._dcomb_dev_n < needed:
-            self._dcomb_dev = self.ts.ctx.value().enqueue_create_buffer[DT](
-                needed
-            )
-            self._dcomb_dev_n = needed
+        self._dcomb.ensure_gpu(self.ts.ctx.value(), batch * 6 * Self.HIDDEN)
 
     # ------------------------------------------------------------------
     # for_each_param / zero_grad: inherited from the Module default (S1,
@@ -529,7 +514,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             ](self.b_hh.val.dev.value())
             var cc = LayoutTensor[
                 DT, Layout.row_major(BATCH, 4 * H), MutAnyOrigin
-            ](self._cache_dev.value())
+            ](self._cache.dev.value())
             comptime kern = _gru_fwd_kernel[BATCH, Self.IN0_DIM, H]
             ctx.enqueue_function[kern](
                 x_lt, wih, whh, bih, bhh, h_lt, out_lt, cc,
@@ -651,10 +636,10 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[1].ptr))
             var cc = LayoutTensor[
                 DT, Layout.row_major(BATCH, 4 * H), MutAnyOrigin
-            ](self._cache_dev.value())
+            ](self._cache.dev.value())
             var dcomb = LayoutTensor[
                 DT, Layout.row_major(BATCH, 6 * H), MutAnyOrigin
-            ](self._dcomb_dev.value())
+            ](self._dcomb.dev.value())
             var wih = LayoutTensor[
                 DT, Layout.row_major(Self.IN0_DIM, THREE_H), MutAnyOrigin
             ](self.W_ih.val.dev.value())
