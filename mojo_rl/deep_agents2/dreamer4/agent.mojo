@@ -75,6 +75,8 @@ struct Dreamer4Agent[
     AHID: Int = 0,                    #  imagination needs ADIM = NACT one-hot)
     K_IMAG: Int = 0,                  # ODE steps for imagination (0 ⇒ KMAX)
     NCTX: Int = 1,                    # clean context frames for the rollout
+    DYN_TARGET: StaticString = "cpu", # "gpu" ⇒ dynamics on device (the heavy
+                                      #  imagination compute); heads stay CPU
 ](Module):
     comptime ARITY: Int = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=1)
@@ -189,10 +191,16 @@ struct Dreamer4Agent[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
         comptime assert target == "cpu", (
-            "Dreamer4Agent: only CPU is wired in v1 (GPU train_step deferred)"
+            "Dreamer4Agent heads/te/value are CPU; set DYN_TARGET=\"gpu\" to put"
+            " the dynamics on device (the heavy imagination compute)."
+        )
+        comptime assert Self.DYN_TARGET == "cpu" or Self.DYN_TARGET == "gpu", (
+            "DYN_TARGET must be 'cpu' or 'gpu'"
         )
         var m = Self()
-        m.dyn = Self.DYN.make[target=target, INIT=INIT](ctx)
+        # dynamics on DYN_TARGET (GPU for the device rollout); everything else
+        # (task embedder, heads, value, prior) stays on host.
+        m.dyn = Self.DYN.make[target = Self.DYN_TARGET, INIT=INIT](ctx)
         m.te = Self.TE.make[target=target, INIT=INIT](ctx)
         m.ph = Self.PH.make[target=target, INIT=INIT](ctx)
         m.rh = Self.RH.make[target=target, INIT=INIT](ctx)
@@ -273,6 +281,11 @@ struct Dreamer4Agent[
     def for_each_param[
         target: StaticString, V: ParamVisitor
     ](mut self, prefix: String, mut visitor: V) raises:
+        comptime assert Self.DYN_TARGET == "cpu", (
+            "whole-agent for_each_param spans one target; with DYN_TARGET=\"gpu\""
+            " the dynamics is on device — optimize submodules separately"
+            " (agent.dyn on GPU, agent.ph/agent.vh on CPU)."
+        )
         assert_tag_for["Dreamer4Agent", target](self.ts.target_tag)
         self.dyn.for_each_param[target, V](prefix + ".dyn", visitor)
         self.te.for_each_param[target, V](prefix + ".te", visitor)
@@ -283,6 +296,10 @@ struct Dreamer4Agent[
         # it is deliberately excluded from the param walk.
 
     def zero_grad[target: StaticString](mut self) raises:
+        comptime assert Self.DYN_TARGET == "cpu", (
+            "whole-agent zero_grad spans one target; with DYN_TARGET=\"gpu\""
+            " zero submodule grads separately."
+        )
         assert_tag_for["Dreamer4Agent", target](self.ts.target_tag)
         self.dyn.zero_grad[target]()
         self.te.zero_grad[target]()
@@ -358,6 +375,11 @@ struct Dreamer4Agent[
         transformer (grads accumulate over the two vjp calls). `clean_bc=False`
         is the paper's coupled form (BC reads the noised main-pass h_t); it only
         clones cleanly when the WM is a strong denoiser (large-scale regime)."""
+        comptime assert Self.DYN_TARGET == "cpu", (
+            "bc_train_step is the CPU world-model path; a DYN_TARGET=\"gpu\""
+            " agent trains the dynamics via dynamics_pretrain_loss[FWD=\"gpu\"]"
+            " directly (see the imagination lighthouse stage 1)."
+        )
         var agp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             self.agent_in.unsafe_ptr()
         )
@@ -487,6 +509,7 @@ struct Dreamer4Agent[
         beta: Scalar[DT] = Scalar[DT](0.3),
         policy_weight: Scalar[DT] = Scalar[DT](1.0),
         value_weight: Scalar[DT] = Scalar[DT](1.0),
+        dctx: Optional[DeviceContext] = None,   # required when DYN_TARGET="gpu"
     ) raises -> Tuple[Float64, Float64]:
         """One imagination-RL step (paper §3.3). Generates an on-policy rollout
         inside the FROZEN world model, then trains ONLY the policy + value heads:
@@ -525,15 +548,27 @@ struct Dreamer4Agent[
         # 1. task embeddings → agent tokens
         self.te.embed_into["cpu", Self.B, Self.T](task_ids, agp)
 
-        # 2. imagined rollout (frozen transformer + heads, forward-only)
-        imagine_rollout[
-            Self.DYN, Self.PH, Self.VH, Self.RH, Self.B, Self.T, Self.NSP,
-            Self.DSP, Self.KMAX, Self.KI, Self.NCTX, Self.AGD, Self.NACT,
-            Self.NBINS, Self.NMTP,
-        ](
-            self.dyn, self.ph, self.vh, self.rh, ctx, agp, u01, znoise, bins,
-            im_h_p, im_act_p, im_rew_p, im_val_p,
-        )
+        # 2. imagined rollout (frozen transformer + heads, forward-only). The
+        #    dynamics forward runs on DYN_TARGET (GPU = the heavy compute); the
+        #    heads + everything below stay on host.
+        comptime if Self.DYN_TARGET == "cpu":
+            imagine_rollout[
+                Self.DYN, Self.PH, Self.VH, Self.RH, Self.B, Self.T, Self.NSP,
+                Self.DSP, Self.KMAX, Self.KI, Self.NCTX, Self.AGD, Self.NACT,
+                Self.NBINS, Self.NMTP, "cpu",
+            ](
+                self.dyn, self.ph, self.vh, self.rh, ctx, agp, u01, znoise, bins,
+                im_h_p, im_act_p, im_rew_p, im_val_p,
+            )
+        else:
+            imagine_rollout[
+                Self.DYN, Self.PH, Self.VH, Self.RH, Self.B, Self.T, Self.NSP,
+                Self.DSP, Self.KMAX, Self.KI, Self.NCTX, Self.AGD, Self.NACT,
+                Self.NBINS, Self.NMTP, "gpu",
+            ](
+                self.dyn, self.ph, self.vh, self.rh, ctx, agp, u01, znoise, bins,
+                im_h_p, im_act_p, im_rew_p, im_val_p, dctx=dctx,
+            )
 
         # 3. continue = γ (no termination in v1); λ-returns (eq. 10)
         for i in range(Self.BF):
