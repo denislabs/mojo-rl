@@ -49,6 +49,7 @@ from ..core import (
     AMPPolicy,
     NoAMP,
     Param,
+    Cache,
     for_each_param_auto,
     zero_grad_auto,
     ParamVisitor,
@@ -59,8 +60,6 @@ from ..core.target_storage import (
     require_ctx,
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
-    ensure_gpu_buffer,
 )
 from .linear import _grad_bias_reduce_kernel, _transpose_kernel, _accum_kernel
 
@@ -145,9 +144,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
 
     # Owned activation cache — stores z (if !owns_cache) or y (if owns_cache).
     # Lazy-grown to [BATCH * OUT] on first forward.
-    var act_cache_cpu: List[Scalar[DT]]
-    var act_cache_dev: Optional[DeviceBuffer[DT]]
-    var act_cache_n: Int
+    var act_cache: Cache["act_cache"]   # [BATCH, OUT] dual, lazy
 
     # Backward grad_w temporaries (GPU). `cacheT_dev` holds the transposed
     # input cacheᵀ[IN, BATCH] (lazy, BATCH-sized — mirrors `act_cache_dev` so
@@ -156,9 +153,8 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
     # `cacheᵀ @ grad_output` (W_SIZE, fixed) before it is accumulated into
     # grad_w. Lets grad_w run through `max_matmul` (tensor cores) instead of
     # the serial `_grad_w_accum_kernel`.
-    var cacheT_dev: Optional[DeviceBuffer[DT]]
-    var cacheT_n: Int
-    var dW_tmp_dev: Optional[DeviceBuffer[DT]]
+    var cacheT: Cache["act_cacheT"]     # [IN, BATCH] device, lazy
+    var dW_tmp: Cache["act_dW_tmp"]     # [IN, OUT] device, fixed (W_SIZE)
 
     var ts: TargetStorage
 
@@ -168,12 +164,9 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
         self.weight = Param["weight", True,  Self.W_SIZE]()
         self.bias   = Param["bias",   False, Self.B_SIZE]()
         self._cached_input_ptr = None
-        self.act_cache_cpu = List[Scalar[DT]]()
-        self.act_cache_dev = None
-        self.act_cache_n = 0
-        self.cacheT_dev = None
-        self.cacheT_n = 0
-        self.dW_tmp_dev = None
+        self.act_cache = Cache["act_cache"]()
+        self.cacheT = Cache["act_cacheT"]()
+        self.dW_tmp = Cache["act_dW_tmp"]()
         self.ts = TargetStorage.make_uninit()
 
     # ----- Factories -------------------------------------------------------
@@ -212,11 +205,9 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
             ctx_v.enqueue_copy(lin.bias.val.dev.value(),   b_host)
             ctx_v.synchronize()
             # Placeholder dev buffer for act_cache; grown lazily on first fwd.
-            lin.act_cache_dev = ctx_v.enqueue_create_buffer[DT](1)
-            lin.act_cache_n = 0
             # Fixed-size [IN, OUT] dW scratch for the max_matmul grad_w path.
             # cacheT stays None (lazily sized to BATCH on first backward).
-            lin.dW_tmp_dev = ctx_v.enqueue_create_buffer[DT](Self.W_SIZE)
+            lin.dW_tmp.ensure_gpu(ctx_v, Self.W_SIZE)
             lin.ts = TargetStorage.make_gpu(ctx_v)
         return lin^
 
@@ -264,9 +255,9 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
 
             # (2) Fused bias-add + activation + cache write. SIMD inner loop.
             comptime N = BATCH * Self.OUT
-            ensure_cpu_buffer(self.act_cache_cpu, N)
+            self.act_cache.ensure_cpu(N)
             var b_ptr = self.bias.value_unsafe_ptr_cpu()
-            var cache_p = self.act_cache_cpu.unsafe_ptr()
+            var cache_p = self.act_cache.cpu_ptr()
             for bi in range(BATCH):
                 var row_off = bi * Self.OUT
                 var ij = 0
@@ -301,10 +292,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
             max_matmul[target="gpu"](output_v, input_v, weight_tt, ctx)
 
             # (2) Fused bias-add + activation + cache write (one launch).
-            ensure_gpu_buffer(
-                self.act_cache_dev, self.act_cache_n,
-                BATCH * Self.OUT, ctx,
-            )
+            self.act_cache.ensure_gpu(ctx, BATCH * Self.OUT)
             comptime out_layout = Layout.row_major(BATCH, Self.OUT)
             comptime bias_layout = Layout.row_major(Self.OUT)
             var output_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](out_p)
@@ -312,7 +300,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
                 self.bias.val.dev.value()
             )
             var cache_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](
-                self.act_cache_dev.value()
+                self.act_cache.dev.value()
             )
             comptime n_blocks = (BATCH * Self.OUT + TPB - 1) // TPB
             comptime fwd_kernel = _linear_act_fwd_epilogue_kernel[
@@ -358,7 +346,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
             # (1) In-place rewrite: grad_output[b,j] = OP.backward(cache[b,j], go).
             #     SIMD loop over BATCH*OUT.
             comptime N = BATCH * Self.OUT
-            var cache_p = self.act_cache_cpu.unsafe_ptr()
+            var cache_p = self.act_cache.cpu_ptr()
             var k = 0
             while k + CPU_SIMD_W <= N:
                 var c = cache_p.load[width=CPU_SIMD_W](k)
@@ -435,7 +423,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
             comptime go_layout = Layout.row_major(BATCH, Self.OUT)
             var go_lt = LayoutTensor[DT, go_layout, MutAnyOrigin](go_p)
             var cache_lt = LayoutTensor[DT, go_layout, MutAnyOrigin](
-                self.act_cache_dev.value()
+                self.act_cache.dev.value()
             )
 
             # (1) In-place activation-derivative rewrite: grad_output ←
@@ -474,16 +462,14 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
                 # 3a. cacheTᵀ[IN, BATCH] = transpose(cache_input[BATCH, IN]).
                 #     Lazy-size cacheT to BATCH (capture-safe: first/settle call
                 #     allocates, replays reuse).
-                ensure_gpu_buffer(
-                    self.cacheT_dev, self.cacheT_n, BATCH * Self.IN, ctx,
-                )
+                self.cacheT.ensure_gpu(ctx, BATCH * Self.IN)
                 comptime cin_layout = Layout.row_major(BATCH, Self.IN)
                 comptime cinT_layout = Layout.row_major(Self.IN, BATCH)
                 var cin_lt = LayoutTensor[DT, cin_layout, MutAnyOrigin](
                     self._cached_input_ptr.value()
                 )
                 var cinT_lt = LayoutTensor[DT, cinT_layout, MutAnyOrigin](
-                    self.cacheT_dev.value()
+                    self.cacheT.dev.value()
                 )
                 comptime n_blocks_t = (BATCH * Self.IN + TPB - 1) // TPB
                 comptime t_kernel = _transpose_kernel[BATCH, Self.IN]
@@ -493,10 +479,10 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
                 )
                 # 3b. dW_tmp[IN, OUT] = cacheTᵀ @ grad_pre_act  (max_matmul).
                 var cinT_tt = TileTensor(
-                    self.cacheT_dev.value(), row_major[Self.IN, BATCH](),
+                    self.cacheT.dev.value(), row_major[Self.IN, BATCH](),
                 )
                 var dW_tmp_tt = TileTensor(
-                    self.dW_tmp_dev.value(), row_major[Self.IN, Self.OUT](),
+                    self.dW_tmp.dev.value(), row_major[Self.IN, Self.OUT](),
                 )
                 max_matmul[target="gpu"](
                     dW_tmp_tt, cinT_tt, grad_output_v, ctx,
@@ -507,7 +493,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
                     self.weight.grd.dev.value()
                 )
                 var dW_tmp_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
-                    self.dW_tmp_dev.value()
+                    self.dW_tmp.dev.value()
                 )
                 comptime n_blocks_acc = (Self.W_SIZE + TPB - 1) // TPB
                 comptime acc_kernel = _accum_kernel[Self.W_SIZE]

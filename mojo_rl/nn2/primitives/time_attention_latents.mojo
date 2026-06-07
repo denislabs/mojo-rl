@@ -30,9 +30,9 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
+from ..core import Initializer, AMPPolicy, NoAMP, Cache, ParamVisitor
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for, ensure_cpu_buffer
+from ..core.target_storage import TargetStorage, assert_tag_for
 from ..composites import MultiHeadAttention
 
 
@@ -90,25 +90,23 @@ struct TimeAttentionLatents[
     comptime MHA = MultiHeadAttention[Self.D, Self.N_HEADS, Self.T, True]
 
     var mha: Self.MHA
-    var packed_in: List[Scalar[DT]]    # CPU scratch [B*L, T*D]
-    var packed_out: List[Scalar[DT]]
-    var grad_pout: List[Scalar[DT]]
-    var grad_pin: List[Scalar[DT]]
-    # GPU scratch: two reused packed buffers (gather→A, MHA A→B, scatter B).
-    var pa_dev: Optional[DeviceBuffer[DT]]
-    var pb_dev: Optional[DeviceBuffer[DT]]
-    var scratch_n: Int
+    # S5 Cache role — CPU pack scratch + 2 reused device packed buffers.
+    var packed_in: Cache["tal_packed_in"]    # CPU scratch [B*L, T*D]
+    var packed_out: Cache["tal_packed_out"]
+    var grad_pout: Cache["tal_grad_pout"]
+    var grad_pin: Cache["tal_grad_pin"]
+    var pa: Cache["tal_pa"]   # device (gather→A, MHA A→B, scatter B)
+    var pb: Cache["tal_pb"]
     var ts: TargetStorage
 
     def __init__(out self):
         self.mha = Self.MHA()
-        self.packed_in = List[Scalar[DT]]()
-        self.packed_out = List[Scalar[DT]]()
-        self.grad_pout = List[Scalar[DT]]()
-        self.grad_pin = List[Scalar[DT]]()
-        self.pa_dev = None
-        self.pb_dev = None
-        self.scratch_n = 0
+        self.packed_in = Cache["tal_packed_in"]()
+        self.packed_out = Cache["tal_packed_out"]()
+        self.grad_pout = Cache["tal_grad_pout"]()
+        self.grad_pin = Cache["tal_grad_pin"]()
+        self.pa = Cache["tal_pa"]()
+        self.pb = Cache["tal_pb"]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -129,11 +127,9 @@ struct TimeAttentionLatents[
         return m^
 
     def _ensure_scratch_gpu(mut self, packed_n: Int) raises:
-        if self.scratch_n < packed_n:
-            var ctx = self.ts.ctx.value()
-            self.pa_dev = ctx.enqueue_create_buffer[DT](packed_n)
-            self.pb_dev = ctx.enqueue_create_buffer[DT](packed_n)
-            self.scratch_n = packed_n
+        var ctx = self.ts.ctx.value()
+        self.pa.ensure_gpu(ctx, packed_n)
+        self.pb.ensure_gpu(ctx, packed_n)
 
     @staticmethod
     def display_label() -> String:
@@ -165,11 +161,11 @@ struct TimeAttentionLatents[
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.packed_in, BL * TD)
-            ensure_cpu_buffer(self.packed_out, BL * TD)
+            self.packed_in.ensure_cpu(BL * TD)
+            self.packed_out.ensure_cpu(BL * TD)
             var pin = TileTensor(
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.packed_in.unsafe_ptr()
+                    self.packed_in.cpu_ptr()
                 ),
                 row_major[BL, TD](),
             )
@@ -183,7 +179,7 @@ struct TimeAttentionLatents[
                             ]
             var pout = TileTensor(
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.packed_out.unsafe_ptr()
+                    self.packed_out.cpu_ptr()
                 ),
                 row_major[BL, TD](),
             )
@@ -202,8 +198,8 @@ struct TimeAttentionLatents[
             comptime FULL = BATCH * Self.S * Self.D
             self._ensure_scratch_gpu(PACKED)
             var ctx = self.ts.ctx.value()
-            var a = self.pa_dev.value()
-            var b = self.pb_dev.value()
+            var a = self.pa.dev.value()
+            var b = self.pb.dev.value()
             var in_flat = LayoutTensor[DT, Layout.row_major(FULL), MutAnyOrigin](
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inp.ptr)
             )
@@ -258,11 +254,11 @@ struct TimeAttentionLatents[
         var gi = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.grad_pout, BL * TD)
-            ensure_cpu_buffer(self.grad_pin, BL * TD)
+            self.grad_pout.ensure_cpu(BL * TD)
+            self.grad_pin.ensure_cpu(BL * TD)
             var gpout = TileTensor(
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.grad_pout.unsafe_ptr()
+                    self.grad_pout.cpu_ptr()
                 ),
                 row_major[BL, TD](),
             )
@@ -276,7 +272,7 @@ struct TimeAttentionLatents[
                             ]
             var gpin = TileTensor(
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.grad_pin.unsafe_ptr()
+                    self.grad_pin.cpu_ptr()
                 ),
                 row_major[BL, TD](),
             )
@@ -295,8 +291,8 @@ struct TimeAttentionLatents[
             comptime FULL = BATCH * Self.S * Self.D
             self._ensure_scratch_gpu(PACKED)
             var ctx = self.ts.ctx.value()
-            var a = self.pa_dev.value()
-            var b = self.pb_dev.value()
+            var a = self.pa.dev.value()
+            var b = self.pb.dev.value()
             var go_flat = LayoutTensor[DT, Layout.row_major(FULL), MutAnyOrigin](
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go.ptr)
             )
