@@ -41,7 +41,10 @@ from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 
 from .dynamics import Dreamer4Dynamics
 from .task_embedder import TaskEmbedder
-from .heads import Dreamer4PolicyHead, Dreamer4RewardHead, Dreamer4ValueHead
+from .heads import (
+    Dreamer4PolicyHead, Dreamer4RewardHead, Dreamer4ValueHead,
+    Dreamer4ContinueHead,
+)
 from .shortcut_loss import dynamics_pretrain_loss
 from .bc_loss import bc_mtp_loss
 from .imag_rollout import imagine_rollout
@@ -51,6 +54,7 @@ from .imag_rl_loss import (
     value_td_loss_backward,
     pmpo_policy_loss_cpu,
     pmpo_policy_loss_backward,
+    continue_pred,
 )
 from ..dreamerv3.polyak import polyak_module
 
@@ -99,6 +103,7 @@ struct Dreamer4Agent[
     comptime PH = Dreamer4PolicyHead[Self.AGD, Self.HHID, Self.NACT, Self.NMTP]
     comptime RH = Dreamer4RewardHead[Self.AGD, Self.HHID, Self.NBINS, Self.NMTP]
     comptime VH = Dreamer4ValueHead[Self.AGD, Self.HHID, Self.NBINS]
+    comptime CH = Dreamer4ContinueHead[Self.AGD, Self.HHID]
 
     var dyn: Self.DYN
     var te: Self.TE
@@ -106,6 +111,8 @@ struct Dreamer4Agent[
     var rh: Self.RH
     var vh: Self.VH                  # value head (Phase 4; untrained during BC)
     var ph_prior: Self.PH           # frozen behavioral prior (PMPO reverse-KL)
+    var ch: Self.CH                 # continue/termination head (opt-in via
+                                    #  use_continue; frozen during imagination)
 
     # CPU scratch (owned; sized at make)
     var agent_in: List[Scalar[DT]]      # [BF, AGD]
@@ -144,6 +151,8 @@ struct Dreamer4Agent[
     var im_prior0: List[Scalar[DT]]     # [BF, NACT]  dist-0 prior block
     var im_gplog0: List[Scalar[DT]]     # [BF, NACT]  dist-0 grad
     var im_gplog: List[Scalar[DT]]      # [BF, PLOG]  full policy-logit grad
+    var im_clog: List[Scalar[DT]]       # [BF]        continue logits (use_continue)
+    var im_chat: List[Scalar[DT]]       # [BF]        continue preds ĉ
     var ts: TargetStorage
 
     def __init__(out self):
@@ -153,6 +162,7 @@ struct Dreamer4Agent[
         self.rh = Self.RH()
         self.vh = Self.VH()
         self.ph_prior = Self.PH()
+        self.ch = Self.CH()
         self.im_h = List[Scalar[DT]]()
         self.im_act = List[Scalar[DT]]()
         self.im_rew = List[Scalar[DT]]()
@@ -170,6 +180,8 @@ struct Dreamer4Agent[
         self.im_prior0 = List[Scalar[DT]]()
         self.im_gplog0 = List[Scalar[DT]]()
         self.im_gplog = List[Scalar[DT]]()
+        self.im_clog = List[Scalar[DT]]()
+        self.im_chat = List[Scalar[DT]]()
         self.agent_in = List[Scalar[DT]]()
         self.grad_zhat = List[Scalar[DT]]()
         self.zhat = List[Scalar[DT]]()
@@ -208,6 +220,9 @@ struct Dreamer4Agent[
         # BC path) are byte-for-byte unchanged from the Phase-3 agent.
         m.vh = Self.VH.make[target=target, INIT=INIT](ctx)
         m.ph_prior = Self.PH.make[target=target, INIT=INIT](ctx)
+        # continue head made LAST so all earlier RNG draws (BC path + Phase-4
+        # heads) are byte-for-byte unchanged.
+        m.ch = Self.CH.make[target=target, INIT=INIT](ctx)
         m.im_h.resize(Self.BF * Self.AGD, Scalar[DT](0.0))
         m.im_act.resize(Self.B * Self.TM1, Scalar[DT](0.0))
         m.im_rew.resize(Self.BF, Scalar[DT](0.0))
@@ -225,6 +240,8 @@ struct Dreamer4Agent[
         m.im_prior0.resize(Self.BF * Self.NACT, Scalar[DT](0.0))
         m.im_gplog0.resize(Self.BF * Self.NACT, Scalar[DT](0.0))
         m.im_gplog.resize(Self.BF * Self.PLOG, Scalar[DT](0.0))
+        m.im_clog.resize(Self.BF, Scalar[DT](0.0))
+        m.im_chat.resize(Self.BF, Scalar[DT](0.0))
         m.agent_in.resize(Self.BF * Self.AGD, Scalar[DT](0.0))
         m.grad_zhat.resize(Self.BF * Self.ND, Scalar[DT](0.0))
         m.zhat.resize(Self.BF * Self.ND, Scalar[DT](0.0))
@@ -292,6 +309,7 @@ struct Dreamer4Agent[
         self.ph.for_each_param[target, V](prefix + ".ph", visitor)
         self.rh.for_each_param[target, V](prefix + ".rh", visitor)
         self.vh.for_each_param[target, V](prefix + ".vh", visitor)
+        self.ch.for_each_param[target, V](prefix + ".ch", visitor)
         # NOTE: `ph_prior` is the FROZEN behavioral prior — never optimized, so
         # it is deliberately excluded from the param walk.
 
@@ -306,6 +324,7 @@ struct Dreamer4Agent[
         self.ph.zero_grad[target]()
         self.rh.zero_grad[target]()
         self.vh.zero_grad[target]()
+        self.ch.zero_grad[target]()
 
     # ── eval accessors ──────────────────────────────────────────────────
     def agent_out_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -509,6 +528,7 @@ struct Dreamer4Agent[
         beta: Scalar[DT] = Scalar[DT](0.3),
         policy_weight: Scalar[DT] = Scalar[DT](1.0),
         value_weight: Scalar[DT] = Scalar[DT](1.0),
+        use_continue: Bool = False,             # discount with the continue head
         dctx: Optional[DeviceContext] = None,   # required when DYN_TARGET="gpu"
     ) raises -> Tuple[Float64, Float64]:
         """One imagination-RL step (paper §3.3). Generates an on-policy rollout
@@ -570,9 +590,26 @@ struct Dreamer4Agent[
                 im_h_p, im_act_p, im_rew_p, im_val_p, dctx=dctx,
             )
 
-        # 3. continue = γ (no termination in v1); λ-returns (eq. 10)
-        for i in range(Self.BF):
-            self.im_con[i] = gamma
+        # 3. continue factor con_t. use_continue=False ⇒ constant γ (no
+        #    termination). use_continue=True ⇒ con_t = γ·ĉ_t where ĉ_t is the
+        #    (frozen) continue head's sigmoid read off the rollout's h_t, so the
+        #    λ-return truncates at predicted terminal states. Then λ-returns.
+        if use_continue:
+            var imh_t = TileTensor(im_h_p, row_major[Self.BF, Self.AGD]())
+            var clog_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.im_clog.unsafe_ptr()
+            )
+            var clog_t = TileTensor(clog_p, row_major[Self.BF, 1]())
+            self.ch.forward["cpu", Self.BF](imh_t, output=clog_t)
+            var chat_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.im_chat.unsafe_ptr()
+            )
+            continue_pred[Self.BF](clog_p, chat_p)
+            for i in range(Self.BF):
+                self.im_con[i] = gamma * self.im_chat[i]
+        else:
+            for i in range(Self.BF):
+                self.im_con[i] = gamma
         lambda_returns[Self.B, Self.T](
             im_rew_p, im_val_p, im_con_p, lam, im_ret_p
         )

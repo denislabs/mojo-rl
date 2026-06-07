@@ -23,7 +23,10 @@ from .shortcut_loss import dynamics_pretrain_loss, ShortcutDynamics, AgentDynami
 from .ode_sampler import sample_one_timestep
 from .imag_rollout import imagine_rollout
 from .task_embedder import TaskEmbedder
-from .heads import Dreamer4PolicyHead, Dreamer4RewardHead, Dreamer4ValueHead
+from .heads import (
+    Dreamer4PolicyHead, Dreamer4RewardHead, Dreamer4ValueHead,
+    Dreamer4ContinueHead,
+)
 from .bc_loss import bc_mtp_loss, bc_n_valid
 from .imag_rl_loss import (
     lambda_returns,
@@ -31,6 +34,9 @@ from .imag_rl_loss import (
     value_td_loss_backward,
     pmpo_policy_loss_cpu,
     pmpo_policy_loss_backward,
+    continue_pred,
+    continue_bce_loss,
+    continue_bce_backward,
 )
 from .agent import Dreamer4Agent
 from .recon_loss import (

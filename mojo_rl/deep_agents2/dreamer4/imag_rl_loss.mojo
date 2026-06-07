@@ -38,6 +38,61 @@ from std.math import log, exp
 from mojo_rl.nn2.constants import DT
 from .heads import Dreamer4ValueHead
 from ..dreamerv3.twohot import twohot_pred, twohot_loss, twohot_loss_backward
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Continue/termination head (DreamerV3-style `cont`): a single binary logit per
+# state; ĉ = sigmoid(logit) = P(non-terminal). Trained by binary cross-entropy
+# vs the real continue flag (1−done); used to discount the λ-return.
+# ─────────────────────────────────────────────────────────────────────────
+@always_inline
+def _sigmoid(x: Scalar[DT]) -> Scalar[DT]:
+    # numerically-stable logistic
+    if x >= Scalar[DT](0.0):
+        return Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-x))
+    var e = exp(x)
+    return e / (Scalar[DT](1.0) + e)
+
+
+def continue_pred[
+    N: Int
+](
+    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [N]
+    out_c: UnsafePointer[Scalar[DT], MutAnyOrigin],    # OUT [N] = sigmoid
+):
+    for i in range(N):
+        out_c[i] = _sigmoid(logits[i])
+
+
+def continue_bce_loss[
+    N: Int
+](
+    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [N] continue logits
+    target: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [N] continue flag 0/1
+) raises -> Float64:
+    """Σ binary cross-entropy of the continue flag (mean is the caller's job)."""
+    var loss = Float64(0.0)
+    for i in range(N):
+        var z = Float64(logits[i])
+        var y = Float64(target[i])
+        # stable BCE: max(z,0) − z·y + log(1+exp(−|z|))
+        var az = z if z >= 0.0 else -z
+        var mz = z if z >= 0.0 else 0.0
+        loss += mz - z * y + log(1.0 + exp(-az))
+    return loss
+
+
+def continue_bce_backward[
+    N: Int
+](
+    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [N]
+    target: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [N]
+    upstream: Scalar[DT],
+    grad_logits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [N] (zeroed+filled)
+):
+    """∂BCE/∂logit = upstream·(σ(logit) − target)."""
+    for i in range(N):
+        grad_logits[i] = upstream * (_sigmoid(logits[i]) - target[i])
 from ..dreamerv3.dists_discrete import (
     cat_softmax_mix,
     cat_fwd,

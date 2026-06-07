@@ -55,3 +55,17 @@ comptime Dreamer4ValueHead[
     SiLU[HID],
     Linear[HID, NBINS],
 ]
+
+
+# Continue/termination head (Phase 4, DreamerV3-style `cont`): a single binary
+# logit per state s_t whose sigmoid ĉ_t = P(non-terminal). Trained by binary
+# cross-entropy vs the real continue flag (1−done); used in imagination to
+# discount the λ-return — `con_t = γ·ĉ_t` replaces the constant-γ assumption so
+# returns truncate at predicted terminal states (`imag_rl_loss.mojo`).
+comptime Dreamer4ContinueHead[
+    D_IN: Int, HID: Int
+] = Sequential[
+    Linear[D_IN, HID],
+    SiLU[HID],
+    Linear[HID, 1],
+]
