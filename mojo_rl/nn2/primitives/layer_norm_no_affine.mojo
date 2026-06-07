@@ -26,13 +26,12 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
-from ..core import Initializer, AMPPolicy, NoAMP
+from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
     require_ctx,
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
 )
 
 
@@ -144,19 +143,13 @@ struct LayerNormNoAffine[DIM: Int](Module):
     def display_label() -> String:
         return String("LayerNormNoAffine")
 
-    var cache_xhat: List[Scalar[DT]]
-    var cache_inv_std: List[Scalar[DT]]
-    var cache_xhat_dev: Optional[DeviceBuffer[DT]]
-    var cache_inv_std_dev: Optional[DeviceBuffer[DT]]
-    var cache_n_batch: Int
+    var cache_xhat: Cache["cache_xhat"]
+    var cache_inv_std: Cache["cache_inv_std"]
     var ts: TargetStorage
 
     def __init__(out self):
-        self.cache_xhat = List[Scalar[DT]]()
-        self.cache_inv_std = List[Scalar[DT]]()
-        self.cache_xhat_dev = None
-        self.cache_inv_std_dev = None
-        self.cache_n_batch = 0
+        self.cache_xhat = Cache["cache_xhat"]()
+        self.cache_inv_std = Cache["cache_inv_std"]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -171,20 +164,13 @@ struct LayerNormNoAffine[DIM: Int](Module):
             ln.ts = TargetStorage.make_cpu()
         else:
             var ctx_v = require_ctx["LayerNormNoAffine.make[target='gpu']"](ctx)
-            ln.cache_xhat_dev = ctx_v.enqueue_create_buffer[DT](1)
-            ln.cache_inv_std_dev = ctx_v.enqueue_create_buffer[DT](1)
-            ln.cache_n_batch = 0
             ln.ts = TargetStorage.make_gpu(ctx_v)
         return ln^
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:
-        if self.cache_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.cache_xhat_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.DIM
-            )
-            self.cache_inv_std_dev = ctx.enqueue_create_buffer[DT](batch)
-            self.cache_n_batch = batch
+        var ctx = self.ts.ctx.value()
+        self.cache_xhat.ensure_gpu(ctx, batch * Self.DIM)
+        self.cache_inv_std.ensure_gpu(ctx, batch)
 
     def forward[
         target: StaticString,
@@ -206,12 +192,12 @@ struct LayerNormNoAffine[DIM: Int](Module):
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.cache_xhat, BATCH * Self.DIM)
-            ensure_cpu_buffer(self.cache_inv_std, BATCH)
+            self.cache_xhat.ensure_cpu(BATCH * Self.DIM)
+            self.cache_inv_std.ensure_cpu(BATCH)
             var xhat_v = TileTensor(
-                self.cache_xhat, row_major[BATCH, Self.DIM]()
+                self.cache_xhat.cpu, row_major[BATCH, Self.DIM]()
             )
-            var inv_v = TileTensor(self.cache_inv_std, row_major[BATCH]())
+            var inv_v = TileTensor(self.cache_inv_std.cpu, row_major[BATCH]())
             var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
             for b in range(BATCH):
                 var s: Scalar[DT] = 0.0
@@ -240,10 +226,10 @@ struct LayerNormNoAffine[DIM: Int](Module):
             var in_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p)
             var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p)
             var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_xhat_dev.value()
+                self.cache_xhat.dev.value()
             )
             var is_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](
-                self.cache_inv_std_dev.value()
+                self.cache_inv_std.dev.value()
             )
             comptime kernel = _lnna_forward_kernel[BATCH, Self.DIM]
             self.ts.ctx.value().enqueue_function[kernel](
@@ -278,9 +264,9 @@ struct LayerNormNoAffine[DIM: Int](Module):
 
         comptime if target == "cpu":
             var xhat_v = TileTensor(
-                self.cache_xhat, row_major[BATCH, Self.DIM]()
+                self.cache_xhat.cpu, row_major[BATCH, Self.DIM]()
             )
-            var inv_v = TileTensor(self.cache_inv_std, row_major[BATCH]())
+            var inv_v = TileTensor(self.cache_inv_std.cpu, row_major[BATCH]())
             var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
             for b in range(BATCH):
                 var inv_std = inv_v[b]
@@ -311,10 +297,10 @@ struct LayerNormNoAffine[DIM: Int](Module):
             var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
             var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_xhat_dev.value()
+                self.cache_xhat.dev.value()
             )
             var is_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](
-                self.cache_inv_std_dev.value()
+                self.cache_inv_std.dev.value()
             )
             comptime kernel = _lnna_backward_kernel[BATCH, Self.DIM]
             ctx.enqueue_function[kernel](

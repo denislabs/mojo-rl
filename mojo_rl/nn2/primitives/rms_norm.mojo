@@ -33,6 +33,7 @@ from ..core import (
     AMPPolicy,
     NoAMP,
     Param,
+    Cache,
     ParamVisitor,
     for_each_param_auto,
     zero_grad_auto,
@@ -42,7 +43,6 @@ from ..core.target_storage import (
     require_ctx,
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
 )
 
 
@@ -171,21 +171,15 @@ struct RMSNorm[DIM: Int](Module):
 
     var gamma: Param["gamma", False, Self.DIM]
 
-    var cache_norm: List[Scalar[DT]]                 # [BATCH, DIM]
-    var cache_inv_rms: List[Scalar[DT]]              # [BATCH]
-    var cache_norm_dev: Optional[DeviceBuffer[DT]]
-    var cache_inv_rms_dev: Optional[DeviceBuffer[DT]]
-    var cache_n_batch: Int
+    var cache_norm: Cache["cache_norm"]
+    var cache_inv_rms: Cache["cache_inv_rms"]
 
     var ts: TargetStorage
 
     def __init__(out self):
         self.gamma = Param["gamma", False, Self.DIM]()
-        self.cache_norm = List[Scalar[DT]]()
-        self.cache_inv_rms = List[Scalar[DT]]()
-        self.cache_norm_dev = None
-        self.cache_inv_rms_dev = None
-        self.cache_n_batch = 0
+        self.cache_norm = Cache["cache_norm"]()
+        self.cache_inv_rms = Cache["cache_inv_rms"]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -211,20 +205,13 @@ struct RMSNorm[DIM: Int](Module):
             var ctx_v = require_ctx["RMSNorm.make[target='gpu']"](ctx)
             rn.gamma = Param["gamma", False, Self.DIM].make_gpu(ctx_v)
             rn.gamma.val.dev.value().enqueue_fill(1.0)
-            rn.cache_norm_dev = ctx_v.enqueue_create_buffer[DT](1)
-            rn.cache_inv_rms_dev = ctx_v.enqueue_create_buffer[DT](1)
-            rn.cache_n_batch = 0
             rn.ts = TargetStorage.make_gpu(ctx_v)
         return rn^
 
     def _ensure_cache_gpu(mut self, batch: Int) raises:
-        if self.cache_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.cache_norm_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.DIM
-            )
-            self.cache_inv_rms_dev = ctx.enqueue_create_buffer[DT](batch)
-            self.cache_n_batch = batch
+        var ctx = self.ts.ctx.value()
+        self.cache_norm.ensure_gpu(ctx, batch * Self.DIM)
+        self.cache_inv_rms.ensure_gpu(ctx, batch)
 
     # ----- Forward ---------------------------------------------------------
 
@@ -248,13 +235,13 @@ struct RMSNorm[DIM: Int](Module):
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.cache_norm, BATCH * Self.DIM)
-            ensure_cpu_buffer(self.cache_inv_rms, BATCH)
+            self.cache_norm.ensure_cpu(BATCH * Self.DIM)
+            self.cache_inv_rms.ensure_cpu(BATCH)
             var gamma_v = TileTensor(self.gamma.val.cpu, row_major[Self.DIM]())
             var norm_v = TileTensor(
-                self.cache_norm, row_major[BATCH, Self.DIM](),
+                self.cache_norm.cpu, row_major[BATCH, Self.DIM](),
             )
-            var inv_v = TileTensor(self.cache_inv_rms, row_major[BATCH]())
+            var inv_v = TileTensor(self.cache_inv_rms.cpu, row_major[BATCH]())
             var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
             for b in range(BATCH):
                 var sumsq: Scalar[DT] = 0.0
@@ -281,10 +268,10 @@ struct RMSNorm[DIM: Int](Module):
                 self.gamma.val.dev.value()
             )
             var nm_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_norm_dev.value()
+                self.cache_norm.dev.value()
             )
             var ir_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](
-                self.cache_inv_rms_dev.value()
+                self.cache_inv_rms.dev.value()
             )
             comptime kernel = _rms_norm_forward_kernel[BATCH, Self.DIM]
             self.ts.ctx.value().enqueue_function[kernel](
@@ -322,9 +309,9 @@ struct RMSNorm[DIM: Int](Module):
             var gamma_v = TileTensor(self.gamma.val.cpu, row_major[Self.DIM]())
             var grad_gamma_v = TileTensor(self.gamma.grd.cpu, row_major[Self.DIM]())
             var norm_v = TileTensor(
-                self.cache_norm, row_major[BATCH, Self.DIM](),
+                self.cache_norm.cpu, row_major[BATCH, Self.DIM](),
             )
-            var inv_v = TileTensor(self.cache_inv_rms, row_major[BATCH]())
+            var inv_v = TileTensor(self.cache_inv_rms.cpu, row_major[BATCH]())
             var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
             for b in range(BATCH):
                 var inv_rms = inv_v[b]
@@ -352,10 +339,10 @@ struct RMSNorm[DIM: Int](Module):
                 self.gamma.val.dev.value()
             )
             var nm_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_norm_dev.value()
+                self.cache_norm.dev.value()
             )
             var ir_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](
-                self.cache_inv_rms_dev.value()
+                self.cache_inv_rms.dev.value()
             )
             comptime dx_kernel = _rms_norm_backward_dx_kernel[BATCH, Self.DIM]
             ctx.enqueue_function[dx_kernel](
