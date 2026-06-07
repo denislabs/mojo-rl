@@ -189,30 +189,3 @@ struct Tensor[
     ](self) -> LayoutTensor[Self.dtype, layout, MutAnyOrigin]:
         """Typed device view of the buffer at the given comptime layout."""
         return LayoutTensor[Self.dtype, layout, MutAnyOrigin](self.dev_ptr())
-
-
-# ──────────────────────────────────────────────────────────────────────
-# IsState — checkpoint-only role marker. The checkpoint walker visits
-# IsParam ∪ IsState; the optimizer walker visits IsParam only.
-# ──────────────────────────────────────────────────────────────────────
-
-
-trait IsState(Movable & ImplicitlyDestructible):
-    """Marker — a non-trainable but persisted field (e.g. BatchNorm
-    running stats). Saved/loaded with the checkpoint; never optimized."""
-
-    def state_name(self) -> StaticString:
-        ...
-
-    def init_with[
-        target: StaticString
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        ...
-
-    def save(self, mut out: String, prefix: String) raises:
-        ...
-
-    def load(
-        mut self, lines: List[String], mut idx: Int, prefix: String
-    ) raises:
-        ...

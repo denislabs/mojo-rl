@@ -56,6 +56,7 @@ from ..core import (
     AMPPolicy,
     NoAMP,
     Param,
+    State,
     ParamVisitor,
     for_each_param_auto,
     zero_grad_auto,
@@ -251,8 +252,8 @@ struct BatchNorm1D[
     # Running stats — decay-exempt, zero-grad Params (M1). Walked by
     # for_each_param so they ride the v2 checkpoint envelope; never
     # updated by the optimizer (grad ≡ 0), only by the forward EMA.
-    var running_mean: Param["running_mean", False, Self.DIM]
-    var running_var:  Param["running_var",  False, Self.DIM]
+    var running_mean: State["running_mean", Self.DIM]
+    var running_var:  State["running_var", Self.DIM]
     # Training-only cache (output-caching).
     var cache_xhat: List[Scalar[DT]]      # [BATCH, DIM]
     var cache_inv_std: List[Scalar[DT]]   # [DIM]
@@ -267,8 +268,8 @@ struct BatchNorm1D[
     def __init__(out self):
         self.gamma = Param["gamma", False, Self.DIM]()
         self.beta  = Param["beta",  False, Self.DIM]()
-        self.running_mean = Param["running_mean", False, Self.DIM]()
-        self.running_var  = Param["running_var",  False, Self.DIM]()
+        self.running_mean = State["running_mean", Self.DIM]()
+        self.running_var  = State["running_var", Self.DIM]()
         self.cache_xhat = List[Scalar[DT]]()
         self.cache_inv_std = List[Scalar[DT]]()
         self.cache_xhat_dev = None
@@ -299,8 +300,8 @@ struct BatchNorm1D[
             var g_ptr = bn.gamma.value_unsafe_ptr_cpu()
             for k in range(Self.DIM):
                 g_ptr[k] = Scalar[DT](1.0)
-            bn.running_mean = Param["running_mean", False, Self.DIM].make_cpu()
-            bn.running_var  = Param["running_var",  False, Self.DIM].make_cpu()
+            bn.running_mean = State["running_mean", Self.DIM].make_cpu()
+            bn.running_var  = State["running_var", Self.DIM].make_cpu()
             # make_cpu zero-fills value → running_mean already 0; set var←1.
             var rv_ptr = bn.running_var.value_unsafe_ptr_cpu()
             for k in range(Self.DIM):
@@ -312,14 +313,14 @@ struct BatchNorm1D[
             bn.beta  = Param["beta",  False, Self.DIM].make_gpu(ctx_v)
             bn.gamma.val.dev.value().enqueue_fill(1.0)
             bn.beta.val.dev.value().enqueue_fill(0.0)
-            bn.running_mean = Param["running_mean", False, Self.DIM].make_gpu(
+            bn.running_mean = State["running_mean", Self.DIM].make_gpu(
                 ctx_v
             )
-            bn.running_var = Param["running_var", False, Self.DIM].make_gpu(
+            bn.running_var = State["running_var", Self.DIM].make_gpu(
                 ctx_v
             )
-            bn.running_mean.val.dev.value().enqueue_fill(0.0)
-            bn.running_var.val.dev.value().enqueue_fill(1.0)
+            bn.running_mean.t.dev.value().enqueue_fill(0.0)
+            bn.running_var.t.dev.value().enqueue_fill(1.0)
             bn.cache_xhat_dev    = ctx_v.enqueue_create_buffer[DT](1)
             bn.cache_inv_std_dev = ctx_v.enqueue_create_buffer[DT](Self.DIM)
             bn.cache_n_batch = 0
@@ -358,8 +359,8 @@ struct BatchNorm1D[
         comptime if target == "cpu":
             var gamma_v = TileTensor(self.gamma.val.cpu, row_major[Self.DIM]())
             var beta_v  = TileTensor(self.beta.val.cpu,  row_major[Self.DIM]())
-            var rm_v = TileTensor(self.running_mean.val.cpu, row_major[Self.DIM]())
-            var rv_v = TileTensor(self.running_var.val.cpu,  row_major[Self.DIM]())
+            var rm_v = TileTensor(self.running_mean.t.cpu, row_major[Self.DIM]())
+            var rv_v = TileTensor(self.running_var.t.cpu,  row_major[Self.DIM]())
             var eps = Scalar[DT](Self.EPSILON)
             if self.training:
                 ensure_cpu_buffer(self.cache_xhat,    BATCH * Self.DIM)
@@ -426,10 +427,10 @@ struct BatchNorm1D[
                 self.beta.val.dev.value()
             )
             var rm_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                self.running_mean.val.dev.value()
+                self.running_mean.t.dev.value()
             )
             var rv_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                self.running_var.val.dev.value()
+                self.running_var.t.dev.value()
             )
             var ctx = self.ts.ctx.value()
             if self.training:

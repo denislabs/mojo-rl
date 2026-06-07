@@ -506,6 +506,16 @@ struct ComputeGraph[
                 visitor,
             )
 
+    def for_each_state[
+        target: StaticString,
+        V: ParamVisitor,
+    ](mut self, prefix: String, mut visitor: V,) raises:
+        """No-op (S5 Stage 3): ComputeGraph drives loss DAGs whose nodes
+        carry no `State` (no BatchNorm). If a State-bearing leaf is ever
+        placed in a graph, add `for_each_state_via` to `GraphNode`
+        mirroring `for_each_param_via`."""
+        pass
+
     # ──────────────────────────────────────────────────────────────────
     # describe — topology walk into a pluggable GraphVisitor sink.
     #

@@ -77,12 +77,12 @@ def main() raises:
 
     print(
         "  trained running_mean[0..1] =",
-        bn.running_mean.val.cpu[0], bn.running_mean.val.cpu[1],
+        bn.running_mean.t.cpu[0], bn.running_mean.t.cpu[1],
     )
     # Sanity: the EMA actually moved the stats off their 0/1 init.
     assert_true(
-        bn.running_mean.val.cpu[0] != Scalar[DT](0.0)
-        or bn.running_var.val.cpu[0] != Scalar[DT](1.0),
+        bn.running_mean.t.cpu[0] != Scalar[DT](0.0)
+        or bn.running_var.t.cpu[0] != Scalar[DT](1.0),
         "running stats should have drifted off 0/1 after training",
     )
 
@@ -126,8 +126,8 @@ def main() raises:
     load_state_v2(fresh, path)
     var stat_diff: Scalar[DT] = 0.0
     for f in range(DIM):
-        var dm = fresh.running_mean.val.cpu[f] - bn.running_mean.val.cpu[f]
-        var dv = fresh.running_var.val.cpu[f] - bn.running_var.val.cpu[f]
+        var dm = fresh.running_mean.t.cpu[f] - bn.running_mean.t.cpu[f]
+        var dv = fresh.running_var.t.cpu[f] - bn.running_var.t.cpu[f]
         stat_diff += (dm if dm >= 0 else -dm) + (dv if dv >= 0 else -dv)
     print("  |loaded - trained| running stats =", stat_diff)
     assert_true(

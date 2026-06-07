@@ -227,6 +227,14 @@ struct Residual[Inner: Module](Module):
         var sep = "." if prefix.byte_length() > 0 else ""
         self.inner.for_each_param[target, V](prefix + sep + "inner", visitor)
 
+    def for_each_state[
+        target: StaticString,
+        V: ParamVisitor,
+    ](mut self, prefix: String, mut visitor: V) raises:
+        assert_tag_for["Residual", target](self.ts.target_tag)
+        var sep = "." if prefix.byte_length() > 0 else ""
+        self.inner.for_each_state[target, V](prefix + sep + "inner", visitor)
+
     def zero_grad[target: StaticString](mut self) raises:
         assert_tag_for["Residual", target](self.ts.target_tag)
         self.inner.zero_grad[target]()

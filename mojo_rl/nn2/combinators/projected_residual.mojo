@@ -270,6 +270,15 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
         self.inner.for_each_param[target, V](prefix + sep + "inner", visitor)
         self.skip.for_each_param[target, V](prefix + sep + "skip", visitor)
 
+    def for_each_state[
+        target: StaticString,
+        V: ParamVisitor,
+    ](mut self, prefix: String, mut visitor: V) raises:
+        assert_tag_for["ProjectedResidual", target](self.ts.target_tag)
+        var sep = "." if prefix.byte_length() > 0 else ""
+        self.inner.for_each_state[target, V](prefix + sep + "inner", visitor)
+        self.skip.for_each_state[target, V](prefix + sep + "skip", visitor)
+
     def zero_grad[target: StaticString](mut self) raises:
         assert_tag_for["ProjectedResidual", target](self.ts.target_tag)
         self.inner.zero_grad[target]()

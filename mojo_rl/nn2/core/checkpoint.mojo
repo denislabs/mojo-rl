@@ -297,6 +297,11 @@ def save_state_v2_body[M: Module](
     model.for_each_param[target="cpu", V=_SaveStateV2Visitor](
         prefix, v,
     )
+    # S5 Stage 3: persist State (e.g. BatchNorm running stats) right after
+    # params, using the same visitor/section format.
+    model.for_each_state[target="cpu", V=_SaveStateV2Visitor](
+        prefix, v,
+    )
     _ = out  # lifetime extender — visitor holds UnsafePointer(to=out)
 
 
@@ -313,6 +318,10 @@ def load_state_v2_body[M: Module](
         lines=lines.copy(), idx_ptr=UnsafePointer(to=idx),
     )
     model.for_each_param[target="cpu", V=_LoadStateV2Visitor](
+        prefix, v,
+    )
+    # S5 Stage 3: load State right after params (same order as save).
+    model.for_each_state[target="cpu", V=_LoadStateV2Visitor](
         prefix, v,
     )
     _ = idx  # lifetime extender — visitor holds UnsafePointer(to=idx)
@@ -414,6 +423,7 @@ def save_state_v2_body_gpu[M: Module](
     """GPU counterpart of `save_state_v2_body` — byte-identical output."""
     var v = _SaveStateV2GpuVisitor(out_ptr=UnsafePointer(to=out), ctx=ctx)
     model.for_each_param[target="gpu", V=_SaveStateV2GpuVisitor](prefix, v)
+    model.for_each_state[target="gpu", V=_SaveStateV2GpuVisitor](prefix, v)
     _ = out  # lifetime extender — visitor holds UnsafePointer(to=out)
 
 
@@ -429,6 +439,7 @@ def load_state_v2_body_gpu[M: Module](
         lines=lines.copy(), idx_ptr=UnsafePointer(to=idx), ctx=ctx,
     )
     model.for_each_param[target="gpu", V=_LoadStateV2GpuVisitor](prefix, v)
+    model.for_each_state[target="gpu", V=_LoadStateV2GpuVisitor](prefix, v)
     _ = idx  # lifetime extender — visitor holds UnsafePointer(to=idx)
 
 

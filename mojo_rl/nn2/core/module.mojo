@@ -52,6 +52,7 @@ from .amp import AMPPolicy, NoAMP
 from .param_visitor import ParamVisitor
 from .graph_visitor import DisplayStep
 from .walkers import for_each_param_auto, zero_grad_auto
+from .state import for_each_state_auto
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -271,6 +272,18 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         `Sequential`. Combinators + wrapper leaves still override to
         recurse into children."""
         zero_grad_auto[Self, target](self)
+
+    def for_each_state[
+        target: StaticString,
+        V: ParamVisitor,
+    ](mut self, prefix: String, mut visitor: V) raises:
+        """Default: reflection-walk every `IsState` field of the concrete
+        leaf and dispatch the visitor (S5 Stage 3, 2026-06-07). The
+        checkpoint path runs this right after `for_each_param`, so State
+        fields (e.g. BatchNorm running stats) are persisted; the optimizer
+        path (`for_each_param`) never reaches them. State-less leaves
+        reflect to a no-op. Combinators override to recurse into children."""
+        for_each_state_auto[Self, V, target](self, prefix, visitor)
 
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         """Per-call runtime attribute mutation. Default no-op. Modules

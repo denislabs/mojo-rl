@@ -329,6 +329,12 @@ struct TimeAttentionLatents[
         assert_tag_for["TimeAttentionLatents", target](self.ts.target_tag)
         self.mha.for_each_param[target, V](prefix, visitor)
 
+    def for_each_state[
+        target: StaticString, V: ParamVisitor
+    ](mut self, prefix: String, mut visitor: V) raises:
+        assert_tag_for["TimeAttentionLatents", target](self.ts.target_tag)
+        self.mha.for_each_state[target, V](prefix, visitor)
+
     def zero_grad[target: StaticString](mut self) raises:
         assert_tag_for["TimeAttentionLatents", target](self.ts.target_tag)
         self.mha.zero_grad[target]()

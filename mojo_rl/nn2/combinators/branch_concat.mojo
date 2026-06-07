@@ -209,6 +209,17 @@ struct BranchConcat[*BRANCHES: Module](Module):
                 prefix + sep + String(i), visitor,
             )
 
+    def for_each_state[
+        target: StaticString,
+        V: ParamVisitor,
+    ](mut self, prefix: String, mut visitor: V) raises:
+        assert_tag_for["BranchConcat", target](self.ts.target_tag)
+        var sep = "." if prefix.byte_length() > 0 else ""
+        comptime for i in range(Self.N):
+            self.branches[i].for_each_state[target, V](
+                prefix + sep + String(i), visitor,
+            )
+
     def zero_grad[target: StaticString](mut self) raises:
         assert_tag_for["BranchConcat", target](self.ts.target_tag)
         comptime for i in range(Self.N):

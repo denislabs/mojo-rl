@@ -335,6 +335,15 @@ struct Parallel[A: Module, B: Module](Module):
         self.branch_a.for_each_param[target, V](prefix + sep + "a", visitor)
         self.branch_b.for_each_param[target, V](prefix + sep + "b", visitor)
 
+    def for_each_state[
+        target: StaticString,
+        V: ParamVisitor,
+    ](mut self, prefix: String, mut visitor: V) raises:
+        assert_tag_for["Parallel", target](self.ts.target_tag)
+        var sep = "." if prefix.byte_length() > 0 else ""
+        self.branch_a.for_each_state[target, V](prefix + sep + "a", visitor)
+        self.branch_b.for_each_state[target, V](prefix + sep + "b", visitor)
+
     def zero_grad[target: StaticString](mut self) raises:
         assert_tag_for["Parallel", target](self.ts.target_tag)
         self.branch_a.zero_grad[target]()

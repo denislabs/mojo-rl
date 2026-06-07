@@ -189,3 +189,8 @@ struct ConditionalTransformerBlock[
             self.ts.target_tag
         )
         self.graph.for_each_param[target, V](prefix, visitor)
+
+    def for_each_state[
+        target: StaticString, V: ParamVisitor,
+    ](mut self, prefix: String, mut visitor: V) raises:
+        self.graph.for_each_state[target, V](prefix, visitor)

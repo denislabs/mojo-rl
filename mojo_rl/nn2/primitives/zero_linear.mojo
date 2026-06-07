@@ -100,5 +100,10 @@ struct ZeroLinear[IN: Int, OUT: Int](Module):
     ](mut self, prefix: String, mut visitor: V) raises:
         self.inner.for_each_param[target, V](prefix, visitor)
 
+    def for_each_state[
+        target: StaticString, V: ParamVisitor,
+    ](mut self, prefix: String, mut visitor: V) raises:
+        self.inner.for_each_state[target, V](prefix, visitor)
+
     def zero_grad[target: StaticString](mut self) raises:
         self.inner.zero_grad[target]()
