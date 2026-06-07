@@ -36,11 +36,11 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core import (
-    Initializer, AMPPolicy, NoAMP, Param, ParamVisitor,
+    Initializer, AMPPolicy, NoAMP, Param, Cache, ParamVisitor,
     for_each_param_auto, zero_grad_auto,
 )
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for, ensure_cpu_buffer
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 comptime MAE_RTPB = 64
@@ -139,9 +139,7 @@ struct MAEReplacer[
     comptime OUT_DIM = Self.NP * Self.D
 
     var mask_token: Param["mask_token", False, Self.D]
-    var keep: List[Scalar[DT]]      # CPU: [BATCH*NP] 1.0 kept / 0.0 dropped
-    var keep_dev: Optional[DeviceBuffer[DT]]
-    var keep_n_batch: Int
+    var keep: Cache["keep"]
     var rng_step: UInt64
     var p_min_rt: Float64
     var p_max_rt: Float64
@@ -149,9 +147,7 @@ struct MAEReplacer[
 
     def __init__(out self):
         self.mask_token = Param["mask_token", False, Self.D]()
-        self.keep = List[Scalar[DT]]()
-        self.keep_dev = None
-        self.keep_n_batch = 0
+        self.keep = Cache["keep"]()
         self.rng_step = 0
         self.p_min_rt = Self.P_MIN
         self.p_max_rt = Self.P_MAX
@@ -192,20 +188,17 @@ struct MAEReplacer[
         self.rng_step += 1
 
     def mae_mask_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        if self.keep_dev:
+        if self.keep.dev:
             return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.keep_dev.value().unsafe_ptr()
+                self.keep.dev.value().unsafe_ptr()
             )
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.keep.unsafe_ptr()
+            self.keep.cpu_ptr()
         )
 
     def _ensure_keep_gpu(mut self, batch: Int) raises:
-        if self.keep_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.keep_dev = ctx.enqueue_create_buffer[DT](batch * Self.NP)
-            self.keep_n_batch = batch
-
+        var ctx = self.ts.ctx.value()
+        self.keep.ensure_gpu(ctx, batch * Self.NP)
     def forward[
         target: StaticString,
         BATCH: Int,
@@ -225,8 +218,8 @@ struct MAEReplacer[
         var inp = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.keep, BATCH * Self.NP)
-            var kp = self.keep.unsafe_ptr()
+            self.keep.ensure_cpu(BATCH * Self.NP)
+            var kp = self.keep.cpu_ptr()
             var mt = self.mask_token.value_unsafe_ptr_cpu()
             comptime STRIDE = UInt64(BATCH * (1 + Self.NP))
             var base = self.rng_step * STRIDE
@@ -262,7 +255,7 @@ struct MAEReplacer[
             )
             var k_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH * Self.NP), MutAnyOrigin
-            ](self.keep_dev.value())
+            ](self.keep.dev.value())
             comptime nb = (BATCH * Self.NP * Self.D + 127) // 128
             comptime kern = _mae_fwd_kernel[BATCH, Self.NP, Self.D, Self.SEED]
             self.ts.ctx.value().enqueue_function[kern](

@@ -110,6 +110,8 @@ struct SwiGLU[HIDDEN: Int](Module):
         var ctx = self.ts.ctx.value()
         self.cache_u.ensure_gpu(ctx, batch * Self.HIDDEN)
         self.cache_v.ensure_gpu(ctx, batch * Self.HIDDEN)
+
+    @staticmethod
     def display_label() -> String:
         return String("SwiGLU")
 
