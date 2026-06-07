@@ -51,6 +51,7 @@ from ..data.n_step_replay import GPUNStepBuffer
 from mojo_rl.core.env_traits import BoxContinuousActionEnv, RenderableEnv
 from .batched_env import BatchedEnv
 from .driver_scratch import DriverScratch
+from .episode_tracker import EpisodeTracker
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -160,8 +161,26 @@ trait OffPolicyAgent(Movable, ImplicitlyDestructible):
     ) raises:
         ...
 
-    def end_episode(mut self):
+    # ─── Episode-tracker plumbing (S6: trait defaults) ───────────────
+    #
+    # Every off-policy trainer owns a `tracker: EpisodeTracker` and four
+    # one-line delegators into it (`end_episode` / `mean_return` /
+    # `ep_count` / `add_complete_return`). Those four were byte-identical
+    # across SAC/DDPG/TD3/REDQ/REDQ-OFE/MBPO. They are now trait DEFAULTS
+    # expressed against ONE required accessor, `_tracker_ptr`, so a
+    # conformer supplies only the field handle (one method) instead of
+    # re-typing four delegators. The pointer is laundered to `MutAnyOrigin`
+    # at the accessor (the codebase's standard field-handle idiom) so the
+    # read-receiver defaults (`mean_return`/`ep_count`) and the mut-receiver
+    # ones (`end_episode`/`add_complete_return`) can share it.
+
+    def _tracker_ptr(self) -> UnsafePointer[EpisodeTracker, MutAnyOrigin]:
+        """Handle to the conformer's `EpisodeTracker` field. The ONE
+        required member behind the four delegator defaults below."""
         ...
+
+    def end_episode(mut self):
+        self._tracker_ptr()[].end_episode()
 
     def train_step(mut self, step_idx: Int) raises -> Bool:
         ...
@@ -177,10 +196,10 @@ trait OffPolicyAgent(Movable, ImplicitlyDestructible):
         return 0
 
     def mean_return(self) -> Scalar[DT]:
-        ...
+        return self._tracker_ptr()[].mean_return()
 
     def ep_count(self) -> Int:
-        ...
+        return self._tracker_ptr()[].ep_count
 
     # ─── Tier-2 additions — batched CPU env support ──────────────────
     #
@@ -198,7 +217,7 @@ trait OffPolicyAgent(Movable, ImplicitlyDestructible):
     # doesn't re-declare it (which would create diamond ambiguity).
 
     def add_complete_return(mut self, ret: Scalar[DT]):
-        ...
+        self._tracker_ptr()[].add_complete_return(ret)
 
     def record_batch_cpu[
         N_ENVS: Int

@@ -821,8 +821,12 @@ struct MBPOTrainer[
             obs, action, reward, next_obs, done, ctx=self.ctx,
         )
 
-    def end_episode(mut self):
-        self.tracker.end_episode()
+    # `end_episode` / `mean_return` / `ep_count` / `add_complete_return`
+    # are OffPolicyAgent trait defaults (S6) over this single accessor.
+    def _tracker_ptr(self) -> UnsafePointer[EpisodeTracker, MutAnyOrigin]:
+        return rebind[UnsafePointer[EpisodeTracker, MutAnyOrigin]](
+            UnsafePointer(to=self.tracker)
+        )
 
     def train_step(mut self, step_idx: Int) raises -> Bool:
         if step_idx < self.learning_starts:
@@ -994,12 +998,6 @@ struct MBPOTrainer[
             self._total_train_steps += 1
             any = True
         return any
-
-    def mean_return(self) -> Scalar[DT]:
-        return self.tracker.mean_return()
-
-    def ep_count(self) -> Int:
-        return self.tracker.ep_count
 
     # ─── Logging surface (parity with SACTrainer) ────────────────────────
 
@@ -1334,9 +1332,6 @@ struct MBPOTrainer[
                 alp_lt, action_lt, self.action_scale,
                 grid_dim=n_blocks, block_dim=TPB,
             )
-
-    def add_complete_return(mut self, ret: Scalar[DT]):
-        self.tracker.add_complete_return(ret)
 
     def record_batch_cpu[
         N_ENVS: Int

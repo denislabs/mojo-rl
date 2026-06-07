@@ -1021,17 +1021,12 @@ struct REDQOFETrainer[
             ctx=self.ctx,
         )
 
-    def end_episode(mut self):
-        self.tracker.end_episode()
-
-    def add_complete_return(mut self, ret: Scalar[DT]):
-        self.tracker.add_complete_return(ret)
-
-    def mean_return(self) -> Scalar[DT]:
-        return self.tracker.mean_return()
-
-    def ep_count(self) -> Int:
-        return self.tracker.ep_count
+    # `end_episode` / `mean_return` / `ep_count` / `add_complete_return`
+    # are OffPolicyAgent trait defaults (S6) over this single accessor.
+    def _tracker_ptr(self) -> UnsafePointer[EpisodeTracker, MutAnyOrigin]:
+        return rebind[UnsafePointer[EpisodeTracker, MutAnyOrigin]](
+            UnsafePointer(to=self.tracker)
+        )
 
     def flush_metrics(mut self) -> REDQOFEMetrics:
         """Drain per-flush-window accumulators into a `REDQOFEMetrics`

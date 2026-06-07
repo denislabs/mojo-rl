@@ -401,8 +401,12 @@ struct TD3Trainer[
         self.tracker.add_reward(reward)
         self.sample_blk.add(obs, action, reward, next_obs, done, ctx=self.ctx)
 
-    def end_episode(mut self):
-        self.tracker.end_episode()
+    # `end_episode` / `mean_return` / `ep_count` / `add_complete_return`
+    # are OffPolicyAgent trait defaults (S6) over this single accessor.
+    def _tracker_ptr(self) -> UnsafePointer[EpisodeTracker, MutAnyOrigin]:
+        return rebind[UnsafePointer[EpisodeTracker, MutAnyOrigin]](
+            UnsafePointer(to=self.tracker)
+        )
 
     # ─── train_step ───────────────────────────────────────────────────
 
@@ -506,12 +510,6 @@ struct TD3Trainer[
         self._total_train_steps += 1
         return True
 
-    def mean_return(self) -> Scalar[DT]:
-        return self.tracker.mean_return()
-
-    def ep_count(self) -> Int:
-        return self.tracker.ep_count
-
     # ─── OffPolicyAgentGpu surface (drivers) ──────────────────────────
 
     def select_action_batched[
@@ -591,9 +589,6 @@ struct TD3Trainer[
                 ao_lt, noise_lt, action_lt, sigma, self.action_scale,
                 grid_dim=n_blocks, block_dim=TPB,
             )
-
-    def add_complete_return(mut self, ret: Scalar[DT]):
-        self.tracker.add_complete_return(ret)
 
     def record_batch_cpu[
         N_ENVS: Int

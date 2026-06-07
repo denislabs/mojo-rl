@@ -1183,11 +1183,14 @@ struct SACTrainer[
         )
         self.sample_blk.store_via_block_gpu[N_ENVS, NS](ctx, nstep_buf)
 
-    def add_complete_return(mut self, ret: Scalar[DT]):
-        """Driver hook — push a complete-episode return into the
-        rolling-window tracker (used by the N_ENVS GPU driver which
-        owns per-env reward accumulators host-side)."""
-        self.tracker.add_complete_return(ret)
+    # `add_complete_return` / `end_episode` / `mean_return` / `ep_count`
+    # are trait DEFAULTS (OffPolicyAgent, S6) expressed against the single
+    # `_tracker_ptr` accessor below.
+
+    def _tracker_ptr(self) -> UnsafePointer[EpisodeTracker, MutAnyOrigin]:
+        return rebind[UnsafePointer[EpisodeTracker, MutAnyOrigin]](
+            UnsafePointer(to=self.tracker)
+        )
 
     # ─── Shared surface (both traits) ─────────────────────────────────
 
@@ -1200,15 +1203,6 @@ struct SACTrainer[
         done: Scalar[DT],
     ) raises:
         self._record_impl(obs, action, reward, next_obs, done)
-
-    def end_episode(mut self):
-        self.tracker.end_episode()
-
-    def mean_return(self) -> Scalar[DT]:
-        return self.tracker.mean_return()
-
-    def ep_count(self) -> Int:
-        return self.tracker.ep_count
 
     # ─── Logging surface (parity with legacy SACTrainer) ──────────────
 
