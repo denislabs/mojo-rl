@@ -39,6 +39,7 @@ from .imag_rl_loss import (
     continue_bce_backward,
 )
 from .agent import Dreamer4Agent
+from .pong_reward_buffer import Dreamer4PongRewardBuffer
 from .recon_loss import (
     masked_recon_loss, full_recon_psnr, masked_recon_grad_gpu,
 )
