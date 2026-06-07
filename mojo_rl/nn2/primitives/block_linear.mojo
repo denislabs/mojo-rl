@@ -324,25 +324,45 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
+        """Combined backward (S7) — the two phases in fixed order. Single
+        source of truth for direct callers; Sequential calls the phases
+        directly so the param-before-input order is the orchestrator's."""
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["BlockLinear", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN](grad_inputs[0])
-        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            grad_output_v.ptr
+        self.vjp_param_grads[target, BATCH, POLICY=POLICY, mode=mode](
+            grad_output
         )
-        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            grad_input_v.ptr
+        self.vjp_grad_input[target, BATCH, POLICY=POLICY, mode=mode](
+            grad_output, *grad_inputs
         )
 
-        comptime if target == "cpu":
-            # ── LOOP 1: param grads FIRST ──────────────────────────────
-            # They read `_cached_input_ptr` (the cached input x), which
-            # aliases the input slab grad_input is about to clobber — so ALL
-            # grad_weight gathers/matmuls happen before any grad_x write.
-            comptime if mode == "all":
+    def vjp_param_grads[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Phase 1 (S7) — was LOOP 1. grad_weight/grad_bias (mode=all),
+        which read `_cached_input_ptr` (the cached input x). MUST precede
+        `vjp_grad_input` since x aliases the slab grad_input clobbers."""
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        comptime if mode == "all":
+            assert_tag_for["BlockLinear", target](self.ts.target_tag)
+            var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_output_v.ptr
+            )
+
+            comptime if target == "cpu":
                 var gw_p = self.weight.grad_unsafe_ptr_cpu()
                 var gb_p = self.bias.grad_unsafe_ptr_cpu()
                 var x_p = self._cached_input_ptr.value()
@@ -408,8 +428,60 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                     dW_buf.free()
                     gob_buf.free()
                     xT_buf.free()
+            else:
+                var ctx = self.ts.ctx.value()
+                var gw_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    self.weight.grd.dev.value().unsafe_ptr()
+                )
+                var gb_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    self.bias.grd.dev.value().unsafe_ptr()
+                )
+                var x_p = self._cached_input_ptr.value()
+                comptime n_w = (Self.W_SIZE + TPB - 1) // TPB
+                comptime k_dw = _bl_dweight_kernel[
+                    BATCH, Self.IN, Self.OUT, Self.BLOCKS
+                ]
+                ctx.enqueue_function[k_dw](
+                    x_p, go_p, gw_p, grid_dim=n_w, block_dim=TPB,
+                )
+                comptime n_b = (Self.OUT + TPB - 1) // TPB
+                comptime k_db = _bl_dbias_kernel[BATCH, Self.OUT]
+                ctx.enqueue_function[k_db](
+                    go_p, gb_p, grid_dim=n_b, block_dim=TPB,
+                )
 
-            # ── LOOP 2: grad_x last (clobbers the aliased input slab) ──
+    def vjp_grad_input[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        mut *grad_inputs: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Phase 2 (S7) — was LOOP 2. grad_x (clobbers the aliased input
+        slab — safe because phase 1 already read it). Runs in both modes."""
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        assert_tag_for["BlockLinear", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN](grad_inputs[0])
+        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            grad_output_v.ptr
+        )
+        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            grad_input_v.ptr
+        )
+
+        comptime if target == "cpu":
             # grad_x_block = go_block @ kernel[k]ᵀ, [BATCH,OPB]@[OPB,IPB], via
             # transpose_b BLAS. kernel[k] is row-major [IPB, OPB] at w_blk, so
             # transpose_b gives go_block @ kernelᵀ → [BATCH, IPB]. Gather
@@ -458,26 +530,6 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
             var w_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 self.weight.val.dev.value().unsafe_ptr()
             )
-            comptime if mode == "all":
-                var gw_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.weight.grd.dev.value().unsafe_ptr()
-                )
-                var gb_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.bias.grd.dev.value().unsafe_ptr()
-                )
-                var x_p = self._cached_input_ptr.value()
-                comptime n_w = (Self.W_SIZE + TPB - 1) // TPB
-                comptime k_dw = _bl_dweight_kernel[
-                    BATCH, Self.IN, Self.OUT, Self.BLOCKS
-                ]
-                ctx.enqueue_function[k_dw](
-                    x_p, go_p, gw_p, grid_dim=n_w, block_dim=TPB,
-                )
-                comptime n_b = (Self.OUT + TPB - 1) // TPB
-                comptime k_db = _bl_dbias_kernel[BATCH, Self.OUT]
-                ctx.enqueue_function[k_db](
-                    go_p, gb_p, grid_dim=n_b, block_dim=TPB,
-                )
             comptime n_x = (BATCH * Self.IN + TPB - 1) // TPB
             comptime k_dx = _bl_dx_kernel[
                 BATCH, Self.IN, Self.OUT, Self.BLOCKS

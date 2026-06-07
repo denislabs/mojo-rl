@@ -613,37 +613,59 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
+        """Combined backward (S7) — the two phases in fixed order. Single
+        source of truth for direct callers; Sequential calls the phases
+        directly so the param-before-input order is the orchestrator's."""
         comptime assert (
             target == "cpu" or target == "gpu"
         ), "NoisyLinear: target must be 'cpu' or 'gpu'"
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["NoisyLinear", target](self.ts.target_tag)
-        var grad_out_v = typed_view[BATCH, Self.OUT](grad_output)
-        var grad_in_v = typed_view_mut[BATCH, Self.IN](grad_inputs[0])
-        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_out_v.ptr)
-        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_in_v.ptr)
+        self.vjp_param_grads[target, BATCH, POLICY=POLICY, mode=mode](
+            grad_output
+        )
+        self.vjp_grad_input[target, BATCH, POLICY=POLICY, mode=mode](
+            grad_output, *grad_inputs
+        )
 
-        # BACKWARD-ORDER INVARIANT: `_cached_input_ptr` aliases the
-        # orchestrator's input slab — and Sequential reuses the SAME
-        # `mid_cpu[N-2]` slab as the grad_input destination for this
-        # leaf. So we MUST read `x_p` (param-grad accumulation) before
-        # writing `gi_p` (grad_x). Mirrors Linear's invariant at
-        # `primitives/linear.mojo:390-397`. Holds for both CPU and GPU.
+    def vjp_param_grads[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Phase 1 (S7): factorized μ/σ weight + bias grads (mode=all).
+        Reads the cached input (`_cached_input_ptr`); MUST run before
+        `vjp_grad_input` writes the slab the cache aliases (Sequential
+        reuses the same `mid` slab for this leaf's grad_input)."""
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "NoisyLinear: target must be 'cpu' or 'gpu'"
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        comptime if mode == "all":
+            assert_tag_for["NoisyLinear", target](self.ts.target_tag)
+            var grad_out_v = typed_view[BATCH, Self.OUT](grad_output)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_out_v.ptr)
 
-        comptime if target == "cpu":
-            var ni_p = self._noise_in.cpu_ptr()
-            var no_p = self._noise_out.cpu_ptr()
-            var w_eff_p = self._w_eff.cpu_ptr()
-            var x_p = self._cached_input_ptr.value()
+            comptime if target == "cpu":
+                var ni_p = self._noise_in.cpu_ptr()
+                var no_p = self._noise_out.cpu_ptr()
+                var x_p = self._cached_input_ptr.value()
 
-            # 1. Param grads (mode="all" only) — reads x_p before grad_x writes.
-            #    grad_mu_b[j]    = Σ_b grad_out[b, j]
-            #    grad_sigma_b[j] = grad_mu_b[j] * f(ε_out[j])
-            #    grad_mu_w[i,j]  = Σ_b x[b, i] * grad_out[b, j]
-            #    grad_sigma_w[i,j] = grad_mu_w[i,j] * f(ε_in[i]) * f(ε_out[j])
-            comptime if mode == "all":
+                # Param grads — reads x_p (the cached input).
+                #    grad_mu_b[j]    = Σ_b grad_out[b, j]
+                #    grad_sigma_b[j] = grad_mu_b[j] * f(ε_out[j])
+                #    grad_mu_w[i,j]  = Σ_b x[b, i] * grad_out[b, j]
+                #    grad_sigma_w[i,j] = grad_mu_w[i,j] * f(ε_in[i]) * f(ε_out[j])
                 var g_mu_w = self.mu_w.grad_unsafe_ptr_cpu()
                 var g_sg_w = self.sigma_w.grad_unsafe_ptr_cpu()
                 var g_mu_b = self.mu_b.grad_unsafe_ptr_cpu()
@@ -681,26 +703,18 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
                 dW_buf.free()
                 cT_buf.free()
 
-            # 2. grad_x = grad_output @ W_effᵀ via BLAS (was a naive
-            #    BATCH·IN·OUT scalar loop). After step 1's read of `x_p`;
-            #    this write clobbers the input slab `x_p` aliases.
-            var w_eff_tt = TileTensor(w_eff_p, row_major[Self.IN, Self.OUT]())
-            max_matmul[transpose_b=True, target="cpu"](
-                grad_in_v, grad_out_v, w_eff_tt, None
-            )
-        else:
-            var ctx = self.ts.ctx.value()
-            var ni_p = self._noise_in.dev_ptr()
-            var no_p = self._noise_out.dev_ptr()
-            var ni_lt = LayoutTensor[
-                DT, Layout.row_major(Self.IN), MutAnyOrigin,
-            ](ni_p)
-            var no_lt = LayoutTensor[
-                DT, Layout.row_major(Self.OUT), MutAnyOrigin,
-            ](no_p)
+            else:
+                var ctx = self.ts.ctx.value()
+                var ni_p = self._noise_in.dev_ptr()
+                var no_p = self._noise_out.dev_ptr()
+                var ni_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.IN), MutAnyOrigin,
+                ](ni_p)
+                var no_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.OUT), MutAnyOrigin,
+                ](no_p)
 
-            # 1. Param grads (mode="all" only) — fused pairs (mu/sigma).
-            comptime if mode == "all":
+                # Param grads — fused pairs (mu/sigma).
                 var go_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH, Self.OUT), MutAnyOrigin,
                 ](go_p)
@@ -723,7 +737,9 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
                 #   dW = cacheᵀ @ grad_output     → grad_mu_w increment
                 #   grad_mu_w    += dW
                 #   grad_sigma_w += dW · n_in[i] · n_out[j]
-                # Replaces the naive serial per-(i,j) pair kernel.
+                # Replaces the naive serial per-(i,j) pair kernel. The
+                # transpose CONSUMES the cached-input read before phase 2
+                # clobbers the aliased slab.
                 ensure_gpu_buffer(
                     self.cacheT_dev, self.cacheT_n, BATCH * Self.IN, ctx,
                 )
@@ -777,7 +793,43 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
                     grid_dim=n_blocks_acc, block_dim=TPB,
                 )
 
-            # 2. grad_x = grad_output @ W_eff^T (may alias cache).
+    def vjp_grad_input[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        mut *grad_inputs: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Phase 2 (S7): grad_x = grad_output @ W_effᵀ. Writes
+        grad_inputs[0] (aliases the cached input — safe because phase 1
+        already read it). Runs in both modes."""
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "NoisyLinear: target must be 'cpu' or 'gpu'"
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        assert_tag_for["NoisyLinear", target](self.ts.target_tag)
+        var grad_out_v = typed_view[BATCH, Self.OUT](grad_output)
+        var grad_in_v = typed_view_mut[BATCH, Self.IN](grad_inputs[0])
+        comptime if target == "cpu":
+            var w_eff_tt = TileTensor(
+                self._w_eff.cpu_ptr(), row_major[Self.IN, Self.OUT]()
+            )
+            max_matmul[transpose_b=True, target="cpu"](
+                grad_in_v, grad_out_v, w_eff_tt, None
+            )
+        else:
+            var ctx = self.ts.ctx.value()
             var w_eff_tt = TileTensor(
                 self._w_eff.dev.value(),
                 row_major[Self.IN, Self.OUT](),

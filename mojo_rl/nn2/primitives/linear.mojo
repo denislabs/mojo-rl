@@ -398,19 +398,47 @@ struct Linear[IN: Int, OUT: Int](Module):
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
+        """Combined backward — single source of truth that fixes the
+        param-before-input order by calling the two phases in sequence
+        (S7, 2026-06-07). Direct callers (ComputeGraph, non-Sequential
+        combinators, tests) keep using this; `Sequential` calls the two
+        phases directly so the order is enforced by the orchestrator."""
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Linear", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN](grad_inputs[0])
+        self.vjp_param_grads[target, BATCH, POLICY=POLICY, mode=mode](
+            grad_output
+        )
+        self.vjp_grad_input[target, BATCH, POLICY=POLICY, mode=mode](
+            grad_output, *grad_inputs
+        )
 
-        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+    def vjp_param_grads[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Phase 1 (S7): grad_b + grad_w. Reads grad_output + the cached
+        forward input (`_cached_input_ptr`); writes bias/weight grads.
+        Skipped entirely under `mode == "input_only"`. MUST run before
+        `vjp_grad_input` — grad_input may clobber the cache slab."""
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        comptime if mode == "all":
+            assert_tag_for["Linear", target](self.ts.target_tag)
+            var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
 
-        comptime if target == "cpu":
-            # ── (1) grad_b += column-sum(grad_output) (mode=all only) ───
-            comptime if mode == "all":
+            comptime if target == "cpu":
+                # ── (1) grad_b += column-sum(grad_output) ───
                 var gb_ptr = self.bias.grad_unsafe_ptr_cpu()
                 for bi in range(BATCH):
                     var row_off = bi * Self.OUT
@@ -424,10 +452,9 @@ struct Linear[IN: Int, OUT: Int](Module):
                         gb_ptr[gj] = gb_ptr[gj] + go_p[row_off + gj]
                         gj += 1
 
-            # ── (2) grad_w += cache^T @ grad_output (mode=all only) ─────
-            # Reads cache via _cached_input_ptr — MUST come before
-            # grad_input write since grad_input may alias the cache slab.
-            comptime if mode == "all":
+                # ── (2) grad_w += cache^T @ grad_output ─────
+                # Reads cache via _cached_input_ptr — MUST come before
+                # grad_input write since grad_input may alias the cache slab.
                 var gw_ptr = self.weight.grad_unsafe_ptr_cpu()
                 var cache_ptr = self._cached_input_ptr.value()
                 comptime if CompilationTarget.is_macos() and DT == DType.float32:
@@ -485,9 +512,97 @@ struct Linear[IN: Int, OUT: Int](Module):
                         dw_i += 1
                     dW_tmp_buf.free()
                     cT_buf.free()
+            else:
+                var ctx = self.ts.ctx.value()
 
+                # ── (1) grad_b += column-sum(grad_output) — block-per-column
+                #        reduction (full occupancy), replaces the serial kernel.
+                comptime gb_layout = Layout.row_major(Self.OUT)
+                var go_lt = LayoutTensor[
+                    DT, Layout.row_major(BATCH, Self.OUT), MutAnyOrigin
+                ](go_p)
+                var gb_lt = LayoutTensor[DT, gb_layout, MutAnyOrigin](
+                    self.bias.grd.dev.value()
+                )
+                comptime gb_kernel = _grad_bias_reduce_kernel[BATCH, Self.OUT]
+                ctx.enqueue_function[gb_kernel](
+                    go_lt, gb_lt,
+                    grid_dim=Self.OUT, block_dim=TPB,
+                )
+
+                # ── (2) grad_w += cacheᵀ @ grad_output — transpose + max_matmul
+                #        (tensor cores) + accumulate, replaces the naive serial
+                #        kernel. Reads cache; must precede the grad_input matmul
+                #        (which may alias the cache slab).
+                ensure_gpu_buffer(
+                    self.cacheT_dev, self.cacheT_n, BATCH * Self.IN, ctx,
+                )
+                var cache_lt = LayoutTensor[
+                    DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin
+                ](self._cached_input_ptr.value())
+                var cacheT_lt = LayoutTensor[
+                    DT, Layout.row_major(Self.IN, BATCH), MutAnyOrigin
+                ](self.cacheT_dev.value())
+                comptime n_blocks_t = (BATCH * Self.IN + TPB - 1) // TPB
+                comptime t_kernel = _transpose_kernel[BATCH, Self.IN]
+                ctx.enqueue_function[t_kernel](
+                    cache_lt, cacheT_lt,
+                    grid_dim=n_blocks_t, block_dim=TPB,
+                )
+                var cacheT_tt = TileTensor(
+                    self.cacheT_dev.value(), row_major[Self.IN, BATCH](),
+                )
+                var dW_tmp_tt = TileTensor(
+                    self.dW_tmp_dev.value(), row_major[Self.IN, Self.OUT](),
+                )
+                max_matmul[target="gpu"](
+                    dW_tmp_tt, cacheT_tt, grad_output_v, ctx,
+                )
+                comptime gw_layout = Layout.row_major(Self.W_SIZE)
+                var gw_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
+                    self.weight.grd.dev.value()
+                )
+                var dW_tmp_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
+                    self.dW_tmp_dev.value()
+                )
+                comptime n_blocks_acc = (Self.W_SIZE + TPB - 1) // TPB
+                comptime acc_kernel = _accum_kernel[Self.W_SIZE]
+                ctx.enqueue_function[acc_kernel](
+                    gw_lt, dW_tmp_lt,
+                    grid_dim=n_blocks_acc, block_dim=TPB,
+                )
+
+    def vjp_grad_input[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        mut *grad_inputs: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Phase 2 (S7): grad_input = grad_output @ Wᵀ. May alias the
+        cache slab — safe because the orchestrator (or `vjp`) ran
+        `vjp_param_grads` first. Runs regardless of `mode`."""
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        assert_tag_for["Linear", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN](grad_inputs[0])
+
+        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+
+        comptime if target == "cpu":
             # ── (3) grad_input = grad_output @ W^T (always) ────────────
-            # May alias the cache slab — safe now (1) and (2) are done.
             comptime if POLICY.compute_dtype == DT:
                 var w_tt = TileTensor(
                     self.weight.val.cpu, row_major[Self.IN, Self.OUT](),
@@ -536,65 +651,6 @@ struct Linear[IN: Int, OUT: Int](Module):
                 )
         else:
             var ctx = self.ts.ctx.value()
-
-            # ── (1) grad_b += column-sum(grad_output) — block-per-column
-            #        reduction (full occupancy), replaces the serial kernel.
-            comptime if mode == "all":
-                comptime gb_layout = Layout.row_major(Self.OUT)
-                var go_lt = LayoutTensor[
-                    DT, Layout.row_major(BATCH, Self.OUT), MutAnyOrigin
-                ](go_p)
-                var gb_lt = LayoutTensor[DT, gb_layout, MutAnyOrigin](
-                    self.bias.grd.dev.value()
-                )
-                comptime gb_kernel = _grad_bias_reduce_kernel[BATCH, Self.OUT]
-                ctx.enqueue_function[gb_kernel](
-                    go_lt, gb_lt,
-                    grid_dim=Self.OUT, block_dim=TPB,
-                )
-
-            # ── (2) grad_w += cacheᵀ @ grad_output — transpose + max_matmul
-            #        (tensor cores) + accumulate, replaces the naive serial
-            #        kernel. Reads cache; must precede the grad_input matmul
-            #        (which may alias the cache slab).
-            comptime if mode == "all":
-                ensure_gpu_buffer(
-                    self.cacheT_dev, self.cacheT_n, BATCH * Self.IN, ctx,
-                )
-                var cache_lt = LayoutTensor[
-                    DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin
-                ](self._cached_input_ptr.value())
-                var cacheT_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.IN, BATCH), MutAnyOrigin
-                ](self.cacheT_dev.value())
-                comptime n_blocks_t = (BATCH * Self.IN + TPB - 1) // TPB
-                comptime t_kernel = _transpose_kernel[BATCH, Self.IN]
-                ctx.enqueue_function[t_kernel](
-                    cache_lt, cacheT_lt,
-                    grid_dim=n_blocks_t, block_dim=TPB,
-                )
-                var cacheT_tt = TileTensor(
-                    self.cacheT_dev.value(), row_major[Self.IN, BATCH](),
-                )
-                var dW_tmp_tt = TileTensor(
-                    self.dW_tmp_dev.value(), row_major[Self.IN, Self.OUT](),
-                )
-                max_matmul[target="gpu"](
-                    dW_tmp_tt, cacheT_tt, grad_output_v, ctx,
-                )
-                comptime gw_layout = Layout.row_major(Self.W_SIZE)
-                var gw_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
-                    self.weight.grd.dev.value()
-                )
-                var dW_tmp_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
-                    self.dW_tmp_dev.value()
-                )
-                comptime n_blocks_acc = (Self.W_SIZE + TPB - 1) // TPB
-                comptime acc_kernel = _accum_kernel[Self.W_SIZE]
-                ctx.enqueue_function[acc_kernel](
-                    gw_lt, dW_tmp_lt,
-                    grid_dim=n_blocks_acc, block_dim=TPB,
-                )
 
             # ── (3) grad_input = grad_output @ W^T ─────────────────────
             comptime if POLICY.compute_dtype == DT:

@@ -220,7 +220,13 @@ struct Sequential[*MODULES: Module](Module):
         var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if Self.N == 1:
-            self.children[0].vjp[
+            # Two-phase vjp (S7): param grads BEFORE grad_input, enforced
+            # here at the orchestrator. Non-split children inherit the
+            # defaults (no-op param phase + full-vjp grad_input phase).
+            self.children[0].vjp_param_grads[
+                target, BATCH, POLICY=POLICY, mode=mode,
+            ](grad_output_v)
+            self.children[0].vjp_grad_input[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](grad_output_v, grad_input_v)
         else:
@@ -382,14 +388,20 @@ def _backward_cpu[
             var out_grad = TileTensor(
                 seq.mid_cpu[N - 2], row_major[BATCH, MODULES[N - 1].IN_DIMS[0]](),
             )
-            seq.children[N - 1].vjp[
+            seq.children[N - 1].vjp_param_grads[
+                target, BATCH, POLICY=POLICY, mode=mode,
+            ](grad_output)
+            seq.children[N - 1].vjp_grad_input[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](grad_output, out_grad)
         elif i == 0:
             var in_grad = TileTensor(
                 seq.mid_cpu[0], row_major[BATCH, MODULES[0].OUT_DIM](),
             )
-            seq.children[0].vjp[
+            seq.children[0].vjp_param_grads[
+                target, BATCH, POLICY=POLICY, mode=mode,
+            ](in_grad)
+            seq.children[0].vjp_grad_input[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](in_grad, grad_input)
         else:
@@ -399,7 +411,10 @@ def _backward_cpu[
             var out_grad = TileTensor(
                 seq.mid_cpu[i - 1], row_major[BATCH, MODULES[i].IN_DIMS[0]](),
             )
-            seq.children[i].vjp[
+            seq.children[i].vjp_param_grads[
+                target, BATCH, POLICY=POLICY, mode=mode,
+            ](in_grad)
+            seq.children[i].vjp_grad_input[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](in_grad, out_grad)
 
@@ -431,13 +446,19 @@ def _backward_gpu[
         comptime if i == N - 1:
             var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[N - 2].unsafe_ptr()
             var out_grad = TileTensor(p, row_major[BATCH, MODULES[N - 1].IN_DIMS[0]]())
-            seq.children[N - 1].vjp[
+            seq.children[N - 1].vjp_param_grads[
+                target, BATCH, POLICY=POLICY, mode=mode,
+            ](grad_output)
+            seq.children[N - 1].vjp_grad_input[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](grad_output, out_grad)
         elif i == 0:
             var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[0].unsafe_ptr()
             var in_grad = TileTensor(p, row_major[BATCH, MODULES[0].OUT_DIM]())
-            seq.children[0].vjp[
+            seq.children[0].vjp_param_grads[
+                target, BATCH, POLICY=POLICY, mode=mode,
+            ](in_grad)
+            seq.children[0].vjp_grad_input[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](in_grad, grad_input)
         else:
@@ -445,6 +466,9 @@ def _backward_gpu[
             var po: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i - 1].unsafe_ptr()
             var in_grad  = TileTensor(pi, row_major[BATCH, MODULES[i].OUT_DIM]())
             var out_grad = TileTensor(po, row_major[BATCH, MODULES[i].IN_DIMS[0]]())
-            seq.children[i].vjp[
+            seq.children[i].vjp_param_grads[
+                target, BATCH, POLICY=POLICY, mode=mode,
+            ](in_grad)
+            seq.children[i].vjp_grad_input[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](in_grad, out_grad)

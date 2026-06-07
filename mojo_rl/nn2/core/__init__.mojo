@@ -22,6 +22,7 @@ from .grad_clip import clip_grads_auto, clip_grads_auto_gpu, GradClipState
 from .element_op import ElementOp
 from .reduce_op import ReduceOp
 from .tensor import Tensor, IsScratch
+from .tensor_pack import TensorPack
 from .state import State, IsState, for_each_state_auto
 from .scratch import Scratch, Cache
 from .scratch_walkers import init_scratch_auto

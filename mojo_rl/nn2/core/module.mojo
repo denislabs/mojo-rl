@@ -248,6 +248,84 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         ...
 
     # ──────────────────────────────────────────────────────────────────
+    # Two-phase vjp (S7, 2026-06-07) — structurally enforces the
+    # backward-aliasing order (A2/A3) at the ORCHESTRATOR instead of
+    # trusting each leaf's internal `grad_b → grad_w → grad_input`
+    # ordering. Orchestrators (`Sequential`/`ComputeGraph`) call
+    # `vjp_param_grads` (reads the cached input + grad_output) BEFORE
+    # `vjp_grad_input` (writes grad_inputs — the same slab the cache may
+    # alias). A leaf that splits these two phases physically cannot
+    # interleave them wrong: the order is fixed by the caller.
+    #
+    # Both carry defaults, so the split is INCREMENTAL — only leaves that
+    # cache a forward input by pointer (Linear, Conv2D, NoisyLinear, …)
+    # need to override. Every other leaf inherits:
+    #   • `vjp_param_grads` → no-op (param-less leaves have nothing to do;
+    #     non-split param leaves still do all their work in the combined
+    #     `vjp`, reached via the `vjp_grad_input` default below).
+    #   • `vjp_grad_input` → delegates to the combined `vjp` (which the
+    #     leaf already orders correctly internally). Bit-identical to the
+    #     single-call path because `vjp_param_grads` was the no-op.
+    # ──────────────────────────────────────────────────────────────────
+
+    def vjp_param_grads[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
+        ],
+    ) raises:
+        """Phase 1 of the two-phase vjp: accumulate PARAM grads only.
+        Reads `grad_output` (+ any cached forward input), writes the
+        leaf's own `Param` grads, touches NO grad_inputs slab. Skipped
+        entirely under `mode == "input_only"`. Default no-op — only
+        cached-input leaves override; everything else does its param work
+        inside the combined `vjp` (reached via `vjp_grad_input`)."""
+        pass
+
+    def vjp_grad_input[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
+        ],
+        mut *grad_inputs: TileTensor[
+            mut=True,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
+        ],
+    ) raises:
+        """Phase 2 of the two-phase vjp: write grad_inputs (the
+        predecessor slab). Default: delegate to the combined `vjp`. For a
+        NON-split leaf this runs its full backward (params + inputs) here
+        — correct, because the orchestrator's `vjp_param_grads` call was
+        the no-op default. A split leaf (Linear) overrides to do ONLY the
+        grad_input computation, relying on `vjp_param_grads` having
+        already run."""
+        self.vjp[target, BATCH, POLICY=POLICY, mode=mode](
+            grad_output, *grad_inputs
+        )
+
+    # ──────────────────────────────────────────────────────────────────
     # Provided defaults — parameterless leaves auto-inherit no-ops.
     # ──────────────────────────────────────────────────────────────────
 

@@ -578,74 +578,81 @@ struct Conv2D[
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
+        """Combined backward (S7) — the two phases in fixed order. Single
+        source of truth for direct callers; Sequential calls the phases
+        directly so the param-before-input order is the orchestrator's."""
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Conv2D", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](
-            grad_inputs[0]
+        self.vjp_param_grads[target, BATCH, POLICY=POLICY, mode=mode](
+            grad_output
+        )
+        self.vjp_grad_input[target, BATCH, POLICY=POLICY, mode=mode](
+            grad_output, *grad_inputs
         )
 
-        comptime if target == "cpu":
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
-            var x_p = self._cached_input_ptr.value()
-            var w_p = self.weight.value_unsafe_ptr_cpu()
-            var dw_p = self.weight.grad_unsafe_ptr_cpu()
-            var db_p = self.bias.grad_unsafe_ptr_cpu()
+    def vjp_param_grads[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Phase 1 (S7): d_bias + d_weight (mode=all). im2col reads the
+        cached forward input (`_cached_input_ptr`); MUST run before
+        `vjp_grad_input` writes the slab that input aliases under
+        Sequential. d_weight needs the rebuilt `col`; the grad_input
+        phase (d_col + col2im) does NOT, so im2col runs once, here."""
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        comptime if mode == "all":
+            assert_tag_for["Conv2D", target](self.ts.target_tag)
+            var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
 
-            # Zero d_input — col2im is scatter-add.
-            for k in range(BATCH * Self.IN_DIM_FLAT):
-                gi_p[k] = Scalar[DT](0.0)
-
-            var col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
-                Scalar[DT]
-            ](Self.SPATIAL_OUT * Self.COL_SIZE)
-            var d_col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
-                Scalar[DT]
-            ](Self.SPATIAL_OUT * Self.COL_SIZE)
-            var dw_tmp: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-            var go_b_T_buf: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-            comptime if (
-                CompilationTarget.is_macos() and DT == DType.float32
-            ):
-                dw_tmp = None
-                go_b_T_buf = None
-            else:
-                dw_tmp = alloc[Scalar[DT]](Self.W_SIZE)
-                go_b_T_buf = alloc[Scalar[DT]](
-                    Self.SPATIAL_OUT * Self.OC
+            comptime if target == "cpu":
+                var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    grad_output_v.ptr
                 )
+                var x_p = self._cached_input_ptr.value()
+                var dw_p = self.weight.grad_unsafe_ptr_cpu()
+                var db_p = self.bias.grad_unsafe_ptr_cpu()
 
-            var w_tt = TileTensor(
-                self.weight.val.cpu, row_major[Self.OC, Self.COL_SIZE](),
-            )
+                var col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+                    Scalar[DT]
+                ](Self.SPATIAL_OUT * Self.COL_SIZE)
+                var dw_tmp: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+                comptime if (
+                    CompilationTarget.is_macos() and DT == DType.float32
+                ):
+                    dw_tmp = None
+                else:
+                    dw_tmp = alloc[Scalar[DT]](Self.W_SIZE)
 
-            for b in range(BATCH):
-                # ---- 1. Rebuild col_b for this batch ------------------
-                _im2col_one_batch[
-                    Self.IC, Self.K, Self.S, Self.P,
-                    Self.H, Self.W, Self.OH, Self.OW,
-                ](
-                    x_p + b * Self.IN_DIM_FLAT,
-                    col_buf,
-                )
-                var col_tt = TileTensor(
-                    col_buf,
-                    row_major[Self.SPATIAL_OUT, Self.COL_SIZE](),
-                )
+                for b in range(BATCH):
+                    # ---- 1. Rebuild col_b for this batch (reads x) ----
+                    _im2col_one_batch[
+                        Self.IC, Self.K, Self.S, Self.P,
+                        Self.H, Self.W, Self.OH, Self.OW,
+                    ](
+                        x_p + b * Self.IN_DIM_FLAT,
+                        col_buf,
+                    )
+                    var col_tt = TileTensor(
+                        col_buf,
+                        row_major[Self.SPATIAL_OUT, Self.COL_SIZE](),
+                    )
 
-                # ---- 2. d_out_b view + d_bias accumulate --------------
-                var go_b_p = go_p + b * Self.OUT_DIM_FLAT
-                var go_b_tt = TileTensor(
-                    go_b_p, row_major[Self.OC, Self.SPATIAL_OUT](),
-                )
-                comptime if mode == "all":
+                    # ---- 2. d_out_b view + d_bias accumulate ----------
+                    var go_b_p = go_p + b * Self.OUT_DIM_FLAT
+                    var go_b_tt = TileTensor(
+                        go_b_p, row_major[Self.OC, Self.SPATIAL_OUT](),
+                    )
                     for oc in range(Self.OC):
                         var acc: Scalar[DT] = 0.0
                         var row_off = oc * Self.SPATIAL_OUT
@@ -653,13 +660,12 @@ struct Conv2D[
                             acc += go_b_p[row_off + s]
                         db_p[oc] += acc
 
-                # ---- 3. d_weight += d_out_b @ col_b -------------------
-                #         d_out_b is [OC, SPATIAL_OUT],
-                #         col_b   is [SPATIAL_OUT, COL_SIZE],
-                #         result  is [OC, COL_SIZE] (= same flat as W).
-                # On Apple fp32 we use one cblas_sgemm with beta=1 (no
-                # temp). Elsewhere we matmul into dw_tmp and add.
-                comptime if mode == "all":
+                    # ---- 3. d_weight += d_out_b @ col_b ---------------
+                    #         d_out_b is [OC, SPATIAL_OUT],
+                    #         col_b   is [SPATIAL_OUT, COL_SIZE],
+                    #         result  is [OC, COL_SIZE] (= same flat as W).
+                    # On Apple fp32 we use one cblas_sgemm with beta=1 (no
+                    # temp). Elsewhere we matmul into dw_tmp and add.
                     comptime if (
                         CompilationTarget.is_macos()
                         and DT == DType.float32
@@ -706,6 +712,124 @@ struct Conv2D[
                             dw_p[i] = dw_p[i] + dw_tmp_p[i]
                             i += 1
 
+                col_buf.free()
+                comptime if not (
+                    CompilationTarget.is_macos() and DT == DType.float32
+                ):
+                    dw_tmp.value().free()
+            else:
+                var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    grad_output_v.ptr
+                )
+                var x_p = self._cached_input_ptr.value()
+                comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
+                comptime out_layout = Layout.row_major(
+                    BATCH, Self.OUT_DIM_FLAT
+                )
+                comptime w_layout = Layout.row_major(Self.W_SIZE)
+                comptime b_layout = Layout.row_major(Self.B_SIZE)
+                var go_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](go_p)
+                var in_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](x_p)
+                var ctx = self.ts.ctx.value()
+
+                # Param grads (dW, dB) read `in_lt` (the cached forward
+                # input); enqueued in THIS phase so they precede dx (the
+                # grad_input phase), which clobbers the aliased slab. The
+                # original Conv2D dx-first bug
+                # (feedback_nn2_gpu_backward_order_aliased_slab) is now
+                # structurally impossible: dx lives in a different method
+                # the orchestrator calls strictly after this one.
+                var dw_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
+                    self.weight.grd.dev.value()
+                )
+                var db_lt = LayoutTensor[DT, b_layout, MutAnyOrigin](
+                    self.bias.grd.dev.value()
+                )
+
+                # d_weight — 1 block per weight scalar, CONV_DW_TPB
+                # threads reduce over BATCH·OH·OW via `block.sum`.
+                comptime dw_kernel = _conv2d_backward_dw_kernel[
+                    BATCH, Self.IC, Self.OC, Self.K, Self.S, Self.P,
+                    Self.H, Self.W, Self.OH, Self.OW,
+                    Self.IN_DIM_FLAT, Self.OUT_DIM_FLAT,
+                ]
+                ctx.enqueue_function[dw_kernel](
+                    go_lt, in_lt, dw_lt,
+                    grid_dim=Self.W_SIZE, block_dim=CONV_DW_TPB,
+                )
+
+                # d_bias — 1 block per OC, CONV_DW_TPB threads reduce
+                # over BATCH·OH·OW via `block.sum`.
+                comptime db_kernel = _conv2d_backward_db_kernel[
+                    BATCH, Self.OC, Self.OH, Self.OW, Self.OUT_DIM_FLAT,
+                ]
+                ctx.enqueue_function[db_kernel](
+                    go_lt, db_lt,
+                    grid_dim=Self.OC, block_dim=CONV_DW_TPB,
+                )
+
+    def vjp_grad_input[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        mut *grad_inputs: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Phase 2 (S7): d_input = col2im(d_out.T @ weight). Reads only
+        grad_output + weight (NOT the cached input / col), so no im2col
+        here; writes grad_inputs[0] (aliases the cached input — safe
+        because phase 1 already consumed it). Runs in both modes."""
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        assert_tag_for["Conv2D", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](
+            grad_inputs[0]
+        )
+
+        comptime if target == "cpu":
+            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_output_v.ptr
+            )
+            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                grad_input_v.ptr
+            )
+            var w_p = self.weight.value_unsafe_ptr_cpu()
+
+            # Zero d_input — col2im is scatter-add.
+            for k in range(BATCH * Self.IN_DIM_FLAT):
+                gi_p[k] = Scalar[DT](0.0)
+
+            var d_col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+                Scalar[DT]
+            ](Self.SPATIAL_OUT * Self.COL_SIZE)
+            var go_b_T_buf: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+            comptime if (
+                CompilationTarget.is_macos() and DT == DType.float32
+            ):
+                go_b_T_buf = None
+            else:
+                go_b_T_buf = alloc[Scalar[DT]](
+                    Self.SPATIAL_OUT * Self.OC
+                )
+
+            var w_tt = TileTensor(
+                self.weight.val.cpu, row_major[Self.OC, Self.COL_SIZE](),
+            )
+
+            for b in range(BATCH):
+                var go_b_p = go_p + b * Self.OUT_DIM_FLAT
+
                 # ---- 4. d_col_b = d_out_b.T @ weight ------------------
                 #         d_out_b.T is [SPATIAL_OUT, OC],
                 #         weight     is [OC, COL_SIZE],
@@ -714,7 +838,6 @@ struct Conv2D[
                 # Apple fp32 we drop through to cblas (which does); on
                 # other targets we materialise the transpose explicitly
                 # into `go_b_T_buf` and call max_matmul untransposed.
-                # Mirrors `linear.mojo` grad_w's Apple-vs-other split.
                 comptime if (
                     CompilationTarget.is_macos() and DT == DType.float32
                 ):
@@ -771,12 +894,10 @@ struct Conv2D[
                     gi_p + b * Self.IN_DIM_FLAT,
                 )
 
-            col_buf.free()
             d_col_buf.free()
             comptime if not (
                 CompilationTarget.is_macos() and DT == DType.float32
             ):
-                dw_tmp.value().free()
                 go_b_T_buf.value().free()
         else:
             var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
@@ -785,63 +906,21 @@ struct Conv2D[
             var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 grad_input_v.ptr
             )
-            var x_p = self._cached_input_ptr.value()
             comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
             comptime out_layout = Layout.row_major(
                 BATCH, Self.OUT_DIM_FLAT
             )
             comptime w_layout = Layout.row_major(Self.W_SIZE)
-            comptime b_layout = Layout.row_major(Self.B_SIZE)
             var go_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](go_p)
-            var in_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](x_p)
             var gi_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](gi_p)
             var w_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
                 self.weight.val.dev.value()
             )
             var ctx = self.ts.ctx.value()
 
-            # BACKWARD-ORDER INVARIANT (mirrors CPU + Linear): the param
-            # grads (dW, dB) read `in_lt` (the cached forward input), so
-            # they MUST run BEFORE dx, which writes `gi_lt`. When this
-            # conv is not the first layer, Sequential aliases its
-            # grad_input slab onto the same buffer that holds its cached
-            # forward input (memory reuse). Since the GPU queue is
-            # in-order, running dx first would clobber the input with
-            # gradients before dw/db read it → corrupt dW (silent;
-            # diverges only across multi-batch training, where the stale
-            # input differs between steps). Enqueue dw/db first.
-            comptime if mode == "all":
-                var dw_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
-                    self.weight.grd.dev.value()
-                )
-                var db_lt = LayoutTensor[DT, b_layout, MutAnyOrigin](
-                    self.bias.grd.dev.value()
-                )
-
-                # d_weight — 1 block per weight scalar, CONV_DW_TPB
-                # threads reduce over BATCH·OH·OW via `block.sum`.
-                comptime dw_kernel = _conv2d_backward_dw_kernel[
-                    BATCH, Self.IC, Self.OC, Self.K, Self.S, Self.P,
-                    Self.H, Self.W, Self.OH, Self.OW,
-                    Self.IN_DIM_FLAT, Self.OUT_DIM_FLAT,
-                ]
-                ctx.enqueue_function[dw_kernel](
-                    go_lt, in_lt, dw_lt,
-                    grid_dim=Self.W_SIZE, block_dim=CONV_DW_TPB,
-                )
-
-                # d_bias — 1 block per OC, CONV_DW_TPB threads reduce
-                # over BATCH·OH·OW via `block.sum`.
-                comptime db_kernel = _conv2d_backward_db_kernel[
-                    BATCH, Self.OC, Self.OH, Self.OW, Self.OUT_DIM_FLAT,
-                ]
-                ctx.enqueue_function[db_kernel](
-                    go_lt, db_lt,
-                    grid_dim=Self.OC, block_dim=CONV_DW_TPB,
-                )
-
-            # d_input — 1 thread per (b, ic, ih, iw). Runs LAST so it may
-            # safely overwrite an aliased input/grad_input slab.
+            # d_input — 1 thread per (b, ic, ih, iw). The orchestrator
+            # ran vjp_param_grads (dw/db) first, so this may safely
+            # overwrite an aliased input/grad_input slab.
             comptime total_in = BATCH * Self.IN_DIM_FLAT
             comptime n_blocks_in = (total_in + TPB - 1) // TPB
             comptime dx_kernel = _conv2d_backward_dx_kernel[

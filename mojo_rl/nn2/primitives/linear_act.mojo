@@ -329,6 +329,37 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
+        """Combined backward (S7) — the two phases in fixed order. Single
+        source of truth for direct callers (ComputeGraph, non-Sequential
+        combinators, tests); Sequential calls the phases directly."""
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        self.vjp_param_grads[target, BATCH, POLICY=POLICY, mode=mode](
+            grad_output
+        )
+        self.vjp_grad_input[target, BATCH, POLICY=POLICY, mode=mode](
+            grad_output, *grad_inputs
+        )
+
+    def vjp_param_grads[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Phase 1 (S7): in-place activation-derivative rewrite of
+        grad_output (ALWAYS — both modes) + grad_b + grad_w (mode=all).
+        grad_w reads the cached input; runs before `vjp_grad_input` writes
+        the slab that cache aliases. NOTE: `vjp_grad_input` depends on the
+        rewrite done here, so callers MUST run this phase first (the
+        orchestrator + the `vjp` delegator both do)."""
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
@@ -337,10 +368,8 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
         # AMP-compiled trainer; fp32 at runtime when bf16 is off.
         assert_tag_for["LinearAct", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN](grad_inputs[0])
 
         var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
 
         comptime if target == "cpu":
             # (1) In-place rewrite: grad_output[b,j] = OP.backward(cache[b,j], go).
@@ -409,14 +438,6 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
                     dw_i += 1
                 dW_tmp_buf.free()
                 cT_buf.free()
-
-            # (4) grad_input = grad_pre_act @ W^T (always).
-            var w_tt = TileTensor(
-                self.weight.val.cpu, row_major[Self.IN, Self.OUT](),
-            )
-            max_matmul[transpose_b=True, target="cpu"](
-                grad_input_v, grad_output_v, w_tt, None,
-            )
         else:
             var ctx = self.ts.ctx.value()
 
@@ -502,6 +523,43 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
                     grid_dim=n_blocks_acc, block_dim=TPB,
                 )
 
+    def vjp_grad_input[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+        mut *grad_inputs: TileTensor[
+            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Phase 2 (S7): grad_input = grad_pre_act @ Wᵀ. Reads the
+        grad_output slab AFTER `vjp_param_grads` rewrote it in place to
+        grad_pre_act; writes grad_inputs[0] (which aliases the cached
+        input — safe because phase 1 already read it)."""
+        comptime assert (
+            mode == "all" or mode == "input_only"
+        ), "mode must be 'all' or 'input_only'"
+        assert_tag_for["LinearAct", target](self.ts.target_tag)
+        var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
+        var grad_input_v = typed_view_mut[BATCH, Self.IN](grad_inputs[0])
+
+        comptime if target == "cpu":
+            # (4) grad_input = grad_pre_act @ W^T (always).
+            var w_tt = TileTensor(
+                self.weight.val.cpu, row_major[Self.IN, Self.OUT](),
+            )
+            max_matmul[transpose_b=True, target="cpu"](
+                grad_input_v, grad_output_v, w_tt, None,
+            )
+        else:
+            var ctx = self.ts.ctx.value()
             # (4) grad_input = grad_pre_act @ W^T (always).
             var weight_tt = TileTensor(
                 self.weight.val.dev.value(),
