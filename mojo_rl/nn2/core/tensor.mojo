@@ -132,7 +132,7 @@ struct Tensor[
 
     # ----- dynamic (Cache) lazy grow -------------------------------------
 
-    def ensure_cpu(mut self, n: Int) raises:
+    def ensure_cpu(mut self, n: Int):
         """Lazy-grow the CPU list to >= n, zero-filled. Cache role."""
         if len(self.cpu) < n:
             self.cpu = List[Scalar[Self.dtype]](
@@ -141,9 +141,13 @@ struct Tensor[
 
     def ensure_gpu(mut self, ctx: DeviceContext, n: Int) raises:
         """Lazy-(re)allocate the device buffer to >= n. Cache role —
-        replaces the old `ensure_gpu_buffer` helper + `*_dev_n` field."""
+        replaces the old `ensure_gpu_buffer` helper + `*_dev_n` field. When
+        `STAGING`, a pinned host buffer of matching length is (re)allocated
+        alongside it for H2D/D2H bookkeeping (folds the old `*_hbuf` field)."""
         if self.cap < n:
             self.dev = ctx.enqueue_create_buffer[Self.dtype](n)
+            comptime if Self.STAGING:
+                self.hbuf = ctx.enqueue_create_host_buffer[Self.dtype](n)
             self.cap = n
 
     # ----- IsScratch ------------------------------------------------------

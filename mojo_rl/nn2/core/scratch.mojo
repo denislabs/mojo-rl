@@ -21,4 +21,8 @@ comptime Scratch[
 
 
 # Cache — runtime-sized backward cache (lazy-grow at forward time).
-comptime Cache[NAME: StaticString, dtype: DType = DT] = Tensor[NAME, 0, dtype]
+# `STAGING=True` keeps a pinned host buffer beside the device buffer (grown
+# in lockstep by `ensure_gpu`) for H2D/D2H upload bookkeeping.
+comptime Cache[
+    NAME: StaticString, dtype: DType = DT, STAGING: Bool = False
+] = Tensor[NAME, 0, dtype, STAGING]

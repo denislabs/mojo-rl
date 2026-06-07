@@ -52,19 +52,19 @@ no atomics are needed — the signal/step vocabs are tiny (KMAX+1, log2 KMAX+1).
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import (
-    Initializer, AMPPolicy, NoAMP, Param, ParamVisitor,
+    Initializer, AMPPolicy, NoAMP, Param, ParamVisitor, Cache,
     for_each_param_auto, zero_grad_auto,
 )
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
 from mojo_rl.nn2.core.target_storage import (
     require_ctx,
-    TargetStorage, assert_tag_for, ensure_cpu_buffer,
+    TargetStorage, assert_tag_for,
 )
 from mojo_rl.nn2.combinators import Sequential, Tokenwise
 from mojo_rl.nn2.primitives.linear import Linear
@@ -420,47 +420,32 @@ struct Dreamer4Dynamics[
     var step_table: Param["step_table", True, Self.NSTEP * Self.D]
     var register: Param["register", False, Self.NREG * Self.D]
 
-    # CPU scratch
-    var grid: List[Scalar[DT]]            # [BATCH, S*D] transformer input grid
-    var grad_grid: List[Scalar[DT]]       # [BATCH, S*D] grad wrt grid
-    var tf_out: List[Scalar[DT]]          # [BATCH, S*D] transformer output
-    var grad_tf_out: List[Scalar[DT]]     # [BATCH, S*D] grad wrt transformer out
-    var proj_out: List[Scalar[DT]]        # [BATCH, NSP*D]
-    var grad_proj_out: List[Scalar[DT]]
+    # ── Working buffers (S5 Cache role) ─────────────────────────────────
+    # Each `Cache` folds the old (CPU `List` + device `DeviceBuffer`
+    # [+ pinned `HostBuffer`]) trio into ONE unified `Tensor` that lazy-grows
+    # its `cpu`/`dev`/`hbuf` storage at forward time (`ensure_cpu`/`ensure_gpu`).
+    var grid: Cache["dyn.grid"]           # [BATCH, S*D] transformer input grid
+    var grad_grid: Cache["dyn.ggrid"]     # [BATCH, S*D] grad wrt grid
+    var tf_out: Cache["dyn.tfout"]        # [BATCH, S*D] transformer output
+    var grad_tf_out: Cache["dyn.gtfout"]  # [BATCH, S*D] grad wrt transformer out
+    var proj_out: Cache["dyn.po"]         # [BATCH, NSP*D]
+    var grad_proj_out: Cache["dyn.gpo"]
+    var act_out: Cache["dyn.aout"]        # [BATCH, D] act-MLP output
+    var grad_act_out: Cache["dyn.gaout"]  # [BATCH, D] grad into the act token
+    var grad_act_in: Cache["dyn.gain"]    # [BATCH, ADIM] (discarded; data input)
+    var agent_out: Cache["dyn.agout"]     # [BATCH, AG_DIM] h_t (task embeddings)
+    var grad_agent_in: Cache["dyn.gagin"]  # [BATCH, AG_DIM] grad wrt agent input
+    # Integer index caches (CPU-canonical, set via set_indices; uploaded to
+    # the staged `sig_stage`/`step_stage` device buffers on the GPU path).
     var cache_sig: List[Int]              # [BATCH] signal index per sample
     var cache_step: List[Int]             # [BATCH] step index per sample
-    var cache_act: List[Scalar[DT]]       # [BATCH, ADIM] clamped/masked actions
-    var act_out: List[Scalar[DT]]         # [BATCH, D] act-MLP output
-    var grad_act_out: List[Scalar[DT]]    # [BATCH, D] grad into the act token
-    var grad_act_in: List[Scalar[DT]]     # [BATCH, ADIM] (discarded; data input)
-    # Agent-token scratch (used iff AGENT)
-    var cache_agent_in: List[Scalar[DT]]  # [BATCH, AG_DIM] agent token input
-    var agent_out: List[Scalar[DT]]       # [BATCH, AG_DIM] h_t (task embeddings)
-    var grad_agent_out: List[Scalar[DT]]  # [BATCH, AG_DIM] grad of h_t (from BC)
-    var grad_agent_in: List[Scalar[DT]]   # [BATCH, AG_DIM] grad wrt agent input
-    # GPU scratch
-    var grid_dev: Optional[DeviceBuffer[DT]]
-    var ggrid_dev: Optional[DeviceBuffer[DT]]
-    var tfout_dev: Optional[DeviceBuffer[DT]]    # [BATCH, S*D] transformer out
-    var gtfout_dev: Optional[DeviceBuffer[DT]]   # [BATCH, S*D] grad wrt tf out
-    var po_dev: Optional[DeviceBuffer[DT]]
-    var gpo_dev: Optional[DeviceBuffer[DT]]
-    var sig_dev: Optional[DeviceBuffer[DT]]      # uploaded indices (device)
-    var step_dev: Optional[DeviceBuffer[DT]]
-    var sig_hbuf: Optional[HostBuffer[DT]]       # host staging for upload
-    var step_hbuf: Optional[HostBuffer[DT]]
-    var act_dev: Optional[DeviceBuffer[DT]]      # [BATCH, ADIM] uploaded actions
-    var act_hbuf: Optional[HostBuffer[DT]]       # host staging for actions
-    var aout_dev: Optional[DeviceBuffer[DT]]     # [BATCH, D] act-MLP output
-    var gaout_dev: Optional[DeviceBuffer[DT]]    # [BATCH, D] grad into act token
-    var gain_dev: Optional[DeviceBuffer[DT]]     # [BATCH, ADIM] (discarded)
-    var agin_dev: Optional[DeviceBuffer[DT]]     # [BATCH, AG_DIM] agent input
-    var agin_hbuf: Optional[HostBuffer[DT]]      # host staging for agent input
-    var agout_dev: Optional[DeviceBuffer[DT]]    # [BATCH, AG_DIM] h_t output
-    var gagout_dev: Optional[DeviceBuffer[DT]]   # [BATCH, AG_DIM] grad of h_t
-    var gagout_hbuf: Optional[HostBuffer[DT]]    # host staging for grad of h_t
-    var gagin_dev: Optional[DeviceBuffer[DT]]    # [BATCH, AG_DIM] grad of input
-    var scratch_batch: Int
+    var sig_stage: Cache["dyn.sig", DT, True]   # [BATCH] uploaded sig indices
+    var step_stage: Cache["dyn.step", DT, True]  # [BATCH] uploaded step indices
+    # Staged control I/O (STAGING ⇒ cpu mirror + pinned host + device): the
+    # CPU path reads `.cpu`, the GPU path uploads `.cpu`→`.hbuf`→`.dev`.
+    var cache_act: Cache["dyn.act", DT, True]     # [BATCH, ADIM] clamp/masked acts
+    var cache_agent_in: Cache["dyn.agin", DT, True]  # [BATCH, AG_DIM] agent input
+    var grad_agent_out: Cache["dyn.gagout", DT, True]  # [BATCH, AG_DIM] h_t grad
     var ts: TargetStorage
 
     def __init__(out self):
@@ -472,86 +457,49 @@ struct Dreamer4Dynamics[
         self.signal_table = Param["signal_table", True, Self.NSIG * Self.D]()
         self.step_table = Param["step_table", True, Self.NSTEP * Self.D]()
         self.register = Param["register", False, Self.NREG * Self.D]()
-        self.grid = List[Scalar[DT]]()
-        self.grad_grid = List[Scalar[DT]]()
-        self.tf_out = List[Scalar[DT]]()
-        self.grad_tf_out = List[Scalar[DT]]()
-        self.proj_out = List[Scalar[DT]]()
-        self.grad_proj_out = List[Scalar[DT]]()
+        self.grid = Cache["dyn.grid"]()
+        self.grad_grid = Cache["dyn.ggrid"]()
+        self.tf_out = Cache["dyn.tfout"]()
+        self.grad_tf_out = Cache["dyn.gtfout"]()
+        self.proj_out = Cache["dyn.po"]()
+        self.grad_proj_out = Cache["dyn.gpo"]()
+        self.act_out = Cache["dyn.aout"]()
+        self.grad_act_out = Cache["dyn.gaout"]()
+        self.grad_act_in = Cache["dyn.gain"]()
+        self.agent_out = Cache["dyn.agout"]()
+        self.grad_agent_in = Cache["dyn.gagin"]()
         self.cache_sig = List[Int]()
         self.cache_step = List[Int]()
-        self.cache_act = List[Scalar[DT]]()
-        self.act_out = List[Scalar[DT]]()
-        self.grad_act_out = List[Scalar[DT]]()
-        self.grad_act_in = List[Scalar[DT]]()
-        self.cache_agent_in = List[Scalar[DT]]()
-        self.agent_out = List[Scalar[DT]]()
-        self.grad_agent_out = List[Scalar[DT]]()
-        self.grad_agent_in = List[Scalar[DT]]()
-        self.grid_dev = None
-        self.ggrid_dev = None
-        self.tfout_dev = None
-        self.gtfout_dev = None
-        self.po_dev = None
-        self.gpo_dev = None
-        self.sig_dev = None
-        self.step_dev = None
-        self.sig_hbuf = None
-        self.step_hbuf = None
-        self.act_dev = None
-        self.act_hbuf = None
-        self.aout_dev = None
-        self.gaout_dev = None
-        self.gain_dev = None
-        self.agin_dev = None
-        self.agin_hbuf = None
-        self.agout_dev = None
-        self.gagout_dev = None
-        self.gagout_hbuf = None
-        self.gagin_dev = None
-        self.scratch_batch = 0
+        self.sig_stage = Cache["dyn.sig", DT, True]()
+        self.step_stage = Cache["dyn.step", DT, True]()
+        self.cache_act = Cache["dyn.act", DT, True]()
+        self.cache_agent_in = Cache["dyn.agin", DT, True]()
+        self.grad_agent_out = Cache["dyn.gagout", DT, True]()
         self.ts = TargetStorage.make_uninit()
 
     def _ensure_scratch_gpu(mut self, batch: Int) raises:
-        if self.scratch_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.grid_dev = ctx.enqueue_create_buffer[DT](batch * Self.SD)
-            self.ggrid_dev = ctx.enqueue_create_buffer[DT](batch * Self.SD)
-            self.tfout_dev = ctx.enqueue_create_buffer[DT](batch * Self.SD)
-            self.gtfout_dev = ctx.enqueue_create_buffer[DT](batch * Self.SD)
-            self.po_dev = ctx.enqueue_create_buffer[DT](batch * Self.NSP * Self.D)
-            self.gpo_dev = ctx.enqueue_create_buffer[DT](batch * Self.NSP * Self.D)
-            self.sig_dev = ctx.enqueue_create_buffer[DT](batch)
-            self.step_dev = ctx.enqueue_create_buffer[DT](batch)
-            self.sig_hbuf = ctx.enqueue_create_host_buffer[DT](batch)
-            self.step_hbuf = ctx.enqueue_create_host_buffer[DT](batch)
-            comptime if Self.ACOND:
-                self.act_dev = ctx.enqueue_create_buffer[DT](batch * Self.ADIM)
-                self.act_hbuf = ctx.enqueue_create_host_buffer[DT](
-                    batch * Self.ADIM
-                )
-                self.aout_dev = ctx.enqueue_create_buffer[DT](batch * Self.D)
-                self.gaout_dev = ctx.enqueue_create_buffer[DT](batch * Self.D)
-                self.gain_dev = ctx.enqueue_create_buffer[DT](batch * Self.ADIM)
-            comptime if Self.AGENT:
-                self.agin_dev = ctx.enqueue_create_buffer[DT](batch * Self.AG_DIM)
-                self.agin_hbuf = ctx.enqueue_create_host_buffer[DT](
-                    batch * Self.AG_DIM
-                )
-                self.agout_dev = ctx.enqueue_create_buffer[DT](
-                    batch * Self.AG_DIM
-                )
-                self.gagout_dev = ctx.enqueue_create_buffer[DT](
-                    batch * Self.AG_DIM
-                )
-                self.gagout_hbuf = ctx.enqueue_create_host_buffer[DT](
-                    batch * Self.AG_DIM
-                )
-                self.gagin_dev = ctx.enqueue_create_buffer[DT](
-                    batch * Self.AG_DIM
-                )
-            ctx.synchronize()
-            self.scratch_batch = batch
+        # Per-Cache lazy-grow: each tracks its own device capacity, so the
+        # old single `scratch_batch` guard + bulk reallocation is unneeded.
+        var ctx = self.ts.ctx.value()
+        self.grid.ensure_gpu(ctx, batch * Self.SD)
+        self.grad_grid.ensure_gpu(ctx, batch * Self.SD)
+        self.tf_out.ensure_gpu(ctx, batch * Self.SD)
+        self.grad_tf_out.ensure_gpu(ctx, batch * Self.SD)
+        self.proj_out.ensure_gpu(ctx, batch * Self.NSP * Self.D)
+        self.grad_proj_out.ensure_gpu(ctx, batch * Self.NSP * Self.D)
+        self.sig_stage.ensure_gpu(ctx, batch)
+        self.step_stage.ensure_gpu(ctx, batch)
+        comptime if Self.ACOND:
+            self.cache_act.ensure_gpu(ctx, batch * Self.ADIM)
+            self.act_out.ensure_gpu(ctx, batch * Self.D)
+            self.grad_act_out.ensure_gpu(ctx, batch * Self.D)
+            self.grad_act_in.ensure_gpu(ctx, batch * Self.ADIM)
+        comptime if Self.AGENT:
+            self.cache_agent_in.ensure_gpu(ctx, batch * Self.AG_DIM)
+            self.agent_out.ensure_gpu(ctx, batch * Self.AG_DIM)
+            self.grad_agent_out.ensure_gpu(ctx, batch * Self.AG_DIM)
+            self.grad_agent_in.ensure_gpu(ctx, batch * Self.AG_DIM)
+        ctx.synchronize()
 
     @staticmethod
     def make[
@@ -643,8 +591,7 @@ struct Dreamer4Dynamics[
         `actions` is [batch, ADIM] row-major; `act_mask` is [ADIM] (pass all
         ones for no masking)."""
         comptime if Self.ACOND:
-            if len(self.cache_act) < batch * Self.ADIM:
-                self.cache_act.resize(batch * Self.ADIM, Scalar[DT](0.0))
+            self.cache_act.ensure_cpu(batch * Self.ADIM)
             for bt in range(batch):
                 for a in range(Self.ADIM):
                     var v = actions[bt * Self.ADIM + a] * act_mask[a]
@@ -652,7 +599,7 @@ struct Dreamer4Dynamics[
                         v = Scalar[DT](1.0)
                     elif v < Scalar[DT](-1.0):
                         v = Scalar[DT](-1.0)
-                    self.cache_act[bt * Self.ADIM + a] = v
+                    self.cache_act.cpu[bt * Self.ADIM + a] = v
 
     # ── Agent-token control inputs / outputs (AGENT only) ───────────────
     def set_agent_in(
@@ -666,10 +613,9 @@ struct Dreamer4Dynamics[
         it carries a gradient back (read via `grad_agent_in_*` after vjp).
         `agent_in` is [batch, AG_DIM] row-major (AG_DIM = NAGENT·D)."""
         comptime if Self.AGENT:
-            if len(self.cache_agent_in) < batch * Self.AG_DIM:
-                self.cache_agent_in.resize(batch * Self.AG_DIM, Scalar[DT](0.0))
+            self.cache_agent_in.ensure_cpu(batch * Self.AG_DIM)
             for i in range(batch * Self.AG_DIM):
-                self.cache_agent_in[i] = agent_in[i]
+                self.cache_agent_in.cpu[i] = agent_in[i]
 
     def set_grad_h(
         mut self,
@@ -680,34 +626,27 @@ struct Dreamer4Dynamics[
         (AGENT only). Scattered into the agent columns of the transformer-out
         grad alongside the flow-head grad. `grad_h` is [batch, AG_DIM]."""
         comptime if Self.AGENT:
-            if len(self.grad_agent_out) < batch * Self.AG_DIM:
-                self.grad_agent_out.resize(
-                    batch * Self.AG_DIM, Scalar[DT](0.0)
-                )
+            self.grad_agent_out.ensure_cpu(batch * Self.AG_DIM)
             for i in range(batch * Self.AG_DIM):
-                self.grad_agent_out[i] = grad_h[i]
+                self.grad_agent_out.cpu[i] = grad_h[i]
 
     def agent_out_ptr_cpu(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         """CPU pointer to h_t (the agent transformer outputs), valid after a
         CPU forward. Shape [BATCH, AG_DIM]."""
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.agent_out.unsafe_ptr()
-        )
+        return self.agent_out.cpu_ptr()
 
     def agent_out_dev(self) -> DeviceBuffer[DT]:
         """Device buffer holding h_t, valid after a GPU forward."""
-        return self.agout_dev.value()
+        return self.agent_out.dev.value()
 
     def grad_agent_in_ptr_cpu(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         """CPU pointer to the grad wrt the agent input, valid after a CPU vjp.
         Feeds the TaskEmbedder backward. Shape [BATCH, AG_DIM]."""
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.grad_agent_in.unsafe_ptr()
-        )
+        return self.grad_agent_in.cpu_ptr()
 
     def grad_agent_in_dev(self) -> DeviceBuffer[DT]:
         """Device buffer holding the grad wrt the agent input, after a GPU vjp."""
-        return self.gagin_dev.value()
+        return self.grad_agent_in.dev.value()
 
     def forward[
         target: StaticString,
@@ -729,20 +668,16 @@ struct Dreamer4Dynamics[
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.grid, BATCH * Self.SD)
-            ensure_cpu_buffer(self.proj_out, BATCH * Self.NSP * Self.D)
+            self.grid.ensure_cpu(BATCH * Self.SD)
+            self.proj_out.ensure_cpu(BATCH * Self.NSP * Self.D)
             var po = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.proj_out.unsafe_ptr()
-                ),
+                self.proj_out.cpu_ptr(),
                 row_major[BATCH, Self.NSP * Self.D](),
             )
             self.proj.forward[target, BATCH, POLICY=POLICY](packed, output=po)
 
             var grid = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.grid.unsafe_ptr()
-                ),
+                self.grid.cpu_ptr(),
                 row_major[BATCH, Self.SD](),
             )
             var ab = TileTensor(self.action_base.val.cpu, row_major[Self.D]())
@@ -757,17 +692,13 @@ struct Dreamer4Dynamics[
             )
             # action conditioning: act token = action_base + act_mlp(actions)
             comptime if Self.ACOND:
-                ensure_cpu_buffer(self.act_out, BATCH * Self.D)
+                self.act_out.ensure_cpu(BATCH * Self.D)
                 var ain = TileTensor(
-                    rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                        self.cache_act.unsafe_ptr()
-                    ),
+                    self.cache_act.cpu_ptr(),
                     row_major[BATCH, Self.ADIM](),
                 )
                 var aout_t = TileTensor(
-                    rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                        self.act_out.unsafe_ptr()
-                    ),
+                    self.act_out.cpu_ptr(),
                     row_major[BATCH, Self.D](),
                 )
                 self.act_mlp.forward[target, BATCH, POLICY=POLICY](
@@ -779,7 +710,7 @@ struct Dreamer4Dynamics[
                 for d in range(Self.D):
                     grid[bt, d] = ab[d]                          # action
                     comptime if Self.ACOND:
-                        grid[bt, d] += self.act_out[bt * Self.D + d]
+                        grid[bt, d] += self.act_out.cpu[bt * Self.D + d]
                     grid[bt, Self.D + d] = sigt[si * Self.D + d]  # signal
                     grid[bt, 2 * Self.D + d] = stpt[pi * Self.D + d]  # step
                 for k in range(Self.NSP * Self.D):
@@ -788,58 +719,58 @@ struct Dreamer4Dynamics[
                     grid[bt, Self.REG_OFF + k] = reg[k]           # register
                 comptime if Self.AGENT:
                     for k in range(Self.AG_DIM):
-                        grid[bt, Self.AGENT_OFF + k] = self.cache_agent_in[
+                        grid[bt, Self.AGENT_OFF + k] = self.cache_agent_in.cpu[
                             bt * Self.AG_DIM + k
                         ]
 
             # transformer body → full per-token output
-            ensure_cpu_buffer(self.tf_out, BATCH * Self.SD)
+            self.tf_out.ensure_cpu(BATCH * Self.SD)
             var tfo = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.tf_out.unsafe_ptr()
-                ),
+                self.tf_out.cpu_ptr(),
                 row_major[BATCH, Self.SD](),
             )
             self.tf.forward[target, BATCH, POLICY=POLICY](grid, output=tfo)
             # agent token outputs h_t = transformer output agent columns
             comptime if Self.AGENT:
-                ensure_cpu_buffer(self.agent_out, BATCH * Self.AG_DIM)
+                self.agent_out.ensure_cpu(BATCH * Self.AG_DIM)
                 for bt in range(BATCH):
                     for k in range(Self.AG_DIM):
-                        self.agent_out[bt * Self.AG_DIM + k] = self.tf_out[
-                            bt * Self.SD + Self.AGENT_OFF + k
-                        ]
+                        self.agent_out.cpu[bt * Self.AG_DIM + k] = (
+                            self.tf_out.cpu[
+                                bt * Self.SD + Self.AGENT_OFF + k
+                            ]
+                        )
             # flow head reads the spatial columns of the transformer output
             self.head.forward[target, BATCH, POLICY=POLICY](tfo, output=out)
         else:
             self._ensure_scratch_gpu(BATCH)
             var ctx = self.ts.ctx.value()
             # upload the cached indices (set via set_indices) → device
-            var sh = self.sig_hbuf.value()
-            var th = self.step_hbuf.value()
+            var sh = self.sig_stage.hbuf.value()
+            var th = self.step_stage.hbuf.value()
             for bt in range(BATCH):
                 sh.unsafe_ptr()[bt] = Scalar[DT](Float64(self.cache_sig[bt]))
                 th.unsafe_ptr()[bt] = Scalar[DT](Float64(self.cache_step[bt]))
-            ctx.enqueue_copy(self.sig_dev.value(), sh)
-            ctx.enqueue_copy(self.step_dev.value(), th)
+            ctx.enqueue_copy(self.sig_stage.dev.value(), sh)
+            ctx.enqueue_copy(self.step_stage.dev.value(), th)
             comptime if Self.ACOND:
-                var ah = self.act_hbuf.value()
+                var ah = self.cache_act.hbuf.value()
                 for i in range(BATCH * Self.ADIM):
-                    ah.unsafe_ptr()[i] = self.cache_act[i]
-                ctx.enqueue_copy(self.act_dev.value(), ah)
+                    ah.unsafe_ptr()[i] = self.cache_act.cpu[i]
+                ctx.enqueue_copy(self.cache_act.dev.value(), ah)
             comptime if Self.AGENT:
-                var agh = self.agin_hbuf.value()
+                var agh = self.cache_agent_in.hbuf.value()
                 for i in range(BATCH * Self.AG_DIM):
-                    agh.unsafe_ptr()[i] = self.cache_agent_in[i]
-                ctx.enqueue_copy(self.agin_dev.value(), agh)
+                    agh.unsafe_ptr()[i] = self.cache_agent_in.cpu[i]
+                ctx.enqueue_copy(self.cache_agent_in.dev.value(), agh)
 
-            var po = _dev_tile[BATCH, Self.NSP * Self.D](self.po_dev.value())
+            var po = _dev_tile[BATCH, Self.NSP * Self.D](self.proj_out.dev.value())
             self.proj.forward[target, BATCH, POLICY=POLICY](packed, output=po)
 
             comptime AN = BATCH * Self.SD
             comptime PN = BATCH * Self.NSP * Self.D
             var proj_lt = LayoutTensor[DT, Layout.row_major(PN), MutAnyOrigin](
-                self.po_dev.value()
+                self.proj_out.dev.value()
             )
             var ab_lt = LayoutTensor[DT, Layout.row_major(Self.D), MutAnyOrigin](
                 self.action_base.val.dev.value()
@@ -854,13 +785,13 @@ struct Dreamer4Dynamics[
                 DT, Layout.row_major(Self.NREG * Self.D), MutAnyOrigin
             ](self.register.val.dev.value())
             var si_lt = LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin](
-                self.sig_dev.value()
+                self.sig_stage.dev.value()
             )
             var sp_lt = LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin](
-                self.step_dev.value()
+                self.step_stage.dev.value()
             )
             var grid_lt = LayoutTensor[DT, Layout.row_major(AN), MutAnyOrigin](
-                self.grid_dev.value()
+                self.grid.dev.value()
             )
             comptime ak = _dyn_assemble_kernel[
                 BATCH, Self.S, Self.D, Self.NSP, Self.NREG, Self.NSIG, Self.NSTEP
@@ -871,14 +802,14 @@ struct Dreamer4Dynamics[
             )
             # action conditioning: act token += act_mlp(actions)
             comptime if Self.ACOND:
-                var ain_t = _dev_tile[BATCH, Self.ADIM](self.act_dev.value())
-                var aout_t = _dev_tile[BATCH, Self.D](self.aout_dev.value())
+                var ain_t = _dev_tile[BATCH, Self.ADIM](self.cache_act.dev.value())
+                var aout_t = _dev_tile[BATCH, Self.D](self.act_out.dev.value())
                 self.act_mlp.forward[target, BATCH, POLICY=POLICY](
                     ain_t, output=aout_t
                 )
                 var aout_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH * Self.D), MutAnyOrigin
-                ](self.aout_dev.value())
+                ](self.act_out.dev.value())
                 comptime addk = _dyn_add_act_kernel[BATCH, Self.S, Self.D]
                 ctx.enqueue_function[addk](
                     aout_lt, grid_lt,
@@ -888,7 +819,7 @@ struct Dreamer4Dynamics[
             comptime if Self.AGENT:
                 var agin_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH * Self.AG_DIM), MutAnyOrigin
-                ](self.agin_dev.value())
+                ](self.cache_agent_in.dev.value())
                 comptime stk = _dyn_set_agent_kernel[
                     BATCH, Self.S, Self.D, Self.NAGENT
                 ]
@@ -898,17 +829,17 @@ struct Dreamer4Dynamics[
                     block_dim=TPB,
                 )
 
-            var grid_t = _dev_tile[BATCH, Self.SD](self.grid_dev.value())
-            var tfout_t = _dev_tile[BATCH, Self.SD](self.tfout_dev.value())
+            var grid_t = _dev_tile[BATCH, Self.SD](self.grid.dev.value())
+            var tfout_t = _dev_tile[BATCH, Self.SD](self.tf_out.dev.value())
             self.tf.forward[target, BATCH, POLICY=POLICY](grid_t, output=tfout_t)
             # h_t = transformer output agent columns
             comptime if Self.AGENT:
                 var tfout_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH * Self.SD), MutAnyOrigin
-                ](self.tfout_dev.value())
+                ](self.tf_out.dev.value())
                 var agout_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH * Self.AG_DIM), MutAnyOrigin
-                ](self.agout_dev.value())
+                ](self.agent_out.dev.value())
                 comptime exk = _dyn_extract_agent_fwd_kernel[
                     BATCH, Self.S, Self.D, Self.NAGENT
                 ]
@@ -940,19 +871,15 @@ struct Dreamer4Dynamics[
         var gpacked = typed_view_mut[BATCH, Self.NSP * Self.DSP](grad_inputs[0])
 
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.grad_grid, BATCH * Self.SD)
-            ensure_cpu_buffer(self.grad_tf_out, BATCH * Self.SD)
-            ensure_cpu_buffer(self.grad_proj_out, BATCH * Self.NSP * Self.D)
+            self.grad_grid.ensure_cpu(BATCH * Self.SD)
+            self.grad_tf_out.ensure_cpu(BATCH * Self.SD)
+            self.grad_proj_out.ensure_cpu(BATCH * Self.NSP * Self.D)
             var ggrid = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.grad_grid.unsafe_ptr()
-                ),
+                self.grad_grid.cpu_ptr(),
                 row_major[BATCH, Self.SD](),
             )
             var gtfo = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.grad_tf_out.unsafe_ptr()
-                ),
+                self.grad_tf_out.cpu_ptr(),
                 row_major[BATCH, Self.SD](),
             )
             # flow head backward → grad wrt the transformer output. The Slice
@@ -963,17 +890,15 @@ struct Dreamer4Dynamics[
             comptime if Self.AGENT:
                 for bt in range(BATCH):
                     for k in range(Self.AG_DIM):
-                        self.grad_tf_out[
+                        self.grad_tf_out.cpu[
                             bt * Self.SD + Self.AGENT_OFF + k
-                        ] += self.grad_agent_out[bt * Self.AG_DIM + k]
+                        ] += self.grad_agent_out.cpu[bt * Self.AG_DIM + k]
             # transformer backward → grad wrt the assembled grid
             self.tf.vjp[target, BATCH, POLICY=POLICY, mode=mode](gtfo, ggrid)
 
             # spatial token grad → proj input grad
             var gpo = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.grad_proj_out.unsafe_ptr()
-                ),
+                self.grad_proj_out.cpu_ptr(),
                 row_major[BATCH, Self.NSP * Self.D](),
             )
             for bt in range(BATCH):
@@ -984,10 +909,10 @@ struct Dreamer4Dynamics[
             # agent input grad = grid grad agent columns (always — feeds the
             # TaskEmbedder backward, regardless of the param-grad `mode`).
             comptime if Self.AGENT:
-                ensure_cpu_buffer(self.grad_agent_in, BATCH * Self.AG_DIM)
+                self.grad_agent_in.ensure_cpu(BATCH * Self.AG_DIM)
                 for bt in range(BATCH):
                     for k in range(Self.AG_DIM):
-                        self.grad_agent_in[bt * Self.AG_DIM + k] = ggrid[
+                        self.grad_agent_in.cpu[bt * Self.AG_DIM + k] = ggrid[
                             bt, Self.AGENT_OFF + k
                         ]
 
@@ -1017,21 +942,17 @@ struct Dreamer4Dynamics[
                 # into action_base above — is the act-MLP's grad_output. Its
                 # grad_input (wrt actions) is data ⇒ discarded.
                 comptime if Self.ACOND:
-                    ensure_cpu_buffer(self.grad_act_out, BATCH * Self.D)
-                    ensure_cpu_buffer(self.grad_act_in, BATCH * Self.ADIM)
+                    self.grad_act_out.ensure_cpu(BATCH * Self.D)
+                    self.grad_act_in.ensure_cpu(BATCH * Self.ADIM)
                     for bt in range(BATCH):
                         for d in range(Self.D):
-                            self.grad_act_out[bt * Self.D + d] = ggrid[bt, d]
+                            self.grad_act_out.cpu[bt * Self.D + d] = ggrid[bt, d]
                     var gao = TileTensor(
-                        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                            self.grad_act_out.unsafe_ptr()
-                        ),
+                        self.grad_act_out.cpu_ptr(),
                         row_major[BATCH, Self.D](),
                     )
                     var gai = TileTensor(
-                        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                            self.grad_act_in.unsafe_ptr()
-                        ),
+                        self.grad_act_in.cpu_ptr(),
                         row_major[BATCH, Self.ADIM](),
                     )
                     self.act_mlp.vjp[target, BATCH, POLICY=POLICY, mode="all"](
@@ -1042,8 +963,8 @@ struct Dreamer4Dynamics[
             var ctx = self.ts.ctx.value()
             comptime AN = BATCH * Self.SD
             comptime PN = BATCH * Self.NSP * Self.D
-            var ggrid_t = _dev_tile[BATCH, Self.SD](self.ggrid_dev.value())
-            var gtfout_t = _dev_tile[BATCH, Self.SD](self.gtfout_dev.value())
+            var ggrid_t = _dev_tile[BATCH, Self.SD](self.grad_grid.dev.value())
+            var gtfout_t = _dev_tile[BATCH, Self.SD](self.grad_tf_out.dev.value())
             # flow head backward → grad wrt transformer output (Slice vjp
             # zero-fills, so agent/other columns are 0)
             self.head.vjp[target, BATCH, POLICY=POLICY, mode=mode](
@@ -1051,16 +972,16 @@ struct Dreamer4Dynamics[
             )
             comptime if Self.AGENT:
                 # upload h_t grad (set via set_grad_h), add into agent columns
-                var goh2 = self.gagout_hbuf.value()
+                var goh2 = self.grad_agent_out.hbuf.value()
                 for i in range(BATCH * Self.AG_DIM):
-                    goh2.unsafe_ptr()[i] = self.grad_agent_out[i]
-                ctx.enqueue_copy(self.gagout_dev.value(), goh2)
+                    goh2.unsafe_ptr()[i] = self.grad_agent_out.cpu[i]
+                ctx.enqueue_copy(self.grad_agent_out.dev.value(), goh2)
                 var gagout_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH * Self.AG_DIM), MutAnyOrigin
-                ](self.gagout_dev.value())
+                ](self.grad_agent_out.dev.value())
                 var gtfout_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH * Self.SD), MutAnyOrigin
-                ](self.gtfout_dev.value())
+                ](self.grad_tf_out.dev.value())
                 comptime agk = _dyn_add_agent_grad_kernel[
                     BATCH, Self.S, Self.D, Self.NAGENT
                 ]
@@ -1075,16 +996,16 @@ struct Dreamer4Dynamics[
             )
 
             var ggrid_lt = LayoutTensor[DT, Layout.row_major(AN), MutAnyOrigin](
-                self.ggrid_dev.value()
+                self.grad_grid.dev.value()
             )
             var gpo_lt = LayoutTensor[DT, Layout.row_major(PN), MutAnyOrigin](
-                self.gpo_dev.value()
+                self.grad_proj_out.dev.value()
             )
             comptime gpk = _dyn_grad_proj_kernel[BATCH, Self.S, Self.D, Self.NSP]
             ctx.enqueue_function[gpk](
                 ggrid_lt, gpo_lt, grid_dim=(PN + TPB - 1) // TPB, block_dim=TPB,
             )
-            var gpo_t = _dev_tile[BATCH, Self.NSP * Self.D](self.gpo_dev.value())
+            var gpo_t = _dev_tile[BATCH, Self.NSP * Self.D](self.grad_proj_out.dev.value())
             self.proj.vjp[target, BATCH, POLICY=POLICY, mode=mode](gpo_t, gpacked)
 
             # agent input grad = grid grad agent columns (always — feeds the
@@ -1092,7 +1013,7 @@ struct Dreamer4Dynamics[
             comptime if Self.AGENT:
                 var gagin_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH * Self.AG_DIM), MutAnyOrigin
-                ](self.gagin_dev.value())
+                ](self.grad_agent_in.dev.value())
                 comptime egk = _dyn_extract_agent_grad_kernel[
                     BATCH, Self.S, Self.D, Self.NAGENT
                 ]
@@ -1117,10 +1038,10 @@ struct Dreamer4Dynamics[
                 ](self.step_table.grd.dev.value())
                 var si_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH), MutAnyOrigin
-                ](self.sig_dev.value())
+                ](self.sig_stage.dev.value())
                 var sp_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH), MutAnyOrigin
-                ](self.step_dev.value())
+                ](self.step_stage.dev.value())
                 comptime bk = _dyn_grad_base_kernel[BATCH, Self.S, Self.D]
                 ctx.enqueue_function[bk](
                     ggrid_lt, gab_lt,
@@ -1154,7 +1075,7 @@ struct Dreamer4Dynamics[
                 comptime if Self.ACOND:
                     var gaout_lt = LayoutTensor[
                         DT, Layout.row_major(BATCH * Self.D), MutAnyOrigin
-                    ](self.gaout_dev.value())
+                    ](self.grad_act_out.dev.value())
                     comptime xk = _dyn_extract_token0_kernel[
                         BATCH, Self.S, Self.D
                     ]
@@ -1163,8 +1084,8 @@ struct Dreamer4Dynamics[
                         grid_dim=(BATCH * Self.D + TPB - 1) // TPB,
                         block_dim=TPB,
                     )
-                    var gaout_t = _dev_tile[BATCH, Self.D](self.gaout_dev.value())
-                    var gain_t = _dev_tile[BATCH, Self.ADIM](self.gain_dev.value())
+                    var gaout_t = _dev_tile[BATCH, Self.D](self.grad_act_out.dev.value())
+                    var gain_t = _dev_tile[BATCH, Self.ADIM](self.grad_act_in.dev.value())
                     self.act_mlp.vjp[target, BATCH, POLICY=POLICY, mode="all"](
                         gaout_t, gain_t
                     )
