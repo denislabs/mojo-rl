@@ -42,3 +42,16 @@ comptime Dreamer4RewardHead[
     SiLU[HID],
     Linear[HID, NMTP * NBINS],
 ]
+
+
+# Value head (Phase 4 / eq. 10): a SINGLE symexp-twohot value distribution per
+# state s_t (NOT multi-token — the value loss predicts the λ-return of the
+# current imagined state only). Same trunk as the reward head; one NBINS output
+# block. Trained by TD-learning vs sg(R_t^λ) (`imag_rl_loss.mojo`).
+comptime Dreamer4ValueHead[
+    D_IN: Int, HID: Int, NBINS: Int
+] = Sequential[
+    Linear[D_IN, HID],
+    SiLU[HID],
+    Linear[HID, NBINS],
+]

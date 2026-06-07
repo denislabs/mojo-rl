@@ -41,9 +41,18 @@ from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 
 from .dynamics import Dreamer4Dynamics
 from .task_embedder import TaskEmbedder
-from .heads import Dreamer4PolicyHead, Dreamer4RewardHead
+from .heads import Dreamer4PolicyHead, Dreamer4RewardHead, Dreamer4ValueHead
 from .shortcut_loss import dynamics_pretrain_loss
 from .bc_loss import bc_mtp_loss
+from .imag_rollout import imagine_rollout
+from .imag_rl_loss import (
+    lambda_returns,
+    value_td_loss_cpu,
+    value_td_loss_backward,
+    pmpo_policy_loss_cpu,
+    pmpo_policy_loss_backward,
+)
+from ..dreamerv3.polyak import polyak_module
 
 
 def _ilog2(n: Int) -> Int:
@@ -62,6 +71,10 @@ struct Dreamer4Agent[
     HHID: Int, NACT: Int, NBINS: Int, NMTP: Int,   # heads
     B: Int, B_SELF: Int,              # sequences per batch + self rows
     USE_MAX: Bool = True,
+    ADIM: Int = 0,                    # action dim (0 ⇒ unconditional; Phase-4
+    AHID: Int = 0,                    #  imagination needs ADIM = NACT one-hot)
+    K_IMAG: Int = 0,                  # ODE steps for imagination (0 ⇒ KMAX)
+    NCTX: Int = 1,                    # clean context frames for the rollout
 ](Module):
     comptime ARITY: Int = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=1)
@@ -73,19 +86,24 @@ struct Dreamer4Agent[
     comptime PLOG: Int = Self.NMTP * Self.NACT
     comptime RLOG: Int = Self.NMTP * Self.NBINS
     comptime EMAX: Int = _ilog2(Self.KMAX)            # clean-BC step index
+    comptime KI: Int = Self.K_IMAG if Self.K_IMAG > 0 else Self.KMAX
+    comptime TM1: Int = Self.T - 1                    # imagined states with a return
 
     comptime DYN = Dreamer4Dynamics[
         Self.DSP, Self.NSP, Self.D, Self.NH, Self.T, Self.NREG, Self.HID,
-        Self.DEPTH, Self.KMAX, Self.USE_MAX, 0, 0, Self.NAGENT,
+        Self.DEPTH, Self.KMAX, Self.USE_MAX, Self.ADIM, Self.AHID, Self.NAGENT,
     ]
     comptime TE = TaskEmbedder[Self.D, Self.NTASK, Self.NAGENT]
     comptime PH = Dreamer4PolicyHead[Self.AGD, Self.HHID, Self.NACT, Self.NMTP]
     comptime RH = Dreamer4RewardHead[Self.AGD, Self.HHID, Self.NBINS, Self.NMTP]
+    comptime VH = Dreamer4ValueHead[Self.AGD, Self.HHID, Self.NBINS]
 
     var dyn: Self.DYN
     var te: Self.TE
     var ph: Self.PH
     var rh: Self.RH
+    var vh: Self.VH                  # value head (Phase 4; untrained during BC)
+    var ph_prior: Self.PH           # frozen behavioral prior (PMPO reverse-KL)
 
     # CPU scratch (owned; sized at make)
     var agent_in: List[Scalar[DT]]      # [BF, AGD]
@@ -106,6 +124,24 @@ struct Dreamer4Agent[
     var clean_step: List[Scalar[DT]]    # [BF] = EMAX
     var bc_in: List[Scalar[DT]]         # [BF, ND] noised BC input at σ_bc
     var gzero: List[Scalar[DT]]         # [BF, ND] zero flow-grad for the BC vjp
+    # ── imagination-RL scratch (Phase 4) ────────────────────────────────
+    var im_h: List[Scalar[DT]]          # [BF, AGD]  rollout agent tokens
+    var im_act: List[Scalar[DT]]        # [B, T-1]   sampled action class
+    var im_rew: List[Scalar[DT]]        # [BF]       reward-head pred per state
+    var im_val: List[Scalar[DT]]        # [BF]       value-head pred per state
+    var im_con: List[Scalar[DT]]        # [BF]       continue (= γ)
+    var im_ret: List[Scalar[DT]]        # [B, T-1]   λ-returns
+    var im_adv: List[Scalar[DT]]        # [B, T-1]   advantages
+    var im_actbt: List[Scalar[DT]]      # [BF]       actions on the [B,T] grid
+    var im_vlog: List[Scalar[DT]]       # [BF, NBINS] value logits (grad re-run)
+    var im_gvlog: List[Scalar[DT]]      # [BF, NBINS] value-logit grad
+    var im_vloss: List[Scalar[DT]]      # [B, T-1]
+    var im_plog: List[Scalar[DT]]       # [BF, PLOG]  policy logits (grad re-run)
+    var im_prior: List[Scalar[DT]]      # [BF, PLOG]  frozen prior logits
+    var im_plog0: List[Scalar[DT]]      # [BF, NACT]  dist-0 policy block
+    var im_prior0: List[Scalar[DT]]     # [BF, NACT]  dist-0 prior block
+    var im_gplog0: List[Scalar[DT]]     # [BF, NACT]  dist-0 grad
+    var im_gplog: List[Scalar[DT]]      # [BF, PLOG]  full policy-logit grad
     var ts: TargetStorage
 
     def __init__(out self):
@@ -113,6 +149,25 @@ struct Dreamer4Agent[
         self.te = Self.TE()
         self.ph = Self.PH()
         self.rh = Self.RH()
+        self.vh = Self.VH()
+        self.ph_prior = Self.PH()
+        self.im_h = List[Scalar[DT]]()
+        self.im_act = List[Scalar[DT]]()
+        self.im_rew = List[Scalar[DT]]()
+        self.im_val = List[Scalar[DT]]()
+        self.im_con = List[Scalar[DT]]()
+        self.im_ret = List[Scalar[DT]]()
+        self.im_adv = List[Scalar[DT]]()
+        self.im_actbt = List[Scalar[DT]]()
+        self.im_vlog = List[Scalar[DT]]()
+        self.im_gvlog = List[Scalar[DT]]()
+        self.im_vloss = List[Scalar[DT]]()
+        self.im_plog = List[Scalar[DT]]()
+        self.im_prior = List[Scalar[DT]]()
+        self.im_plog0 = List[Scalar[DT]]()
+        self.im_prior0 = List[Scalar[DT]]()
+        self.im_gplog0 = List[Scalar[DT]]()
+        self.im_gplog = List[Scalar[DT]]()
         self.agent_in = List[Scalar[DT]]()
         self.grad_zhat = List[Scalar[DT]]()
         self.zhat = List[Scalar[DT]]()
@@ -141,6 +196,27 @@ struct Dreamer4Agent[
         m.te = Self.TE.make[target=target, INIT=INIT](ctx)
         m.ph = Self.PH.make[target=target, INIT=INIT](ctx)
         m.rh = Self.RH.make[target=target, INIT=INIT](ctx)
+        # vh + ph_prior made AFTER rh so the dyn/te/ph/rh RNG draws (hence the
+        # BC path) are byte-for-byte unchanged from the Phase-3 agent.
+        m.vh = Self.VH.make[target=target, INIT=INIT](ctx)
+        m.ph_prior = Self.PH.make[target=target, INIT=INIT](ctx)
+        m.im_h.resize(Self.BF * Self.AGD, Scalar[DT](0.0))
+        m.im_act.resize(Self.B * Self.TM1, Scalar[DT](0.0))
+        m.im_rew.resize(Self.BF, Scalar[DT](0.0))
+        m.im_val.resize(Self.BF, Scalar[DT](0.0))
+        m.im_con.resize(Self.BF, Scalar[DT](0.0))
+        m.im_ret.resize(Self.B * Self.TM1, Scalar[DT](0.0))
+        m.im_adv.resize(Self.B * Self.TM1, Scalar[DT](0.0))
+        m.im_actbt.resize(Self.BF, Scalar[DT](0.0))
+        m.im_vlog.resize(Self.BF * Self.NBINS, Scalar[DT](0.0))
+        m.im_gvlog.resize(Self.BF * Self.NBINS, Scalar[DT](0.0))
+        m.im_vloss.resize(Self.B * Self.TM1, Scalar[DT](0.0))
+        m.im_plog.resize(Self.BF * Self.PLOG, Scalar[DT](0.0))
+        m.im_prior.resize(Self.BF * Self.PLOG, Scalar[DT](0.0))
+        m.im_plog0.resize(Self.BF * Self.NACT, Scalar[DT](0.0))
+        m.im_prior0.resize(Self.BF * Self.NACT, Scalar[DT](0.0))
+        m.im_gplog0.resize(Self.BF * Self.NACT, Scalar[DT](0.0))
+        m.im_gplog.resize(Self.BF * Self.PLOG, Scalar[DT](0.0))
         m.agent_in.resize(Self.BF * Self.AGD, Scalar[DT](0.0))
         m.grad_zhat.resize(Self.BF * Self.ND, Scalar[DT](0.0))
         m.zhat.resize(Self.BF * Self.ND, Scalar[DT](0.0))
@@ -202,6 +278,9 @@ struct Dreamer4Agent[
         self.te.for_each_param[target, V](prefix + ".te", visitor)
         self.ph.for_each_param[target, V](prefix + ".ph", visitor)
         self.rh.for_each_param[target, V](prefix + ".rh", visitor)
+        self.vh.for_each_param[target, V](prefix + ".vh", visitor)
+        # NOTE: `ph_prior` is the FROZEN behavioral prior — never optimized, so
+        # it is deliberately excluded from the param walk.
 
     def zero_grad[target: StaticString](mut self) raises:
         assert_tag_for["Dreamer4Agent", target](self.ts.target_tag)
@@ -209,6 +288,7 @@ struct Dreamer4Agent[
         self.te.zero_grad[target]()
         self.ph.zero_grad[target]()
         self.rh.zero_grad[target]()
+        self.vh.zero_grad[target]()
 
     # ── eval accessors ──────────────────────────────────────────────────
     def agent_out_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -380,3 +460,194 @@ struct Dreamer4Agent[
         )
 
         return Tuple(loss_v, loss_bc)
+
+    # ── imagination RL (Phase 4) ─────────────────────────────────────────
+    def snapshot_prior(mut self) raises:
+        """Freeze the current policy head as the behavioral prior π_prior (the
+        PMPO reverse-KL anchor). Call once before imagination training starts."""
+        polyak_module["cpu", Self.PH](self.ph, self.ph_prior, Scalar[DT](1.0))
+
+    def imag_policy_logits_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Per-state policy logits [BF, PLOG] from the last `imag_train_step`
+        (greedy action = argmax of the dist-0 block)."""
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_plog.unsafe_ptr()
+        )
+
+    def imag_train_step(
+        mut self,
+        ctx: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B, NCTX, ND]
+        u01: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B, T] action rng
+        znoise: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [B, T, ND] ODE seeds
+        task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B]
+        bins: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [NBINS]
+        gamma: Scalar[DT] = Scalar[DT](0.997),
+        lam: Scalar[DT] = Scalar[DT](0.95),
+        alpha: Scalar[DT] = Scalar[DT](0.5),
+        beta: Scalar[DT] = Scalar[DT](0.3),
+        policy_weight: Scalar[DT] = Scalar[DT](1.0),
+        value_weight: Scalar[DT] = Scalar[DT](1.0),
+    ) raises -> Tuple[Float64, Float64]:
+        """One imagination-RL step (paper §3.3). Generates an on-policy rollout
+        inside the FROZEN world model, then trains ONLY the policy + value heads:
+          • value head — TD-λ twohot CE vs sg(R_t^λ)   (eq. 10)
+          • policy head — PMPO, sign-of-advantage + reverse-KL prior (eq. 11).
+        Fills the grads of `ph` and `vh` ONLY (dyn / te / rh / ph_prior get no
+        grad ⇒ frozen under a fresh heads-only optimizer). Returns
+        (value_loss, policy_loss). Caller `zero_grad`s + `step`s the optimizer.
+        """
+        comptime assert Self.ADIM == Self.NACT, (
+            "imag_train_step needs ADIM = NACT (one-hot action conditioning)"
+        )
+        comptime assert Self.NMTP >= 1, "need at least the dist-0 MTP block"
+        var agp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.agent_in.unsafe_ptr()
+        )
+        var im_h_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_h.unsafe_ptr()
+        )
+        var im_act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_act.unsafe_ptr()
+        )
+        var im_rew_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_rew.unsafe_ptr()
+        )
+        var im_val_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_val.unsafe_ptr()
+        )
+        var im_con_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_con.unsafe_ptr()
+        )
+        var im_ret_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_ret.unsafe_ptr()
+        )
+
+        # 1. task embeddings → agent tokens
+        self.te.embed_into["cpu", Self.B, Self.T](task_ids, agp)
+
+        # 2. imagined rollout (frozen transformer + heads, forward-only)
+        imagine_rollout[
+            Self.DYN, Self.PH, Self.VH, Self.RH, Self.B, Self.T, Self.NSP,
+            Self.DSP, Self.KMAX, Self.KI, Self.NCTX, Self.AGD, Self.NACT,
+            Self.NBINS, Self.NMTP,
+        ](
+            self.dyn, self.ph, self.vh, self.rh, ctx, agp, u01, znoise, bins,
+            im_h_p, im_act_p, im_rew_p, im_val_p,
+        )
+
+        # 3. continue = γ (no termination in v1); λ-returns (eq. 10)
+        for i in range(Self.BF):
+            self.im_con[i] = gamma
+        lambda_returns[Self.B, Self.T](
+            im_rew_p, im_val_p, im_con_p, lam, im_ret_p
+        )
+
+        # 4. advantages A_t = R_t^λ − v_t (states 0..T-2); actions on the [B,T] grid
+        for b in range(Self.B):
+            for t in range(Self.TM1):
+                self.im_adv[b * Self.TM1 + t] = (
+                    self.im_ret[b * Self.TM1 + t] - self.im_val[b * Self.T + t]
+                )
+            for t in range(Self.T):
+                self.im_actbt[b * Self.T + t] = Scalar[DT](0.0)
+            for t in range(Self.TM1):
+                self.im_actbt[b * Self.T + t] = self.im_act[b * Self.TM1 + t]
+
+        var im_h_t = TileTensor(im_h_p, row_major[Self.BF, Self.AGD]())
+
+        # 5. value loss + backward → vh param grads
+        var vlog_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_vlog.unsafe_ptr()
+        )
+        var vlog_t = TileTensor(vlog_p, row_major[Self.BF, Self.NBINS]())
+        self.vh.forward["cpu", Self.BF](im_h_t, output=vlog_t)
+        var vloss_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_vloss.unsafe_ptr()
+        )
+        value_td_loss_cpu[Self.B, Self.T, Self.NBINS](
+            vlog_p, bins, im_ret_p, vloss_p
+        )
+        var vloss: Float64 = 0.0
+        for i in range(Self.B * Self.TM1):
+            vloss += Float64(self.im_vloss[i])
+        # d_loss = value_weight (reuse the loss buffer as the cotangent)
+        for i in range(Self.B * Self.TM1):
+            self.im_vloss[i] = value_weight
+        var gvlog_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_gvlog.unsafe_ptr()
+        )
+        value_td_loss_backward[Self.B, Self.T, Self.NBINS](
+            vlog_p, bins, im_ret_p, vloss_p, gvlog_p
+        )
+        var gvlog_t = TileTensor(gvlog_p, row_major[Self.BF, Self.NBINS]())
+        var vgi_t = TileTensor(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.grad_h.unsafe_ptr()
+            ),
+            row_major[Self.BF, Self.AGD](),
+        )
+        self.vh.vjp["cpu", Self.BF, mode="all"](gvlog_t, vgi_t)
+
+        # 6. policy: current + frozen-prior logits → PMPO (dist-0 block)
+        var plog_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_plog.unsafe_ptr()
+        )
+        var prior_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_prior.unsafe_ptr()
+        )
+        var plog_t = TileTensor(plog_p, row_major[Self.BF, Self.PLOG]())
+        var prior_t = TileTensor(prior_p, row_major[Self.BF, Self.PLOG]())
+        self.ph.forward["cpu", Self.BF](im_h_t, output=plog_t)
+        self.ph_prior.forward["cpu", Self.BF](im_h_t, output=prior_t)
+        # extract dist-0 logits [BF, NACT]
+        for s in range(Self.BF):
+            for a in range(Self.NACT):
+                self.im_plog0[s * Self.NACT + a] = self.im_plog[s * Self.PLOG + a]
+                self.im_prior0[s * Self.NACT + a] = self.im_prior[
+                    s * Self.PLOG + a
+                ]
+        var plog0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_plog0.unsafe_ptr()
+        )
+        var prior0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_prior0.unsafe_ptr()
+        )
+        var actbt_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_actbt.unsafe_ptr()
+        )
+        var adv_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_adv.unsafe_ptr()
+        )
+        var ploss = pmpo_policy_loss_cpu[Self.B, Self.T, Self.NACT](
+            plog0_p, prior0_p, actbt_p, adv_p, alpha, beta
+        )
+        var gplog0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.im_gplog0.unsafe_ptr()
+        )
+        pmpo_policy_loss_backward[Self.B, Self.T, Self.NACT](
+            plog0_p, prior0_p, actbt_p, adv_p, alpha, beta, policy_weight,
+            gplog0_p,
+        )
+        # scatter dist-0 grad into the full [BF, PLOG] grad (other blocks = 0)
+        for i in range(Self.BF * Self.PLOG):
+            self.im_gplog[i] = Scalar[DT](0.0)
+        for s in range(Self.BF):
+            for a in range(Self.NACT):
+                self.im_gplog[s * Self.PLOG + a] = self.im_gplog0[
+                    s * Self.NACT + a
+                ]
+        var gplog_t = TileTensor(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.im_gplog.unsafe_ptr()
+            ),
+            row_major[Self.BF, Self.PLOG](),
+        )
+        var pgi_t = TileTensor(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.grad_h_tmp.unsafe_ptr()
+            ),
+            row_major[Self.BF, Self.AGD](),
+        )
+        self.ph.vjp["cpu", Self.BF, mode="all"](gplog_t, pgi_t)
+
+        return Tuple(vloss, ploss)

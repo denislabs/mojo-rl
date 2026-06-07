@@ -89,6 +89,17 @@ trait ShortcutDynamics(Module):
         pass
 
 
+trait AgentDynamics(ShortcutDynamics):
+    """A `ShortcutDynamics` that also exposes the agent task-output embeddings
+    h_t after a CPU forward (Dreamer4Dynamics). Used by the imagination rollout
+    (`imag_rollout.mojo`), which reads h_t per state to drive the policy /
+    value / reward heads. (The affine fixture stub stays ShortcutDynamics-only;
+    only the real dynamics conforms here.)"""
+
+    def agent_out_ptr_cpu(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        ...
+
+
 def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
 

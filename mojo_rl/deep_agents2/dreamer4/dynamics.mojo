@@ -72,7 +72,7 @@ from mojo_rl.nn2.primitives.slice import Slice
 from mojo_rl.nn2.primitives.zero_linear import ZeroLinear
 from mojo_rl.nn2.primitives.sinusoidal_pos_bt import SinusoidalPosAddBT
 from .blocks import Dreamer4Stack, Dreamer4DynStack
-from .shortcut_loss import ShortcutDynamics
+from .shortcut_loss import ShortcutDynamics, AgentDynamics
 
 
 def _ilog2(n: Int) -> Int:
@@ -346,7 +346,7 @@ struct Dreamer4Dynamics[
     ADIM: Int = 0,   # action dim (0 ⇒ unconditional: learned base token only)
     AHID: Int = 0,   # action-MLP hidden (0 ⇒ derive 2·D, matching the reference)
     NAGENT: Int = 0, # agent tokens (0 ⇒ no agent modality; Phase 3 BC uses >0)
-](ShortcutDynamics):
+](AgentDynamics):
     comptime ARITY: Int = 1
     # tokens per frame: [action|signal|step|spatial×NSP|register×NREG|agent×NAGENT]
     comptime S: Int = 3 + Self.NSP + Self.NREG + Self.NAGENT
