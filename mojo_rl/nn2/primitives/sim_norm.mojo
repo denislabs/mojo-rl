@@ -30,6 +30,7 @@ from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
+    require_ctx,
     TargetStorage,
     assert_tag_for,
     ensure_cpu_buffer,
@@ -139,9 +140,7 @@ struct SimNorm[DIM: Int, GROUPS: Int](Module):
         comptime if target == "cpu":
             s.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("SimNorm.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["SimNorm.make[target='gpu']"](ctx)
             # Placeholder device buffer — real size set on first forward.
             s.cache_y_dev = ctx_v.enqueue_create_buffer[DT](1)
             s.cache_n_batch = 0

@@ -19,7 +19,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 from .sinusoidal_pos import build_sinusoid_bias
 
 
@@ -77,9 +77,7 @@ struct SinusoidalPosAddBT[T: Int, S: Int, D: Int, SCALE: Bool = False](Module):
         comptime if target == "cpu":
             m.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("SinusoidalPosAddBT.make[gpu]: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["SinusoidalPosAddBT.make[gpu]"](ctx)
             m.ts = TargetStorage.make_gpu(ctx_v)
             comptime N = Self.T * Self.SD
             var dev = ctx_v.enqueue_create_buffer[DT](N)

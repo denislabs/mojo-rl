@@ -39,7 +39,7 @@ from mojo_rl.nn2.core import (
     zero_grad_auto,
 )
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
-from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn2.core.target_storage import require_ctx, TargetStorage, assert_tag_for
 from mojo_rl.nn2.core.target_tag import TARGET_GPU
 
 
@@ -188,9 +188,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
                 ls_ptr[k] = Self.DEFAULT_LOG_STD_INIT
             h.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("GaussianHead.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["GaussianHead.make[target='gpu']"](ctx)
             h.weight  = Param["weight",  True,  Self.W_SIZE].make_gpu(ctx_v)
             h.bias    = Param["bias",    False, Self.B_SIZE].make_gpu(ctx_v)
             h.log_std = Param["log_std", False, Self.LS_SIZE].make_gpu(ctx_v)

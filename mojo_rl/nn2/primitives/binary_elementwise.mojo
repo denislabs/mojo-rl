@@ -42,6 +42,7 @@ from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.binary_element_op import BinaryElementOp
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
+    require_ctx,
     TargetStorage,
     assert_tag_for,
     ensure_cpu_buffer,
@@ -165,9 +166,7 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
         comptime if target == "cpu":
             e.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("BinaryElementwise.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["BinaryElementwise.make[target='gpu']"](ctx)
             e.ts = TargetStorage.make_gpu(ctx_v)
             comptime if Self.OP.owns_cache:
                 e.cache_dev = ctx_v.enqueue_create_buffer[DT](1)

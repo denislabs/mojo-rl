@@ -19,6 +19,9 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.scratch import Scratch
 
 
+from mojo_rl.nn2.core.target_storage import require_ctx
+
+
 struct TrainerState[
     OBS: Int,
     ACT: Int,
@@ -86,9 +89,7 @@ struct TrainerState[
             s.mb_w         = Scratch["mb_w",         Self.BATCH, True].make_cpu()
             s.td_residuals = Scratch["td_residuals", Self.BATCH, True].make_cpu()
         else:
-            if not ctx:
-                raise Error("TrainerState.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["TrainerState.make[target='gpu']"](ctx)
             s.mb_s  = Scratch["mb_s",  Self.BATCH * Self.OBS, True].make_gpu(ctx_v)
             s.mb_a  = Scratch["mb_a",  Self.BATCH * Self.ACT, True].make_gpu(ctx_v)
             s.mb_r  = Scratch["mb_r",  Self.BATCH, True].make_gpu(ctx_v)

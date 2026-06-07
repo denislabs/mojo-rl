@@ -21,7 +21,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W, TPB, TPB_REDUCE
 from ..core import Loss, AMPPolicy, NoAMP
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -137,9 +137,7 @@ struct MSELoss[DIM: Int](Loss):
         var loss = Self()
         loss.ts = TargetStorage.make[target](ctx=ctx)
         comptime if target == "gpu":
-            if not ctx:
-                raise Error("MSELoss.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["MSELoss.make[target='gpu']"](ctx)
             loss.cache_logits_dev = ctx_v.enqueue_create_buffer[DT](1)
             loss.partial_loss_dev = ctx_v.enqueue_create_buffer[DT](1)
             loss.partial_loss_host = ctx_v.enqueue_create_host_buffer[DT](1)

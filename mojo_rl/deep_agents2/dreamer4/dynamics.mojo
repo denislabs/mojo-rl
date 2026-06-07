@@ -63,6 +63,7 @@ from mojo_rl.nn2.core import (
 )
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
 from mojo_rl.nn2.core.target_storage import (
+    require_ctx,
     TargetStorage, assert_tag_for, ensure_cpu_buffer,
 )
 from mojo_rl.nn2.combinators import Sequential, Tokenwise
@@ -593,9 +594,7 @@ struct Dreamer4Dynamics[
             )
             m.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("Dreamer4Dynamics.make[gpu]: ctx required")
-            var c = ctx.value()
+            var c = require_ctx["Dreamer4Dynamics.make[gpu]"](ctx)
             m.action_base = Param["action_base", False, Self.D].make_gpu(c)
             m.signal_table = Param["signal_table", True, NS].make_gpu(c)
             m.step_table = Param["step_table", True, NT].make_gpu(c)

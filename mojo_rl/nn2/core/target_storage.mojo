@@ -107,6 +107,30 @@ def assert_tag_for[
 
 
 # ──────────────────────────────────────────────────────────────────────
+# require_ctx[where](ctx) — unwrap a GPU factory's Optional[DeviceContext]
+# or raise a uniform "<where>: ctx required" error (S3-DRY, 2026-06-07).
+# Collapses the repeated 3-line guard
+#     if not ctx:
+#         raise Error("X.make[target='gpu']: ctx required")
+#     var ctx_v = ctx.value()
+# to one line: `var ctx_v = require_ctx["X.make[target='gpu']"](ctx)`.
+# NOTE: this is the *runtime* check — the compile-time variant is
+# architecturally blocked (combinators are target-generic and thread an
+# Optional ctx down, so a leaf's GPU make can't require a non-optional
+# ctx without duplicating the whole make API; see the improvement audit
+# §spike-table S3). Pass the full call-site string as `where`.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def require_ctx[
+    where: StaticString
+](ctx: Optional[DeviceContext]) raises -> DeviceContext:
+    if not ctx:
+        raise Error(String(where) + ": ctx required")
+    return ctx.value()
+
+
+# ──────────────────────────────────────────────────────────────────────
 # ensure_cpu_buffer / ensure_gpu_buffer — replace per-leaf
 # `_ensure_cache_cpu` / `_ensure_cache_gpu` helpers.
 # ──────────────────────────────────────────────────────────────────────

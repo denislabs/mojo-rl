@@ -29,7 +29,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 from .residual import _elementwise_add_kernel
 
 
@@ -90,9 +90,7 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
         comptime if target == "cpu":
             r.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("ProjectedResidual.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["ProjectedResidual.make[target='gpu']"](ctx)
             r.inner_out_dev = ctx_v.enqueue_create_buffer[DT](1)
             r.skip_out_dev  = ctx_v.enqueue_create_buffer[DT](1)
             r.gi_inner_dev  = ctx_v.enqueue_create_buffer[DT](1)

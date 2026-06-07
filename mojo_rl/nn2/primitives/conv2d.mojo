@@ -74,7 +74,7 @@ from ..core import (
     zero_grad_auto,
 )
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -423,9 +423,7 @@ struct Conv2D[
             INIT.init_bias(c.bias.value_unsafe_ptr_cpu(), Self.B_SIZE)
             c.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("Conv2D.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["Conv2D.make[target='gpu']"](ctx)
             c.weight = Param["weight", True,  Self.W_SIZE].make_gpu(ctx_v)
             c.bias   = Param["bias",   False, Self.B_SIZE].make_gpu(ctx_v)
             # Initialise CPU storage with the chosen INIT, then enqueue

@@ -39,7 +39,11 @@ from mojo_rl.deep_agents2.dreamerv3.wm import (
 from mojo_rl.deep_agents2.dreamerv3.nets import (
     DreamerEncoder, DreamerValue, DreamerPolicyHead,
 )
-from mojo_rl.deep_agents2.dreamerv3.twohot import symexp_twohot_bins, twohot_pred
+from mojo_rl.deep_agents2.dreamerv3.twohot import (
+    symexp_twohot_bins,
+    twohot_pred,
+    DREAMER_REWARD_GRID_LO,
+)
 from mojo_rl.deep_agents2.dreamerv3.normalize import PercentileNormalize
 from mojo_rl.deep_agents2.dreamerv3.zero_init import (
     scale_output_module, scale_output_graph,
@@ -195,20 +199,19 @@ struct DreamerV3Trainer[
         ocon.lr = lr; oval.lr = lr; opol.lr = lr
 
         var bins = List[Scalar[DT]](length=Self.BINS, fill=Scalar[DT](0.0))
-        # Reward/value twohot bins, narrowed to lo=-9 (max bin ≈ 8102 vs the
-        # reference's symexp(20) ≈ 4.85e8). Two reasons for the narrow grid:
+        # Reward/value twohot bins, narrowed (max bin ≈ 8102 vs the reference's
+        # symexp(20) ≈ 4.85e8). Two reasons for the narrow grid:
         #   (1) huge bins amplify float noise in `Σ softmax·bins` (the e-tail
         #       over a 4.85e8 bin), which breaks CPU↔GPU AC parity;
         #   (2) they turn off-distribution head errors into 1e5–1e6 predictions.
-        # CRITICAL: this grid MUST equal the grid the reward head is TRAINED on
-        # — `TwoHotLoss.make` (inside RewLossGraph) is hard-set to the same
-        # lo=-9 (see wm_loss_ops.mojo). They previously diverged (-9 here vs the
-        # -20 default there): the head learned mass at the bin index meaning −6.5
-        # on the −20 grid but it was read back as ≈−1.5 on the −9 grid → reward
-        # stuck ~5× small, starving imagined returns. Keep both at -9.
+        # This grid MUST equal the grid the reward head is TRAINED on
+        # (`TwoHotLoss.make` in wm_loss_ops.mojo). Both now read the SAME
+        # `DREAMER_REWARD_GRID_LO` constant (S4) so they can no longer diverge —
+        # a past -9-vs-(-20)-default split decoded reward ~5× small, starving
+        # imagined returns.
         symexp_twohot_bins[Self.BINS](
             rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](bins.unsafe_ptr()),
-            lo=Scalar[DT](-9.0),
+            lo=Scalar[DT](DREAMER_REWARD_GRID_LO),
         )
         var retnorm = PercentileNormalize.make(
             String("perc"), Scalar[DT](0.01), Scalar[DT](5.0),

@@ -22,7 +22,7 @@ from layout import TileTensor, row_major
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
-from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn2.core.target_storage import require_ctx, TargetStorage, assert_tag_for
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.combinators.parallel import Parallel
 from mojo_rl.nn2.primitives.linear import Linear
@@ -87,9 +87,7 @@ struct StochasticActor[
         comptime if target == "cpu":
             a.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("StochasticActor.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["StochasticActor.make[target='gpu']"](ctx)
             a.mid_dev = ctx_v.enqueue_create_buffer[DT](1)
             a.ts = TargetStorage.make_gpu(ctx_v)
         return a^

@@ -36,6 +36,7 @@ from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
+    require_ctx,
     TargetStorage,
     assert_tag_for,
     ensure_cpu_buffer,
@@ -216,9 +217,7 @@ struct MinMaxNorm[DIM: Int](Module):
         comptime if target == "cpu":
             n.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("MinMaxNorm.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["MinMaxNorm.make[target='gpu']"](ctx)
             n.cache_x_dev = ctx_v.enqueue_create_buffer[DT](1)
             n.cache_n_batch = 0
             n.ts = TargetStorage.make_gpu(ctx_v)

@@ -39,6 +39,7 @@ from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.element_op import ElementOp
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
+    require_ctx,
     TargetStorage,
     assert_tag_for,
     ensure_cpu_buffer,
@@ -141,9 +142,7 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
         comptime if target == "cpu":
             e.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("Elementwise.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["Elementwise.make[target='gpu']"](ctx)
             e.ts = TargetStorage.make_gpu(ctx_v)
             # If owns_cache, pre-allocate a placeholder dev buffer (grown
             # lazily on first forward). For input-alias ops, the field is

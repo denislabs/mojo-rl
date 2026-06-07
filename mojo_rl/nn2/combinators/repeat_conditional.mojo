@@ -24,7 +24,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 def _rc_accum_kernel[NN: Int](
@@ -99,9 +99,7 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
                     r.mid_caps.append(0)
             r.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("RepeatConditional.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["RepeatConditional.make[target='gpu']"](ctx)
             comptime if Self.N >= 2:
                 for _ in range(Self.N - 1):
                     r.mid_dev.append(ctx_v.enqueue_create_buffer[DT](1))

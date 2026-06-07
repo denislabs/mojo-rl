@@ -50,6 +50,7 @@ from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
+    require_ctx,
     TargetStorage,
     assert_tag_for,
     ensure_cpu_buffer,
@@ -148,9 +149,7 @@ struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
         comptime if target == "cpu":
             d.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("Dropout.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["Dropout.make[target='gpu']"](ctx)
             d.cache_mask_dev = ctx_v.enqueue_create_buffer[DT](1)
             d.cache_n_batch = 0
             d.ts = TargetStorage.make_gpu(ctx_v)

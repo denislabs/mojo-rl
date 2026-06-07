@@ -48,7 +48,7 @@ from ..core import (
     zero_grad_auto,
 )
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -201,9 +201,7 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
             INIT.init_bias(bl.bias.value_unsafe_ptr_cpu(), Self.B_SIZE)
             bl.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("BlockLinear.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["BlockLinear.make[target='gpu']"](ctx)
             bl.weight = Param["weight", True, Self.W_SIZE].make_gpu(ctx_v)
             bl.bias = Param["bias", False, Self.B_SIZE].make_gpu(ctx_v)
             var w_host = ctx_v.enqueue_create_host_buffer[DT](Self.W_SIZE)

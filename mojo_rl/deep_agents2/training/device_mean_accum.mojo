@@ -33,6 +33,9 @@ from mojo_rl.nn2.constants import DT, TPB_REDUCE
 # `total/N` into `acc[0]` and `+1` into `acc[1]`. Launch grid_dim=1,
 # block_dim=TPB_REDUCE. Mirrors `_mse_reduce_add_kernel`.
 # ──────────────────────────────────────────────────────────────────────────
+from mojo_rl.nn2.core.target_storage import require_ctx
+
+
 def _mean_reduce_add_kernel[N: Int](
     data: UnsafePointer[Scalar[DT], MutAnyOrigin],
     acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -116,9 +119,7 @@ struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDestructible):
         )
         var a = Self()
         comptime if target == "gpu":
-            if not ctx:
-                raise Error("DeviceMeanAccum.make[target='gpu']: ctx required")
-            var c = ctx.value()
+            var c = require_ctx["DeviceMeanAccum.make[target='gpu']"](ctx)
             var b = c.enqueue_create_buffer[DT](2)
             b.enqueue_fill(0.0)
             a.acc_dev = b^

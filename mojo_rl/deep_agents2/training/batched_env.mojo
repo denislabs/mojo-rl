@@ -52,6 +52,9 @@ from mojo_rl.core.env_traits import (
 )
 
 
+from mojo_rl.nn2.core.target_storage import require_ctx
+
+
 def _increment_env_rng_kernel(
     counter: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
 ):
@@ -404,9 +407,7 @@ struct BatchedGpuEnv[
         comptime assert BATCH == Self.N_ENVS, (
             "BatchedGpuEnv: reset_batch BATCH must match struct param"
         )
-        if not ctx:
-            raise Error("BatchedGpuEnv.reset_batch: ctx required")
-        var c = ctx.value()
+        var c = require_ctx["BatchedGpuEnv.reset_batch"](ctx)
         Self.E.reset_kernel_gpu[Self.N_ENVS, Self.STATE_SIZE](
             c, self._states, rng_seed=rng_seed,
         )
@@ -420,9 +421,7 @@ struct BatchedGpuEnv[
         comptime assert BATCH == Self.N_ENVS, (
             "BatchedGpuEnv: step_batch BATCH must match struct param"
         )
-        if not ctx:
-            raise Error("BatchedGpuEnv.step_batch: ctx required")
-        var c = ctx.value()
+        var c = require_ctx["BatchedGpuEnv.step_batch"](ctx)
         # Pass the PERSISTENT workspace so `step_kernel_gpu` neither
         # re-allocates nor re-uploads the model per step, and — critically —
         # the captured kernels (USE_ENV_CUDA_GRAPH) reference stable memory on
@@ -450,9 +449,7 @@ struct BatchedGpuEnv[
         comptime assert BATCH == Self.N_ENVS, (
             "BatchedGpuEnv: selective_reset_batch BATCH must match struct param"
         )
-        if not ctx:
-            raise Error("BatchedGpuEnv.selective_reset_batch: ctx required")
-        var c = ctx.value()
+        var c = require_ctx["BatchedGpuEnv.selective_reset_batch"](ctx)
         # `rng_seed` is retained for trait/CPU compatibility but the GPU reset
         # is driven by the DEVICE counter (capture-safe): bump it, then pass it
         # as `rng_counter_ptr` so `selective_reset_kernel_gpu` ignores the host
@@ -630,9 +627,7 @@ struct BatchedGpuDiscreteEnv[
         comptime assert BATCH == Self.N_ENVS, (
             "BatchedGpuDiscreteEnv: reset_batch BATCH must match struct param"
         )
-        if not ctx:
-            raise Error("BatchedGpuDiscreteEnv.reset_batch: ctx required")
-        var c = ctx.value()
+        var c = require_ctx["BatchedGpuDiscreteEnv.reset_batch"](ctx)
         Self.E.reset_kernel_gpu[Self.N_ENVS, Self.STATE_SIZE](
             c, self._states, rng_seed=rng_seed,
         )
@@ -644,9 +639,7 @@ struct BatchedGpuDiscreteEnv[
         comptime assert BATCH == Self.N_ENVS, (
             "BatchedGpuDiscreteEnv: step_batch BATCH must match struct param"
         )
-        if not ctx:
-            raise Error("BatchedGpuDiscreteEnv.step_batch: ctx required")
-        var c = ctx.value()
+        var c = require_ctx["BatchedGpuDiscreteEnv.step_batch"](ctx)
         # Discrete `step_kernel_gpu`: THREE comptime params (no ACTION_DIM).
         # Reads `_action` as [N_ENVS] integer indices; writes obs/reward/
         # done/terminated in place.

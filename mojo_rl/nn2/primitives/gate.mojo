@@ -26,6 +26,7 @@ from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
+    require_ctx,
     TargetStorage,
     assert_tag_for,
     ensure_cpu_buffer,
@@ -113,9 +114,7 @@ struct Gate[DIM: Int](Module):
         comptime if target == "cpu":
             m.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("Gate.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["Gate.make[target='gpu']"](ctx)
             m.cache_gate_dev = ctx_v.enqueue_create_buffer[DT](1)
             m.cache_branch_dev = ctx_v.enqueue_create_buffer[DT](1)
             m.cache_n_batch = 0

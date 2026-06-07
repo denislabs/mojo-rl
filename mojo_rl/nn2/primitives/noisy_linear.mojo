@@ -62,6 +62,7 @@ from ..core.module import Module, typed_view, typed_view_mut
 from ..core.scratch import Scratch
 from ..core.scratch_walkers import init_scratch_auto
 from ..core.target_storage import (
+    require_ctx,
     TargetStorage,
     assert_tag_for,
     ensure_gpu_buffer,
@@ -372,9 +373,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
                 sg_b_p[k] = sigma_init
             nl.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("NoisyLinear.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["NoisyLinear.make[target='gpu']"](ctx)
             nl.mu_w    = Param["mu_w",    True,  Self.W_SIZE].make_gpu(ctx_v)
             nl.sigma_w = Param["sigma_w", True,  Self.W_SIZE].make_gpu(ctx_v)
             nl.mu_b    = Param["mu_b",    False, Self.B_SIZE].make_gpu(ctx_v)

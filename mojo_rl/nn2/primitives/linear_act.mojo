@@ -56,6 +56,7 @@ from ..core import (
 from ..core.element_op import ElementOp
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
+    require_ctx,
     TargetStorage,
     assert_tag_for,
     ensure_cpu_buffer,
@@ -199,9 +200,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
             INIT.init_bias(lin.bias.value_unsafe_ptr_cpu(), Self.B_SIZE)
             lin.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("LinearAct.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["LinearAct.make[target='gpu']"](ctx)
             lin.weight = Param["weight", True,  Self.W_SIZE].make_gpu(ctx_v)
             lin.bias   = Param["bias",   False, Self.B_SIZE].make_gpu(ctx_v)
             var w_host = ctx_v.enqueue_create_host_buffer[DT](Self.W_SIZE)

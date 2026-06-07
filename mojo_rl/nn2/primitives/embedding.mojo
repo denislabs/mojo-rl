@@ -36,6 +36,7 @@ from ..core import (
 )
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
+    require_ctx,
     TargetStorage,
     assert_tag_for,
     ensure_cpu_buffer,
@@ -161,9 +162,7 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
             )
             e.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("Embedding.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["Embedding.make[target='gpu']"](ctx)
             e.weight = Param["weight", True, W_SIZE].make_gpu(ctx_v)
             var w_host = ctx_v.enqueue_create_host_buffer[DT](W_SIZE)
             ctx_v.synchronize()

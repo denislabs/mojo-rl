@@ -18,6 +18,20 @@ from std.math import exp, log, log1p, expm1
 from mojo_rl.nn2.constants import DT
 
 
+# ──────────────────────────────────────────────────────────────────────
+# DREAMER_REWARD_GRID_LO — single source of truth for the symexp-twohot
+# reward/value grid lower bound (S4, 2026-06-07). The grid the reward
+# head is TRAINED on (`TwoHotLoss.make` in wm_loss_ops.mojo) MUST equal
+# the grid it is READ BACK on in imagination (`DreamerV3Trainer.bins`).
+# These were two independent `-9.0` literals with long "MUST match"
+# warnings; they previously diverged (-9 vs -20 default) → reward decoded
+# ~5× small → imagined returns starved → non-convergence. One constant
+# makes divergence impossible. If a future consumer needs a different
+# scale, change it here (both sites follow).
+# ──────────────────────────────────────────────────────────────────────
+comptime DREAMER_REWARD_GRID_LO = -9.0
+
+
 @always_inline
 def _symexp(x: Scalar[DT]) -> Scalar[DT]:
     var s = Scalar[DT](1.0) if x >= Scalar[DT](0.0) else Scalar[DT](-1.0)

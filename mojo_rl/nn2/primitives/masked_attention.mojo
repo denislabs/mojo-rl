@@ -38,7 +38,7 @@ from linalg.bmm import batched_matmul
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for, ensure_cpu_buffer
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for, ensure_cpu_buffer
 
 # The BMM fast path reuses attention.mojo's pack/unpack/transpose/jvp kernels
 # verbatim (they are mask-agnostic); only the softmax differs (adds the mask),
@@ -511,9 +511,7 @@ struct MaskedAttention[
         comptime if target == "cpu":
             a.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("MaskedAttention.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["MaskedAttention.make[target='gpu']"](ctx)
             a.cache_dev = ctx_v.enqueue_create_buffer[DT](1)
             a.cache_n_batch = 0
             a.ts = TargetStorage.make_gpu(ctx_v)

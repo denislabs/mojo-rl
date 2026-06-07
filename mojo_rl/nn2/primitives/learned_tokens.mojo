@@ -25,7 +25,7 @@ from ..core import (
     for_each_param_auto, zero_grad_auto,
 )
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 comptime LT_RTPB = 64  # reduction block size for the param-grad batch sum
@@ -117,9 +117,7 @@ struct LearnedTokens[N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool](Module):
             )
             m.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("LearnedTokens.make[gpu]: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["LearnedTokens.make[gpu]"](ctx)
             m.tokens = Param["tokens", False, Self.NEW_N].make_gpu(ctx_v)
             var host = ctx_v.enqueue_create_host_buffer[DT](Self.NEW_N)
             ctx_v.synchronize()

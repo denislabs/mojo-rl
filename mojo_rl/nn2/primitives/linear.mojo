@@ -58,6 +58,7 @@ from ..core import (
 )
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
+    require_ctx,
     TargetStorage,
     assert_tag_for,
     ensure_gpu_buffer,
@@ -210,9 +211,7 @@ struct Linear[IN: Int, OUT: Int](Module):
             INIT.init_bias(lin.bias.value_unsafe_ptr_cpu(), Self.B_SIZE)
             lin.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("Linear.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["Linear.make[target='gpu']"](ctx)
             lin.weight = Param["weight", True,  Self.W_SIZE].make_gpu(ctx_v)
             lin.bias   = Param["bias",   False, Self.B_SIZE].make_gpu(ctx_v)
             # Init weights/biases on host via INIT, then upload.

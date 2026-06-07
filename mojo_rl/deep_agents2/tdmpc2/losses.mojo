@@ -32,7 +32,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
-from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn2.core.target_storage import require_ctx, TargetStorage, assert_tag_for
 from mojo_rl.deep_agents2.dreamerv3.twohot import (
     twohot_loss,
     twohot_loss_backward,
@@ -539,9 +539,7 @@ struct TDMPC2TwoHotLoss[BINS: Int, VMIN: Int, VMAX: Int](Module):
         comptime if target == "cpu":
             m.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("TDMPC2TwoHotLoss.make[gpu]: ctx required")
-            var c = ctx.value()
+            var c = require_ctx["TDMPC2TwoHotLoss.make[gpu]"](ctx)
             var bd = c.enqueue_create_buffer[DT](Self.BINS)
             var hb = c.enqueue_create_host_buffer[DT](Self.BINS)
             c.synchronize()
@@ -756,9 +754,7 @@ struct TwoHotDecode[BINS: Int, VMIN: Int, VMAX: Int](Module):
         comptime if target == "cpu":
             m.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("TwoHotDecode.make[gpu]: ctx required")
-            var c = ctx.value()
+            var c = require_ctx["TwoHotDecode.make[gpu]"](ctx)
             var bd = c.enqueue_create_buffer[DT](Self.BINS)
             var hb = c.enqueue_create_host_buffer[DT](Self.BINS)
             c.synchronize()

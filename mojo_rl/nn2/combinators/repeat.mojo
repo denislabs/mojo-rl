@@ -25,7 +25,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 struct Repeat[N: Int, Inner: Module, shared: Bool = False](Module):
@@ -75,9 +75,7 @@ struct Repeat[N: Int, Inner: Module, shared: Bool = False](Module):
                     r.mid_caps.append(0)
             r.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("Repeat.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["Repeat.make[target='gpu']"](ctx)
             comptime if Self.N >= 2:
                 for _ in range(Self.N - 1):
                     r.mid_dev.append(ctx_v.enqueue_create_buffer[DT](1))

@@ -62,6 +62,7 @@ from ..core import (
 )
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
+    require_ctx,
     TargetStorage,
     assert_tag_for,
     ensure_cpu_buffer,
@@ -306,9 +307,7 @@ struct BatchNorm1D[
                 rv_ptr[k] = Scalar[DT](1.0)
             bn.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("BatchNorm1D.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["BatchNorm1D.make[target='gpu']"](ctx)
             bn.gamma = Param["gamma", False, Self.DIM].make_gpu(ctx_v)
             bn.beta  = Param["beta",  False, Self.DIM].make_gpu(ctx_v)
             bn.gamma.value_dev.value().enqueue_fill(1.0)

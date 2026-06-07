@@ -46,12 +46,10 @@ from ..core import (
     AMPPolicy,
     NoAMP,
     Param,
-    for_each_param_auto,
-    zero_grad_auto,
     ParamVisitor,
 )
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 @always_inline
@@ -325,9 +323,7 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             )
             INIT.init_bias(m.b.value_unsafe_ptr_cpu(), Self.B_SIZE)
         else:
-            if not ctx:
-                raise Error("LSTMCell.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["LSTMCell.make[target='gpu']"](ctx)
             m.ts = TargetStorage.make_gpu(ctx_v)
             m.W_ih = Param["W_ih", True,  Self.W_IH_SIZE].make_gpu(ctx_v)
             m.W_hh = Param["W_hh", True,  Self.W_HH_SIZE].make_gpu(ctx_v)
@@ -362,17 +358,11 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
         ctx.synchronize()
 
     # ------------------------------------------------------------------
-    # Param-walker overrides (so nn2 Adam / zero_grad / checkpoint work).
+    # for_each_param / zero_grad: inherited from the Module default (S1,
+    # 2026-06-07) — the default reflection-walks IsParam fields, replacing
+    # the old pure-`*_auto` overrides. nn2 Adam / zero_grad / checkpoint
+    # work unchanged.
     # ------------------------------------------------------------------
-
-    def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        for_each_param_auto[Self, V, target](self, prefix, visitor)
-
-    def zero_grad[target: StaticString](mut self) raises:
-        zero_grad_auto[Self, target](self)
 
     # ------------------------------------------------------------------
     # Module conformance — recurrent cell uses the step API instead.

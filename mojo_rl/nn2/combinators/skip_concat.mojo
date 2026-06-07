@@ -34,7 +34,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -155,9 +155,7 @@ struct SkipConcat[Inner: Module](Module):
         comptime if target == "cpu":
             s.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("SkipConcat.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["SkipConcat.make[target='gpu']"](ctx)
             s.inner_buf_dev = ctx_v.enqueue_create_buffer[DT](1)
             s.ts = TargetStorage.make_gpu(ctx_v)
         return s^

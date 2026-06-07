@@ -35,7 +35,7 @@ from ..core import (
     zero_grad_auto,
 )
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 comptime BA_TPB: Int = 128
@@ -117,9 +117,7 @@ struct BiasAdd[DIM: Int](Module):
             ba.bias = Param["bias", False, Self.DIM].make_cpu()
             ba.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("BiasAdd.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["BiasAdd.make[target='gpu']"](ctx)
             ba.bias = Param["bias", False, Self.DIM].make_gpu(ctx_v)
             ba.bias.value_dev.value().enqueue_fill(0.0)
             ba.ts = TargetStorage.make_gpu(ctx_v)

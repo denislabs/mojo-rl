@@ -27,7 +27,7 @@ from ..core import (
     Initializer, AMPPolicy, NoAMP, ParamVisitor, DisplayStep,
 )
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 struct Sequential[*MODULES: Module](Module):
@@ -140,9 +140,7 @@ struct Sequential[*MODULES: Module](Module):
                     s.mid_caps.append(0)
             s.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("Sequential.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["Sequential.make[target='gpu']"](ctx)
             comptime if Self.N >= 2:
                 for _ in range(Self.N - 1):
                     s.mid_dev.append(ctx_v.enqueue_create_buffer[DT](1))

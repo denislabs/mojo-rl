@@ -51,6 +51,7 @@ from .initializer import Initializer
 from .amp import AMPPolicy, NoAMP
 from .param_visitor import ParamVisitor
 from .graph_visitor import DisplayStep
+from .walkers import for_each_param_auto, zero_grad_auto
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -253,13 +254,23 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         target: StaticString,
         V: ParamVisitor,
     ](mut self, prefix: String, mut visitor: V) raises:
-        """Default: no params. Parameterised leaves override to call
-        `for_each_param_auto[Self, V, target]` from `walkers.mojo`."""
-        pass
+        """Default: reflection-walk every `IsParam` field of the concrete
+        leaf and dispatch the visitor (S1, 2026-06-07). Param-less leaves
+        reflect to a no-op (no IsParam fields). Param-bearing leaves no
+        longer need to override — forgetting the override can no longer
+        silently skip params in checkpoint/optimizer walks. Combinators +
+        wrapper leaves (children are Module-typed, not IsParam) still
+        override to recurse into children."""
+        for_each_param_auto[Self, V, target](self, prefix, visitor)
 
     def zero_grad[target: StaticString](mut self) raises:
-        """Default: no params. Override on param-bearing leaves."""
-        pass
+        """Default: reflection-walk every `IsParam` field of the concrete
+        leaf and zero its grad (S1, 2026-06-07). Param-less leaves reflect
+        to a no-op. Param-bearing leaves no longer need to override —
+        forgetting it can no longer silently accumulate grads under
+        `Sequential`. Combinators + wrapper leaves still override to
+        recurse into children."""
+        zero_grad_auto[Self, target](self)
 
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         """Per-call runtime attribute mutation. Default no-op. Modules

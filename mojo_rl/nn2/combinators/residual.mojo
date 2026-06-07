@@ -20,7 +20,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 def _elementwise_add_kernel[
@@ -76,9 +76,7 @@ struct Residual[Inner: Module](Module):
         comptime if target == "cpu":
             r.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("Residual.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["Residual.make[target='gpu']"](ctx)
             r.mid_dev = ctx_v.enqueue_create_buffer[DT](1)
             r.ts = TargetStorage.make_gpu(ctx_v)
         return r^

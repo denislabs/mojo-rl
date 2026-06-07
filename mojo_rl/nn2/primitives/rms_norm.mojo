@@ -39,6 +39,7 @@ from ..core import (
 )
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
+    require_ctx,
     TargetStorage,
     assert_tag_for,
     ensure_cpu_buffer,
@@ -207,9 +208,7 @@ struct RMSNorm[DIM: Int](Module):
                 g_ptr[k] = Scalar[DT](1.0)
             rn.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("RMSNorm.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["RMSNorm.make[target='gpu']"](ctx)
             rn.gamma = Param["gamma", False, Self.DIM].make_gpu(ctx_v)
             rn.gamma.value_dev.value().enqueue_fill(1.0)
             rn.cache_norm_dev = ctx_v.enqueue_create_buffer[DT](1)

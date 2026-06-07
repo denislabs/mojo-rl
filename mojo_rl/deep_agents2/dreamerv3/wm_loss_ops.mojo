@@ -33,8 +33,13 @@ from layout import Layout, LayoutTensor, TileTensor
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
-from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
-from .twohot import twohot_loss, twohot_loss_backward, symexp_twohot_bins
+from mojo_rl.nn2.core.target_storage import require_ctx, TargetStorage, assert_tag_for
+from .twohot import (
+    twohot_loss,
+    twohot_loss_backward,
+    symexp_twohot_bins,
+    DREAMER_REWARD_GRID_LO,
+)
 
 
 @always_inline
@@ -399,25 +404,23 @@ struct TwoHotLoss[BINS: Int](Module):
         )
         var m = Self()
         m.bins = List[Scalar[DT]](length=Self.BINS, fill=Scalar[DT](0.0))
-        # lo=-9 MUST match DreamerV3Trainer.self.bins (the grid the reward is
-        # read back on in imagination / imag_loss). A mismatch (e.g. the old
-        # default lo=-20 here vs -9 there) makes the reward head learn the right
-        # bin INDEX but be decoded on the wrong value grid → predictions ~5×
-        # off, poisoning imagined returns. The narrow grid also keeps bin values
-        # bounded (≈8102) so `Σ softmax·bins` stays CPU↔GPU bit-stable. If a
-        # future consumer needs a different scale, thread `lo` from the trainer.
+        # This grid MUST match the grid the reward is read back on in
+        # imagination / imag_loss (DreamerV3Trainer.bins). Both now read the
+        # SAME `DREAMER_REWARD_GRID_LO` constant (S4) so they can't diverge — a
+        # past -9-vs-(-20)-default split made the head learn the right bin INDEX
+        # but decode it on the wrong value grid → predictions ~5× off, poisoning
+        # imagined returns. The narrow grid also keeps bin values bounded
+        # (≈8102) so `Σ softmax·bins` stays CPU↔GPU bit-stable.
         symexp_twohot_bins[Self.BINS](
             rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 m.bins.unsafe_ptr()
             ),
-            lo=Scalar[DT](-9.0),
+            lo=Scalar[DT](DREAMER_REWARD_GRID_LO),
         )
         comptime if target == "cpu":
             m.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("TwoHotLoss.make[gpu]: ctx required")
-            var c = ctx.value()
+            var c = require_ctx["TwoHotLoss.make[gpu]"](ctx)
             var bd = c.enqueue_create_buffer[DT](Self.BINS)
             var hb = c.enqueue_create_host_buffer[DT](Self.BINS)
             c.synchronize()

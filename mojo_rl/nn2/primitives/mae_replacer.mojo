@@ -40,7 +40,7 @@ from ..core import (
     for_each_param_auto, zero_grad_auto,
 )
 from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for, ensure_cpu_buffer
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for, ensure_cpu_buffer
 
 
 comptime MAE_RTPB = 64
@@ -170,9 +170,7 @@ struct MAEReplacer[
             INIT.init_bias(m.mask_token.value_unsafe_ptr_cpu(), Self.D)
             m.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("MAEReplacer.make[gpu]: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["MAEReplacer.make[gpu]"](ctx)
             m.mask_token = Param["mask_token", False, Self.D].make_gpu(ctx_v)
             var host = ctx_v.enqueue_create_host_buffer[DT](Self.D)
             ctx_v.synchronize()

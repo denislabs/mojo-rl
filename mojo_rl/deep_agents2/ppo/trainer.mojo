@@ -61,15 +61,25 @@ from .blocks.minibatch_gather_step import PPOMinibatchGatherStep
 from .blocks.actor_train_step import PPOActorTrainStep
 from .blocks.critic_train_step import PPOCriticTrainStep
 from .metrics import PPOMetrics
+from .objective import (
+    LOG_STD_MIN,
+    LOG_STD_MAX,
+    LOG_PROB_DIFF_MAX,
+    EPS_STD,
+    LOG_2PI,
+)
 
 
-# Diagnostic constants — MUST match ppo/objective.mojo's clamps so the
-# recomputed entropy / ratio line up with the loss the kernel produced.
-comptime _DIAG_LOG_STD_MIN: Scalar[DT] = -5.0
-comptime _DIAG_LOG_STD_MAX: Scalar[DT] = 2.0
-comptime _DIAG_LOG_PROB_DIFF_MAX: Scalar[DT] = 20.0
-comptime _DIAG_EPS_STD: Scalar[DT] = 1e-6
-comptime _DIAG_LOG_2PI: Scalar[DT] = 1.8378770664093453
+# Diagnostic constants — aliased from ppo/objective.mojo (S4, 2026-06-07)
+# so the recomputed entropy / ratio in the diag path can NEVER drift from
+# the clamps the loss kernel actually applied. Previously these were five
+# independent literals with a "MUST match" comment; now they are one
+# source of truth.
+comptime _DIAG_LOG_STD_MIN = LOG_STD_MIN
+comptime _DIAG_LOG_STD_MAX = LOG_STD_MAX
+comptime _DIAG_LOG_PROB_DIFF_MAX = LOG_PROB_DIFF_MAX
+comptime _DIAG_EPS_STD = EPS_STD
+comptime _DIAG_LOG_2PI = LOG_2PI
 
 
 # ──────────────────────────────────────────────────────────────────────────

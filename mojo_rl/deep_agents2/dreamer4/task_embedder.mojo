@@ -35,7 +35,7 @@ from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import (
     Initializer, Param, ParamVisitor, for_each_param_auto, zero_grad_auto,
 )
-from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn2.core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 # ── GPU kernels ─────────────────────────────────────────────────────────
@@ -154,9 +154,7 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
             )
             m.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("TaskEmbedder.make[gpu]: ctx required")
-            var c = ctx.value()
+            var c = require_ctx["TaskEmbedder.make[gpu]"](ctx)
             m.task_table = Param["task_table", True, NT].make_gpu(c)
             m.agent_base = Param["agent_base", False, Self.D].make_gpu(c)
             var th = c.enqueue_create_host_buffer[DT](NT)

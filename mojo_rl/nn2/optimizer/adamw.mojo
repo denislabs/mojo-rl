@@ -37,7 +37,7 @@ from ..core.module import Module
 from ..core.optimizer import Optimizer
 from ..core.saveable import Saveable
 from ..core.save_scalar import _expect_kv_line
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -485,9 +485,7 @@ struct AdamW(Optimizer, Saveable):
             opt.total_size = len(opt.m_flat)
             opt.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("AdamW.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["AdamW.make[target='gpu']"](ctx)
             var visitor = _AdamWGPUInitVisitor(
                 offsets_ptr=UnsafePointer(to=opt.offsets),
                 apply_decay_ptr=UnsafePointer(to=opt.apply_decay),
