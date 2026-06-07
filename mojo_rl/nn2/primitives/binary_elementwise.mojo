@@ -38,15 +38,13 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT, CPU_SIMD_W, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
+from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.binary_element_op import BinaryElementOp
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
     require_ctx,
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
-    ensure_gpu_buffer,
 )
 
 
@@ -139,16 +137,14 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
 
     var ts: TargetStorage
 
-    # Cache cluster (used only when Self.OP.owns_cache = True).
-    var cache: List[Scalar[DT]]
-    var cache_dev: Optional[DeviceBuffer[DT]]
-    var cache_dev_n: Int
+    # Cache (used only when Self.OP.owns_cache = True). S5 dynamic Cache
+    # role — one Tensor lazy-grown at forward; was List + Optional
+    # DeviceBuffer + capacity-Int.
+    var cache: Cache["be_cache"]
 
     def __init__(out self):
         self.ts = TargetStorage.make_uninit()
-        self.cache = List[Scalar[DT]]()
-        self.cache_dev = None
-        self.cache_dev_n = 0
+        self.cache = Cache["be_cache"]()
 
     @staticmethod
     def make[
@@ -168,9 +164,7 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
         else:
             var ctx_v = require_ctx["BinaryElementwise.make[target='gpu']"](ctx)
             e.ts = TargetStorage.make_gpu(ctx_v)
-            comptime if Self.OP.owns_cache:
-                e.cache_dev = ctx_v.enqueue_create_buffer[DT](1)
-                e.cache_dev_n = 0
+            # cache is lazy (S5 Cache) — grown at forward via ensure_gpu.
         return e^
 
     # ------------------------------------------------------------------
@@ -202,8 +196,8 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
             var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
 
             comptime if Self.OP.owns_cache:
-                ensure_cpu_buffer(self.cache, N)
-                var c_p = self.cache.unsafe_ptr()
+                self.cache.ensure_cpu(N)
+                var c_p = self.cache.cpu_ptr()
                 var k = 0
                 while k + CPU_SIMD_W <= N:
                     var xv = i0_p.load[width=CPU_SIMD_W](k)
@@ -239,11 +233,9 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
             comptime n_blocks = (N + TPB - 1) // TPB
 
             comptime if Self.OP.owns_cache:
-                ensure_gpu_buffer(
-                    self.cache_dev, self.cache_dev_n, N, self.ts.ctx.value(),
-                )
+                self.cache.ensure_gpu(self.ts.ctx.value(), N)
                 var c_lt = LayoutTensor[DT, layout, MutAnyOrigin](
-                    self.cache_dev.value()
+                    self.cache.dev.value()
                 )
                 comptime kernel = _be_forward_kernel_cached[N, Self.OP]
                 self.ts.ctx.value().enqueue_function[kernel](
@@ -290,7 +282,7 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
             var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[1].ptr)
 
             comptime if Self.OP.owns_cache:
-                var c_p = self.cache.unsafe_ptr()
+                var c_p = self.cache.cpu_ptr()
                 var k = 0
                 while k + CPU_SIMD_W <= N:
                     var c = c_p.load[width=CPU_SIMD_W](k)
@@ -330,7 +322,7 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
 
             comptime if Self.OP.owns_cache:
                 var c_lt = LayoutTensor[DT, layout, MutAnyOrigin](
-                    self.cache_dev.value()
+                    self.cache.dev.value()
                 )
                 comptime kernel = _be_backward_kernel_cached[N, Self.OP]
                 self.ts.ctx.value().enqueue_function[kernel](
