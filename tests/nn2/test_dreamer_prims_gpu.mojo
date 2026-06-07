@@ -165,7 +165,7 @@ def test_rmsnorm_gpu() raises:
 
     var ctx = DeviceContext()
     var rn = RMSNorm[DIM].make[target="gpu", INIT=Zero](ctx=ctx)
-    _h2d(ctx, rn.gamma.value_dev.value(), gamma_fix)
+    _h2d(ctx, rn.gamma.val.dev.value(), gamma_fix)
     rn.zero_grad["gpu"]()
 
     var in_dev = ctx.enqueue_create_buffer[DT](N)
@@ -184,7 +184,7 @@ def test_rmsnorm_gpu() raises:
 
     var got_y = _d2h(ctx, out_dev, N)
     var got_gx = _d2h(ctx, gi_dev, N)
-    var got_gg = _d2h(ctx, rn.gamma.grad_dev.value(), DIM)
+    var got_gg = _d2h(ctx, rn.gamma.grd.dev.value(), DIM)
     var df = _max_abs_diff(got_y, y_ref)
     var dgx = _max_abs_diff(got_gx, gx_ref)
     var dgg = _max_abs_diff(got_gg, ggamma_ref)
@@ -216,8 +216,8 @@ def test_blocklinear_gpu() raises:
 
     var ctx = DeviceContext()
     var bl = BlockLinear[IN, OUT, BLK].make[target="gpu", INIT=Zero](ctx=ctx)
-    _h2d(ctx, bl.weight.value_dev.value(), kernel)
-    _h2d(ctx, bl.bias.value_dev.value(), bias_fix)
+    _h2d(ctx, bl.weight.val.dev.value(), kernel)
+    _h2d(ctx, bl.bias.val.dev.value(), bias_fix)
     bl.zero_grad["gpu"]()
 
     var in_dev = ctx.enqueue_create_buffer[DT](BATCH * IN)
@@ -236,8 +236,8 @@ def test_blocklinear_gpu() raises:
 
     var got_y = _d2h(ctx, out_dev, BATCH * OUT)
     var got_gx = _d2h(ctx, gi_dev, BATCH * IN)
-    var got_gk = _d2h(ctx, bl.weight.grad_dev.value(), len(kernel))
-    var got_gb = _d2h(ctx, bl.bias.grad_dev.value(), OUT)
+    var got_gk = _d2h(ctx, bl.weight.grd.dev.value(), len(kernel))
+    var got_gb = _d2h(ctx, bl.bias.grd.dev.value(), OUT)
     var df = _max_abs_diff(got_y, y_ref)
     var dgx = _max_abs_diff(got_gx, gx_ref)
     var dgk = _max_abs_diff(got_gk, gk_ref)

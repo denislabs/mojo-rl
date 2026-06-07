@@ -213,10 +213,10 @@ def test_gpu_parity() raises:
     ctx.enqueue_copy(y_relu_host, y_relu_dev)
     ctx.enqueue_copy(gi_act_host, gi_act_dev)
     ctx.enqueue_copy(gi_lin_host, gi_lin_dev)
-    ctx.enqueue_copy(gw_act_host, linact.weight.grad_dev.value())
-    ctx.enqueue_copy(gw_lin_host, lin.weight.grad_dev.value())
-    ctx.enqueue_copy(gb_act_host, linact.bias.grad_dev.value())
-    ctx.enqueue_copy(gb_lin_host, lin.bias.grad_dev.value())
+    ctx.enqueue_copy(gw_act_host, linact.weight.grd.dev.value())
+    ctx.enqueue_copy(gw_lin_host, lin.weight.grd.dev.value())
+    ctx.enqueue_copy(gb_act_host, linact.bias.grd.dev.value())
+    ctx.enqueue_copy(gb_lin_host, lin.bias.grd.dev.value())
     ctx.synchronize()
     for i in range(N_Y):
         y_act_h[i] = y_act_host.unsafe_ptr()[i]

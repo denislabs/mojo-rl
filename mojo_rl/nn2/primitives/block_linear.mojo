@@ -209,8 +209,8 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
             ctx_v.synchronize()
             INIT.init_weight(w_host.unsafe_ptr(), Self.W_SIZE, Self.IN, Self.OUT)
             INIT.init_bias(b_host.unsafe_ptr(), Self.B_SIZE)
-            ctx_v.enqueue_copy(bl.weight.value_dev.value(), w_host)
-            ctx_v.enqueue_copy(bl.bias.value_dev.value(), b_host)
+            ctx_v.enqueue_copy(bl.weight.val.dev.value(), w_host)
+            ctx_v.enqueue_copy(bl.bias.val.dev.value(), b_host)
             ctx_v.synchronize()
             bl.ts = TargetStorage.make_gpu(ctx_v)
         return bl^
@@ -246,7 +246,7 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                 # Plain dense matmul — input/output blocks ARE the full
                 # contiguous [BATCH, IN]/[BATCH, OUT] tiles, no gather needed.
                 var w_tt = TileTensor(
-                    self.weight.value, row_major[Self.IN, Self.OUT](),
+                    self.weight.val.cpu, row_major[Self.IN, Self.OUT](),
                 )
                 max_matmul[target="cpu"](output_v, input_v, w_tt, None)
                 for b in range(BATCH):
@@ -293,10 +293,10 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
         else:
             var ctx = self.ts.ctx.value()
             var w_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.weight.value_dev.value().unsafe_ptr()
+                self.weight.val.dev.value().unsafe_ptr()
             )
             var b_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.bias.value_dev.value().unsafe_ptr()
+                self.bias.val.dev.value().unsafe_ptr()
             )
             comptime n_blk = (BATCH * Self.OUT + TPB - 1) // TPB
             comptime k_fwd = _bl_forward_kernel[
@@ -417,7 +417,7 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
             var w_p = self.weight.value_unsafe_ptr_cpu()
             comptime if Self.BLOCKS == 1:
                 var w_tt = TileTensor(
-                    self.weight.value, row_major[Self.IN, Self.OUT](),
+                    self.weight.val.cpu, row_major[Self.IN, Self.OUT](),
                 )
                 max_matmul[transpose_b=True, target="cpu"](
                     grad_input_v, grad_output_v, w_tt, None,
@@ -456,14 +456,14 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
         else:
             var ctx = self.ts.ctx.value()
             var w_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.weight.value_dev.value().unsafe_ptr()
+                self.weight.val.dev.value().unsafe_ptr()
             )
             comptime if mode == "all":
                 var gw_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.weight.grad_dev.value().unsafe_ptr()
+                    self.weight.grd.dev.value().unsafe_ptr()
                 )
                 var gb_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.bias.grad_dev.value().unsafe_ptr()
+                    self.bias.grd.dev.value().unsafe_ptr()
                 )
                 var x_p = self._cached_input_ptr.value()
                 comptime n_w = (Self.W_SIZE + TPB - 1) // TPB

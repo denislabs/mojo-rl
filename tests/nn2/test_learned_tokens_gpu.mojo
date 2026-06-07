@@ -71,7 +71,7 @@ def _run[
         var v = _spread(k, 0.33)
         cpu_p[k] = v
         phost.unsafe_ptr()[k] = v
-    ctx.enqueue_copy(gpu.tokens.value_dev.value(), phost)
+    ctx.enqueue_copy(gpu.tokens.val.dev.value(), phost)
     ctx.synchronize()
 
     var xh = ctx.enqueue_create_host_buffer[DT](IN_N)
@@ -114,12 +114,12 @@ def _run[
     var gph = ctx.enqueue_create_host_buffer[DT](PN)
     ctx.enqueue_copy(yh, yd)
     ctx.enqueue_copy(gih, gid)
-    ctx.enqueue_copy(gph, gpu.tokens.grad_dev.value())
+    ctx.enqueue_copy(gph, gpu.tokens.grd.dev.value())
     ctx.synchronize()
 
     var mf = _maxdiff(yh.unsafe_ptr(), ycpu, OUT_N)
     var mi = _maxdiff(gih.unsafe_ptr(), gicpu, IN_N)
-    var mp = _maxdiff(gph.unsafe_ptr(), cpu.tokens.grad.unsafe_ptr(), PN)
+    var mp = _maxdiff(gph.unsafe_ptr(), cpu.tokens.grd.cpu.unsafe_ptr(), PN)
     print("   fwd =", mf, " grad_in =", mi, " grad_param =", mp)
     assert_true(mf < TOL and mi < TOL and mp < TOL, name + ": parity")
     print("  ok")

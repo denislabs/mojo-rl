@@ -75,8 +75,8 @@ def test_tokenwise_linear_parity(ctx: DeviceContext) raises:
         var v = Scalar[DT](0.1 * Float64(o) - 0.2)
         bc[o] = v
         bh.unsafe_ptr()[o] = v
-    ctx.enqueue_copy(gpu.inner.weight.value_dev.value(), wh)
-    ctx.enqueue_copy(gpu.inner.bias.value_dev.value(), bh)
+    ctx.enqueue_copy(gpu.inner.weight.val.dev.value(), wh)
+    ctx.enqueue_copy(gpu.inner.bias.val.dev.value(), bh)
     ctx.synchronize()
 
     var xh = ctx.enqueue_create_host_buffer[DT](IN_N)
@@ -119,8 +119,8 @@ def test_tokenwise_linear_parity(ctx: DeviceContext) raises:
     gpu.vjp["gpu", BATCH](got, git)
     ctx.enqueue_copy(yh, yd)
     ctx.enqueue_copy(gih, gid)
-    ctx.enqueue_copy(gwh, gpu.inner.weight.grad_dev.value())
-    ctx.enqueue_copy(gbh, gpu.inner.bias.grad_dev.value())
+    ctx.enqueue_copy(gwh, gpu.inner.weight.grd.dev.value())
+    ctx.enqueue_copy(gbh, gpu.inner.bias.grd.dev.value())
     ctx.synchronize()
 
     var mf = _maxdiff(yh.unsafe_ptr(), ycpu, OUT_N)

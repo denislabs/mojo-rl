@@ -600,10 +600,10 @@ struct Dreamer4Dynamics[
             m.step_table = Param["step_table", True, NT].make_gpu(c)
             m.register = Param["register", False, NR].make_gpu(c)
             # init on host then upload (Xavier uses host RNG)
-            _init_param_gpu[INIT](c, m.action_base.value_dev.value(), Self.D, 1, Self.D)
-            _init_param_gpu[INIT](c, m.signal_table.value_dev.value(), NS, Self.NSIG, Self.D)
-            _init_param_gpu[INIT](c, m.step_table.value_dev.value(), NT, Self.NSTEP, Self.D)
-            _init_param_gpu[INIT](c, m.register.value_dev.value(), NR, Self.NREG, Self.D)
+            _init_param_gpu[INIT](c, m.action_base.val.dev.value(), Self.D, 1, Self.D)
+            _init_param_gpu[INIT](c, m.signal_table.val.dev.value(), NS, Self.NSIG, Self.D)
+            _init_param_gpu[INIT](c, m.step_table.val.dev.value(), NT, Self.NSTEP, Self.D)
+            _init_param_gpu[INIT](c, m.register.val.dev.value(), NR, Self.NREG, Self.D)
             m.ts = TargetStorage.make_gpu(c)
         return m^
 
@@ -745,15 +745,15 @@ struct Dreamer4Dynamics[
                 ),
                 row_major[BATCH, Self.SD](),
             )
-            var ab = TileTensor(self.action_base.value, row_major[Self.D]())
+            var ab = TileTensor(self.action_base.val.cpu, row_major[Self.D]())
             var sigt = TileTensor(
-                self.signal_table.value, row_major[Self.NSIG * Self.D]()
+                self.signal_table.val.cpu, row_major[Self.NSIG * Self.D]()
             )
             var stpt = TileTensor(
-                self.step_table.value, row_major[Self.NSTEP * Self.D]()
+                self.step_table.val.cpu, row_major[Self.NSTEP * Self.D]()
             )
             var reg = TileTensor(
-                self.register.value, row_major[Self.NREG * Self.D]()
+                self.register.val.cpu, row_major[Self.NREG * Self.D]()
             )
             # action conditioning: act token = action_base + act_mlp(actions)
             comptime if Self.ACOND:
@@ -842,17 +842,17 @@ struct Dreamer4Dynamics[
                 self.po_dev.value()
             )
             var ab_lt = LayoutTensor[DT, Layout.row_major(Self.D), MutAnyOrigin](
-                self.action_base.value_dev.value()
+                self.action_base.val.dev.value()
             )
             var sg_lt = LayoutTensor[
                 DT, Layout.row_major(Self.NSIG * Self.D), MutAnyOrigin
-            ](self.signal_table.value_dev.value())
+            ](self.signal_table.val.dev.value())
             var st_lt = LayoutTensor[
                 DT, Layout.row_major(Self.NSTEP * Self.D), MutAnyOrigin
-            ](self.step_table.value_dev.value())
+            ](self.step_table.val.dev.value())
             var rg_lt = LayoutTensor[
                 DT, Layout.row_major(Self.NREG * Self.D), MutAnyOrigin
-            ](self.register.value_dev.value())
+            ](self.register.val.dev.value())
             var si_lt = LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin](
                 self.sig_dev.value()
             )
@@ -992,15 +992,15 @@ struct Dreamer4Dynamics[
                         ]
 
             comptime if mode == "all":
-                var gab = TileTensor(self.action_base.grad, row_major[Self.D]())
+                var gab = TileTensor(self.action_base.grd.cpu, row_major[Self.D]())
                 var gsig = TileTensor(
-                    self.signal_table.grad, row_major[Self.NSIG * Self.D]()
+                    self.signal_table.grd.cpu, row_major[Self.NSIG * Self.D]()
                 )
                 var gstp = TileTensor(
-                    self.step_table.grad, row_major[Self.NSTEP * Self.D]()
+                    self.step_table.grd.cpu, row_major[Self.NSTEP * Self.D]()
                 )
                 var greg = TileTensor(
-                    self.register.grad, row_major[Self.NREG * Self.D]()
+                    self.register.grd.cpu, row_major[Self.NREG * Self.D]()
                 )
                 for bt in range(BATCH):
                     var si = self.cache_sig[bt]
@@ -1105,16 +1105,16 @@ struct Dreamer4Dynamics[
             comptime if mode == "all":
                 var gab_lt = LayoutTensor[
                     DT, Layout.row_major(Self.D), MutAnyOrigin
-                ](self.action_base.grad_dev.value())
+                ](self.action_base.grd.dev.value())
                 var greg_lt = LayoutTensor[
                     DT, Layout.row_major(Self.NREG * Self.D), MutAnyOrigin
-                ](self.register.grad_dev.value())
+                ](self.register.grd.dev.value())
                 var gsig_lt = LayoutTensor[
                     DT, Layout.row_major(Self.NSIG * Self.D), MutAnyOrigin
-                ](self.signal_table.grad_dev.value())
+                ](self.signal_table.grd.dev.value())
                 var gstp_lt = LayoutTensor[
                     DT, Layout.row_major(Self.NSTEP * Self.D), MutAnyOrigin
-                ](self.step_table.grad_dev.value())
+                ](self.step_table.grd.dev.value())
                 var si_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH), MutAnyOrigin
                 ](self.sig_dev.value())

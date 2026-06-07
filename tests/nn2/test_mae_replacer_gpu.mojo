@@ -70,7 +70,7 @@ def main() raises:
         var v = _spread(k, 0.21)
         cpu_mt[k] = v
         mth.unsafe_ptr()[k] = v
-    ctx.enqueue_copy(gpu.mask_token.value_dev.value(), mth)
+    ctx.enqueue_copy(gpu.mask_token.val.dev.value(), mth)
     ctx.synchronize()
 
     var xh = ctx.enqueue_create_host_buffer[DT](N)
@@ -112,12 +112,12 @@ def main() raises:
     var gth = ctx.enqueue_create_host_buffer[DT](D)
     ctx.enqueue_copy(yh, yd)
     ctx.enqueue_copy(gih, gid)
-    ctx.enqueue_copy(gth, gpu.mask_token.grad_dev.value())
+    ctx.enqueue_copy(gth, gpu.mask_token.grd.dev.value())
     ctx.synchronize()
 
     var mf = _maxdiff(yh.unsafe_ptr(), ycpu, N)
     var mi = _maxdiff(gih.unsafe_ptr(), gicpu, N)
-    var mt = _maxdiff(gth.unsafe_ptr(), cpu.mask_token.grad.unsafe_ptr(), D)
+    var mt = _maxdiff(gth.unsafe_ptr(), cpu.mask_token.grd.cpu.unsafe_ptr(), D)
     print("   fwd =", mf, " grad_in =", mi, " grad_mask_token =", mt)
     assert_true(mf < TOL, "forward parity (keep mask must bit-match)")
     assert_true(mi < TOL and mt < TOL, "grad parity")

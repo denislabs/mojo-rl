@@ -162,8 +162,8 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
             c.synchronize()
             INIT.init_weight(th.unsafe_ptr(), NT, Self.NTASK, Self.D)
             INIT.init_weight(bh.unsafe_ptr(), Self.D, 1, Self.D)
-            c.enqueue_copy(m.task_table.value_dev.value(), th)
-            c.enqueue_copy(m.agent_base.value_dev.value(), bh)
+            c.enqueue_copy(m.task_table.val.dev.value(), th)
+            c.enqueue_copy(m.agent_base.val.dev.value(), bh)
             c.synchronize()
             m.ts = TargetStorage.make_gpu(c)
         return m^
@@ -201,9 +201,9 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
         comptime AG = Self.AG_DIM
         comptime if target == "cpu":
             var tab = TileTensor(
-                self.task_table.value, row_major[Self.NTASK * Self.D]()
+                self.task_table.val.cpu, row_major[Self.NTASK * Self.D]()
             )
-            var base = TileTensor(self.agent_base.value, row_major[Self.D]())
+            var base = TileTensor(self.agent_base.val.cpu, row_major[Self.D]())
             for b in range(B):
                 var idb = self.cache_ids[b]
                 for t in range(T):
@@ -225,10 +225,10 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
             )
             var tab_lt = LayoutTensor[
                 DT, Layout.row_major(Self.NTASK * Self.D), MutAnyOrigin
-            ](self.task_table.value_dev.value())
+            ](self.task_table.val.dev.value())
             var base_lt = LayoutTensor[
                 DT, Layout.row_major(Self.D), MutAnyOrigin
-            ](self.agent_base.value_dev.value())
+            ](self.agent_base.val.dev.value())
             var out_lt = LayoutTensor[
                 DT, Layout.row_major(B * T * AG), MutAnyOrigin
             ](dst)
@@ -251,9 +251,9 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
         comptime AG = Self.AG_DIM
         comptime if target == "cpu":
             var gtab = TileTensor(
-                self.task_table.grad, row_major[Self.NTASK * Self.D]()
+                self.task_table.grd.cpu, row_major[Self.NTASK * Self.D]()
             )
-            var gbase = TileTensor(self.agent_base.grad, row_major[Self.D]())
+            var gbase = TileTensor(self.agent_base.grd.cpu, row_major[Self.D]())
             for b in range(B):
                 var idb = self.cache_ids[b]
                 for d in range(Self.D):
@@ -274,10 +274,10 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
             )
             var gbase_lt = LayoutTensor[
                 DT, Layout.row_major(Self.D), MutAnyOrigin
-            ](self.agent_base.grad_dev.value())
+            ](self.agent_base.grd.dev.value())
             var gtab_lt = LayoutTensor[
                 DT, Layout.row_major(Self.NTASK * Self.D), MutAnyOrigin
-            ](self.task_table.grad_dev.value())
+            ](self.task_table.grd.dev.value())
             comptime bk = _te_grad_base_kernel[B, T, Self.NAGENT, Self.D]
             c.enqueue_function[bk](
                 gin_lt, gbase_lt,

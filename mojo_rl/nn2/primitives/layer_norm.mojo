@@ -246,8 +246,8 @@ struct LayerNorm[DIM: Int](Module):
             var ctx_v = require_ctx["LayerNorm.make[target='gpu']"](ctx)
             ln.gamma = Param["gamma", False, Self.DIM].make_gpu(ctx_v)
             ln.beta  = Param["beta",  False, Self.DIM].make_gpu(ctx_v)
-            ln.gamma.value_dev.value().enqueue_fill(1.0)
-            ln.beta.value_dev.value().enqueue_fill(0.0)
+            ln.gamma.val.dev.value().enqueue_fill(1.0)
+            ln.beta.val.dev.value().enqueue_fill(0.0)
             # Tiny placeholder cache buffers — actual sizes set on first forward.
             ln.cache_xhat_dev    = ctx_v.enqueue_create_buffer[DT](1)
             ln.cache_inv_std_dev = ctx_v.enqueue_create_buffer[DT](1)
@@ -288,8 +288,8 @@ struct LayerNorm[DIM: Int](Module):
         comptime if target == "cpu":
             ensure_cpu_buffer(self.cache_xhat,    BATCH * Self.DIM)
             ensure_cpu_buffer(self.cache_inv_std, BATCH)
-            var gamma_v = TileTensor(self.gamma.value, row_major[Self.DIM]())
-            var beta_v  = TileTensor(self.beta.value,  row_major[Self.DIM]())
+            var gamma_v = TileTensor(self.gamma.val.cpu, row_major[Self.DIM]())
+            var beta_v  = TileTensor(self.beta.val.cpu,  row_major[Self.DIM]())
             var xhat_v  = TileTensor(
                 self.cache_xhat, row_major[BATCH, Self.DIM](),
             )
@@ -323,10 +323,10 @@ struct LayerNorm[DIM: Int](Module):
             var in_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p_w)
             var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p_w)
             var g_lt   = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                self.gamma.value_dev.value()
+                self.gamma.val.dev.value()
             )
             var b_lt   = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                self.beta.value_dev.value()
+                self.beta.val.dev.value()
             )
             var xh_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](
                 self.cache_xhat_dev.value()
@@ -367,9 +367,9 @@ struct LayerNorm[DIM: Int](Module):
         var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
-            var gamma_v       = TileTensor(self.gamma.value, row_major[Self.DIM]())
-            var grad_gamma_v  = TileTensor(self.gamma.grad,  row_major[Self.DIM]())
-            var grad_beta_v   = TileTensor(self.beta.grad,   row_major[Self.DIM]())
+            var gamma_v       = TileTensor(self.gamma.val.cpu, row_major[Self.DIM]())
+            var grad_gamma_v  = TileTensor(self.gamma.grd.cpu,  row_major[Self.DIM]())
+            var grad_beta_v   = TileTensor(self.beta.grd.cpu,   row_major[Self.DIM]())
             var xhat_v        = TileTensor(
                 self.cache_xhat, row_major[BATCH, Self.DIM](),
             )
@@ -405,7 +405,7 @@ struct LayerNorm[DIM: Int](Module):
             var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p_w)
             var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p_w)
             var g_lt  = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                self.gamma.value_dev.value()
+                self.gamma.val.dev.value()
             )
             var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
                 self.cache_xhat_dev.value()
@@ -422,10 +422,10 @@ struct LayerNorm[DIM: Int](Module):
             )
             comptime if mode == "all":
                 var gg_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                    self.gamma.grad_dev.value()
+                    self.gamma.grd.dev.value()
                 )
                 var gb_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                    self.beta.grad_dev.value()
+                    self.beta.grd.dev.value()
                 )
                 comptime dp_kernel = _layer_norm_backward_dparams_kernel[
                     BATCH, Self.DIM

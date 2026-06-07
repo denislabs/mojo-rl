@@ -175,7 +175,7 @@ struct MAEReplacer[
             var host = ctx_v.enqueue_create_host_buffer[DT](Self.D)
             ctx_v.synchronize()
             INIT.init_bias(host.unsafe_ptr(), Self.D)
-            ctx_v.enqueue_copy(m.mask_token.value_dev.value(), host)
+            ctx_v.enqueue_copy(m.mask_token.val.dev.value(), host)
             ctx_v.synchronize()
             m.ts = TargetStorage.make_gpu(ctx_v)
         return m^
@@ -258,7 +258,7 @@ struct MAEReplacer[
                 DT, Layout.row_major(BATCH, Self.NP * Self.D), MutAnyOrigin
             ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr))
             var mt_lt = LayoutTensor[DT, Layout.row_major(Self.D), MutAnyOrigin](
-                self.mask_token.value_dev.value()
+                self.mask_token.val.dev.value()
             )
             var k_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH * Self.NP), MutAnyOrigin
@@ -297,7 +297,7 @@ struct MAEReplacer[
         var pmin = Scalar[DT](self.p_min_rt)
         var span = Scalar[DT](self.p_max_rt - self.p_min_rt)
         comptime if target == "cpu":
-            var gmt = self.mask_token.grad.unsafe_ptr()
+            var gmt = self.mask_token.grd.cpu.unsafe_ptr()
             for bt in range(BATCH):
                 for i in range(Self.NP):
                     var kept = _kept(
@@ -329,7 +329,7 @@ struct MAEReplacer[
             comptime if mode == "all":
                 var gt_lt = LayoutTensor[
                     DT, Layout.row_major(Self.D), MutAnyOrigin
-                ](self.mask_token.grad_dev.value())
+                ](self.mask_token.grd.dev.value())
                 comptime gtk = _mae_grad_token_kernel[
                     BATCH, Self.NP, Self.D, Self.SEED
                 ]

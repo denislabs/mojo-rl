@@ -157,10 +157,10 @@ def main() raises:
     var dpred = _maxdiff(pred_c, pred_g, N)
     var dgin = _maxdiff(gin_c, gin_g, N)
     var hab = ctx.enqueue_create_host_buffer[DT](D)
-    ctx.enqueue_copy(hab, dgpu.action_base.grad_dev.value())
+    ctx.enqueue_copy(hab, dgpu.action_base.grd.dev.value())
     ctx.synchronize()
     var dab = _maxdiff(
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](dcpu.action_base.grad.unsafe_ptr()),
+        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](dcpu.action_base.grd.cpu.unsafe_ptr()),
         rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](hab.unsafe_ptr()), D)
     print("  forward          max|Δ| =", dpred)
     print("  grad_input       max|Δ| =", dgin)
@@ -168,11 +168,11 @@ def main() raises:
 
     # ── 2. DIRECT act-MLP param-grad parity (first Linear weight) ────────
     var haw = ctx.enqueue_create_host_buffer[DT](AW)
-    ctx.enqueue_copy(haw, dgpu.act_mlp.children[0].weight.grad_dev.value())
+    ctx.enqueue_copy(haw, dgpu.act_mlp.children[0].weight.grd.dev.value())
     ctx.synchronize()
     var daw = _maxdiff(
         rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            dcpu.act_mlp.children[0].weight.grad.unsafe_ptr()
+            dcpu.act_mlp.children[0].weight.grd.cpu.unsafe_ptr()
         ),
         rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](haw.unsafe_ptr()),
         AW,

@@ -132,38 +132,38 @@ def main() raises:
     # FD on parameters (W_ih, W_hh, b) via the Param value Lists.
     var max_wih: Scalar[DT] = 0.0
     for idx in range(Cell.W_IH_SIZE):
-        var s = cell.W_ih.value[idx]
-        cell.W_ih.value[idx] = s + eps
+        var s = cell.W_ih.val.cpu[idx]
+        cell.W_ih.val.cpu[idx] = s + eps
         var lp = _loss(cell, x, hp, cp, go_h, go_c)
-        cell.W_ih.value[idx] = s - eps
+        cell.W_ih.val.cpu[idx] = s - eps
         var ln = _loss(cell, x, hp, cp, go_h, go_c)
-        cell.W_ih.value[idx] = s
+        cell.W_ih.val.cpu[idx] = s
         var fd = (lp - ln) / (Scalar[DT](2.0) * eps)
-        var d = cell.W_ih.grad[idx] - fd
+        var d = cell.W_ih.grd.cpu[idx] - fd
         max_wih = max(max_wih, d if d >= 0 else -d)
 
     var max_whh: Scalar[DT] = 0.0
     for idx in range(Cell.W_HH_SIZE):
-        var s = cell.W_hh.value[idx]
-        cell.W_hh.value[idx] = s + eps
+        var s = cell.W_hh.val.cpu[idx]
+        cell.W_hh.val.cpu[idx] = s + eps
         var lp = _loss(cell, x, hp, cp, go_h, go_c)
-        cell.W_hh.value[idx] = s - eps
+        cell.W_hh.val.cpu[idx] = s - eps
         var ln = _loss(cell, x, hp, cp, go_h, go_c)
-        cell.W_hh.value[idx] = s
+        cell.W_hh.val.cpu[idx] = s
         var fd = (lp - ln) / (Scalar[DT](2.0) * eps)
-        var d = cell.W_hh.grad[idx] - fd
+        var d = cell.W_hh.grd.cpu[idx] - fd
         max_whh = max(max_whh, d if d >= 0 else -d)
 
     var max_b: Scalar[DT] = 0.0
     for idx in range(Cell.B_SIZE):
-        var s = cell.b.value[idx]
-        cell.b.value[idx] = s + eps
+        var s = cell.b.val.cpu[idx]
+        cell.b.val.cpu[idx] = s + eps
         var lp = _loss(cell, x, hp, cp, go_h, go_c)
-        cell.b.value[idx] = s - eps
+        cell.b.val.cpu[idx] = s - eps
         var ln = _loss(cell, x, hp, cp, go_h, go_c)
-        cell.b.value[idx] = s
+        cell.b.val.cpu[idx] = s
         var fd = (lp - ln) / (Scalar[DT](2.0) * eps)
-        var d = cell.b.grad[idx] - fd
+        var d = cell.b.grd.cpu[idx] - fd
         max_b = max(max_b, d if d >= 0 else -d)
 
     print("  max|dW_ih-fd| =", max_wih, " max|dW_hh-fd| =", max_whh, " max|db-fd| =", max_b)

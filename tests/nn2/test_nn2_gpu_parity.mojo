@@ -372,8 +372,8 @@ def test_batch_norm_1d_gpu_parity() raises:
     var db_h = ctx.enqueue_create_host_buffer[DT](DIM)
     ctx.enqueue_copy(y_h, y_d)
     ctx.enqueue_copy(gi_h, gi_d)
-    ctx.enqueue_copy(dg_h, bn_gpu.gamma.grad_dev.value())
-    ctx.enqueue_copy(db_h, bn_gpu.beta.grad_dev.value())
+    ctx.enqueue_copy(dg_h, bn_gpu.gamma.grd.dev.value())
+    ctx.enqueue_copy(db_h, bn_gpu.beta.grd.dev.value())
     ctx.synchronize()
 
     var dy = _max_diff(y_cpu, y_h.unsafe_ptr(), N)
@@ -381,8 +381,8 @@ def test_batch_norm_1d_gpu_parity() raises:
     var max_dg: Scalar[DT] = 0.0
     var max_db: Scalar[DT] = 0.0
     for f in range(DIM):
-        var ed = _abs(bn_cpu.gamma.grad[f] - dg_h.unsafe_ptr()[f])
-        var eb = _abs(bn_cpu.beta.grad[f]  - db_h.unsafe_ptr()[f])
+        var ed = _abs(bn_cpu.gamma.grd.cpu[f] - dg_h.unsafe_ptr()[f])
+        var eb = _abs(bn_cpu.beta.grd.cpu[f]  - db_h.unsafe_ptr()[f])
         if ed > max_dg: max_dg = ed
         if eb > max_db: max_db = eb
     print(
@@ -458,8 +458,8 @@ def test_batch_norm_2d_gpu_parity() raises:
     var db_h = ctx.enqueue_create_host_buffer[DT](C)
     ctx.enqueue_copy(y_h, y_d)
     ctx.enqueue_copy(gi_h, gi_d)
-    ctx.enqueue_copy(dg_h, bn_gpu.gamma.grad_dev.value())
-    ctx.enqueue_copy(db_h, bn_gpu.beta.grad_dev.value())
+    ctx.enqueue_copy(dg_h, bn_gpu.gamma.grd.dev.value())
+    ctx.enqueue_copy(db_h, bn_gpu.beta.grd.dev.value())
     ctx.synchronize()
 
     var dy = _max_diff(y_cpu, y_h.unsafe_ptr(), N)
@@ -467,8 +467,8 @@ def test_batch_norm_2d_gpu_parity() raises:
     var max_dg: Scalar[DT] = 0.0
     var max_db: Scalar[DT] = 0.0
     for f in range(C):
-        var ed = _abs(bn_cpu.gamma.grad[f] - dg_h.unsafe_ptr()[f])
-        var eb = _abs(bn_cpu.beta.grad[f]  - db_h.unsafe_ptr()[f])
+        var ed = _abs(bn_cpu.gamma.grd.cpu[f] - dg_h.unsafe_ptr()[f])
+        var eb = _abs(bn_cpu.beta.grd.cpu[f]  - db_h.unsafe_ptr()[f])
         if ed > max_dg: max_dg = ed
         if eb > max_db: max_db = eb
     print(
@@ -680,11 +680,11 @@ def test_conv2d_gpu_parity() raises:
     var b_h = ctx.enqueue_create_host_buffer[DT](B_SIZE)
     ctx.synchronize()
     for k in range(W_SIZE):
-        w_h.unsafe_ptr()[k] = cv_cpu.weight.value[k]
+        w_h.unsafe_ptr()[k] = cv_cpu.weight.val.cpu[k]
     for k in range(B_SIZE):
-        b_h.unsafe_ptr()[k] = cv_cpu.bias.value[k]
-    ctx.enqueue_copy(cv_gpu.weight.value_dev.value(), w_h)
-    ctx.enqueue_copy(cv_gpu.bias.value_dev.value(),   b_h)
+        b_h.unsafe_ptr()[k] = cv_cpu.bias.val.cpu[k]
+    ctx.enqueue_copy(cv_gpu.weight.val.dev.value(), w_h)
+    ctx.enqueue_copy(cv_gpu.bias.val.dev.value(),   b_h)
     ctx.synchronize()
 
     var x_h = ctx.enqueue_create_host_buffer[DT](N_IN)
@@ -734,8 +734,8 @@ def test_conv2d_gpu_parity() raises:
     var db_host = ctx.enqueue_create_host_buffer[DT](B_SIZE)
     ctx.enqueue_copy(y_host,  y_d)
     ctx.enqueue_copy(gi_host, gi_d)
-    ctx.enqueue_copy(dw_host, cv_gpu.weight.grad_dev.value())
-    ctx.enqueue_copy(db_host, cv_gpu.bias.grad_dev.value())
+    ctx.enqueue_copy(dw_host, cv_gpu.weight.grd.dev.value())
+    ctx.enqueue_copy(db_host, cv_gpu.bias.grd.dev.value())
     ctx.synchronize()
 
     var dy = _max_diff(y_cpu, y_host.unsafe_ptr(), N_OUT)
@@ -743,10 +743,10 @@ def test_conv2d_gpu_parity() raises:
     var max_dw: Scalar[DT] = 0.0
     var max_db: Scalar[DT] = 0.0
     for k in range(W_SIZE):
-        var e = _abs(cv_cpu.weight.grad[k] - dw_host.unsafe_ptr()[k])
+        var e = _abs(cv_cpu.weight.grd.cpu[k] - dw_host.unsafe_ptr()[k])
         if e > max_dw: max_dw = e
     for k in range(B_SIZE):
-        var e = _abs(cv_cpu.bias.grad[k] - db_host.unsafe_ptr()[k])
+        var e = _abs(cv_cpu.bias.grd.cpu[k] - db_host.unsafe_ptr()[k])
         if e > max_db: max_db = e
     print(
         "  max|y| =", dy, " max|gi| =", dgi,

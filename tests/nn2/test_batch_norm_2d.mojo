@@ -108,14 +108,14 @@ def test_running_stats_converge() raises:
                 var d = x[b * FLAT + c * (HH * WW) + s] - true_mean
                 true_var += d * d
         true_var = true_var / n_eff
-        var dm = bn.running_mean.value[c] - true_mean
+        var dm = bn.running_mean.val.cpu[c] - true_mean
         var adm = dm if dm >= Scalar[DT](0) else -dm
-        var dv = bn.running_var.value[c] - true_var
+        var dv = bn.running_var.val.cpu[c] - true_var
         var adv = dv if dv >= Scalar[DT](0) else -dv
         print(
             "  ch ", c,
-            ": μ run=", bn.running_mean.value[c], " true=", true_mean,
-            "  σ² run=", bn.running_var.value[c], " true=", true_var,
+            ": μ run=", bn.running_mean.val.cpu[c], " true=", true_mean,
+            "  σ² run=", bn.running_var.val.cpu[c], " true=", true_var,
         )
         assert_true(
             adm < Scalar[DT](1e-3),
@@ -206,15 +206,15 @@ def test_backward_fd() raises:
         ]()
         bn_p.training = True
         bn_n.training = True
-        bn_p.gamma.value[c] = Scalar[DT](1.0) + eps
-        bn_n.gamma.value[c] = Scalar[DT](1.0) - eps
+        bn_p.gamma.val.cpu[c] = Scalar[DT](1.0) + eps
+        bn_n.gamma.val.cpu[c] = Scalar[DT](1.0) - eps
         bn_p.forward["cpu", BATCH](x_t, output=ypos_t)
         bn_n.forward["cpu", BATCH](x_t, output=yneg_t)
         var fd_dg: Scalar[DT] = 0.0
         for k in range(N):
             fd_dg += go[k] * (y_pos[k] - y_neg[k])
         fd_dg = fd_dg / (Scalar[DT](2.0) * eps)
-        var d = bn.gamma.grad[c] - fd_dg
+        var d = bn.gamma.grd.cpu[c] - fd_dg
         var ad = d if d >= Scalar[DT](0) else -d
         if ad > max_dg:
             max_dg = ad
@@ -227,15 +227,15 @@ def test_backward_fd() raises:
         ]()
         bn_p2.training = True
         bn_n2.training = True
-        bn_p2.beta.value[c] = eps
-        bn_n2.beta.value[c] = -eps
+        bn_p2.beta.val.cpu[c] = eps
+        bn_n2.beta.val.cpu[c] = -eps
         bn_p2.forward["cpu", BATCH](x_t, output=ypos_t)
         bn_n2.forward["cpu", BATCH](x_t, output=yneg_t)
         var fd_db: Scalar[DT] = 0.0
         for k in range(N):
             fd_db += go[k] * (y_pos[k] - y_neg[k])
         fd_db = fd_db / (Scalar[DT](2.0) * eps)
-        var d2 = bn.beta.grad[c] - fd_db
+        var d2 = bn.beta.grd.cpu[c] - fd_db
         var ad2 = d2 if d2 >= Scalar[DT](0) else -d2
         if ad2 > max_db:
             max_db = ad2

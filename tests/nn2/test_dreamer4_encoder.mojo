@@ -118,7 +118,7 @@ def main() raises:
     # mask_token param gradcheck.
     print("mask_token gradcheck ...")
     var tp = enc.mae.mask_token.value_unsafe_ptr_cpu()
-    var gtok = enc.mae.mask_token.grad.unsafe_ptr()
+    var gtok = enc.mae.mask_token.grd.cpu.unsafe_ptr()
     var max_p: Float64 = 0.0
     for k in range(D):
         var orig = tp[k]

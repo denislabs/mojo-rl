@@ -399,16 +399,16 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             g.b_ih = Param["b_ih", False, Self.B_IH_SIZE].make_gpu(ctx_v)
             g.b_hh = Param["b_hh", False, Self.B_IH_SIZE].make_gpu(ctx_v)
             Self._gpu_init_param[Self.W_IH_SIZE, Self.IN_, 3 * Self.HIDDEN, INIT](
-                ctx_v, g.W_ih.value_dev.value(), is_bias=False
+                ctx_v, g.W_ih.val.dev.value(), is_bias=False
             )
             Self._gpu_init_param[Self.W_HH_SIZE, Self.HIDDEN, 3 * Self.HIDDEN, INIT](
-                ctx_v, g.W_hh.value_dev.value(), is_bias=False
+                ctx_v, g.W_hh.val.dev.value(), is_bias=False
             )
             Self._gpu_init_param[Self.B_IH_SIZE, 0, 0, INIT](
-                ctx_v, g.b_ih.value_dev.value(), is_bias=True
+                ctx_v, g.b_ih.val.dev.value(), is_bias=True
             )
             Self._gpu_init_param[Self.B_IH_SIZE, 0, 0, INIT](
-                ctx_v, g.b_hh.value_dev.value(), is_bias=True
+                ctx_v, g.b_hh.val.dev.value(), is_bias=True
             )
             g._cache_dev = ctx_v.enqueue_create_buffer[DT](1)
             g._dcomb_dev = ctx_v.enqueue_create_buffer[DT](1)
@@ -517,16 +517,16 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr))
             var wih = LayoutTensor[
                 DT, Layout.row_major(Self.IN0_DIM, THREE_H), MutAnyOrigin
-            ](self.W_ih.value_dev.value())
+            ](self.W_ih.val.dev.value())
             var whh = LayoutTensor[
                 DT, Layout.row_major(H, THREE_H), MutAnyOrigin
-            ](self.W_hh.value_dev.value())
+            ](self.W_hh.val.dev.value())
             var bih = LayoutTensor[
                 DT, Layout.row_major(THREE_H), MutAnyOrigin
-            ](self.b_ih.value_dev.value())
+            ](self.b_ih.val.dev.value())
             var bhh = LayoutTensor[
                 DT, Layout.row_major(THREE_H), MutAnyOrigin
-            ](self.b_hh.value_dev.value())
+            ](self.b_hh.val.dev.value())
             var cc = LayoutTensor[
                 DT, Layout.row_major(BATCH, 4 * H), MutAnyOrigin
             ](self._cache_dev.value())
@@ -657,10 +657,10 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             ](self._dcomb_dev.value())
             var wih = LayoutTensor[
                 DT, Layout.row_major(Self.IN0_DIM, THREE_H), MutAnyOrigin
-            ](self.W_ih.value_dev.value())
+            ](self.W_ih.val.dev.value())
             var whh = LayoutTensor[
                 DT, Layout.row_major(H, THREE_H), MutAnyOrigin
-            ](self.W_hh.value_dev.value())
+            ](self.W_hh.val.dev.value())
 
             # 1. Gate kernel → d_comb (reads cache, h_prev, go).
             comptime gk = _gru_bwd_gate_kernel[BATCH, H]
@@ -671,16 +671,16 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             comptime if mode == "all":
                 var dwih = LayoutTensor[
                     DT, Layout.row_major(Self.IN0_DIM, THREE_H), MutAnyOrigin
-                ](self.W_ih.grad_dev.value())
+                ](self.W_ih.grd.dev.value())
                 var dwhh = LayoutTensor[
                     DT, Layout.row_major(H, THREE_H), MutAnyOrigin,
-                ](self.W_hh.grad_dev.value())
+                ](self.W_hh.grd.dev.value())
                 var dbih = LayoutTensor[
                     DT, Layout.row_major(THREE_H), MutAnyOrigin
-                ](self.b_ih.grad_dev.value())
+                ](self.b_ih.grd.dev.value())
                 var dbhh = LayoutTensor[
                     DT, Layout.row_major(THREE_H), MutAnyOrigin
-                ](self.b_hh.grad_dev.value())
+                ](self.b_hh.grd.dev.value())
                 comptime wk = _gru_dWih_kernel[BATCH, Self.IN0_DIM, H]
                 ctx.enqueue_function[wk](
                     x_lt, dcomb, dwih,

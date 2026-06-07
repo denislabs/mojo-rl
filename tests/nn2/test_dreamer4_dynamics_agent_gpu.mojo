@@ -156,7 +156,7 @@ def main() raises:
     ctx.enqueue_copy(gih, gind)
     ctx.enqueue_copy(hh, dgpu.agent_out_dev())
     ctx.enqueue_copy(gainh, dgpu.grad_agent_in_dev())
-    ctx.enqueue_copy(regh, dgpu.register.grad_dev.value())
+    ctx.enqueue_copy(regh, dgpu.register.grd.dev.value())
     ctx.synchronize()
 
     var pred_g = _alloc(N)
@@ -173,7 +173,7 @@ def main() raises:
         gain_c,
         rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gainh.unsafe_ptr()), AGN)
     var dreg = _maxdiff(
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](dcpu.register.grad.unsafe_ptr()),
+        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](dcpu.register.grd.cpu.unsafe_ptr()),
         rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](regh.unsafe_ptr()), RN)
 
     print("  forward flow     max|Δ| =", dpred)

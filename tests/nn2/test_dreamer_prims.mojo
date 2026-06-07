@@ -188,7 +188,7 @@ def test_rmsnorm_parity() raises:
         got_y.append(y[i])
         got_gx.append(gi[i])
     for k in range(DIM):
-        got_gg.append(rn.gamma.grad[k])
+        got_gg.append(rn.gamma.grd.cpu[k])
 
     var df = _max_abs_diff(got_y, y_ref)
     var db = _max_abs_diff(got_gx, gx_ref)
@@ -254,9 +254,9 @@ def test_blocklinear_parity() raises:
     for i in range(BATCH * IN):
         got_gx.append(gi[i])
     for k in range(len(kernel)):
-        got_gk.append(bl.weight.grad[k])
+        got_gk.append(bl.weight.grd.cpu[k])
     for k in range(OUT):
-        got_gb.append(bl.bias.grad[k])
+        got_gb.append(bl.bias.grd.cpu[k])
 
     var df = _max_abs_diff(got_y, y_ref)
     var dgx = _max_abs_diff(got_gx, gx_ref)

@@ -90,10 +90,10 @@ def main() raises:
     var gpu = GRUCell[IN_DIM, H].make[target="gpu", INIT=Kaiming](ctx)
 
     # Make params identical: copy CPU → GPU device buffers.
-    _upload(ctx, cpu.W_ih.value_unsafe_ptr_cpu(), gpu.W_ih.value_dev.value(), cpu.W_IH_SIZE)
-    _upload(ctx, cpu.W_hh.value_unsafe_ptr_cpu(), gpu.W_hh.value_dev.value(), cpu.W_HH_SIZE)
-    _upload(ctx, cpu.b_ih.value_unsafe_ptr_cpu(), gpu.b_ih.value_dev.value(), cpu.B_IH_SIZE)
-    _upload(ctx, cpu.b_hh.value_unsafe_ptr_cpu(), gpu.b_hh.value_dev.value(), cpu.B_IH_SIZE)
+    _upload(ctx, cpu.W_ih.value_unsafe_ptr_cpu(), gpu.W_ih.val.dev.value(), cpu.W_IH_SIZE)
+    _upload(ctx, cpu.W_hh.value_unsafe_ptr_cpu(), gpu.W_hh.val.dev.value(), cpu.W_HH_SIZE)
+    _upload(ctx, cpu.b_ih.value_unsafe_ptr_cpu(), gpu.b_ih.val.dev.value(), cpu.B_IH_SIZE)
+    _upload(ctx, cpu.b_hh.value_unsafe_ptr_cpu(), gpu.b_hh.val.dev.value(), cpu.B_IH_SIZE)
 
     # ---- Host inputs (shared) ----
     var x_h: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH * IN_DIM)
@@ -154,22 +154,22 @@ def main() raises:
 
     var dwih_diff = _maxdiff(
         cpu.W_ih.grad_unsafe_ptr_cpu(),
-        _download(ctx, gpu.W_ih.grad_dev.value(), cpu.W_IH_SIZE),
+        _download(ctx, gpu.W_ih.grd.dev.value(), cpu.W_IH_SIZE),
         cpu.W_IH_SIZE,
     )
     var dwhh_diff = _maxdiff(
         cpu.W_hh.grad_unsafe_ptr_cpu(),
-        _download(ctx, gpu.W_hh.grad_dev.value(), cpu.W_HH_SIZE),
+        _download(ctx, gpu.W_hh.grd.dev.value(), cpu.W_HH_SIZE),
         cpu.W_HH_SIZE,
     )
     var dbih_diff = _maxdiff(
         cpu.b_ih.grad_unsafe_ptr_cpu(),
-        _download(ctx, gpu.b_ih.grad_dev.value(), cpu.B_IH_SIZE),
+        _download(ctx, gpu.b_ih.grd.dev.value(), cpu.B_IH_SIZE),
         cpu.B_IH_SIZE,
     )
     var dbhh_diff = _maxdiff(
         cpu.b_hh.grad_unsafe_ptr_cpu(),
-        _download(ctx, gpu.b_hh.grad_dev.value(), cpu.B_IH_SIZE),
+        _download(ctx, gpu.b_hh.grd.dev.value(), cpu.B_IH_SIZE),
         cpu.B_IH_SIZE,
     )
     print("  max|dW_ih|    =", dwih_diff)

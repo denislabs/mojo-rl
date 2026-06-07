@@ -55,8 +55,8 @@ struct ZeroLinear[IN: Int, OUT: Int](Module):
             z.ts = TargetStorage.make_cpu()
         else:
             var ctx_v = ctx.value()
-            z.inner.weight.value_dev.value().enqueue_fill(0.0)
-            z.inner.bias.value_dev.value().enqueue_fill(0.0)
+            z.inner.weight.val.dev.value().enqueue_fill(0.0)
+            z.inner.bias.val.dev.value().enqueue_fill(0.0)
             z.ts = TargetStorage.make_gpu(ctx_v)
         return z^
 

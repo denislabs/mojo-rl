@@ -202,7 +202,7 @@ def test_backward_fd() raises:
         for k in range(OUT_N):
             fd += go[k] * (y_pos[k] - y_neg[k])
         fd = fd / (Scalar[DT](2.0) * eps)
-        var d = conv.weight.grad[wi] - fd
+        var d = conv.weight.grd.cpu[wi] - fd
         var ad = d if d >= Scalar[DT](0) else -d
         if ad > max_dw:
             max_dw = ad
@@ -225,7 +225,7 @@ def test_backward_fd() raises:
         for k in range(OUT_N):
             fd += go[k] * (y_pos[k] - y_neg[k])
         fd = fd / (Scalar[DT](2.0) * eps)
-        var d = conv.bias.grad[oc] - fd
+        var d = conv.bias.grd.cpu[oc] - fd
         var ad = d if d >= Scalar[DT](0) else -d
         if ad > max_db:
             max_db = ad

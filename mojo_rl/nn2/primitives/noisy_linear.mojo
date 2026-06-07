@@ -392,10 +392,10 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
                 sgw_host.unsafe_ptr()[k] = sigma_init
             for k in range(Self.B_SIZE):
                 sgb_host.unsafe_ptr()[k] = sigma_init
-            ctx_v.enqueue_copy(nl.mu_w.value_dev.value(),    muw_host)
-            ctx_v.enqueue_copy(nl.sigma_w.value_dev.value(), sgw_host)
-            ctx_v.enqueue_copy(nl.mu_b.value_dev.value(),    mub_host)
-            ctx_v.enqueue_copy(nl.sigma_b.value_dev.value(), sgb_host)
+            ctx_v.enqueue_copy(nl.mu_w.val.dev.value(),    muw_host)
+            ctx_v.enqueue_copy(nl.sigma_w.val.dev.value(), sgw_host)
+            ctx_v.enqueue_copy(nl.mu_b.val.dev.value(),    mub_host)
+            ctx_v.enqueue_copy(nl.sigma_b.val.dev.value(), sgb_host)
             ctx_v.synchronize()
             nl.ts = TargetStorage.make_gpu(ctx_v)
 
@@ -551,16 +551,16 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
             # 2. Materialize W_eff and b_eff on device.
             var muw_lt = LayoutTensor[
                 DT, Layout.row_major(Self.IN, Self.OUT), MutAnyOrigin,
-            ](self.mu_w.value_dev.value().unsafe_ptr())
+            ](self.mu_w.val.dev.value().unsafe_ptr())
             var sgw_lt = LayoutTensor[
                 DT, Layout.row_major(Self.IN, Self.OUT), MutAnyOrigin,
-            ](self.sigma_w.value_dev.value().unsafe_ptr())
+            ](self.sigma_w.val.dev.value().unsafe_ptr())
             var mub_lt = LayoutTensor[
                 DT, Layout.row_major(Self.OUT), MutAnyOrigin,
-            ](self.mu_b.value_dev.value().unsafe_ptr())
+            ](self.mu_b.val.dev.value().unsafe_ptr())
             var sgb_lt = LayoutTensor[
                 DT, Layout.row_major(Self.OUT), MutAnyOrigin,
-            ](self.sigma_b.value_dev.value().unsafe_ptr())
+            ](self.sigma_b.val.dev.value().unsafe_ptr())
             var we_lt = LayoutTensor[
                 DT, Layout.row_major(Self.IN, Self.OUT), MutAnyOrigin,
             ](w_eff_p)
@@ -706,10 +706,10 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
                 ](go_p)
                 var g_mu_b_lt = LayoutTensor[
                     DT, Layout.row_major(Self.OUT), MutAnyOrigin,
-                ](self.mu_b.grad_dev.value().unsafe_ptr())
+                ](self.mu_b.grd.dev.value().unsafe_ptr())
                 var g_sg_b_lt = LayoutTensor[
                     DT, Layout.row_major(Self.OUT), MutAnyOrigin,
-                ](self.sigma_b.grad_dev.value().unsafe_ptr())
+                ](self.sigma_b.grd.dev.value().unsafe_ptr())
                 # grad_b pair — block-per-column reduction (full occupancy).
                 comptime gb_kernel = _grad_b_pair_reduce_kernel[
                     BATCH, Self.OUT
@@ -751,7 +751,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
                 # grad_mu_w += dW_tmp  (flat accumulate)
                 comptime gw_flat = Layout.row_major(Self.W_SIZE)
                 var g_mu_w_flat = LayoutTensor[DT, gw_flat, MutAnyOrigin](
-                    self.mu_w.grad_dev.value().unsafe_ptr()
+                    self.mu_w.grd.dev.value().unsafe_ptr()
                 )
                 var dW_tmp_flat = LayoutTensor[DT, gw_flat, MutAnyOrigin](
                     self.dW_tmp_dev.value()
@@ -765,7 +765,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
                 # grad_sigma_w += dW_tmp · n_in[i] · n_out[j]
                 var g_sg_w_lt = LayoutTensor[
                     DT, Layout.row_major(Self.IN, Self.OUT), MutAnyOrigin,
-                ](self.sigma_w.grad_dev.value().unsafe_ptr())
+                ](self.sigma_w.grd.dev.value().unsafe_ptr())
                 var dW_tmp_2d = LayoutTensor[
                     DT, Layout.row_major(Self.IN, Self.OUT), MutAnyOrigin,
                 ](self.dW_tmp_dev.value())

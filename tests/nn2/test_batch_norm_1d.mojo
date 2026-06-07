@@ -118,8 +118,8 @@ def test_running_stats_converge() raises:
             var d = x[b * DIM + f] - true_mean
             true_var += d * d
         true_var = true_var / Scalar[DT](Float64(BATCH))
-        var rm = bn.running_mean.value[f]
-        var rv = bn.running_var.value[f]
+        var rm = bn.running_mean.val.cpu[f]
+        var rv = bn.running_var.val.cpu[f]
         var dm = rm - true_mean
         var adm = dm if dm >= Scalar[DT](0) else -dm
         var dv = rv - true_var
@@ -149,10 +149,10 @@ def test_eval_uses_running_stats() raises:
     comptime N = BATCH * DIM
     var bn = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
     # Set running stats explicitly so the math is deterministic.
-    bn.running_mean.value[0] = Scalar[DT](1.0)
-    bn.running_mean.value[1] = Scalar[DT](-2.0)
-    bn.running_var.value[0]  = Scalar[DT](4.0)
-    bn.running_var.value[1]  = Scalar[DT](0.25)
+    bn.running_mean.val.cpu[0] = Scalar[DT](1.0)
+    bn.running_mean.val.cpu[1] = Scalar[DT](-2.0)
+    bn.running_var.val.cpu[0]  = Scalar[DT](4.0)
+    bn.running_var.val.cpu[1]  = Scalar[DT](0.25)
     bn.training = False
 
     var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
@@ -186,7 +186,7 @@ def test_eval_uses_running_stats() raises:
     )
     # Running stats should not have moved (eval mode).
     assert_true(
-        bn.running_mean.value[0] == Scalar[DT](1.0),
+        bn.running_mean.val.cpu[0] == Scalar[DT](1.0),
         "Eval mode must not update running_mean",
     )
     print("  ok")
@@ -267,15 +267,15 @@ def test_backward_fd() raises:
         var bn_n = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
         bn_p.training = True
         bn_n.training = True
-        bn_p.gamma.value[f] = Scalar[DT](1.0) + eps
-        bn_n.gamma.value[f] = Scalar[DT](1.0) - eps
+        bn_p.gamma.val.cpu[f] = Scalar[DT](1.0) + eps
+        bn_n.gamma.val.cpu[f] = Scalar[DT](1.0) - eps
         bn_p.forward["cpu", BATCH](x_t, output=ypos_t)
         bn_n.forward["cpu", BATCH](x_t, output=yneg_t)
         var fd_dg: Scalar[DT] = 0.0
         for k in range(N):
             fd_dg += go[k] * (y_pos[k] - y_neg[k])
         fd_dg = fd_dg / (Scalar[DT](2.0) * eps)
-        var d = bn2.gamma.grad[f] - fd_dg
+        var d = bn2.gamma.grd.cpu[f] - fd_dg
         var ad = d if d >= Scalar[DT](0) else -d
         if ad > max_dg:
             max_dg = ad
@@ -285,15 +285,15 @@ def test_backward_fd() raises:
         var bn_n2 = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
         bn_p2.training = True
         bn_n2.training = True
-        bn_p2.beta.value[f] = eps
-        bn_n2.beta.value[f] = -eps
+        bn_p2.beta.val.cpu[f] = eps
+        bn_n2.beta.val.cpu[f] = -eps
         bn_p2.forward["cpu", BATCH](x_t, output=ypos_t)
         bn_n2.forward["cpu", BATCH](x_t, output=yneg_t)
         var fd_db: Scalar[DT] = 0.0
         for k in range(N):
             fd_db += go[k] * (y_pos[k] - y_neg[k])
         fd_db = fd_db / (Scalar[DT](2.0) * eps)
-        var d2 = bn2.beta.grad[f] - fd_db
+        var d2 = bn2.beta.grd.cpu[f] - fd_db
         var ad2 = d2 if d2 >= Scalar[DT](0) else -d2
         if ad2 > max_db:
             max_db = ad2

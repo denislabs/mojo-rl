@@ -122,7 +122,7 @@ struct LearnedTokens[N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool](Module):
             var host = ctx_v.enqueue_create_host_buffer[DT](Self.NEW_N)
             ctx_v.synchronize()
             INIT.init_weight(host.unsafe_ptr(), Self.NEW_N, Self.N_NEW, Self.D)
-            ctx_v.enqueue_copy(m.tokens.value_dev.value(), host)
+            ctx_v.enqueue_copy(m.tokens.val.dev.value(), host)
             ctx_v.synchronize()
             m.ts = TargetStorage.make_gpu(ctx_v)
         return m^
@@ -150,7 +150,7 @@ struct LearnedTokens[N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool](Module):
         var inp = typed_view[BATCH, Self.IN_N](inputs[0])
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
         comptime if target == "cpu":
-            var tok = TileTensor(self.tokens.value, row_major[Self.NEW_N]())
+            var tok = TileTensor(self.tokens.val.cpu, row_major[Self.NEW_N]())
             for bt in range(BATCH):
                 for k in range(Self.NEW_N):
                     out[bt, Self.NEW_OFF + k] = tok[k]
@@ -165,7 +165,7 @@ struct LearnedTokens[N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool](Module):
             ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr))
             var p_lt = LayoutTensor[
                 DT, Layout.row_major(Self.NEW_N), MutAnyOrigin
-            ](self.tokens.value_dev.value())
+            ](self.tokens.val.dev.value())
             comptime n_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
             comptime kernel = _lt_forward_kernel[
                 BATCH, Self.IN_N, Self.NEW_N, Self.OUT_DIM,
@@ -202,7 +202,7 @@ struct LearnedTokens[N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool](Module):
                 for k in range(Self.IN_N):
                     gi[bt, k] = go[bt, Self.IN_OFF + k]
             comptime if mode == "all":
-                var gtok = TileTensor(self.tokens.grad, row_major[Self.NEW_N]())
+                var gtok = TileTensor(self.tokens.grd.cpu, row_major[Self.NEW_N]())
                 for bt in range(BATCH):
                     for k in range(Self.NEW_N):
                         gtok[k] += go[bt, Self.NEW_OFF + k]
@@ -224,7 +224,7 @@ struct LearnedTokens[N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool](Module):
             comptime if mode == "all":
                 var gp_lt = LayoutTensor[
                     DT, Layout.row_major(Self.NEW_N), MutAnyOrigin
-                ](self.tokens.grad_dev.value())
+                ](self.tokens.grd.dev.value())
                 comptime gpk = _lt_grad_param_kernel[
                     BATCH, Self.NEW_N, Self.OUT_DIM, Self.NEW_OFF
                 ]

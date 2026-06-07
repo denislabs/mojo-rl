@@ -220,8 +220,8 @@ struct Linear[IN: Int, OUT: Int](Module):
             ctx_v.synchronize()
             INIT.init_weight(w_host.unsafe_ptr(), Self.W_SIZE, Self.IN, Self.OUT)
             INIT.init_bias(b_host.unsafe_ptr(), Self.B_SIZE)
-            ctx_v.enqueue_copy(lin.weight.value_dev.value(), w_host)
-            ctx_v.enqueue_copy(lin.bias.value_dev.value(),   b_host)
+            ctx_v.enqueue_copy(lin.weight.val.dev.value(), w_host)
+            ctx_v.enqueue_copy(lin.bias.val.dev.value(),   b_host)
             ctx_v.synchronize()
             # Fixed [IN, OUT] dW scratch for the max_matmul grad_w path; cacheT
             # stays None (lazily sized to BATCH on first backward).
@@ -259,7 +259,7 @@ struct Linear[IN: Int, OUT: Int](Module):
         comptime if target == "cpu":
             comptime if POLICY.compute_dtype == DT:
                 var w_tt = TileTensor(
-                    self.weight.value, row_major[Self.IN, Self.OUT](),
+                    self.weight.val.cpu, row_major[Self.IN, Self.OUT](),
                 )
                 max_matmul[target="cpu"](output_v, input_v, w_tt, None)
             else:
@@ -317,7 +317,7 @@ struct Linear[IN: Int, OUT: Int](Module):
 
             comptime if POLICY.compute_dtype == DT:
                 var weight_tt = TileTensor(
-                    self.weight.value_dev.value(),
+                    self.weight.val.dev.value(),
                     row_major[Self.IN, Self.OUT](),
                 )
                 max_matmul[target="gpu"](output_v, input_v, weight_tt, ctx)
@@ -332,7 +332,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                 ](self.amp.w_bf16_dev.value().unsafe_ptr())
                 cast_fp32_to_bf16[target="gpu", N=Self.W_SIZE](
                     rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                        self.weight.value_dev.value().unsafe_ptr()
+                        self.weight.val.dev.value().unsafe_ptr()
                     ),
                     w_bf16_p,
                     ctx,
@@ -371,7 +371,7 @@ struct Linear[IN: Int, OUT: Int](Module):
             comptime bias_layout = Layout.row_major(Self.OUT)
             var output_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](out_p)
             var bias_lt = LayoutTensor[DT, bias_layout, MutAnyOrigin](
-                self.bias.value_dev.value()
+                self.bias.val.dev.value()
             )
             comptime n_blocks_ba = (BATCH * Self.OUT + TPB - 1) // TPB
             comptime ba_kernel = _bias_add_kernel[BATCH, Self.OUT]
@@ -490,7 +490,7 @@ struct Linear[IN: Int, OUT: Int](Module):
             # May alias the cache slab — safe now (1) and (2) are done.
             comptime if POLICY.compute_dtype == DT:
                 var w_tt = TileTensor(
-                    self.weight.value, row_major[Self.IN, Self.OUT](),
+                    self.weight.val.cpu, row_major[Self.IN, Self.OUT](),
                 )
                 max_matmul[transpose_b=True, target="cpu"](
                     grad_input_v, grad_output_v, w_tt, None,
@@ -545,7 +545,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                     DT, Layout.row_major(BATCH, Self.OUT), MutAnyOrigin
                 ](go_p)
                 var gb_lt = LayoutTensor[DT, gb_layout, MutAnyOrigin](
-                    self.bias.grad_dev.value()
+                    self.bias.grd.dev.value()
                 )
                 comptime gb_kernel = _grad_bias_reduce_kernel[BATCH, Self.OUT]
                 ctx.enqueue_function[gb_kernel](
@@ -584,7 +584,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                 )
                 comptime gw_layout = Layout.row_major(Self.W_SIZE)
                 var gw_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
-                    self.weight.grad_dev.value()
+                    self.weight.grd.dev.value()
                 )
                 var dW_tmp_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
                     self.dW_tmp_dev.value()
@@ -599,7 +599,7 @@ struct Linear[IN: Int, OUT: Int](Module):
             # ── (3) grad_input = grad_output @ W^T ─────────────────────
             comptime if POLICY.compute_dtype == DT:
                 var weight_tt = TileTensor(
-                    self.weight.value_dev.value(),
+                    self.weight.val.dev.value(),
                     row_major[Self.IN, Self.OUT](),
                 )
                 max_matmul[transpose_b=True, target="gpu"](
@@ -616,7 +616,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                 ](self.amp.w_bf16_dev.value().unsafe_ptr())
                 cast_fp32_to_bf16[target="gpu", N=Self.W_SIZE](
                     rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                        self.weight.value_dev.value().unsafe_ptr()
+                        self.weight.val.dev.value().unsafe_ptr()
                     ),
                     w_bf16_p, ctx,
                 )

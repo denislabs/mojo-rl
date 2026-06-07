@@ -63,14 +63,14 @@ def main() raises:
     var b_h = ctx.enqueue_create_host_buffer[DT](Cell.B_SIZE)
     ctx.synchronize()
     for i in range(Cell.W_IH_SIZE):
-        wih_h.unsafe_ptr()[i] = cpu.W_ih.value[i]
+        wih_h.unsafe_ptr()[i] = cpu.W_ih.val.cpu[i]
     for i in range(Cell.W_HH_SIZE):
-        whh_h.unsafe_ptr()[i] = cpu.W_hh.value[i]
+        whh_h.unsafe_ptr()[i] = cpu.W_hh.val.cpu[i]
     for i in range(Cell.B_SIZE):
-        b_h.unsafe_ptr()[i] = cpu.b.value[i]
-    ctx.enqueue_copy(gpu.W_ih.value_dev.value(), wih_h)
-    ctx.enqueue_copy(gpu.W_hh.value_dev.value(), whh_h)
-    ctx.enqueue_copy(gpu.b.value_dev.value(), b_h)
+        b_h.unsafe_ptr()[i] = cpu.b.val.cpu[i]
+    ctx.enqueue_copy(gpu.W_ih.val.dev.value(), wih_h)
+    ctx.enqueue_copy(gpu.W_hh.val.dev.value(), whh_h)
+    ctx.enqueue_copy(gpu.b.val.dev.value(), b_h)
     ctx.synchronize()
 
     # Inputs (host).
@@ -173,9 +173,9 @@ def main() raises:
     _download(ctx, dxd, dx_g, BATCH * IN_)
     _download(ctx, dhpd, dhp_g, BATCH * H)
     _download(ctx, dcpd, dcp_g, BATCH * H)
-    _download(ctx, gpu.W_ih.grad_dev.value(), dwih_g, Cell.W_IH_SIZE)
-    _download(ctx, gpu.W_hh.grad_dev.value(), dwhh_g, Cell.W_HH_SIZE)
-    _download(ctx, gpu.b.grad_dev.value(), db_g, Cell.B_SIZE)
+    _download(ctx, gpu.W_ih.grd.dev.value(), dwih_g, Cell.W_IH_SIZE)
+    _download(ctx, gpu.W_hh.grd.dev.value(), dwhh_g, Cell.W_HH_SIZE)
+    _download(ctx, gpu.b.grd.dev.value(), db_g, Cell.B_SIZE)
 
     # ---- Compare ----
     var md: Scalar[DT] = 0.0
@@ -190,11 +190,11 @@ def main() raises:
         md = max(md, _abs(dx_c[i] - dx_g[i]))
     var mg: Scalar[DT] = 0.0
     for i in range(Cell.W_IH_SIZE):
-        mg = max(mg, _abs(cpu.W_ih.grad[i] - dwih_g[i]))
+        mg = max(mg, _abs(cpu.W_ih.grd.cpu[i] - dwih_g[i]))
     for i in range(Cell.W_HH_SIZE):
-        mg = max(mg, _abs(cpu.W_hh.grad[i] - dwhh_g[i]))
+        mg = max(mg, _abs(cpu.W_hh.grd.cpu[i] - dwhh_g[i]))
     for i in range(Cell.B_SIZE):
-        mg = max(mg, _abs(cpu.b.grad[i] - db_g[i]))
+        mg = max(mg, _abs(cpu.b.grd.cpu[i] - db_g[i]))
 
     print("  max|fwd/state diff| =", md, "  max|param-grad diff| =", mg)
     assert_true(md < ATOL, "LSTM GPU forward/state/input-grad parity failed")

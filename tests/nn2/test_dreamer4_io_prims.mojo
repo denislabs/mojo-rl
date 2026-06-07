@@ -168,7 +168,7 @@ def _test_learned_tokens[PREPEND: Bool](name: String) raises:
 
     # param gradcheck (FD over the learned-token parameter)
     var tp = op.tokens.value_unsafe_ptr_cpu()
-    var gtok = op.tokens.grad.unsafe_ptr()
+    var gtok = op.tokens.grd.cpu.unsafe_ptr()
     var max_p: Float64 = 0.0
     for kk in range(N_NEW * D):
         var orig = tp[kk]

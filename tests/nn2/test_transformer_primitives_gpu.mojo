@@ -183,7 +183,7 @@ def test_bias_add_parity(ctx: DeviceContext) raises:
         var v = Scalar[DT](0.1 * Float64(i) - 0.25)
         bc[i] = v
         bh.unsafe_ptr()[i] = v
-    ctx.enqueue_copy(gpu.bias.value_dev.value(), bh)
+    ctx.enqueue_copy(gpu.bias.val.dev.value(), bh)
     ctx.synchronize()
 
     var xh = ctx.enqueue_create_host_buffer[DT](N)
@@ -222,7 +222,7 @@ def test_bias_add_parity(ctx: DeviceContext) raises:
     gpu.vjp["gpu", BATCH](got, git)
     ctx.enqueue_copy(yh, yd)
     ctx.enqueue_copy(gih, gid)
-    ctx.enqueue_copy(gbh, gpu.bias.grad_dev.value())
+    ctx.enqueue_copy(gbh, gpu.bias.grd.dev.value())
     ctx.synchronize()
 
     var mf = _maxdiff(yh.unsafe_ptr(), ycpu, N)
@@ -255,7 +255,7 @@ def test_embedding_parity(ctx: DeviceContext) raises:
         var v = Scalar[DT](0.2 * Float64(i) - 0.5)
         wc[i] = v
         wh.unsafe_ptr()[i] = v
-    ctx.enqueue_copy(gpu.weight.value_dev.value(), wh)
+    ctx.enqueue_copy(gpu.weight.val.dev.value(), wh)
     ctx.synchronize()
 
     var xh = ctx.enqueue_create_host_buffer[DT](IN_N)
@@ -297,7 +297,7 @@ def test_embedding_parity(ctx: DeviceContext) raises:
     gpu.vjp["gpu", BATCH](got, git)
     ctx.enqueue_copy(yh, yd)
     ctx.enqueue_copy(gih, gid)
-    ctx.enqueue_copy(gwh, gpu.weight.grad_dev.value())
+    ctx.enqueue_copy(gwh, gpu.weight.grd.dev.value())
     ctx.synchronize()
 
     var mf = _maxdiff(yh.unsafe_ptr(), ycpu, OUT_N)

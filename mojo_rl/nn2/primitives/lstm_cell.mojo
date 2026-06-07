@@ -329,13 +329,13 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             m.W_hh = Param["W_hh", True,  Self.W_HH_SIZE].make_gpu(ctx_v)
             m.b    = Param["b",    False, Self.B_SIZE].make_gpu(ctx_v)
             Self._gpu_init_param[Self.W_IH_SIZE, Self.IN_, 4 * Self.HIDDEN, INIT](
-                ctx_v, m.W_ih.value_dev.value(), is_bias=False
+                ctx_v, m.W_ih.val.dev.value(), is_bias=False
             )
             Self._gpu_init_param[Self.W_HH_SIZE, Self.HIDDEN, 4 * Self.HIDDEN, INIT](
-                ctx_v, m.W_hh.value_dev.value(), is_bias=False
+                ctx_v, m.W_hh.val.dev.value(), is_bias=False
             )
             Self._gpu_init_param[Self.B_SIZE, 0, 0, INIT](
-                ctx_v, m.b.value_dev.value(), is_bias=True
+                ctx_v, m.b.val.dev.value(), is_bias=True
             )
             m._dcomb_dev = ctx_v.enqueue_create_buffer[DT](1)
         return m^
@@ -521,9 +521,9 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             var cc_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin](
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](cache.ptr)
             )
-            var wih = LayoutTensor[DT, Layout.row_major(Self.IN_, FOURH), MutAnyOrigin](self.W_ih.value_dev.value())
-            var whh = LayoutTensor[DT, Layout.row_major(H, FOURH), MutAnyOrigin](self.W_hh.value_dev.value())
-            var bb = LayoutTensor[DT, Layout.row_major(FOURH), MutAnyOrigin](self.b.value_dev.value())
+            var wih = LayoutTensor[DT, Layout.row_major(Self.IN_, FOURH), MutAnyOrigin](self.W_ih.val.dev.value())
+            var whh = LayoutTensor[DT, Layout.row_major(H, FOURH), MutAnyOrigin](self.W_hh.val.dev.value())
+            var bb = LayoutTensor[DT, Layout.row_major(FOURH), MutAnyOrigin](self.b.val.dev.value())
             comptime kern = _lstm_fwd_kernel[BATCH, Self.IN_, H, Self.CACHE_SIZE, True]
             ctx.enqueue_function[kern](
                 x_lt, wih, whh, bb, hp_lt, cp_lt, ht_lt, ct_lt, cc_lt,
@@ -609,9 +609,9 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             var ct_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](c_t.ptr)
             )
-            var wih = LayoutTensor[DT, Layout.row_major(Self.IN_, FOURH), MutAnyOrigin](self.W_ih.value_dev.value())
-            var whh = LayoutTensor[DT, Layout.row_major(H, FOURH), MutAnyOrigin](self.W_hh.value_dev.value())
-            var bb = LayoutTensor[DT, Layout.row_major(FOURH), MutAnyOrigin](self.b.value_dev.value())
+            var wih = LayoutTensor[DT, Layout.row_major(Self.IN_, FOURH), MutAnyOrigin](self.W_ih.val.dev.value())
+            var whh = LayoutTensor[DT, Layout.row_major(H, FOURH), MutAnyOrigin](self.W_hh.val.dev.value())
+            var bb = LayoutTensor[DT, Layout.row_major(FOURH), MutAnyOrigin](self.b.val.dev.value())
             # Reuse the fused kernel with WITH_CACHE=False (cache view unused).
             var dummy = LayoutTensor[DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin](
                 rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](h_t.ptr)
@@ -788,11 +788,11 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             var dcomb = LayoutTensor[DT, Layout.row_major(BATCH, FOURH), MutAnyOrigin](
                 self._dcomb_dev.value()
             )
-            var wih = LayoutTensor[DT, Layout.row_major(Self.IN_, FOURH), MutAnyOrigin](self.W_ih.value_dev.value())
-            var whh = LayoutTensor[DT, Layout.row_major(H, FOURH), MutAnyOrigin](self.W_hh.value_dev.value())
-            var dwih = LayoutTensor[DT, Layout.row_major(Self.IN_, FOURH), MutAnyOrigin](self.W_ih.grad_dev.value())
-            var dwhh = LayoutTensor[DT, Layout.row_major(H, FOURH), MutAnyOrigin](self.W_hh.grad_dev.value())
-            var dbb = LayoutTensor[DT, Layout.row_major(FOURH), MutAnyOrigin](self.b.grad_dev.value())
+            var wih = LayoutTensor[DT, Layout.row_major(Self.IN_, FOURH), MutAnyOrigin](self.W_ih.val.dev.value())
+            var whh = LayoutTensor[DT, Layout.row_major(H, FOURH), MutAnyOrigin](self.W_hh.val.dev.value())
+            var dwih = LayoutTensor[DT, Layout.row_major(Self.IN_, FOURH), MutAnyOrigin](self.W_ih.grd.dev.value())
+            var dwhh = LayoutTensor[DT, Layout.row_major(H, FOURH), MutAnyOrigin](self.W_hh.grd.dev.value())
+            var dbb = LayoutTensor[DT, Layout.row_major(FOURH), MutAnyOrigin](self.b.grd.dev.value())
 
             comptime ik = _lstm_bwd_input_kernel[BATCH, Self.IN_, H, Self.CACHE_SIZE]
             ctx.enqueue_function[ik](

@@ -208,8 +208,8 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
             ctx_v.synchronize()
             INIT.init_weight(w_host.unsafe_ptr(), Self.W_SIZE, Self.IN, Self.OUT)
             INIT.init_bias(b_host.unsafe_ptr(), Self.B_SIZE)
-            ctx_v.enqueue_copy(lin.weight.value_dev.value(), w_host)
-            ctx_v.enqueue_copy(lin.bias.value_dev.value(),   b_host)
+            ctx_v.enqueue_copy(lin.weight.val.dev.value(), w_host)
+            ctx_v.enqueue_copy(lin.bias.val.dev.value(),   b_host)
             ctx_v.synchronize()
             # Placeholder dev buffer for act_cache; grown lazily on first fwd.
             lin.act_cache_dev = ctx_v.enqueue_create_buffer[DT](1)
@@ -258,7 +258,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
         comptime if target == "cpu":
             # (1) max_matmul: output = input @ W
             var w_tt = TileTensor(
-                self.weight.value, row_major[Self.IN, Self.OUT](),
+                self.weight.val.cpu, row_major[Self.IN, Self.OUT](),
             )
             max_matmul[target="cpu"](output_v, input_v, w_tt, None)
 
@@ -295,7 +295,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
 
             # (1) max_matmul: output = input @ W
             var weight_tt = TileTensor(
-                self.weight.value_dev.value(),
+                self.weight.val.dev.value(),
                 row_major[Self.IN, Self.OUT](),
             )
             max_matmul[target="gpu"](output_v, input_v, weight_tt, ctx)
@@ -309,7 +309,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
             comptime bias_layout = Layout.row_major(Self.OUT)
             var output_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](out_p)
             var bias_lt = LayoutTensor[DT, bias_layout, MutAnyOrigin](
-                self.bias.value_dev.value()
+                self.bias.val.dev.value()
             )
             var cache_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](
                 self.act_cache_dev.value()
@@ -424,7 +424,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
 
             # (4) grad_input = grad_pre_act @ W^T (always).
             var w_tt = TileTensor(
-                self.weight.value, row_major[Self.IN, Self.OUT](),
+                self.weight.val.cpu, row_major[Self.IN, Self.OUT](),
             )
             max_matmul[transpose_b=True, target="cpu"](
                 grad_input_v, grad_output_v, w_tt, None,
@@ -458,7 +458,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
             comptime if mode == "all":
                 comptime gb_layout = Layout.row_major(Self.OUT)
                 var gb_lt = LayoutTensor[DT, gb_layout, MutAnyOrigin](
-                    self.bias.grad_dev.value()
+                    self.bias.grd.dev.value()
                 )
                 comptime gb_kernel = _grad_bias_reduce_kernel[BATCH, Self.OUT]
                 ctx.enqueue_function[gb_kernel](
@@ -504,7 +504,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
                 # 3c. grad_w += dW_tmp.
                 comptime gw_layout = Layout.row_major(Self.W_SIZE)
                 var gw_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
-                    self.weight.grad_dev.value()
+                    self.weight.grd.dev.value()
                 )
                 var dW_tmp_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
                     self.dW_tmp_dev.value()
@@ -518,7 +518,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
 
             # (4) grad_input = grad_pre_act @ W^T (always).
             var weight_tt = TileTensor(
-                self.weight.value_dev.value(),
+                self.weight.val.dev.value(),
                 row_major[Self.IN, Self.OUT](),
             )
             max_matmul[transpose_b=True, target="gpu"](

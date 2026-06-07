@@ -306,16 +306,16 @@ struct BatchNorm2D[
             var ctx_v = require_ctx["BatchNorm2D.make[target='gpu']"](ctx)
             bn.gamma = Param["gamma", False, Self.C].make_gpu(ctx_v)
             bn.beta  = Param["beta",  False, Self.C].make_gpu(ctx_v)
-            bn.gamma.value_dev.value().enqueue_fill(1.0)
-            bn.beta.value_dev.value().enqueue_fill(0.0)
+            bn.gamma.val.dev.value().enqueue_fill(1.0)
+            bn.beta.val.dev.value().enqueue_fill(0.0)
             bn.running_mean = Param["running_mean", False, Self.C].make_gpu(
                 ctx_v
             )
             bn.running_var = Param["running_var", False, Self.C].make_gpu(
                 ctx_v
             )
-            bn.running_mean.value_dev.value().enqueue_fill(0.0)
-            bn.running_var.value_dev.value().enqueue_fill(1.0)
+            bn.running_mean.val.dev.value().enqueue_fill(0.0)
+            bn.running_var.val.dev.value().enqueue_fill(1.0)
             bn.cache_xhat_dev    = ctx_v.enqueue_create_buffer[DT](1)
             bn.cache_inv_std_dev = ctx_v.enqueue_create_buffer[DT](Self.C)
             bn.cache_n_batch = 0
@@ -360,8 +360,8 @@ struct BatchNorm2D[
             )
             var g_p = self.gamma.value_unsafe_ptr_cpu()
             var b_p = self.bias_unsafe_ptr_cpu()
-            var rm_v = TileTensor(self.running_mean.value, row_major[Self.C]())
-            var rv_v = TileTensor(self.running_var.value,  row_major[Self.C]())
+            var rm_v = TileTensor(self.running_mean.val.cpu, row_major[Self.C]())
+            var rv_v = TileTensor(self.running_var.val.cpu,  row_major[Self.C]())
             var eps = Scalar[DT](Self.EPSILON)
             var n_eff = Scalar[DT](Float64(BATCH * Self.SPATIAL))
             var inv_n = Scalar[DT](1.0) / n_eff
@@ -436,16 +436,16 @@ struct BatchNorm2D[
             var in_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p_w)
             var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p_w)
             var g_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.gamma.value_dev.value()
+                self.gamma.val.dev.value()
             )
             var b_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.beta.value_dev.value()
+                self.beta.val.dev.value()
             )
             var rm_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.running_mean.value_dev.value()
+                self.running_mean.val.dev.value()
             )
             var rv_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.running_var.value_dev.value()
+                self.running_var.val.dev.value()
             )
             var ctx = self.ts.ctx.value()
             if self.training:
@@ -567,7 +567,7 @@ struct BatchNorm2D[
             var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
             var g_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.gamma.value_dev.value()
+                self.gamma.val.dev.value()
             )
             var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
                 self.cache_xhat_dev.value()
@@ -576,10 +576,10 @@ struct BatchNorm2D[
                 self.cache_inv_std_dev.value()
             )
             var dg_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.gamma.grad_dev.value()
+                self.gamma.grd.dev.value()
             )
             var db_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.beta.grad_dev.value()
+                self.beta.grd.dev.value()
             )
             comptime kernel = _bn2d_backward_kernel[
                 BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM,

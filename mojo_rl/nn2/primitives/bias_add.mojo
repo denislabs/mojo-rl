@@ -119,7 +119,7 @@ struct BiasAdd[DIM: Int](Module):
         else:
             var ctx_v = require_ctx["BiasAdd.make[target='gpu']"](ctx)
             ba.bias = Param["bias", False, Self.DIM].make_gpu(ctx_v)
-            ba.bias.value_dev.value().enqueue_fill(0.0)
+            ba.bias.val.dev.value().enqueue_fill(0.0)
             ba.ts = TargetStorage.make_gpu(ctx_v)
         return ba^
 
@@ -143,7 +143,7 @@ struct BiasAdd[DIM: Int](Module):
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            var bias_v = TileTensor(self.bias.value, row_major[Self.DIM]())
+            var bias_v = TileTensor(self.bias.val.cpu, row_major[Self.DIM]())
             for b in range(BATCH):
                 for i in range(Self.DIM):
                     output_v[b, i] = input[b, i] + bias_v[i]
@@ -157,7 +157,7 @@ struct BiasAdd[DIM: Int](Module):
             var in_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p)
             var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p)
             var b_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                self.bias.value_dev.value()
+                self.bias.val.dev.value()
             )
             comptime total = BATCH * Self.DIM
             comptime n_blocks = (total + TPB - 1) // TPB
@@ -198,7 +198,7 @@ struct BiasAdd[DIM: Int](Module):
                     grad_input_v[b, i] = grad_output_v[b, i]
             comptime if mode == "all":
                 var grad_bias_v = TileTensor(
-                    self.bias.grad, row_major[Self.DIM]()
+                    self.bias.grd.cpu, row_major[Self.DIM]()
                 )
                 for b in range(BATCH):
                     for i in range(Self.DIM):
@@ -229,7 +229,7 @@ struct BiasAdd[DIM: Int](Module):
             )
             comptime if mode == "all":
                 var gb_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                    self.bias.grad_dev.value()
+                    self.bias.grd.dev.value()
                 )
                 comptime db_kernel = _bias_add_dbias_kernel[BATCH, Self.DIM]
                 ctx.enqueue_function[db_kernel](

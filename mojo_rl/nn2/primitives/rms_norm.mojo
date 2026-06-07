@@ -210,7 +210,7 @@ struct RMSNorm[DIM: Int](Module):
         else:
             var ctx_v = require_ctx["RMSNorm.make[target='gpu']"](ctx)
             rn.gamma = Param["gamma", False, Self.DIM].make_gpu(ctx_v)
-            rn.gamma.value_dev.value().enqueue_fill(1.0)
+            rn.gamma.val.dev.value().enqueue_fill(1.0)
             rn.cache_norm_dev = ctx_v.enqueue_create_buffer[DT](1)
             rn.cache_inv_rms_dev = ctx_v.enqueue_create_buffer[DT](1)
             rn.cache_n_batch = 0
@@ -250,7 +250,7 @@ struct RMSNorm[DIM: Int](Module):
         comptime if target == "cpu":
             ensure_cpu_buffer(self.cache_norm, BATCH * Self.DIM)
             ensure_cpu_buffer(self.cache_inv_rms, BATCH)
-            var gamma_v = TileTensor(self.gamma.value, row_major[Self.DIM]())
+            var gamma_v = TileTensor(self.gamma.val.cpu, row_major[Self.DIM]())
             var norm_v = TileTensor(
                 self.cache_norm, row_major[BATCH, Self.DIM](),
             )
@@ -278,7 +278,7 @@ struct RMSNorm[DIM: Int](Module):
             var in_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p_w)
             var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p_w)
             var g_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                self.gamma.value_dev.value()
+                self.gamma.val.dev.value()
             )
             var nm_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
                 self.cache_norm_dev.value()
@@ -319,8 +319,8 @@ struct RMSNorm[DIM: Int](Module):
         var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
 
         comptime if target == "cpu":
-            var gamma_v = TileTensor(self.gamma.value, row_major[Self.DIM]())
-            var grad_gamma_v = TileTensor(self.gamma.grad, row_major[Self.DIM]())
+            var gamma_v = TileTensor(self.gamma.val.cpu, row_major[Self.DIM]())
+            var grad_gamma_v = TileTensor(self.gamma.grd.cpu, row_major[Self.DIM]())
             var norm_v = TileTensor(
                 self.cache_norm, row_major[BATCH, Self.DIM](),
             )
@@ -349,7 +349,7 @@ struct RMSNorm[DIM: Int](Module):
             var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p_w)
             var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p_w)
             var g_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                self.gamma.value_dev.value()
+                self.gamma.val.dev.value()
             )
             var nm_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
                 self.cache_norm_dev.value()
@@ -365,7 +365,7 @@ struct RMSNorm[DIM: Int](Module):
             )
             comptime if mode == "all":
                 var gg_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                    self.gamma.grad_dev.value()
+                    self.gamma.grd.dev.value()
                 )
                 comptime dg_kernel = _rms_norm_backward_dgamma_kernel[
                     BATCH, Self.DIM

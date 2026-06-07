@@ -452,8 +452,8 @@ struct Conv2D[
                 w_hb.unsafe_ptr()[k] = w_host[k]
             for k in range(Self.B_SIZE):
                 b_hb.unsafe_ptr()[k] = b_host[k]
-            ctx_v.enqueue_copy(c.weight.value_dev.value(), w_hb)
-            ctx_v.enqueue_copy(c.bias.value_dev.value(),   b_hb)
+            ctx_v.enqueue_copy(c.weight.val.dev.value(), w_hb)
+            ctx_v.enqueue_copy(c.bias.val.dev.value(),   b_hb)
             ctx_v.synchronize()
             c.ts = TargetStorage.make_gpu(ctx_v)
         return c^
@@ -493,7 +493,7 @@ struct Conv2D[
                 Scalar[DT]
             ](Self.SPATIAL_OUT * Self.COL_SIZE)
             var w_tt = TileTensor(
-                self.weight.value, row_major[Self.OC, Self.COL_SIZE](),
+                self.weight.val.cpu, row_major[Self.OC, Self.COL_SIZE](),
             )
             for b in range(BATCH):
                 _im2col_one_batch[
@@ -543,10 +543,10 @@ struct Conv2D[
                 out_p
             )
             var w_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
-                self.weight.value_dev.value()
+                self.weight.val.dev.value()
             )
             var b_lt = LayoutTensor[DT, b_layout, MutAnyOrigin](
-                self.bias.value_dev.value()
+                self.bias.val.dev.value()
             )
             comptime total = BATCH * Self.OUT_DIM_FLAT
             comptime n_blocks = (total + TPB - 1) // TPB
@@ -623,7 +623,7 @@ struct Conv2D[
                 )
 
             var w_tt = TileTensor(
-                self.weight.value, row_major[Self.OC, Self.COL_SIZE](),
+                self.weight.val.cpu, row_major[Self.OC, Self.COL_SIZE](),
             )
 
             for b in range(BATCH):
@@ -796,7 +796,7 @@ struct Conv2D[
             var in_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](x_p)
             var gi_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](gi_p)
             var w_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
-                self.weight.value_dev.value()
+                self.weight.val.dev.value()
             )
             var ctx = self.ts.ctx.value()
 
@@ -812,10 +812,10 @@ struct Conv2D[
             # input differs between steps). Enqueue dw/db first.
             comptime if mode == "all":
                 var dw_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
-                    self.weight.grad_dev.value()
+                    self.weight.grd.dev.value()
                 )
                 var db_lt = LayoutTensor[DT, b_layout, MutAnyOrigin](
-                    self.bias.grad_dev.value()
+                    self.bias.grd.dev.value()
                 )
 
                 # d_weight — 1 block per weight scalar, CONV_DW_TPB

@@ -149,7 +149,7 @@ def test_gpu_step_parity() raises:
     # Initial params → device.
     var init = _read_flat(lines, "init")
     _h2d_split(
-        ctx, model.weight.value_dev.value(), model.bias.value_dev.value(), init
+        ctx, model.weight.val.dev.value(), model.bias.val.dev.value(), init
     )
 
     var worst: Scalar[DT] = 0.0
@@ -157,13 +157,13 @@ def test_gpu_step_parity() raises:
         var grads = _read_flat(lines, "step" + String(t) + ".grad")
         _h2d_split(
             ctx,
-            model.weight.grad_dev.value(),
-            model.bias.grad_dev.value(),
+            model.weight.grd.dev.value(),
+            model.bias.grd.dev.value(),
             grads,
         )
         opt.step["gpu", M=MODEL](model)
         var got = _d2h_split(
-            ctx, model.weight.value_dev.value(), model.bias.value_dev.value()
+            ctx, model.weight.val.dev.value(), model.bias.val.dev.value()
         )
         var expected = _read_flat(lines, "step" + String(t) + ".param")
         var d = _max_abs_diff(got, expected)

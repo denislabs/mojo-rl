@@ -170,8 +170,8 @@ def main() raises:
     var gtabh = ctx.enqueue_create_host_buffer[DT](TW)
     var gbaseh = ctx.enqueue_create_host_buffer[DT](D)
     ctx.enqueue_copy(outh, outd)
-    ctx.enqueue_copy(gtabh, tg.task_table.grad_dev.value())
-    ctx.enqueue_copy(gbaseh, tg.agent_base.grad_dev.value())
+    ctx.enqueue_copy(gtabh, tg.task_table.grd.dev.value())
+    ctx.enqueue_copy(gbaseh, tg.agent_base.grd.dev.value())
     ctx.synchronize()
 
     var d_out = _maxdiff(

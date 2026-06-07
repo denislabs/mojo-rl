@@ -138,12 +138,12 @@ def test_actor_step_gpu() raises:
     var c0_w_pre_host = ctx.enqueue_create_host_buffer[DT](1)
     var actor_w_pre_host = ctx.enqueue_create_host_buffer[DT](1)
     var ab_w_dev = (
-        ab.children[0].inner.children[0].weight.value_dev.value()
+        ab.children[0].inner.children[0].weight.val.dev.value()
     )
     var c0_w_dev = (
-        ensemble.pairs[0].online.children[0].weight.value_dev.value()
+        ensemble.pairs[0].online.children[0].weight.val.dev.value()
     )
-    var actor_w_dev = actor.children[0].weight.value_dev.value()
+    var actor_w_dev = actor.children[0].weight.val.dev.value()
     ctx.enqueue_copy(ab_w_pre_host, ab_w_dev)
     ctx.enqueue_copy(c0_w_pre_host, c0_w_dev)
     ctx.enqueue_copy(actor_w_pre_host, actor_w_dev)

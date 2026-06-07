@@ -169,7 +169,7 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
             INIT.init_weight(
                 w_host.unsafe_ptr(), W_SIZE, Self.VOCAB, Self.EMBED_DIM
             )
-            ctx_v.enqueue_copy(e.weight.value_dev.value(), w_host)
+            ctx_v.enqueue_copy(e.weight.val.dev.value(), w_host)
             ctx_v.synchronize()
             e.cache_in_dev = ctx_v.enqueue_create_buffer[DT](1)
             e.cache_n_batch = 0
@@ -206,7 +206,7 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
         comptime if target == "cpu":
             ensure_cpu_buffer(self.cache_in, BATCH * Self.VOCAB)
             var w_v = TileTensor(
-                self.weight.value, row_major[Self.VOCAB, Self.EMBED_DIM]()
+                self.weight.val.cpu, row_major[Self.VOCAB, Self.EMBED_DIM]()
             )
             var cin = TileTensor(
                 self.cache_in, row_major[BATCH, Self.VOCAB]()
@@ -231,7 +231,7 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
             var in_lt = LayoutTensor[DT, lay_bv, MutAnyOrigin](in_p)
             var out_lt = LayoutTensor[DT, lay_be, MutAnyOrigin](out_p)
             var w_lt = LayoutTensor[DT, lay_w, MutAnyOrigin](
-                self.weight.value_dev.value()
+                self.weight.val.dev.value()
             )
             var cin_lt = LayoutTensor[DT, lay_bv, MutAnyOrigin](
                 self.cache_in_dev.value()
@@ -273,7 +273,7 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
 
         comptime if target == "cpu":
             var w_v = TileTensor(
-                self.weight.value, row_major[Self.VOCAB, Self.EMBED_DIM]()
+                self.weight.val.cpu, row_major[Self.VOCAB, Self.EMBED_DIM]()
             )
             for b in range(BATCH):
                 for v in range(Self.VOCAB):
@@ -283,7 +283,7 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
                     grad_input_v[b, v] = acc
             comptime if mode == "all":
                 var gw_v = TileTensor(
-                    self.weight.grad, row_major[Self.VOCAB, Self.EMBED_DIM]()
+                    self.weight.grd.cpu, row_major[Self.VOCAB, Self.EMBED_DIM]()
                 )
                 var cin = TileTensor(
                     self.cache_in, row_major[BATCH, Self.VOCAB]()
@@ -308,7 +308,7 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
             var go_lt = LayoutTensor[DT, lay_be, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, lay_bv, MutAnyOrigin](gi_p)
             var w_lt = LayoutTensor[DT, lay_w, MutAnyOrigin](
-                self.weight.value_dev.value()
+                self.weight.val.dev.value()
             )
             comptime gi_total = BATCH * Self.VOCAB
             comptime gi_blocks = (gi_total + TPB - 1) // TPB
@@ -323,7 +323,7 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
                     self.cache_in_dev.value()
                 )
                 var gw_lt = LayoutTensor[DT, lay_w, MutAnyOrigin](
-                    self.weight.grad_dev.value()
+                    self.weight.grd.dev.value()
                 )
                 comptime gw_total = Self.VOCAB * Self.EMBED_DIM
                 comptime gw_blocks = (gw_total + TPB - 1) // TPB
