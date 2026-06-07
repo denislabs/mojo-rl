@@ -27,6 +27,7 @@ from layout import TileTensor
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 from .masked_attention import MaskedAttention, build_modality_mask
 
@@ -113,10 +114,7 @@ struct DynamicsSpaceAttention[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -124,7 +122,7 @@ struct DynamicsSpaceAttention[
     ) raises:
         assert_tag_for["DynamicsSpaceAttention", target](self.ts.target_tag)
         self.inner.forward[target, BATCH, POLICY=POLICY](
-            inputs[0], output=output
+            inputs, output=output
         )
 
     def vjp[
@@ -138,12 +136,9 @@ struct DynamicsSpaceAttention[
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         assert_tag_for["DynamicsSpaceAttention", target](self.ts.target_tag)
         self.inner.vjp[target, BATCH, POLICY=POLICY, mode=mode](
-            grad_output, grad_inputs[0]
+            grad_output, grad_inputs
         )

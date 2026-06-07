@@ -30,6 +30,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 from ..combinators import ComputeGraph, InputSlot, Node, Tokenwise
 from ..composites import MultiHeadAttention, TransformerFFN
@@ -114,10 +115,7 @@ struct ConditionalTransformerBlock[
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -126,8 +124,8 @@ struct ConditionalTransformerBlock[
         assert_tag_for["ConditionalTransformerBlock", target](
             self.ts.target_tag
         )
-        var x = typed_view[BATCH, Self.SEQ_DIM](inputs[0])
-        var c = typed_view[BATCH, Self.SEQ_DIM](inputs[1])
+        var x = inputs.tile[0, BATCH, Self.SEQ_DIM]()
+        var c = inputs.tile[1, BATCH, Self.SEQ_DIM]()
         var out = typed_view_mut[BATCH, Self.SEQ_DIM](output)
         self.graph.set_input["x", BATCH](x)
         self.graph.set_input["c", BATCH](c)
@@ -142,17 +140,14 @@ struct ConditionalTransformerBlock[
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         assert_tag_for["ConditionalTransformerBlock", target](
             self.ts.target_tag
         )
         var go = typed_view[BATCH, Self.SEQ_DIM](grad_output)
-        var gx = typed_view_mut[BATCH, Self.SEQ_DIM](grad_inputs[0])
-        var gc = typed_view_mut[BATCH, Self.SEQ_DIM](grad_inputs[1])
+        var gx = grad_inputs.tile[0, BATCH, Self.SEQ_DIM]()
+        var gc = grad_inputs.tile[1, BATCH, Self.SEQ_DIM]()
         self.graph.vjp[target, BATCH, POLICY=POLICY, mode=mode](go)
         var gx_src = self.graph.grad_input_ptr["x"]()
         var gc_src = self.graph.grad_input_ptr["c"]()

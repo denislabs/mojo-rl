@@ -14,6 +14,7 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.combinators import RepeatConditional
 from mojo_rl.nn2.primitives.conditional_transformer_block import (
@@ -71,7 +72,9 @@ def test_stack_gpu_identity_and_grad() raises:
     var x_t = TileTensor(_p(x_d), row_major[BATCH, SEQ]())
     var c_t = TileTensor(_p(c_d), row_major[BATCH, SEQ]())
     var y_t = TileTensor(_p(y_d), row_major[BATCH, SEQ]())
-    stk.forward["gpu", BATCH](x_t, c_t, output=y_t)
+    stk.forward["gpu", BATCH](
+            TensorPack[2].of(x_t, c_t), output=y_t,
+        )
     ctx.enqueue_copy(oh, y_d)
     ctx.synchronize()
     var maxd: Scalar[DT] = 0.0
@@ -85,7 +88,7 @@ def test_stack_gpu_identity_and_grad() raises:
     var w_t = TileTensor(_p(w_d), row_major[BATCH, SEQ]())
     var gx_t = TileTensor(_p(gx_d), row_major[BATCH, SEQ]())
     var gc_t = TileTensor(_p(gc_d), row_major[BATCH, SEQ]())
-    stk.vjp["gpu", BATCH](w_t, gx_t, gc_t)
+    stk.vjp["gpu", BATCH](w_t, TensorPack[2].of(gx_t, gc_t))
     var gxh = ctx.enqueue_create_host_buffer[DT](N)
     var gch = ctx.enqueue_create_host_buffer[DT](N)
     ctx.enqueue_copy(gxh, gx_d)

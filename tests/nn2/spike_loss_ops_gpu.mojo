@@ -12,6 +12,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.initializer import Zero
 from mojo_rl.deep_agents2.dreamerv3.wm_loss_ops import (
     SymlogMSELoss, TwoHotLoss, BinaryLoss,
@@ -85,11 +86,13 @@ def test_symmse() raises:
     var pt = TileTensor(pred, row_major[B, OBS]())
     var tt = TileTensor(tgt, row_major[B, OBS]())
     var cot = TileTensor(co, row_major[B, 1]())
-    cpu.forward["cpu", B](pt, tt, output=cot)
+    cpu.forward["cpu", B](
+            TensorPack[2].of(pt, tt), output=cot,
+        )
     var got = TileTensor(go, row_major[B, 1]())
     var cgpt = TileTensor(cgp, row_major[B, OBS]())
     var cgtt = TileTensor(cgt, row_major[B, OBS]())
-    cpu.vjp["cpu", B](got, cgpt, cgtt)
+    cpu.vjp["cpu", B](got, TensorPack[2].of(cgpt, cgtt))
 
     var ctx = DeviceContext()
     var gpu = SymlogMSELoss[OBS].make["gpu", INIT=Zero](ctx=ctx)
@@ -105,11 +108,13 @@ def test_symmse() raises:
     var pdt = TileTensor(_p(pd), row_major[B, OBS]())
     var tdt = TileTensor(_p(td), row_major[B, OBS]())
     var odt = TileTensor(_p(od), row_major[B, 1]())
-    gpu.forward["gpu", B](pdt, tdt, output=odt)
+    gpu.forward["gpu", B](
+            TensorPack[2].of(pdt, tdt), output=odt,
+        )
     var godt = TileTensor(_p(god), row_major[B, 1]())
     var gpdt = TileTensor(_p(gpd), row_major[B, OBS]())
     var gtdt = TileTensor(_p(gtd), row_major[B, OBS]())
-    gpu.vjp["gpu", B](godt, gpdt, gtdt)
+    gpu.vjp["gpu", B](godt, TensorPack[2].of(gpdt, gtdt))
     ctx.synchronize()
 
     var dfo = _diff(_d2h(ctx, od, B), co)
@@ -139,11 +144,13 @@ def test_binary() raises:
     var lot = TileTensor(lo, row_major[B, 1]())
     var tgt = TileTensor(tg, row_major[B, 1]())
     var cot = TileTensor(co, row_major[B, 1]())
-    cpu.forward["cpu", B](lot, tgt, output=cot)
+    cpu.forward["cpu", B](
+            TensorPack[2].of(lot, tgt), output=cot,
+        )
     var got = TileTensor(go, row_major[B, 1]())
     var cglt = TileTensor(cgl, row_major[B, 1]())
     var cgtt = TileTensor(cgt, row_major[B, 1]())
-    cpu.vjp["cpu", B](got, cglt, cgtt)
+    cpu.vjp["cpu", B](got, TensorPack[2].of(cglt, cgtt))
 
     var ctx = DeviceContext()
     var gpu = BinaryLoss.make["gpu", INIT=Zero](ctx=ctx)
@@ -159,11 +166,13 @@ def test_binary() raises:
     var lodt = TileTensor(_p(lod), row_major[B, 1]())
     var tgdt = TileTensor(_p(tgd), row_major[B, 1]())
     var odt = TileTensor(_p(od), row_major[B, 1]())
-    gpu.forward["gpu", B](lodt, tgdt, output=odt)
+    gpu.forward["gpu", B](
+            TensorPack[2].of(lodt, tgdt), output=odt,
+        )
     var godt = TileTensor(_p(god), row_major[B, 1]())
     var gldt = TileTensor(_p(gld), row_major[B, 1]())
     var gtdt = TileTensor(_p(gtd), row_major[B, 1]())
-    gpu.vjp["gpu", B](godt, gldt, gtdt)
+    gpu.vjp["gpu", B](godt, TensorPack[2].of(gldt, gtdt))
     ctx.synchronize()
 
     var dfo = _diff(_d2h(ctx, od, B), co)
@@ -194,11 +203,13 @@ def test_twohot() raises:
     var lgt = TileTensor(lg, row_major[B, BINS]())
     var tgt = TileTensor(tg, row_major[B, BINS]())
     var cot = TileTensor(co, row_major[B, 1]())
-    cpu.forward["cpu", B](lgt, tgt, output=cot)
+    cpu.forward["cpu", B](
+            TensorPack[2].of(lgt, tgt), output=cot,
+        )
     var got = TileTensor(go, row_major[B, 1]())
     var cglt = TileTensor(cgl, row_major[B, BINS]())
     var cgtt = TileTensor(cgt, row_major[B, BINS]())
-    cpu.vjp["cpu", B](got, cglt, cgtt)
+    cpu.vjp["cpu", B](got, TensorPack[2].of(cglt, cgtt))
 
     var ctx = DeviceContext()
     var gpu = TwoHotLoss[BINS].make["gpu", INIT=Zero](ctx=ctx)
@@ -214,11 +225,13 @@ def test_twohot() raises:
     var lgdt = TileTensor(_p(lgd), row_major[B, BINS]())
     var tgdt = TileTensor(_p(tgd), row_major[B, BINS]())
     var odt = TileTensor(_p(od), row_major[B, 1]())
-    gpu.forward["gpu", B](lgdt, tgdt, output=odt)
+    gpu.forward["gpu", B](
+            TensorPack[2].of(lgdt, tgdt), output=odt,
+        )
     var godt = TileTensor(_p(god), row_major[B, 1]())
     var gldt = TileTensor(_p(gld), row_major[B, BINS]())
     var gtdt = TileTensor(_p(gtd), row_major[B, BINS]())
-    gpu.vjp["gpu", B](godt, gldt, gtdt)
+    gpu.vjp["gpu", B](godt, TensorPack[2].of(gldt, gtdt))
     ctx.synchronize()
 
     var dfo = _diff(_d2h(ctx, od, B), co)

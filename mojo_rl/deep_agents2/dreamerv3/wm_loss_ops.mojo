@@ -33,6 +33,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import require_ctx, TargetStorage, assert_tag_for
 from .twohot import (
     twohot_loss,
@@ -285,10 +286,7 @@ struct SymlogMSELoss[OBS: Int](Module):
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -296,10 +294,10 @@ struct SymlogMSELoss[OBS: Int](Module):
     ) raises:
         assert_tag_for["SymlogMSELoss", target](self.ts.target_tag)
         var pred = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            typed_view[BATCH, Self.OBS](inputs[0]).ptr
+            inputs.tile[0, BATCH, Self.OBS]().ptr
         )
         var tgt = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            typed_view[BATCH, Self.OBS](inputs[1]).ptr
+            inputs.tile[1, BATCH, Self.OBS]().ptr
         )
         self._pred_ptr = pred
         self._target_ptr = tgt
@@ -329,14 +327,11 @@ struct SymlogMSELoss[OBS: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         var go = typed_view[BATCH, 1](grad_output).ptr
-        var g_pred = typed_view_mut[BATCH, Self.OBS](grad_inputs[0]).ptr
-        var g_tgt = typed_view_mut[BATCH, Self.OBS](grad_inputs[1]).ptr
+        var g_pred = grad_inputs.tile[0, BATCH, Self.OBS]().ptr
+        var g_tgt = grad_inputs.tile[1, BATCH, Self.OBS]().ptr
         var pred = self._pred_ptr.value()
         var tgt = self._target_ptr.value()
         comptime if target == "cpu":
@@ -443,10 +438,7 @@ struct TwoHotLoss[BINS: Int](Module):
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -454,10 +446,10 @@ struct TwoHotLoss[BINS: Int](Module):
     ) raises:
         assert_tag_for["TwoHotLoss", target](self.ts.target_tag)
         var lg = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            typed_view[BATCH, Self.BINS](inputs[0]).ptr
+            inputs.tile[0, BATCH, Self.BINS]().ptr
         )
         var tgt = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            typed_view[BATCH, 1](inputs[1]).ptr
+            inputs.tile[1, BATCH, 1]().ptr
         )
         self._logits_ptr = lg
         self._target_ptr = tgt
@@ -488,14 +480,11 @@ struct TwoHotLoss[BINS: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         var go = typed_view[BATCH, 1](grad_output).ptr
-        var g_lg = typed_view_mut[BATCH, Self.BINS](grad_inputs[0]).ptr
-        var g_tgt = typed_view_mut[BATCH, 1](grad_inputs[1]).ptr
+        var g_lg = grad_inputs.tile[0, BATCH, Self.BINS]().ptr
+        var g_tgt = grad_inputs.tile[1, BATCH, 1]().ptr
         var lg = self._logits_ptr.value()
         var tgt = self._target_ptr.value()
         comptime if target == "cpu":
@@ -567,10 +556,7 @@ struct BinaryLoss(Module):
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -578,10 +564,10 @@ struct BinaryLoss(Module):
     ) raises:
         assert_tag_for["BinaryLoss", target](self.ts.target_tag)
         var lo = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            typed_view[BATCH, 1](inputs[0]).ptr
+            inputs.tile[0, BATCH, 1]().ptr
         )
         var tgt = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            typed_view[BATCH, 1](inputs[1]).ptr
+            inputs.tile[1, BATCH, 1]().ptr
         )
         self._logit_ptr = lo
         self._target_ptr = tgt
@@ -613,14 +599,11 @@ struct BinaryLoss(Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         var go = typed_view[BATCH, 1](grad_output).ptr
-        var g_lo = typed_view_mut[BATCH, 1](grad_inputs[0]).ptr
-        var g_tgt = typed_view_mut[BATCH, 1](grad_inputs[1]).ptr
+        var g_lo = grad_inputs.tile[0, BATCH, 1]().ptr
+        var g_tgt = grad_inputs.tile[1, BATCH, 1]().ptr
         var lo = self._logit_ptr.value()
         var tgt = self._target_ptr.value()
         comptime if target == "cpu":

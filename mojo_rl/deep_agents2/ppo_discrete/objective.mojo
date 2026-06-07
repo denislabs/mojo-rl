@@ -67,6 +67,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -266,10 +267,7 @@ struct PPODiscreteObjective[N_: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -278,10 +276,10 @@ struct PPODiscreteObjective[N_: Int](Module):
         assert_tag_for["PPODiscreteObjective", target](self.ts.target_tag)
         comptime N = Self.N_
 
-        var ao = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
-        var act = typed_view[BATCH, Self.IN_DIMS[1]](inputs[1])
-        var olp = typed_view[BATCH, Self.IN_DIMS[2]](inputs[2])
-        var adv = typed_view[BATCH, Self.IN_DIMS[3]](inputs[3])
+        var ao = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
+        var act = inputs.tile[1, BATCH, Self.IN_DIMS[1]]()
+        var olp = inputs.tile[2, BATCH, Self.IN_DIMS[2]]()
+        var adv = inputs.tile[3, BATCH, Self.IN_DIMS[3]]()
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         # Cache input pointers for vjp.
@@ -376,10 +374,7 @@ struct PPODiscreteObjective[N_: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
@@ -388,10 +383,10 @@ struct PPODiscreteObjective[N_: Int](Module):
         comptime N = Self.N_
 
         var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gi0 = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])  # grad logits
-        var gi1 = typed_view_mut[BATCH, Self.IN_DIMS[1]](grad_inputs[1])  # grad action
-        var gi2 = typed_view_mut[BATCH, Self.IN_DIMS[2]](grad_inputs[2])  # grad olp
-        var gi3 = typed_view_mut[BATCH, Self.IN_DIMS[3]](grad_inputs[3])  # grad adv
+        var gi0 = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()  # grad logits
+        var gi1 = grad_inputs.tile[1, BATCH, Self.IN_DIMS[1]]()  # grad action
+        var gi2 = grad_inputs.tile[2, BATCH, Self.IN_DIMS[2]]()  # grad olp
+        var gi3 = grad_inputs.tile[3, BATCH, Self.IN_DIMS[3]]()  # grad adv
 
         comptime if target == "cpu":
             var ao_p = self._cache_ao_ptr.value()

@@ -178,10 +178,7 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -191,11 +188,9 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
 
         comptime if target == "cpu":
             comptime N = BATCH * Self.DIM
-            # S2′: the two inputs go through ONE TensorPack — the erasure
             # is centralized in `of()`, not re-spelled per input here.
-            var inp = TensorPack[2].of(inputs[0], inputs[1])
-            var i0_p = inp.ptr[0]()
-            var i1_p = inp.ptr[1]()
+            var i0_p = inputs.ptr[0]()
+            var i1_p = inputs.ptr[1]()
             var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
 
             comptime if Self.OP.owns_cache:
@@ -227,11 +222,9 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
         else:
             comptime N = BATCH * Self.DIM
             comptime layout = Layout.row_major(N)
-            # S2′: indexed views off one pack — `lt[i, layout]()` replaces
             # the per-input `rebind` + manual `LayoutTensor` rebuild.
-            var inp = TensorPack[2].of(inputs[0], inputs[1])
-            var i0_lt = inp.lt[0, layout]()
-            var i1_lt = inp.lt[1, layout]()
+            var i0_lt = inputs.lt[0, layout]()
+            var i1_lt = inputs.lt[1, layout]()
             var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
             var o_lt = LayoutTensor[DT, layout, MutAnyOrigin](o_p)
             comptime n_blocks = (N + TPB - 1) // TPB
@@ -269,10 +262,7 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
@@ -282,11 +272,8 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
         comptime if target == "cpu":
             comptime N = BATCH * Self.DIM
             var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            # S2′: write-side pack — the two grad_inputs are addressed
-            # through one TensorPack just like the read-side inputs.
-            var gout = TensorPack[2].of(grad_inputs[0], grad_inputs[1])
-            var gi0_p = gout.ptr[0]()
-            var gi1_p = gout.ptr[1]()
+            var gi0_p = grad_inputs.ptr[0]()
+            var gi1_p = grad_inputs.ptr[1]()
 
             comptime if Self.OP.owns_cache:
                 var c_p = self.cache.cpu_ptr()
@@ -321,10 +308,8 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
             comptime layout = Layout.row_major(N)
             var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
             var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](go_p)
-            # S2′: write-side pack — indexed grad_input kernel args.
-            var gout = TensorPack[2].of(grad_inputs[0], grad_inputs[1])
-            var gi0_lt = gout.lt[0, layout]()
-            var gi1_lt = gout.lt[1, layout]()
+            var gi0_lt = grad_inputs.lt[0, layout]()
+            var gi1_lt = grad_inputs.lt[1, layout]()
             comptime n_blocks = (N + TPB - 1) // TPB
 
             comptime if Self.OP.owns_cache:

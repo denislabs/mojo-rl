@@ -17,6 +17,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -97,17 +98,14 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["Slice", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
@@ -142,17 +140,14 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Slice", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
             # Zero whole grad_input first; scatter the slice in afterward.

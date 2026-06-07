@@ -62,6 +62,7 @@ from mojo_rl.nn2.core import (
     for_each_param_auto, zero_grad_auto,
 )
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import (
     require_ctx,
     TargetStorage, assert_tag_for,
@@ -654,17 +655,14 @@ struct Dreamer4Dynamics[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["Dreamer4Dynamics", target](self.ts.target_tag)
-        var packed = typed_view[BATCH, Self.NSP * Self.DSP](inputs[0])
+        var packed = inputs.tile[0, BATCH, Self.NSP * Self.DSP]()
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
@@ -861,14 +859,11 @@ struct Dreamer4Dynamics[
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         assert_tag_for["Dreamer4Dynamics", target](self.ts.target_tag)
         var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gpacked = typed_view_mut[BATCH, Self.NSP * Self.DSP](grad_inputs[0])
+        var gpacked = grad_inputs.tile[0, BATCH, Self.NSP * Self.DSP]()
 
         comptime if target == "cpu":
             self.grad_grid.ensure_cpu(BATCH * Self.SD)

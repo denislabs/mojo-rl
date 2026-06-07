@@ -29,6 +29,7 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
@@ -237,8 +238,7 @@ struct DQNTargetYBlock[
                 row_major[Self.BATCH, Self.NA](),
             )
             self.gather_cols.forward[target, Self.BATCH, POLICY](
-                q_all_carrier,
-                idx_carrier,
+                TensorPack[2].of(q_all_carrier, idx_carrier),
                 output=max_q_t_g,
             )
         else:

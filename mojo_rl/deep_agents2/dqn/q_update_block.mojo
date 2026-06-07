@@ -29,6 +29,7 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
@@ -202,7 +203,7 @@ struct DQNQUpdateBlock[
         )
         var q_gath_t = TileTensor(q_gath_p, row_major[Self.BATCH, 1]())
         self.gather_cols.forward[target, Self.BATCH, POLICY](
-            q_all_carrier, mb_a_carrier, output=q_gath_t,
+            TensorPack[2].of(q_all_carrier, mb_a_carrier), output=q_gath_t,
         )
 
         # 4. MSE(q_gath, y).

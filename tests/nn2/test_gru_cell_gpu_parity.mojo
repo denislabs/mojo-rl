@@ -23,6 +23,7 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.primitives.gru_cell import GRUCell
 from mojo_rl.nn2.initializer import Kaiming
 
@@ -113,11 +114,13 @@ def main() raises:
     var cx = TileTensor(x_h, row_major[BATCH, IN_DIM]())
     var ch = TileTensor(h_h, row_major[BATCH, H]())
     var co = TileTensor(cpu_out, row_major[BATCH, H]())
-    cpu.forward["cpu", BATCH](cx, ch, output=co)
+    cpu.forward["cpu", BATCH](
+            TensorPack[2].of(cx, ch), output=co,
+        )
     var cgo = TileTensor(go_h, row_major[BATCH, H]())
     var cdx = TileTensor(cpu_dx, row_major[BATCH, IN_DIM]())
     var cdh = TileTensor(cpu_dh, row_major[BATCH, H]())
-    cpu.vjp["cpu", BATCH](cgo, cdx, cdh)
+    cpu.vjp["cpu", BATCH](cgo, TensorPack[2].of(cdx, cdh))
 
     # ---- GPU forward + vjp ----
     var x_d = ctx.enqueue_create_buffer[DT](BATCH * IN_DIM)
@@ -134,11 +137,13 @@ def main() raises:
     var gx = TileTensor(_p(x_d), row_major[BATCH, IN_DIM]())
     var gh = TileTensor(_p(h_d), row_major[BATCH, H]())
     var go = TileTensor(_p(o_d), row_major[BATCH, H]())
-    gpu.forward["gpu", BATCH](gx, gh, output=go)
+    gpu.forward["gpu", BATCH](
+            TensorPack[2].of(gx, gh), output=go,
+        )
     var ggo = TileTensor(_p(go_d), row_major[BATCH, H]())
     var gdx = TileTensor(_p(dx_d), row_major[BATCH, IN_DIM]())
     var gdh = TileTensor(_p(dh_d), row_major[BATCH, H]())
-    gpu.vjp["gpu", BATCH](ggo, gdx, gdh)
+    gpu.vjp["gpu", BATCH](ggo, TensorPack[2].of(gdx, gdh))
     ctx.synchronize()
 
     # ---- Compare ----

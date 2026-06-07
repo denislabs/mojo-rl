@@ -26,6 +26,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -95,17 +96,14 @@ struct SpaceTimeTranspose[T: Int, S: Int, D: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["SpaceTimeTranspose", target](self.ts.target_tag)
-        var inp = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var inp = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
         comptime if target == "cpu":
             for b in range(BATCH):
@@ -129,17 +127,14 @@ struct SpaceTimeTranspose[T: Int, S: Int, D: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["SpaceTimeTranspose", target](self.ts.target_tag)
         var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gi = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+        var gi = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         comptime if target == "cpu":
             # inverse permutation: grad_in[(t,s)] = grad_out[(s,t)]
             for b in range(BATCH):

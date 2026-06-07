@@ -34,6 +34,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
@@ -251,8 +252,7 @@ struct C51QUpdateBlock[
             row_major[Self.BATCH, Self.N_ATOMS](),
         )
         self.gather_slice.forward[target, Self.BATCH, POLICY](
-            la_carrier,
-            mb_a_carrier,
+            TensorPack[2].of(la_carrier, mb_a_carrier),
             output=la_slice_t,
         )
 

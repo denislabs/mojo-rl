@@ -39,6 +39,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import (
     require_ctx,
     TargetStorage,
@@ -186,10 +187,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -200,7 +198,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
         comptime T = Self.SEQ_LEN
         comptime P = Self.NUM_PROJ
         comptime K = Self.KNOTS
-        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var output_v = typed_view_mut[BATCH, 1](output)
 
         comptime if target == "cpu":
@@ -315,10 +313,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
@@ -329,7 +324,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
         comptime P = Self.NUM_PROJ
         comptime K = Self.KNOTS
         var go = typed_view[BATCH, 1](grad_output)
-        var gi = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+        var gi = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
             var cache = TileTensor(self.cache_z.cpu, row_major[BATCH, T * P]())

@@ -27,6 +27,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -152,10 +153,7 @@ struct Concat[*DIMS: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -168,7 +166,7 @@ struct Concat[*DIMS: Int](Module):
             comptime for i in range(Self.DIMS.size):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
-                var in_i = typed_view[BATCH, D](inputs[i])
+                var in_i = inputs.tile[i, BATCH, D]()
                 for b in range(BATCH):
                     for d in range(D):
                         output_v[b, OFF + d] = in_i[b, d]
@@ -182,7 +180,7 @@ struct Concat[*DIMS: Int](Module):
             comptime for i in range(Self.DIMS.size):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
-                var in_i = typed_view[BATCH, D](inputs[i])
+                var in_i = inputs.tile[i, BATCH, D]()
                 var i_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                     in_i.ptr
                 )
@@ -209,10 +207,7 @@ struct Concat[*DIMS: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
@@ -224,7 +219,7 @@ struct Concat[*DIMS: Int](Module):
             comptime for i in range(Self.DIMS.size):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
-                var gi = typed_view_mut[BATCH, D](grad_inputs[i])
+                var gi = grad_inputs.tile[i, BATCH, D]()
                 for b in range(BATCH):
                     for d in range(D):
                         gi[b, d] = grad_output_v[b, OFF + d]
@@ -238,7 +233,7 @@ struct Concat[*DIMS: Int](Module):
             comptime for i in range(Self.DIMS.size):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
-                var gi_v = typed_view_mut[BATCH, D](grad_inputs[i])
+                var gi_v = grad_inputs.tile[i, BATCH, D]()
                 var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                     gi_v.ptr
                 )

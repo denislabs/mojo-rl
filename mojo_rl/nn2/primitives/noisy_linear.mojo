@@ -59,6 +59,7 @@ from ..core import (
     zero_grad_auto,
 )
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.scratch import Scratch
 from ..core.scratch_walkers import init_scratch_auto
 from ..core.target_storage import (
@@ -434,10 +435,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -447,7 +445,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
             target == "cpu" or target == "gpu"
         ), "NoisyLinear: target must be 'cpu' or 'gpu'"
         assert_tag_for["NoisyLinear", target](self.ts.target_tag)
-        var input_v = typed_view[BATCH, Self.IN](inputs[0])
+        var input_v = inputs.tile[0, BATCH, Self.IN]()
         var output_v = typed_view_mut[BATCH, Self.OUT](output)
         var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
         var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
@@ -608,10 +606,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         """Combined backward (S7) — the two phases in fixed order. Single
         source of truth for direct callers; Sequential calls the phases
@@ -626,7 +621,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
             grad_output
         )
         self.vjp_grad_input[target, BATCH, POLICY=POLICY, mode=mode](
-            grad_output, *grad_inputs
+            grad_output, grad_inputs
         )
 
     def vjp_param_grads[
@@ -804,10 +799,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         """Phase 2 (S7): grad_x = grad_output @ W_effᵀ. Writes
         grad_inputs[0] (aliases the cached input — safe because phase 1
@@ -820,7 +812,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["NoisyLinear", target](self.ts.target_tag)
         var grad_out_v = typed_view[BATCH, Self.OUT](grad_output)
-        var grad_in_v = typed_view_mut[BATCH, Self.IN](grad_inputs[0])
+        var grad_in_v = grad_inputs.tile[0, BATCH, Self.IN]()
         comptime if target == "cpu":
             var w_eff_tt = TileTensor(
                 self._w_eff.cpu_ptr(), row_major[Self.IN, Self.OUT]()

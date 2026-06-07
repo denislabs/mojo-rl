@@ -21,6 +21,7 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.combinators import ComputeGraph, InputSlot, Node
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.add import Add
@@ -164,13 +165,15 @@ def test_module_wraps_graph() raises:
     var x_t = TileTensor(x, row_major[BATCH, D]())
     var c_t = TileTensor(c, row_major[BATCH, D]())
     var y_t = TileTensor(y, row_major[BATCH, D]())
-    blk.forward["cpu", BATCH](x_t, c_t, output=y_t)
+    blk.forward["cpu", BATCH](
+            TensorPack[2].of(x_t, c_t), output=y_t,
+        )
 
     # vjp → grads to both inputs.
     var w_t = TileTensor(w, row_major[BATCH, D]())
     var gx_t = TileTensor(gx, row_major[BATCH, D]())
     var gc_t = TileTensor(gc, row_major[BATCH, D]())
-    blk.vjp["cpu", BATCH](w_t, gx_t, gc_t)
+    blk.vjp["cpu", BATCH](w_t, TensorPack[2].of(gx_t, gc_t))
 
     # fd-gradcheck on x and c.
     comptime EPS = Scalar[DT](1e-3)
@@ -180,12 +183,16 @@ def test_module_wraps_graph() raises:
         for k in range(N):
             var saved = p[k]
             p[k] = saved + EPS
-            blk.forward["cpu", BATCH](x_t, c_t, output=y_t)
+            blk.forward["cpu", BATCH](
+            TensorPack[2].of(x_t, c_t), output=y_t,
+        )
             var lp: Scalar[DT] = 0.0
             for j in range(N):
                 lp += w[j] * y[j]
             p[k] = saved - EPS
-            blk.forward["cpu", BATCH](x_t, c_t, output=y_t)
+            blk.forward["cpu", BATCH](
+            TensorPack[2].of(x_t, c_t), output=y_t,
+        )
             var lm: Scalar[DT] = 0.0
             for j in range(N):
                 lm += w[j] * y[j]

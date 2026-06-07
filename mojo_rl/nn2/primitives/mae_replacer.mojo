@@ -40,6 +40,7 @@ from ..core import (
     for_each_param_auto, zero_grad_auto,
 )
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
@@ -205,17 +206,14 @@ struct MAEReplacer[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["MAEReplacer", target](self.ts.target_tag)
-        var inp = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var inp = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
         comptime if target == "cpu":
             self.keep.ensure_cpu(BATCH * Self.NP)
@@ -274,17 +272,14 @@ struct MAEReplacer[
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["MAEReplacer", target](self.ts.target_tag)
         var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gi = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+        var gi = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         comptime STRIDE = UInt64(BATCH * (1 + Self.NP))
         var base = self.rng_step * STRIDE
         var pmin = Scalar[DT](self.p_min_rt)

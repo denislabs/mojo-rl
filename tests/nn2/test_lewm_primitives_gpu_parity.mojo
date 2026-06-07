@@ -16,6 +16,7 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.primitives.layer_norm_no_affine import LayerNormNoAffine
 from mojo_rl.nn2.primitives.modulate import Modulate
@@ -132,12 +133,14 @@ def test_modulate_parity() raises:
     var sc_t = TileTensor(sc, row_major[BATCH, DIM]())
     var sh_t = TileTensor(sh, row_major[BATCH, DIM]())
     var yc_t = TileTensor(y_cpu, row_major[BATCH, DIM]())
-    mc.forward["cpu", BATCH](x_t, sc_t, sh_t, output=yc_t)
+    mc.forward["cpu", BATCH](
+            TensorPack[3].of(x_t, sc_t, sh_t), output=yc_t,
+        )
     var w_t = TileTensor(w, row_major[BATCH, DIM]())
     var gxc_t = TileTensor(gx_c, row_major[BATCH, DIM]())
     var gsc_t = TileTensor(gs_c, row_major[BATCH, DIM]())
     var gshc_t = TileTensor(gsh_c, row_major[BATCH, DIM]())
-    mc.vjp["cpu", BATCH](w_t, gxc_t, gsc_t, gshc_t)
+    mc.vjp["cpu", BATCH](w_t, TensorPack[3].of(gxc_t, gsc_t, gshc_t))
 
     # GPU
     var x_d = ctx.enqueue_create_buffer[DT](N)
@@ -164,12 +167,14 @@ def test_modulate_parity() raises:
     var scd_t = TileTensor(_p(sc_d), row_major[BATCH, DIM]())
     var shd_t = TileTensor(_p(sh_d), row_major[BATCH, DIM]())
     var yd_t = TileTensor(_p(y_d), row_major[BATCH, DIM]())
-    mg.forward["gpu", BATCH](xd_t, scd_t, shd_t, output=yd_t)
+    mg.forward["gpu", BATCH](
+            TensorPack[3].of(xd_t, scd_t, shd_t), output=yd_t,
+        )
     var wd_t = TileTensor(_p(w_d), row_major[BATCH, DIM]())
     var gxd_t = TileTensor(_p(gx_d), row_major[BATCH, DIM]())
     var gsd_t = TileTensor(_p(gs_d), row_major[BATCH, DIM]())
     var gshd_t = TileTensor(_p(gsh_d), row_major[BATCH, DIM]())
-    mg.vjp["gpu", BATCH](wd_t, gxd_t, gsd_t, gshd_t)
+    mg.vjp["gpu", BATCH](wd_t, TensorPack[3].of(gxd_t, gsd_t, gshd_t))
 
     var y_g = _a(N); var gx_g = _a(N); var gs_g = _a(N); var gsh_g = _a(N)
 
@@ -210,12 +215,14 @@ def test_gate_parity() raises:
     var g_t = TileTensor(g, row_major[BATCH, DIM]())
     var br_t = TileTensor(br, row_major[BATCH, DIM]())
     var yc_t = TileTensor(y_cpu, row_major[BATCH, DIM]())
-    mc.forward["cpu", BATCH](x_t, g_t, br_t, output=yc_t)
+    mc.forward["cpu", BATCH](
+            TensorPack[3].of(x_t, g_t, br_t), output=yc_t,
+        )
     var w_t = TileTensor(w, row_major[BATCH, DIM]())
     var gxc_t = TileTensor(gx_c, row_major[BATCH, DIM]())
     var ggc_t = TileTensor(gg_c, row_major[BATCH, DIM]())
     var gbrc_t = TileTensor(gbr_c, row_major[BATCH, DIM]())
-    mc.vjp["cpu", BATCH](w_t, gxc_t, ggc_t, gbrc_t)
+    mc.vjp["cpu", BATCH](w_t, TensorPack[3].of(gxc_t, ggc_t, gbrc_t))
 
     # GPU
     var x_d = ctx.enqueue_create_buffer[DT](N)
@@ -242,12 +249,14 @@ def test_gate_parity() raises:
     var gd_t = TileTensor(_p(g_d), row_major[BATCH, DIM]())
     var brd_t = TileTensor(_p(br_d), row_major[BATCH, DIM]())
     var yd_t = TileTensor(_p(y_d), row_major[BATCH, DIM]())
-    mg.forward["gpu", BATCH](xd_t, gd_t, brd_t, output=yd_t)
+    mg.forward["gpu", BATCH](
+            TensorPack[3].of(xd_t, gd_t, brd_t), output=yd_t,
+        )
     var wd_t = TileTensor(_p(w_d), row_major[BATCH, DIM]())
     var gxd_t = TileTensor(_p(gx_d), row_major[BATCH, DIM]())
     var ggd_t = TileTensor(_p(gg_d), row_major[BATCH, DIM]())
     var gbrd_t = TileTensor(_p(gbr_d), row_major[BATCH, DIM]())
-    mg.vjp["gpu", BATCH](wd_t, gxd_t, ggd_t, gbrd_t)
+    mg.vjp["gpu", BATCH](wd_t, TensorPack[3].of(gxd_t, ggd_t, gbrd_t))
 
     var y_g = _a(N); var gx_g = _a(N); var gg_g = _a(N); var gbr_g = _a(N)
 

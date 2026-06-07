@@ -30,6 +30,7 @@ from layout import TileTensor
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from ..core.module import Module
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -83,17 +84,14 @@ struct StopGradParams[Inner: Module](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["StopGradParams", target](self.ts.target_tag)
-        self.inner.forward[target, BATCH, POLICY=POLICY](inputs[0], output=output)
+        self.inner.forward[target, BATCH, POLICY=POLICY](inputs, output=output)
 
     # ----- Backward — always input_only on Inner --------------------------
 
@@ -108,10 +106,7 @@ struct StopGradParams[Inner: Module](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         """Always calls `inner.vjp[mode="input_only"]` regardless of
         the `mode` arg from the caller — that's the whole point of
@@ -120,7 +115,7 @@ struct StopGradParams[Inner: Module](Module):
         assert_tag_for["StopGradParams", target](self.ts.target_tag)
         self.inner.vjp[
             target, BATCH, POLICY=POLICY, mode="input_only",
-        ](grad_output, grad_inputs[0])
+        ](grad_output, grad_inputs)
 
     # ----- Walkers --------------------------------------------------------
 

@@ -24,6 +24,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
@@ -142,10 +143,7 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -153,14 +151,14 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
     ) raises:
         assert_tag_for["RepeatConditional", target](self.ts.target_tag)
         comptime D = Self.D
-        var x = typed_view[BATCH, D](inputs[0])
-        var c = typed_view[BATCH, D](inputs[1])
+        var x = inputs.tile[0, BATCH, D]()
+        var c = inputs.tile[1, BATCH, D]()
         var out = typed_view_mut[BATCH, D](output)
 
         comptime if Self.N == 1:
             self.children[0].forward[target, BATCH, POLICY=POLICY](
-                x, c, output=out
-            )
+            TensorPack[Self.Inner.ARITY].of(x, c), output=out,
+        )
         else:
             var midp = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
             comptime for k in range(Self.N - 1):
@@ -175,19 +173,19 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
                 comptime if i == 0:
                     var om = TileTensor(midp[0], row_major[BATCH, D]())
                     self.children[0].forward[target, BATCH, POLICY=POLICY](
-                        x, c, output=om
-                    )
+            TensorPack[Self.Inner.ARITY].of(x, c), output=om,
+        )
                 elif i == Self.N - 1:
                     var im = TileTensor(midp[Self.N - 2], row_major[BATCH, D]())
                     self.children[i].forward[target, BATCH, POLICY=POLICY](
-                        im, c, output=out
-                    )
+            TensorPack[Self.Inner.ARITY].of(im, c), output=out,
+        )
                 else:
                     var im = TileTensor(midp[i - 1], row_major[BATCH, D]())
                     var om = TileTensor(midp[i], row_major[BATCH, D]())
                     self.children[i].forward[target, BATCH, POLICY=POLICY](
-                        im, c, output=om
-                    )
+            TensorPack[Self.Inner.ARITY].of(im, c), output=om,
+        )
 
     # ----- Backward --------------------------------------------------------
     def vjp[
@@ -199,10 +197,7 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
@@ -210,13 +205,11 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
         assert_tag_for["RepeatConditional", target](self.ts.target_tag)
         comptime D = Self.D
         var go = typed_view[BATCH, D](grad_output)
-        var gx = typed_view_mut[BATCH, D](grad_inputs[0])
-        var gc = typed_view_mut[BATCH, D](grad_inputs[1])
+        var gx = grad_inputs.tile[0, BATCH, D]()
+        var gc = grad_inputs.tile[1, BATCH, D]()
 
         comptime if Self.N == 1:
-            self.children[0].vjp[target, BATCH, POLICY=POLICY, mode=mode](
-                go, gx, gc
-            )
+            self.children[0].vjp[target, BATCH, POLICY=POLICY, mode=mode](go, TensorPack[Self.Inner.ARITY].of(gx, gc))
             return
 
         # grad_c accumulator: zero it, then add each block's grad_c.
@@ -254,18 +247,18 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
                 var gim = TileTensor(midp[Self.N - 2], row_major[BATCH, D]())
                 self.children[i].vjp[
                     target, BATCH, POLICY=POLICY, mode=mode
-                ](go, gim, gc_tmp_t)
+                ](go, TensorPack[Self.Inner.ARITY].of(gim, gc_tmp_t))
             elif i == 0:
                 var gom = TileTensor(midp[0], row_major[BATCH, D]())
                 self.children[0].vjp[
                     target, BATCH, POLICY=POLICY, mode=mode
-                ](gom, gx, gc_tmp_t)
+                ](gom, TensorPack[Self.Inner.ARITY].of(gx, gc_tmp_t))
             else:
                 var gom = TileTensor(midp[i], row_major[BATCH, D]())
                 var gim = TileTensor(midp[i - 1], row_major[BATCH, D]())
                 self.children[i].vjp[
                     target, BATCH, POLICY=POLICY, mode=mode
-                ](gom, gim, gc_tmp_t)
+                ](gom, TensorPack[Self.Inner.ARITY].of(gim, gc_tmp_t))
             # grad_c += gc_tmp
             self._accum[target, total](gc_p, gc_tmp)
 

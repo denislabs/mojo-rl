@@ -13,6 +13,7 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.primitives.layer_norm_no_affine import LayerNormNoAffine
 from mojo_rl.nn2.primitives.modulate import Modulate
@@ -138,7 +139,9 @@ def test_modulate() raises:
     var sc_t = TileTensor(sc, row_major[BATCH, DIM]())
     var sh_t = TileTensor(sh, row_major[BATCH, DIM]())
     var y_t = TileTensor(y, row_major[BATCH, DIM]())
-    m.forward["cpu", BATCH](x_t, sc_t, sh_t, output=y_t)
+    m.forward["cpu", BATCH](
+            TensorPack[3].of(x_t, sc_t, sh_t), output=y_t,
+        )
 
     for k in range(N):
         var want = x[k] * (Scalar[DT](1.0) + sc[k]) + sh[k]
@@ -149,7 +152,7 @@ def test_modulate() raises:
     var gx_t = TileTensor(gx, row_major[BATCH, DIM]())
     var gs_t = TileTensor(gs, row_major[BATCH, DIM]())
     var gsh_t = TileTensor(gsh, row_major[BATCH, DIM]())
-    m.vjp["cpu", BATCH](w_t, gx_t, gs_t, gsh_t)
+    m.vjp["cpu", BATCH](w_t, TensorPack[3].of(gx_t, gs_t, gsh_t))
 
     # fd over x, scale, shift
     for which in range(3):
@@ -158,10 +161,14 @@ def test_modulate() raises:
         for k in range(N):
             var saved = p[k]
             p[k] = saved + EPS
-            m.forward["cpu", BATCH](x_t, sc_t, sh_t, output=y_t)
+            m.forward["cpu", BATCH](
+            TensorPack[3].of(x_t, sc_t, sh_t), output=y_t,
+        )
             var lp = _wdot(w, y, N)
             p[k] = saved - EPS
-            m.forward["cpu", BATCH](x_t, sc_t, sh_t, output=y_t)
+            m.forward["cpu", BATCH](
+            TensorPack[3].of(x_t, sc_t, sh_t), output=y_t,
+        )
             var lm = _wdot(w, y, N)
             p[k] = saved
             var num = (lp - lm) / (Scalar[DT](2.0) * EPS)
@@ -200,7 +207,9 @@ def test_gate() raises:
     var g_t = TileTensor(g, row_major[BATCH, DIM]())
     var br_t = TileTensor(br, row_major[BATCH, DIM]())
     var y_t = TileTensor(y, row_major[BATCH, DIM]())
-    m.forward["cpu", BATCH](x_t, g_t, br_t, output=y_t)
+    m.forward["cpu", BATCH](
+            TensorPack[3].of(x_t, g_t, br_t), output=y_t,
+        )
 
     for k in range(N):
         var want = x[k] + g[k] * br[k]
@@ -211,7 +220,7 @@ def test_gate() raises:
     var gx_t = TileTensor(gx, row_major[BATCH, DIM]())
     var gg_t = TileTensor(gg, row_major[BATCH, DIM]())
     var gbr_t = TileTensor(gbr, row_major[BATCH, DIM]())
-    m.vjp["cpu", BATCH](w_t, gx_t, gg_t, gbr_t)
+    m.vjp["cpu", BATCH](w_t, TensorPack[3].of(gx_t, gg_t, gbr_t))
 
     for which in range(3):
         var p = x if which == 0 else (g if which == 1 else br)
@@ -219,10 +228,14 @@ def test_gate() raises:
         for k in range(N):
             var saved = p[k]
             p[k] = saved + EPS
-            m.forward["cpu", BATCH](x_t, g_t, br_t, output=y_t)
+            m.forward["cpu", BATCH](
+            TensorPack[3].of(x_t, g_t, br_t), output=y_t,
+        )
             var lp = _wdot(w, y, N)
             p[k] = saved - EPS
-            m.forward["cpu", BATCH](x_t, g_t, br_t, output=y_t)
+            m.forward["cpu", BATCH](
+            TensorPack[3].of(x_t, g_t, br_t), output=y_t,
+        )
             var lm = _wdot(w, y, N)
             p[k] = saved
             var num = (lp - lm) / (Scalar[DT](2.0) * EPS)

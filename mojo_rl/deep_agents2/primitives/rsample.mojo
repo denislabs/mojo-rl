@@ -21,6 +21,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.saveable import Saveable
 from mojo_rl.nn2.core.save_scalar import _expect_kv_line
 from mojo_rl.nn2.core.target_storage import (
@@ -217,10 +218,7 @@ struct RSample[ACT: Int](Module, Saveable):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -228,7 +226,7 @@ struct RSample[ACT: Int](Module, Saveable):
     ) raises:
         comptime assert Self.ACT >= 1, "RSample[ACT]: ACT >= 1"
         assert_tag_for["RSample", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
@@ -330,17 +328,14 @@ struct RSample[ACT: Int](Module, Saveable):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["RSample", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
             # Unpack grad_output [BATCH, ACT+1] → grad_action [BATCH, ACT]

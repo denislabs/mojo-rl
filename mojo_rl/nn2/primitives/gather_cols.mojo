@@ -38,6 +38,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -122,18 +123,15 @@ struct GatherCols[NA: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["GatherCols", target](self.ts.target_tag)
-        var values = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
-        var idx = typed_view[BATCH, Self.IN_DIMS[1]](inputs[1])
+        var values = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
+        var idx = inputs.tile[1, BATCH, Self.IN_DIMS[1]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
@@ -170,10 +168,7 @@ struct GatherCols[NA: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         """Forward-only op: both grad_values and grad_idx zero-fill.
         See module docstring for why."""
@@ -181,8 +176,8 @@ struct GatherCols[NA: Int](Module):
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["GatherCols", target](self.ts.target_tag)
-        var grad_values_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
-        var grad_idx_v = typed_view_mut[BATCH, Self.IN_DIMS[1]](grad_inputs[1])
+        var grad_values_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
+        var grad_idx_v = grad_inputs.tile[1, BATCH, Self.IN_DIMS[1]]()
 
         comptime if target == "cpu":
             for b in range(BATCH):

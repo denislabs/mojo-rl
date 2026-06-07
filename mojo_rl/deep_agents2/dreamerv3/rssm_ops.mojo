@@ -24,6 +24,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -275,17 +276,14 @@ struct ActionSquash[ACT: Int](Module):
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["ActionSquash", target](self.ts.target_tag)
-        var iv = typed_view[BATCH, Self.ACT](inputs[0])
+        var iv = inputs.tile[0, BATCH, Self.ACT]()
         var ov = typed_view_mut[BATCH, Self.ACT](output)
         var ip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](iv.ptr)
         self._cached_input_ptr = ip
@@ -313,13 +311,10 @@ struct ActionSquash[ACT: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         var gov = typed_view[BATCH, Self.ACT](grad_output)
-        var giv = typed_view_mut[BATCH, Self.ACT](grad_inputs[0])
+        var giv = grad_inputs.tile[0, BATCH, Self.ACT]()
         var xp = self._cached_input_ptr.value()
         comptime if target == "cpu":
             for i in range(BATCH * Self.ACT):
@@ -387,10 +382,7 @@ struct BlockGroupAssemble[DETER: Int, H: Int, BLOCKS: Int](Module):
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -402,10 +394,10 @@ struct BlockGroupAssemble[DETER: Int, H: Int, BLOCKS: Int](Module):
         comptime g = Self.BLOCKS
         comptime dpb = Self.DPB
         comptime pg = Self.PER_GROUP
-        var deter = typed_view[BATCH, D](inputs[0]).ptr
-        var x0 = typed_view[BATCH, HH](inputs[1]).ptr
-        var x1 = typed_view[BATCH, HH](inputs[2]).ptr
-        var x2 = typed_view[BATCH, HH](inputs[3]).ptr
+        var deter = inputs.tile[0, BATCH, D]().ptr
+        var x0 = inputs.tile[1, BATCH, HH]().ptr
+        var x1 = inputs.tile[2, BATCH, HH]().ptr
+        var x2 = inputs.tile[3, BATCH, HH]().ptr
         var o = typed_view_mut[BATCH, Self.OUT_DIM](output).ptr
         comptime if target == "cpu":
             for b in range(BATCH):
@@ -442,10 +434,7 @@ struct BlockGroupAssemble[DETER: Int, H: Int, BLOCKS: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime D = Self.DETER
         comptime HH = Self.H
@@ -453,10 +442,10 @@ struct BlockGroupAssemble[DETER: Int, H: Int, BLOCKS: Int](Module):
         comptime dpb = Self.DPB
         comptime pg = Self.PER_GROUP
         var go = typed_view[BATCH, Self.OUT_DIM](grad_output).ptr
-        var g_deter = typed_view_mut[BATCH, D](grad_inputs[0]).ptr
-        var g_x0 = typed_view_mut[BATCH, HH](grad_inputs[1]).ptr
-        var g_x1 = typed_view_mut[BATCH, HH](grad_inputs[2]).ptr
-        var g_x2 = typed_view_mut[BATCH, HH](grad_inputs[3]).ptr
+        var g_deter = grad_inputs.tile[0, BATCH, D]().ptr
+        var g_x0 = grad_inputs.tile[1, BATCH, HH]().ptr
+        var g_x1 = grad_inputs.tile[2, BATCH, HH]().ptr
+        var g_x2 = grad_inputs.tile[3, BATCH, HH]().ptr
         comptime if target == "cpu":
             for i in range(BATCH * HH):
                 g_x0[i] = 0.0
@@ -546,10 +535,7 @@ struct GRUGate[DETER: Int, BLOCKS: Int](Module):
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -561,10 +547,10 @@ struct GRUGate[DETER: Int, BLOCKS: Int](Module):
         comptime dpb = Self.DPB
         comptime opb = Self.OPB
         var gru = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            typed_view[BATCH, Self.GRU_DIM](inputs[0]).ptr
+            inputs.tile[0, BATCH, Self.GRU_DIM]().ptr
         )
         var deter = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            typed_view[BATCH, D](inputs[1]).ptr
+            inputs.tile[1, BATCH, D]().ptr
         )
         self._gru_ptr = gru
         self._deter_ptr = deter
@@ -600,18 +586,15 @@ struct GRUGate[DETER: Int, BLOCKS: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime D = Self.DETER
         comptime g = Self.BLOCKS
         comptime dpb = Self.DPB
         comptime opb = Self.OPB
         var go = typed_view[BATCH, D](grad_output).ptr
-        var g_gru = typed_view_mut[BATCH, Self.GRU_DIM](grad_inputs[0]).ptr
-        var g_deter = typed_view_mut[BATCH, D](grad_inputs[1]).ptr
+        var g_gru = grad_inputs.tile[0, BATCH, Self.GRU_DIM]().ptr
+        var g_deter = grad_inputs.tile[1, BATCH, D]().ptr
         var gru = self._gru_ptr.value()
         var deter = self._deter_ptr.value()
         comptime if target == "cpu":
@@ -716,10 +699,7 @@ struct StraightThroughSample[STOCH: Int, CLASSES: Int](Module):
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -727,7 +707,7 @@ struct StraightThroughSample[STOCH: Int, CLASSES: Int](Module):
     ) raises:
         assert_tag_for["StraightThroughSample", target](self.ts.target_tag)
         comptime C = Self.CLASSES
-        var z = typed_view[BATCH, Self.SC](inputs[0]).ptr
+        var z = inputs.tile[0, BATCH, Self.SC]().ptr
         var o = typed_view_mut[BATCH, Self.SC](output).ptr
         comptime if target == "cpu":
             self._ensure(BATCH * Self.SC)
@@ -782,14 +762,11 @@ struct StraightThroughSample[STOCH: Int, CLASSES: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime C = Self.CLASSES
         var go = typed_view[BATCH, Self.SC](grad_output).ptr
-        var gz = typed_view_mut[BATCH, Self.SC](grad_inputs[0]).ptr
+        var gz = grad_inputs.tile[0, BATCH, Self.SC]().ptr
         var one_m_u = Scalar[DT](1.0) - self.unimix
         comptime if target == "cpu":
             var sm = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](

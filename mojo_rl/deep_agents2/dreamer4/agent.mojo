@@ -37,6 +37,7 @@ from layout import TileTensor, row_major
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 
 from .dynamics import Dreamer4Dynamics
@@ -268,10 +269,7 @@ struct Dreamer4Agent[
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -288,10 +286,7 @@ struct Dreamer4Agent[
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         raise Error("Dreamer4Agent.vjp is unused; call bc_train_step")
 

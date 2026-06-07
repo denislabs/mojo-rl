@@ -53,6 +53,7 @@ from .param_visitor import ParamVisitor
 from .graph_visitor import DisplayStep
 from .walkers import for_each_param_auto, zero_grad_auto
 from .state import for_each_state_auto
+from .tensor_pack import TensorPack
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -183,13 +184,7 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT,
-            address_space=AddressSpace.GENERIC,
-            element_size=1,
-            origin=MutAnyOrigin,
-            ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True,
             dtype=DT,
@@ -224,14 +219,7 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
             origin=MutAnyOrigin,
             ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True,
-            dtype=DT,
-            address_space=AddressSpace.GENERIC,
-            element_size=1,
-            origin=MutAnyOrigin,
-            ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         """N-ary vector-Jacobian product.
 
@@ -305,14 +293,7 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
             origin=MutAnyOrigin,
             ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True,
-            dtype=DT,
-            address_space=AddressSpace.GENERIC,
-            element_size=1,
-            origin=MutAnyOrigin,
-            ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         """Phase 2 of the two-phase vjp: write grad_inputs (the
         predecessor slab). Default: delegate to the combined `vjp`. For a
@@ -322,7 +303,7 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         grad_input computation, relying on `vjp_param_grads` having
         already run."""
         self.vjp[target, BATCH, POLICY=POLICY, mode=mode](
-            grad_output, *grad_inputs
+            grad_output, grad_inputs
         )
 
     # ──────────────────────────────────────────────────────────────────

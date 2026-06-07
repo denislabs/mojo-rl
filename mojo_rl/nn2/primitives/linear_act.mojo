@@ -56,6 +56,7 @@ from ..core import (
 )
 from ..core.element_op import ElementOp
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import (
     require_ctx,
     TargetStorage,
@@ -219,10 +220,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -237,7 +235,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
         # this layer with bf16-compute `Linear`s in one Sequential is safe. For
         # an actual bf16 compute path use Sequential[Linear, Elementwise[OP]].
         assert_tag_for["LinearAct", target](self.ts.target_tag)
-        var input_v = typed_view[BATCH, Self.IN](inputs[0])
+        var input_v = inputs.tile[0, BATCH, Self.IN]()
         var output_v = typed_view_mut[BATCH, Self.OUT](output)
 
         var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
@@ -324,10 +322,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         """Combined backward (S7) — the two phases in fixed order. Single
         source of truth for direct callers (ComputeGraph, non-Sequential
@@ -339,7 +334,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
             grad_output
         )
         self.vjp_grad_input[target, BATCH, POLICY=POLICY, mode=mode](
-            grad_output, *grad_inputs
+            grad_output, grad_inputs
         )
 
     def vjp_param_grads[
@@ -534,10 +529,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         """Phase 2 (S7): grad_input = grad_pre_act @ Wᵀ. Reads the
         grad_output slab AFTER `vjp_param_grads` rewrote it in place to
@@ -548,7 +540,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["LinearAct", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN](grad_inputs[0])
+        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN]()
 
         comptime if target == "cpu":
             # (4) grad_input = grad_pre_act @ W^T (always).

@@ -11,6 +11,7 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.core import ParamVisitor
 from mojo_rl.nn2.primitives.conditional_transformer_block import (
@@ -73,7 +74,9 @@ def test_identity_at_init() raises:
     var x_t = TileTensor(x, row_major[BATCH, SEQ]())
     var c_t = TileTensor(c, row_major[BATCH, SEQ]())
     var y_t = TileTensor(y, row_major[BATCH, SEQ]())
-    blk.forward["cpu", BATCH](x_t, c_t, output=y_t)
+    blk.forward["cpu", BATCH](
+            TensorPack[2].of(x_t, c_t), output=y_t,
+        )
 
     var maxd: Scalar[DT] = 0.0
     for k in range(N):
@@ -106,12 +109,14 @@ def test_gradcheck_randomized() raises:
     var x_t = TileTensor(x, row_major[BATCH, SEQ]())
     var c_t = TileTensor(c, row_major[BATCH, SEQ]())
     var y_t = TileTensor(y, row_major[BATCH, SEQ]())
-    blk.forward["cpu", BATCH](x_t, c_t, output=y_t)
+    blk.forward["cpu", BATCH](
+            TensorPack[2].of(x_t, c_t), output=y_t,
+        )
 
     var w_t = TileTensor(w, row_major[BATCH, SEQ]())
     var gx_t = TileTensor(gx, row_major[BATCH, SEQ]())
     var gc_t = TileTensor(gc, row_major[BATCH, SEQ]())
-    blk.vjp["cpu", BATCH](w_t, gx_t, gc_t)
+    blk.vjp["cpu", BATCH](w_t, TensorPack[2].of(gx_t, gc_t))
 
     comptime EPS = Scalar[DT](1e-3)
     var bad = 0
@@ -121,12 +126,16 @@ def test_gradcheck_randomized() raises:
         for k in range(N):
             var saved = p[k]
             p[k] = saved + EPS
-            blk.forward["cpu", BATCH](x_t, c_t, output=y_t)
+            blk.forward["cpu", BATCH](
+            TensorPack[2].of(x_t, c_t), output=y_t,
+        )
             var lp: Scalar[DT] = 0.0
             for j in range(N):
                 lp += w[j] * y[j]
             p[k] = saved - EPS
-            blk.forward["cpu", BATCH](x_t, c_t, output=y_t)
+            blk.forward["cpu", BATCH](
+            TensorPack[2].of(x_t, c_t), output=y_t,
+        )
             var lm: Scalar[DT] = 0.0
             for j in range(N):
                 lm += w[j] * y[j]

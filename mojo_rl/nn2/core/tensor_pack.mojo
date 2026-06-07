@@ -44,7 +44,7 @@ the type first.
 
 from std.gpu.memory import AddressSpace
 from std.memory import UnsafePointer
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 
@@ -57,6 +57,32 @@ struct TensorPack[N: Int](Copyable, Movable):
     body needs. Trivially copyable (just `N` pointers)."""
 
     var ptrs: InlineArray[UnsafePointer[Scalar[DT], MutAnyOrigin], Self.N]
+
+    @implicit
+    def __init__(
+        out self,
+        t: TileTensor[
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
+        ],
+    ):
+        """Implicit single-tensor → 1-pack. Lets every UNARY call site
+        (`child.forward(input, ...)`, `child.vjp(go, gi)`, the test suite)
+        keep passing a bare `TileTensor` — Mojo converts it to
+        `TensorPack[1]` with no caller change. Compile error if used where
+        `N != 1` (multi-arity callers build the pack with `of(...)`)."""
+        comptime assert Self.N == 1, (
+            "implicit single-tensor TensorPack is only valid for N == 1;"
+            " multi-arity leaves must build the pack via TensorPack.of(...)"
+        )
+        var ps = InlineArray[
+            UnsafePointer[Scalar[DT], MutAnyOrigin], Self.N
+        ](uninitialized=True)
+        ps[0] = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](t.ptr)
+        self.ptrs = ps^
 
     @staticmethod
     def of(
@@ -93,3 +119,13 @@ struct TensorPack[N: Int](Copyable, Movable):
         """Typed GPU `LayoutTensor` over view `i` — for kernel args."""
         comptime assert i < Self.N, "TensorPack.lt: index out of range"
         return LayoutTensor[DT, L, MutAnyOrigin](self.ptrs[i])
+
+    def tile[
+        i: Int, BATCH: Int, DIM: Int
+    ](self) -> TileTensor[DT, type_of(row_major[BATCH, DIM]()), MutAnyOrigin]:
+        """Typed rank-2 `[BATCH, DIM]` TileTensor over view `i` — the
+        `typed_view` equivalent for leaf bodies that feed `max_matmul` or
+        SIMD over a 2-D view. Mutable through `MutAnyOrigin`, so it serves
+        both the read (`inputs`) and write (`grad_inputs`) sides."""
+        comptime assert i < Self.N, "TensorPack.tile: index out of range"
+        return TileTensor(self.ptrs[i], row_major[BATCH, DIM]())

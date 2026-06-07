@@ -38,6 +38,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -397,10 +398,7 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -408,10 +406,10 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
     ) raises:
         assert_tag_for["OneHotKLLoss", target](self.ts.target_tag)
         var post = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            typed_view[BATCH, Self.SC](inputs[0]).ptr
+            inputs.tile[0, BATCH, Self.SC]().ptr
         )
         var prior = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            typed_view[BATCH, Self.SC](inputs[1]).ptr
+            inputs.tile[1, BATCH, Self.SC]().ptr
         )
         var o = typed_view_mut[BATCH, 2](output).ptr
         comptime if target == "cpu":
@@ -457,17 +455,14 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         var go = typed_view[BATCH, 2](grad_output).ptr
         var g_post = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            typed_view_mut[BATCH, Self.SC](grad_inputs[0]).ptr
+            grad_inputs.tile[0, BATCH, Self.SC]().ptr
         )
         var g_prior = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            typed_view_mut[BATCH, Self.SC](grad_inputs[1]).ptr
+            grad_inputs.tile[1, BATCH, Self.SC]().ptr
         )
         comptime if target == "cpu":
             var d_dyn: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)

@@ -19,6 +19,7 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.initializer import Zero, Xavier
 from mojo_rl.nn2.primitives.zero_linear import ZeroLinear
 from mojo_rl.nn2.primitives.mse_per_sample import MSEPerSample
@@ -91,7 +92,9 @@ def test_mse_per_sample() raises:
     var a_t = TileTensor(a, row_major[BATCH, DIM]())
     var b_t = TileTensor(b, row_major[BATCH, DIM]())
     var o_t = TileTensor(out, row_major[BATCH, 1]())
-    m.forward["cpu", BATCH](a_t, b_t, output=o_t)
+    m.forward["cpu", BATCH](
+            TensorPack[2].of(a_t, b_t), output=o_t,
+        )
 
     comptime expect = Scalar[DT](14.0 / 3.0)
     for r in range(BATCH):
@@ -114,7 +117,7 @@ def test_mse_per_sample() raises:
     var go_t = TileTensor(go, row_major[BATCH, 1]())
     var ga_t = TileTensor(ga, row_major[BATCH, DIM]())
     var gb_t = TileTensor(gb, row_major[BATCH, DIM]())
-    m.vjp["cpu", BATCH](go_t, ga_t, gb_t)
+    m.vjp["cpu", BATCH](go_t, TensorPack[2].of(ga_t, gb_t))
 
     comptime c = Scalar[DT](2.0 / Float64(DIM))
     var max_err: Scalar[DT] = 0.0

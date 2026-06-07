@@ -14,6 +14,7 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.primitives.gather_cols import GatherCols
 from mojo_rl.nn2.initializer import Zero
 
@@ -51,7 +52,9 @@ def test_forward_cpu() raises:
     var v_t = TileTensor(vp, row_major[BATCH, NA]())
     var i_t = TileTensor(ip, row_major[BATCH, NA]())
     var o_t = TileTensor(op, row_major[BATCH, 1]())
-    g.forward["cpu", BATCH](v_t, i_t, output=o_t)
+    g.forward["cpu", BATCH](
+            TensorPack[2].of(v_t, i_t), output=o_t,
+        )
 
     assert_true(out[0] == Scalar[DT](30), "row 0 gather")
     assert_true(out[1] == Scalar[DT](-1), "row 1 gather")
@@ -83,7 +86,7 @@ def test_vjp_cpu_zero_fill() raises:
     var go_t = TileTensor(gop, row_major[BATCH, 1]())
     var gv_t = TileTensor(gvp, row_major[BATCH, NA]())
     var gi_t = TileTensor(gip, row_major[BATCH, NA]())
-    g.vjp["cpu", BATCH](go_t, gv_t, gi_t)
+    g.vjp["cpu", BATCH](go_t, TensorPack[2].of(gv_t, gi_t))
 
     for i in range(BATCH * NA):
         assert_true(gv[i] == Scalar[DT](0.0), "grad_values zero-fill")
@@ -121,7 +124,9 @@ def test_cpu_gpu_parity() raises:
         var v_cpu_t = TileTensor(vp_cpu, row_major[BATCH, NA]())
         var i_cpu_t = TileTensor(ip_cpu, row_major[BATCH, NA]())
         var o_cpu_t = TileTensor(op_cpu, row_major[BATCH, 1]())
-        g_cpu.forward["cpu", BATCH](v_cpu_t, i_cpu_t, output=o_cpu_t)
+        g_cpu.forward["cpu", BATCH](
+            TensorPack[2].of(v_cpu_t, i_cpu_t), output=o_cpu_t,
+        )
 
         # GPU. Same hetero-variadic workaround.
         var g_gpu = GatherCols[NA].make[target="gpu", INIT=Zero](ctx=ctx)
@@ -136,7 +141,9 @@ def test_cpu_gpu_parity() raises:
         var v_gpu_t = TileTensor(vp_dev, row_major[BATCH, NA]())
         var i_gpu_t = TileTensor(ip_dev, row_major[BATCH, NA]())
         var o_gpu_t = TileTensor(op_dev, row_major[BATCH, 1]())
-        g_gpu.forward["gpu", BATCH](v_gpu_t, i_gpu_t, output=o_gpu_t)
+        g_gpu.forward["gpu", BATCH](
+            TensorPack[2].of(v_gpu_t, i_gpu_t), output=o_gpu_t,
+        )
         ctx.enqueue_copy(out_gpu_host, o_dev)
         ctx.synchronize()
 

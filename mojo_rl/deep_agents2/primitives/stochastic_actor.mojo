@@ -22,6 +22,7 @@ from layout import TileTensor, row_major
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import require_ctx, TargetStorage, assert_tag_for
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.combinators.parallel import Parallel
@@ -114,17 +115,14 @@ struct StochasticActor[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["StochasticActor", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.HIDDEN)
@@ -151,16 +149,13 @@ struct StochasticActor[
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["StochasticActor", target](self.ts.target_tag)
-        var grad_input = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+        var grad_input = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.HIDDEN)

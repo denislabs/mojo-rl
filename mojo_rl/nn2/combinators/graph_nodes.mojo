@@ -59,6 +59,7 @@ from ..core import (
     Initializer,
     AMPPolicy,
     NoAMP,
+    TensorPack,
 )
 from ..core.graph_node import names_to_inline_array
 from ..core.target_tag import TARGET_GPU
@@ -417,20 +418,20 @@ struct Node[
         elif Self.Op.ARITY == 2:
             var in1_t = TileTensor(in_ptrs[1], row_major[BATCH, Self.IN0_DIM]())
             self.op.forward[target, BATCH, POLICY=POLICY](
-                in0_t, in1_t, output=out_t,
+                TensorPack[Self.Op.ARITY].of(in0_t, in1_t), output=out_t,
             )
         elif Self.Op.ARITY == 3:
             var in1_t = TileTensor(in_ptrs[1], row_major[BATCH, Self.IN0_DIM]())
             var in2_t = TileTensor(in_ptrs[2], row_major[BATCH, Self.IN0_DIM]())
             self.op.forward[target, BATCH, POLICY=POLICY](
-                in0_t, in1_t, in2_t, output=out_t,
+                TensorPack[Self.Op.ARITY].of(in0_t, in1_t, in2_t), output=out_t,
             )
         else:  # ARITY == 4 (further arities mechanical: add another branch)
             var in1_t = TileTensor(in_ptrs[1], row_major[BATCH, Self.IN0_DIM]())
             var in2_t = TileTensor(in_ptrs[2], row_major[BATCH, Self.IN0_DIM]())
             var in3_t = TileTensor(in_ptrs[3], row_major[BATCH, Self.IN0_DIM]())
             self.op.forward[target, BATCH, POLICY=POLICY](
-                in0_t, in1_t, in2_t, in3_t, output=out_t,
+                TensorPack[Self.Op.ARITY].of(in0_t, in1_t, in2_t, in3_t), output=out_t,
             )
 
     def vjp_via[
@@ -448,14 +449,14 @@ struct Node[
             # Hetero-binary variadic workaround (see forward_via).
             var gi1_p = self.grad_in1_ptr_via().value()
             var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
-            self.op.vjp[target, BATCH, POLICY=POLICY](go_t, gi0_t, gi1_t)
+            self.op.vjp[target, BATCH, POLICY=POLICY](go_t, TensorPack[Self.Op.ARITY].of(gi0_t, gi1_t))
         elif Self.Op.ARITY == 3:
             var gi1_p = self.grad_in1_ptr_via().value()
             var gi2_p = self.grad_in2_ptr_via().value()
             var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
             var gi2_t = TileTensor(gi2_p, row_major[BATCH, Self.IN0_DIM]())
             self.op.vjp[target, BATCH, POLICY=POLICY](
-                go_t, gi0_t, gi1_t, gi2_t,
+                go_t, TensorPack[Self.Op.ARITY].of(gi0_t, gi1_t, gi2_t),
             )
         else:  # ARITY == 4
             var gi1_p = self.grad_in1_ptr_via().value()
@@ -465,7 +466,7 @@ struct Node[
             var gi2_t = TileTensor(gi2_p, row_major[BATCH, Self.IN0_DIM]())
             var gi3_t = TileTensor(gi3_p, row_major[BATCH, Self.IN0_DIM]())
             self.op.vjp[target, BATCH, POLICY=POLICY](
-                go_t, gi0_t, gi1_t, gi2_t, gi3_t,
+                go_t, TensorPack[Self.Op.ARITY].of(gi0_t, gi1_t, gi2_t, gi3_t),
             )
 
     def for_each_param_via[
@@ -703,20 +704,20 @@ struct ExternalNode[
         elif Self.M.ARITY == 2:
             var in1_t = TileTensor(in_ptrs[1], row_major[BATCH, Self.IN0_DIM]())
             typed_ptr[].forward[target, BATCH, POLICY=POLICY](
-                in0_t, in1_t, output=out_t,
+                TensorPack[Self.M.ARITY].of(in0_t, in1_t), output=out_t,
             )
         elif Self.M.ARITY == 3:
             var in1_t = TileTensor(in_ptrs[1], row_major[BATCH, Self.IN0_DIM]())
             var in2_t = TileTensor(in_ptrs[2], row_major[BATCH, Self.IN0_DIM]())
             typed_ptr[].forward[target, BATCH, POLICY=POLICY](
-                in0_t, in1_t, in2_t, output=out_t,
+                TensorPack[Self.M.ARITY].of(in0_t, in1_t, in2_t), output=out_t,
             )
         else:  # ARITY == 4
             var in1_t = TileTensor(in_ptrs[1], row_major[BATCH, Self.IN0_DIM]())
             var in2_t = TileTensor(in_ptrs[2], row_major[BATCH, Self.IN0_DIM]())
             var in3_t = TileTensor(in_ptrs[3], row_major[BATCH, Self.IN0_DIM]())
             typed_ptr[].forward[target, BATCH, POLICY=POLICY](
-                in0_t, in1_t, in2_t, in3_t, output=out_t,
+                TensorPack[Self.M.ARITY].of(in0_t, in1_t, in2_t, in3_t), output=out_t,
             )
 
     def vjp_via[
@@ -740,7 +741,7 @@ struct ExternalNode[
             var gi1_t = TileTensor(gi1_p, row_major[BATCH, Self.IN0_DIM]())
             typed_ptr[].vjp[
                 target, BATCH, POLICY=POLICY, mode=Self.MODE,
-            ](go_t, gi0_t, gi1_t)
+            ](go_t, TensorPack[Self.M.ARITY].of(gi0_t, gi1_t))
         elif Self.M.ARITY == 3:
             var gi1_p = self.grad_in1_ptr_via().value()
             var gi2_p = self.grad_in2_ptr_via().value()
@@ -748,7 +749,7 @@ struct ExternalNode[
             var gi2_t = TileTensor(gi2_p, row_major[BATCH, Self.IN0_DIM]())
             typed_ptr[].vjp[
                 target, BATCH, POLICY=POLICY, mode=Self.MODE,
-            ](go_t, gi0_t, gi1_t, gi2_t)
+            ](go_t, TensorPack[Self.M.ARITY].of(gi0_t, gi1_t, gi2_t))
         else:  # ARITY == 4
             var gi1_p = self.grad_in1_ptr_via().value()
             var gi2_p = self.grad_in2_ptr_via().value()
@@ -758,7 +759,7 @@ struct ExternalNode[
             var gi3_t = TileTensor(gi3_p, row_major[BATCH, Self.IN0_DIM]())
             typed_ptr[].vjp[
                 target, BATCH, POLICY=POLICY, mode=Self.MODE,
-            ](go_t, gi0_t, gi1_t, gi2_t, gi3_t)
+            ](go_t, TensorPack[Self.M.ARITY].of(gi0_t, gi1_t, gi2_t, gi3_t))
 
     def for_each_param_via[
         target: StaticString,

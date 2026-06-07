@@ -69,6 +69,7 @@ from std.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
@@ -265,7 +266,7 @@ struct OFEAuxLossStep[
             obs_t, output=phi_s_t,
         )
         self.concat.forward[target, Self.BATCH, POLICY=POLICY](
-            phi_s_t, act_t, output=sa_in_t,
+            TensorPack[2].of(phi_s_t, act_t), output=sa_in_t,
         )
         action_branch.forward[target, Self.BATCH, POLICY=POLICY](
             sa_in_t, output=phi_sa_t,
@@ -326,9 +327,7 @@ struct OFEAuxLossStep[
         # Concat splits grad_sa_in into (grad_phi_s, grad_action).
         # grad_action is discarded — the buffer-sampled action has no
         # upstream that the OFE training can propagate to.
-        self.concat.vjp[target, Self.BATCH, POLICY=POLICY](
-            g_sa_in_t, g_phi_s_t, g_act_dummy_t,
-        )
+        self.concat.vjp[target, Self.BATCH, POLICY=POLICY](g_sa_in_t, TensorPack[2].of(g_phi_s_t, g_act_dummy_t))
         state_branch.vjp[target, Self.BATCH, POLICY=POLICY](
             g_phi_s_t, g_obs_dummy_t,
         )

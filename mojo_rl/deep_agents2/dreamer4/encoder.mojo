@@ -21,6 +21,7 @@ from layout import TileTensor, row_major
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
 from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import (
     TargetStorage, assert_tag_for, ensure_cpu_buffer,
 )
@@ -156,17 +157,14 @@ struct Dreamer4Encoder[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["Dreamer4Encoder", target](self.ts.target_tag)
-        var inp = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var inp = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
         comptime LAY = type_of(row_major[BATCH, Self.ND]())
         var po: TileTensor[DT, LAY, MutAnyOrigin]
@@ -195,14 +193,11 @@ struct Dreamer4Encoder[
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         assert_tag_for["Dreamer4Encoder", target](self.ts.target_tag)
         var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gin = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+        var gin = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         comptime LAY = type_of(row_major[BATCH, Self.ND]())
         var gmk: TileTensor[DT, LAY, MutAnyOrigin]
         var gpo: TileTensor[DT, LAY, MutAnyOrigin]

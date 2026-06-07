@@ -78,6 +78,7 @@ from ..core import (
     ParamVisitor,
 )
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for, ensure_cpu_buffer
 
 
@@ -466,10 +467,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -483,12 +481,8 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         comptime if target == "gpu":
             self._ensure_cache_gpu(BATCH)
             var ctx = self.ts.ctx.value()
-            var x_pg = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                inputs[0].ptr
-            )
-            var h_pg = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                inputs[1].ptr
-            )
+            var x_pg = inputs.ptr[0]()
+            var h_pg = inputs.ptr[1]()
             self._x_ptr = x_pg
             self._h_ptr = h_pg
             var x_lt = LayoutTensor[
@@ -524,8 +518,8 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
 
         self._ensure_cache(BATCH)
 
-        var x_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[0].ptr)
-        var h_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[1].ptr)
+        var x_p = inputs.ptr[0]()
+        var h_p = inputs.ptr[1]()
         var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
         self._x_ptr = x_p
         self._h_ptr = h_p
@@ -603,10 +597,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         """Combined backward (S7) — the two phases in fixed order. Single
         source of truth for direct callers; the recurrent unroll + any
@@ -619,7 +610,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             grad_output
         )
         self.vjp_grad_input[target, BATCH, POLICY=POLICY, mode=mode](
-            grad_output, *grad_inputs
+            grad_output, grad_inputs
         )
 
     def vjp_param_grads[
@@ -801,10 +792,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         """Phase 2 (S7): dx = d_ix @ W_ihᵀ, dh = d_hx @ W_hhᵀ + z-path.
         Writes grad_inputs[0]/[1] (alias the cached x/h — safe after phase
@@ -828,10 +816,10 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr))
             var dx_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.IN0_DIM), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[0].ptr))
+            ](grad_inputs.ptr[0]())
             var dh_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, H), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[1].ptr))
+            ](grad_inputs.ptr[1]())
             var cc = LayoutTensor[
                 DT, Layout.row_major(BATCH, 4 * H), MutAnyOrigin
             ](self._cache.dev.value())
@@ -862,8 +850,8 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         var hn_c = self._hn_pre.unsafe_ptr()
 
         var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-        var dx_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[0].ptr)
-        var dh_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[1].ptr)
+        var dx_p = grad_inputs.ptr[0]()
+        var dh_p = grad_inputs.ptr[1]()
 
         var W_ih_tt = TileTensor(W_ih_p, row_major[Self.IN0_DIM, THREE_H]())
         var W_hh_tt = TileTensor(W_hh_p, row_major[H, THREE_H]())

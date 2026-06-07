@@ -19,6 +19,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 from .sinusoidal_pos import build_sinusoid_bias
 
@@ -100,17 +101,14 @@ struct SinusoidalPosAddBT[T: Int, S: Int, D: Int, SCALE: Bool = False](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["SinusoidalPosAddBT", target](self.ts.target_tag)
-        var inp = typed_view[BATCH, Self.SD](inputs[0])
+        var inp = inputs.tile[0, BATCH, Self.SD]()
         var out = typed_view_mut[BATCH, Self.SD](output)
         comptime if target == "cpu":
             var bp = self.bias.unsafe_ptr()
@@ -146,17 +144,14 @@ struct SinusoidalPosAddBT[T: Int, S: Int, D: Int, SCALE: Bool = False](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["SinusoidalPosAddBT", target](self.ts.target_tag)
         var go = typed_view[BATCH, Self.SD](grad_output)
-        var gi = typed_view_mut[BATCH, Self.SD](grad_inputs[0])
+        var gi = grad_inputs.tile[0, BATCH, Self.SD]()
         comptime if target == "cpu":
             for bt in range(BATCH):
                 for i in range(Self.SD):

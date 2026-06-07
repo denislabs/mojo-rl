@@ -19,6 +19,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import (
     require_ctx,
     TargetStorage, assert_tag_for, ensure_cpu_buffer,
@@ -93,18 +94,15 @@ struct MSEPerSample[DIM: Int](Module):
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["MSEPerSample", target](self.ts.target_tag)
-        var a = typed_view[BATCH, Self.DIM](inputs[0])
-        var b = typed_view[BATCH, Self.DIM](inputs[1])
+        var a = inputs.tile[0, BATCH, Self.DIM]()
+        var b = inputs.tile[1, BATCH, Self.DIM]()
         var out = typed_view_mut[BATCH, 1](output)
 
         comptime if target == "cpu":
@@ -147,15 +145,12 @@ struct MSEPerSample[DIM: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         assert_tag_for["MSEPerSample", target](self.ts.target_tag)
         var go = typed_view[BATCH, 1](grad_output)
-        var ga = typed_view_mut[BATCH, Self.DIM](grad_inputs[0])
-        var gb = typed_view_mut[BATCH, Self.DIM](grad_inputs[1])
+        var ga = grad_inputs.tile[0, BATCH, Self.DIM]()
+        var gb = grad_inputs.tile[1, BATCH, Self.DIM]()
 
         comptime if target == "cpu":
             var diff = TileTensor(self.cache_diff.cpu, row_major[BATCH, Self.DIM]())
