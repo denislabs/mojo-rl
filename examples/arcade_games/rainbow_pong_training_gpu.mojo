@@ -90,6 +90,14 @@ comptime NUM_STEPS = 5_000_000
 
 comptime LR = Scalar[DT](6.25e-5)
 
+# Checkpointing. The trainer's q-net + optimizer + epsilon are written to
+# CKPT_PATH every CKPT_EVERY env-steps (and once more at the end of training);
+# the replay buffer is NOT saved. The render-eval script
+# `rainbow_pong_eval_render.mojo` reconstructs the same trainer config and
+# `load_state(CKPT_PATH)`s it to play a live game.
+comptime CKPT_EVERY = 250_000
+comptime CKPT_PATH = "checkpoints/rainbow_pong.ckpt"
+
 # Compile-time agent identity. Rainbow == C51 with DOUBLE=True over a
 # (PER + N-step) sample block and a dueling/noisy distributional net.
 comptime SAMPLE = NStepSampleStep[
@@ -158,6 +166,7 @@ def main() raises:
         print("  Learning rate:", LR)
         print("  Warmup:", WARMUP)
         print("  Total transitions:", NUM_STEPS)
+        print("  Checkpoint:", CKPT_PATH, "(every", CKPT_EVERY, "steps)")
         print()
         print("Expected rewards:")
         print("  - Random policy: ~-21 (CPU wins almost every point)")
@@ -214,6 +223,8 @@ def main() raises:
                 nstep_gamma=Scalar[DT](0.99),
                 logger=UnsafePointer(to=logger),
                 diag_every=5_000,
+                checkpoint_every=CKPT_EVERY,
+                checkpoint_path=String(CKPT_PATH),
                 eval_env=UnsafePointer(to=eval_env),
                 eval_every=100_000,
                 eval_episodes=20,

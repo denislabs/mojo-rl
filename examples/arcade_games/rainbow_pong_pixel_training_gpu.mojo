@@ -97,6 +97,13 @@ comptime WARMUP = 20_000
 comptime NUM_STEPS = 5_000_000
 comptime LR = Scalar[DT](6.25e-5)
 
+# Checkpointing. The CNN q-net + optimizer + epsilon are written to CKPT_PATH
+# every CKPT_EVERY env-steps (and once at the end); the replay buffer is NOT
+# saved. `rainbow_pong_pixel_eval_render.mojo` reconstructs the same trainer
+# config and `load_state(CKPT_PATH)`s it to play a live game.
+comptime CKPT_EVERY = 250_000
+comptime CKPT_PATH = "checkpoints/rainbow_pong_pixel.ckpt"
+
 
 # Rainbow CNN Q-net: Nature backbone + noisy dueling distributional heads.
 # Conv geometry matches NatureDQNNet (84→20→9→7, 64·7·7 = 3136).
@@ -175,6 +182,7 @@ def main() raises:
         print("  Learning rate:", LR)
         print("  Warmup:", WARMUP)
         print("  Total transitions:", NUM_STEPS)
+        print("  Checkpoint:", CKPT_PATH, "(every", CKPT_EVERY, "steps)")
         print()
 
         # =====================================================================
@@ -230,6 +238,8 @@ def main() raises:
                 nstep_gamma=Scalar[DT](0.99),
                 logger=UnsafePointer(to=logger),
                 diag_every=5_000,
+                checkpoint_every=CKPT_EVERY,
+                checkpoint_path=String(CKPT_PATH),
                 eval_env=UnsafePointer(to=eval_env),
                 eval_every=100_000,
                 eval_episodes=10,
