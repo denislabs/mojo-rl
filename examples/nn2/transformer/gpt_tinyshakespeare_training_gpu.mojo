@@ -22,14 +22,16 @@ nn2 differences vs the legacy script (simpler, not awkward):
   - Per-token CE is the `SequenceCrossEntropyLoss[SEQ, VOCAB]` op (used for
     both training and val), instead of reinterpreting + a static CE kernel.
 
-Generation-quality features ported from gen-1 (the full nanoGPT recipe now):
-dropout (`GPTDrop`, p=0.2), `Normal(0,0.02)` init, **LM-head↔embedding weight
-tying** (`TIE_WEIGHTS`), **1/√(2L) c_proj scaled init** (`SCALED_INIT`, applied
-to each block's attention-out + FFN-out projection), and a **bias-less LM head**
-(`HEAD_NO_BIAS`, matching nanoGPT's `lm_head bias=False` — frozen at 0 rather
-than a separate Linear variant). Tying drives the step manually so the grad-fold
-lands between net.vjp and optim.step. Still deferred (smallest effect): per-step
-grad clip (nn2 AdamW has none). See docs/NN2_TRANSFORMER_PORT.md.
+Generation-quality features (the full nanoGPT recipe), now expressed through
+the framework instead of a hand-rolled training loop: dropout (`GPTDropTied`,
+p=0.2), `Normal(0,0.02)` init, **LM-head↔embedding weight tying** (structural —
+the model's head is a bias-less `TiedLinear` sharing the embedding table; one
+`gpt_wire_tie` call replaces the old per-step grad-fold + re-copy + bias-freeze),
+**1/√(2L) c_proj scaled init** (`gpt_scale_residual_proj`), and **grad-norm
+clipping** (`GRAD_CLIP`=1.0 via `optim.max_grad_norm`). Because tying is now
+structural, the training loop is just `trainer.train_step` per iteration — no
+zero/forward/vjp/step juggling, no tying code. See `composites_gpt.mojo` and
+`primitives/tied_linear.mojo`; docs/NN2_TRANSFORMER_PORT.md.
 
 Default config is sized for NVIDIA. On Apple it OOMs — shrink SEQ→64,
 EMBED→64, LAYERS→2, BATCH→16, TOTAL_ITERS→400 (the prior dev config).
@@ -40,17 +42,17 @@ Run on NVIDIA:
 
 from std.memory import alloc
 from std.random import seed, random_float64
-from std.math import log, exp, cos, sqrt
+from std.math import log, exp, cos
 from std.time import perf_counter_ns
-from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from layout import row_major, TileTensor, Layout, LayoutTensor
+from layout import row_major, TileTensor
 
 from mojo_rl.nn2.datasets import (
     CharTokenizer, load_text, train_val_split, make_batch, to_one_hot,
 )
-from mojo_rl.nn2.constants import DT, TPB
-from mojo_rl.nn2.composites import GPTDrop
+from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.composites import GPTDropTied
+from mojo_rl.nn2.composites_gpt import gpt_scale_residual_proj, gpt_wire_tie
 from mojo_rl.nn2.loss import SequenceCrossEntropyLoss
 from mojo_rl.nn2.optimizer import AdamW
 from mojo_rl.nn2.training import Trainer
@@ -88,141 +90,28 @@ comptime USE_MAX_ATTN = True
 # the small corpus — without it val loss collapses (memorization) and greedy
 # generation degenerates. Toggled off for eval/generation via set_attr.
 comptime DROPOUT_P: Float64 = 0.2
-comptime GPT_MODEL = GPTDrop[
+comptime GPT_MODEL = GPTDropTied[
     VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True, DROPOUT_P,
     UInt64(0xC0FFEE), USE_MAX_ATTN,
 ]
 comptime GPT_LOSS = SequenceCrossEntropyLoss[SEQ, VOCAB]
 comptime GPT_TRAINER = Trainer[GPT_MODEL, AdamW, GPT_LOSS, BATCH, target="gpu"]
 
-# Weight tying: LM-head W shares the embedding W (transposed) — nanoGPT's
-# `lm_head.weight = wte.weight`. In your nn experience this was the key fix
-# for degenerate generation (val collapsing low while greedy decodes "the the
-# the"). Each step we fold the LM-head W grad (transposed) into the embedding
-# W grad + zero the LM-head's, step, then copy emb→lm so the two stay tied.
-# Requires the manual training pipeline (the grad-fold lands between net.vjp
-# and optim.step, which the packaged train_step does atomically).
-#   Embedding W : (VOCAB, EMBED) row-major → v*EMBED + e
-#   LM-head  W  : (EMBED, VOCAB) row-major → e*VOCAB + v   ⇒ tie lm[e,v]=emb[v,e]
-# GPTDrop children: [Tok[Embed], BiasAdd, Dropout, Repeat, Tok[LN], Tok[LMHead]]
-# → embedding is child 0, LM head is the last child.
-comptime TIE_WEIGHTS = True
-comptime LM_IDX = GPT_MODEL.N - 1
-
-# nanoGPT's lm_head is `nn.Linear(..., bias=False)`. nn2 Linear always carries
-# a bias, so instead of a bias-less Linear variant (would touch the core
-# primitive used everywhere) we make the head bias-less by freezing it at 0:
-# Normal init sets bias=0, and we zero its gradient every step so the optimizer
-# never moves it (decay is already off for biases). forward = x@W + 0 ≡ no bias.
-comptime HEAD_NO_BIAS = True
-
-
-def _tie_grads_kernel[
-    VOCAB_: Int, EMBED_: Int
-](
-    emb_g: LayoutTensor[DT, Layout.row_major(VOCAB_ * EMBED_), MutAnyOrigin],
-    lm_g: LayoutTensor[DT, Layout.row_major(EMBED_ * VOCAB_), MutAnyOrigin],
-):
-    var idx = Int(global_idx.x)
-    if idx >= VOCAB_ * EMBED_:
-        return
-    var v = idx // EMBED_
-    var e = idx % EMBED_
-    var lm_i = e * VOCAB_ + v
-    emb_g[idx] = rebind[Scalar[DT]](emb_g[idx]) + rebind[Scalar[DT]](lm_g[lm_i])
-    lm_g[lm_i] = Scalar[DT](0)
-
-
-def _tie_params_kernel[
-    VOCAB_: Int, EMBED_: Int
-](
-    emb_v: LayoutTensor[DT, Layout.row_major(VOCAB_ * EMBED_), MutAnyOrigin],
-    lm_v: LayoutTensor[DT, Layout.row_major(EMBED_ * VOCAB_), MutAnyOrigin],
-):
-    var idx = Int(global_idx.x)
-    if idx >= VOCAB_ * EMBED_:
-        return
-    var v = idx // EMBED_
-    var e = idx % EMBED_
-    lm_v[e * VOCAB_ + v] = rebind[Scalar[DT]](emb_v[idx])
-
-
-def _tie_grads(mut trainer: GPT_TRAINER, ctx: DeviceContext) raises:
-    var eg = LayoutTensor[DT, Layout.row_major(VOCAB * EMBED), MutAnyOrigin](
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            trainer.net.children[0].inner.weight.grad_dev.value().unsafe_ptr()
-        )
-    )
-    var lg = LayoutTensor[DT, Layout.row_major(EMBED * VOCAB), MutAnyOrigin](
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            trainer.net.children[LM_IDX].inner.weight.grad_dev.value().unsafe_ptr()
-        )
-    )
-    comptime nb = (VOCAB * EMBED + TPB - 1) // TPB
-    ctx.enqueue_function[_tie_grads_kernel[VOCAB, EMBED]](
-        eg, lg, grid_dim=nb, block_dim=TPB
-    )
-
-
-def _tie_params(mut trainer: GPT_TRAINER, ctx: DeviceContext) raises:
-    var ev = LayoutTensor[DT, Layout.row_major(VOCAB * EMBED), MutAnyOrigin](
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            trainer.net.children[0].inner.weight.value_dev.value().unsafe_ptr()
-        )
-    )
-    var lv = LayoutTensor[DT, Layout.row_major(EMBED * VOCAB), MutAnyOrigin](
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            trainer.net.children[LM_IDX].inner.weight.value_dev.value().unsafe_ptr()
-        )
-    )
-    comptime nb = (VOCAB * EMBED + TPB - 1) // TPB
-    ctx.enqueue_function[_tie_params_kernel[VOCAB, EMBED]](
-        ev, lv, grid_dim=nb, block_dim=TPB
-    )
-
-
-# nanoGPT/GPT-2 scaled init: divide each residual output projection
-# (attention-out and FFN-out) weight by 1/√(2L) after Normal init, keeping the
-# residual-stream variance bounded as depth grows. Reached through the GPTDrop
-# child tree (per-block, deeply nested — see the chain below).
+# The full nanoGPT recipe, now expressed through the framework rather than a
+# hand-rolled training loop:
+#   - WEIGHT TYING is STRUCTURAL: `GPTDropTied`'s LM head is a bias-less
+#       `TiedLinear` that borrows the embedding table (nanoGPT's
+#       `lm_head.weight = wte.weight`). One `gpt_wire_tie` call after the
+#       trainer is built points the head at the embedding's buffers; then the
+#       packaged `trainer.train_step` trains it with NO per-step tying code —
+#       the shared weight gets one gradient and one optimizer update. (This
+#       also makes the head bias-less, so the old head-bias-freeze is gone.)
+#   - SCALED_INIT : 1/√(2L) c_proj scaled init (`gpt_scale_residual_proj`),
+#       applied once after `make` (legit init-time weight surgery).
+#   - GRAD_CLIP   : nanoGPT clips grads to 1.0 — nn2 AdamW carries this
+#       natively (`optim.max_grad_norm`); set once, no per-step code.
 comptime SCALED_INIT = True
-
-
-def _scale_kernel[
-    N: Int
-](buf: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin], s: Scalar[DT]):
-    var idx = Int(global_idx.x)
-    if idx < N:
-        buf[idx] = rebind[Scalar[DT]](buf[idx]) * s
-
-
-def _scale_c_proj(mut trainer: GPT_TRAINER, ctx: DeviceContext) raises:
-    var s = Scalar[DT](1.0 / sqrt(Float64(2 * LAYERS)))
-    comptime DD = EMBED * EMBED                 # attn-out Linear[D, D]
-    comptime FD = (FF_MULT * EMBED) * EMBED      # FFN-out  Linear[F, D]
-    comptime db = (DD + TPB - 1) // TPB
-    comptime fb = (FD + TPB - 1) // TPB
-    # GPTDrop.children[3] = Repeat; .children[L] = TransformerBlockDrop:
-    #   [0]=Residual(LN+MHADrop), [1]=Residual(LN+FFNDrop).
-    # MHADrop  = Seq[Tok[Lin d,3d], QKVToMajor, Attn, Tok[Lin d,d] (c_proj@3), Dropout]
-    # FFNDrop  = Seq[Tok[Lin d,ff], GELU, Tok[Lin ff,d] (c_proj@2), Dropout]
-    for L in range(LAYERS):
-        var a = LayoutTensor[DT, Layout.row_major(DD), MutAnyOrigin](
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                trainer.net.children[3].children[L].children[0].inner
-                .children[1].children[3].inner.weight.value_dev.value()
-                .unsafe_ptr()
-            )
-        )
-        ctx.enqueue_function[_scale_kernel[DD]](a, s, grid_dim=db, block_dim=TPB)
-        var f = LayoutTensor[DT, Layout.row_major(FD), MutAnyOrigin](
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                trainer.net.children[3].children[L].children[1].inner
-                .children[1].children[2].inner.weight.value_dev.value()
-                .unsafe_ptr()
-            )
-        )
-        ctx.enqueue_function[_scale_kernel[FD]](f, s, grid_dim=fb, block_dim=TPB)
+comptime GRAD_CLIP: Scalar[DT] = 1.0
 
 
 def _lr_scale(it: Int) -> Scalar[DT]:
@@ -241,6 +130,12 @@ def _lr_scale(it: Int) -> Scalar[DT]:
 
 def _mao(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+
+
+def _mao_l(
+    mut l: List[Scalar[DT]],
+) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](l.unsafe_ptr())
 
 
 def _host_one_hot_into(
@@ -438,9 +333,9 @@ def main() raises:
         "  batch=" + String(BATCH) + " base_lr=" + String(BASE_LR)
         + " wd=" + String(WD)
         + " | dropout_p=" + String(DROPOUT_P)
-        + " tie_weights=" + String(TIE_WEIGHTS)
+        + " tie_weights=structural(TiedLinear)"
         + " scaled_init=" + String(SCALED_INIT)
-        + " head_no_bias=" + String(HEAD_NO_BIAS)
+        + " grad_clip=" + String(GRAD_CLIP)
         + " use_max_attn=" + String(USE_MAX_ATTN)
     )
     print(
@@ -472,6 +367,7 @@ def main() raises:
     optim.lr = BASE_LR
     optim.weight_decay = WD
     optim.beta2 = BETA2
+    optim.max_grad_norm = GRAD_CLIP  # native AdamW grad-norm clip (nanoGPT=1.0)
     var trainer = GPT_TRAINER.make_from(net^, optim^, loss_fn^, ctx)
     print("  in_dim=" + String(GPT_MODEL.IN_DIMS[0]) + " out_dim=" + String(OUT_DIM))
 
@@ -499,33 +395,32 @@ def main() raises:
     # Eval scratch: a (BATCH, OUT_DIM) device output + host mirror.
     var eval_out_d = ctx.enqueue_create_buffer[DT](BATCH * OUT_DIM)
     var eval_out_h = ctx.enqueue_create_host_buffer[DT](BATCH * OUT_DIM)
-    # Per-iter train staging + the manual-pipeline device buffers (weight tying
-    # needs the grad-fold between net.vjp and optim.step, so we drive the step
-    # ourselves instead of trainer.train_step).
-    var in_host = ctx.enqueue_create_host_buffer[DT](BATCH * IN_DIM)
-    var tgt_host = ctx.enqueue_create_host_buffer[DT](BATCH * OUT_DIM)
-    var in_d = ctx.enqueue_create_buffer[DT](BATCH * IN_DIM)
-    var tgt_d = ctx.enqueue_create_buffer[DT](BATCH * OUT_DIM)
-    var out_d = ctx.enqueue_create_buffer[DT](BATCH * OUT_DIM)
-    var go_d = ctx.enqueue_create_buffer[DT](BATCH * OUT_DIM)
-    var gi_d = ctx.enqueue_create_buffer[DT](BATCH * IN_DIM)
-    var in_hp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        in_host.unsafe_ptr()
-    )
-    var tgt_hp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        tgt_host.unsafe_ptr()
-    )
+    # Per-iter train staging: flat one-hot host Lists fed to `trainer.train_step`
+    # (it owns the H2D copy + the whole forward/backward/step internally).
+    var in_list = List[Scalar[DT]](length=BATCH * IN_DIM, fill=0.0)
+    var tgt_list = List[Scalar[DT]](length=BATCH * OUT_DIM, fill=0.0)
+    var in_lp = _mao_l(in_list)
+    var tgt_lp = _mao_l(tgt_list)
     ctx.synchronize()
 
-    # nanoGPT scaled init on residual c_proj weights (after Normal init).
+    # nanoGPT scaled init on residual c_proj weights (after Normal init), then
+    # wire the LM-head↔embedding tie. Both take GPTDropTied's full param list
+    # (Mojo can't infer it through the alias, nor apply defaults into the
+    # dependent `net` type) — same brackets as the GPT_MODEL alias above.
     comptime if SCALED_INIT:
-        _scale_c_proj(trainer, ctx)
+        gpt_scale_residual_proj[
+            VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True, DROPOUT_P,
+            UInt64(0xC0FFEE), USE_MAX_ATTN,
+        ](trainer.net, ctx)
         ctx.synchronize()
 
-    # Tie LM-head W to the embedding W at init so step 0 sees a coherent pair.
-    comptime if TIE_WEIGHTS:
-        _tie_params(trainer, ctx)
-        ctx.synchronize()
+    # Tie the head to the embedding (once, now that the net is in its final
+    # home inside the trainer). After this the head shares the embedding table.
+    gpt_wire_tie[
+        "gpu", VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True, DROPOUT_P,
+        UInt64(0xC0FFEE), USE_MAX_ATTN,
+    ](trainer.net)
+    ctx.synchronize()
 
     var val_init = _eval_val_loss(trainer, val_in_p, val_tgt_p, eval_out_d)
     print(
@@ -539,34 +434,14 @@ def main() raises:
     for it in range(TOTAL_ITERS):
         trainer.optim.lr = BASE_LR * _lr_scale(it)
         var mb = make_batch(split.train, BATCH, SEQ)
-        _host_one_hot_into(in_hp, mb.inputs, BATCH)
-        _host_one_hot_into(tgt_hp, mb.targets, BATCH)
-        ctx.enqueue_copy(in_d, in_host)
-        ctx.enqueue_copy(tgt_d, tgt_host)
+        _host_one_hot_into(in_lp, mb.inputs, BATCH)
+        _host_one_hot_into(tgt_lp, mb.targets, BATCH)
 
-        # Manual train step (= trainer.train_step) with the tying grad-fold
-        # injected between net.vjp and optim.step.
-        var in_tt = TileTensor(_mao(in_d), row_major[BATCH, IN_DIM]())
-        var tgt_tt = TileTensor(_mao(tgt_d), row_major[BATCH, OUT_DIM]())
-        var out_tt = TileTensor(_mao(out_d), row_major[BATCH, OUT_DIM]())
-        var go_tt = TileTensor(_mao(go_d), row_major[BATCH, OUT_DIM]())
-        var gi_tt = TileTensor(_mao(gi_d), row_major[BATCH, IN_DIM]())
-        trainer.optim.zero_grad["gpu"](trainer.net)
-        trainer.net.forward["gpu", BATCH](in_tt, output=out_tt)
-        final_train = Float64(trainer.loss_fn.forward["gpu", BATCH](out_tt, tgt_tt))
-        trainer.loss_fn.vjp["gpu", BATCH](tgt_tt, go_tt)
-        trainer.net.vjp["gpu", BATCH](go_tt, gi_tt)
-        comptime if TIE_WEIGHTS:
-            _tie_grads(trainer, ctx)
-        comptime if HEAD_NO_BIAS:
-            # Freeze the LM-head bias at 0 (≡ bias=False): zero its grad so
-            # the optimizer never moves it from the 0 it was initialized to.
-            trainer.net.children[LM_IDX].inner.bias.grad_dev.value().enqueue_fill(
-                Scalar[DT](0.0)
-            )
-        trainer.optim.step["gpu"](trainer.net)
-        comptime if TIE_WEIGHTS:
-            _tie_params(trainer, ctx)
+        # The packaged step does the whole forward/loss/vjp/clip/step. Weight
+        # tying is structural (the head shares the embedding table), so there
+        # is nothing to inject — this single call replaces the old ~12-line
+        # manual pipeline + grad-fold + re-copy.
+        final_train = Float64(trainer.train_step(in_list, tgt_list))
 
         if (it + 1) % EVAL_INTERVAL == 0 or (it + 1) == TOTAL_ITERS:
             var v = _eval_val_loss(trainer, val_in_p, val_tgt_p, eval_out_d)

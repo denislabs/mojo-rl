@@ -144,12 +144,8 @@ def main() raises:
     ctx.enqueue_copy(tr_img_d, tr_img_h)
     ctx.enqueue_copy(tr_tgt_d, tr_tgt_h)
 
-    var train_x = TileTensor(
-        tr_img_d.unsafe_ptr(), row_major[N_TRAIN, CIFAR10.IMG_SIZE]()
-    )
-    var train_y = TileTensor(
-        tr_tgt_d.unsafe_ptr(), row_major[N_TRAIN, N_CLASSES]()
-    )
+    var train_x = TileTensor(tr_img_d, row_major[N_TRAIN, CIFAR10.IMG_SIZE]())
+    var train_y = TileTensor(tr_tgt_d, row_major[N_TRAIN, N_CLASSES]())
 
     # ── Upload test images; labels stay host-side (int32) for eval ──
     var te_img_h = ctx.enqueue_create_host_buffer[DT](N_TEST * CIFAR10.IMG_SIZE)
@@ -158,9 +154,7 @@ def main() raises:
     var te_img_d = ctx.enqueue_create_buffer[DT](N_TEST * CIFAR10.IMG_SIZE)
     ctx.enqueue_copy(te_img_d, te_img_h)
 
-    var test_x = TileTensor(
-        te_img_d.unsafe_ptr(), row_major[N_TEST, CIFAR10.IMG_SIZE]()
-    )
+    var test_x = TileTensor(te_img_d, row_major[N_TEST, CIFAR10.IMG_SIZE]())
 
     ctx.synchronize()
 

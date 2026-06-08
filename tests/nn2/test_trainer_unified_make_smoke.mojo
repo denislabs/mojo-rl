@@ -15,7 +15,6 @@ and asserts a handful of train_steps drive the loss down on both, plus
     pixi run -e apple mojo run -I . tests/nn2/test_trainer_unified_make_smoke.mojo
 """
 
-from std.memory import alloc
 from std.random import seed
 from std.gpu.host import DeviceContext
 from std.testing import assert_true
@@ -48,8 +47,8 @@ comptime TRAINER_GPU = Trainer[
 
 
 def _fill_separable(
-    inp: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut inp: List[Scalar[DT]],
+    mut tgt: List[Scalar[DT]],
 ):
     # Class = (x[0] > 0); x[0] is the only informative feature.
     for b in range(BATCH):
@@ -67,15 +66,9 @@ def test_cpu() raises:
     print("--- CPU: TRAINER_CPU.make[Kaiming]() ---")
     seed(11)
     var trainer = TRAINER_CPU.make[Kaiming]()
-    var inp: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
-        BATCH * IN_DIM
-    )
-    var tgt: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
-        BATCH * N_CLASSES
-    )
-    var out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
-        BATCH * N_CLASSES
-    )
+    var inp = List[Scalar[DT]](length=BATCH * IN_DIM, fill=0.0)
+    var tgt = List[Scalar[DT]](length=BATCH * N_CLASSES, fill=0.0)
+    var out = List[Scalar[DT]](length=BATCH * N_CLASSES, fill=0.0)
     _fill_separable(inp, tgt)
     var first = trainer.train_step(inp, tgt)
     var last: Scalar[DT] = first
@@ -84,7 +77,6 @@ def test_cpu() raises:
     trainer.predict(inp, out)
     print("  loss", first, "->", last)
     assert_true(last < first, "CPU trainer should reduce the loss")
-    inp.free(); tgt.free(); out.free()
     print("  ok")
 
 
@@ -92,15 +84,9 @@ def test_gpu(ctx: DeviceContext) raises:
     print("--- GPU: TRAINER_GPU.make[Kaiming](ctx) ---")
     seed(11)
     var trainer = TRAINER_GPU.make[Kaiming](ctx)
-    var inp: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
-        BATCH * IN_DIM
-    )
-    var tgt: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
-        BATCH * N_CLASSES
-    )
-    var out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
-        BATCH * N_CLASSES
-    )
+    var inp = List[Scalar[DT]](length=BATCH * IN_DIM, fill=0.0)
+    var tgt = List[Scalar[DT]](length=BATCH * N_CLASSES, fill=0.0)
+    var out = List[Scalar[DT]](length=BATCH * N_CLASSES, fill=0.0)
     _fill_separable(inp, tgt)
     var first = trainer.train_step(inp, tgt)
     var last: Scalar[DT] = first
@@ -109,7 +95,6 @@ def test_gpu(ctx: DeviceContext) raises:
     trainer.predict(inp, out)
     print("  loss", first, "->", last)
     assert_true(last < first, "GPU trainer should reduce the loss")
-    inp.free(); tgt.free(); out.free()
     print("  ok")
 
 

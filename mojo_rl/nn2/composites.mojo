@@ -29,6 +29,7 @@ from .primitives.conv2d import Conv2D
 from .primitives.batch_norm_2d import BatchNorm2D
 from .primitives.relu import ReLU
 from .primitives.linear import Linear
+from .primitives.tied_linear import TiedLinear
 from .primitives.layer_norm import LayerNorm
 from .primitives.gelu import GELU
 from .primitives.embedding import Embedding
@@ -353,4 +354,40 @@ comptime GPTDrop[
     ],
     Tokenwise[seq_len, LayerNorm[embed_dim]],
     Tokenwise[seq_len, Linear[embed_dim, vocab]],
+]
+
+
+# GPTDropTied: GPTDrop with the LM head WEIGHT-TIED to the token embedding
+# (nanoGPT's `lm_head.weight = wte.weight`). Identical to `GPTDrop` except
+# the final projection is a bias-less `TiedLinear` that borrows the
+# embedding's `[vocab, embed]` table (used transposed) instead of owning a
+# separate `Linear[embed, vocab]`. After `make`, call `gpt_wire_tie` (see
+# `composites_gpt.mojo`) once to point the head at the embedding's buffers;
+# then the standard `Trainer.train_*` loop trains it with no per-step tying
+# code — the shared weight gets one gradient (both leaves accumulate into
+# it) and one optimizer update (reflection sees it only via the embedding).
+comptime GPTDropTied[
+    vocab: Int,
+    seq_len: Int,
+    embed_dim: Int,
+    n_heads: Int,
+    n_layers: Int,
+    ff_mult: Int = 4,
+    causal: Bool = True,
+    dropout_p: Float64 = 0.2,
+    seed_base: UInt64 = UInt64(0xC0FFEE),
+    use_max: Bool = True,
+] = Sequential[
+    Tokenwise[seq_len, Embedding[vocab, embed_dim]],
+    BiasAdd[seq_len * embed_dim],
+    Dropout[seq_len * embed_dim, dropout_p, seed_base],
+    Repeat[
+        n_layers,
+        TransformerBlockDrop[
+            embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal,
+            dropout_p, seed_base, use_max,
+        ],
+    ],
+    Tokenwise[seq_len, LayerNorm[embed_dim]],
+    Tokenwise[seq_len, TiedLinear[embed_dim, vocab]],
 ]

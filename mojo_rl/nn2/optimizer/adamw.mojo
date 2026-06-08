@@ -35,6 +35,11 @@ from .adam import (
 )
 from ..core.module import Module, mptr
 from ..core.optimizer import Optimizer
+from ..core.grad_clip import (
+    clip_grads_auto,
+    clip_grads_auto_gpu,
+    GradClipState,
+)
 from ..core.saveable import Saveable
 from ..core.save_scalar import _expect_kv_line
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
@@ -422,6 +427,17 @@ struct AdamW(Optimizer, Saveable):
     var eps: Scalar[DT]
     var weight_decay: Scalar[DT]
 
+    # Phase B.3 — global L2 grad-norm clip threshold. `0.0` (default) means
+    # disabled — `AdamW.step` skips the clip pipeline entirely, preserving
+    # bit-identity with pre-B.3 behaviour. Set on the optimizer instance
+    # after `make` (e.g. `optim.max_grad_norm = 1.0`, nanoGPT's default).
+    # GPU path lazy-allocates `_clip_state` on the first clipped GPU step.
+    # Mirrors `Adam`. See `mojo_rl/nn2/core/grad_clip.mojo`.
+    var max_grad_norm: Scalar[DT]
+    # Lazy-allocated GPU clip state (None on CPU or before first clipped
+    # GPU step). `n_params` is exactly `len(self.offsets)`.
+    var _clip_state: Optional[GradClipState]
+
     # Multi-tensor ("grouped") GPU optimizer descriptors. Built ONCE in
     # `make[target='gpu']` on NVIDIA only (Apple Metal can't deref
     # host-captured device addresses in-kernel → keeps the per-tensor
@@ -455,6 +471,8 @@ struct AdamW(Optimizer, Saveable):
         self.beta2 = Scalar[DT](0.999)
         self.eps = Scalar[DT](1e-8)
         self.weight_decay = Scalar[DT](0.01)
+        self.max_grad_norm = Scalar[DT](0.0)
+        self._clip_state = None
         self._mt_param_addrs = None
         self._mt_grad_addrs = None
         self._mt_moment_offs = None
@@ -587,6 +605,27 @@ struct AdamW(Optimizer, Saveable):
         M: Module,
     ](mut self, mut model: M) raises:
         assert_tag_for["AdamW", target](self.ts.target_tag)
+
+        # Phase B.3 — global grad-norm clip. No-op when `max_grad_norm == 0`
+        # (the default sentinel) → bit-identical to pre-clip behaviour.
+        comptime if target == "cpu":
+            _ = clip_grads_auto[M, target](model, self.max_grad_norm)
+        else:
+            if self.max_grad_norm > Scalar[DT](0.0):
+                # Lazy-allocate clip state on first clipped GPU step.
+                # `len(self.offsets)` is the Param count after the init
+                # walker ran in `make[target='gpu']`.
+                if not self._clip_state:
+                    self._clip_state = GradClipState.make(
+                        self.ts.ctx.value(), len(self.offsets),
+                    )
+                clip_grads_auto_gpu[M](
+                    model,
+                    self.ts.ctx.value(),
+                    self._clip_state.value(),
+                    self.max_grad_norm,
+                )
+
         comptime if target == "cpu":
             self.step_count += 1
             self.beta1_pow_t = self.beta1_pow_t * self.beta1
