@@ -85,7 +85,9 @@ comptime ONLINE_EPS: Float64 = 0.3    # scripted-policy exploration (online)
 comptime BUFFER_PATH: String = "/tmp/lewm_pong_buffer.bin"
 comptime STEPS: Int = 2000
 comptime LOG_EVERY: Int = 50
-comptime LAM: Scalar[DT] = 0.09
+comptime LAM: Scalar[DT] = 1.0    # healthy at SIG_PROJ=256 (λ-sweep: var_min
+                                  # 0.136>0.1, gram_off 0.423<0.5); 0.09/0.3
+                                  # under-regularize, 3.0 over-regularizes
 comptime LR: Scalar[DT] = 1e-3
 comptime CKPT_PATH: String = "/tmp/lewm2_pong_world_model.txt"
 
