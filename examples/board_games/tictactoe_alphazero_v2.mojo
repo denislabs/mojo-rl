@@ -8,12 +8,6 @@ plays the agent at full **MCTS** strength (temp=0), so the numbers reflect the
 deployed agent; over the run it learns strong play (drawing minimax, beating
 random) — the textbook "optimal never loses" result.
 
-Note on `arena_every`: the best (self-play generator) is frozen between
-promotion checks, so the number of net generations ≈ `iterations / arena_every`.
-AlphaZero bootstraps via search amplification across MANY generations, so
-`arena_every` must stay small relative to `iterations` — too large and the agent
-barely learns (the loss curve plateaus while win-rate stalls).
-
 Note `iterations` / `report_every` are in self-play *moves* (one loop pass
 advances all N_ENVS games by one move), not legacy-style collect+train rounds.
 
@@ -89,11 +83,7 @@ def main() raises:
         learning_starts=20,
         train_per_iter=4,
         seed=42,
-        # #generations ≈ iterations / arena_every (the best stays frozen between
-        # promotion checks); AlphaZero needs MANY generations to bootstrap, so
-        # keep this small — 400 here would give only ~10 generations and barely
-        # learn, 100 gives ~40 and the agent reaches strong play.
-        arena_every=100,
+        arena_every=400,
         arena_open_plies=2,
         promote_threshold=0.55,
         report_every=200,

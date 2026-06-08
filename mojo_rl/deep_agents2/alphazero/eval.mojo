@@ -279,7 +279,7 @@ def eval_mcts_vs_opponent_cpu[
     comptime ACT = NET.OUT_DIM - 1
     comptime LATENT = ENV.SAVE_SIZE
     comptime EVAL_MCTS = GenericCPUMCTS[
-        ACT, LATENT, NUM_SIMS, MAX_NODES, AlphaGoPUCT[2.5], NoNoise, SelfPlay,
+        ACT, LATENT, NUM_SIMS, MAX_NODES, AlphaGoPUCT[1.0], NoNoise, SelfPlay,
     ]
 
     net.set_attr["training"](Scalar[DT](0.0))
@@ -373,7 +373,7 @@ def eval_mcts_vs_opponent[
     comptime STATE = ENV.STATE_SIZE
     comptime EVAL_MCTS = GenericGPUMCTS[
         N_GAMES, ACT, OBS, 1, MAX_NODES, NUM_SIMS, 1,
-        AlphaGoPUCT[2.5], NoNoise, SelfPlay, STATE_SIZE=STATE,
+        AlphaGoPUCT[1.0], NoNoise, SelfPlay, STATE_SIZE=STATE,
     ]
     # Resets let early-finishing games stop interfering; +ACT slack covers any
     # desync between fast and slow games before all first-games complete.

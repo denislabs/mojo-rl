@@ -64,7 +64,7 @@ def run_alphazero_selfplay[
     comptime STATE = ENV.STATE_SIZE
     comptime MCTS = GenericGPUMCTS[
         N_ENVS, ACT, OBS, 1, MAX_NODES, NUM_SIMS, 1,
-        AlphaGoPUCT[2.5], DirichletNoise[0.25, 0.25], SelfPlay,
+        AlphaGoPUCT[1.0], DirichletNoise[0.25, 0.25], SelfPlay,
         STATE_SIZE=STATE,
     ]
     comptime Graph = ComputeGraph[

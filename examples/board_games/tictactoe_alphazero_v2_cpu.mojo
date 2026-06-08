@@ -114,12 +114,7 @@ def main() raises:
         learning_starts=20,
         train_per_iter=4,
         seed=42,
-        # arena_every = moves the *best* (self-play generator) stays frozen
-        # between promotion checks, so #generations ≈ iterations / arena_every.
-        # AlphaZero bootstraps via search amplification across MANY generations,
-        # so this must stay SMALL: 400 here gives only ~25 generations and the
-        # agent barely learns; 100 gives ~100 generations and it learns well.
-        arena_every=100,
+        arena_every=400,
         arena_open_plies=2,
         promote_threshold=0.55,
         report_every=200,

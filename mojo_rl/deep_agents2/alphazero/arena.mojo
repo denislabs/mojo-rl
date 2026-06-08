@@ -203,7 +203,7 @@ def arena_match_mcts[
     comptime STATE = ENV.STATE_SIZE
     comptime ARENA_MCTS = GenericGPUMCTS[
         N_GAMES, ACT, OBS, 1, MAX_NODES, NUM_SIMS, 1,
-        AlphaGoPUCT[2.5], NoNoise, SelfPlay, STATE_SIZE=STATE,
+        AlphaGoPUCT[1.0], NoNoise, SelfPlay, STATE_SIZE=STATE,
     ]
     comptime MAX_ARENA_MOVES = MAX_PLIES + ACT
 
@@ -406,7 +406,7 @@ def arena_match_cpu[
     comptime ACT = NETA.OUT_DIM - 1
     comptime LATENT = ENV.SAVE_SIZE
     comptime AMCTS = GenericCPUMCTS[
-        ACT, LATENT, NUM_SIMS, MAX_NODES, AlphaGoPUCT[2.5], NoNoise, SelfPlay,
+        ACT, LATENT, NUM_SIMS, MAX_NODES, AlphaGoPUCT[1.0], NoNoise, SelfPlay,
     ]
     _ = ctx_unused
     a.set_attr["training"](Scalar[DT](0.0))

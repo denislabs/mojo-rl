@@ -65,7 +65,7 @@ def run_alphazero_selfplay_cpu[
     comptime LATENT = ENV.SAVE_SIZE
     comptime MCTS = GenericCPUMCTS[
         ACT, LATENT, NUM_SIMS, MAX_NODES,
-        AlphaGoPUCT[2.5], DirichletNoise[0.25, 0.25], SelfPlay,
+        AlphaGoPUCT[1.0], DirichletNoise[0.25, 0.25], SelfPlay,
     ]
     comptime Graph = ComputeGraph[
         1,
