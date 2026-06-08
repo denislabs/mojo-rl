@@ -292,6 +292,10 @@ def run_offpolicy_discrete_train[
         checkpoint_every: Checkpoint writing cadence (env-steps). 0 disables.
         checkpoint_path: Path to write checkpoints to.
         base_step: Base step counter for the training loop.
+        eval_env: Optional separate env used for greedy evaluation.
+        eval_every: Greedy-eval cadence (env steps; 0 disables).
+        eval_episodes: Episodes per greedy-eval pass.
+        eval_max_steps: Max env iterations per eval episode (safety cap).
 
     Returns:
         List of `trainer.mean_return()` snapshots at each completed
@@ -446,11 +450,7 @@ def run_offpolicy_discrete_train[
         # env. For ε=0 Noisy nets the training rollout IS the noisy argmax, so
         # `avg_reward` under-reports the learned policy; bracket a greedy
         # rollout with set_noise_scale(0)/(1) to log the true policy quality.
-        if (
-            eval_every > 0
-            and Bool(eval_env)
-            and abs_step % eval_every == 0
-        ):
+        if eval_every > 0 and Bool(eval_env) and abs_step % eval_every == 0:
             trainer.set_noise_scale(Scalar[DT](0.0))
             var eval_ret = run_offpolicy_discrete_eval[A, E](
                 trainer,
@@ -462,7 +462,10 @@ def run_offpolicy_discrete_train[
             trainer.set_noise_scale(Scalar[DT](1.0))
             if verbose:
                 print(
-                    "[step ", abs_step, "] eval/mean_return = ", eval_ret,
+                    "[step ",
+                    abs_step,
+                    "] eval/mean_return = ",
+                    eval_ret,
                 )
             comptime if L.ENABLED:
                 if Bool(logger):
@@ -650,9 +653,9 @@ def run_offpolicy_discrete_train_gpu_batched[
     )
     comptime assert N_ENVS > 0, "N_ENVS must be > 0"
     comptime assert NS > 0, "NS must be > 0"
-    comptime assert E.OBS_DIM == OBS, (
-        "BatchedEnv OBS_DIM must match trainer AGENT_OBS_DIM"
-    )
+    comptime assert (
+        E.OBS_DIM == OBS
+    ), "BatchedEnv OBS_DIM must match trainer AGENT_OBS_DIM"
 
     # Device n-step accumulator (NS > 1 only). N_ENVS is method-comptime on
     # the trainer's record path, so the driver owns the buffer.
@@ -668,9 +671,7 @@ def run_offpolicy_discrete_train_gpu_batched[
 
     var prev_obs = DriverScratch["prev_obs", N_ENVS, OBS].make["gpu"](ctx=ctx)
 
-    var per_env_returns = List[Scalar[DT]](
-        length=N_ENVS, fill=Scalar[DT](0.0)
-    )
+    var per_env_returns = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
     # Host mirrors for per-step episode tracking (reward + done D2H).
     var reward_host = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
     var done_host = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
@@ -684,7 +685,9 @@ def run_offpolicy_discrete_train_gpu_batched[
     var next_print: Int = print_every
     var next_log: Int = print_every
     var next_diag: Int = diag_every if diag_every > 0 else total_env_steps + 1
-    var ckpt_on: Bool = checkpoint_every > 0 and checkpoint_path.byte_length() > 0
+    var ckpt_on: Bool = (
+        checkpoint_every > 0 and checkpoint_path.byte_length() > 0
+    )
     var next_ckpt: Int = checkpoint_every if ckpt_on else total_env_steps + 1
     # Deterministic greedy-eval cadence. The training `avg_reward` above is
     # the NOISY rollout (for ε=0 Noisy nets the acting policy IS the noisy
@@ -818,9 +821,7 @@ def run_offpolicy_discrete_train_gpu_batched[
 
         # Deterministic greedy eval on the isolated `eval_env` (noise off).
         if eval_on and step_idx >= next_eval:
-            var eval_ret = run_offpolicy_discrete_eval_batched[
-                A, E, N_ENVS
-            ](
+            var eval_ret = run_offpolicy_discrete_eval_batched[A, E, N_ENVS](
                 ctx,
                 trainer,
                 eval_env.value()[],
@@ -836,7 +837,10 @@ def run_offpolicy_discrete_train_gpu_batched[
                     logger.value()[].flush()
             if verbose:
                 print(
-                    "[step ", abs_step, "] eval/mean_return = ", eval_ret,
+                    "[step ",
+                    abs_step,
+                    "] eval/mean_return = ",
+                    eval_ret,
                 )
             next_eval += eval_every
 
@@ -878,9 +882,9 @@ def run_offpolicy_discrete_eval_batched[
     Returns the mean completed-episode return (0 if none completed).
     """
     comptime OBS = A.AGENT_OBS_DIM
-    comptime assert E.OBS_DIM == OBS, (
-        "eval_env OBS_DIM must match trainer AGENT_OBS_DIM"
-    )
+    comptime assert (
+        E.OBS_DIM == OBS
+    ), "eval_env OBS_DIM must match trainer AGENT_OBS_DIM"
 
     trainer.set_noise_scale(Scalar[DT](0.0))  # deterministic mean weights
 
@@ -897,9 +901,7 @@ def run_offpolicy_discrete_eval_batched[
         trainer.select_greedy_action_batched[N_ENVS](
             eval_env.obs_ptr(), eval_env.action_ptr()
         )
-        eval_env.step_batch[N_ENVS](
-            ctx=ctx, rng_seed=rng_seed + UInt64(it + 1)
-        )
+        eval_env.step_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed + UInt64(it + 1))
         var rv = DeviceBuffer[DT](
             ctx, eval_env.reward_ptr(), N_ENVS, owning=False
         )
