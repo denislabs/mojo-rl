@@ -11,11 +11,14 @@ comes from real Pong, collected WITH rewards by
 `pong_reward_collect_buffer.mojo` (format LWMR). The full pipeline runs on it:
 
   Phase A  causal tokenizer on buffer frames → FREEZE.
-  Phase B  `agent.bc_train_step(reward_weight=1)` jointly trains the world model
-           (shortcut-forcing video loss), clones the dataset action (policy
-           head), AND fits the REWARD HEAD to the buffer's real per-step reward
-           (eq. 9 twohot). In parallel, the continue head is trained on the real
-           done flags (BCE) off the same clean h_t.
+  Phase B  `agent.acwm_train_step(reward_weight=1)` jointly trains the
+           ACTION-CONDITIONED world model (shortcut-forcing video loss whose
+           action token moves the transition), clones the dataset action
+           (policy head), AND fits the REWARD HEAD to the buffer's real
+           transition reward (eq. 9 twohot). Training the action-conditioned
+           transition is what lets imagined actions move the reward. In
+           parallel, the continue head is trained on the real done flags (BCE)
+           off the same clean h_t.
   Eval     • REWARD HEAD: does the learned reward model, read off the encoded
              observation, predict real Pong reward? Gate = it raises its
              prediction on true reward states above zero-reward states (it
@@ -227,15 +230,10 @@ def main() raises:
     var rew = _alloc(BATCH)            # REAL per-step reward (twohot target)
     var done = _alloc(BATCH)           # REAL done flag
     var cont_tgt = _alloc(BATCH)       # 1 − done
-    var act_zero = _alloc(BATCH * ADIM)
-    var act_mask = _alloc(BATCH * ADIM)
     var bins = _alloc(NBINS)
     symexp_twohot_bins[NBINS](bins, lo=Scalar[DT](-9.0))
     for b in range(B):
         task_ids[b] = Scalar[DT](0.0)
-    for i in range(BATCH * ADIM):
-        act_zero[i] = Scalar[DT](0.0)
-        act_mask[i] = Scalar[DT](1.0)
 
     # sampled windows (pixels/actions/rewards/dones) come straight from the buffer
     var pix = _alloc(BATCH * IMG_DIM)
@@ -294,9 +292,12 @@ def main() raises:
         for i in range(ZN):
             z0n[i] = Scalar[DT](rng.gauss())
 
-        agent.dyn.set_actions(act_zero, act_mask, BATCH)   # seed action cache
         aopt.zero_grad["cpu"](agent)
-        var losses = agent.bc_train_step(
+        # ACTION-CONDITIONED world model: the action token moves the transition
+        # (and hence the reward); reward head fits the transition-into reward
+        # r[f-1]; policy clones the same-frame action. This is what makes the
+        # imagined actions move the reward.
+        var losses = agent.acwm_train_step(
             z1, z0n, sigma, sig_idx, step_idx, step >= 30,
             task_ids, act_idx, rew, bins,
             policy_weight=Scalar[DT](1.0), reward_weight=Scalar[DT](1.0),
@@ -353,30 +354,32 @@ def main() raises:
                 step_idx[bt] = Scalar[DT](Float64(EMAX))
         for i in range(ZN):
             z0n[i] = Scalar[DT](rng.gauss())
-        agent.dyn.set_actions(act_zero, act_mask, BATCH)
-        var _l = agent.bc_train_step(
+        var _l = agent.acwm_train_step(
             z1, z0n, sigma, sig_idx, step_idx, False,
             task_ids, act_idx, rew, bins,
             policy_weight=Scalar[DT](1.0), reward_weight=Scalar[DT](1.0),
         )
-        # reward predictions: dist-0 block of the reward logits
+        # reward predictions: dist-0 block of the reward logits. acwm fits the
+        # TRANSITION-INTO reward, so r̂(h_f) targets the dataset reward r[f-1];
+        # compare on frames f≥1 (frame 0 has no in-window preceding action).
         var rlog = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             agent.rlog.unsafe_ptr()
         )
-        for bt in range(BATCH):
-            var pr = Float64(twohot_pred[NBINS](rlog, bt * RLOG, bins))
-            var tr = Float64(rew[bt])
-            collected_r.append(tr)
-            var is_r = abs(tr) > 1e-6
-            if is_r:
-                sum_pred_rstate += pr
-                n_rstate += 1
-            else:
-                sum_pred_zstate += pr
-                n_zstate += 1
-            mae_model += abs(pr - tr)
-            sum_true_r += tr
-            n_all += 1
+        for b in range(B):
+            for f in range(1, T):
+                var pr = Float64(twohot_pred[NBINS](rlog, (b * T + f) * RLOG, bins))
+                var tr = Float64(rew[b * T + f - 1])
+                collected_r.append(tr)
+                var is_r = abs(tr) > 1e-6
+                if is_r:
+                    sum_pred_rstate += pr
+                    n_rstate += 1
+                else:
+                    sum_pred_zstate += pr
+                    n_zstate += 1
+                mae_model += abs(pr - tr)
+                sum_true_r += tr
+                n_all += 1
 
         # continue predictions off the clean h_t
         var ht = agent.agent_out_ptr()
@@ -440,8 +443,12 @@ def main() raises:
         for i in range(B * T * ND):
             znoise[i] = Scalar[DT](rng.gauss())
         iopt.zero_grad["cpu"](agent)
+        # γ=0.9 (not the 0.997 default): with only NCTX=1 context + a short
+        # imagined window the untrained bootstrap value dominates a γ→1 return,
+        # so a bounded γ keeps the execution check finite.
         var l = agent.imag_train_step(
-            ctx, u01, znoise, task_ids, bins, use_continue=True
+            ctx, u01, znoise, task_ids, bins, use_continue=True,
+            gamma=Scalar[DT](0.9),
         )
         iopt.step["cpu"](agent)
         if step == 0:

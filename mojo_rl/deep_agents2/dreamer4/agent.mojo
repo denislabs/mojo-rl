@@ -134,6 +134,10 @@ struct Dreamer4Agent[
     var clean_step: List[Scalar[DT]]    # [BF] = EMAX
     var bc_in: List[Scalar[DT]]         # [BF, ND] noised BC input at σ_bc
     var gzero: List[Scalar[DT]]         # [BF, ND] zero flow-grad for the BC vjp
+    # ── action-conditioned WM scratch (acwm_train_step) ─────────────────
+    var ac_tok: List[Scalar[DT]]        # [BF, ADIM] shifted action one-hot tokens
+    var ac_mask: List[Scalar[DT]]       # [ADIM] all-ones (no masking)
+    var rew_shift: List[Scalar[DT]]     # [BF] transition-into reward (r[f-1])
     # ── imagination-RL scratch (Phase 4) ────────────────────────────────
     var im_h: List[Scalar[DT]]          # [BF, AGD]  rollout agent tokens
     var im_act: List[Scalar[DT]]        # [B, T-1]   sampled action class
@@ -197,6 +201,9 @@ struct Dreamer4Agent[
         self.clean_step = List[Scalar[DT]]()
         self.bc_in = List[Scalar[DT]]()
         self.gzero = List[Scalar[DT]]()
+        self.ac_tok = List[Scalar[DT]]()
+        self.ac_mask = List[Scalar[DT]]()
+        self.rew_shift = List[Scalar[DT]]()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -257,6 +264,9 @@ struct Dreamer4Agent[
         m.clean_step.resize(Self.BF, Scalar[DT](Float64(Self.EMAX)))
         m.bc_in.resize(Self.BF * Self.ND, Scalar[DT](0.0))
         m.gzero.resize(Self.BF * Self.ND, Scalar[DT](0.0))
+        m.ac_tok.resize(Self.BF * Self.ADIM, Scalar[DT](0.0))
+        m.ac_mask.resize(Self.ADIM, Scalar[DT](1.0))
+        m.rew_shift.resize(Self.BF, Scalar[DT](0.0))
         m.ts = TargetStorage.make_cpu()
         return m^
 
@@ -466,6 +476,157 @@ struct Dreamer4Agent[
         self.dyn.set_grad_h(ghp, Self.BF)
         var gzero_t = TileTensor(
             mptr(self.gzero.unsafe_ptr()),
+            row_major[Self.BF, Self.ND](),
+        )
+        self.dyn.vjp["cpu", Self.BF](gzero_t, gzt_t)
+        self.te.accumulate_grad["cpu", Self.B, Self.T](
+            self.dyn.grad_agent_in_ptr_cpu()
+        )
+
+        return Tuple(loss_v, loss_bc)
+
+    # ── action-conditioned world-model + reward + BC step ────────────────
+    def acwm_train_step(
+        mut self,
+        z1: UnsafePointer[Scalar[DT], MutAnyOrigin],         # [BF, ND] latents
+        z0: UnsafePointer[Scalar[DT], MutAnyOrigin],         # [BF, ND] noise
+        sigma: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [BF]
+        sigma_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BF]
+        step_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [BF]
+        do_boot: Bool,
+        task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B]
+        actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [BF] class ids
+        rewards: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [BF] transition reward
+        bins: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [NBINS]
+        policy_weight: Scalar[DT] = Scalar[DT](1.0),
+        reward_weight: Scalar[DT] = Scalar[DT](1.0),
+    ) raises -> Tuple[Float64, Float64]:
+        """ACTION-CONDITIONED counterpart of `bc_train_step`. Trains the world
+        model so the action token MOVES the transition (and hence the reward),
+        which `imag_train_step` then exploits to improve the policy by
+        imagination. Returns (video_loss, bc_loss); fills all four components'
+        grads — caller `zero_grad`s + `step`s one optimizer.
+
+        Conventions (matched to `imagine_rollout`):
+          • the action token at frame f conditions the transition INTO f, so it
+            holds the dataset action taken at f−1 (frame 0 → no action);
+          • the reward head at frame f predicts the reward of that transition,
+            i.e. the dataset reward earned at f−1 (so the λ-return's r_{t+1}
+            term equals the reward of the action sampled at state t);
+          • the policy head at frame f clones the SAME-frame action a_f (it is
+            what `imagine_rollout` samples at state f).
+        `actions`/`rewards` are passed UNSHIFTED ([BF] per (b, window-pos)); the
+        shifts are built here. Always clean-decoupled (a dedicated near-clean
+        forward gives h_t an un-noised frame). CPU world-model path only."""
+        comptime assert Self.DYN_TARGET == "cpu", (
+            "acwm_train_step is the CPU world-model path (DYN_TARGET=\"cpu\")"
+        )
+        comptime assert Self.ADIM == Self.NACT, (
+            "acwm_train_step needs ADIM = NACT (one-hot action conditioning)"
+        )
+        var agp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.agent_in.unsafe_ptr()
+        )
+        var gzh = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.grad_zhat.unsafe_ptr()
+        )
+        var zh = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.zhat.unsafe_ptr()
+        )
+        var ghp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.grad_h.unsafe_ptr()
+        )
+        var atk = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.ac_tok.unsafe_ptr()
+        )
+        var amk = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.ac_mask.unsafe_ptr()
+        )
+        var rsh = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.rew_shift.unsafe_ptr()
+        )
+        var gzt_t = TileTensor(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.grad_zt.unsafe_ptr()
+            ),
+            row_major[Self.BF, Self.ND](),
+        )
+
+        # 0. build the SHIFTED action tokens + transition rewards (frame f ← f−1;
+        #    frame 0 = no preceding in-window action ⇒ zeros / 0 reward).
+        for i in range(Self.BF * Self.ADIM):
+            self.ac_tok[i] = Scalar[DT](0.0)
+        for b in range(Self.B):
+            self.rew_shift[b * Self.T + 0] = Scalar[DT](0.0)
+            for f in range(1, Self.T):
+                var a_prev = Int(Float64(actions[b * Self.T + f - 1]) + 0.5)
+                self.ac_tok[(b * Self.T + f) * Self.ADIM + a_prev] = Scalar[DT](
+                    1.0
+                )
+                self.rew_shift[b * Self.T + f] = rewards[b * Self.T + f - 1]
+
+        # 1. task embeddings → agent token input
+        self.te.embed_into["cpu", Self.B, Self.T](task_ids, agp)
+
+        # 2. ACTION-CONDITIONED shortcut-forcing video loss (ADIM=NACT): the
+        #    action token moves the predicted transition. MAIN pass leaves h_t.
+        var loss_v = dynamics_pretrain_loss[
+            Self.DYN, Self.B, Self.T, Self.B_SELF, Self.NSP, Self.DSP,
+            Self.KMAX, "cpu", Self.ADIM, Self.AGD,
+        ](
+            self.dyn, z1, z0, sigma, sigma_idx, step_idx, do_boot, gzh, zh,
+            actions=atk, act_mask=amk, agent_in=agp,
+        )
+
+        # 3. video vjp ONLY (zero the agent-token grad) using the video caches;
+        #    accumulates the action-MLP + transition param grads.
+        for i in range(Self.BF * Self.AGD):
+            self.grad_h[i] = Scalar[DT](0.0)
+        self.dyn.set_grad_h(ghp, Self.BF)
+        var gzh_t = TileTensor(gzh, row_major[Self.BF, Self.ND]())
+        self.dyn.vjp["cpu", Self.BF](gzh_t, gzt_t)
+
+        # 4. dedicated near-clean forward (σ_bc) WITH the action tokens → an
+        #    action-conditioned, un-noised h_t for the heads.
+        self.dyn.set_indices(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.clean_sig.unsafe_ptr()
+            ),
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.clean_step.unsafe_ptr()
+            ),
+            Self.BF,
+        )
+        self.dyn.set_actions(atk, amk, Self.BF)
+        self.dyn.set_agent_in(agp, Self.BF)
+        var sig_bc = Float64(Self.KMAX - 1) / Float64(Self.KMAX)
+        for i in range(Self.BF * Self.ND):
+            self.bc_in[i] = Scalar[DT](
+                sig_bc * Float64(z1[i]) + (1.0 - sig_bc) * Float64(z0[i])
+            )
+        var z1_t = TileTensor(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.bc_in.unsafe_ptr()
+            ),
+            row_major[Self.BF, Self.ND](),
+        )
+        var zh_t = TileTensor(zh, row_major[Self.BF, Self.ND]())
+        self.dyn.forward["cpu", Self.BF](z1_t, output=zh_t)
+
+        # 5. BC loss on the clean h_t: policy clones SAME-frame actions; reward
+        #    head fits the SHIFTED (transition-into) reward.
+        var loss_bc = self._run_bc_loss(
+            self.dyn.agent_out_ptr_cpu(), actions, rsh, bins,
+            policy_weight, reward_weight,
+        )
+
+        # 6. BC vjp through the clean forward (zero flow grad) → dyn + act-MLP
+        #    grads; then the task-embedder grad.
+        self.dyn.set_grad_h(ghp, Self.BF)
+        var gzero_t = TileTensor(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.gzero.unsafe_ptr()
+            ),
             row_major[Self.BF, Self.ND](),
         )
         self.dyn.vjp["cpu", Self.BF](gzero_t, gzt_t)
