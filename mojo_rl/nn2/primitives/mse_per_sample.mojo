@@ -89,7 +89,8 @@ struct MSEPerSample[DIM: Int](Module):
         return m^
 
     def _ensure_gpu(mut self, batch: Int) raises:
-        var ctx = self.ts.ctx.value()
+        self.cache_diff.ensure_gpu(self.ts.ctx.value(), batch * Self.DIM)
+
     def forward[
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
     ](
