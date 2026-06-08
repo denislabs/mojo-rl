@@ -1224,45 +1224,21 @@ struct REDQOFETrainer[
                 grid_dim=n_blocks_c, block_dim=TPB,
             )
 
-    def record_batch_cpu[
-        N_ENVS: Int,
-    ](
+    def _replay_add(
         mut self,
-        prev_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        ref action: List[Scalar[DT]],
+        reward: Scalar[DT],
+        ref next_obs: List[Scalar[DT]],
+        done: Scalar[DT],
     ) raises:
-        """Per-lane replay push WITHOUT touching the episode tracker
-        (the driver manages per-env return accumulators via
-        `add_complete_return`). Matches REDQ's `record_batch_cpu`."""
-        var obs_lane = List[Scalar[DT]](
-            length=Self.OBS,
-            fill=Scalar[DT](0.0),
+        # `record_batch_cpu`'s staging loop is the OffPolicyAgent trait
+        # default (S6 follow-on); this hook is the one trainer-specific line.
+        # Per-lane replay push WITHOUT touching the episode tracker (the
+        # driver manages per-env returns via `add_complete_return`).
+        self.sample_blk.add(
+            obs, action, reward, next_obs, done, ctx=self.ctx,
         )
-        var act_lane = List[Scalar[DT]](
-            length=Self.ACT,
-            fill=Scalar[DT](0.0),
-        )
-        var nxt_lane = List[Scalar[DT]](
-            length=Self.OBS,
-            fill=Scalar[DT](0.0),
-        )
-        for env_idx in range(N_ENVS):
-            for d in range(Self.OBS):
-                obs_lane[d] = prev_obs_ptr[env_idx * Self.OBS + d]
-                nxt_lane[d] = next_obs_ptr[env_idx * Self.OBS + d]
-            for j in range(Self.ACT):
-                act_lane[j] = action_ptr[env_idx * Self.ACT + j]
-            self.sample_blk.add(
-                obs_lane,
-                act_lane,
-                reward_ptr[env_idx],
-                nxt_lane,
-                done_ptr[env_idx],
-                ctx=self.ctx,
-            )
 
     # ──────────────────────────────────────────────────────────────────
     # One-file `nn2-ckpt v2` checkpoint.

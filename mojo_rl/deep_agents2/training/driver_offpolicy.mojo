@@ -219,6 +219,22 @@ trait OffPolicyAgent(Movable, ImplicitlyDestructible):
     def add_complete_return(mut self, ret: Scalar[DT]):
         self._tracker_ptr()[].add_complete_return(ret)
 
+    def _replay_add(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        ref action: List[Scalar[DT]],
+        reward: Scalar[DT],
+        ref next_obs: List[Scalar[DT]],
+        done: Scalar[DT],
+    ) raises:
+        """Push ONE host-list transition into the trainer's replay. The
+        per-lane hook behind the defaulted `record_batch_cpu` staging loop
+        below — the ONE genuinely trainer-specific line (SAC/DDPG/TD3/REDQ/
+        REDQ-OFE forward to `sample_blk.add`; MBPO to its DualSampleStep's
+        `real_add`, which the uniform default can't name since
+        DualSampleStep isn't a `SampleBlock`)."""
+        ...
+
     def record_batch_cpu[
         N_ENVS: Int
     ](
@@ -229,11 +245,38 @@ trait OffPolicyAgent(Movable, ImplicitlyDestructible):
         next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
-        """Push N transitions from host pointer slabs into the
-        trainer's replay buffer. Does NOT update the trainer's
-        episode tracker — caller manages per-env returns via
-        `add_complete_return`."""
-        ...
+        """Push N transitions from host pointer slabs into the trainer's
+        replay buffer. Does NOT update the trainer's episode tracker —
+        caller manages per-env returns via `add_complete_return`.
+
+        DEFAULT (S6 follow-on): stage each lane into reused per-lane Lists
+        and push via the `_replay_add` hook. This staging loop was
+        byte-identical across all 6 off-policy trainers; it now lives here
+        once. Only ever instantiated on the same-target cpu-env batched
+        driver (cpu-env ⇒ cpu-train), so `AGENT_TRAIN_TARGET == "cpu"`."""
+        comptime assert (
+            Self.AGENT_TRAIN_TARGET == "cpu"
+        ), "record_batch_cpu: trainer's train_target must be 'cpu'"
+        comptime OBS = Self.AGENT_OBS_DIM
+        comptime ACT = Self.AGENT_ACT_DIM
+        # Reused per-lane Lists for the `_replay_add` hook (which takes
+        # List args). Re-using across lanes avoids per-lane re-allocation.
+        var obs_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+        var act_lane = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+        var nxt_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+        for env_idx in range(N_ENVS):
+            for d in range(OBS):
+                obs_lane[d] = prev_obs_ptr[env_idx * OBS + d]
+                nxt_lane[d] = next_obs_ptr[env_idx * OBS + d]
+            for j in range(ACT):
+                act_lane[j] = action_ptr[env_idx * ACT + j]
+            self._replay_add(
+                obs_lane,
+                act_lane,
+                reward_ptr[env_idx],
+                nxt_lane,
+                done_ptr[env_idx],
+            )
 
     # ─── Optional cadence hooks (default no-op) ──────────────────────
     #

@@ -926,37 +926,21 @@ struct REDQTrainer[
         capture path (N/A for REDQ — `train_device_kernels` raises)."""
         return self.learning_starts
 
-    def record_batch_cpu[
-        N_ENVS: Int,
-    ](
+    def _replay_add(
         mut self,
-        prev_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        ref action: List[Scalar[DT]],
+        reward: Scalar[DT],
+        ref next_obs: List[Scalar[DT]],
+        done: Scalar[DT],
     ) raises:
-        """Per-lane SAC-style replay push without tracker.add_reward
-        (the driver manages per-env return accumulators)."""
-        comptime OBS = Self.OBS_DIM
-        comptime ACT = Self.ACT_DIM
-        var obs_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
-        var act_lane = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
-        var nxt_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
-        for env_idx in range(N_ENVS):
-            for d in range(OBS):
-                obs_lane[d] = prev_obs_ptr[env_idx * OBS + d]
-                nxt_lane[d] = next_obs_ptr[env_idx * OBS + d]
-            for j in range(ACT):
-                act_lane[j] = action_ptr[env_idx * ACT + j]
-            self.sample_blk.add(
-                obs_lane,
-                act_lane,
-                reward_ptr[env_idx],
-                nxt_lane,
-                done_ptr[env_idx],
-                ctx=self.ctx,
-            )
+        # `record_batch_cpu`'s staging loop is the OffPolicyAgent trait
+        # default (S6 follow-on); this hook is the one trainer-specific line.
+        # Per-lane SAC-style replay push without tracker.add_reward (the
+        # driver manages per-env return accumulators).
+        self.sample_blk.add(
+            obs, action, reward, next_obs, done, ctx=self.ctx,
+        )
 
     # ────────────────────────────────────────────────────────────────
     # Tracker passthroughs — `end_episode` / `mean_return` / `ep_count` /
