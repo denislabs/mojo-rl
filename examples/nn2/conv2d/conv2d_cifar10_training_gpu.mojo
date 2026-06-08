@@ -92,13 +92,13 @@ def main() raises:
     )
     ctx.synchronize()
     for i in range(CIFAR10.N_TRAIN * IN_DIM):
-        train_x_host.unsafe_ptr()[i] = ds.train_images[i]
+        train_x_host[i] = ds.train_images[i]
     for i in range(CIFAR10.N_TRAIN * N_CLASSES):
-        train_y_host.unsafe_ptr()[i] = 0.0
+        train_y_host[i] = 0.0
     for i in range(CIFAR10.N_TRAIN):
-        train_y_host.unsafe_ptr()[i * N_CLASSES + Int(ds.train_labels[i])] = 1.0
+        train_y_host[i * N_CLASSES + Int(ds.train_labels[i])] = 1.0
     for i in range(CIFAR10.N_TEST * IN_DIM):
-        test_x_host.unsafe_ptr()[i] = ds.test_images[i]
+        test_x_host[i] = ds.test_images[i]
 
     var train_x_dev = ctx.enqueue_create_buffer[DT](CIFAR10.N_TRAIN * IN_DIM)
     var train_y_dev = ctx.enqueue_create_buffer[DT](CIFAR10.N_TRAIN * N_CLASSES)

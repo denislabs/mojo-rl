@@ -398,8 +398,10 @@ struct Trainer[
             self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 input, output=output
             )
+            # Flat read from the slab: indexing the 2-D `output` view with a
+            # single int selects row `k` (column 0), not the flat element.
             for k in range(Self.BATCH * Self.OUT_DIM):
-                result[k] = output[k]
+                result[k] = self.output_buf[k]
         else:
             var ctx = self.ctx.value()
             var in_host_buf: HostBuffer[DT] = self.input_host.value()
@@ -424,6 +426,134 @@ struct Trainer[
             ctx.synchronize()
             for k in range(Self.BATCH * Self.OUT_DIM):
                 result[k] = out_host_buf[k]
+
+    # ------------------------------------------------------------------
+    # Whole-dataset CPU training (mirrors `train_gpu`).
+    #
+    # Caller supplies the full train + test sets as flat row-major `List`s
+    # once; the trainer slices each mini-batch by pointer offset and runs
+    # the same forward/backward/step pipeline as the per-step API. Keeps the
+    # CPU example as terse as the GPU one (no hand-rolled epoch loop).
+    # ------------------------------------------------------------------
+
+    def train_cpu[
+        N_TRAIN: Int,
+        N_TEST: Int,
+    ](
+        mut self,
+        train_x: List[Scalar[DT]],
+        train_y: List[Scalar[DT]],
+        test_x: List[Scalar[DT]],
+        test_y_labels: List[Int32],
+        epochs: Int = 1,
+        print_progress: Bool = True,
+    ) raises -> TrainResult:
+        """Whole-dataset CPU training with per-epoch top-1 eval.
+
+        `train_x` is flat row-major `[N_TRAIN, IN_DIM]`, `train_y` is flat
+        one-hot `[N_TRAIN, OUT_DIM]`, `test_x` is `[N_TEST, IN_DIM]`. Batches
+        are taken in order (no shuffle); the loss/step path is identical to
+        `train_step`. Returns per-epoch `TrainResult` metrics.
+        """
+        comptime assert (
+            Self.target == "cpu"
+        ), "Trainer.train_cpu requires target='cpu'"
+        comptime assert (
+            N_TRAIN % Self.BATCH == 0
+        ), "Trainer.train_cpu: N_TRAIN must be divisible by BATCH"
+        comptime assert (
+            N_TEST % Self.BATCH == 0
+        ), "Trainer.train_cpu: N_TEST must be divisible by BATCH"
+        comptime N_BATCHES_TRAIN = N_TRAIN // Self.BATCH
+
+        var result = TrainResult.empty()
+        var x_base = mptr(train_x.unsafe_ptr())
+        var y_base = mptr(train_y.unsafe_ptr())
+
+        for epoch in range(epochs):
+            var t0 = perf_counter_ns()
+            var epoch_loss: Scalar[DT] = 0.0
+            for b in range(N_BATCHES_TRAIN):
+                var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
+                var y_ptr = y_base + b * Self.BATCH * Self.OUT_DIM
+                var input = TileTensor(
+                    x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
+                )
+                var targets = TileTensor(
+                    y_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
+                )
+                epoch_loss += self._train_step_views(input, targets)
+            var t1 = perf_counter_ns()
+            var train_s = Float64(t1 - t0) / 1e9
+
+            var top1 = self.eval_top1_cpu[N_TEST](test_x, test_y_labels)
+            var t2 = perf_counter_ns()
+            var eval_s = Float64(t2 - t1) / 1e9
+
+            var avg = Float64(epoch_loss / Scalar[DT](N_BATCHES_TRAIN))
+            result.epoch_train_loss.append(avg)
+            result.epoch_test_top1.append(top1)
+            result.epoch_train_s.append(train_s)
+            result.epoch_eval_s.append(eval_s)
+            if print_progress:
+                print(
+                    "epoch "
+                    + String(epoch)
+                    + " | train_loss="
+                    + String(avg)
+                    + " | test_top1="
+                    + String(top1 * 100.0)
+                    + "%"
+                    + " | train="
+                    + String(train_s)
+                    + "s"
+                    + " | eval="
+                    + String(eval_s)
+                    + "s"
+                )
+        return result^
+
+    def eval_top1_cpu[
+        N_TEST: Int,
+    ](
+        mut self,
+        test_x: List[Scalar[DT]],
+        test_y_labels: List[Int32],
+    ) raises -> Float64:
+        comptime assert (
+            Self.target == "cpu"
+        ), "Trainer.eval_top1_cpu requires target='cpu'"
+        comptime assert (
+            N_TEST % Self.BATCH == 0
+        ), "Trainer.eval_top1_cpu: N_TEST must be divisible by BATCH"
+        comptime N_BATCHES = N_TEST // Self.BATCH
+
+        var x_base = mptr(test_x.unsafe_ptr())
+        var n_correct: Int = 0
+        for b in range(N_BATCHES):
+            var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
+            var input = TileTensor(
+                x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
+            )
+            var output = TileTensor(
+                self.output_buf, row_major[Self.BATCH, Self.OUT_DIM]()
+            )
+            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                input, output=output
+            )
+            # Flat read from the slab (see `predict`): single-int indexing of
+            # the 2-D view selects a row, not the flat element.
+            for k in range(Self.BATCH):
+                var best_c: Int = 0
+                var best_v: Scalar[DT] = self.output_buf[k * Self.OUT_DIM + 0]
+                for c in range(1, Self.OUT_DIM):
+                    var v = self.output_buf[k * Self.OUT_DIM + c]
+                    if v > best_v:
+                        best_v = v
+                        best_c = c
+                if best_c == Int(test_y_labels[b * Self.BATCH + k]):
+                    n_correct += 1
+        return Float64(n_correct) / Float64(N_TEST)
 
     # ------------------------------------------------------------------
     # Whole-dataset GPU training.
