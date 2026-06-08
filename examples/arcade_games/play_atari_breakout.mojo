@@ -1,14 +1,18 @@
-"""Interactive Atari 2600 player — play games with keyboard input.
+"""Interactive Atari 2600 Breakout player — keyboard controlled.
 
 Usage:
-    pixi run -e apple mojo run envs/atari/play_atari.mojo
+    pixi run -e apple mojo run -I . examples/arcade_games/play_atari_breakout.mojo
 
 Controls:
-    Arrow keys  → Joystick directions
-    Space       → FIRE button
-    P           → Pause/Unpause
-    V           → Toggle video recording
-    Escape/Q    → Quit
+    Left / Right  → Move paddle
+    Space         → FIRE (launch the ball / serve)
+    P             → Pause/Unpause
+    V             → Toggle video recording
+    Escape/Q      → Quit
+
+Breakout is a paddle game: LEFT/RIGHT move the paddle (read as the analog
+paddle on INPT0/INPT1) and Space serves the ball. This exercises the paddle
+input path together with the fire button.
 
 Requires ROM files in 'roms/' (symlink to ale_py/roms/).
 """
@@ -17,27 +21,28 @@ from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
 from mojo_rl.envs.atari.renderer import AtariRenderer
 from mojo_rl.envs.atari.riot import set_action
 from mojo_rl.envs.atari.cpu6502 import run_frame_with_video
-from mojo_rl.envs.atari.games.pong import PongDef
+from mojo_rl.envs.atari.games.breakout import BreakoutDef
 from mojo_rl.envs.atari.flags import ACTION_NOOP, ACTION_RESET
 
 
 def main() raises:
     # Load ROM
-    var rom_path = "roms/pong.bin"
+    var rom_path = "roms/breakout.bin"
     print("Loading ROM: " + rom_path)
     var rom_data = load_rom(rom_path)
     print("ROM loaded: " + String(rom_data.size) + " bytes")
 
     # Create environment (frame_skip=1 for interactive play)
     var env = AtariEnvironment(
-        rom_data.data, rom_data.size, frame_skip=1, max_frames=0
+        rom_data.data.value(), rom_data.size, frame_skip=1, max_frames=0
     )
     env.reset()
+    env.state.lives = UInt8(BreakoutDef.get_lives(env.state.ram))
     print("Environment reset. Starting interactive play...")
     print("")
     print("Controls:")
-    print("  Arrow keys = Move")
-    print("  Space      = Fire")
+    print("  Left/Right = Move paddle")
+    print("  Space      = Fire (serve ball)")
     print("  P          = Pause")
     print("  V          = Record video")
     print("  Esc/Q      = Quit")
@@ -64,27 +69,22 @@ def main() raises:
             )
             step_count += 1
 
-            # Debug TIA state every 300 frames (~5 sec)
+            # Debug RAM state every 300 frames (~5 sec)
             if step_count % 300 == 1:
                 print(
-                    "P0="
-                    + String(Int(env.state.pos_p0))
-                    + " P1="
-                    + String(Int(env.state.pos_p1))
-                    + " BL="
-                    + String(Int(env.state.pos_bl))
+                    "score="
+                    + String(BreakoutDef.get_score(env.state.ram))
+                    + " lives="
+                    + String(BreakoutDef.get_lives(env.state.ram))
                     + " paddle="
                     + String(Int(env.state.paddle_pos))
-                    + " RAM13="
-                    + String(Int(env.state.ram[13]))
-                    + " RAM14="
-                    + String(Int(env.state.ram[14]))
                 )
 
             # Extract game state from RAM
-            var score = PongDef.get_score(env.state.ram)
+            var score = BreakoutDef.get_score(env.state.ram)
             env.state.score = Int32(score)
-            env.state.terminal = PongDef.is_terminal(env.state.ram)
+            env.state.lives = UInt8(BreakoutDef.get_lives(env.state.ram))
+            env.state.terminal = BreakoutDef.is_terminal(env.state.ram)
 
             # Auto-reset on terminal
             if env.state.terminal:
@@ -96,6 +96,7 @@ def main() raises:
                     + ")"
                 )
                 env.reset()
+                env.state.lives = UInt8(BreakoutDef.get_lives(env.state.ram))
                 step_count = 0
 
         # Display the frame buffer (already filled by run_frame_with_video)
