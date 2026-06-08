@@ -115,16 +115,13 @@ def main() raises:
     print("[init] building nn2 ViT on GPU...")
     var net = VIT_MODEL.make["gpu", INIT=Kaiming](ctx)
     var loss_fn = CrossEntropyLoss[N_CLASSES].make["gpu"](ctx)
-    var optim = AdamW.make["gpu", M=type_of(net)](net, ctx)
+    var optim = AdamW.make["gpu"](net, ctx)
     optim.lr = BASE_LR
     optim.weight_decay = WD
     optim.beta2 = 0.999
 
     var trainer = Trainer[
-        type_of(net),
-        type_of(optim),
-        type_of(loss_fn),
-        BATCH,
+        BATCH=BATCH,
         target="gpu",
     ].make_from(net^, optim^, loss_fn^, ctx)
 
