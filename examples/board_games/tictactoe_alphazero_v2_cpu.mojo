@@ -33,7 +33,8 @@ from mojo_rl.deep_agents2.alphazero.nets import AZMLPNet
 from mojo_rl.deep_agents2.alphazero.agent import AlphaZeroAgent
 from mojo_rl.deep_agents2.zero.symmetries import D4SquareAugmenter
 from mojo_rl.deep_agents2.zero.evaluators import (
-    RandomOpponent, GPUMinimaxTicTacToe,
+    RandomOpponent,
+    GPUMinimaxTicTacToe,
 )
 from mojo_rl.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
 
@@ -64,14 +65,21 @@ def main() raises:
     comptime H = 128
     comptime Net = AZMLPNet[OBS, ACT, H]
     comptime Env = TicTacToeEnv[DType.float64]
-    comptime Aug = D4SquareAugmenter[3, 3]    # 8 D4 board symmetries
+    comptime Aug = D4SquareAugmenter[3, 3]  # 8 D4 board symmetries
 
     # CPU path: no DeviceContext (ctx=None), host-resident net. `N_ENVS` is a
     # required facade param but unused on CPU (single-env self-play), so it is
     # set to 1.
     var agent = AlphaZeroAgent[
-        "cpu", Env, Net, N_ENVS=1, NUM_SIMS=50, MAX_NODES=128,
-        BATCH=64, CAP=80000, MAX_TRAJ=16,
+        "cpu",
+        Env,
+        Net,
+        N_ENVS=1,
+        NUM_SIMS=50,
+        MAX_NODES=128,
+        BATCH=64,
+        CAP=80000,
+        MAX_TRAJ=16,
     ](None, lr=0.005)
 
     # Baseline: greedy policy head (search-free) vs random before training.
@@ -79,8 +87,12 @@ def main() raises:
     # (the "vs Random/Minimax" lines in the report below are full-strength).
     var before = agent.eval_vs_random_cpu[200, 9](agent_player=0, seed=12345)
     print(
-        "BEFORE (greedy policy vs random)  win=", before.wins,
-        " draw=", before.draws, " loss=", before.losses,
+        "BEFORE (greedy policy vs random)  win=",
+        before.wins,
+        " draw=",
+        before.draws,
+        " loss=",
+        before.losses,
     )
     print()
 
@@ -98,11 +110,16 @@ def main() raises:
         MAX_PLIES=9,
         EVAL_GAMES=32,
     ](
-        iterations=2000,
+        iterations=10_000,
         learning_starts=20,
         train_per_iter=4,
         seed=42,
-        arena_every=400,
+        # arena_every = moves the *best* (self-play generator) stays frozen
+        # between promotion checks, so #generations ≈ iterations / arena_every.
+        # AlphaZero bootstraps via search amplification across MANY generations,
+        # so this must stay SMALL: 400 here gives only ~25 generations and the
+        # agent barely learns; 100 gives ~100 generations and it learns well.
+        arena_every=100,
         arena_open_plies=2,
         promote_threshold=0.55,
         report_every=200,
@@ -123,8 +140,12 @@ def main() raises:
 
     print()
     print(
-        "AFTER  (greedy policy vs random)  win=", after.wins,
-        " draw=", after.draws, " loss=", after.losses,
+        "AFTER  (greedy policy vs random)  win=",
+        after.wins,
+        " draw=",
+        after.draws,
+        " loss=",
+        after.losses,
     )
     print("last_loss:", res.last_loss, "| promotions:", res.promotions)
     print("saved → tictactoe_alphazero_v2_cpu.ckpt")

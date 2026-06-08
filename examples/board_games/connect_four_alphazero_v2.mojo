@@ -99,7 +99,12 @@ def main() raises:
         learning_starts=200,
         train_per_iter=4,
         seed=42,
-        arena_every=2_000,
+        # #generations ≈ iterations / arena_every (best frozen between promotion
+        # checks). AlphaZero bootstraps via search amplification over MANY
+        # generations: 2000 here gives only ~20 generations and the agent barely
+        # learns; 400 gives ~100 generations. Connect Four is hard, so it also
+        # wants a long run (large iterations) on top of frequent promotion.
+        arena_every=400,
         arena_open_plies=4,
         promote_threshold=0.55,
         report_every=1_000,
