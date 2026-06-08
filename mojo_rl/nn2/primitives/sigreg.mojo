@@ -59,12 +59,12 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
     # cache_z [BATCH, T*P] — leaf-owned, reused by backward.
     var cache_z: Cache["cache_z"]
     # workspace (GPU) — A/cm/sm/partials/scalar/dLdz, allocated once per batch.
-    var ws_dev: Optional[DeviceBuffer[DT]]
+    var ws: Cache["sig_ws"]
     var ts: TargetStorage
 
     def __init__(out self):
         self.cache_z = Cache["cache_z"]()
-        self.ws_dev = None
+        self.ws = Cache["sig_ws"]()
         self.ts = TargetStorage.make_uninit()
 
     # ── comptime knot grid / weights ──────────────────────────────────
@@ -172,14 +172,17 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             m.ts = TargetStorage.make_cpu()
         else:
             var ctx_v = require_ctx["SIGReg.make[target='gpu']"](ctx)
-            m.ws_dev = ctx_v.enqueue_create_buffer[DT](1)
             m.ts = TargetStorage.make_gpu(ctx_v)
         return m^
 
     def _ensure_gpu(mut self, batch: Int) raises:
         var ctx = self.ts.ctx.value()
         self.cache_z.ensure_gpu(ctx, batch * Self.SEQ_LEN * Self.NUM_PROJ)
+        var ws_size = (
+            Self._ws_off_dLdz() + batch * Self.SEQ_LEN * Self.NUM_PROJ
+        )
         self.ws.ensure_gpu(ctx, ws_size)
+
     # ── forward ───────────────────────────────────────────────────────
     def forward[
         target: StaticString,
@@ -251,7 +254,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             self._ensure_gpu(BATCH)
             var ctx = self.ts.ctx.value()
             comptime N_PARTIALS = Self._n_partials()
-            var ws = mptr(self.ws_dev.value().unsafe_ptr())
+            var ws = mptr(self.ws.dev.value().unsafe_ptr())
             var cache_p = mptr(self.cache_z.dev.value().unsafe_ptr())
             var a_t = LayoutTensor[DT, Layout.row_major(D, P), MutAnyOrigin](
                 ws + Self._ws_off_a()
@@ -377,7 +380,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             self._ensure_gpu(BATCH)
             var ctx = self.ts.ctx.value()
             comptime N_PARTIALS = Self._n_partials()
-            var ws = mptr(self.ws_dev.value().unsafe_ptr())
+            var ws = mptr(self.ws.dev.value().unsafe_ptr())
             var cache_p = mptr(self.cache_z.dev.value().unsafe_ptr())
             var a_t = LayoutTensor[DT, Layout.row_major(D, P), MutAnyOrigin](
                 ws + Self._ws_off_a()

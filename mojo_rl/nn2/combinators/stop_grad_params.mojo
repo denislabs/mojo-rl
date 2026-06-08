@@ -91,7 +91,13 @@ struct StopGradParams[Inner: Module](Module):
         ],
     ) raises:
         assert_tag_for["StopGradParams", target](self.ts.target_tag)
-        self.inner.forward[target, BATCH, POLICY=POLICY](inputs, output=output)
+        # Pass the underlying view (not `inputs` itself): the implicit
+        # TileTensor→TensorPack[1] ctor rebuilds it as TensorPack[Inner.ARITY]
+        # (Mojo won't unify TensorPack[Self.ARITY=1] with the symbolic
+        # TensorPack[Inner.ARITY] even though both are 1).
+        self.inner.forward[target, BATCH, POLICY=POLICY](
+            inputs.tile[0, BATCH, Self.IN_DIMS[0]](), output=output
+        )
 
     # ----- Backward — always input_only on Inner --------------------------
 
@@ -115,7 +121,7 @@ struct StopGradParams[Inner: Module](Module):
         assert_tag_for["StopGradParams", target](self.ts.target_tag)
         self.inner.vjp[
             target, BATCH, POLICY=POLICY, mode="input_only",
-        ](grad_output, grad_inputs)
+        ](grad_output, grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]())
 
     # ----- Walkers --------------------------------------------------------
 
