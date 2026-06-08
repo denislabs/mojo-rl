@@ -71,7 +71,7 @@ comptime HIDDEN = 512
 # N_STEP=1 mirrors the converged clean-obs run (the value-config fix below was
 # validated at N_STEP=1). Bump to 3 for full Rainbow once a pixel run confirms
 # convergence.
-comptime N_STEP = 1
+comptime N_STEP = 3
 
 # GPU-resident replay → capacity is VRAM-bound (obs + next_obs per slot).
 comptime BUFFER_CAPACITY = 12_000
@@ -108,9 +108,12 @@ comptime CKPT_PATH = "checkpoints/rainbow_pong_pixel.ckpt"
 # Rainbow CNN Q-net: Nature backbone + noisy dueling distributional heads.
 # Conv geometry matches NatureDQNNet (84→20→9→7, 64·7·7 = 3136).
 comptime RainbowCNNNet = Sequential[
-    Conv2D[FRAMES, 32, 8, 4, 0, 84, 84], ReLU[32 * 20 * 20],
-    Conv2D[32, 64, 4, 2, 0, 20, 20], ReLU[64 * 9 * 9],
-    Conv2D[64, 64, 3, 1, 0, 9, 9], ReLU[64 * 7 * 7],
+    Conv2D[FRAMES, 32, 8, 4, 0, 84, 84],
+    ReLU[32 * 20 * 20],
+    Conv2D[32, 64, 4, 2, 0, 20, 20],
+    ReLU[64 * 9 * 9],
+    Conv2D[64, 64, 3, 1, 0, 9, 9],
+    ReLU[64 * 7 * 7],
     Flatten[64 * 7 * 7],
     LinearReLU[64 * 7 * 7, HIDDEN],
     NoisyLinear[HIDDEN, (1 + NUM_ACTIONS) * NUM_ATOMS],
