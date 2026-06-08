@@ -708,11 +708,40 @@ def execute_one(
 
 @always_inline
 def _adc(mut state: AtariState, operand: UInt8):
-    """Add with carry."""
-    var carry = UInt16(1) if get_flag(state, FLAG_C) else UInt16(0)
+    """Add with carry. Supports NMOS 6502 decimal (BCD) mode.
+
+    Games like Space Invaders compute their BCD score with the D flag set,
+    so ignoring decimal mode yields garbage scores (and any value derived
+    from BCD arithmetic). Decimal-mode result + C are correct BCD; the
+    N/V/Z flags follow the quirky NMOS behavior (Stella's algorithm).
+    """
+    var carry = 1 if get_flag(state, FLAG_C) else 0
+
+    if get_flag(state, FLAG_D):
+        var a = Int(state.a)
+        var value = Int(operand)
+        var lo = (a & 0x0F) + (value & 0x0F) + carry
+        var hi = (a & 0xF0) + (value & 0xF0)
+        if lo > 0x09:
+            hi += 0x10
+            lo += 0x06
+        # NMOS quirks: Z from the binary sum; N/V from the high nibble.
+        set_flag(state, FLAG_Z, ((a + value + carry) & 0xFF) == 0)
+        set_flag(state, FLAG_N, (hi & 0x80) != 0)
+        set_flag(
+            state,
+            FLAG_V,
+            ((a ^ value) & 0x80) == 0 and ((a ^ hi) & 0x80) != 0,
+        )
+        if hi > 0x90:
+            hi += 0x60
+        set_flag(state, FLAG_C, (hi & 0xFF00) != 0)
+        state.a = UInt8((lo & 0x0F) | (hi & 0xF0))
+        return
+
     var a16 = UInt16(state.a)
     var op16 = UInt16(operand)
-    var result = a16 + op16 + carry
+    var result = a16 + op16 + UInt16(carry)
 
     set_flag(state, FLAG_C, result > 0xFF)
     # Overflow: positive + positive = negative, or negative + negative = positive
@@ -723,7 +752,39 @@ def _adc(mut state: AtariState, operand: UInt8):
 
 @always_inline
 def _sbc(mut state: AtariState, operand: UInt8):
-    """Subtract with borrow (SBC = ADC with complement)."""
+    """Subtract with borrow. Supports NMOS 6502 decimal (BCD) mode.
+
+    In binary mode SBC == ADC with the complemented operand. In decimal
+    mode the flags are identical to binary SBC (NMOS), but the accumulator
+    result is BCD-adjusted.
+    """
+    if get_flag(state, FLAG_D):
+        var carry = 1 if get_flag(state, FLAG_C) else 0
+        var borrow = 1 - carry
+        var a = Int(state.a)
+        var value = Int(operand)
+
+        # Flags from the plain binary subtraction (NMOS: same as binary mode).
+        var bin = a - value - borrow
+        set_flag(state, FLAG_C, bin >= 0)
+        set_flag(
+            state,
+            FLAG_V,
+            ((a ^ value) & 0x80) != 0 and ((a ^ bin) & 0x80) != 0,
+        )
+        update_nz(state, UInt8(bin & 0xFF))
+
+        # BCD-adjusted accumulator result.
+        var lo = (a & 0x0F) - (value & 0x0F) - borrow
+        var hi = (a & 0xF0) - (value & 0xF0)
+        if (lo & 0x10) != 0:
+            lo -= 0x06
+            hi -= 0x10
+        if (hi & 0x100) != 0:
+            hi -= 0x60
+        state.a = UInt8((lo & 0x0F) | (hi & 0xF0))
+        return
+
     _adc(state, ~operand)
 
 
@@ -852,7 +913,7 @@ def _run_scanline(
             elif line_cycles > CPU_CLOCKS_PER_LINE:
                 state.wsync = True
 
-    # If midpoint was never reached (e.g. WSYNC before cycle 49), use final PF
+    # If midpoint was never reached (e.g. WSYNC before cycle 36), use final PF
     if not saved_mid:
         state.pf0_mid = state.pf0
         state.pf1_mid = state.pf1
@@ -916,13 +977,19 @@ def run_frame_with_video(
     from .frame_render import render_scanline_with_collision_bgra
     from .flags import TIA_VBLANK, TIA_VSYNC, FRAME_HEIGHT as FH
 
-    # Use state.scanline to track visible line position across frames.
-    # This handles the case where VSYNC falls near the 262-scanline loop
-    # boundary — visible_line persists correctly across calls.
-    var visible_line = Int(state.scanline)
+    # Render exactly one VSYNC-aligned frame per call. A fixed 262-scanline
+    # loop drifts against the ROM's actual frame length, splitting one game
+    # frame across two calls (the displayed buffer becomes a mix of two
+    # frames → tearing/flicker). Instead, run scanlines until the VSYNC that
+    # begins the *next* frame, so each call emits one complete, aligned frame.
+    var visible_line = 0
     var overflow = Int(state.cpu_cycles)  # Carry from previous frame
+    var rendered_any = False
+    var prev_vsync = (state.tia_flags & TIA_VSYNC) != 0
+    # Safety cap so a ROM that never asserts VSYNC can't spin forever.
+    comptime MAX_LINES: Int = TOTAL_SCANLINES * 2
 
-    for _ in range(TOTAL_SCANLINES):
+    for _ in range(MAX_LINES):
         # Only charge paddle capacitor when not grounded (VBLANK bit 7 clear)
         if (
             state.paddle_charge < 255
@@ -933,18 +1000,22 @@ def run_frame_with_video(
         var total = _run_scanline(state, rom, rom_size, overflow)
         overflow = total - CPU_CLOCKS_PER_LINE
 
-        # Detect VSYNC — marks the start of a new frame
-        if (state.tia_flags & TIA_VSYNC) != 0:
-            visible_line = 0  # Reset visible line counter
+        # Detect the VSYNC rising edge (start of a frame).
+        var vsync_now = (state.tia_flags & TIA_VSYNC) != 0
+        var vsync_rising = vsync_now and not prev_vsync
+        prev_vsync = vsync_now
+        if vsync_rising:
+            if rendered_any:
+                break  # reached the start of the next frame — done
+            visible_line = 0  # anchor our frame at this VSYNC
 
-        # Combined render + collision in one pass (halves mask computations)
-        # Render when VBLANK is clear (no need for saw_vsync gate since
-        # visible_line is reset by VSYNC and persists across calls)
+        # Combined render + collision in one pass (halves mask computations).
         if (state.tia_flags & TIA_VBLANK) == 0 and visible_line < FH:
             render_scanline_with_collision_bgra(state, visible_line, frame_buf)
             visible_line += 1
+            rendered_any = True
 
-    state.scanline = UInt16(visible_line)  # Persist for next frame
+    state.scanline = UInt16(visible_line)
     state.cpu_cycles = UInt32(overflow)  # Persist overflow for next frame
     state.frame_number += 1
 

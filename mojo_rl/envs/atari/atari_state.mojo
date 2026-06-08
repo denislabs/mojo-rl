@@ -113,8 +113,12 @@ struct AtariState(Copyable, Movable):
     var current_bank: UInt8  # Currently active ROM bank
 
     # ========================================================================
-    # Mid-scanline PF snapshot (captured at cycle ~49 for score rendering)
+    # Mid-scanline PF snapshot (captured at cycle ~36 for left/right PF split)
     # ========================================================================
+    # The 2600 draws its 20 PF bits twice per line; kernels like Pong's score
+    # and Breakout's bricks rewrite PF at the pixel-80 repeat boundary so each
+    # half shows a different pattern. pf*_mid holds the left-half PF, while the
+    # live pf* registers hold the right-half PF (see tables.playfield_mask).
     var pf0_mid: UInt8  # PF0 at beam midpoint (used for left half)
     var pf1_mid: UInt8  # PF1 at beam midpoint
     var pf2_mid: UInt8  # PF2 at beam midpoint

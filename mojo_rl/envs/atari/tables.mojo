@@ -157,10 +157,12 @@ def playfield_mask(state: AtariState, pixel: Int) -> Bool:
     PF0 uses bits 4-7 (4 bits), PF1 uses bits 7-0 (8 bits reversed),
     PF2 uses bits 0-7 (8 bits).
 
-    For mid-scanline PF writes (e.g. Pong score digits), the left half
-    (pixels 0-79) uses the midpoint PF snapshot (pf0_mid/pf1_mid/pf2_mid)
-    captured at ~cycle 49, and the right half uses the final PF values.
-    For non-score scanlines, both snapshots are identical.
+    For mid-scanline PF writes (e.g. Pong score digits, Breakout brick rows),
+    the left half (pixels 0-79) uses the midpoint PF snapshot
+    (pf0_mid/pf1_mid/pf2_mid) and the right half uses the final PF values.
+    Pixel 80 is the playfield repeat boundary: the 2600 draws its 20 PF bits
+    twice per line, and these kernels rewrite PF at that boundary to give the
+    two halves different patterns. For static scanlines both snapshots match.
     """
     var x = (
         pixel >> 2

@@ -218,9 +218,14 @@ struct AtariRenderer(Movable):
             var name = String("")
             self.sdl_renderer = create_renderer(self.window.value(), name)
 
-            # Create streaming texture at native Atari resolution
+            # Create streaming texture at native Atari resolution.
+            # The frame buffer is written as memory bytes [B, G, R, A] (see
+            # frame_render._write_pixel_bgra), which is SDL's memory-order
+            # BGRA32 alias (== ARGB8888 on little-endian). Using the packed
+            # BGRA8888 enum here misreads the channels (green → purple, alpha
+            # shifted), so use the endianness-safe *32 alias.
             self.texture = create_texture(self.sdl_renderer.value(),
-                PixelFormat.PIXELFORMAT_BGRA8888,
+                PixelFormat.PIXELFORMAT_BGRA32,
                 TextureAccess.TEXTUREACCESS_STREAMING,
                 c_int(FRAME_WIDTH),
                 c_int(FRAME_HEIGHT),
