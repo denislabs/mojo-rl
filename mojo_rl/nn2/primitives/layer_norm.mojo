@@ -28,7 +28,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT
+from ..constants import DT, CPU_SIMD_W
 from ..core import (
     Initializer,
     AMPPolicy,
@@ -39,7 +39,7 @@ from ..core import (
     for_each_param_auto,
     zero_grad_auto,
 )
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import (
     require_ctx,
@@ -275,31 +275,64 @@ struct LayerNorm[DIM: Int](Module):
         comptime if target == "cpu":
             self.cache_xhat.ensure_cpu(BATCH * Self.DIM)
             self.cache_inv_std.ensure_cpu(BATCH)
-            var gamma_v = TileTensor(self.gamma.val.cpu, row_major[Self.DIM]())
-            var beta_v  = TileTensor(self.beta.val.cpu,  row_major[Self.DIM]())
-            var xhat_v  = TileTensor(
-                self.cache_xhat.cpu, row_major[BATCH, Self.DIM](),
-            )
             var inv_v   = TileTensor(
                 self.cache_inv_std.cpu, row_major[BATCH](),
             )
+            # SIMD-vectorized over the feature axis (C3). Reductions use a
+            # width-W accumulator + reduce_add (tree order — within CPU↔GPU
+            # parity tolerance, not bit-identical to the old scalar loop).
+            var in_p   = input.ptr
+            var out_p  = output_v.ptr
+            var g_p    = self.gamma.value_unsafe_ptr_cpu()
+            var b_p    = self.beta.value_unsafe_ptr_cpu()
+            var xh_p   = mptr(self.cache_xhat.cpu.unsafe_ptr())
+            comptime W = CPU_SIMD_W
             var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
             for b in range(BATCH):
-                var s: Scalar[DT] = 0.0
-                for d in range(Self.DIM):
-                    s += input[b, d]
+                var row = b * Self.DIM
+                # mean = Σ x / DIM
+                var acc = SIMD[DT, W](0)
+                var d = 0
+                while d + W <= Self.DIM:
+                    acc += in_p.load[width=W](row + d)
+                    d += W
+                var s = acc.reduce_add()
+                while d < Self.DIM:
+                    s += in_p[row + d]
+                    d += 1
                 var mean = s * inv_dim
-                var sv: Scalar[DT] = 0.0
-                for d in range(Self.DIM):
-                    var diff = input[b, d] - mean
+                var meanv = SIMD[DT, W](mean)
+                # var = Σ (x-mean)² / DIM
+                var vacc = SIMD[DT, W](0)
+                d = 0
+                while d + W <= Self.DIM:
+                    var diff = in_p.load[width=W](row + d) - meanv
+                    vacc += diff * diff
+                    d += W
+                var sv = vacc.reduce_add()
+                while d < Self.DIM:
+                    var diff = in_p[row + d] - mean
                     sv += diff * diff
+                    d += 1
                 var var_v = sv * inv_dim
                 var inv_std = Scalar[DT](1.0) / sqrt(var_v + LN_EPS)
                 inv_v[b] = inv_std
-                for d in range(Self.DIM):
-                    var xh = (input[b, d] - mean) * inv_std
-                    xhat_v[b, d] = xh
-                    output_v[b, d] = gamma_v[d] * xh + beta_v[d]
+                # x_hat = (x-mean)·inv_std ; out = γ·x_hat + β
+                var isv = SIMD[DT, W](inv_std)
+                d = 0
+                while d + W <= Self.DIM:
+                    var xh = (in_p.load[width=W](row + d) - meanv) * isv
+                    xh_p.store(row + d, xh)
+                    out_p.store(
+                        row + d,
+                        g_p.load[width=W](d) * xh + b_p.load[width=W](d),
+                    )
+                    d += W
+                while d < Self.DIM:
+                    var xh = (in_p[row + d] - mean) * inv_std
+                    xh_p[row + d] = xh
+                    out_p[row + d] = g_p[d] * xh + b_p[d]
+                    d += 1
         else:
             self._ensure_cache_gpu(BATCH)
             comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
@@ -351,34 +384,70 @@ struct LayerNorm[DIM: Int](Module):
         var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
-            var gamma_v       = TileTensor(self.gamma.val.cpu, row_major[Self.DIM]())
-            var grad_gamma_v  = TileTensor(self.gamma.grd.cpu,  row_major[Self.DIM]())
-            var grad_beta_v   = TileTensor(self.beta.grd.cpu,   row_major[Self.DIM]())
-            var xhat_v        = TileTensor(
-                self.cache_xhat.cpu, row_major[BATCH, Self.DIM](),
-            )
             var inv_v         = TileTensor(
                 self.cache_inv_std.cpu, row_major[BATCH](),
             )
+            # SIMD-vectorized over the feature axis (C3).
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
+            var g_p  = self.gamma.value_unsafe_ptr_cpu()
+            var gg_p = self.gamma.grad_unsafe_ptr_cpu()
+            var gb_p = self.beta.grad_unsafe_ptr_cpu()
+            var xh_p = mptr(self.cache_xhat.cpu.unsafe_ptr())
+            comptime W = CPU_SIMD_W
             var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
             for b in range(BATCH):
+                var row = b * Self.DIM
                 var inv_std = inv_v[b]
-                var sum_g: Scalar[DT] = 0.0
-                var sum_g_xhat: Scalar[DT] = 0.0
-                for d in range(Self.DIM):
-                    var g = grad_output_v[b, d] * gamma_v[d]
-                    sum_g       += g
-                    sum_g_xhat  += g * xhat_v[b, d]
-                var mean_g       = sum_g       * inv_dim
-                var mean_g_xhat  = sum_g_xhat  * inv_dim
-                for d in range(Self.DIM):
-                    var g  = grad_output_v[b, d] * gamma_v[d]
-                    var xh = xhat_v[b, d]
-                    grad_input_v[b, d] = inv_std * (g - mean_g - xh * mean_g_xhat)
+                # mean_g, mean_g_xhat — two fused reductions
+                var acc_g  = SIMD[DT, W](0)
+                var acc_gx = SIMD[DT, W](0)
+                var d = 0
+                while d + W <= Self.DIM:
+                    var g = go_p.load[width=W](row + d) * g_p.load[width=W](d)
+                    acc_g  += g
+                    acc_gx += g * xh_p.load[width=W](row + d)
+                    d += W
+                var sum_g      = acc_g.reduce_add()
+                var sum_g_xhat = acc_gx.reduce_add()
+                while d < Self.DIM:
+                    var g = go_p[row + d] * g_p[d]
+                    sum_g      += g
+                    sum_g_xhat += g * xh_p[row + d]
+                    d += 1
+                var mean_g      = sum_g      * inv_dim
+                var mean_g_xhat = sum_g_xhat * inv_dim
+                # grad_input = inv_std·(g - mean_g - x̂·mean_g_xhat)
+                var mg  = SIMD[DT, W](mean_g)
+                var mgx = SIMD[DT, W](mean_g_xhat)
+                var isv = SIMD[DT, W](inv_std)
+                d = 0
+                while d + W <= Self.DIM:
+                    var g  = go_p.load[width=W](row + d) * g_p.load[width=W](d)
+                    var xh = xh_p.load[width=W](row + d)
+                    gi_p.store(row + d, isv * (g - mg - xh * mgx))
+                    d += W
+                while d < Self.DIM:
+                    var g  = go_p[row + d] * g_p[d]
+                    var xh = xh_p[row + d]
+                    gi_p[row + d] = inv_std * (g - mean_g - xh * mean_g_xhat)
+                    d += 1
                 comptime if mode == "all":
-                    for d in range(Self.DIM):
-                        grad_gamma_v[d] += grad_output_v[b, d] * xhat_v[b, d]
-                        grad_beta_v[d]  += grad_output_v[b, d]
+                    # dγ += go·x̂ ; dβ += go  (accumulated across the batch)
+                    d = 0
+                    while d + W <= Self.DIM:
+                        var go = go_p.load[width=W](row + d)
+                        gg_p.store(
+                            d,
+                            gg_p.load[width=W](d)
+                            + go * xh_p.load[width=W](row + d),
+                        )
+                        gb_p.store(d, gb_p.load[width=W](d) + go)
+                        d += W
+                    while d < Self.DIM:
+                        gg_p[d] = gg_p[d] + go_p[row + d] * xh_p[row + d]
+                        gb_p[d] = gb_p[d] + go_p[row + d]
+                        d += 1
         else:
             var ctx = self.ts.ctx.value()
             comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
