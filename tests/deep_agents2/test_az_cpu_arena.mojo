@@ -58,6 +58,7 @@ def main() raises:
         arena_open_plies=2,
         promote_threshold=0.55,
         report_every=300,
+        diag_every=100,
         do_eval=True,
         do_eval2=True,
         verbose=True,
@@ -86,6 +87,18 @@ def main() raises:
         csv.total_logged() >= 12,
         "CPU arena logger did not receive the per-report metric series",
     )
+    # Dense per-batch diagnostics (diag_every=100) must reach the CSV on the
+    # CPU path too, not just the per-report eval series.
+    with open(String("logs/az_cpu_arena.csv"), "r") as f:
+        var content = f.read()
+        assert_true(
+            "policy_ce," in content,
+            "CPU arena policy_ce diagnostic missing from CSV",
+        )
+        assert_true(
+            "value_mse," in content,
+            "CPU arena value_mse diagnostic missing from CSV",
+        )
     # The CPU-trained net clearly improved vs random.
     assert_true(
         after.losses * 4 < before.losses * 3,

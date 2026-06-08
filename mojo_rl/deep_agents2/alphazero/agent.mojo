@@ -144,6 +144,7 @@ struct AlphaZeroAgent[
         arena_open_plies: Int = 2,
         promote_threshold: Float64 = 0.55,
         report_every: Int = 0,
+        diag_every: Int = 0,
         do_eval: Bool = True,
         do_eval2: Bool = False,
         verbose: Bool = True,
@@ -152,10 +153,13 @@ struct AlphaZeroAgent[
         """Full-AlphaZero training: best/learner split + Arena gating +
         symmetry augmentation, with two pluggable eval opponents and a logger.
 
-        Defaults (`AUG=Identity`, `OPP*=Random`, `L=NoOp`, `report_every=0`)
-        reduce to a silent arena run. Set `report_every>0` (+ a logger and/or
-        `OPP1=GPUMinimaxTicTacToe`, `do_eval2=True`) for per-report eval+print+
-        metric flush, mirroring the legacy `train_selfplay_gpu` telemetry. The
+        Defaults (`AUG=Identity`, `OPP*=Random`, `L=NoOp`, `report_every=0`,
+        `diag_every=0`) reduce to a silent arena run. Set `report_every>0` (+ a
+        logger and/or `OPP1=GPUMinimaxTicTacToe`, `do_eval2=True`) for per-report
+        MCTS-eval+print+metric flush. Set `diag_every>0` for dense per-batch
+        training diagnostics (policy CE, entropy, value MSE, target stats —
+        cheap, decoupled from the expensive eval), mirroring the legacy
+        `train_selfplay_gpu` telemetry. The
         periodic eval plays the agent at **full MCTS strength** (temp=0), not the
         bare policy head — `iterations`/`report_every` are in self-play *moves*.
         Routes on `TARGET`: GPU runs `N_ENVS` batched games; CPU plays one game
@@ -191,6 +195,7 @@ struct AlphaZeroAgent[
                 arena_open_plies,
                 promote_threshold,
                 report_every,
+                diag_every,
                 do_eval,
                 do_eval2,
                 verbose,
@@ -223,6 +228,7 @@ struct AlphaZeroAgent[
                 arena_open_plies,
                 promote_threshold,
                 report_every,
+                diag_every,
                 do_eval,
                 do_eval2,
                 verbose,

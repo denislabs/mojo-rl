@@ -9,6 +9,12 @@ progress print, and a `RemoteLogger` metrics sink. The periodic eval plays the
 agent at full **MCTS** strength (temp=0), so the numbers reflect the deployed
 agent, not the bare policy head.
 
+Two logging cadences: the expensive MCTS eval + win-rates run every
+`report_every` moves (coarse, ~minutes apart), while the cheap per-batch
+training diagnostics — policy CE, policy/target entropy, target max-prob, the
+policy KL gap, value MSE/mean, value-target stats — flush every `diag_every`
+moves for dense training curves (legacy `train_selfplay_gpu` parity).
+
 Connect Four is heavier than TicTacToe (126D obs = 3 planes × 6×7, 7 actions,
 games up to 42 plies, a 5-block ResNet) — this needs an NVIDIA GPU to train at a
 useful pace. The ResNet torso carries BatchNorm, which the self-play / eval
@@ -97,6 +103,7 @@ def main() raises:
         arena_open_plies=4,
         promote_threshold=0.55,
         report_every=1_000,
+        diag_every=50,
         do_eval=True,
         do_eval2=True,
         verbose=True,

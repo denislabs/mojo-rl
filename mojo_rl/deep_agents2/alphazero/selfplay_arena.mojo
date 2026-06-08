@@ -23,14 +23,26 @@ The passed-in `net` is the *best* and holds the final (best) weights on return.
 `AUG = IdentityAugmenter` recovers the un-augmented behaviour.
 
 **Telemetry.** Two `GPUEvaluator` opponents (`OPP1`, `OPP2`, e.g. random +
-minimax) and a `Logger` (`L`) can be plugged in. Every `report_every`
-iterations the best net is evaluated (both colors) against each enabled
-opponent, a one-line progress summary is printed, and the metrics (loss, replay
-size, promotions, per-opponent win/draw/loss + win-rate) are flushed to the
-logger. With the defaults (`OPP*=RandomOpponent`, `L=NoOpLogger`,
-`report_every=0`) this is a no-op and matches the original silent behaviour.
+minimax) and a `Logger` (`L`) can be plugged in. Two cadences feed the logger:
+
+  * **`report_every` (expensive).** The best net is evaluated (both colors) via
+    full MCTS against each enabled opponent, a one-line progress summary is
+    printed, and the eval win/draw/loss + win-rate (plus loss, replay size,
+    promotions) are flushed. MCTS eval is slow, so this is necessarily coarse.
+
+  * **`diag_every` (cheap).** Per-batch *training* diagnostics — policy CE,
+    policy/target entropy, target max-prob, the policy KL gap, value MSE/mean,
+    and value-target stats (`append_az_train_diagnostics`) — flushed against the
+    same train axis. Computed from the last train batch's net output (`pred`
+    graph node, one small D2H) + its targets, so it can run far more often than
+    the eval, giving the dense curves the legacy `train_selfplay_gpu` logged.
+
+With the defaults (`OPP*=RandomOpponent`, `L=NoOpLogger`, `report_every=0`,
+`diag_every=0`) both are no-ops and the run matches the original silent
+behaviour.
 """
 
+from std.math import exp, log, tanh
 from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -63,6 +75,112 @@ struct ArenaRunResult(Copyable, Movable):
     learner was accepted over the best."""
     var last_loss: Float64
     var promotions: Int
+
+
+def append_az_train_diagnostics[ACT: Int, BATCH: Int](
+    pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut names: List[String],
+    mut values: List[Float64],
+):
+    """Append the AlphaZero per-batch training diagnostics (legacy parity) to
+    `names`/`values`, computed on the host from the last train batch.
+
+    `pred` is the net output `[policy_logits(ACT) | raw_value(1)]` (BATCH·W);
+    `tgt` is the packed self-play target `[mcts_policy(ACT) | z(1)]` (BATCH·W).
+    Both are plain host buffers (the GPU caller D2H-copies the `pred` graph node
+    first; the CPU graph writes host buffers directly).
+
+    Mirrors `deep_agents/alphazero/alphazero.mojo`'s diag block — the value head
+    is `tanh`-squashed before the MSE (AlphaZero value ∈ [-1, 1]), the policy is
+    soft-CE against the MCTS visit distribution. Metrics emitted:
+
+      * ``policy_ce`` / ``policy_entropy`` — fit + sharpness of the policy head.
+      * ``target_entropy`` / ``target_max_prob`` — are the MCTS targets sharp or
+        near-uniform? (Uniform ⇒ search is not discriminating.)
+      * ``policy_ce_minus_target_entropy`` — the policy KL gap, the real
+        fit-quality number (0 ⇒ head matches the search distribution).
+      * ``value_mse`` / ``value_mean`` — value-head fit + its mean output.
+      * ``value_target_mean`` / ``value_target_pos_frac`` — what the value head
+        is being asked to learn (label balance).
+
+    NaN/inf entries are dropped by the logger's own guard, so no clamping here.
+    """
+    comptime W = ACT + 1
+    var n = Float64(BATCH)
+    var ce_sum: Float64 = 0.0
+    var ent_sum: Float64 = 0.0
+    var vmse_sum: Float64 = 0.0
+    var vmean_sum: Float64 = 0.0
+    var tent_sum: Float64 = 0.0
+    var tmax_sum: Float64 = 0.0
+    var vt_sum: Float64 = 0.0
+    var vt_pos = 0
+    for b in range(BATCH):
+        var base = b * W
+
+        # Policy: softmax(logits) → CE vs target π, plus pred-policy entropy.
+        var maxl = Float64(pred[base])
+        for a in range(1, ACT):
+            var v = Float64(pred[base + a])
+            if v > maxl:
+                maxl = v
+        var sume: Float64 = 0.0
+        for a in range(ACT):
+            sume += exp(Float64(pred[base + a]) - maxl)
+        var ce: Float64 = 0.0
+        var ent: Float64 = 0.0
+        for a in range(ACT):
+            var prob = exp(Float64(pred[base + a]) - maxl) / sume
+            var t = Float64(tgt[base + a])
+            if t > 1e-8 and prob > 1e-8:
+                ce -= t * log(prob)
+            if prob > 1e-8:
+                ent -= prob * log(prob)
+        ce_sum += ce
+        ent_sum += ent
+
+        # Value: tanh-squashed head vs z target.
+        var tv = tanh(Float64(pred[base + ACT]))
+        var z = Float64(tgt[base + ACT])
+        vmse_sum += (tv - z) * (tv - z)
+        vmean_sum += tv
+
+        # MCTS target distribution stats (sharpness + label balance).
+        var tent: Float64 = 0.0
+        var tmax: Float64 = 0.0
+        for a in range(ACT):
+            var tp = Float64(tgt[base + a])
+            if tp > 1e-8:
+                tent -= tp * log(tp)
+            if tp > tmax:
+                tmax = tp
+        tent_sum += tent
+        tmax_sum += tmax
+        vt_sum += z
+        if z > 0.5:
+            vt_pos += 1
+
+    var policy_ce = ce_sum / n
+    var target_entropy = tent_sum / n
+    names.append(String("policy_ce"))
+    values.append(policy_ce)
+    names.append(String("policy_entropy"))
+    values.append(ent_sum / n)
+    names.append(String("target_entropy"))
+    values.append(target_entropy)
+    names.append(String("target_max_prob"))
+    values.append(tmax_sum / n)
+    names.append(String("policy_ce_minus_target_entropy"))
+    values.append(policy_ce - target_entropy)
+    names.append(String("value_mse"))
+    values.append(vmse_sum / n)
+    names.append(String("value_mean"))
+    values.append(vmean_sum / n)
+    names.append(String("value_target_mean"))
+    values.append(vt_sum / n)
+    names.append(String("value_target_pos_frac"))
+    values.append(Float64(vt_pos) / n)
 
 
 def _eval_both_colors[
@@ -121,6 +239,9 @@ def run_alphazero_selfplay_arena[
     arena_open_plies: Int = 2,
     promote_threshold: Float64 = 0.55,
     report_every: Int = 0,        # 0 → fall back to arena_every (0 = no reports)
+    diag_every: Int = 0,          # cheap per-batch train diagnostics every N
+    #                               moves (train-axis), decoupled from the
+    #                               expensive periodic eval; 0 = off
     do_eval: Bool = True,         # MCTS-eval the best vs OPP1 each report
     do_eval2: Bool = False,       # also MCTS-eval vs OPP2 each report
     verbose: Bool = True,         # print a per-report progress line
@@ -184,6 +305,7 @@ def run_alphazero_selfplay_arena[
     var tb_tgt_h = ctx.enqueue_create_host_buffer[DT](BATCH * W)
     var loss_h = ctx.enqueue_create_host_buffer[DT](BATCH)
     var grad_h = ctx.enqueue_create_host_buffer[DT](BATCH)
+    var pred_h = ctx.enqueue_create_host_buffer[DT](BATCH * W)  # diag: net out
     ctx.synchronize()
 
     # ── Host trajectory storage (per-env in-progress game) ──
@@ -318,6 +440,30 @@ def run_alphazero_selfplay_arena[
             for b in range(BATCH):
                 ml += Float64(loss_h.unsafe_ptr()[b])
             last_loss = ml / Float64(BATCH)
+
+            # 6b. Dense per-batch training diagnostics (legacy parity), on the
+            #     train axis and decoupled from the expensive periodic eval. The
+            #     graph's "pred" node still holds the last train batch's net
+            #     output; the matching targets are in `tb_tgt_h`. One small D2H.
+            if (
+                Bool(logger)
+                and diag_every > 0
+                and (it + 1) % diag_every == 0
+            ):
+                var pred_src = graph.node_out_ptr["pred"]()
+                var pred_dev = DeviceBuffer[DT](
+                    ctx, pred_src, BATCH * W, owning=False
+                )
+                ctx.enqueue_copy(pred_h, pred_dev)
+                ctx.synchronize()
+                var dnames = List[String]()
+                var dvalues = List[Float64]()
+                dnames.append(String("loss"))
+                dvalues.append(last_loss)
+                append_az_train_diagnostics[ACT, BATCH](
+                    pred_h.unsafe_ptr(), tb_tgt_h.unsafe_ptr(), dnames, dvalues
+                )
+                logger.value()[].log_scalars(dnames, dvalues, it + 1)
 
         # 7. Arena gating: periodically challenge the best with the learner.
         if (

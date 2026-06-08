@@ -87,6 +87,7 @@ def main() raises:
         arena_open_plies=2,
         promote_threshold=0.55,
         report_every=200,
+        diag_every=20,
         do_eval=True,
         do_eval2=True,
         verbose=True,

@@ -30,7 +30,7 @@ from mojo_rl.planners.tree_search import (
 from .loss_ops import AZLossOp
 from .arena import candidate_winrate_cpu, should_promote
 from .eval import eval_mcts_vs_opponent_cpu, EvalResult
-from .selfplay_arena import ArenaRunResult
+from .selfplay_arena import ArenaRunResult, append_az_train_diagnostics
 from ..zero.mcts_adapters_cpu import AZRepCPU, AZDynCPU, AZPredCPU
 from ..zero.example_replay import MCTSExampleReplay
 from ..zero.symmetries import BoardAugmenter
@@ -94,6 +94,8 @@ def run_alphazero_selfplay_arena_cpu[
     arena_open_plies: Int = 2,
     promote_threshold: Float64 = 0.55,
     report_every: Int = 0,
+    diag_every: Int = 0,          # cheap per-batch train diagnostics every N
+    #                               moves; decoupled from periodic eval; 0 = off
     do_eval: Bool = True,
     do_eval2: Bool = False,
     verbose: Bool = True,
@@ -251,6 +253,25 @@ def run_alphazero_selfplay_arena_cpu[
             for b in range(BATCH):
                 ml += Float64(tb_loss[b])
             last_loss = ml / Float64(BATCH)
+
+            # 5b. Dense per-batch training diagnostics (legacy parity), on the
+            #     train axis, decoupled from the expensive periodic eval. The
+            #     CPU graph writes host buffers in place, so "pred" is directly
+            #     readable; the matching targets are in `tb_tgt`.
+            if (
+                Bool(logger)
+                and diag_every > 0
+                and (it + 1) % diag_every == 0
+            ):
+                var pred_p = graph.node_out_ptr["pred"]()
+                var dnames = List[String]()
+                var dvalues = List[Float64]()
+                dnames.append(String("loss"))
+                dvalues.append(last_loss)
+                append_az_train_diagnostics[ACT, BATCH](
+                    pred_p, tb_tgt, dnames, dvalues
+                )
+                logger.value()[].log_scalars(dnames, dvalues, it + 1)
 
         # 6. Arena gating: challenge the best with the learner (CPU MCTS).
         if (

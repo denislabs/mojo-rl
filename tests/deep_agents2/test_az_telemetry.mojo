@@ -6,8 +6,10 @@ opponents (minimax as the primary signal, random as the secondary), a periodic
 progress print, and a `CsvLogger` sink that captures the per-report metrics.
 
 Asserts the run completes, the logger received the expected scalar series
-(loss / replay_size / promotions / eval{1,2}_*), and the printed/flushed numbers
-are well-formed. Convergence itself is covered elsewhere — this is the wiring.
+(loss / replay_size / promotions / eval{1,2}_*), the dense per-batch training
+diagnostics (`diag_every`: policy_ce / value_mse / target_entropy / …) are
+flushed on their own cadence, and the printed/flushed numbers are well-formed.
+Convergence itself is covered elsewhere — this is the wiring.
 
 Run (Apple Metal):
     pixi run -e apple mojo run -I . tests/deep_agents2/test_az_telemetry.mojo
@@ -75,6 +77,7 @@ def main() raises:
         arena_open_plies=2,
         promote_threshold=0.55,
         report_every=100,
+        diag_every=50,
         do_eval=True,
         do_eval2=True,
         verbose=True,
@@ -94,9 +97,29 @@ def main() raises:
         "telemetry run produced non-finite loss",
     )
     # Each report flushes: loss, games, replay_size, promotions (4) + eval1 (4)
-    # + eval2 (4) = 12 scalars. With ≥3 reports that is ≥36 logged rows.
+    # + eval2 (4) = 12 scalars. With ≥3 reports that is ≥36 rows. The dense
+    # diagnostics (diag_every=50) add loss + 10 metrics per event, fired every
+    # 50 moves once training starts (moves 50..400 → ≥6 events × 11 = ≥66 rows).
     assert_true(
-        logger.total_logged() >= 36,
-        "logger did not receive the expected per-report metric series",
+        logger.total_logged() >= 36 + 66,
+        "logger did not receive the expected per-report + diagnostic series",
     )
-    print("AZ telemetry (2 evaluators + logger + per-report print): OK")
+
+    # The dense diagnostics must actually be present in the CSV (not just a
+    # higher count). Scan for the legacy-parity metric names. The CSV name
+    # column is comma-delimited, so "policy_ce," does not match the longer
+    # "policy_ce_minus_target_entropy" row.
+    with open(csv_path, "r") as f:
+        var content = f.read()
+        assert_true(
+            "policy_ce," in content, "policy_ce diagnostic missing from CSV"
+        )
+        assert_true(
+            "value_mse," in content, "value_mse diagnostic missing from CSV"
+        )
+        assert_true(
+            "policy_ce_minus_target_entropy," in content,
+            "policy KL-gap diagnostic missing from CSV",
+        )
+
+    print("AZ telemetry (2 evaluators + logger + report + diagnostics): OK")
