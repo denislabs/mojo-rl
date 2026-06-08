@@ -606,9 +606,16 @@ def run_offpolicy_train[
                 last_diag_bucket = bucket
                 diag_due = True
 
+        # Log the diagnostic bundle (Q-values, critic/actor loss, alpha …)
+        # against the TRAIN-step counter, not `abs_step` (env interactions).
+        # These are per-gradient-update quantities, so at UTD>1 (e.g. REDQ
+        # 40:1) the env-step x-axis under-counts by UTD×. `avg_reward` /
+        # `episodes` above stay on `abs_step` — those are env-level.
         comptime if L.ENABLED:
             if diag_due and Bool(logger):
-                trainer.flush_metrics_through_logger[L](logger, abs_step)
+                trainer.flush_metrics_through_logger[L](
+                    logger, trainer.total_train_steps()
+                )
 
         # Live flush: push whatever was just buffered to the monitoring
         # server at the print/diag cadence so the dashboard updates DURING
@@ -1302,6 +1309,11 @@ def run_offpolicy_train_batched[
         # that's ~1000 synchronous POSTs serializing the training loop on HTTP
         # latency. The print-cadence flush above (rare) + `logger.close()` drain
         # the remainder, so nothing is lost.
+        # Log the bundle against the TRAIN-step counter, not `step_idx`
+        # (env interactions). These are per-gradient-update quantities; at
+        # updates_per_step>1 (e.g. REDQ UTD 40:1) the env-step x-axis
+        # under-counts by that factor. `avg_reward` / `episodes` above stay
+        # on `base_step + step_idx` — those are env-level.
         comptime if L.ENABLED:
             if (
                 diag_every > 0
@@ -1309,7 +1321,7 @@ def run_offpolicy_train_batched[
                 and Bool(logger)
             ):
                 trainer.flush_metrics_through_logger[L](
-                    logger, base_step + step_idx
+                    logger, trainer.total_train_steps()
                 )
                 next_diag += diag_every
 
@@ -1618,7 +1630,10 @@ def run_offpolicy_train_cpu_env_gpu_agent[
 
         # `diag_every` — drain the trainer's metric bundle through the
         # logger. Default trait impl is a no-op for trainers that haven't
-        # wired this up yet.
+        # wired this up yet. Logged against the TRAIN-step counter (not the
+        # env-interaction `step_idx`) — per-gradient-update quantities at
+        # updates_per_step>1 (e.g. REDQ UTD 40:1) would otherwise be plotted
+        # on an x-axis under-counted by that factor.
         comptime if L.ENABLED:
             if (
                 diag_every > 0
@@ -1626,7 +1641,7 @@ def run_offpolicy_train_cpu_env_gpu_agent[
                 and Bool(logger)
             ):
                 trainer.flush_metrics_through_logger[L](
-                    logger, base_step + step_idx
+                    logger, trainer.total_train_steps()
                 )
 
         # `checkpoint_every` — overwrite `checkpoint_path` with the
