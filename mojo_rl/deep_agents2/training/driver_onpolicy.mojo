@@ -22,6 +22,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
+from mojo_rl.utils.progress import IntervalProgress
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from .batched_env import BatchedEnv
 from .driver_scratch import DriverScratch
@@ -51,6 +52,13 @@ trait OnPolicyCheckpointable(ImplicitlyDestructible, Movable):
 
     def save_state(mut self, path: String) raises:
         pass
+
+    def total_train_steps(self) -> Int:
+        """Cumulative gradient-update count for the inter-log progress bar's
+        `Train:` field. Declared on the shared ancestor so BOTH on-policy
+        traits (single-env + batched) inherit it. Default 0 for trainers
+        that don't track it; real trainers may override."""
+        return 0
 
 
 trait OnPolicyAgent(OnPolicyCheckpointable):
@@ -119,6 +127,9 @@ trait OnPolicyAgent(OnPolicyCheckpointable):
     def ep_count(self) -> Int:
         ...
 
+    # `total_train_steps` (progress-bar `Train:` field) is inherited from
+    # `OnPolicyCheckpointable` so the batched trait shares one declaration.
+
     # Cadence hooks (`flush_metrics_through_logger` / `save_state`) are
     # inherited from `OnPolicyCheckpointable` — declared once so the
     # PPOTrainer override doesn't recurse across two trait declarations.
@@ -142,6 +153,7 @@ def run_onpolicy_train[
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
     base_step: Int = 0,
+    progress_label: String = "on-policy",
 ) raises -> List[Scalar[DT]]:
     """Step-based on-policy single-env training driver.
 
@@ -182,6 +194,10 @@ def run_onpolicy_train[
 
     var t_start = perf_counter_ns()
     var step: Int = 0
+    # In-place progress bar between log lines (pure CPU, no GPU sync).
+    var prog = IntervalProgress(
+        print_every, label=progress_label, enabled=verbose
+    )
     while step < total_timesteps:
         for d in range(obs_dim):
             obs[d] = Scalar[DT](obs_list[d])
@@ -224,7 +240,10 @@ def run_onpolicy_train[
 
         var abs_step = base_step + step
 
+        prog.tick(abs_step, trainer.total_train_steps())
+
         if verbose and print_every > 0 and abs_step % print_every == 0:
+            prog.clear()
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
                 "[step ",
@@ -375,6 +394,7 @@ def run_onpolicy_train_batched[
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
     base_step: Int = 0,
+    progress_label: String = "on-policy",
 ) raises -> List[Scalar[DT]]:
     """Tier-3 on-policy driver covering same-target combinations.
 
@@ -459,6 +479,10 @@ def run_onpolicy_train_batched[
     var step_idx: Int = 0
     var iter_idx: Int = 0
     var next_print: Int = print_every
+    # In-place progress bar between log lines (pure CPU, no GPU sync).
+    var prog = IntervalProgress(
+        print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
+    )
     # Independent counter for logger cadence — only read inside the
     # `comptime if L.ENABLED` block. Bit-identity preserved when
     # L=NoOpLogger (default).
@@ -609,7 +633,10 @@ def run_onpolicy_train_batched[
 
         var abs_step = base_step + step_idx
 
+        prog.tick(step_idx, trainer.total_train_steps())
+
         if verbose and print_every > 0 and step_idx >= next_print:
+            prog.clear()
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
                 "[step ",

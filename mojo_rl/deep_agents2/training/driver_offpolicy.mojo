@@ -46,6 +46,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
+from mojo_rl.utils.progress import IntervalProgress
 from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 from ..data.n_step_replay import GPUNStepBuffer
 from mojo_rl.core.env_traits import BoxContinuousActionEnv, RenderableEnv
@@ -394,6 +395,7 @@ def run_offpolicy_train[
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
     base_step: Int = 0,
+    progress_label: String = "off-policy",
 ) raises -> List[Scalar[DT]]:
     """Single-env off-policy training driver bound on the CPU env trait
     (`BoxContinuousActionEnv`). Covers (env_target=cpu, train_target=cpu)
@@ -456,6 +458,10 @@ def run_offpolicy_train[
 
     var t_start = perf_counter_ns()
     var step: Int = 0
+    # In-place progress bar between log lines (pure CPU, no GPU sync).
+    var prog = IntervalProgress(
+        print_every, label=progress_label, enabled=verbose
+    )
     # Diag cadence is keyed on TRAIN steps (gradient updates) via
     # `trainer.total_train_steps()`, not env-steps — see the trait method.
     # `last_diag_bucket` tracks the last emitted `train_steps // diag_every`.
@@ -540,7 +546,10 @@ def run_offpolicy_train[
 
         var abs_step = base_step + step
 
+        prog.tick(abs_step, trainer.total_train_steps())
+
         if verbose and print_every > 0 and abs_step % print_every == 0:
+            prog.clear()
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
                 "[step ",
@@ -771,6 +780,7 @@ def run_offpolicy_train_batched[
     eval_every: Int = 0,
     eval_episodes: Int = 16,
     eval_max_steps: Int = 1_000,
+    progress_label: String = "off-policy",
 ) raises -> List[Scalar[DT]]:
     """Tier-3 off-policy driver covering same-target combinations.
 
@@ -955,6 +965,11 @@ def run_offpolicy_train_batched[
     var step_idx: Int = 0
     var iter_idx: Int = 0
     var next_print: Int = print_every
+    # In-place progress bar between log lines (pure CPU, no GPU sync).
+    # `min_stride=N_ENVS` so the bar updates at most once per iteration.
+    var prog = IntervalProgress(
+        print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
+    )
     # Independent counter for logger emit; only read inside the
     # `comptime if L.ENABLED` block so the default (NoOpLogger) path
     # never reads or writes it after this initialization.
@@ -1225,7 +1240,10 @@ def run_offpolicy_train_batched[
             for _ in range(updates_per_step):
                 _ = trainer.train_step(base_step + step_idx)
 
+        prog.tick(step_idx, trainer.total_train_steps())
+
         if verbose and print_every > 0 and step_idx >= next_print:
+            prog.clear()
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
                 "[step ",
@@ -1302,6 +1320,7 @@ def run_offpolicy_train_batched[
         if ckpt_on and step_idx >= next_ckpt:
             trainer.save_state(checkpoint_path)
             if verbose:
+                prog.clear()
                 print(
                     "[step ",
                     base_step + step_idx,
@@ -1335,6 +1354,7 @@ def run_offpolicy_train_batched[
                     )
                     logger.value()[].flush()
             if verbose:
+                prog.clear()
                 print(
                     "[step ",
                     base_step + step_idx,
@@ -1394,6 +1414,7 @@ def run_offpolicy_train_cpu_env_gpu_agent[
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
     base_step: Int = 0,
+    progress_label: String = "off-policy",
 ) raises -> List[Scalar[DT]]:
     """GPU-agent / CPU-env hybrid off-policy driver (Phase 6.1).
 
@@ -1486,6 +1507,10 @@ def run_offpolicy_train_cpu_env_gpu_agent[
     var iter_idx: Int = 0
     var next_print: Int = print_every
     var next_log: Int = print_every
+    # In-place progress bar between log lines (pure CPU, no GPU sync).
+    var prog = IntervalProgress(
+        print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
+    )
 
     while step_idx < total_env_steps:
         var abs_step = base_step + step_idx
@@ -1554,7 +1579,10 @@ def run_offpolicy_train_cpu_env_gpu_agent[
         for _ in range(updates_per_step):
             _ = trainer.train_step(base_step + step_idx)
 
+        prog.tick(step_idx, trainer.total_train_steps())
+
         if verbose and print_every > 0 and step_idx >= next_print:
+            prog.clear()
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
                 "[step ",

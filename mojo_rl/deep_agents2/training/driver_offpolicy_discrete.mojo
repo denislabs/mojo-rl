@@ -33,6 +33,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
+from mojo_rl.utils.progress import IntervalProgress
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from .driver_scratch import DriverScratch
 from .batched_env import BatchedEnv
@@ -115,6 +116,12 @@ trait OffPolicyDiscreteAgent(ImplicitlyDestructible, Movable):
 
     def ep_count(self) -> Int:
         ...
+
+    def total_train_steps(self) -> Int:
+        """Cumulative gradient-update count for the inter-log progress bar's
+        `Train:` field. Default 0 for trainers that don't track it; DQN-family
+        trainers may override."""
+        return 0
 
     # ─── Batched support (for future Tier-3 driver) ─────────────────
 
@@ -269,6 +276,7 @@ def run_offpolicy_discrete_train[
     eval_every: Int = 0,
     eval_episodes: Int = 10,
     eval_max_steps: Int = 20_000,
+    progress_label: String = "dqn",
 ) raises -> List[Scalar[DT]]:
     """Single-env discrete off-policy training driver.
 
@@ -335,6 +343,10 @@ def run_offpolicy_discrete_train[
 
     var t_start = perf_counter_ns()
     var step: Int = 0
+    # In-place progress bar between log lines (pure CPU, no GPU sync).
+    var prog = IntervalProgress(
+        print_every, label=progress_label, enabled=verbose
+    )
     while step < total_timesteps:
         var obs_scratch_h = obs_scratch.host_ptr()
         for d in range(OBS):
@@ -398,7 +410,10 @@ def run_offpolicy_discrete_train[
 
         var abs_step = base_step + step
 
+        prog.tick(abs_step, trainer.total_train_steps())
+
         if verbose and print_every > 0 and abs_step % print_every == 0:
+            prog.clear()
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
                 "[step ",
@@ -461,6 +476,7 @@ def run_offpolicy_discrete_train[
             )
             trainer.set_noise_scale(Scalar[DT](1.0))
             if verbose:
+                prog.clear()
                 print(
                     "[step ",
                     abs_step,
@@ -591,6 +607,7 @@ def run_offpolicy_discrete_train_gpu_batched[
     eval_every: Int = 0,
     eval_episodes: Int = 16,
     eval_max_iters: Int = 20_000,
+    progress_label: String = "dqn",
 ) raises -> List[Scalar[DT]]:
     """GPU-batched discrete off-policy training driver (Tier-3).
 
@@ -683,6 +700,10 @@ def run_offpolicy_discrete_train_gpu_batched[
     var step_idx: Int = 0
     var iter_idx: Int = 0
     var next_print: Int = print_every
+    # In-place progress bar between log lines (pure CPU, no GPU sync).
+    var prog = IntervalProgress(
+        print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
+    )
     var next_log: Int = print_every
     var next_diag: Int = diag_every if diag_every > 0 else total_env_steps + 1
     var ckpt_on: Bool = (
@@ -784,7 +805,10 @@ def run_offpolicy_discrete_train_gpu_batched[
 
         var abs_step = base_step + step_idx
 
+        prog.tick(step_idx, trainer.total_train_steps())
+
         if verbose and print_every > 0 and step_idx >= next_print:
+            prog.clear()
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
                 "[step ",
@@ -836,6 +860,7 @@ def run_offpolicy_discrete_train_gpu_batched[
                     )
                     logger.value()[].flush()
             if verbose:
+                prog.clear()
                 print(
                     "[step ",
                     abs_step,

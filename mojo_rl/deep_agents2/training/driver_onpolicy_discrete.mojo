@@ -25,6 +25,7 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
+from mojo_rl.utils.progress import IntervalProgress
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 
 
@@ -95,6 +96,11 @@ trait OnPolicyDiscreteAgent(Movable, ImplicitlyDestructible):
     def ep_count(self) -> Int:
         ...
 
+    def total_train_steps(self) -> Int:
+        """Cumulative gradient-update count for the inter-log progress bar's
+        `Train:` field. Default 0 for trainers that don't track it."""
+        return 0
+
     # ─── Optional cadence hooks (default no-op) ──────────────────────
 
     def flush_metrics_through_logger[L: Logger](
@@ -129,6 +135,7 @@ def run_onpolicy_discrete_train[
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
     base_step: Int = 0,
+    progress_label: String = "on-policy",
 ) raises -> List[Scalar[DT]]:
     """Step-based discrete on-policy single-env training driver.
 
@@ -150,6 +157,10 @@ def run_onpolicy_discrete_train[
 
     var t_start = perf_counter_ns()
     var step: Int = 0
+    # In-place progress bar between log lines (pure CPU, no GPU sync).
+    var prog = IntervalProgress(
+        print_every, label=progress_label, enabled=verbose
+    )
     while step < total_timesteps:
         for d in range(OBS):
             obs[d] = Scalar[DT](obs_list[d])
@@ -182,7 +193,10 @@ def run_onpolicy_discrete_train[
 
         var abs_step = base_step + step
 
+        prog.tick(abs_step, trainer.total_train_steps())
+
         if verbose and print_every > 0 and abs_step % print_every == 0:
+            prog.clear()
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
                 "[step ", abs_step, "] mean_ret(10)=", trainer.mean_return(),
