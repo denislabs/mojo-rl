@@ -82,9 +82,9 @@ comptime ActionEmbedder[
 # DEPTH-stack of AdaLN-zero conditional blocks. ARITY=2: forward(x, c) where x
 # is the context embeddings (B, H·EMB) and c the action conditioning.
 comptime ARPredictor[
-    EMB: Int, HEADS: Int, H: Int, FF: Int, DEPTH: Int
+    EMB: Int, HEADS: Int, H: Int, FF: Int, DEPTH: Int, HEAD_DIM: Int = 0
 ] = RepeatConditional[
-    DEPTH, ConditionalTransformerBlock[EMB, HEADS, H, FF]
+    DEPTH, ConditionalTransformerBlock[EMB, HEADS, H, FF, HEAD_DIM]
 ]
 
 

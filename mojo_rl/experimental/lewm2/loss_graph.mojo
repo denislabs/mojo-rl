@@ -46,6 +46,7 @@ comptime LeWMLossGraph[
     PRED_PROJ_H: Int,
     SIG_PROJ: Int,
     SIG_KNOTS: Int,
+    PRED_DIM_HEAD: Int = 0,
 ] = ComputeGraph[
     1,
     InputSlot["pixels", T * IN_CH * IMG * IMG],
@@ -69,7 +70,7 @@ comptime LeWMLossGraph[
     Node["x_pe", BiasAdd[H * EMB], "ctx_x"],
     Node[
         "pred_raw",
-        ARPredictor[EMB, PRED_HEADS, H, PRED_FF, DEPTH],
+        ARPredictor[EMB, PRED_HEADS, H, PRED_FF, DEPTH, PRED_DIM_HEAD],
         "x_pe", "ctx_a",
     ],
     Node["pred", PredProj[H, EMB, PRED_PROJ_H], "pred_raw"],

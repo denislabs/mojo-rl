@@ -182,13 +182,18 @@ struct LeWMTrainer[
     H: Int, N_PREDS: Int, PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
     PRED_PROJ_H: Int, SIG_PROJ: Int, SIG_KNOTS: Int,
     BATCH: Int, train_target: StaticString = "cpu",
+    PRED_DIM_HEAD: Int = 0,
 ](Movable & ImplicitlyDestructible):
+    # PRED_DIM_HEAD 0 ⇒ standard EMB/PRED_HEADS attention; >0 ⇒ the paper's
+    # expanded predictor attention (e.g. 16 heads × 64 = 1024 inner > EMB).
+    # Added last (after train_target) so existing positional call sites are
+    # unchanged. Bit-identical at the default 0.
     comptime LG = LeWMLossGraph[
         Self.IN_CH, Self.IMG, Self.PATCH, Self.HIDDEN, Self.ENC_HEADS,
         Self.ENC_LAYERS, Self.EMB, Self.ENC_PROJ_H, Self.ENC_FF_MULT,
         Self.T, Self.ACT, Self.SMOOTHED, Self.AE_MLP,
         Self.H, Self.N_PREDS, Self.PRED_HEADS, Self.PRED_FF, Self.DEPTH,
-        Self.PRED_PROJ_H, Self.SIG_PROJ, Self.SIG_KNOTS,
+        Self.PRED_PROJ_H, Self.SIG_PROJ, Self.SIG_KNOTS, Self.PRED_DIM_HEAD,
     ]
     comptime PIX = Self.T * Self.IN_CH * Self.IMG * Self.IMG
     comptime ACTIN = Self.T * Self.ACT

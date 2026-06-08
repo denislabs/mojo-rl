@@ -33,7 +33,7 @@ from ..core.module import Module, typed_view, typed_view_mut
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 from ..combinators import ComputeGraph, InputSlot, Node, Tokenwise
-from ..composites import MultiHeadAttention, TransformerFFN
+from ..composites import MultiHeadAttentionXL, TransformerFFN
 from .silu import SiLU
 from .zero_linear import ZeroLinear
 from .layer_norm_no_affine import LayerNormNoAffine
@@ -51,12 +51,15 @@ def _ctb_copy_kernel[N: Int](
 
 
 struct ConditionalTransformerBlock[
-    EMB: Int, HEADS: Int, H: Int, FF: Int
+    EMB: Int, HEADS: Int, H: Int, FF: Int, HEAD_DIM: Int = 0
 ](Module):
     comptime ARITY: Int = 2
     comptime SEQ_DIM = Self.H * Self.EMB
     comptime IN_DIMS = InlineArray[Int, 2](fill=Self.SEQ_DIM)
     comptime OUT_DIM = Self.SEQ_DIM
+    # head_dim 0 ⇒ standard EMB/HEADS (inner == EMB); >0 ⇒ expanded ("XL")
+    # attention with inner = HEADS·HEAD_DIM (the paper predictor's 16×64=1024).
+    comptime HD = Self.HEAD_DIM if Self.HEAD_DIM > 0 else Self.EMB // Self.HEADS
 
     @staticmethod
     def display_label() -> String:
@@ -78,7 +81,8 @@ struct ConditionalTransformerBlock[
         Node["g2", Self.Mod6, "cs"],
         Node["ln1", Self.LN, "x"],
         Node["mod1", Modulate[Self.SEQ_DIM], "ln1", "sc1", "sh1"],
-        Node["attn", MultiHeadAttention[Self.EMB, Self.HEADS, Self.H, True],
+        Node["attn",
+             MultiHeadAttentionXL[Self.EMB, Self.HEADS, Self.HD, Self.H, True],
              "mod1"],
         Node["x1", Gate[Self.SEQ_DIM], "x", "g1", "attn"],
         Node["ln2", Self.LN, "x1"],

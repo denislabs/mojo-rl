@@ -5,16 +5,13 @@ Scales the scaled-baseline `lewm2_pusht_train_gpu.mojo` up to the legacy
 3 heads × head_dim 64, 12 layers), wide projectors (2048), wide predictor
 FFN (2048), depth 6.
 
-FIDELITY NOTE — the ENCODER is exactly the paper's ViT-Tiny (hidden=192,
-enc_heads=3 → head_dim = 192/3 = 64, inner = 192, standard MHA). The
-PREDICTOR is where nn2 deviates: the paper predictor uses EXPANDED attention
-(pred_heads=16 × pred_dim_head=64 = 1024 inner dim, decoupled from emb=192).
-nn2's MultiHeadAttention ties head_dim = EMB/HEADS (inner = emb), per locked
-decision #5 — there's no 1024-wide expansion. We set PRED_HEADS=3 → head_dim
-64 (matches the paper's per-head resolution; inner stays 192, not 1024). So
-this matches the paper on every capacity axis EXCEPT the predictor's attention
-expansion. For a fully-faithful predictor, nn2 needs a MultiHeadAttentionXL
-(independent head_dim → QKV Linear[emb, 3·heads·head_dim]); ping to add it.
+FULLY FAITHFUL NOW. Encoder = paper ViT-Tiny (hidden=192, enc_heads=3 →
+head_dim 64, inner 192). Predictor = paper expanded attention via
+`MultiHeadAttentionXL` (PRED_HEADS=16 × PRED_DIM_HEAD=64 = 1024 inner ≫ emb
+192) — the `PRED_DIM_HEAD` param (last LeWMTrainer param) threads through
+ARPredictor → ConditionalTransformerBlock → MultiHeadAttentionXL. Validated by
+`tests/nn2/test_conditional_block_xl.mojo` (expanded attn, identity-at-init +
+grad, CPU+GPU bitwise).
 
 This is a LARGE model (12 enc layers + 6 cond blocks @ 192-d, 224×224, B=16):
 expect a long compile and a multi-hour run (legacy estimated ~6-10h @ 32k
@@ -49,19 +46,17 @@ comptime SMOOTHED = 32
 comptime AE_MLP = 2
 comptime H = 3
 comptime N_PREDS = 1
-comptime PRED_HEADS = 3        # head_dim = 192/3 = 64 (paper per-head width;
-                               # paper used 16 heads × 64 = 1024 inner — see note)
+comptime PRED_HEADS = 16       # paper: 16 heads
+comptime PRED_DIM_HEAD = 64    # paper: head_dim 64 → inner = 16·64 = 1024 ≫
+                               # emb 192 (EXPANDED attention via
+                               # MultiHeadAttentionXL — now fully faithful)
 comptime PRED_FF = 2048        # paper wide predictor FFN
 comptime DEPTH = 6
 comptime PRED_PROJ_H = 2048
-comptime SIG_PROJ = 1024       # paper value. NOTE: 1024/EMB(192) ≈ 5.3× —
-                               # HALF the baseline's 1024/96 ≈ 11× over-
-                               # determination, so isotropy comes in slower
-                               # (an 8000-step run leaves var_min ~0.09,
-                               # still rising). For faster/cleaner var_min set
-                               # SIG_PROJ=2048 (≈11× again); else use the
-                               # paper's 32000 steps. (P/D ratio drives
-                               # anti-collapse strength — see the Pong sweep.)
+comptime SIG_PROJ = 2048       # 2048/EMB(192) ≈ 10.7× over-determined (restores
+                               # the baseline's ~11× ratio; paper used 1024 ≈
+                               # 5.3× which converges slower — P/D ratio drives
+                               # anti-collapse strength, see the Pong sweep)
 comptime SIG_KNOTS = 17
 comptime B = 16
 comptime FRAMESKIP = 5
@@ -70,9 +65,7 @@ comptime IMG_DIM = IN_CH * IMG * IMG
 comptime PIX = T * IMG_DIM
 comptime ACTIN = T * ACT
 
-comptime STEPS: Int = 8000     # paper used 32000 — at 8000 the paper-width
-                               # var_min is still climbing (~0.09); use 32000
-                               # and/or SIG_PROJ=2048 for a converged var_min>0.1
+comptime STEPS: Int = 32000    # paper budget (the bigger model needs it)
 comptime LOG_EVERY: Int = 200
 comptime LAM: Scalar[DT] = 0.09
 comptime LR: Scalar[DT] = 1e-3
@@ -81,7 +74,7 @@ comptime CKPT_PATH: String = "/tmp/lewm2_pusht_paper_world_model.txt"
 comptime Trainer = LeWMTrainer[
     IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
     ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS, PRED_FF,
-    DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu",
+    DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu", PRED_DIM_HEAD,
 ]
 comptime Source = WindowSource[
     IMG_DIM, ACT, T, B, "gpu", PushTOfflineSampler, IN_CH, IMG
@@ -95,7 +88,8 @@ def main() raises:
     print("encoder: hidden=", HIDDEN, " heads=", ENC_HEADS, " layers=",
           ENC_LAYERS, " | emb=", EMB, " proj_h=", ENC_PROJ_H)
     print("predictor: depth=", DEPTH, " pred_ff=", PRED_FF, " pred_heads=",
-          PRED_HEADS, "(head_dim 64; attn inner=emb, not paper's 1024)")
+          PRED_HEADS, " head_dim=", PRED_DIM_HEAD, " (expanded attn inner=",
+          PRED_HEADS * PRED_DIM_HEAD, "= paper 1024)")
     print()
 
     var ctx = DeviceContext()

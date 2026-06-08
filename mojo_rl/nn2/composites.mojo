@@ -147,14 +147,30 @@ comptime ResBlockDownsampleBN[
 #
 # `use_max` selects the SDPA GPU path: True (default) = batched-GEMM; False =
 # serial custom kernels (bit-identical; CPU ignores it).
+# MultiHeadAttentionXL: expanded ("XL") attention with an INDEPENDENT
+# head_dim, decoupled from `dim`. The QKV/out projections + SDPA run at the
+# inner width `n_heads * head_dim` (can exceed `dim`), then project back to
+# `dim`. The legacy LeWM predictor used this (16 heads × 64 = 1024 inner over
+# emb=192). `MultiHeadAttention` below is the special case head_dim=dim/n_heads
+# (inner == dim), so this is a strict generalization — bit-identical there.
+comptime MultiHeadAttentionXL[
+    dim: Int, n_heads: Int, head_dim: Int, seq_len: Int,
+    causal: Bool = False, use_max: Bool = True,
+] = Sequential[
+    Tokenwise[seq_len, Linear[dim, 3 * n_heads * head_dim]],
+    QKVToMajor[seq_len, n_heads * head_dim],
+    ScaledDotProductAttention[
+        n_heads * head_dim, n_heads, seq_len, causal, use_max
+    ],
+    Tokenwise[seq_len, Linear[n_heads * head_dim, dim]],
+]
+
+
 comptime MultiHeadAttention[
     dim: Int, n_heads: Int, seq_len: Int, causal: Bool = False,
     use_max: Bool = True,
-] = Sequential[
-    Tokenwise[seq_len, Linear[dim, 3 * dim]],
-    QKVToMajor[seq_len, dim],
-    ScaledDotProductAttention[dim, n_heads, seq_len, causal, use_max],
-    Tokenwise[seq_len, Linear[dim, dim]],
+] = MultiHeadAttentionXL[
+    dim, n_heads, dim // n_heads, seq_len, causal, use_max
 ]
 
 

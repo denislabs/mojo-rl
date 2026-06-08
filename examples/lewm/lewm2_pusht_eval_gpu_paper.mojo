@@ -35,11 +35,12 @@ comptime SMOOTHED = 32
 comptime AE_MLP = 2
 comptime H = 3
 comptime N_PREDS = 1
-comptime PRED_HEADS = 3
+comptime PRED_HEADS = 16
+comptime PRED_DIM_HEAD = 64     # expanded attention, must match training
 comptime PRED_FF = 2048
 comptime DEPTH = 6
 comptime PRED_PROJ_H = 2048
-comptime SIG_PROJ = 1024
+comptime SIG_PROJ = 2048
 comptime SIG_KNOTS = 17
 comptime B = 16
 comptime FRAMESKIP = 5
@@ -52,7 +53,7 @@ comptime CKPT_PATH: String = "/tmp/lewm2_pusht_paper_world_model.txt"
 comptime Trainer = LeWMTrainer[
     IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
     ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS, PRED_FF,
-    DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu",
+    DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu", PRED_DIM_HEAD,
 ]
 comptime Source = WindowSource[
     IMG_DIM, ACT, T, B, "gpu", PushTOfflineSampler, IN_CH, IMG
@@ -83,6 +84,7 @@ def main() raises:
         IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
         ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
         PRED_FF, DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu",
+        PRED_DIM_HEAD,
     ](
         tr, pix_t,
         rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](act_host.unsafe_ptr()),

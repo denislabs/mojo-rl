@@ -176,12 +176,13 @@ def lewm2_shuffled_eval[
     T: Int, ACT: Int, SMOOTHED: Int, AE_MLP: Int,
     H: Int, N_PREDS: Int, PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
     PRED_PROJ_H: Int, SIG_PROJ: Int, SIG_KNOTS: Int,
-    BATCH: Int, target: StaticString,
+    BATCH: Int, target: StaticString, PRED_DIM_HEAD: Int = 0,
 ](
     mut trainer: LeWMTrainer[
         IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
         ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
         PRED_FF, DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, BATCH, target,
+        PRED_DIM_HEAD,
     ],
     pix_t: TileTensor[
         dtype=DT, address_space=AddressSpace.GENERIC,
