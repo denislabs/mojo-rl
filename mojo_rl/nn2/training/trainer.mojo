@@ -108,9 +108,9 @@ struct Trainer[
     # ------------------------------------------------------------------
 
     @staticmethod
-    def make[INIT: Initializer](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    def make[
+        INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None,) raises -> Self:
         """Unified one-call factory (matches the nn2 `make[...](ctx:
         Optional[DeviceContext]=None)` convention). Builds net + optim +
         loss internally. `ctx=None` on CPU; required on GPU."""
@@ -121,9 +121,7 @@ struct Trainer[
             return Self.make_from(net^, optim^, loss^)
         else:
             if not ctx:
-                raise Error(
-                    "Trainer.make[INIT](): target='gpu' requires a ctx"
-                )
+                raise Error("Trainer.make[INIT](): target='gpu' requires a ctx")
             var ctx_v = ctx.value()
             var net = Self.NET.make[Self.target, INIT](ctx_v)
             var loss = Self.LOSS.make[Self.target](ctx_v)
@@ -343,14 +341,14 @@ struct Trainer[
 
     def train_step(
         mut self,
-        input_host_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        target_host_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        input: List[Scalar[DT]],
+        targets: List[Scalar[DT]],
     ) raises -> Scalar[DT]:
         comptime if Self.target == "cpu":
             for k in range(Self.BATCH * Self.IN_DIM):
-                self.input_buf[k] = input_host_ptr[k]
+                self.input_buf[k] = input[k]
             for k in range(Self.BATCH * Self.OUT_DIM):
-                self.target_buf[k] = target_host_ptr[k]
+                self.target_buf[k] = targets[k]
             var input = TileTensor(
                 self.input_buf, row_major[Self.BATCH, Self.IN_DIM]()
             )
@@ -363,9 +361,9 @@ struct Trainer[
             var in_host_buf: HostBuffer[DT] = self.input_host.value()
             var tg_host_buf: HostBuffer[DT] = self.target_host.value()
             for k in range(Self.BATCH * Self.IN_DIM):
-                in_host_buf.unsafe_ptr()[k] = input_host_ptr[k]
+                in_host_buf[k] = input[k]
             for k in range(Self.BATCH * Self.OUT_DIM):
-                tg_host_buf.unsafe_ptr()[k] = target_host_ptr[k]
+                tg_host_buf[k] = targets[k]
             ctx.enqueue_copy(self.input_dev.value(), in_host_buf)
             ctx.enqueue_copy(self.target_dev.value(), tg_host_buf)
             # Launder pointers through MutAnyOrigin so Mojo's aliasing
@@ -385,12 +383,12 @@ struct Trainer[
 
     def predict(
         mut self,
-        input_host_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        output_host_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        input: List[Scalar[DT]],
+        mut result: List[Scalar[DT]],
     ) raises:
         comptime if Self.target == "cpu":
             for k in range(Self.BATCH * Self.IN_DIM):
-                self.input_buf[k] = input_host_ptr[k]
+                self.input_buf[k] = input[k]
             var input = TileTensor(
                 self.input_buf, row_major[Self.BATCH, Self.IN_DIM]()
             )
@@ -401,13 +399,13 @@ struct Trainer[
                 input, output=output
             )
             for k in range(Self.BATCH * Self.OUT_DIM):
-                output_host_ptr[k] = self.output_buf[k]
+                result[k] = output[k]
         else:
             var ctx = self.ctx.value()
             var in_host_buf: HostBuffer[DT] = self.input_host.value()
             var out_host_buf: HostBuffer[DT] = self.output_host.value()
             for k in range(Self.BATCH * Self.IN_DIM):
-                in_host_buf.unsafe_ptr()[k] = input_host_ptr[k]
+                in_host_buf[k] = input[k]
             ctx.enqueue_copy(self.input_dev.value(), in_host_buf)
             var in_ptr: UnsafePointer[
                 Scalar[DT], MutAnyOrigin
@@ -425,7 +423,7 @@ struct Trainer[
             ctx.enqueue_copy(out_host_buf, self.output_dev.value())
             ctx.synchronize()
             for k in range(Self.BATCH * Self.OUT_DIM):
-                output_host_ptr[k] = out_host_buf.unsafe_ptr()[k]
+                result[k] = out_host_buf[k]
 
     # ------------------------------------------------------------------
     # Whole-dataset GPU training.
@@ -454,12 +452,8 @@ struct Trainer[
         ), "Trainer.train_gpu: N_TRAIN must be divisible by BATCH"
         comptime N_BATCHES = N_TRAIN // Self.BATCH
         comptime BLOCKS_INIT = (N_TRAIN + TPB - 1) // TPB
-        comptime BLOCKS_GATHER_X = (
-            Self.BATCH * Self.IN_DIM + TPB - 1
-        ) // TPB
-        comptime BLOCKS_GATHER_Y = (
-            Self.BATCH * Self.OUT_DIM + TPB - 1
-        ) // TPB
+        comptime BLOCKS_GATHER_X = (Self.BATCH * Self.IN_DIM + TPB - 1) // TPB
+        comptime BLOCKS_GATHER_Y = (Self.BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
         var result = TrainResult.empty()
         var ctx = self.ctx.value()
@@ -474,12 +468,8 @@ struct Trainer[
         if shuffle:
             var idx = ctx.enqueue_create_buffer[DType.int32](N_TRAIN)
             var seed = ctx.enqueue_create_buffer[DType.uint64](1)
-            var sx = ctx.enqueue_create_buffer[DT](
-                Self.BATCH * Self.IN_DIM
-            )
-            var sy = ctx.enqueue_create_buffer[DT](
-                Self.BATCH * Self.OUT_DIM
-            )
+            var sx = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.IN_DIM)
+            var sy = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OUT_DIM)
             var seed_host = ctx.enqueue_create_host_buffer[DType.uint64](1)
             seed_host.unsafe_ptr()[0] = rng_seed
             ctx.enqueue_copy(seed, seed_host)
@@ -542,9 +532,7 @@ struct Trainer[
                     ](sy_p)
                     var offset = b * Self.BATCH
                     ctx.enqueue_function[
-                        gather_rows_kernel[
-                            N_TRAIN, Self.BATCH, Self.IN_DIM, DT
-                        ]
+                        gather_rows_kernel[N_TRAIN, Self.BATCH, Self.IN_DIM, DT]
                     ](
                         shuf_x_t,
                         full_x_t,
@@ -617,7 +605,7 @@ struct Trainer[
         test_x: TileTensor[
             dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        test_y_labels: UnsafePointer[Int32, MutAnyOrigin],
+        test_y_labels: List[Int32],
         epochs: Int = 1,
         print_progress: Bool = True,
         shuffle: Bool = False,
@@ -647,12 +635,8 @@ struct Trainer[
         ), "Trainer.train_gpu: N_TEST must be divisible by BATCH"
         comptime N_BATCHES_TRAIN = N_TRAIN // Self.BATCH
         comptime BLOCKS_INIT = (N_TRAIN + TPB - 1) // TPB
-        comptime BLOCKS_GATHER_X = (
-            Self.BATCH * Self.IN_DIM + TPB - 1
-        ) // TPB
-        comptime BLOCKS_GATHER_Y = (
-            Self.BATCH * Self.OUT_DIM + TPB - 1
-        ) // TPB
+        comptime BLOCKS_GATHER_X = (Self.BATCH * Self.IN_DIM + TPB - 1) // TPB
+        comptime BLOCKS_GATHER_Y = (Self.BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
         var result = TrainResult.empty()
         var ctx = self.ctx.value()
@@ -685,12 +669,8 @@ struct Trainer[
         if shuffle:
             var idx = ctx.enqueue_create_buffer[DType.int32](N_TRAIN)
             var seed = ctx.enqueue_create_buffer[DType.uint64](1)
-            var sx = ctx.enqueue_create_buffer[DT](
-                Self.BATCH * Self.IN_DIM
-            )
-            var sy = ctx.enqueue_create_buffer[DT](
-                Self.BATCH * Self.OUT_DIM
-            )
+            var sx = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.IN_DIM)
+            var sy = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OUT_DIM)
             var seed_host = ctx.enqueue_create_host_buffer[DType.uint64](1)
             seed_host.unsafe_ptr()[0] = rng_seed
             ctx.enqueue_copy(seed, seed_host)
@@ -770,9 +750,7 @@ struct Trainer[
                     ](sy_p)
                     var offset = b * Self.BATCH
                     ctx.enqueue_function[
-                        gather_rows_kernel[
-                            N_TRAIN, Self.BATCH, Self.IN_DIM, DT
-                        ]
+                        gather_rows_kernel[N_TRAIN, Self.BATCH, Self.IN_DIM, DT]
                     ](
                         shuf_x_t,
                         full_x_t,
@@ -849,7 +827,7 @@ struct Trainer[
         test_x: TileTensor[
             dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        test_y_labels: UnsafePointer[Int32, MutAnyOrigin],
+        test_y_labels: List[Int32],
     ) raises -> Float64:
         comptime assert (
             Self.target == "gpu"
@@ -866,9 +844,12 @@ struct Trainer[
         for b in range(N_BATCHES):
             var x_ptr_my = mptr(x_base + b * Self.BATCH * Self.IN_DIM)
             var out_ptr_my = mptr(self.output_dev.value().unsafe_ptr())
-            var input = TileTensor(x_ptr_my, row_major[Self.BATCH, Self.IN_DIM]())
+            var input = TileTensor(
+                x_ptr_my, row_major[Self.BATCH, Self.IN_DIM]()
+            )
             var output = TileTensor(
-                out_ptr_my, row_major[Self.BATCH, Self.OUT_DIM](),
+                out_ptr_my,
+                row_major[Self.BATCH, Self.OUT_DIM](),
             )
             self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 input, output=output

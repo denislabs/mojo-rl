@@ -1,4 +1,4 @@
-"""nn2 VGG-style CNN (with BatchNorm) on CIFAR-10 (GPU).
+"""VGG-style CNN (with BatchNorm) on CIFAR-10 (GPU).
 
 Port of `examples/nn/conv2d/conv2d_cifar10_training_gpu.mojo` to nn2.
 
@@ -56,29 +56,40 @@ def main() raises:
     comptime Net = Sequential[
         Conv2DBatchNormReLU[3, 32, 3, 1, 1, 32, 32],
         Conv2DBatchNormReLU[32, 32, 3, 1, 1, 32, 32],
-        MaxPool2D[32, 2, 2, 0, 32, 32],                 # → 32×16×16
+        MaxPool2D[32, 2, 2, 0, 32, 32],  # → 32×16×16
         Conv2DBatchNormReLU[32, 64, 3, 1, 1, 16, 16],
         Conv2DBatchNormReLU[64, 64, 3, 1, 1, 16, 16],
-        MaxPool2D[64, 2, 2, 0, 16, 16],                 # → 64×8×8
+        MaxPool2D[64, 2, 2, 0, 16, 16],  # → 64×8×8
         Conv2DBatchNormReLU[64, 128, 3, 1, 1, 8, 8],
         Conv2DBatchNormReLU[128, 128, 3, 1, 1, 8, 8],
-        MaxPool2D[128, 2, 2, 0, 8, 8],                  # → 128×4×4 = 2048
+        MaxPool2D[128, 2, 2, 0, 8, 8],  # → 128×4×4 = 2048
         Flatten[128 * 4 * 4],
-        Linear[128 * 4 * 4, 128], ReLU[128],
+        Linear[128 * 4 * 4, 128],
+        ReLU[128],
         Linear[128, N_CLASSES],
     ]
 
     print("initializing network on GPU...")
     var trainer = Trainer[
-        Net, Adam, CrossEntropyLoss[N_CLASSES], BATCH, target="gpu",
+        Net,
+        Adam,
+        CrossEntropyLoss[N_CLASSES],
+        BATCH,
+        target="gpu",
     ].make[INIT=Kaiming](ctx)
     trainer.optim.lr = LR
 
     print("uploading dataset to GPU...")
     comptime IN_DIM = 3 * 32 * 32
-    var train_x_host = ctx.enqueue_create_host_buffer[DT](CIFAR10.N_TRAIN * IN_DIM)
-    var train_y_host = ctx.enqueue_create_host_buffer[DT](CIFAR10.N_TRAIN * N_CLASSES)
-    var test_x_host = ctx.enqueue_create_host_buffer[DT](CIFAR10.N_TEST * IN_DIM)
+    var train_x_host = ctx.enqueue_create_host_buffer[DT](
+        CIFAR10.N_TRAIN * IN_DIM
+    )
+    var train_y_host = ctx.enqueue_create_host_buffer[DT](
+        CIFAR10.N_TRAIN * N_CLASSES
+    )
+    var test_x_host = ctx.enqueue_create_host_buffer[DT](
+        CIFAR10.N_TEST * IN_DIM
+    )
     ctx.synchronize()
     for i in range(CIFAR10.N_TRAIN * IN_DIM):
         train_x_host.unsafe_ptr()[i] = ds.train_images[i]
@@ -89,12 +100,6 @@ def main() raises:
     for i in range(CIFAR10.N_TEST * IN_DIM):
         test_x_host.unsafe_ptr()[i] = ds.test_images[i]
 
-    var test_labels_host: UnsafePointer[Int32, MutAnyOrigin] = (
-        ctx.enqueue_create_host_buffer[DType.int32](CIFAR10.N_TEST).unsafe_ptr()
-    )
-    for i in range(CIFAR10.N_TEST):
-        test_labels_host[i] = Int32(ds.test_labels[i])
-
     var train_x_dev = ctx.enqueue_create_buffer[DT](CIFAR10.N_TRAIN * IN_DIM)
     var train_y_dev = ctx.enqueue_create_buffer[DT](CIFAR10.N_TRAIN * N_CLASSES)
     var test_x_dev = ctx.enqueue_create_buffer[DT](CIFAR10.N_TEST * IN_DIM)
@@ -104,7 +109,9 @@ def main() raises:
     ctx.synchronize()
 
     var train_x = TileTensor(train_x_dev, row_major[CIFAR10.N_TRAIN, IN_DIM]())
-    var train_y = TileTensor(train_y_dev, row_major[CIFAR10.N_TRAIN, N_CLASSES]())
+    var train_y = TileTensor(
+        train_y_dev, row_major[CIFAR10.N_TRAIN, N_CLASSES]()
+    )
     var test_x = TileTensor(test_x_dev, row_major[CIFAR10.N_TEST, IN_DIM]())
 
     var best_acc: Float64 = 0.0
@@ -113,27 +120,40 @@ def main() raises:
         # BN in training mode → uses + updates batch stats.
         trainer.net.set_attr["training"](Scalar[DT](1.0))
         var r = trainer.train_gpu[CIFAR10.N_TRAIN](
-            train_x, train_y, epochs=1, print_progress=False,
-            shuffle=True, rng_seed=UInt64(42 + epoch),
+            train_x,
+            train_y,
+            epochs=1,
+            print_progress=False,
+            shuffle=True,
+            rng_seed=UInt64(42 + epoch),
         )
         var train_s = Float64(perf_counter_ns() - t0) / 1e9
 
         # BN in eval mode → uses running stats.
         trainer.net.set_attr["training"](Scalar[DT](0.0))
-        var acc = trainer.eval_top1_gpu[CIFAR10.N_TEST](test_x, test_labels_host)
+        var acc = trainer.eval_top1_gpu[CIFAR10.N_TEST](test_x, ds.test_labels)
         if acc > best_acc:
             best_acc = acc
         print(
-            "epoch " + String(epoch)
-            + " | train_loss=" + String(r.epoch_train_loss[0])
-            + " | test_acc=" + String(acc * 100.0) + "%"
-            + " | train=" + String(train_s) + "s"
+            "epoch "
+            + String(epoch)
+            + " | train_loss="
+            + String(r.epoch_train_loss[0])
+            + " | test_acc="
+            + String(acc * 100.0)
+            + "%"
+            + " | train="
+            + String(train_s)
+            + "s"
         )
 
     print("\nbest test accuracy: " + String(best_acc * 100.0) + "%")
     assert_true(
         best_acc >= TARGET_ACC,
-        "Expected best >= " + String(TARGET_ACC * 100.0) + "%, got "
-        + String(best_acc * 100.0) + "%",
+        "Expected best >= "
+        + String(TARGET_ACC * 100.0)
+        + "%, got "
+        + String(best_acc * 100.0)
+        + "%",
     )
     print("DONE")

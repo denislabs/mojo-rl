@@ -1,4 +1,4 @@
-"""nn2 ResNet-20 on CIFAR-10 (GPU).
+"""ResNet-20 on CIFAR-10 (GPU).
 
 Port of `examples/nn/resnet/resnet20_cifar10_training_gpu.mojo` to nn2.
 
@@ -23,6 +23,7 @@ additionally want SGD+momentum; with Adam + augmentation + cosine LR +
 
 Run (Apple Metal):
     pixi run -e apple mojo run -I . examples/nn2/resnet/resnet20_cifar10_training_gpu.mojo
+.
 """
 
 from std.random import seed
@@ -32,7 +33,11 @@ from layout import TileTensor, row_major
 
 from mojo_rl.nn2.datasets import CIFAR10
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.composites import Conv2DBatchNormReLU, ResBlockConv2DBN, ResBlockDownsampleBN
+from mojo_rl.nn2.composites import (
+    Conv2DBatchNormReLU,
+    ResBlockConv2DBN,
+    ResBlockDownsampleBN,
+)
 from mojo_rl.nn2.primitives.avg_pool_2d import AvgPool2D
 from mojo_rl.nn2.primitives.flatten import Flatten
 from mojo_rl.nn2.primitives.linear import Linear
@@ -60,7 +65,7 @@ def main() raises:
     var ctx = DeviceContext()
 
     comptime Net = Sequential[
-        Conv2DBatchNormReLU[3, 16, 3, 1, 1, 32, 32],            # stem → 16×32×32
+        Conv2DBatchNormReLU[3, 16, 3, 1, 1, 32, 32],  # stem → 16×32×32
         # Stage 1: 3 identity blocks @ 16ch, 32×32
         Repeat[3, ResBlockConv2DBN[16, 3, 1, 32, 32], shared=False],
         # Stage 2: downsample 16→32 (32×32→16×16) + 2 identity blocks
@@ -77,30 +82,34 @@ def main() raises:
 
     print("initializing ResNet-20 on GPU (this compile is long)...")
     var trainer = Trainer[
-        Net, Adam, CrossEntropyLoss[N_CLASSES], BATCH, target="gpu",
+        Net,
+        Adam,
+        CrossEntropyLoss[N_CLASSES],
+        BATCH,
+        target="gpu",
     ].make[INIT=Kaiming](ctx)
     trainer.optim.lr = LR
 
     print("uploading dataset to GPU...")
     comptime IN_DIM = 3 * 32 * 32
-    var train_x_host = ctx.enqueue_create_host_buffer[DT](CIFAR10.N_TRAIN * IN_DIM)
-    var train_y_host = ctx.enqueue_create_host_buffer[DT](CIFAR10.N_TRAIN * N_CLASSES)
-    var test_x_host = ctx.enqueue_create_host_buffer[DT](CIFAR10.N_TEST * IN_DIM)
+    var train_x_host = ctx.enqueue_create_host_buffer[DT](
+        CIFAR10.N_TRAIN * IN_DIM
+    )
+    var train_y_host = ctx.enqueue_create_host_buffer[DT](
+        CIFAR10.N_TRAIN * N_CLASSES
+    )
+    var test_x_host = ctx.enqueue_create_host_buffer[DT](
+        CIFAR10.N_TEST * IN_DIM
+    )
     ctx.synchronize()
     for i in range(CIFAR10.N_TRAIN * IN_DIM):
-        train_x_host.unsafe_ptr()[i] = ds.train_images[i]
+        train_x_host[i] = ds.train_images[i]
     for i in range(CIFAR10.N_TRAIN * N_CLASSES):
-        train_y_host.unsafe_ptr()[i] = 0.0
+        train_y_host[i] = 0.0
     for i in range(CIFAR10.N_TRAIN):
-        train_y_host.unsafe_ptr()[i * N_CLASSES + Int(ds.train_labels[i])] = 1.0
+        train_y_host[i * N_CLASSES + Int(ds.train_labels[i])] = 1.0
     for i in range(CIFAR10.N_TEST * IN_DIM):
-        test_x_host.unsafe_ptr()[i] = ds.test_images[i]
-
-    var test_labels_host: UnsafePointer[Int32, MutAnyOrigin] = (
-        ctx.enqueue_create_host_buffer[DType.int32](CIFAR10.N_TEST).unsafe_ptr()
-    )
-    for i in range(CIFAR10.N_TEST):
-        test_labels_host[i] = Int32(ds.test_labels[i])
+        test_x_host[i] = ds.test_images[i]
 
     var train_x_dev = ctx.enqueue_create_buffer[DT](CIFAR10.N_TRAIN * IN_DIM)
     var train_y_dev = ctx.enqueue_create_buffer[DT](CIFAR10.N_TRAIN * N_CLASSES)
@@ -111,19 +120,28 @@ def main() raises:
     ctx.synchronize()
 
     var train_x = TileTensor(train_x_dev, row_major[CIFAR10.N_TRAIN, IN_DIM]())
-    var train_y = TileTensor(train_y_dev, row_major[CIFAR10.N_TRAIN, N_CLASSES]())
+    var train_y = TileTensor(
+        train_y_dev, row_major[CIFAR10.N_TRAIN, N_CLASSES]()
+    )
     var test_x = TileTensor(test_x_dev, row_major[CIFAR10.N_TEST, IN_DIM]())
 
     # The trainer handles shuffling, per-epoch CIFAR crop+flip augmentation,
     # the BatchNorm train/eval toggle, the LR schedule (5-epoch warmup then
     # cosine decay to 1% of base), and per-epoch top-1 eval internally.
     var result = trainer.train_gpu[
-        CIFAR10.N_TRAIN, CIFAR10.N_TEST,
+        CIFAR10.N_TRAIN,
+        CIFAR10.N_TEST,
         AUGMENTER=CIFAR10CropFlipAugmenter,
-        SCHEDULER = WarmupCosineSchedule[5, 0.01],
+        SCHEDULER=WarmupCosineSchedule[5, 0.01],
     ](
-        train_x, train_y, test_x, test_labels_host,
-        epochs=N_EPOCHS, shuffle=True, rng_seed=UInt64(42), aug_seed=UInt64(1000),
+        train_x,
+        train_y,
+        test_x,
+        ds.test_labels,
+        epochs=N_EPOCHS,
+        shuffle=True,
+        rng_seed=UInt64(42),
+        aug_seed=UInt64(1000),
     )
 
     var best_acc: Float64 = 0.0
@@ -133,7 +151,10 @@ def main() raises:
     print("\nbest test accuracy: " + String(best_acc * 100.0) + "%")
     assert_true(
         best_acc >= TARGET_ACC,
-        "Expected best >= " + String(TARGET_ACC * 100.0) + "%, got "
-        + String(best_acc * 100.0) + "%",
+        "Expected best >= "
+        + String(TARGET_ACC * 100.0)
+        + "%, got "
+        + String(best_acc * 100.0)
+        + "%",
     )
     print("DONE")

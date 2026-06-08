@@ -17,7 +17,6 @@ grad_input invariant (e.g. Linear) are safe when their
 isn't reused as a grad target until that child's backward returns.
 """
 
-from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
@@ -26,7 +25,7 @@ from ..constants import DT
 from ..core import (
     Initializer, AMPPolicy, NoAMP, ParamVisitor, DisplayStep,
 )
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
@@ -59,7 +58,11 @@ struct Sequential[*MODULES: Module](Module):
     var children: Tuple[*Self.MODULES]
 
     # Persistent intermediate buffers (N-1 entries each, lazy-grown).
-    var mid_cpu: List[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    # S8: CPU slabs are owning RAII `List`s (was raw alloc/.free()
+    # UnsafePointer — the manual-free hazard class). Each `List` frees
+    # itself; the borrow view is `mptr(.unsafe_ptr())`. `mid_dev`
+    # (DeviceBuffer) is already RAII.
+    var mid_cpu: List[List[Scalar[DT]]]
     var mid_dev: List[DeviceBuffer[DT]]
     var mid_caps: List[Int]
 
@@ -75,7 +78,7 @@ struct Sequential[*MODULES: Module](Module):
                     Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIMS[0]
                 ), "Sequential: adjacent child dims must match"
         self.children = Tuple[*Self.MODULES]()
-        self.mid_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
+        self.mid_cpu = List[List[Scalar[DT]]]()
         self.mid_dev = List[DeviceBuffer[DT]]()
         self.mid_caps = List[Int]()
         self.ts = TargetStorage.make_uninit()
@@ -89,13 +92,12 @@ struct Sequential[*MODULES: Module](Module):
                     Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIMS[0]
                 ), "Sequential: adjacent child dims must match"
         self.children = Tuple(*children^)
-        self.mid_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
+        self.mid_cpu = List[List[Scalar[DT]]]()
         self.mid_dev = List[DeviceBuffer[DT]]()
         self.mid_caps = List[Int]()
         comptime if Self.N >= 2:
             for _ in range(Self.N - 1):
-                var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](1)
-                self.mid_cpu.append(p)
+                self.mid_cpu.append(List[Scalar[DT]]())
                 self.mid_caps.append(0)
         self.ts = TargetStorage.make_cpu()
 
@@ -108,7 +110,7 @@ struct Sequential[*MODULES: Module](Module):
                     Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIMS[0]
                 ), "Sequential: adjacent child dims must match"
         self.children = Tuple(*children^)
-        self.mid_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
+        self.mid_cpu = List[List[Scalar[DT]]]()
         self.mid_dev = List[DeviceBuffer[DT]]()
         self.mid_caps = List[Int]()
         comptime if Self.N >= 2:
@@ -136,8 +138,7 @@ struct Sequential[*MODULES: Module](Module):
         comptime if target == "cpu":
             comptime if Self.N >= 2:
                 for _ in range(Self.N - 1):
-                    var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](1)
-                    s.mid_cpu.append(p)
+                    s.mid_cpu.append(List[Scalar[DT]]())
                     s.mid_caps.append(0)
             s.ts = TargetStorage.make_cpu()
         else:
@@ -149,16 +150,11 @@ struct Sequential[*MODULES: Module](Module):
             s.ts = TargetStorage.make_gpu(ctx_v)
         return s^
 
-    def __del__(deinit self):
-        for p in self.mid_cpu:
-            p.free()
-
     # ----- Lazy-grow helpers ----------------------------------------------
 
     def _ensure_mid_cpu[i: Int](mut self, needed: Int):
         if self.mid_caps[i] < needed:
-            self.mid_cpu[i].free()
-            self.mid_cpu[i] = alloc[Scalar[DT]](needed)
+            self.mid_cpu[i] = List[Scalar[DT]](length=needed, fill=Scalar[DT](0))
             self.mid_caps[i] = needed
 
     def _ensure_mid_gpu[i: Int](mut self, needed: Int) raises:
@@ -297,20 +293,20 @@ def _forward_cpu[
     comptime for i in range(N):
         comptime if i == 0:
             var out_mid = TileTensor(
-                seq.mid_cpu[0], row_major[BATCH, MODULES[0].OUT_DIM](),
+                mptr(seq.mid_cpu[0].unsafe_ptr()), row_major[BATCH, MODULES[0].OUT_DIM](),
             )
             seq.children[0].forward[target, BATCH, POLICY=POLICY](input, output=out_mid)
         elif i == N - 1:
             var in_mid = TileTensor(
-                seq.mid_cpu[N - 2], row_major[BATCH, MODULES[N - 1].IN_DIMS[0]](),
+                mptr(seq.mid_cpu[N - 2].unsafe_ptr()), row_major[BATCH, MODULES[N - 1].IN_DIMS[0]](),
             )
             seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output=output)
         else:
             var in_mid  = TileTensor(
-                seq.mid_cpu[i - 1], row_major[BATCH, MODULES[i].IN_DIMS[0]](),
+                mptr(seq.mid_cpu[i - 1].unsafe_ptr()), row_major[BATCH, MODULES[i].IN_DIMS[0]](),
             )
             var out_mid = TileTensor(
-                seq.mid_cpu[i], row_major[BATCH, MODULES[i].OUT_DIM](),
+                mptr(seq.mid_cpu[i].unsafe_ptr()), row_major[BATCH, MODULES[i].OUT_DIM](),
             )
             seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output=out_mid)
 
@@ -381,7 +377,7 @@ def _backward_cpu[
         comptime i = N - 1 - j
         comptime if i == N - 1:
             var out_grad = TileTensor(
-                seq.mid_cpu[N - 2], row_major[BATCH, MODULES[N - 1].IN_DIMS[0]](),
+                mptr(seq.mid_cpu[N - 2].unsafe_ptr()), row_major[BATCH, MODULES[N - 1].IN_DIMS[0]](),
             )
             seq.children[N - 1].vjp_param_grads[
                 target, BATCH, POLICY=POLICY, mode=mode,
@@ -391,7 +387,7 @@ def _backward_cpu[
             ](grad_output, out_grad)
         elif i == 0:
             var in_grad = TileTensor(
-                seq.mid_cpu[0], row_major[BATCH, MODULES[0].OUT_DIM](),
+                mptr(seq.mid_cpu[0].unsafe_ptr()), row_major[BATCH, MODULES[0].OUT_DIM](),
             )
             seq.children[0].vjp_param_grads[
                 target, BATCH, POLICY=POLICY, mode=mode,
@@ -401,10 +397,10 @@ def _backward_cpu[
             ](in_grad, grad_input)
         else:
             var in_grad  = TileTensor(
-                seq.mid_cpu[i], row_major[BATCH, MODULES[i].OUT_DIM](),
+                mptr(seq.mid_cpu[i].unsafe_ptr()), row_major[BATCH, MODULES[i].OUT_DIM](),
             )
             var out_grad = TileTensor(
-                seq.mid_cpu[i - 1], row_major[BATCH, MODULES[i].IN_DIMS[0]](),
+                mptr(seq.mid_cpu[i - 1].unsafe_ptr()), row_major[BATCH, MODULES[i].IN_DIMS[0]](),
             )
             seq.children[i].vjp_param_grads[
                 target, BATCH, POLICY=POLICY, mode=mode,

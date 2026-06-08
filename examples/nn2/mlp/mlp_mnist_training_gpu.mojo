@@ -1,4 +1,4 @@
-"""nn2 MLP on MNIST (GPU).
+"""MLP on MNIST (GPU).
 
 Port of `examples/nn/mlp/mlp_mnist_training_gpu.mojo` to nn2.
 
@@ -45,41 +45,39 @@ def main() raises:
     var ctx = DeviceContext()
 
     print("initializing network on GPU...")
-    var net = Sequential(
-        Linear[IN_DIM, H1].make["gpu", INIT=Kaiming](ctx),
-        ReLU[H1].make["gpu", INIT=Kaiming](ctx),
-        Linear[H1, H2].make["gpu", INIT=Kaiming](ctx),
-        ReLU[H2].make["gpu", INIT=Kaiming](ctx),
-        Linear[H2, N_CLASSES].make["gpu", INIT=Kaiming](ctx),
-        ctx=ctx,
-    )
-    var loss_fn = CrossEntropyLoss[N_CLASSES].make["gpu"](ctx)
-    var optim = Adam.make["gpu", M=type_of(net)](net, ctx)
-    optim.lr = LR
+    comptime Net = Sequential[
+        Linear[IN_DIM, H1],
+        ReLU[H1],
+        Linear[H1, H2],
+        ReLU[H2],
+        Linear[H2, N_CLASSES],
+    ]
 
     var trainer = Trainer[
-        type_of(net), type_of(optim), type_of(loss_fn), BATCH, target="gpu",
-    ].make_from(net^, optim^, loss_fn^, ctx)
+        Net,
+        Adam,
+        CrossEntropyLoss[N_CLASSES],
+        BATCH,
+        target="gpu",
+    ].make[INIT=Kaiming](ctx)
 
     print("uploading dataset to GPU...")
-    var train_x_host = ctx.enqueue_create_host_buffer[DT](MNIST.N_TRAIN * IN_DIM)
-    var train_y_host = ctx.enqueue_create_host_buffer[DT](MNIST.N_TRAIN * N_CLASSES)
+    var train_x_host = ctx.enqueue_create_host_buffer[DT](
+        MNIST.N_TRAIN * IN_DIM
+    )
+    var train_y_host = ctx.enqueue_create_host_buffer[DT](
+        MNIST.N_TRAIN * N_CLASSES
+    )
     var test_x_host = ctx.enqueue_create_host_buffer[DT](MNIST.N_TEST * IN_DIM)
     ctx.synchronize()
     for i in range(MNIST.N_TRAIN * IN_DIM):
-        train_x_host.unsafe_ptr()[i] = ds.train_images[i]
+        train_x_host[i] = ds.train_images[i]
     for i in range(MNIST.N_TRAIN * N_CLASSES):
-        train_y_host.unsafe_ptr()[i] = 0.0
+        train_y_host[i] = 0.0
     for i in range(MNIST.N_TRAIN):
-        train_y_host.unsafe_ptr()[i * N_CLASSES + Int(ds.train_labels[i])] = 1.0
+        train_y_host[i * N_CLASSES + Int(ds.train_labels[i])] = 1.0
     for i in range(MNIST.N_TEST * IN_DIM):
-        test_x_host.unsafe_ptr()[i] = ds.test_images[i]
-
-    var test_labels_host: UnsafePointer[Int32, MutAnyOrigin] = (
-        ctx.enqueue_create_host_buffer[DType.int32](MNIST.N_TEST).unsafe_ptr()
-    )
-    for i in range(MNIST.N_TEST):
-        test_labels_host[i] = Int32(ds.test_labels[i])
+        test_x_host[i] = ds.test_images[i]
 
     var train_x_dev = ctx.enqueue_create_buffer[DT](MNIST.N_TRAIN * IN_DIM)
     var train_y_dev = ctx.enqueue_create_buffer[DT](MNIST.N_TRAIN * N_CLASSES)
@@ -95,8 +93,12 @@ def main() raises:
 
     var t0 = perf_counter_ns()
     var result = trainer.train_gpu[MNIST.N_TRAIN, MNIST.N_TEST](
-        train_x, train_y, test_x, test_labels_host,
-        epochs=N_EPOCHS, shuffle=True,
+        train_x,
+        train_y,
+        test_x,
+        ds.test_labels,
+        epochs=N_EPOCHS,
+        shuffle=True,
     )
     var total_s = Float64(perf_counter_ns() - t0) / 1e9
 
@@ -108,7 +110,10 @@ def main() raises:
     print("total wall time: " + String(total_s) + "s")
     assert_true(
         best_acc >= TARGET_ACC,
-        "Expected best >= " + String(TARGET_ACC * 100.0) + "%, got "
-        + String(best_acc * 100.0) + "%",
+        "Expected best >= "
+        + String(TARGET_ACC * 100.0)
+        + "%, got "
+        + String(best_acc * 100.0)
+        + "%",
     )
     print("DONE")

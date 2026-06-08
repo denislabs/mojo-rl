@@ -1,4 +1,4 @@
-"""nn2 MLP on MNIST (CPU).
+"""MLP on MNIST (CPU).
 
 Port of `examples/nn/mlp/mlp_mnist_training_cpu.mojo` to the nn2 framework.
 
@@ -44,30 +44,25 @@ def main() raises:
     comptime N_BATCHES_TEST = 10000 // BATCH
 
     print("initializing network...")
-    var net = Sequential(
-        Linear[IN_DIM, H1].make["cpu", INIT=Kaiming](),
-        ReLU[H1].make["cpu", INIT=Kaiming](),
-        Linear[H1, H2].make["cpu", INIT=Kaiming](),
-        ReLU[H2].make["cpu", INIT=Kaiming](),
-        Linear[H2, N_CLASSES].make["cpu", INIT=Kaiming](),
-    )
-    var loss_fn = CrossEntropyLoss[N_CLASSES].make["cpu"]()
-    var optim = Adam.make["cpu", M=type_of(net)](net)
-    optim.lr = LR
+    comptime Net = Sequential[
+        Linear[IN_DIM, H1],
+        ReLU[H1],
+        Linear[H1, H2],
+        ReLU[H2],
+        Linear[H2, N_CLASSES],
+    ]
 
     var trainer = Trainer[
-        type_of(net), type_of(optim), type_of(loss_fn), BATCH, target="cpu",
-    ].make_from(net^, optim^, loss_fn^)
+        Net,
+        Adam,
+        CrossEntropyLoss[N_CLASSES],
+        BATCH,
+        target="cpu",
+    ].make[INIT=Kaiming]()
 
-    var in_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
-        BATCH * IN_DIM
-    )
-    var tgt_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
-        BATCH * N_CLASSES
-    )
-    var out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
-        BATCH * N_CLASSES
-    )
+    var inputs = List[Scalar[DT]](capacity=BATCH * IN_DIM)
+    var targets = List[Scalar[DT]](capacity=BATCH * N_CLASSES)
+    var outputs = List[Scalar[DT]](capacity=BATCH * N_CLASSES)
 
     var final_acc: Float64 = 0.0
     for epoch in range(N_EPOCHS):
@@ -77,13 +72,13 @@ def main() raises:
             for b in range(BATCH):
                 var sample_idx = batch_idx * BATCH + b
                 for px in range(IN_DIM):
-                    in_buf[b * IN_DIM + px] = ds.train_images[
+                    inputs[b * IN_DIM + px] = ds.train_images[
                         sample_idx * IN_DIM + px
                     ]
                 for c in range(N_CLASSES):
-                    tgt_buf[b * N_CLASSES + c] = 0.0
-                tgt_buf[b * N_CLASSES + Int(ds.train_labels[sample_idx])] = 1.0
-            epoch_loss += trainer.train_step(in_buf, tgt_buf)
+                    targets[b * N_CLASSES + c] = 0.0
+                targets[b * N_CLASSES + Int(ds.train_labels[sample_idx])] = 1.0
+            epoch_loss += trainer.train_step(inputs, targets)
         var t_train = perf_counter_ns()
 
         var n_correct: Int = 0
@@ -91,15 +86,15 @@ def main() raises:
             for b in range(BATCH):
                 var sample_idx = batch_idx * BATCH + b
                 for px in range(IN_DIM):
-                    in_buf[b * IN_DIM + px] = ds.test_images[
+                    inputs[b * IN_DIM + px] = ds.test_images[
                         sample_idx * IN_DIM + px
                     ]
-            trainer.predict(in_buf, out_buf)
+            trainer.predict(inputs, outputs)
             for b in range(BATCH):
                 var best_c: Int = 0
-                var best_v: Scalar[DT] = out_buf[b * N_CLASSES + 0]
+                var best_v: Scalar[DT] = outputs[b * N_CLASSES + 0]
                 for c in range(1, N_CLASSES):
-                    var v = out_buf[b * N_CLASSES + c]
+                    var v = outputs[b * N_CLASSES + c]
                     if v > best_v:
                         best_v = v
                         best_c = c
@@ -109,17 +104,25 @@ def main() raises:
         var acc = Float64(n_correct) / 10000.0
         final_acc = acc
         print(
-            "epoch " + String(epoch)
-            + " | train_loss=" + String(epoch_loss / Scalar[DT](N_BATCHES_TRAIN))
-            + " | test_acc=" + String(acc * 100.0) + "%"
-            + " | train=" + String(Float64(t_train - t0) / 1e9) + "s"
+            "epoch "
+            + String(epoch)
+            + " | train_loss="
+            + String(epoch_loss / Scalar[DT](N_BATCHES_TRAIN))
+            + " | test_acc="
+            + String(acc * 100.0)
+            + "%"
+            + " | train="
+            + String(Float64(t_train - t0) / 1e9)
+            + "s"
         )
 
     print("\nfinal test accuracy: " + String(final_acc * 100.0) + "%")
     assert_true(
         final_acc >= TARGET_ACC,
-        "Expected >= " + String(TARGET_ACC * 100.0) + "%, got "
-        + String(final_acc * 100.0) + "%",
+        "Expected >= "
+        + String(TARGET_ACC * 100.0)
+        + "%, got "
+        + String(final_acc * 100.0)
+        + "%",
     )
-    in_buf.free(); tgt_buf.free(); out_buf.free()
     print("DONE")

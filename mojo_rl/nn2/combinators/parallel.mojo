@@ -18,7 +18,6 @@ Scratch layout (4 slabs per side, lazy-grown to BATCH):
   - `gi_a`/`gi_b` (BATCH×IN_DIM): each branch's grad_input
 """
 
-from std.memory import alloc
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
@@ -88,10 +87,13 @@ struct Parallel[A: Module, B: Module](Module):
     var branch_a: Self.A
     var branch_b: Self.B
 
-    var out_a_cpu: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var out_b_cpu: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var gi_a_cpu:  UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var gi_b_cpu:  UnsafePointer[Scalar[DT], MutAnyOrigin]
+    # S8: owning RAII slabs (was raw alloc/.free() UnsafePointer — the
+    # manual-free hazard class). `List` frees itself; the borrow view is
+    # `mptr(.unsafe_ptr())`. The device side already uses RAII DeviceBuffer.
+    var out_a_cpu: List[Scalar[DT]]
+    var out_b_cpu: List[Scalar[DT]]
+    var gi_a_cpu:  List[Scalar[DT]]
+    var gi_b_cpu:  List[Scalar[DT]]
 
     var out_a_dev: Optional[DeviceBuffer[DT]]
     var out_b_dev: Optional[DeviceBuffer[DT]]
@@ -107,10 +109,10 @@ struct Parallel[A: Module, B: Module](Module):
         ), "Parallel requires A.IN_DIMS[0] == B.IN_DIMS[0]"
         self.branch_a = Self.A()
         self.branch_b = Self.B()
-        self.out_a_cpu = alloc[Scalar[DT]](1)
-        self.out_b_cpu = alloc[Scalar[DT]](1)
-        self.gi_a_cpu  = alloc[Scalar[DT]](1)
-        self.gi_b_cpu  = alloc[Scalar[DT]](1)
+        self.out_a_cpu = List[Scalar[DT]]()
+        self.out_b_cpu = List[Scalar[DT]]()
+        self.gi_a_cpu  = List[Scalar[DT]]()
+        self.gi_b_cpu  = List[Scalar[DT]]()
         self.out_a_dev = None
         self.out_b_dev = None
         self.gi_a_dev  = None
@@ -142,22 +144,27 @@ struct Parallel[A: Module, B: Module](Module):
             p.ts = TargetStorage.make_gpu(ctx_v)
         return p^
 
-    def __del__(deinit self):
-        self.out_a_cpu.free()
-        self.out_b_cpu.free()
-        self.gi_a_cpu.free()
-        self.gi_b_cpu.free()
+    # No __del__: `List` cpu slabs + `Optional[DeviceBuffer]` dev slabs
+    # are RAII (self-freeing) — the compiler-synthesized destructor handles
+    # them, so the former manual `.free()` loop (and its double-free hazard)
+    # is gone.
 
     def _ensure_scratch_cpu(mut self, batch: Int):
+        # Grow by reassigning a fresh List (old one auto-frees) — the S5
+        # Cache idiom; no manual free/realloc.
         if self.scratch_n_batch < batch:
-            self.out_a_cpu.free()
-            self.out_b_cpu.free()
-            self.gi_a_cpu.free()
-            self.gi_b_cpu.free()
-            self.out_a_cpu = alloc[Scalar[DT]](batch * Self.OUT_A)
-            self.out_b_cpu = alloc[Scalar[DT]](batch * Self.OUT_B)
-            self.gi_a_cpu  = alloc[Scalar[DT]](batch * Self.IN_DIMS[0])
-            self.gi_b_cpu  = alloc[Scalar[DT]](batch * Self.IN_DIMS[0])
+            self.out_a_cpu = List[Scalar[DT]](
+                length=batch * Self.OUT_A, fill=Scalar[DT](0)
+            )
+            self.out_b_cpu = List[Scalar[DT]](
+                length=batch * Self.OUT_B, fill=Scalar[DT](0)
+            )
+            self.gi_a_cpu = List[Scalar[DT]](
+                length=batch * Self.IN_DIMS[0], fill=Scalar[DT](0)
+            )
+            self.gi_b_cpu = List[Scalar[DT]](
+                length=batch * Self.IN_DIMS[0], fill=Scalar[DT](0)
+            )
             self.scratch_n_batch = batch
 
     def _ensure_scratch_gpu(mut self, batch: Int) raises:
@@ -189,8 +196,8 @@ struct Parallel[A: Module, B: Module](Module):
 
         comptime if target == "cpu":
             self._ensure_scratch_cpu(BATCH)
-            var out_a = TileTensor(self.out_a_cpu, row_major[BATCH, Self.OUT_A]())
-            var out_b = TileTensor(self.out_b_cpu, row_major[BATCH, Self.OUT_B]())
+            var out_a = TileTensor(mptr(self.out_a_cpu.unsafe_ptr()), row_major[BATCH, Self.OUT_A]())
+            var out_b = TileTensor(mptr(self.out_b_cpu.unsafe_ptr()), row_major[BATCH, Self.OUT_B]())
             self.branch_a.forward[target, BATCH, POLICY=POLICY](input, output=out_a)
             self.branch_b.forward[target, BATCH, POLICY=POLICY](input, output=out_b)
             for b in range(BATCH):
@@ -244,23 +251,23 @@ struct Parallel[A: Module, B: Module](Module):
 
         comptime if target == "cpu":
             self._ensure_scratch_cpu(BATCH)
-            var go_a = TileTensor(self.out_a_cpu, row_major[BATCH, Self.OUT_A]())
-            var go_b = TileTensor(self.out_b_cpu, row_major[BATCH, Self.OUT_B]())
+            var go_a = TileTensor(mptr(self.out_a_cpu.unsafe_ptr()), row_major[BATCH, Self.OUT_A]())
+            var go_b = TileTensor(mptr(self.out_b_cpu.unsafe_ptr()), row_major[BATCH, Self.OUT_B]())
             for b in range(BATCH):
                 for j in range(Self.OUT_A):
                     go_a[b, j] = grad_output_v[b, j]
                 for j in range(Self.OUT_B):
                     go_b[b, j] = grad_output_v[b, Self.OUT_A + j]
-            var gi_a = TileTensor(self.gi_a_cpu, row_major[BATCH, Self.IN_DIMS[0]]())
-            var gi_b = TileTensor(self.gi_b_cpu, row_major[BATCH, Self.IN_DIMS[0]]())
+            var gi_a = TileTensor(mptr(self.gi_a_cpu.unsafe_ptr()), row_major[BATCH, Self.IN_DIMS[0]]())
+            var gi_b = TileTensor(mptr(self.gi_b_cpu.unsafe_ptr()), row_major[BATCH, Self.IN_DIMS[0]]())
             self.branch_a.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](go_a, gi_a)
             self.branch_b.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](go_b, gi_b)
-            var ap = self.gi_a_cpu
-            var bp = self.gi_b_cpu
+            var ap = mptr(self.gi_a_cpu.unsafe_ptr())
+            var bp = mptr(self.gi_b_cpu.unsafe_ptr())
             var gp = mptr(grad_input_v.ptr)
             comptime N = BATCH * Self.IN_DIMS[0]
             var k = 0
