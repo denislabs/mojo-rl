@@ -27,7 +27,7 @@ from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ...nn2.constants import DT
-from .pixel_convert import u8_to_fp32_norm
+from .pixel_convert import u8_to_fp32_norm, u8_hwc_to_chw_norm
 from mojo_rl.core.offline_buffer import OfflineBuffer
 from mojo_rl.envs.arcade_games.pong.offline_buffer import PongOfflineBuffer
 
@@ -39,7 +39,13 @@ struct WindowSource[
     B: Int,
     target: StaticString = "cpu",
     BUF: OfflineBuffer = PongOfflineBuffer,
+    C: Int = 0,
+    FRAME: Int = 0,
 ](Movable & ImplicitlyDestructible):
+    # `C`/`FRAME` are the per-frame channel count + side length, required ONLY
+    # when `BUF.INPUT_LAYOUT_HWC` (e.g. PushT 3×224×224): then conversion is
+    # `u8_hwc_to_chw_norm` (permute HWC→CHW + ÷255). CHW buffers (Pong) leave
+    # them 0 and use the layout-preserving `u8_to_fp32_norm`.
     comptime NPIX = Self.B * Self.T * Self.IMG_DIM
     comptime NACT = Self.B * Self.T * Self.ACT
 
@@ -55,11 +61,14 @@ struct WindowSource[
     var ctx: Optional[DeviceContext]
 
     def __init__(out self, var buf: Self.BUF):
-        comptime assert not Self.BUF.INPUT_LAYOUT_HWC, (
-            "WindowSource: only CHW buffers (INPUT_LAYOUT_HWC=False) are"
-            " supported — the in-place u8_to_fp32_norm does no permute. HWC"
-            " buffers (e.g. PushT) need the u8_hwc_to_chw_norm branch (TODO)."
-        )
+        comptime if Self.BUF.INPUT_LAYOUT_HWC:
+            comptime assert (
+                Self.C > 0
+                and Self.C * Self.FRAME * Self.FRAME == Self.IMG_DIM
+            ), (
+                "WindowSource: HWC buffer (INPUT_LAYOUT_HWC=True) needs C/FRAME"
+                " params with C*FRAME*FRAME == IMG_DIM (e.g. C=3, FRAME=224)."
+            )
         self.buf = buf^
         self.pix_u8_host = alloc[Scalar[DType.uint8]](Self.NPIX)
         self.act_host = alloc[Scalar[DT]](Self.NACT)
@@ -98,22 +107,32 @@ struct WindowSource[
             Self.B, Self.T, self.pix_u8_host, self.act_host
         )
         comptime if Self.target == "cpu":
-            u8_to_fp32_norm["cpu", Self.NPIX](
-                self.pix_u8_host, self.pix_fp32_host
-            )
+            comptime if Self.BUF.INPUT_LAYOUT_HWC:
+                u8_hwc_to_chw_norm[
+                    "cpu", Self.C, Self.FRAME, Self.FRAME, Self.B * Self.T
+                ](self.pix_u8_host, self.pix_fp32_host)
+            else:
+                u8_to_fp32_norm["cpu", Self.NPIX](
+                    self.pix_u8_host, self.pix_fp32_host
+                )
         else:
             var c = self.ctx.value()
             c.enqueue_copy(self.pix_u8_dev.value(), self.pix_u8_host)
             c.enqueue_copy(self.act_dev.value(), self.act_host)
-            u8_to_fp32_norm["gpu", Self.NPIX](
-                rebind[UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]](
-                    self.pix_u8_dev.value().unsafe_ptr()
-                ),
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.pix_fp32_dev.value().unsafe_ptr()
-                ),
-                ctx=self.ctx,
+            var src_u8 = rebind[
+                UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]
+            ](self.pix_u8_dev.value().unsafe_ptr())
+            var dst_fp32 = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.pix_fp32_dev.value().unsafe_ptr()
             )
+            comptime if Self.BUF.INPUT_LAYOUT_HWC:
+                u8_hwc_to_chw_norm[
+                    "gpu", Self.C, Self.FRAME, Self.FRAME, Self.B * Self.T
+                ](src_u8, dst_fp32, ctx=self.ctx)
+            else:
+                u8_to_fp32_norm["gpu", Self.NPIX](
+                    src_u8, dst_fp32, ctx=self.ctx
+                )
 
     def pix_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         comptime if Self.target == "cpu":
