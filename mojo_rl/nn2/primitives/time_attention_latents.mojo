@@ -34,7 +34,7 @@ from ..core import Initializer, AMPPolicy, NoAMP, Cache, ParamVisitor
 from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
-from ..composites import MultiHeadAttention
+from ..models.transformer import MultiHeadAttention
 
 
 # Gather full (B·T, S·D) latent tokens → packed (B·L, T·D); same index map is

@@ -14,7 +14,7 @@ from layout import TileTensor, row_major
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.combinators.repeat import Repeat
-from mojo_rl.nn2.composites import ResBlockConv2DBN
+from mojo_rl.nn2.models.resnet import ResBlockConv2DBN
 from mojo_rl.nn2.initializer import Xavier
 
 

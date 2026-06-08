@@ -11,7 +11,7 @@ from layout import TileTensor, row_major
 
 from mojo_rl.nn2.datasets import CIFAR10
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.composites import Conv2DBatchNormReLU
+from mojo_rl.nn2.models.conv import Conv2DBatchNormReLU
 from mojo_rl.nn2.primitives.flatten import Flatten
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.combinators import Sequential

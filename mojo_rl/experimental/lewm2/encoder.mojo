@@ -18,7 +18,8 @@ architecture (docs/LEWM_PORT_PLAN.md §3) on nn2.
 """
 
 from ...nn2.combinators import Sequential, Repeat, Tokenwise, RepeatConditional
-from ...nn2.composites import PatchEmbed, TransformerBlock
+from ...nn2.models.vit import PatchEmbed
+from ...nn2.models.transformer import TransformerBlock
 from ...nn2.primitives.linear import Linear
 from ...nn2.primitives.linear_swish import LinearSwish
 from ...nn2.primitives.batch_norm_1d import BatchNorm1D

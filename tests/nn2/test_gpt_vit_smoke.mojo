@@ -14,7 +14,8 @@ from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.initializer import Kaiming
-from mojo_rl.nn2.composites import GPT, ViT
+from mojo_rl.nn2.models.gpt import GPT
+from mojo_rl.nn2.models.vit import ViT
 
 
 def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:

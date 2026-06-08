@@ -39,7 +39,8 @@ from mojo_rl.nn2.combinators.repeat import Repeat
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.linear_relu import LinearReLU
 from mojo_rl.nn2.primitives.flatten import Flatten
-from mojo_rl.nn2.composites import Conv2DBatchNormReLU, ResBlockConv2DBN
+from mojo_rl.nn2.models.conv import Conv2DBatchNormReLU
+from mojo_rl.nn2.models.resnet import ResBlockConv2DBN
 
 
 # ──────────────────────────────────────────────────────────────────────

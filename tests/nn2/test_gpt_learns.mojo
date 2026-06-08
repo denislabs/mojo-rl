@@ -18,7 +18,7 @@ from std.random import seed
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.composites import GPT
+from mojo_rl.nn2.models.gpt import GPT
 from mojo_rl.nn2.loss import SequenceCrossEntropyLoss
 from mojo_rl.nn2.optimizer import Adam
 from mojo_rl.nn2.training import Trainer

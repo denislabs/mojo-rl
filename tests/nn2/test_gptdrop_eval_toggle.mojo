@@ -22,7 +22,7 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.composites import GPTDrop
+from mojo_rl.nn2.models.gpt import GPTDrop
 from mojo_rl.nn2.initializer import Normal
 
 

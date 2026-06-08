@@ -33,7 +33,7 @@ from ..core.module import Module, typed_view, typed_view_mut
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 from ..combinators import ComputeGraph, InputSlot, Node, Tokenwise
-from ..composites import MultiHeadAttentionXL, TransformerFFN
+from ..models.transformer import MultiHeadAttentionXL, TransformerFFN
 from .silu import SiLU
 from .zero_linear import ZeroLinear
 from .layer_norm_no_affine import LayerNormNoAffine

@@ -16,7 +16,7 @@ from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.initializer import Kaiming
-from mojo_rl.nn2.composites import MultiHeadAttention
+from mojo_rl.nn2.models.transformer import MultiHeadAttention
 
 
 def _mao(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:

@@ -14,7 +14,7 @@ from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.initializer import Kaiming
-from mojo_rl.nn2.composites import TransformerBlock
+from mojo_rl.nn2.models.transformer import TransformerBlock
 
 
 comptime EPS: Float64 = 1e-3

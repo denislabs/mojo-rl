@@ -29,7 +29,7 @@ from layout import TileTensor, row_major
 
 from mojo_rl.nn2.datasets import CIFAR10
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.composites import ViT
+from mojo_rl.nn2.models.vit import ViT
 from mojo_rl.nn2.loss import CrossEntropyLoss
 from mojo_rl.nn2.optimizer import AdamW
 from mojo_rl.nn2.training import Trainer, WarmupCosineSchedule
