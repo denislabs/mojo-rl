@@ -22,6 +22,7 @@ latents in latent space) is the remaining Phase F piece (see plan §2.5).
 
 from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.memory import AddressSpace
 from layout import TileTensor, TensorLayout, row_major
 
 from mojo_rl.nn.constants import dtype           # == nn2 DT (float32)
@@ -167,6 +168,104 @@ def _mean(v: List[Float64]) -> Float64:
     for i in range(len(v)):
         s += v[i]
     return s / Float64(len(v)) if len(v) > 0 else 0.0
+
+
+def lewm2_shuffled_eval[
+    IN_CH: Int, IMG: Int, PATCH: Int, HIDDEN: Int, ENC_HEADS: Int,
+    ENC_LAYERS: Int, EMB: Int, ENC_PROJ_H: Int, ENC_FF_MULT: Int,
+    T: Int, ACT: Int, SMOOTHED: Int, AE_MLP: Int,
+    H: Int, N_PREDS: Int, PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
+    PRED_PROJ_H: Int, SIG_PROJ: Int, SIG_KNOTS: Int,
+    BATCH: Int, target: StaticString,
+](
+    mut trainer: LeWMTrainer[
+        IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
+        ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
+        PRED_FF, DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, BATCH, target,
+    ],
+    pix_t: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, origin=MutAnyOrigin, ...,
+    ],
+    expert_act_host: UnsafePointer[Scalar[DT], MutAnyOrigin],   # (B, T·ACT)
+    n_shuffles: Int = 0,
+    ctx: Optional[DeviceContext] = None,
+    verbose: Bool = True,
+) raises -> Tuple[Float64, Float64, Float64, Float64]:
+    """Teacher-forced action-awareness via the legacy H6 diagnostic — needs
+    NO action sampling, so it works for CONTINUOUS actions (PushT) too.
+    Score = MSE(pred under some actions, tgt = encoded real next latents,
+    fixed). Compare the real (expert) actions against BATCH-shuffled actions
+    (cyclic row shifts, which break the action↔transition correspondence but
+    keep the action distribution). An action-aware model scores expert below
+    shuffled. Returns (expert, shuffled_mean, shuffled_min, frac_shuffled_worse)."""
+    comptime HE = H * EMB
+    comptime ACTIN = T * ACT
+    comptime NP = BATCH * HE
+    var act_host = alloc[Scalar[DT]](BATCH * ACTIN)
+    var pred = alloc[Scalar[DT]](NP)
+    var tgt = alloc[Scalar[DT]](NP)
+    var act_dev: Optional[DeviceBuffer[DT]] = None
+    comptime if target == "gpu":
+        act_dev = ctx.value().enqueue_create_buffer[DT](BATCH * ACTIN)
+
+    # one forward over the fixed pixels + current act_host → MSE(pred, tgt).
+    # Inlined (no closure) to keep `trainer` borrows simple.
+    var scores = List[Float64]()
+    var worse = 0
+    var expert: Float64 = 0.0
+    var ns = n_shuffles if n_shuffles > 0 else BATCH - 1
+    if ns > BATCH - 1:
+        ns = BATCH - 1
+    # round -1 = expert, rounds 0..ns-1 = cyclic shifts by (round+1)
+    for rnd in range(-1, ns):
+        if rnd < 0:
+            for i in range(BATCH * ACTIN):
+                act_host[i] = expert_act_host[i]
+        else:
+            var shift = rnd + 1
+            for b in range(BATCH):
+                var src = ((b + shift) % BATCH) * ACTIN
+                for i in range(ACTIN):
+                    act_host[b * ACTIN + i] = expert_act_host[src + i]
+        comptime if target == "gpu":
+            var c = ctx.value()
+            c.enqueue_copy(act_dev.value(), act_host)
+            var at = TileTensor(
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    act_dev.value().unsafe_ptr()
+                ),
+                row_major[BATCH, ACTIN](),
+            )
+            trainer.forward_into(pix_t, at, pred, tgt)
+        else:
+            var at = TileTensor(act_host, row_major[BATCH, ACTIN]())
+            trainer.forward_into(pix_t, at, pred, tgt)
+        var s = _mse_latent(pred, tgt, NP)
+        if rnd < 0:
+            expert = s
+        else:
+            scores.append(s)
+            if s > expert:
+                worse += 1
+    var shuffled_mean = _mean(scores)
+    var shuffled_min = Float64(1e30)
+    for i in range(len(scores)):
+        if scores[i] < shuffled_min:
+            shuffled_min = scores[i]
+    var frac_worse = Float64(worse) / Float64(ns) if ns > 0 else 0.0
+
+    if verbose:
+        print("   expert        =", expert)
+        print("   shuffled mean =", shuffled_mean, " min=", shuffled_min)
+        print("   expert/shuffled_mean =", expert / shuffled_mean,
+              "  frac_shuffled_worse =", frac_worse)
+        print("   action-aware (expert < shuffled_min):",
+              "yes" if expert < shuffled_min else "no")
+
+    act_host.free(); pred.free(); tgt.free()
+    _ = act_dev^
+    return (expert, shuffled_mean, shuffled_min, frac_worse)
 
 
 def lewm2_action_awareness_eval[
