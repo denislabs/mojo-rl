@@ -60,9 +60,9 @@ def main() raises:
         target="cpu",
     ].make[INIT=Kaiming]()
 
-    var inputs = List[Scalar[DT]]()
-    var targets = List[Scalar[DT]]()
-    var outputs = List[Scalar[DT]]()
+    var inputs = List[Scalar[DT]](length=BATCH * IN_DIM, fill=0.0)
+    var targets = List[Scalar[DT]](length=BATCH * N_CLASSES, fill=0.0)
+    var outputs = List[Scalar[DT]](length=BATCH * N_CLASSES, fill=0.0)
 
     var final_acc: Float64 = 0.0
     for epoch in range(N_EPOCHS):
