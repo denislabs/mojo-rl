@@ -36,6 +36,7 @@ struct AtariState(Copyable, Movable):
     # ========================================================================
     var tia_flags: UInt32  # TIA boolean flags (VBLANK, VSYNC, HMOVE, etc.)
     var collision: UInt16  # 15 collision bits packed
+    var cx_pending: UInt16  # collisions detected this scanline, applied at end-of-line
 
     # Graphics registers
     var grp0: UInt8  # Player 0 graphics
@@ -145,6 +146,7 @@ struct AtariState(Copyable, Movable):
         # TIA
         self.tia_flags = 0
         self.collision = 0
+        self.cx_pending = 0
         self.grp0 = 0
         self.grp1 = 0
         self.grp0_old = 0

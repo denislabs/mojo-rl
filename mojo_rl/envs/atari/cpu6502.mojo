@@ -949,6 +949,102 @@ def run_frame(
     state.frame_number += 1
 
 
+def _run_scanline_render(
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+    overflow: Int,
+    frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
+    render_row: Int,
+    palette: InlineArray[UInt32, 256],
+) -> Int:
+    """Run one scanline, rendering pixels beam-accurately as the CPU executes.
+
+    The TIA "races the beam": graphics registers (PF, GRP, ENABL, positions,
+    colors) are updated mid-scanline and only affect pixels drawn after the
+    write. This catches the beam up to the CPU's current clock before each
+    instruction, so every pixel is drawn with the TIA state active at that beam
+    position — fixing mid-line artifacts (Breakout brick-row seams, smeared
+    ball/missile objects) that a per-scanline snapshot can't represent.
+
+    Per-pixel VBLANK blanking is handled in render_collide_pixel, so this draws
+    every line into `render_row`; the caller decides (from end-of-line VBLANK)
+    whether the line counts as visible and advances the row. `render_row` < 0
+    or >= FRAME_HEIGHT updates collision only (no pixel output). Returns total
+    CPU cycles consumed.
+    """
+    from .frame_render import render_pf_collide_pixel, overlay_sprites_pixel
+    from .flags import FRAME_WIDTH, HBLANK_CLOCKS
+
+    # A TIA write happens a few CPU cycles into the instruction (the store
+    # cycle), not at instruction start where state.clock is sampled. Delay the
+    # beam catch-up by this many TIA clocks so a write lands at the correct
+    # pixel (e.g. a playfield rewrite at the pixel-80 repeat boundary).
+    comptime BEAM_WRITE_DELAY: Int = 8
+
+    var line_cycles: Int = overflow
+    var next_pixel: Int = 0
+
+    # Collisions for this scanline are detected live (pass 1) into cx_pending
+    # and applied to state.collision at end-of-line, so a mid-line CXCLR can't
+    # wipe them before the game reads them.
+    state.cx_pending = 0
+
+    # WSYNC carried over from the previous scanline.
+    if state.wsync:
+        state.wsync = False
+        if line_cycles < CPU_CLOCKS_PER_LINE:
+            riot_update_timer(state, UInt32(CPU_CLOCKS_PER_LINE - line_cycles))
+            line_cycles = CPU_CLOCKS_PER_LINE
+
+    while line_cycles < CPU_CLOCKS_PER_LINE:
+        # Beam clock at instruction start (drives RESP/PF/etc. write timing).
+        state.clock = UInt16(line_cycles * 3)
+
+        # Pass 1: catch the playfield up to the current beam position using
+        # live PF, so mid-line PF rewrites land at the correct pixel.
+        var target = Int(state.clock) - HBLANK_CLOCKS + BEAM_WRITE_DELAY
+        if target > FRAME_WIDTH:
+            target = FRAME_WIDTH
+        while next_pixel < target:
+            render_pf_collide_pixel(
+                state, render_row, next_pixel, frame_buf, palette
+            )
+            next_pixel += 1
+
+        var cycles = Int(execute_one(state, rom, rom_size))
+        riot_update_timer(state, UInt32(cycles))
+        line_cycles += cycles
+
+        # WSYNC: halt CPU until end of scanline.
+        if state.wsync:
+            state.wsync = False
+            if line_cycles < CPU_CLOCKS_PER_LINE:
+                riot_update_timer(
+                    state, UInt32(CPU_CLOCKS_PER_LINE - line_cycles)
+                )
+                line_cycles = CPU_CLOCKS_PER_LINE
+            elif line_cycles > CPU_CLOCKS_PER_LINE:
+                state.wsync = True
+
+    # Flush any remaining playfield pixels using the final state.
+    while next_pixel < FRAME_WIDTH:
+        render_pf_collide_pixel(
+            state, render_row, next_pixel, frame_buf, palette
+        )
+        next_pixel += 1
+
+    # Pass 2: overlay sprites + ball from the settled end-of-line state
+    # (avoids mid-line sprite-repositioning edge clipping).
+    for x in range(FRAME_WIDTH):
+        overlay_sprites_pixel(state, render_row, x, frame_buf, palette)
+
+    # Apply this scanline's detected collisions (deferred from pass 1).
+    state.collision = state.collision | state.cx_pending
+
+    return line_cycles
+
+
 def run_frame_with_video(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
@@ -974,14 +1070,16 @@ def run_frame_with_video(
         rom_size: ROM size in bytes.
         frame_buf: Output BGRA buffer (160×210×4 = 134400 bytes).
     """
-    from .frame_render import render_scanline_with_collision_bgra
     from .flags import TIA_VBLANK, TIA_VSYNC, FRAME_HEIGHT as FH
+    from .palette import NTSC_PALETTE
 
     # Render exactly one VSYNC-aligned frame per call. A fixed 262-scanline
     # loop drifts against the ROM's actual frame length, splitting one game
     # frame across two calls (the displayed buffer becomes a mix of two
     # frames → tearing/flicker). Instead, run scanlines until the VSYNC that
     # begins the *next* frame, so each call emits one complete, aligned frame.
+    # Each scanline is rendered beam-accurately as the CPU executes it.
+    var palette = materialize[NTSC_PALETTE]()
     var visible_line = 0
     var overflow = Int(state.cpu_cycles)  # Carry from previous frame
     var rendered_any = False
@@ -997,7 +1095,12 @@ def run_frame_with_video(
         ):
             state.paddle_charge += 1
 
-        var total = _run_scanline(state, rom, rom_size, overflow)
+        # Candidate frame_buf row for this scanline (-1 once past the visible
+        # area, so the renderer still updates collision without writing pixels).
+        var render_row = visible_line if visible_line < FH else -1
+        var total = _run_scanline_render(
+            state, rom, rom_size, overflow, frame_buf, render_row, palette
+        )
         overflow = total - CPU_CLOCKS_PER_LINE
 
         # Detect the VSYNC rising edge (start of a frame).
@@ -1009,9 +1112,9 @@ def run_frame_with_video(
                 break  # reached the start of the next frame — done
             visible_line = 0  # anchor our frame at this VSYNC
 
-        # Combined render + collision in one pass (halves mask computations).
+        # Decide visibility from end-of-line VBLANK — stable across frames
+        # (a clock-68 check flips on the transition line, jittering the image).
         if (state.tia_flags & TIA_VBLANK) == 0 and visible_line < FH:
-            render_scanline_with_collision_bgra(state, visible_line, frame_buf)
             visible_line += 1
             rendered_any = True
 

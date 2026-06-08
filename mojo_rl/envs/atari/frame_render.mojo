@@ -116,6 +116,166 @@ def _write_pixel_bgra(
 
 
 @always_inline
+def render_pf_collide_pixel(
+    mut state: AtariState,
+    render_row: Int,
+    pixel: Int,
+    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    palette: InlineArray[UInt32, 256],
+):
+    """Pass 1 (beam-accurate): render playfield + background AND update collision.
+
+    Called from the scanline loop while the CPU executes, so LIVE registers
+    hold the value active at this beam position. Two things must be
+    beam-accurate:
+      - Playfield: mid-line PF rewrites (Breakout brick rows, Pong score) land
+        at the correct pixel (no pixel-80 hack).
+      - Collision: objects collide as the beam draws them; fast objects the game
+        enables only on their own scanlines (e.g. the Space Invaders laser) are
+        missed by an end-of-line check, making shots pass through invaders.
+
+    Only the playfield/background pixel is OUTPUT here; sprites are drawn later
+    from the settled end-of-line state (overlay_sprites_pixel) to avoid
+    mid-line RESP edge-clipping.
+    """
+    # Blanked: background only, no objects, no collision.
+    if (state.tia_flags & TIA_VBLANK) != 0:
+        if render_row >= 0 and render_row < FRAME_HEIGHT:
+            _write_pixel_bgra(
+                buf,
+                (render_row * FRAME_WIDTH + pixel) * 4,
+                state.colubk,
+                palette,
+            )
+        return
+
+    var pf = playfield_mask(state, pixel, live=True)
+    var p0 = player_mask(state, 0, pixel)
+    var p1 = player_mask(state, 1, pixel)
+    var m0 = missile_mask(state, 0, pixel)
+    var m1 = missile_mask(state, 1, pixel)
+    var bl = ball_mask(state, pixel)
+
+    # --- Collision detection: LIVE, but DEFERRED ---
+    # Detect every collision at the live beam position (correct PF, and catches
+    # games that reposition players mid-scanline — e.g. the Space Invaders laser
+    # vs an invader copy). Accumulate into cx_pending instead of state.collision
+    # so a mid-line CXCLR can't wipe this scanline's hits before the caller
+    # applies them at end-of-line. Without this defer, the ball tunnels straight
+    # through bricks/paddle (the collision is cleared before the game reads it).
+    if m0 and p1:
+        state.cx_pending = state.cx_pending | CX_M0P1
+    if m0 and p0:
+        state.cx_pending = state.cx_pending | CX_M0P0
+    if m1 and p0:
+        state.cx_pending = state.cx_pending | CX_M1P0
+    if m1 and p1:
+        state.cx_pending = state.cx_pending | CX_M1P1
+    if p0 and pf:
+        state.cx_pending = state.cx_pending | CX_P0PF
+    if p0 and bl:
+        state.cx_pending = state.cx_pending | CX_P0BL
+    if p1 and pf:
+        state.cx_pending = state.cx_pending | CX_P1PF
+    if p1 and bl:
+        state.cx_pending = state.cx_pending | CX_P1BL
+    if m0 and pf:
+        state.cx_pending = state.cx_pending | CX_M0PF
+    if m0 and bl:
+        state.cx_pending = state.cx_pending | CX_M0BL
+    if m1 and pf:
+        state.cx_pending = state.cx_pending | CX_M1PF
+    if m1 and bl:
+        state.cx_pending = state.cx_pending | CX_M1BL
+    if bl and pf:
+        state.cx_pending = state.cx_pending | CX_BLPF
+    if p0 and p1:
+        state.cx_pending = state.cx_pending | CX_P0P1
+    if m0 and m1:
+        state.cx_pending = state.cx_pending | CX_M0M1
+
+    if render_row < 0 or render_row >= FRAME_HEIGHT:
+        return
+
+    var color_idx: UInt8
+    if pf:
+        if (state.tia_flags & TIA_PF_SCORE) != 0:
+            color_idx = state.colup0 if pixel < 80 else state.colup1
+        else:
+            color_idx = state.colupf
+    else:
+        color_idx = state.colubk
+
+    _write_pixel_bgra(
+        buf, (render_row * FRAME_WIDTH + pixel) * 4, color_idx, palette
+    )
+
+
+@always_inline
+def overlay_sprites_pixel(
+    state: AtariState,
+    render_row: Int,
+    pixel: Int,
+    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    palette: InlineArray[UInt32, 256],
+):
+    """Pass 2 (end-of-line snapshot): overlay sprites onto the pass-1 pixel.
+
+    Run after the scanline's CPU has executed, using the settled object state
+    (positions, GRP, enables). Overwrites the pass-1 playfield/background pixel
+    only where a player/missile/ball wins TIA priority. Drawing sprites from the
+    end-of-line state (as the legacy renderer did) avoids the edge clipping that
+    beam-accurate per-pixel positioning causes for sprite-repositioning games
+    (Space Invaders). Collision is detected live in pass 1, not here.
+    """
+    if (state.tia_flags & TIA_VBLANK) != 0:
+        return
+    if render_row < 0 or render_row >= FRAME_HEIGHT:
+        return
+
+    var pf = playfield_mask(state, pixel, live=True)
+    var p0 = player_mask(state, 0, pixel)
+    var p1 = player_mask(state, 1, pixel)
+    var m0 = missile_mask(state, 0, pixel)
+    var m1 = missile_mask(state, 1, pixel)
+    var bl = ball_mask(state, pixel)
+
+    # Decide whether a sprite/ball overwrites the pass-1 (PF/bg) pixel.
+    var overwrite = False
+    var color_idx: UInt8 = 0
+    if (state.tia_flags & TIA_PF_PRIORITY) != 0:
+        # PF/BL > P0/M0 > P1/M1 > BG. Where PF is present, pass 1 is correct.
+        if pf:
+            pass
+        elif bl:
+            overwrite = True
+            color_idx = state.colupf
+        elif p0 or m0:
+            overwrite = True
+            color_idx = state.colup0
+        elif p1 or m1:
+            overwrite = True
+            color_idx = state.colup1
+    else:
+        # P0/M0 > P1/M1 > PF/BL > BG. Players always win; ball draws at PF
+        # level (same color register), so it's safe to set even over PF.
+        if p0 or m0:
+            overwrite = True
+            color_idx = state.colup0
+        elif p1 or m1:
+            overwrite = True
+            color_idx = state.colup1
+        elif bl:
+            overwrite = True
+            color_idx = state.colupf
+
+    if overwrite:
+        _write_pixel_bgra(
+            buf, (render_row * FRAME_WIDTH + pixel) * 4, color_idx, palette
+        )
+
+
+@always_inline
 def render_scanline_bgra(
     state: AtariState,
     scanline: Int,

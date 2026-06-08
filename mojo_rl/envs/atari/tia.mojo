@@ -270,11 +270,16 @@ def tia_write(mut state: AtariState, addr: UInt8, value: UInt8):
         state.pos_bl = _resp_pos(Int(state.clock))
 
     elif reg == 0x1B:  # GRP0
-        state.grp0_old = state.grp0
+        # Vertical delay: writing GRP0 clocks the delayed copy of GRP1.
+        state.grp1_old = state.grp1
         state.grp0 = value
 
     elif reg == 0x1C:  # GRP1
-        state.grp1_old = state.grp1
+        # Vertical delay: writing GRP1 clocks the delayed copies of GRP0 and
+        # the ball enable (the VDEL "old" latches are clocked by the *other*
+        # player's graphics write, not by each object's own write).
+        state.grp0_old = state.grp0
+        state.enabl_old = state.enabl
         state.grp1 = value
 
     elif reg == 0x1D:  # ENAM0
@@ -284,7 +289,8 @@ def tia_write(mut state: AtariState, addr: UInt8, value: UInt8):
         state.enam1 = value & 0x02
 
     elif reg == 0x1F:  # ENABL
-        state.enabl_old = state.enabl
+        # New ball-enable value; the delayed copy (enabl_old) is latched on
+        # GRP1 writes above, not here (NMOS TIA vertical-delay behavior).
         state.enabl = value & 0x02
 
     elif reg == 0x20:  # HMP0

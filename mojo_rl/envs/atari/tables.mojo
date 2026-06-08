@@ -150,28 +150,38 @@ def ball_mask(state: AtariState, pixel: Int) -> Bool:
 
 
 @always_inline
-def playfield_mask(state: AtariState, pixel: Int) -> Bool:
+def playfield_mask(state: AtariState, pixel: Int, live: Bool = False) -> Bool:
     """Check if playfield is visible at this pixel position.
 
     The playfield is 40 bits wide (20 bits repeated or reflected).
     PF0 uses bits 4-7 (4 bits), PF1 uses bits 7-0 (8 bits reversed),
     PF2 uses bits 0-7 (8 bits).
 
-    For mid-scanline PF writes (e.g. Pong score digits, Breakout brick rows),
-    the left half (pixels 0-79) uses the midpoint PF snapshot
-    (pf0_mid/pf1_mid/pf2_mid) and the right half uses the final PF values.
-    Pixel 80 is the playfield repeat boundary: the 2600 draws its 20 PF bits
-    twice per line, and these kernels rewrite PF at that boundary to give the
-    two halves different patterns. For static scanlines both snapshots match.
+    `live=True` (beam-accurate renderer): use the current PF registers, which
+    already hold the correct value for this beam position because rendering is
+    interleaved with CPU execution.
+
+    `live=False` (legacy per-scanline snapshot renderer): for mid-scanline PF
+    writes (Pong score digits, Breakout brick rows) the left half (pixels 0-79)
+    uses the midpoint snapshot (pf*_mid) and the right half the final PF —
+    approximating the pixel-80 playfield repeat boundary. For static scanlines
+    both snapshots match.
     """
     var x = (
         pixel >> 2
     )  # 4 clocks per playfield bit, so 160 pixels / 4 = 40 pf pixels
 
-    # Select PF register source: midpoint snapshot for left, final for right
-    var pf0 = state.pf0_mid if pixel < 80 else state.pf0
-    var pf1 = state.pf1_mid if pixel < 80 else state.pf1
-    var pf2 = state.pf2_mid if pixel < 80 else state.pf2
+    # Select PF register source. Beam-accurate uses live registers; the legacy
+    # snapshot path splits at the pixel-80 playfield repeat boundary.
+    var pf0 = state.pf0 if live else (
+        state.pf0_mid if pixel < 80 else state.pf0
+    )
+    var pf1 = state.pf1 if live else (
+        state.pf1_mid if pixel < 80 else state.pf1
+    )
+    var pf2 = state.pf2 if live else (
+        state.pf2_mid if pixel < 80 else state.pf2
+    )
 
     # Determine if we're in the left or right half
     var pf_bit: Int
