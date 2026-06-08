@@ -54,7 +54,14 @@ comptime PRED_HEADS = 3        # head_dim = 192/3 = 64 (paper per-head width;
 comptime PRED_FF = 2048        # paper wide predictor FFN
 comptime DEPTH = 6
 comptime PRED_PROJ_H = 2048
-comptime SIG_PROJ = 1024       # ≫ EMB=192, over-determined (paper)
+comptime SIG_PROJ = 1024       # paper value. NOTE: 1024/EMB(192) ≈ 5.3× —
+                               # HALF the baseline's 1024/96 ≈ 11× over-
+                               # determination, so isotropy comes in slower
+                               # (an 8000-step run leaves var_min ~0.09,
+                               # still rising). For faster/cleaner var_min set
+                               # SIG_PROJ=2048 (≈11× again); else use the
+                               # paper's 32000 steps. (P/D ratio drives
+                               # anti-collapse strength — see the Pong sweep.)
 comptime SIG_KNOTS = 17
 comptime B = 16
 comptime FRAMESKIP = 5
@@ -63,7 +70,9 @@ comptime IMG_DIM = IN_CH * IMG * IMG
 comptime PIX = T * IMG_DIM
 comptime ACTIN = T * ACT
 
-comptime STEPS: Int = 8000     # paper used 32000
+comptime STEPS: Int = 8000     # paper used 32000 — at 8000 the paper-width
+                               # var_min is still climbing (~0.09); use 32000
+                               # and/or SIG_PROJ=2048 for a converged var_min>0.1
 comptime LOG_EVERY: Int = 200
 comptime LAM: Scalar[DT] = 0.09
 comptime LR: Scalar[DT] = 1e-3
