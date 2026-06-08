@@ -28,6 +28,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, row_major, TileTensor
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.module import mptr
 from mojo_rl.nn2.initializer import Zero
 from mojo_rl.planners.trajectory.rollout_callback import (
     RolloutCallbackCPU, RolloutCallbackGPU,
@@ -177,7 +178,7 @@ struct TDMPC2RolloutCallbackCPU[
 
 @always_inline
 def _dpg(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+    return mptr(b.unsafe_ptr())
 
 
 @always_inline
@@ -303,8 +304,8 @@ struct TDMPC2RolloutCallbackGPU[
         ],
     ) raises:
         comptime assert B == Self.BT, "callback B must equal BT"
-        var zp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](z.ptr)
-        var ap = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](action_out.ptr)
+        var zp = mptr(z.ptr)
+        var ap = mptr(action_out.ptr)
         var pio_t = TileTensor(_dpg(self.pio), row_major[B, Self.POL]())
         self.pol[].forward["gpu", B](
             TileTensor(zp, row_major[B, Self.LATENT]()), output=pio_t
@@ -331,10 +332,10 @@ struct TDMPC2RolloutCallbackGPU[
         r_out: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
     ) raises:
         comptime assert B == Self.BT, "callback B must equal BT"
-        var zp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](z.ptr)
-        var ap = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](a.ptr)
-        var znp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](z_next_out.ptr)
-        var rp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](r_out.ptr)
+        var zp = mptr(z.ptr)
+        var ap = mptr(a.ptr)
+        var znp = mptr(z_next_out.ptr)
+        var rp = mptr(r_out.ptr)
         comptime bza = _build_za_scaled_k[B, Self.LATENT, Self.ACT, Self.ZA]
         comptime nbz = (B * Self.ZA + TPB - 1) // TPB
         ctx.enqueue_function[bza](
@@ -369,8 +370,8 @@ struct TDMPC2RolloutCallbackGPU[
             % (Self.NUM_Q - 1)
         ) % Self.NUM_Q
 
-        var zp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](z.ptr)
-        var vp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](v_out.ptr)
+        var zp = mptr(z.ptr)
+        var vp = mptr(v_out.ptr)
         # action = tanh(mean) of π(z)
         var pio_t = TileTensor(_dpg(self.pio), row_major[B, Self.POL]())
         self.pol[].forward["gpu", B](

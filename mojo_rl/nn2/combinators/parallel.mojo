@@ -26,7 +26,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 from .residual import _elementwise_add_kernel
@@ -200,7 +200,7 @@ struct Parallel[A: Module, B: Module](Module):
                     output_v[b, Self.OUT_A + j] = out_b[b, j]
         else:
             self._ensure_scratch_gpu(BATCH)
-            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var out_p_w = mptr(output_v.ptr)
             var pa: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_a_dev.value().unsafe_ptr()
             var pb: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_b_dev.value().unsafe_ptr()
             var out_a_tt = TileTensor(pa, row_major[BATCH, Self.OUT_A]())
@@ -261,7 +261,7 @@ struct Parallel[A: Module, B: Module](Module):
             ](go_b, gi_b)
             var ap = self.gi_a_cpu
             var bp = self.gi_b_cpu
-            var gp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var gp = mptr(grad_input_v.ptr)
             comptime N = BATCH * Self.IN_DIMS[0]
             var k = 0
             while k + CPU_SIMD_W <= N:
@@ -275,8 +275,8 @@ struct Parallel[A: Module, B: Module](Module):
                 k += 1
         else:
             self._ensure_scratch_gpu(BATCH)
-            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var go_p_w = mptr(grad_output_v.ptr)
+            var gi_p_w = mptr(grad_input_v.ptr)
             var pa: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_a_dev.value().unsafe_ptr()
             var pb: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_b_dev.value().unsafe_ptr()
             var pia: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.gi_a_dev.value().unsafe_ptr()

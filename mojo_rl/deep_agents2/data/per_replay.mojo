@@ -53,6 +53,7 @@ from std.random import random_float64
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.module import mptr
 from ..training.replay_buffer import ReplayBuffer
 from ..training.trainer_block import TrainerState
 from .gpu_replay import GPUReplay, _gather_batch_kernel
@@ -466,15 +467,9 @@ struct GPUPrioritizedReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
         pointer-based `add`. `ctx` required (raises if None)."""
         if not ctx:
             raise Error("GPUPrioritizedReplay.add: ctx required")
-        var s_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            s.unsafe_ptr()
-        )
-        var a_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            a.unsafe_ptr()
-        )
-        var sp_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            sp.unsafe_ptr()
-        )
+        var s_p = mptr(s.unsafe_ptr())
+        var a_p = mptr(a.unsafe_ptr())
+        var sp_p = mptr(sp.unsafe_ptr())
         self.add(ctx.value(), s_p, a_p, r, sp_p, d)
 
     def sample_into[BATCH: Int](

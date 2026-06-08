@@ -61,7 +61,7 @@ from mojo_rl.nn2.core import (
     Initializer, AMPPolicy, NoAMP, Param, ParamVisitor, Cache,
     for_each_param_auto, zero_grad_auto,
 )
-from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut, mptr
 from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import (
     require_ctx,
@@ -98,7 +98,7 @@ def _dev_tile[
     DT, type_of(row_major[BATCH, N]()), MutAnyOrigin
 ]:
     return TileTensor(
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](buf.unsafe_ptr()),
+        mptr(buf.unsafe_ptr()),
         row_major[BATCH, N](),
     )
 

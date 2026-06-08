@@ -65,6 +65,7 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W, TPB
+from ..core.module import mptr
 from ..core import (
     GraphNode,
     Module,
@@ -294,7 +295,7 @@ struct ComputeGraph[
         #
         # We don't call _ensure_all_buffers here — forward and backward
         # do it. set_input just caches a pointer.
-        var p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+        var p = mptr(input.ptr)
         comptime for i in range(Self.N):
             comptime if (
                 Self.NODES[i].KIND == 0 and Self.NODES[i].NAME == slot_name
@@ -603,7 +604,7 @@ def _forward_cpu[
 
     # Copy last node's out_buf into the external output.
     comptime LAST_OUT_DIM = NODES[N - 1].OUT_DIM
-    var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+    var out_p = mptr(output.ptr)
     var last_out_ptr = g.nodes[N - 1].out_ptr_via()
     var total = BATCH * LAST_OUT_DIM
     _copy_cpu(out_p, last_out_ptr, total)
@@ -633,7 +634,7 @@ def _backward_cpu[
 
     # Seed last node's grad_out_buf from the external grad_output.
     comptime LAST_OUT_DIM = NODES[N - 1].OUT_DIM
-    var ext_go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+    var ext_go_p = mptr(grad_output.ptr)
     var last_go_p = g.nodes[N - 1].grad_out_ptr_via()
     _copy_cpu(last_go_p, ext_go_p, BATCH * LAST_OUT_DIM)
 
@@ -713,7 +714,7 @@ def _forward_gpu[
     # Copy last node's out_buf into the external output.
     comptime LAST_OUT_DIM = NODES[N - 1].OUT_DIM
     comptime last_total = BATCH * LAST_OUT_DIM
-    var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+    var out_p = mptr(output.ptr)
     var last_out_ptr = g.nodes[N - 1].out_ptr_via()
     _enqueue_copy[last_total](ctx, out_p, last_out_ptr)
 
@@ -743,7 +744,7 @@ def _backward_gpu[
     # Seed last node's grad_out_buf from the external grad_output.
     comptime LAST_OUT_DIM = NODES[N - 1].OUT_DIM
     comptime last_total = BATCH * LAST_OUT_DIM
-    var ext_go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+    var ext_go_p = mptr(grad_output.ptr)
     var last_go_p = g.nodes[N - 1].grad_out_ptr_via()
     _enqueue_copy[last_total](ctx, last_go_p, ext_go_p)
 

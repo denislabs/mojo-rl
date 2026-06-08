@@ -117,8 +117,8 @@ struct ReduceMax[NA: Int](Module):
                         best = v
                 output_v[b, 0] = best
         else:
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_p = input.ptr
+            var out_p = output_v.ptr
             var in_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.NA), MutAnyOrigin,
             ](in_p)
@@ -158,7 +158,7 @@ struct ReduceMax[NA: Int](Module):
                 for a in range(Self.NA):
                     grad_input_v[b, a] = Scalar[DT](0.0)
         else:
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var gi_p = grad_input_v.ptr
             var gi_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.NA), MutAnyOrigin,
             ](gi_p)

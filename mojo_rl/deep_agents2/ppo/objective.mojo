@@ -63,7 +63,7 @@ from layout import Layout, LayoutTensor, TileTensor
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
-from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut, mptr
 from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 
@@ -301,18 +301,10 @@ struct PPOObjective[ACT_: Int](Module):
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         # Cache input pointers for vjp.
-        self._cache_ao_ptr = rebind[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
-        ](ao.ptr)
-        self._cache_act_ptr = rebind[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
-        ](act.ptr)
-        self._cache_olp_ptr = rebind[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
-        ](olp.ptr)
-        self._cache_adv_ptr = rebind[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
-        ](adv.ptr)
+        self._cache_ao_ptr = mptr(ao.ptr)
+        self._cache_act_ptr = mptr(act.ptr)
+        self._cache_olp_ptr = mptr(olp.ptr)
+        self._cache_adv_ptr = mptr(adv.ptr)
 
         comptime if target == "cpu":
             for b in range(BATCH):
@@ -356,11 +348,11 @@ struct PPOObjective[ACT_: Int](Module):
         else:
             # GPU: reconstruct LayoutTensors over the typed-view raw
             # pointers and dispatch one thread per batch row.
-            var ao_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](ao.ptr)
-            var act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](act.ptr)
-            var olp_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](olp.ptr)
-            var adv_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](adv.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr)
+            var ao_p = mptr(ao.ptr)
+            var act_p = mptr(act.ptr)
+            var olp_p = mptr(olp.ptr)
+            var adv_p = mptr(adv.ptr)
+            var out_p = mptr(out.ptr)
             var ao_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin,
             ](ao_p)
@@ -505,11 +497,11 @@ struct PPOObjective[ACT_: Int](Module):
             var adv_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
             ](self._cache_adv_ptr.value())
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go.ptr)
-            var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi0.ptr)
-            var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi1.ptr)
-            var gi2_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi2.ptr)
-            var gi3_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi3.ptr)
+            var go_p = mptr(go.ptr)
+            var gi0_p = mptr(gi0.ptr)
+            var gi1_p = mptr(gi1.ptr)
+            var gi2_p = mptr(gi2.ptr)
+            var gi3_p = mptr(gi3.ptr)
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
             ](go_p)

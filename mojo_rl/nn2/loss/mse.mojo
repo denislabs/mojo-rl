@@ -20,6 +20,7 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W, TPB, TPB_REDUCE
+from ..core.module import mptr
 from ..core import Loss, AMPPolicy, NoAMP
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
@@ -184,8 +185,8 @@ struct MSELoss[DIM: Int](Loss):
             # fp32 modulo rounding, so row structure doesn't matter (the
             # 1/BATCH normalization dwarfs the rounding delta).
             self._ensure_cache_cpu(BATCH)
-            var lp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
-            var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
+            var lp = mptr(logits.ptr)
+            var tp = mptr(targets.ptr)
             var cp = self.cache_logits.unsafe_ptr()
             comptime N = BATCH * Self.DIM
             var acc_v = SIMD[DT, CPU_SIMD_W](0)
@@ -210,8 +211,8 @@ struct MSELoss[DIM: Int](Loss):
             var ctx = self.ts.ctx.value()
             comptime mat_layout = Layout.row_major(BATCH, Self.DIM)
             comptime row_layout = Layout.row_major(BATCH)
-            var lp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
-            var tp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
+            var lp_w = mptr(logits.ptr)
+            var tp_w = mptr(targets.ptr)
             var logits_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](lp_w)
             var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
             var cache_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](
@@ -276,8 +277,8 @@ struct MSELoss[DIM: Int](Loss):
             var ctx = self.ts.ctx.value()
             comptime mat_layout = Layout.row_major(BATCH, Self.DIM)
             comptime row_layout = Layout.row_major(BATCH)
-            var lp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
-            var tp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
+            var lp_w = mptr(logits.ptr)
+            var tp_w = mptr(targets.ptr)
             var logits_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](lp_w)
             var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
             var partial_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](
@@ -349,8 +350,8 @@ struct MSELoss[DIM: Int](Loss):
         comptime if target == "cpu":
             # SIMD path.
             var cp = self.cache_logits.unsafe_ptr()
-            var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
-            var gp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_logits.ptr)
+            var tp = mptr(targets.ptr)
+            var gp = mptr(grad_logits.ptr)
             var inv_batch_v = SIMD[DT, CPU_SIMD_W](1.0 / Scalar[DT](BATCH))
             comptime N = BATCH * Self.DIM
             var k = 0
@@ -366,8 +367,8 @@ struct MSELoss[DIM: Int](Loss):
         else:
             var ctx = self.ts.ctx.value()
             comptime mat_layout = Layout.row_major(BATCH, Self.DIM)
-            var tp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
-            var gp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_logits.ptr)
+            var tp_w = mptr(targets.ptr)
+            var gp_w = mptr(grad_logits.ptr)
             var cache_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](
                 self.cache_logits_dev.value()
             )

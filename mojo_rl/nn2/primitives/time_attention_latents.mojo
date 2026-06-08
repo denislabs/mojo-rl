@@ -31,7 +31,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, Cache, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 from ..composites import MultiHeadAttention
@@ -162,9 +162,7 @@ struct TimeAttentionLatents[
             self.packed_in.ensure_cpu(BL * TD)
             self.packed_out.ensure_cpu(BL * TD)
             var pin = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.packed_in.cpu_ptr()
-                ),
+                mptr(self.packed_in.cpu_ptr()),
                 row_major[BL, TD](),
             )
             # gather latents: packed_in[b,l,t,d] = input[b,t,s=l,d]
@@ -176,9 +174,7 @@ struct TimeAttentionLatents[
                                 b * Self.T + t, l * Self.D + d
                             ]
             var pout = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.packed_out.cpu_ptr()
-                ),
+                mptr(self.packed_out.cpu_ptr()),
                 row_major[BL, TD](),
             )
             self.mha.forward[target, BL, POLICY=POLICY](pin, output=pout)
@@ -199,10 +195,10 @@ struct TimeAttentionLatents[
             var a = self.pa.dev.value()
             var b = self.pb.dev.value()
             var in_flat = LayoutTensor[DT, Layout.row_major(FULL), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inp.ptr)
+                inp.ptr
             )
             var out_flat = LayoutTensor[DT, Layout.row_major(FULL), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr)
+                out.ptr
             )
             var a_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](a)
             var b_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](b)
@@ -213,11 +209,11 @@ struct TimeAttentionLatents[
                 in_flat, a_lt, grid_dim=(PACKED + TPB - 1) // TPB, block_dim=TPB
             )
             var a_tile = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](a.unsafe_ptr()),
+                mptr(a.unsafe_ptr()),
                 row_major[BL, TD](),
             )
             var b_tile = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr()),
+                mptr(b.unsafe_ptr()),
                 row_major[BL, TD](),
             )
             self.mha.forward[target, BL, POLICY=POLICY](a_tile, output=b_tile)
@@ -252,9 +248,7 @@ struct TimeAttentionLatents[
             self.grad_pout.ensure_cpu(BL * TD)
             self.grad_pin.ensure_cpu(BL * TD)
             var gpout = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.grad_pout.cpu_ptr()
-                ),
+                mptr(self.grad_pout.cpu_ptr()),
                 row_major[BL, TD](),
             )
             # gather grad_output latents (non-latent outputs were 0 → no grad)
@@ -266,9 +260,7 @@ struct TimeAttentionLatents[
                                 b * Self.T + t, l * Self.D + d
                             ]
             var gpin = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.grad_pin.cpu_ptr()
-                ),
+                mptr(self.grad_pin.cpu_ptr()),
                 row_major[BL, TD](),
             )
             self.mha.vjp[target, BL, POLICY=POLICY, mode=mode](gpout, gpin)
@@ -289,10 +281,10 @@ struct TimeAttentionLatents[
             var a = self.pa.dev.value()
             var b = self.pb.dev.value()
             var go_flat = LayoutTensor[DT, Layout.row_major(FULL), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go.ptr)
+                go.ptr
             )
             var gi_flat = LayoutTensor[DT, Layout.row_major(FULL), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi.ptr)
+                gi.ptr
             )
             var a_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](a)
             var b_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](b)
@@ -303,11 +295,11 @@ struct TimeAttentionLatents[
                 go_flat, a_lt, grid_dim=(PACKED + TPB - 1) // TPB, block_dim=TPB
             )
             var a_tile = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](a.unsafe_ptr()),
+                mptr(a.unsafe_ptr()),
                 row_major[BL, TD](),
             )
             var b_tile = TileTensor(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr()),
+                mptr(b.unsafe_ptr()),
                 row_major[BL, TD](),
             )
             self.mha.vjp[target, BL, POLICY=POLICY, mode=mode](a_tile, b_tile)

@@ -33,6 +33,7 @@ from layout import TileTensor, row_major
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT, TPB, TPB_REDUCE
+from mojo_rl.nn2.core.module import mptr
 from ..training.device_mean_accum import DeviceMeanAccum
 from mojo_rl.nn2.core import Module
 from mojo_rl.nn2.core.checkpoint import (
@@ -757,9 +758,7 @@ struct PPOTrainer[
         # Recompute the actor output on the gathered minibatch obs (device).
         var obs_p = self.state.mb_obs.target_ptr["gpu"]()
         var obs_t = TileTensor(obs_p, row_major[MB, Self.OBS_DIM]())
-        var ao_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._diag_ao_dev.value().unsafe_ptr()
-        )
+        var ao_p = mptr(self._diag_ao_dev.value().unsafe_ptr())
         var ao_t = TileTensor(ao_p, row_major[MB, 2 * ACT]())
         self.actor.forward["gpu", MB](obs_t, output=ao_t)
 

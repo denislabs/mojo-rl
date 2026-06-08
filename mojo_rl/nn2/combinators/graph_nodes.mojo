@@ -51,6 +51,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from ..constants import DT
+from ..core.module import mptr
 from ..core import (
     GraphNode,
     Module,
@@ -144,16 +145,12 @@ struct InputSlot[
                     self._grad_out_buf_dev, self._grad_out_buf_dev_n,
                     BATCH * Self.OUT_DIM, ctx,
                 )
-                self._grad_out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_out_buf_dev.value().unsafe_ptr())
+                self._grad_out_ptr = mptr(self._grad_out_buf_dev.value().unsafe_ptr())
                 self._n_batch_buf = BATCH
         else:
             if self._n_batch_buf < BATCH:
                 self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
-                self._grad_out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_out_buf.unsafe_ptr())
+                self._grad_out_ptr = mptr(self._grad_out_buf.unsafe_ptr())
                 self._n_batch_buf = BATCH
 
     def set_input_via(
@@ -332,12 +329,8 @@ struct Node[
                     self._grad_out_buf_dev, self._grad_out_buf_dev_n,
                     BATCH * Self.OUT_DIM, ctx,
                 )
-                self._out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._out_buf_dev.value().unsafe_ptr())
-                self._grad_out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_out_buf_dev.value().unsafe_ptr())
+                self._out_ptr = mptr(self._out_buf_dev.value().unsafe_ptr())
+                self._grad_out_ptr = mptr(self._grad_out_buf_dev.value().unsafe_ptr())
                 # I.2.6: uniform comptime-for over ARITY input slots.
                 comptime for k in range(Self.Op.ARITY):
                     comptime in_dim_k = Self.Op.IN_DIMS[k]
@@ -346,26 +339,18 @@ struct Node[
                         self._grad_ins_buf_dev_n[k],
                         BATCH * in_dim_k, ctx,
                     )
-                    self._grad_ins_ptr[k] = rebind[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_ins_buf_dev[k].value().unsafe_ptr())
+                    self._grad_ins_ptr[k] = mptr(self._grad_ins_buf_dev[k].value().unsafe_ptr())
                 self._n_batch_buf = BATCH
         else:
             if self._n_batch_buf < BATCH:
                 self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
                 self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
-                self._out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._out_buf.unsafe_ptr())
-                self._grad_out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_out_buf.unsafe_ptr())
+                self._out_ptr = mptr(self._out_buf.unsafe_ptr())
+                self._grad_out_ptr = mptr(self._grad_out_buf.unsafe_ptr())
                 comptime for k in range(Self.Op.ARITY):
                     comptime in_dim_k = Self.Op.IN_DIMS[k]
                     self._grad_ins_buf[k].resize(BATCH * in_dim_k, Scalar[DT](0.0))
-                    self._grad_ins_ptr[k] = rebind[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_ins_buf[k].unsafe_ptr())
+                    self._grad_ins_ptr[k] = mptr(self._grad_ins_buf[k].unsafe_ptr())
                 self._n_batch_buf = BATCH
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -619,12 +604,8 @@ struct ExternalNode[
                     self._grad_out_buf_dev, self._grad_out_buf_dev_n,
                     BATCH * Self.OUT_DIM, ctx,
                 )
-                self._out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._out_buf_dev.value().unsafe_ptr())
-                self._grad_out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_out_buf_dev.value().unsafe_ptr())
+                self._out_ptr = mptr(self._out_buf_dev.value().unsafe_ptr())
+                self._grad_out_ptr = mptr(self._grad_out_buf_dev.value().unsafe_ptr())
                 # I.2.6: uniform comptime-for over ARITY input slots.
                 comptime for k in range(Self.M.ARITY):
                     comptime in_dim_k = Self.M.IN_DIMS[k]
@@ -633,26 +614,18 @@ struct ExternalNode[
                         self._grad_ins_buf_dev_n[k],
                         BATCH * in_dim_k, ctx,
                     )
-                    self._grad_ins_ptr[k] = rebind[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_ins_buf_dev[k].value().unsafe_ptr())
+                    self._grad_ins_ptr[k] = mptr(self._grad_ins_buf_dev[k].value().unsafe_ptr())
                 self._n_batch_buf = BATCH
         else:
             if self._n_batch_buf < BATCH:
                 self._out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
                 self._grad_out_buf.resize(BATCH * Self.OUT_DIM, Scalar[DT](0.0))
-                self._out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._out_buf.unsafe_ptr())
-                self._grad_out_ptr = rebind[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](self._grad_out_buf.unsafe_ptr())
+                self._out_ptr = mptr(self._out_buf.unsafe_ptr())
+                self._grad_out_ptr = mptr(self._grad_out_buf.unsafe_ptr())
                 comptime for k in range(Self.M.ARITY):
                     comptime in_dim_k = Self.M.IN_DIMS[k]
                     self._grad_ins_buf[k].resize(BATCH * in_dim_k, Scalar[DT](0.0))
-                    self._grad_ins_ptr[k] = rebind[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](self._grad_ins_buf[k].unsafe_ptr())
+                    self._grad_ins_ptr[k] = mptr(self._grad_ins_buf[k].unsafe_ptr())
                 self._n_batch_buf = BATCH
 
     def out_ptr_via(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:

@@ -28,6 +28,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.module import mptr
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn2.optimizer.dreamer_opt import DreamerOpt
@@ -210,7 +211,7 @@ struct DreamerV3Trainer[
         # a past -9-vs-(-20)-default split decoded reward ~5× small, starving
         # imagined returns.
         symexp_twohot_bins[Self.BINS](
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](bins.unsafe_ptr()),
+            mptr(bins.unsafe_ptr()),
             lo=Scalar[DT](DREAMER_REWARD_GRID_LO),
         )
         var retnorm = PercentileNormalize.make(
@@ -317,9 +318,7 @@ struct DreamerV3Trainer[
         self.ac_blk.step[Self.train_target](
             self.state, self.imagine, self.value, self.slowvalue, self.policy,
             self.rew, self.con, self.oval, self.opol, self.retnorm,
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.bins.unsafe_ptr()
-            ),
+            mptr(self.bins.unsafe_ptr()),
         )
         self.train_steps += 1
         return True
@@ -364,9 +363,7 @@ struct DreamerV3Trainer[
         comptime FEATl = Self.FEAT
         comptime BINSl = Self.BINS
         comptime CARRY = 2 + D + SCl
-        var bins = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.bins.unsafe_ptr()
-        )
+        var bins = mptr(self.bins.unsafe_ptr())
 
         var bd = _ol_alloc(D)
         var bs = _ol_alloc(SCl)

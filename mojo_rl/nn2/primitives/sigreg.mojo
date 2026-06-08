@@ -38,7 +38,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, Cache
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import (
     require_ctx,
@@ -251,12 +251,8 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             self._ensure_gpu(BATCH)
             var ctx = self.ts.ctx.value()
             comptime N_PARTIALS = Self._n_partials()
-            var ws = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.ws_dev.value().unsafe_ptr()
-            )
-            var cache_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.cache_z.dev.value().unsafe_ptr()
-            )
+            var ws = mptr(self.ws_dev.value().unsafe_ptr())
+            var cache_p = mptr(self.cache_z.dev.value().unsafe_ptr())
             var a_t = LayoutTensor[DT, Layout.row_major(D, P), MutAnyOrigin](
                 ws + Self._ws_off_a()
             )
@@ -270,13 +266,13 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             var stat_ptr = ws + Self._ws_off_scalar()
             var in_t = LayoutTensor[
                 DT, Layout.row_major(BATCH, T * D), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr))
+            ](input.ptr)
             var cache_t = LayoutTensor[
                 DT, Layout.row_major(BATCH, T * P), MutAnyOrigin
             ](cache_p)
             var out_t = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr))
+            ](output_v.ptr)
             var seed = UInt64(Int(cache_p))
 
             ctx.enqueue_function[_sr_gen_a_unnorm[D, P]](
@@ -381,12 +377,8 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             self._ensure_gpu(BATCH)
             var ctx = self.ts.ctx.value()
             comptime N_PARTIALS = Self._n_partials()
-            var ws = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.ws_dev.value().unsafe_ptr()
-            )
-            var cache_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.cache_z.dev.value().unsafe_ptr()
-            )
+            var ws = mptr(self.ws_dev.value().unsafe_ptr())
+            var cache_p = mptr(self.cache_z.dev.value().unsafe_ptr())
             var a_t = LayoutTensor[DT, Layout.row_major(D, P), MutAnyOrigin](
                 ws + Self._ws_off_a()
             )
@@ -406,10 +398,10 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             ](cache_p)
             var go_t = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go.ptr))
+            ](go.ptr)
             var gi_t = LayoutTensor[
                 DT, Layout.row_major(BATCH, T * D), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi.ptr))
+            ](gi.ptr)
             var seed = UInt64(Int(cache_p))
 
             ctx.enqueue_function[_sr_gen_a_unnorm[D, P]](

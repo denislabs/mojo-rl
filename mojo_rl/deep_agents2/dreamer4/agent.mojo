@@ -36,7 +36,7 @@ from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 
@@ -330,9 +330,7 @@ struct Dreamer4Agent[
         """Return the [BF, NMTP·NACT] policy logits from the last bc_train_step
         (distance n at columns [n·NACT, (n+1)·NACT)) — greedy action = argmax of
         the distance-0 block."""
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.plog.unsafe_ptr()
-        )
+        return mptr(self.plog.unsafe_ptr())
 
     def _run_bc_loss(
         mut self,
@@ -349,14 +347,12 @@ struct Dreamer4Agent[
             Self.NBINS, Self.AGD,
         ](
             self.ph, self.rh, ht, actions, rewards, bins,
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self.plog.unsafe_ptr()),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self.rlog.unsafe_ptr()),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self.gpl.unsafe_ptr()),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self.grl.unsafe_ptr()),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self.grad_h.unsafe_ptr()),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.grad_h_tmp.unsafe_ptr()
-            ),
+            mptr(self.plog.unsafe_ptr()),
+            mptr(self.rlog.unsafe_ptr()),
+            mptr(self.gpl.unsafe_ptr()),
+            mptr(self.grl.unsafe_ptr()),
+            mptr(self.grad_h.unsafe_ptr()),
+            mptr(self.grad_h_tmp.unsafe_ptr()),
             policy_weight=policy_weight,
             reward_weight=reward_weight,
         )
@@ -394,22 +390,12 @@ struct Dreamer4Agent[
             " agent trains the dynamics via dynamics_pretrain_loss[FWD=\"gpu\"]"
             " directly (see the imagination lighthouse stage 1)."
         )
-        var agp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.agent_in.unsafe_ptr()
-        )
-        var gzh = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.grad_zhat.unsafe_ptr()
-        )
-        var zh = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.zhat.unsafe_ptr()
-        )
-        var ghp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.grad_h.unsafe_ptr()
-        )
+        var agp = mptr(self.agent_in.unsafe_ptr())
+        var gzh = mptr(self.grad_zhat.unsafe_ptr())
+        var zh = mptr(self.zhat.unsafe_ptr())
+        var ghp = mptr(self.grad_h.unsafe_ptr())
         var gzt_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.grad_zt.unsafe_ptr()
-            ),
+            mptr(self.grad_zt.unsafe_ptr()),
             row_major[Self.BF, Self.ND](),
         )
 
@@ -451,12 +437,8 @@ struct Dreamer4Agent[
 
         # 4. dedicated CLEAN forward on z1 (σ=1) → un-noised h_t.
         self.dyn.set_indices(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.clean_sig.unsafe_ptr()
-            ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.clean_step.unsafe_ptr()
-            ),
+            mptr(self.clean_sig.unsafe_ptr()),
+            mptr(self.clean_step.unsafe_ptr()),
             Self.BF,
         )
         self.dyn.set_agent_in(agp, Self.BF)
@@ -467,9 +449,7 @@ struct Dreamer4Agent[
                 sig_bc * Float64(z1[i]) + (1.0 - sig_bc) * Float64(z0[i])
             )
         var z1_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.bc_in.unsafe_ptr()
-            ),
+            mptr(self.bc_in.unsafe_ptr()),
             row_major[Self.BF, Self.ND](),
         )
         var zh_t = TileTensor(zh, row_major[Self.BF, Self.ND]())
@@ -485,9 +465,7 @@ struct Dreamer4Agent[
         #    into the dynamics params; then the task-embedder grad.
         self.dyn.set_grad_h(ghp, Self.BF)
         var gzero_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.gzero.unsafe_ptr()
-            ),
+            mptr(self.gzero.unsafe_ptr()),
             row_major[Self.BF, Self.ND](),
         )
         self.dyn.vjp["cpu", Self.BF](gzero_t, gzt_t)
@@ -506,9 +484,7 @@ struct Dreamer4Agent[
     def imag_policy_logits_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         """Per-state policy logits [BF, PLOG] from the last `imag_train_step`
         (greedy action = argmax of the dist-0 block)."""
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_plog.unsafe_ptr()
-        )
+        return mptr(self.im_plog.unsafe_ptr())
 
     def imag_train_step(
         mut self,
@@ -538,27 +514,13 @@ struct Dreamer4Agent[
             "imag_train_step needs ADIM = NACT (one-hot action conditioning)"
         )
         comptime assert Self.NMTP >= 1, "need at least the dist-0 MTP block"
-        var agp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.agent_in.unsafe_ptr()
-        )
-        var im_h_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_h.unsafe_ptr()
-        )
-        var im_act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_act.unsafe_ptr()
-        )
-        var im_rew_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_rew.unsafe_ptr()
-        )
-        var im_val_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_val.unsafe_ptr()
-        )
-        var im_con_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_con.unsafe_ptr()
-        )
-        var im_ret_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_ret.unsafe_ptr()
-        )
+        var agp = mptr(self.agent_in.unsafe_ptr())
+        var im_h_p = mptr(self.im_h.unsafe_ptr())
+        var im_act_p = mptr(self.im_act.unsafe_ptr())
+        var im_rew_p = mptr(self.im_rew.unsafe_ptr())
+        var im_val_p = mptr(self.im_val.unsafe_ptr())
+        var im_con_p = mptr(self.im_con.unsafe_ptr())
+        var im_ret_p = mptr(self.im_ret.unsafe_ptr())
 
         # 1. task embeddings → agent tokens
         self.te.embed_into["cpu", Self.B, Self.T](task_ids, agp)
@@ -591,14 +553,10 @@ struct Dreamer4Agent[
         #    λ-return truncates at predicted terminal states. Then λ-returns.
         if use_continue:
             var imh_t = TileTensor(im_h_p, row_major[Self.BF, Self.AGD]())
-            var clog_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.im_clog.unsafe_ptr()
-            )
+            var clog_p = mptr(self.im_clog.unsafe_ptr())
             var clog_t = TileTensor(clog_p, row_major[Self.BF, 1]())
             self.ch.forward["cpu", Self.BF](imh_t, output=clog_t)
-            var chat_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.im_chat.unsafe_ptr()
-            )
+            var chat_p = mptr(self.im_chat.unsafe_ptr())
             continue_pred[Self.BF](clog_p, chat_p)
             for i in range(Self.BF):
                 self.im_con[i] = gamma * self.im_chat[i]
@@ -623,14 +581,10 @@ struct Dreamer4Agent[
         var im_h_t = TileTensor(im_h_p, row_major[Self.BF, Self.AGD]())
 
         # 5. value loss + backward → vh param grads
-        var vlog_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_vlog.unsafe_ptr()
-        )
+        var vlog_p = mptr(self.im_vlog.unsafe_ptr())
         var vlog_t = TileTensor(vlog_p, row_major[Self.BF, Self.NBINS]())
         self.vh.forward["cpu", Self.BF](im_h_t, output=vlog_t)
-        var vloss_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_vloss.unsafe_ptr()
-        )
+        var vloss_p = mptr(self.im_vloss.unsafe_ptr())
         value_td_loss_cpu[Self.B, Self.T, Self.NBINS](
             vlog_p, bins, im_ret_p, vloss_p
         )
@@ -640,28 +594,20 @@ struct Dreamer4Agent[
         # d_loss = value_weight (reuse the loss buffer as the cotangent)
         for i in range(Self.B * Self.TM1):
             self.im_vloss[i] = value_weight
-        var gvlog_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_gvlog.unsafe_ptr()
-        )
+        var gvlog_p = mptr(self.im_gvlog.unsafe_ptr())
         value_td_loss_backward[Self.B, Self.T, Self.NBINS](
             vlog_p, bins, im_ret_p, vloss_p, gvlog_p
         )
         var gvlog_t = TileTensor(gvlog_p, row_major[Self.BF, Self.NBINS]())
         var vgi_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.grad_h.unsafe_ptr()
-            ),
+            mptr(self.grad_h.unsafe_ptr()),
             row_major[Self.BF, Self.AGD](),
         )
         self.vh.vjp["cpu", Self.BF, mode="all"](gvlog_t, vgi_t)
 
         # 6. policy: current + frozen-prior logits → PMPO (dist-0 block)
-        var plog_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_plog.unsafe_ptr()
-        )
-        var prior_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_prior.unsafe_ptr()
-        )
+        var plog_p = mptr(self.im_plog.unsafe_ptr())
+        var prior_p = mptr(self.im_prior.unsafe_ptr())
         var plog_t = TileTensor(plog_p, row_major[Self.BF, Self.PLOG]())
         var prior_t = TileTensor(prior_p, row_major[Self.BF, Self.PLOG]())
         self.ph.forward["cpu", Self.BF](im_h_t, output=plog_t)
@@ -673,24 +619,14 @@ struct Dreamer4Agent[
                 self.im_prior0[s * Self.NACT + a] = self.im_prior[
                     s * Self.PLOG + a
                 ]
-        var plog0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_plog0.unsafe_ptr()
-        )
-        var prior0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_prior0.unsafe_ptr()
-        )
-        var actbt_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_actbt.unsafe_ptr()
-        )
-        var adv_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_adv.unsafe_ptr()
-        )
+        var plog0_p = mptr(self.im_plog0.unsafe_ptr())
+        var prior0_p = mptr(self.im_prior0.unsafe_ptr())
+        var actbt_p = mptr(self.im_actbt.unsafe_ptr())
+        var adv_p = mptr(self.im_adv.unsafe_ptr())
         var ploss = pmpo_policy_loss_cpu[Self.B, Self.T, Self.NACT](
             plog0_p, prior0_p, actbt_p, adv_p, alpha, beta
         )
-        var gplog0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.im_gplog0.unsafe_ptr()
-        )
+        var gplog0_p = mptr(self.im_gplog0.unsafe_ptr())
         pmpo_policy_loss_backward[Self.B, Self.T, Self.NACT](
             plog0_p, prior0_p, actbt_p, adv_p, alpha, beta, policy_weight,
             gplog0_p,
@@ -704,15 +640,11 @@ struct Dreamer4Agent[
                     s * Self.NACT + a
                 ]
         var gplog_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.im_gplog.unsafe_ptr()
-            ),
+            mptr(self.im_gplog.unsafe_ptr()),
             row_major[Self.BF, Self.PLOG](),
         )
         var pgi_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.grad_h_tmp.unsafe_ptr()
-            ),
+            mptr(self.grad_h_tmp.unsafe_ptr()),
             row_major[Self.BF, Self.AGD](),
         )
         self.ph.vjp["cpu", Self.BF, mode="all"](gplog_t, pgi_t)

@@ -12,7 +12,7 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import ParamVisitor
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 
 
 def _polyak_mix_k(
@@ -40,7 +40,7 @@ struct _PolyakCollect(ParamVisitor):
         n_elems: Int, apply_decay: Bool,
     ) raises:
         self.ptrs[].append(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+            mptr(param.ptr)
         )
 
 
@@ -58,7 +58,7 @@ struct _PolyakMix(ParamVisitor):
         grad: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
         n_elems: Int, apply_decay: Bool,
     ) raises:
-        var dp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var dp = mptr(param.ptr)
         var sp = self.ptrs[][self.idx]
         var keep = Scalar[DT](1.0) - self.rate
         for k in range(n_elems):
@@ -81,7 +81,7 @@ struct _PolyakMixGPU(ParamVisitor):
         grad: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
         n_elems: Int, apply_decay: Bool,
     ) raises:
-        var dp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var dp = mptr(param.ptr)
         var sp = self.ptrs[][self.idx]
         var nb = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_polyak_mix_k](

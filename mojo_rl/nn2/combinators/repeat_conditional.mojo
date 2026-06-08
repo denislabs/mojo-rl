@@ -23,7 +23,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
@@ -213,7 +213,7 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
             return
 
         # grad_c accumulator: zero it, then add each block's grad_c.
-        var gc_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gc.ptr)
+        var gc_p = mptr(gc.ptr)
         comptime total = BATCH * D
         self._ensure_gc(total)
         var gc_tmp = (

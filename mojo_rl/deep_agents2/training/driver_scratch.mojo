@@ -29,6 +29,7 @@ fanning the type out comptime).
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.module import mptr
 
 
 struct DriverScratch[NAME: StaticString, N_ENVS: Int, DIM: Int](
@@ -78,15 +79,11 @@ struct DriverScratch[NAME: StaticString, N_ENVS: Int, DIM: Int](
     def host_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         """Raw CPU pointer. Valid for `target="cpu"` and for
         `target="gpu"` builds that requested `with_host_mirror=True`."""
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.cpu.unsafe_ptr()
-        )
+        return mptr(self.cpu.unsafe_ptr())
 
     def dev_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         """Raw GPU pointer. Valid only after `make["gpu"]`."""
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.dev.value().unsafe_ptr()
-        )
+        return mptr(self.dev.value().unsafe_ptr())
 
     def target_ptr[
         target: StaticString

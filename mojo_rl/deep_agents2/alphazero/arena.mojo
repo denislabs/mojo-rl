@@ -29,7 +29,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import (
@@ -52,7 +52,7 @@ def _xs(s: UInt64) -> UInt64:
 
 @always_inline
 def _mptr(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+    return mptr(b.unsafe_ptr())
 
 
 @always_inline

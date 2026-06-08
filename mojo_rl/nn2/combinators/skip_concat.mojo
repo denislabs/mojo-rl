@@ -33,7 +33,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
@@ -206,10 +206,8 @@ struct SkipConcat[Inner: Module](Module):
             self.inner.forward[target, BATCH, POLICY=POLICY](
                 input, output=inner_tt,
             )
-            var ip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
+            var ip = mptr(input.ptr)
+            var op = mptr(output_v.ptr)
             var sp = self.inner_buf_cpu
             for b in range(BATCH):
                 var row_out = op + b * (IN + OUT_INNER)
@@ -234,12 +232,8 @@ struct SkipConcat[Inner: Module](Module):
                     k += 1
         else:
             self._ensure_inner_buf_gpu(BATCH * OUT_INNER)
-            var in_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                input.ptr
-            )
-            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
+            var in_p_w = mptr(input.ptr)
+            var out_p_w = mptr(output_v.ptr)
             var sp: UnsafePointer[Scalar[DT], MutAnyOrigin] = (
                 self.inner_buf_dev.value().unsafe_ptr()
             )
@@ -291,9 +285,7 @@ struct SkipConcat[Inner: Module](Module):
 
         comptime if target == "cpu":
             self._ensure_inner_buf_cpu(BATCH * OUT_INNER)
-            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
+            var gop = mptr(grad_output_v.ptr)
             var sp = self.inner_buf_cpu
             # 1. Extract inner-portion grad: grad_output[:, IN:IN+OUT_INNER]
             for b in range(BATCH):
@@ -312,9 +304,7 @@ struct SkipConcat[Inner: Module](Module):
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](inner_tt, grad_input_v)
             # 3. grad_input += grad_output[:, 0:IN]
-            var gip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var gip = mptr(grad_input_v.ptr)
             for b in range(BATCH):
                 var row_gi = gip + b * IN
                 var row_go = gop + b * (IN + OUT_INNER)
@@ -331,12 +321,8 @@ struct SkipConcat[Inner: Module](Module):
                     k += 1
         else:
             self._ensure_inner_buf_gpu(BATCH * OUT_INNER)
-            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var go_p_w = mptr(grad_output_v.ptr)
+            var gi_p_w = mptr(grad_input_v.ptr)
             comptime go_layout = Layout.row_major(BATCH, IN + OUT_INNER)
             comptime inner_layout = Layout.row_major(BATCH, OUT_INNER)
             comptime gi_layout = Layout.row_major(BATCH, IN)

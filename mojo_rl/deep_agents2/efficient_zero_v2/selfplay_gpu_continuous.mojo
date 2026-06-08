@@ -26,7 +26,7 @@ from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.initializer import Kaiming
@@ -40,7 +40,7 @@ from ..zero.sequence_replay_mcts_continuous import MCTSContSequenceReplay
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
+    return mptr(alloc[Scalar[DT]](n))
 
 
 def run_ezv2_sampled_selfplay_gpu[
@@ -189,8 +189,7 @@ def run_ezv2_sampled_selfplay_gpu[
             h_obs[j] = Scalar[DT](cur_f[j])
         ctx.enqueue_copy(d_obs, h_obs)
         var obs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
-            MutAnyOrigin](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                d_obs.unsafe_ptr()))
+            MutAnyOrigin](mptr(d_obs.unsafe_ptr()))
         planner.search_gpu[
             MZRepGPU[OBS, LATENT, REP],
             MZDynGPU[LATENT, ACT_DIM, BINS, DYN],
@@ -228,14 +227,10 @@ def run_ezv2_sampled_selfplay_gpu[
 
         if done or ep_len >= max_ep_steps:
             rb.store_episode(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    e_obs.unsafe_ptr()),
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    e_act.unsafe_ptr()),
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    e_rew.unsafe_ptr()),
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    e_val.unsafe_ptr()),
+                mptr(e_obs.unsafe_ptr()),
+                mptr(e_act.unsafe_ptr()),
+                mptr(e_rew.unsafe_ptr()),
+                mptr(e_val.unsafe_ptr()),
                 ep_len,
             )
             ep_returns.append(ep_return)
@@ -287,9 +282,7 @@ def run_ezv2_sampled_selfplay_gpu[
                         ctx.enqueue_copy(d_obs, h_ra_obs)
                         var ra_obs_t = LayoutTensor[
                             DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
-                        ](rebind[
-                            UnsafePointer[Scalar[DT], MutAnyOrigin]
-                        ](d_obs.unsafe_ptr()))
+                        ](mptr(d_obs.unsafe_ptr()))
                         planner.search_gpu[
                             MZRepGPU[OBS, LATENT, REP],
                             MZDynGPU[LATENT, ACT_DIM, BINS, DYN],
@@ -321,8 +314,7 @@ def run_ezv2_sampled_selfplay_gpu[
                     ctx.enqueue_copy(d_obs, h_obs)
                     var eobs_t = LayoutTensor[DT,
                         Layout.row_major(N_ENVS, OBS), MutAnyOrigin](
-                            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                                d_obs.unsafe_ptr()))
+                            mptr(d_obs.unsafe_ptr()))
                     planner.search_gpu[
                         MZRepGPU[OBS, LATENT, REP],
                         MZDynGPU[LATENT, ACT_DIM, BINS, DYN],

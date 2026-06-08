@@ -154,8 +154,8 @@ struct ConditionalTransformerBlock[
         comptime total = BATCH * Self.SEQ_DIM
 
         comptime if target == "cpu":
-            var gx_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gx.ptr)
-            var gc_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gc.ptr)
+            var gx_p = gx.ptr
+            var gc_p = gc.ptr
             for i in range(total):
                 gx_p[i] = gx_src[i]
                 gc_p[i] = gc_src[i]
@@ -164,8 +164,8 @@ struct ConditionalTransformerBlock[
             comptime lay = Layout.row_major(total)
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime kern = _ctb_copy_kernel[total]
-            var gx_dst = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gx.ptr)
-            var gc_dst = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gc.ptr)
+            var gx_dst = gx.ptr
+            var gc_dst = gc.ptr
             ctx.enqueue_function[kern](
                 LayoutTensor[DT, lay, MutAnyOrigin](gx_src),
                 LayoutTensor[DT, lay, MutAnyOrigin](gx_dst),

@@ -32,7 +32,7 @@ from layout import Layout, LayoutTensor, TileTensor
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
-from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut, mptr
 from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 
@@ -148,12 +148,8 @@ struct AZLossOp[ACT: Int](Module):
     ) raises:
         assert_tag_for["AZLossOp", target](self.ts.target_tag)
         comptime W = Self.ACT + 1
-        var pred = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            inputs.tile[0, BATCH, W]().ptr
-        )
-        var tgt = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            inputs.tile[1, BATCH, W]().ptr
-        )
+        var pred = mptr(inputs.tile[0, BATCH, W]().ptr)
+        var tgt = mptr(inputs.tile[1, BATCH, W]().ptr)
         self._pred_ptr = pred
         self._tgt_ptr = tgt
         var o = typed_view_mut[BATCH, 1](output).ptr

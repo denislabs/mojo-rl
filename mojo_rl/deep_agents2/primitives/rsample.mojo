@@ -20,7 +20,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut, mptr
 from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.saveable import Saveable
 from mojo_rl.nn2.core.save_scalar import _expect_kv_line
@@ -265,20 +265,12 @@ struct RSample[ACT: Int](Module, Saveable):
         else:
             var ctx = self.ts.ctx.value()
             self._ensure_cache_gpu(BATCH)
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
-            var in_cache_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.in_cache_dev.value().unsafe_ptr()
-            )
-            var z_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.z_cache_dev.value().unsafe_ptr()
-            )
-            var act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.act_dev.value().unsafe_ptr()
-            )
-            var lp_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.lp_dev.value().unsafe_ptr()
-            )
+            var in_p = mptr(input.ptr)
+            var out_p = mptr(output_v.ptr)
+            var in_cache_p = mptr(self.in_cache_dev.value().unsafe_ptr())
+            var z_p = mptr(self.z_cache_dev.value().unsafe_ptr())
+            var act_p = mptr(self.act_dev.value().unsafe_ptr())
+            var lp_p = mptr(self.lp_dev.value().unsafe_ptr())
             # Cache input via a device-to-device copy.
             ctx.enqueue_copy(self.in_cache_dev.value(), in_p)
             # Draw fresh z via philox+box-muller, reading the Philox offset
@@ -358,20 +350,12 @@ struct RSample[ACT: Int](Module, Saveable):
             )
         else:
             var ctx = self.ts.ctx.value()
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
-            var in_cache_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.in_cache_dev.value().unsafe_ptr()
-            )
-            var z_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.z_cache_dev.value().unsafe_ptr()
-            )
-            var ga_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.grad_act_dev.value().unsafe_ptr()
-            )
-            var glp_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.grad_lp_dev.value().unsafe_ptr()
-            )
+            var go_p = mptr(grad_output_v.ptr)
+            var gi_p = mptr(grad_input_v.ptr)
+            var in_cache_p = mptr(self.in_cache_dev.value().unsafe_ptr())
+            var z_p = mptr(self.z_cache_dev.value().unsafe_ptr())
+            var ga_p = mptr(self.grad_act_dev.value().unsafe_ptr())
+            var glp_p = mptr(self.grad_lp_dev.value().unsafe_ptr())
             # Unpack grad_output → grad_action + grad_log_prob.
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.ACT + 1), MutAnyOrigin,

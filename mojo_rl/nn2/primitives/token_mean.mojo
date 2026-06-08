@@ -116,10 +116,8 @@ struct TokenMean[SEQ_LEN: Int, DIM: Int](Module):
                         acc += input[b, t * Self.DIM + d]
                     output_v[b, d] = acc * inv_seq
         else:
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
+            var in_p = input.ptr
+            var out_p = output_v.ptr
             var in_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.SEQ_LEN * Self.DIM),
                 MutAnyOrigin,
@@ -165,12 +163,8 @@ struct TokenMean[SEQ_LEN: Int, DIM: Int](Module):
                             grad_output_v[b, d] * inv_seq
                         )
         else:
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin,
             ](go_p)

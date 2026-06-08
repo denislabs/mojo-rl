@@ -168,8 +168,8 @@ struct DuelingHeadC51[NA: Int, N_ATOMS: Int](Module):
                         ]
                         output_v[b, a * Self.N_ATOMS + k] = v_k + (adv - mean_a)
         else:
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_p = input.ptr
+            var out_p = output_v.ptr
             var in_lt = LayoutTensor[
                 DT,
                 Layout.row_major(BATCH, (1 + Self.NA) * Self.N_ATOMS),
@@ -227,8 +227,8 @@ struct DuelingHeadC51[NA: Int, N_ATOMS: Int](Module):
                             - inv * sum_dq
                         )
         else:
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var go_lt = LayoutTensor[
                 DT,
                 Layout.row_major(BATCH, Self.NA * Self.N_ATOMS),

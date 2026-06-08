@@ -211,10 +211,8 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
             comptime lay_bv = Layout.row_major(BATCH, Self.VOCAB)
             comptime lay_be = Layout.row_major(BATCH, Self.EMBED_DIM)
             comptime lay_w = Layout.row_major(Self.VOCAB, Self.EMBED_DIM)
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
+            var in_p = input.ptr
+            var out_p = output_v.ptr
             var in_lt = LayoutTensor[DT, lay_bv, MutAnyOrigin](in_p)
             var out_lt = LayoutTensor[DT, lay_be, MutAnyOrigin](out_p)
             var w_lt = LayoutTensor[DT, lay_w, MutAnyOrigin](
@@ -281,12 +279,8 @@ struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
             comptime lay_bv = Layout.row_major(BATCH, Self.VOCAB)
             comptime lay_be = Layout.row_major(BATCH, Self.EMBED_DIM)
             comptime lay_w = Layout.row_major(Self.VOCAB, Self.EMBED_DIM)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var go_lt = LayoutTensor[DT, lay_be, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, lay_bv, MutAnyOrigin](gi_p)
             var w_lt = LayoutTensor[DT, lay_w, MutAnyOrigin](

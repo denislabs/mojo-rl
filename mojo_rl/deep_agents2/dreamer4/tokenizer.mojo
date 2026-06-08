@@ -14,7 +14,7 @@ from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut, mptr
 from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import (
     TargetStorage, assert_tag_for, ensure_cpu_buffer,
@@ -29,7 +29,7 @@ def _mao_tile[
     DT, type_of(row_major[BATCH, N]()), MutAnyOrigin
 ]:
     return TileTensor(
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](buf.unsafe_ptr()),
+        mptr(buf.unsafe_ptr()),
         row_major[BATCH, N](),
     )
 
@@ -40,7 +40,7 @@ def _dev_tile[
     DT, type_of(row_major[BATCH, N]()), MutAnyOrigin
 ]:
     return TileTensor(
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](buf.unsafe_ptr()),
+        mptr(buf.unsafe_ptr()),
         row_major[BATCH, N](),
     )
 

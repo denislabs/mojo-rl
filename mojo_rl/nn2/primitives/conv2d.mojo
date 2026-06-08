@@ -73,7 +73,7 @@ from ..core import (
     for_each_param_auto,
     zero_grad_auto,
 )
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
@@ -433,17 +433,13 @@ struct Conv2D[
             var w_host = List[Scalar[DT]](length=Self.W_SIZE, fill=0.0)
             var b_host = List[Scalar[DT]](length=Self.B_SIZE, fill=0.0)
             INIT.init_weight(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    w_host.unsafe_ptr()
-                ),
+                mptr(w_host.unsafe_ptr()),
                 Self.W_SIZE,
                 Self.IC * Self.K * Self.K,
                 Self.OC * Self.K * Self.K,
             )
             INIT.init_bias(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    b_host.unsafe_ptr()
-                ),
+                mptr(b_host.unsafe_ptr()),
                 Self.B_SIZE,
             )
             var w_hb = ctx_v.enqueue_create_host_buffer[DT](Self.W_SIZE)
@@ -476,12 +472,8 @@ struct Conv2D[
         assert_tag_for["Conv2D", target](self.ts.target_tag)
         var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            input.ptr
-        )
-        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            output_v.ptr
-        )
+        var in_p = input.ptr
+        var out_p = output_v.ptr
         self._cached_input_ptr = in_p
 
         comptime if target == "cpu":
@@ -611,9 +603,7 @@ struct Conv2D[
             var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
 
             comptime if target == "cpu":
-                var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    grad_output_v.ptr
-                )
+                var go_p = grad_output_v.ptr
                 var x_p = self._cached_input_ptr.value()
                 var dw_p = self.weight.grad_unsafe_ptr_cpu()
                 var db_p = self.bias.grad_unsafe_ptr_cpu()
@@ -713,9 +703,7 @@ struct Conv2D[
                 ):
                     dw_tmp.value().free()
             else:
-                var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    grad_output_v.ptr
-                )
+                var go_p = grad_output_v.ptr
                 var x_p = self._cached_input_ptr.value()
                 comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
                 comptime out_layout = Layout.row_major(
@@ -788,12 +776,8 @@ struct Conv2D[
         var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var w_p = self.weight.value_unsafe_ptr_cpu()
 
             # Zero d_input — col2im is scatter-add.
@@ -890,12 +874,8 @@ struct Conv2D[
             ):
                 go_b_T_buf.value().free()
         else:
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
             comptime out_layout = Layout.row_major(
                 BATCH, Self.OUT_DIM_FLAT

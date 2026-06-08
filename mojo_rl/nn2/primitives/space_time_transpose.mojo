@@ -162,10 +162,10 @@ struct SpaceTimeTranspose[T: Int, S: Int, D: Int](Module):
     ) raises:
         comptime lay = Layout.row_major(BATCH, Self.T * Self.S * Self.D)
         var src_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](src.ptr)
+            src.ptr
         )
         var dst_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](dst.ptr)
+            dst.ptr
         )
         comptime total = BATCH * Self.T * Self.S * Self.D
         comptime n_blocks = (total + TPB - 1) // TPB

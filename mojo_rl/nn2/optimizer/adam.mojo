@@ -33,7 +33,7 @@ from ..core.grad_clip import (
     clip_grads_auto_gpu,
     GradClipState,
 )
-from ..core.module import Module
+from ..core.module import Module, mptr
 from ..core.optimizer import Optimizer
 from ..core.saveable import Saveable
 from ..core.save_scalar import _expect_kv_line
@@ -270,8 +270,8 @@ struct _AdamCPUStepVisitor(ParamVisitor):
         apply_decay: Bool,
     ) raises:
         var off = self.offsets_ptr[][self.idx]
-        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
-        var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        var p_ptr = mptr(param.ptr)
+        var g_ptr = mptr(grad.ptr)
         var m_ptr = self.m_flat_ptr[].unsafe_ptr() + off
         var v_ptr = self.v_flat_ptr[].unsafe_ptr() + off
         var b1_v = SIMD[DT, CPU_SIMD_W](self.beta1)
@@ -328,7 +328,7 @@ struct _ZeroGradCPUVisitor(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        var g_ptr = mptr(grad.ptr)
         var zero: Scalar[DT] = 0.0
         for i in range(n_elems):
             g_ptr[i] = zero
@@ -388,8 +388,8 @@ struct _AdamGPUStepVisitor(ParamVisitor):
         var off = self.offsets_ptr[][self.idx]
         var m_off = self.m_base + off
         var v_off = self.v_base + off
-        var param_w_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
-        var grad_w_ptr  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        var param_w_ptr = mptr(param.ptr)
+        var grad_w_ptr  = mptr(grad.ptr)
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_adam_update_kernel](
             param_w_ptr, grad_w_ptr, m_off, v_off, self.bc_base, n_elems,
@@ -415,7 +415,7 @@ struct _ZeroGradGPUVisitor(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var grad_w_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        var grad_w_ptr = mptr(grad.ptr)
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_zero_fill_kernel](
             grad_w_ptr, n_elems, grid_dim=n_blocks, block_dim=TPB,
@@ -445,8 +445,8 @@ struct _MTDescriptorCollector(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
-        var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        var p_ptr = mptr(param.ptr)
+        var g_ptr = mptr(grad.ptr)
         self.param_addrs_ptr[].append(UInt64(Int(p_ptr)))
         self.grad_addrs_ptr[].append(UInt64(Int(g_ptr)))
 
@@ -727,12 +727,8 @@ struct Adam(Optimizer, Saveable):
                         ),
                         self._mt_n_params,
                         self.total_size,
-                        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                            self.m_dev.value().unsafe_ptr()
-                        ),
-                        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                            self.v_dev.value().unsafe_ptr()
-                        ),
+                        mptr(self.m_dev.value().unsafe_ptr()),
+                        mptr(self.v_dev.value().unsafe_ptr()),
                         bc_ptr,
                         self.lr, self.beta1, self.beta2, self.eps,
                         grid_dim=n_blocks,
@@ -901,15 +897,11 @@ struct Adam(Optimizer, Saveable):
         out += prefix + ".beta1_pow_t=" + String(self.beta1_pow_t) + "\n"
         out += prefix + ".beta2_pow_t=" + String(self.beta2_pow_t) + "\n"
         out += prefix + ".m_flat#size=" + String(self.total_size) + "\n"
-        var m_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.m_flat.unsafe_ptr()
-        )
+        var m_ptr = mptr(self.m_flat.unsafe_ptr())
         for k in range(self.total_size):
             out += String(m_ptr[k]) + "\n"
         out += prefix + ".v_flat#size=" + String(self.total_size) + "\n"
-        var v_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.v_flat.unsafe_ptr()
-        )
+        var v_ptr = mptr(self.v_flat.unsafe_ptr())
         for k in range(self.total_size):
             out += String(v_ptr[k]) + "\n"
 
@@ -1016,9 +1008,7 @@ struct Adam(Optimizer, Saveable):
                 + expected_header + "`, got `" + header + "`"
             )
         idx += 1
-        var t_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            target.unsafe_ptr()
-        )
+        var t_ptr = mptr(target.unsafe_ptr())
         for k in range(expected_size):
             if idx >= len(lines):
                 raise Error(

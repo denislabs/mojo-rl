@@ -9,9 +9,9 @@ the canonical kernel ABI). What S2′ *can* fix is the ergonomics: today
 every leaf body re-does the rebind-to-`MutAnyOrigin` dance inline,
 roughly every two lines —
 
-    var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[0].ptr)
-    var i1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[1].ptr)
-    var o_p  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+    var i0_p = mptr(inputs[0].ptr)
+    var i1_p = mptr(inputs[1].ptr)
+    var o_p  = mptr(output.ptr)
     var i0_lt = LayoutTensor[DT, layout, MutAnyOrigin](i0_p)
     var i1_lt = LayoutTensor[DT, layout, MutAnyOrigin](i1_p)
     var o_lt  = LayoutTensor[DT, layout, MutAnyOrigin](o_p)
@@ -47,6 +47,7 @@ from std.memory import UnsafePointer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
+from .module import mptr
 
 
 @fieldwise_init
@@ -81,7 +82,7 @@ struct TensorPack[N: Int](Copyable, Movable):
         var ps = InlineArray[
             UnsafePointer[Scalar[DT], MutAnyOrigin], Self.N
         ](uninitialized=True)
-        ps[0] = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](t.ptr)
+        ps[0] = mptr(t.ptr)
         self.ptrs = ps^
 
     @staticmethod
@@ -102,9 +103,7 @@ struct TensorPack[N: Int](Copyable, Movable):
             UnsafePointer[Scalar[DT], MutAnyOrigin], Self.N
         ](uninitialized=True)
         comptime for i in range(Self.N):
-            ps[i] = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                inputs[i].ptr
-            )
+            ps[i] = mptr(inputs[i].ptr)
         return Self(ps^)
 
     def ptr[i: Int](self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:

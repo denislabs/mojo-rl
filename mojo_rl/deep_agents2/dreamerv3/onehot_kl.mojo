@@ -37,7 +37,7 @@ from layout import Layout, LayoutTensor, TileTensor
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
-from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut, mptr
 from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 
@@ -244,18 +244,10 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDestructible):
         mut rep_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         self._ensure_cache(BATCH)
-        var smpo = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.sm_post.unsafe_ptr()
-        )
-        var smpr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.sm_prior.unsafe_ptr()
-        )
-        var ppo = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.p_post.unsafe_ptr()
-        )
-        var ppr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.p_prior.unsafe_ptr()
-        )
+        var smpo = mptr(self.sm_post.unsafe_ptr())
+        var smpr = mptr(self.sm_prior.unsafe_ptr())
+        var ppo = mptr(self.p_post.unsafe_ptr())
+        var ppr = mptr(self.p_prior.unsafe_ptr())
         for b in range(BATCH):
             var kl_sum: Scalar[DT] = 0.0
             for s in range(Self.STOCH):
@@ -281,18 +273,10 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDestructible):
         mut grad_post: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mut grad_prior: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
-        var smpo = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.sm_post.unsafe_ptr()
-        )
-        var smpr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.sm_prior.unsafe_ptr()
-        )
-        var ppo = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.p_post.unsafe_ptr()
-        )
-        var ppr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.p_prior.unsafe_ptr()
-        )
+        var smpo = mptr(self.sm_post.unsafe_ptr())
+        var smpr = mptr(self.sm_prior.unsafe_ptr())
+        var ppo = mptr(self.p_post.unsafe_ptr())
+        var ppr = mptr(self.p_prior.unsafe_ptr())
         var one_m_u = Scalar[DT](1.0) - self.unimix
         for b in range(BATCH):
             var act = self.active[b]
@@ -405,12 +389,8 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
         ],
     ) raises:
         assert_tag_for["OneHotKLLoss", target](self.ts.target_tag)
-        var post = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            inputs.tile[0, BATCH, Self.SC]().ptr
-        )
-        var prior = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            inputs.tile[1, BATCH, Self.SC]().ptr
-        )
+        var post = mptr(inputs.tile[0, BATCH, Self.SC]().ptr)
+        var prior = mptr(inputs.tile[1, BATCH, Self.SC]().ptr)
         var o = typed_view_mut[BATCH, 2](output).ptr
         comptime if target == "cpu":
             var dyn: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
@@ -425,12 +405,12 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
             comptime NG = BATCH * Self.STOCH
             self._ensure_dev(NN, NG, BATCH)
             var ctx = self.ts.ctx.value()
-            var smpo = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._smpo.value().unsafe_ptr())
-            var smpr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._smpr.value().unsafe_ptr())
-            var ppo = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._ppo.value().unsafe_ptr())
-            var ppr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._ppr.value().unsafe_ptr())
-            var actp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._act.value().unsafe_ptr())
-            var klp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._klpart.value().unsafe_ptr())
+            var smpo = mptr(self._smpo.value().unsafe_ptr())
+            var smpr = mptr(self._smpr.value().unsafe_ptr())
+            var ppo = mptr(self._ppo.value().unsafe_ptr())
+            var ppr = mptr(self._ppr.value().unsafe_ptr())
+            var actp = mptr(self._act.value().unsafe_ptr())
+            var klp = mptr(self._klpart.value().unsafe_ptr())
             var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
             comptime nb1 = (NG + TPB - 1) // TPB
             comptime k1 = _kl_fwd1_kernel[NG, Self.CLASSES]
@@ -458,12 +438,8 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
         grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         var go = typed_view[BATCH, 2](grad_output).ptr
-        var g_post = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            grad_inputs.tile[0, BATCH, Self.SC]().ptr
-        )
-        var g_prior = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            grad_inputs.tile[1, BATCH, Self.SC]().ptr
-        )
+        var g_post = mptr(grad_inputs.tile[0, BATCH, Self.SC]().ptr)
+        var g_prior = mptr(grad_inputs.tile[1, BATCH, Self.SC]().ptr)
         comptime if target == "cpu":
             var d_dyn: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
             var d_rep: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
@@ -476,11 +452,11 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
             comptime NN = BATCH * Self.SC
             comptime NG = BATCH * Self.STOCH
             var ctx = self.ts.ctx.value()
-            var smpo = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._smpo.value().unsafe_ptr())
-            var smpr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._smpr.value().unsafe_ptr())
-            var ppo = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._ppo.value().unsafe_ptr())
-            var ppr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._ppr.value().unsafe_ptr())
-            var actp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self._act.value().unsafe_ptr())
+            var smpo = mptr(self._smpo.value().unsafe_ptr())
+            var smpr = mptr(self._smpr.value().unsafe_ptr())
+            var ppo = mptr(self._ppo.value().unsafe_ptr())
+            var ppr = mptr(self._ppr.value().unsafe_ptr())
+            var actp = mptr(self._act.value().unsafe_ptr())
             var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
             var one_m_u = Scalar[DT](1.0) - self.kl.unimix
             comptime nb = (NG + TPB - 1) // TPB

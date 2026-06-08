@@ -410,12 +410,8 @@ struct BatchNorm1D[
         else:
             comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
             comptime layout_d  = Layout.row_major(Self.DIM)
-            var in_p_w  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                input.ptr
-            )
-            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
+            var in_p_w  = input.ptr
+            var out_p_w = output_v.ptr
             var in_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p_w)
             var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p_w)
             var g_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
@@ -523,12 +519,8 @@ struct BatchNorm1D[
         else:
             comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
             comptime layout_d  = Layout.row_major(Self.DIM)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
             var g_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](

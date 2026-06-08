@@ -40,6 +40,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.module import mptr
 from mojo_rl.deep_agents2.dreamerv3.trainer import DreamerV3Trainer
 from mojo_rl.deep_agents2.dreamerv3.dists import bounded_std
 from mojo_rl.deep_agents2.dreamerv3.dists_discrete import (
@@ -54,7 +55,7 @@ def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 
 @always_inline
 def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+    return mptr(b.unsafe_ptr())
 
 
 @always_inline

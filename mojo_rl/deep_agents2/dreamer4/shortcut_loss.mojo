@@ -40,7 +40,7 @@ from layout import TileTensor, row_major
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 
 
 def _ilog2(n: Int) -> Int:
@@ -104,7 +104,7 @@ trait AgentDynamics(ShortcutDynamics):
 
 
 def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
+    return mptr(alloc[Scalar[DT]](n))
 
 
 def _run_fwd[
@@ -137,11 +137,11 @@ def _run_fwd[
             hi.unsafe_ptr()[i] = in_host[i]
         c.enqueue_copy(di, hi)
         var it = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](di.unsafe_ptr()),
+            mptr(di.unsafe_ptr()),
             row_major[BATCH, ND](),
         )
         var ot = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](do_out.unsafe_ptr()),
+            mptr(do_out.unsafe_ptr()),
             row_major[BATCH, ND](),
         )
         dyn.forward["gpu", BATCH](it, output=ot)

@@ -8,7 +8,7 @@ trap if their shape changes."""
 
 from .param_visitor import ParamVisitor
 from .graph_visitor import GraphVisitor, DisplayStep
-from .module import Module, typed_view, typed_view_mut
+from .module import Module, typed_view, typed_view_mut, mptr
 from .graph_node import GraphNode
 from .optimizer import Optimizer
 from .loss import Loss

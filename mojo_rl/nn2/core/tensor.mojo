@@ -36,6 +36,7 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from ..constants import DT
+from .module import mptr
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -161,20 +162,14 @@ struct Tensor[
     # ----- pointer / buffer accessors ------------------------------------
 
     def cpu_ptr(ref self) -> UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]](
-            self.cpu.unsafe_ptr()
-        )
+        return mptr(self.cpu.unsafe_ptr())
 
     def dev_ptr(self) -> UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]](
-            self.dev.value().unsafe_ptr()
-        )
+        return mptr(self.dev.value().unsafe_ptr())
 
     def host_ptr(self) -> UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]:
         """Pinned host-staging pointer (STAGING). For H2D/D2H bookkeeping."""
-        return rebind[UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]](
-            self.hbuf.value().unsafe_ptr()
-        )
+        return mptr(self.hbuf.value().unsafe_ptr())
 
     def target_ptr[
         target: StaticString

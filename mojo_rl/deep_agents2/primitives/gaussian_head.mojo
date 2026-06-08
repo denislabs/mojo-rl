@@ -38,7 +38,7 @@ from mojo_rl.nn2.core import (
     for_each_param_auto,
     zero_grad_auto,
 )
-from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut, mptr
 from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import require_ctx, TargetStorage, assert_tag_for
 from mojo_rl.nn2.core.target_tag import TARGET_GPU
@@ -233,7 +233,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
         var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
-        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+        var in_p = mptr(input.ptr)
         self._cached_input_ptr = in_p
 
         comptime if target == "cpu":
@@ -257,7 +257,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
                     output_v[bi, Self.ACT + j] = v
         else:
             var ctx = self.ts.ctx.value()
-            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var out_p_w = mptr(output_v.ptr)
 
             comptime in_layout = Layout.row_major(BATCH, Self.IN)
             comptime out_layout = Layout.row_major(BATCH, 2 * Self.ACT)
@@ -342,8 +342,8 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
                     grad_input_v[bi, i] = acc
         else:
             var ctx = self.ts.ctx.value()
-            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var go_p_w = mptr(grad_output_v.ptr)
+            var gi_p_w = mptr(grad_input_v.ptr)
 
             comptime go_layout = Layout.row_major(BATCH, 2 * Self.ACT)
             comptime gi_layout = Layout.row_major(BATCH, Self.IN)

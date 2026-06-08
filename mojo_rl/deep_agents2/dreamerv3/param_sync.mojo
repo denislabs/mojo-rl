@@ -19,6 +19,7 @@ from std.gpu.memory import AddressSpace
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.module import mptr
 from mojo_rl.nn2.core import ParamVisitor, GraphNode
 from mojo_rl.nn2.combinators.compute_graph import ComputeGraph
 
@@ -58,7 +59,7 @@ struct _CollectVisitor(ParamVisitor):
     ) raises:
         self.names[].append(name)
         self.ptrs[].append(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+            mptr(param.ptr)
         )
         self.lens[].append(n_elems)
 
@@ -86,7 +87,7 @@ struct _CopyByNameVisitor(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var dp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var dp = mptr(param.ptr)
         for i in range(len(self.names[])):
             if self.names[][i] == name:
                 var sp = self.ptrs[][i]
@@ -120,7 +121,7 @@ struct _CopyByNameVisitorGPU(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var dp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var dp = mptr(param.ptr)
         for i in range(len(self.names[])):
             if self.names[][i] == name:
                 var sp = self.ptrs[][i]

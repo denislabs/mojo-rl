@@ -238,8 +238,8 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
         var input_v = inputs.tile[0, BATCH, Self.IN]()
         var output_v = typed_view_mut[BATCH, Self.OUT](output)
 
-        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
-        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+        var in_p = input_v.ptr
+        var out_p = output_v.ptr
 
         # Save the orchestrator input slab pointer for grad_W on backward.
         self._cached_input_ptr = in_p
@@ -364,7 +364,7 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
         assert_tag_for["LinearAct", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
 
-        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+        var go_p = grad_output_v.ptr
 
         comptime if target == "cpu":
             # (1) In-place rewrite: grad_output[b,j] = OP.backward(cache[b,j], go).

@@ -151,16 +151,16 @@ struct Modulate[DIM: Int](Module):
             self._ensure_cache_gpu(BATCH)
             comptime lay = Layout.row_major(BATCH, Self.DIM)
             var x_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](x.ptr)
+                x.ptr
             )
             var s_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](scale.ptr)
+                scale.ptr
             )
             var sh_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](shift.ptr)
+                shift.ptr
             )
             var o_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr)
+                out.ptr
             )
             var cx_lt = LayoutTensor[DT, lay, MutAnyOrigin](
                 self.cache_x.dev.value()
@@ -209,16 +209,16 @@ struct Modulate[DIM: Int](Module):
         else:
             comptime lay = Layout.row_major(BATCH, Self.DIM)
             var go_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go.ptr)
+                go.ptr
             )
             var gx_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gx.ptr)
+                gx.ptr
             )
             var gs_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gs.ptr)
+                gs.ptr
             )
             var gsh_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gsh.ptr)
+                gsh.ptr
             )
             var cx_lt = LayoutTensor[DT, lay, MutAnyOrigin](
                 self.cache_x.dev.value()

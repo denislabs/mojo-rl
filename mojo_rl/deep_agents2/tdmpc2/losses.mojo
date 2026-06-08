@@ -31,7 +31,7 @@ from layout import Layout, LayoutTensor, TileTensor
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
-from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut, mptr
 from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import require_ctx, TargetStorage, assert_tag_for
 from mojo_rl.deep_agents2.dreamerv3.twohot import (
@@ -263,12 +263,8 @@ struct MSELossPlain[DIM: Int](Module):
         ],
     ) raises:
         assert_tag_for["MSELossPlain", target](self.ts.target_tag)
-        var pred = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            inputs.tile[0, BATCH, Self.DIM]().ptr
-        )
-        var tgt = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            inputs.tile[1, BATCH, Self.DIM]().ptr
-        )
+        var pred = mptr(inputs.tile[0, BATCH, Self.DIM]().ptr)
+        var tgt = mptr(inputs.tile[1, BATCH, Self.DIM]().ptr)
         self._pred_ptr = pred
         self._target_ptr = tgt
         var o = typed_view_mut[BATCH, 1](output).ptr
@@ -421,12 +417,8 @@ struct BCEWithLogitsLoss(Module):
         ],
     ) raises:
         assert_tag_for["BCEWithLogitsLoss", target](self.ts.target_tag)
-        var lg = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            inputs.tile[0, BATCH, 1]().ptr
-        )
-        var tgt = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            inputs.tile[1, BATCH, 1]().ptr
-        )
+        var lg = mptr(inputs.tile[0, BATCH, 1]().ptr)
+        var tgt = mptr(inputs.tile[1, BATCH, 1]().ptr)
         self._logit_ptr = lg
         self._target_ptr = tgt
         var o = typed_view_mut[BATCH, 1](output).ptr
@@ -519,9 +511,7 @@ struct TDMPC2TwoHotLoss[BINS: Int, VMIN: Int, VMAX: Int](Module):
         var m = Self()
         m.bins = List[Scalar[DT]](length=Self.BINS, fill=Scalar[DT](0.0))
         _linspace_bins[Self.BINS](
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                m.bins.unsafe_ptr()
-            ),
+            mptr(m.bins.unsafe_ptr()),
             lo=Scalar[DT](Self.VMIN),
             hi=Scalar[DT](Self.VMAX),
         )
@@ -541,9 +531,7 @@ struct TDMPC2TwoHotLoss[BINS: Int, VMIN: Int, VMAX: Int](Module):
         return m^
 
     def bins_unsafe_ptr(mut self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.bins.unsafe_ptr()
-        )
+        return mptr(self.bins.unsafe_ptr())
 
     def forward[
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
@@ -556,12 +544,8 @@ struct TDMPC2TwoHotLoss[BINS: Int, VMIN: Int, VMAX: Int](Module):
         ],
     ) raises:
         assert_tag_for["TDMPC2TwoHotLoss", target](self.ts.target_tag)
-        var lg = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            inputs.tile[0, BATCH, Self.BINS]().ptr
-        )
-        var tgt = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            inputs.tile[1, BATCH, 1]().ptr
-        )
+        var lg = mptr(inputs.tile[0, BATCH, Self.BINS]().ptr)
+        var tgt = mptr(inputs.tile[1, BATCH, 1]().ptr)
         self._logits_ptr = lg
         self._target_ptr = tgt
         var o = typed_view_mut[BATCH, 1](output).ptr
@@ -572,9 +556,7 @@ struct TDMPC2TwoHotLoss[BINS: Int, VMIN: Int, VMAX: Int](Module):
                     lg, b * Self.BINS, bins, _symlog(tgt[b])
                 )
         else:
-            var binsd = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._bins_dev.value().unsafe_ptr()
-            )
+            var binsd = mptr(self._bins_dev.value().unsafe_ptr())
             var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
             comptime nb = (BATCH + TPB - 1) // TPB
             comptime kf = _th_fwd_kernel[BATCH, Self.BINS]
@@ -610,9 +592,7 @@ struct TDMPC2TwoHotLoss[BINS: Int, VMIN: Int, VMAX: Int](Module):
                 )
                 g_tgt[b] = 0.0
         else:
-            var binsd = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._bins_dev.value().unsafe_ptr()
-            )
+            var binsd = mptr(self._bins_dev.value().unsafe_ptr())
             var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
             var glp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_lg)
             var gtp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_tgt)
@@ -730,7 +710,7 @@ struct TwoHotDecode[BINS: Int, VMIN: Int, VMAX: Int](Module):
         var m = Self()
         m.bins = List[Scalar[DT]](length=Self.BINS, fill=Scalar[DT](0.0))
         _linspace_bins[Self.BINS](
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](m.bins.unsafe_ptr()),
+            mptr(m.bins.unsafe_ptr()),
             lo=Scalar[DT](Self.VMIN),
             hi=Scalar[DT](Self.VMAX),
         )
@@ -750,9 +730,7 @@ struct TwoHotDecode[BINS: Int, VMIN: Int, VMAX: Int](Module):
         return m^
 
     def bins_unsafe_ptr(mut self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.bins.unsafe_ptr()
-        )
+        return mptr(self.bins.unsafe_ptr())
 
     def forward[
         target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
@@ -765,9 +743,7 @@ struct TwoHotDecode[BINS: Int, VMIN: Int, VMAX: Int](Module):
         ],
     ) raises:
         assert_tag_for["TwoHotDecode", target](self.ts.target_tag)
-        var lg = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            inputs.tile[0, BATCH, Self.BINS]().ptr
-        )
+        var lg = mptr(inputs.tile[0, BATCH, Self.BINS]().ptr)
         self._logits_ptr = lg
         var o = typed_view_mut[BATCH, 1](output).ptr
         comptime if target == "cpu":
@@ -776,9 +752,7 @@ struct TwoHotDecode[BINS: Int, VMIN: Int, VMAX: Int](Module):
                 var s = twohot_pred[Self.BINS](lg, b * Self.BINS, bins)
                 o[b] = _symexp(s)
         else:
-            var binsd = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._bins_dev.value().unsafe_ptr()
-            )
+            var binsd = mptr(self._bins_dev.value().unsafe_ptr())
             var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
             comptime nb = (BATCH + TPB - 1) // TPB
             comptime kf = _decode_fwd_kernel[BATCH, Self.BINS]
@@ -822,9 +796,7 @@ struct TwoHotDecode[BINS: Int, VMIN: Int, VMAX: Int](Module):
                     var p = exp(lg[base + c] - zmax) * inv
                     g_lg[base + c] = up * dds * p * (bins[c] - s)
         else:
-            var binsd = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._bins_dev.value().unsafe_ptr()
-            )
+            var binsd = mptr(self._bins_dev.value().unsafe_ptr())
             var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
             var glp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_lg)
             comptime nb = (BATCH + TPB - 1) // TPB

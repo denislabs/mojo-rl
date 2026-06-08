@@ -126,8 +126,8 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
         else:
             comptime layout_in = Layout.row_major(BATCH, Self.DIM)
             comptime layout_out = Layout.row_major(BATCH, 1)
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_p = input.ptr
+            var out_p = output_v.ptr
             var in_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](in_p)
             var out_lt = LayoutTensor[DT, layout_out, MutAnyOrigin](out_p)
             comptime n_blocks = (BATCH + TPB - 1) // TPB
@@ -165,8 +165,8 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
         else:
             comptime layout_go = Layout.row_major(BATCH, 1)
             comptime layout_gi = Layout.row_major(BATCH, Self.DIM)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var go_lt = LayoutTensor[DT, layout_go, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, layout_gi, MutAnyOrigin](gi_p)
             comptime total = BATCH * Self.DIM

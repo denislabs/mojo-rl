@@ -34,6 +34,7 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB
+from ..core.module import mptr
 from ..core import Module, Optimizer, Loss, Initializer, AMPPolicy, NoAMP
 from .augmenter import Augmenter, IdentityAugmenter
 from .lr_scheduler import Scheduler, ConstantSchedule
@@ -268,9 +269,7 @@ struct Trainer[
             # Module require origin=MutAnyOrigin. `*_buf` fields are
             # already `UnsafePointer[Scalar[DT], MutAnyOrigin]` (see
             # struct decl); only `input` needs rebinding.
-            var input_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                input.ptr
-            )
+            var input_p = mptr(input.ptr)
             var input_my = TileTensor(
                 input_p, row_major[Self.BATCH, Self.IN_DIM]()
             )
@@ -309,9 +308,7 @@ struct Trainer[
             var gi_ptr: UnsafePointer[
                 Scalar[DT], MutAnyOrigin
             ] = self.grad_in_dev.value().unsafe_ptr()
-            var in_ptr_my = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                input.ptr
-            )
+            var in_ptr_my = mptr(input.ptr)
             var input_my = TileTensor(
                 in_ptr_my, row_major[Self.BATCH, Self.IN_DIM]()
             )
@@ -466,12 +463,8 @@ struct Trainer[
 
         var result = TrainResult.empty()
         var ctx = self.ctx.value()
-        var x_base = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            train_x.ptr
-        )
-        var y_base = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            train_y.ptr
-        )
+        var x_base = mptr(train_x.ptr)
+        var y_base = mptr(train_y.ptr)
 
         # Shuffle scratch (device-only; allocated once, reused across epochs).
         var indices_dev: Optional[DeviceBuffer[DType.int32]] = None
@@ -663,12 +656,8 @@ struct Trainer[
 
         var result = TrainResult.empty()
         var ctx = self.ctx.value()
-        var raw_x = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            train_x.ptr
-        )
-        var y_base = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            train_y.ptr
-        )
+        var raw_x = mptr(train_x.ptr)
+        var y_base = mptr(train_y.ptr)
 
         # Augmentation buffer (allocated once, refilled per epoch). Identity
         # → skip it and train on `train_x` directly. A real augmenter fully
@@ -875,12 +864,8 @@ struct Trainer[
         var x_base = test_x.ptr
         var n_correct: Int = 0
         for b in range(N_BATCHES):
-            var x_ptr_my = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                x_base + b * Self.BATCH * Self.IN_DIM
-            )
-            var out_ptr_my = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.output_dev.value().unsafe_ptr()
-            )
+            var x_ptr_my = mptr(x_base + b * Self.BATCH * Self.IN_DIM)
+            var out_ptr_my = mptr(self.output_dev.value().unsafe_ptr())
             var input = TileTensor(x_ptr_my, row_major[Self.BATCH, Self.IN_DIM]())
             var output = TileTensor(
                 out_ptr_my, row_major[Self.BATCH, Self.OUT_DIM](),

@@ -28,7 +28,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 from .residual import _elementwise_add_kernel
@@ -152,7 +152,7 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
             self.skip.forward[target, BATCH, POLICY=POLICY](input, output=skip_out)
             var ap = self.inner_out_cpu
             var bp = self.skip_out_cpu
-            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var op = mptr(output_v.ptr)
             comptime N = BATCH * Self.OUT_DIM
             var k = 0
             while k + CPU_SIMD_W <= N:
@@ -166,7 +166,7 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
                 k += 1
         else:
             self._ensure_scratch_gpu(BATCH)
-            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var out_p_w = mptr(output_v.ptr)
             var pa: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.inner_out_dev.value().unsafe_ptr()
             var pb: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.skip_out_dev.value().unsafe_ptr()
             var inner_out = TileTensor(pa, row_major[BATCH, Self.OUT_DIM]())
@@ -218,7 +218,7 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
             ](grad_output_v, gi_skip)
             var ap = self.gi_inner_cpu
             var bp = self.gi_skip_cpu
-            var gp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var gp = mptr(grad_input_v.ptr)
             comptime N = BATCH * Self.IN_DIMS[0]
             var k = 0
             while k + CPU_SIMD_W <= N:
@@ -242,7 +242,7 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
             self.skip.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](grad_output_v, gi_skip)
-            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var gi_p_w = mptr(grad_input_v.ptr)
             comptime layout_in = Layout.row_major(BATCH, Self.IN_DIMS[0])
             var gi_a_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](self.gi_inner_dev.value())
             var gi_b_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](self.gi_skip_dev.value())

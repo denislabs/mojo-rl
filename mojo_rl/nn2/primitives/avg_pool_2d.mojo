@@ -181,12 +181,8 @@ struct AvgPool2D[
         assert_tag_for["AvgPool2D", target](self.ts.target_tag)
         var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            input.ptr
-        )
-        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            output_v.ptr
-        )
+        var in_p = input.ptr
+        var out_p = output_v.ptr
 
         comptime if target == "cpu":
             var inv_kk = Scalar[DT](1.0 / Float64(Self.K * Self.K))
@@ -252,12 +248,8 @@ struct AvgPool2D[
         var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var inv_kk = Scalar[DT](1.0 / Float64(Self.K * Self.K))
             for k in range(BATCH * Self.IN_DIM_FLAT):
                 gi_p[k] = Scalar[DT](0.0)
@@ -285,12 +277,8 @@ struct AvgPool2D[
                                         in_c_base + ih * Self.W + iw
                                     ] += go_val
         else:
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
             comptime out_layout = Layout.row_major(BATCH, Self.OUT_DIM_FLAT)
             var go_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](go_p)

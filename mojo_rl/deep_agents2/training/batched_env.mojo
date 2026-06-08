@@ -45,6 +45,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.module import mptr
 from mojo_rl.core.env_traits import (
     BoxContinuousActionEnv,
     GPUContinuousEnv,
@@ -272,29 +273,19 @@ struct BatchedCpuEnv[
                     )
 
     def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._obs.unsafe_ptr()
-        )
+        return mptr(self._obs.unsafe_ptr())
 
     def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._action.unsafe_ptr()
-        )
+        return mptr(self._action.unsafe_ptr())
 
     def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._reward.unsafe_ptr()
-        )
+        return mptr(self._reward.unsafe_ptr())
 
     def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._done.unsafe_ptr()
-        )
+        return mptr(self._done.unsafe_ptr())
 
     def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._terminated.unsafe_ptr()
-        )
+        return mptr(self._terminated.unsafe_ptr())
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -438,9 +429,7 @@ struct BatchedGpuEnv[
             self._terminated,
             self._obs,
             rng_seed=rng_seed,
-            workspace_ptr=rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._workspace.unsafe_ptr()
-            ),
+            workspace_ptr=mptr(self._workspace.unsafe_ptr()),
         )
 
     def selective_reset_batch[BATCH: Int](
@@ -475,12 +464,8 @@ struct BatchedGpuEnv[
             # capture, the captured kernels would reference that per-call buffer
             # after it is freed (garbage model on replay → divergence). Mirrors
             # legacy's reset call passing `workspace_buf`.
-            workspace_ptr=rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._workspace.unsafe_ptr()
-            ),
-            rng_counter_ptr=rebind[
-                UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
-            ](self._env_rng_counter.unsafe_ptr()),
+            workspace_ptr=mptr(self._workspace.unsafe_ptr()),
+            rng_counter_ptr=mptr(self._env_rng_counter.unsafe_ptr()),
         )
         # Re-derive obs from the (post-step / post-reset) state — correct for
         # state-prefix / derived clean-obs envs (all continuous envs today).
@@ -493,31 +478,21 @@ struct BatchedGpuEnv[
             ](c, self._states, self._obs)
 
     def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._obs.unsafe_ptr()
-        )
+        return mptr(self._obs.unsafe_ptr())
 
     def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._action.unsafe_ptr()
-        )
+        return mptr(self._action.unsafe_ptr())
 
     def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._reward.unsafe_ptr()
-        )
+        return mptr(self._reward.unsafe_ptr())
 
     def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._done.unsafe_ptr()
-        )
+        return mptr(self._done.unsafe_ptr())
 
     def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         # `_terminated` is written by `step_kernel_gpu` (1.0 iff natural
         # termination, NOT truncation) — see GPUContinuousEnv.step_kernel_gpu.
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._terminated.unsafe_ptr()
-        )
+        return mptr(self._terminated.unsafe_ptr())
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -654,9 +629,7 @@ struct BatchedGpuDiscreteEnv[
             self._terminated,
             self._obs,
             rng_seed=rng_seed,
-            workspace_ptr=rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._workspace.unsafe_ptr()
-            ),
+            workspace_ptr=mptr(self._workspace.unsafe_ptr()),
         )
 
     def selective_reset_batch[BATCH: Int](
@@ -685,12 +658,8 @@ struct BatchedGpuDiscreteEnv[
             self._states,
             self._done,
             rng_seed=rng_seed,
-            workspace_ptr=rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._workspace.unsafe_ptr()
-            ),
-            rng_counter_ptr=rebind[
-                UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
-            ](self._env_rng_counter.unsafe_ptr()),
+            workspace_ptr=mptr(self._workspace.unsafe_ptr()),
+            rng_counter_ptr=mptr(self._env_rng_counter.unsafe_ptr()),
         )
         # Re-seed obs ONLY for state-prefix (clean-obs) envs, where extraction
         # reproduces the current obs from state — harmless for non-done envs,
@@ -707,26 +676,16 @@ struct BatchedGpuDiscreteEnv[
             self._seed_obs(c)
 
     def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._obs.unsafe_ptr()
-        )
+        return mptr(self._obs.unsafe_ptr())
 
     def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._action.unsafe_ptr()
-        )
+        return mptr(self._action.unsafe_ptr())
 
     def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._reward.unsafe_ptr()
-        )
+        return mptr(self._reward.unsafe_ptr())
 
     def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._done.unsafe_ptr()
-        )
+        return mptr(self._done.unsafe_ptr())
 
     def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._terminated.unsafe_ptr()
-        )
+        return mptr(self._terminated.unsafe_ptr())

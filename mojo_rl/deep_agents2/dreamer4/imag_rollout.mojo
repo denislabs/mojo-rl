@@ -43,7 +43,7 @@ from layout import TileTensor, row_major
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from .shortcut_loss import ShortcutDynamics, AgentDynamics, _ilog2
 from ..dreamerv3.dists_discrete import cat_sample, UNIMIX
 from ..dreamerv3.twohot import twohot_pred
@@ -97,11 +97,11 @@ def _fwd_window[
             hi.unsafe_ptr()[i] = packed_p[i]
         c.enqueue_copy(di, hi)
         var it = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](di.unsafe_ptr()),
+            mptr(di.unsafe_ptr()),
             row_major[BF, ND](),
         )
         var ot = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](do_.unsafe_ptr()),
+            mptr(do_.unsafe_ptr()),
             row_major[BF, ND](),
         )
         dyn.forward["gpu", BF](it, output=ot)
@@ -238,31 +238,17 @@ def imagine_rollout[
             for i in range(ND):
                 packed[bt * ND + i] = ctx[(b * NCTX + c) * ND + i]
 
-    var packed_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        packed.unsafe_ptr()
-    )
-    var zhat_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        zhat.unsafe_ptr()
-    )
-    var sig_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](sig.unsafe_ptr())
-    var step_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        step.unsafe_ptr()
-    )
-    var act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        act_oh.unsafe_ptr()
-    )
-    var mask_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        act_mask.unsafe_ptr()
-    )
-    var hg_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        hgather.unsafe_ptr()
-    )
-    var pl = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](plog.unsafe_ptr())
-    var vl = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](vlog.unsafe_ptr())
-    var rl = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](rlog.unsafe_ptr())
-    var hh_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        h_host.unsafe_ptr()
-    )
+    var packed_p = mptr(packed.unsafe_ptr())
+    var zhat_p = mptr(zhat.unsafe_ptr())
+    var sig_p = mptr(sig.unsafe_ptr())
+    var step_p = mptr(step.unsafe_ptr())
+    var act_p = mptr(act_oh.unsafe_ptr())
+    var mask_p = mptr(act_mask.unsafe_ptr())
+    var hg_p = mptr(hgather.unsafe_ptr())
+    var pl = mptr(plog.unsafe_ptr())
+    var vl = mptr(vlog.unsafe_ptr())
+    var rl = mptr(rlog.unsafe_ptr())
+    var hh_p = mptr(h_host.unsafe_ptr())
 
     # ── autoregressive generation ───────────────────────────────────────
     for tgt in range(NCTX, T):

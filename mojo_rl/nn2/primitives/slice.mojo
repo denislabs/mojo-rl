@@ -113,8 +113,8 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
                 for j in range(Self.OUT_DIM):
                     output_v[b, j] = input[b, Self.START + j]
         else:
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_p = input.ptr
+            var out_p = output_v.ptr
             var in_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin,
             ](in_p)
@@ -161,8 +161,8 @@ struct Slice[IN: Int, START: Int, END: Int](Module):
                 for j in range(Self.OUT_DIM):
                     grad_input_v[b, Self.START + j] = grad_output_v[b, j]
         else:
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
             ](go_p)

@@ -119,10 +119,10 @@ struct SinusoidalPosAddBT[T: Int, S: Int, D: Int, SCALE: Bool = False](Module):
         else:
             comptime lay = Layout.row_major(BATCH, Self.SD)
             var in_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inp.ptr)
+                inp.ptr
             )
             var o_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr)
+                out.ptr
             )
             var b_lt = LayoutTensor[
                 DT, Layout.row_major(Self.T * Self.SD), MutAnyOrigin
@@ -159,10 +159,10 @@ struct SinusoidalPosAddBT[T: Int, S: Int, D: Int, SCALE: Bool = False](Module):
         else:
             comptime lay = Layout.row_major(BATCH, Self.SD)
             var go_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go.ptr)
+                go.ptr
             )
             var gi_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi.ptr)
+                gi.ptr
             )
             comptime n_blocks = (BATCH * Self.SD + TPB - 1) // TPB
             comptime kernel = _pos_bt_copy_kernel[BATCH, Self.SD]

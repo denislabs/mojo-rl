@@ -25,7 +25,7 @@ from layout import TileTensor, row_major
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 
@@ -86,8 +86,8 @@ struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
         assert_tag_for["Tokenwise", target](self.ts.target_tag)
         var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-        var ip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-        var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+        var ip = mptr(input.ptr)
+        var op = mptr(output_v.ptr)
         # Reinterpret (BATCH, SEQ_LEN*IN_INNER) → (BATCH*SEQ_LEN, IN_INNER).
         var in_r = TileTensor(
             ip, row_major[BATCH * Self.SEQ_LEN, Self.IN_INNER]()
@@ -120,12 +120,8 @@ struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
         assert_tag_for["Tokenwise", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
         var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            grad_output_v.ptr
-        )
-        var gip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            grad_input_v.ptr
-        )
+        var gop = mptr(grad_output_v.ptr)
+        var gip = mptr(grad_input_v.ptr)
         var go_r = TileTensor(
             gop, row_major[BATCH * Self.SEQ_LEN, Self.OUT_INNER]()
         )

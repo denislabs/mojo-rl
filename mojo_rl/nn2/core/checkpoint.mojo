@@ -20,6 +20,7 @@ from std.gpu.memory import AddressSpace
 from layout import TileTensor
 
 from ..constants import DT
+from .module import mptr
 from .module import Module
 from .param_visitor import ParamVisitor
 from .state_walker import dump_state, load_state
@@ -48,7 +49,7 @@ struct _SaveVisitor(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var p_ptr = mptr(param.ptr)
         for k in range(n_elems):
             self.values.append(p_ptr[k])
 
@@ -77,7 +78,7 @@ struct _LoadVisitor(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var p_ptr = mptr(param.ptr)
         for k in range(n_elems):
             p_ptr[k] = self.values[self.idx + k]
         self.idx += n_elems
@@ -230,7 +231,7 @@ struct _SaveStateV2Visitor(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var p_ptr = mptr(param.ptr)
         var section = name + "#size=" + String(n_elems) + "\n"
         for k in range(n_elems):
             section += String(p_ptr[k]) + "\n"
@@ -272,7 +273,7 @@ struct _LoadStateV2Visitor(ParamVisitor):
                 + ". Expected `" + expected + "`, got `" + header + "`"
             )
         idx += 1
-        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var p_ptr = mptr(param.ptr)
         for k in range(n_elems):
             if idx >= len(self.lines):
                 raise Error(
@@ -357,7 +358,7 @@ struct _SaveStateV2GpuVisitor(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var d_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var d_ptr = mptr(param.ptr)
         var dev = DeviceBuffer[DT](self.ctx, d_ptr, n_elems, owning=False)
         var host = List[Scalar[DT]](length=n_elems, fill=Scalar[DT](0.0))
         self.ctx.enqueue_copy(host.unsafe_ptr(), dev)
@@ -411,7 +412,7 @@ struct _LoadStateV2GpuVisitor(ParamVisitor):
             host[k] = Scalar[DT](atof(self.lines[idx]))
             idx += 1
         self.idx_ptr[] = idx
-        var d_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+        var d_ptr = mptr(param.ptr)
         var dev = DeviceBuffer[DT](self.ctx, d_ptr, n_elems, owning=False)
         self.ctx.enqueue_copy(dev, host.unsafe_ptr())
         self.ctx.synchronize()

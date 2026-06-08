@@ -30,7 +30,7 @@ Returns the last training loss.
 from std.memory import alloc
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.planners.tree_search import (
@@ -47,7 +47,7 @@ from ..zero.evaluators import CPUEvaluator, RandomOpponent
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
+    return mptr(alloc[Scalar[DT]](n))
 
 
 @always_inline
@@ -195,27 +195,13 @@ def run_muzero_selfplay_2p_cpu[
 
         if done or ep_len >= max_ep_steps:
             rb.store_episode(
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    e_obs.unsafe_ptr()
-                ),
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    e_act.unsafe_ptr()
-                ),
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    e_rew.unsafe_ptr()
-                ),
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    e_pol.unsafe_ptr()
-                ),
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    e_val.unsafe_ptr()
-                ),
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    e_tp.unsafe_ptr()
-                ),
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    e_legal.unsafe_ptr()
-                ),
+                mptr(e_obs.unsafe_ptr()),
+                mptr(e_act.unsafe_ptr()),
+                mptr(e_rew.unsafe_ptr()),
+                mptr(e_pol.unsafe_ptr()),
+                mptr(e_val.unsafe_ptr()),
+                mptr(e_tp.unsafe_ptr()),
+                mptr(e_legal.unsafe_ptr()),
                 ep_len,
             )
             e_obs.clear(); e_act.clear(); e_rew.clear()

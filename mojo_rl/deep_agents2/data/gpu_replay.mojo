@@ -36,6 +36,7 @@ from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.module import mptr
 from ..training.replay_buffer import ReplayBuffer
 from ..training.trainer_block import TrainerState
 
@@ -475,15 +476,9 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
         the pointer-based `add`. `ctx` required (raises if None)."""
         if not ctx:
             raise Error("GPUReplay.add: ctx required for device storage")
-        var s_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            s.unsafe_ptr()
-        )
-        var a_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            a.unsafe_ptr()
-        )
-        var sp_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            sp.unsafe_ptr()
-        )
+        var s_p = mptr(s.unsafe_ptr())
+        var a_p = mptr(a.unsafe_ptr())
+        var sp_p = mptr(sp.unsafe_ptr())
         self.add(ctx.value(), s_p, a_p, r, sp_p, d)
 
     def sample_into[BATCH: Int](

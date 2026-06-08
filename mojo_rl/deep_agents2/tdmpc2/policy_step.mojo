@@ -21,6 +21,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.module import mptr
 from mojo_rl.nn2.initializer import Zero
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.deep_agents2.primitives.rsample import RSample
@@ -33,7 +34,7 @@ from .running_scale import RunningScale
 
 @always_inline
 def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+    return mptr(b.unsafe_ptr())
 
 
 @always_inline
@@ -249,9 +250,7 @@ struct PolicyStep[
         for b in range(BB):
             loss_sum += h_loss.unsafe_ptr()[b]
         var loss_mean = loss_sum / Scalar[DT](BB)
-        var qavg_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            h_qavg.unsafe_ptr()
-        )
+        var qavg_p = mptr(h_qavg.unsafe_ptr())
         self.scale.update_from(qavg_p, BB)
         self._set_q_stats(qavg_p, BB)
 

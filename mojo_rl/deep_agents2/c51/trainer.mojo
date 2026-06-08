@@ -22,6 +22,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import TPB
+from mojo_rl.nn2.core.module import mptr
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
@@ -667,9 +668,7 @@ struct C51Trainer[
             var q_buf = List[Scalar[DT]](
                 length=N_ENVS * NA * NK, fill=Scalar[DT](0.0),
             )
-            var q_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                q_buf.unsafe_ptr()
-            )
+            var q_ptr = mptr(q_buf.unsafe_ptr())
             var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
             var q_t = TileTensor(q_ptr, row_major[N_ENVS, NA * NK]())
             self.pair.online.forward[Self.train_target, N_ENVS](
@@ -695,9 +694,7 @@ struct C51Trainer[
             var ctx = self.ctx.value()
             self._ensure_batch_scratch[N_ENVS](ctx)
             var qdev = self._batch_q_dev.value()
-            var qdev_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                qdev.unsafe_ptr()
-            )
+            var qdev_ptr = mptr(qdev.unsafe_ptr())
             var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
             var q_t = TileTensor(
                 qdev_ptr, row_major[N_ENVS, NA * NK](),
@@ -748,9 +745,7 @@ struct C51Trainer[
             var q_buf = List[Scalar[DT]](
                 length=N_ENVS * NA * NK, fill=Scalar[DT](0.0),
             )
-            var q_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                q_buf.unsafe_ptr()
-            )
+            var q_ptr = mptr(q_buf.unsafe_ptr())
             var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
             var q_t = TileTensor(q_ptr, row_major[N_ENVS, NA * NK]())
             self.pair.online.forward[Self.train_target, N_ENVS](
@@ -764,9 +759,7 @@ struct C51Trainer[
             var ctx = self.ctx.value()
             self._ensure_batch_scratch[N_ENVS](ctx)
             var qdev = self._batch_q_dev.value()
-            var qdev_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                qdev.unsafe_ptr()
-            )
+            var qdev_ptr = mptr(qdev.unsafe_ptr())
             var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
             var q_t = TileTensor(qdev_ptr, row_major[N_ENVS, NA * NK]())
             self.pair.online.forward[Self.train_target, N_ENVS](

@@ -34,6 +34,7 @@ from std.gpu.memory import AddressSpace
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.module import mptr
 from mojo_rl.nn2.core import ParamVisitor, GraphNode, Module
 from mojo_rl.nn2.combinators.compute_graph import ComputeGraph
 
@@ -68,7 +69,7 @@ struct _ScaleOutVisitorCPU(ParamVisitor):
         apply_decay: Bool,
     ) raises:
         if name == self.wname or name == self.bname:
-            var dp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+            var dp = mptr(param.ptr)
             for k in range(n_elems):
                 dp[k] = self.scale * dp[k]
 
@@ -95,7 +96,7 @@ struct _ScaleOutVisitorGPU(ParamVisitor):
         apply_decay: Bool,
     ) raises:
         if name == self.wname or name == self.bname:
-            var dp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
+            var dp = mptr(param.ptr)
             var nb = (n_elems + TPB - 1) // TPB
             self.ctx.enqueue_function[_scale_k](
                 dp, n_elems, self.scale, grid_dim=nb, block_dim=TPB

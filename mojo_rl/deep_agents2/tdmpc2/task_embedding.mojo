@@ -24,11 +24,12 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.module import mptr
 
 
 @always_inline
 def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+    return mptr(b.unsafe_ptr())
 
 
 # ── GPU kernels ────────────────────────────────────────────────────────

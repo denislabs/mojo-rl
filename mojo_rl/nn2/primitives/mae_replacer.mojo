@@ -39,7 +39,7 @@ from ..core import (
     Initializer, AMPPolicy, NoAMP, Param, Cache, ParamVisitor,
     for_each_param_auto, zero_grad_auto,
 )
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
@@ -190,12 +190,8 @@ struct MAEReplacer[
 
     def mae_mask_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         if self.keep.dev:
-            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.keep.dev.value().unsafe_ptr()
-            )
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.keep.cpu_ptr()
-        )
+            return mptr(self.keep.dev.value().unsafe_ptr())
+        return mptr(self.keep.cpu_ptr())
 
     def _ensure_keep_gpu(mut self, batch: Int) raises:
         var ctx = self.ts.ctx.value()
@@ -244,10 +240,10 @@ struct MAEReplacer[
             var span = Scalar[DT](self.p_max_rt - self.p_min_rt)
             var in_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.NP * Self.D), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inp.ptr))
+            ](inp.ptr)
             var o_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.NP * Self.D), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr))
+            ](out.ptr)
             var mt_lt = LayoutTensor[DT, Layout.row_major(Self.D), MutAnyOrigin](
                 self.mask_token.val.dev.value()
             )
@@ -303,10 +299,10 @@ struct MAEReplacer[
             var ctx = self.ts.ctx.value()
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.NP * Self.D), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go.ptr))
+            ](go.ptr)
             var gi_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.NP * Self.D), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi.ptr))
+            ](gi.ptr)
             comptime nb = (BATCH * Self.NP * Self.D + 127) // 128
             comptime gik = _mae_grad_input_kernel[
                 BATCH, Self.NP, Self.D, Self.SEED

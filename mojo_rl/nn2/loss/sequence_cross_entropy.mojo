@@ -24,6 +24,7 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB, TPB_REDUCE
+from ..core.module import mptr
 from ..core import Loss, AMPPolicy, NoAMP
 from ..core.target_storage import TargetStorage, assert_tag_for
 from .cross_entropy import _ce_forward_kernel, _ce_backward_kernel
@@ -108,10 +109,8 @@ struct SequenceCrossEntropyLoss[SEQ_LEN: Int, VOCAB: Int](Loss):
 
         comptime if target == "cpu":
             self._ensure_cache_cpu(BT)
-            var lp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
-            var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                targets.ptr
-            )
+            var lp = mptr(logits.ptr)
+            var tp = mptr(targets.ptr)
             var sm = TileTensor(self.softmax, row_major[BT, Self.VOCAB]())
             var total: Scalar[DT] = 0.0
             for r in range(BT):
@@ -133,12 +132,8 @@ struct SequenceCrossEntropyLoss[SEQ_LEN: Int, VOCAB: Int](Loss):
             var ctx = self.ts.ctx.value()
             comptime mat = Layout.row_major(BT, Self.VOCAB)
             comptime rowl = Layout.row_major(BT)
-            var lp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                logits.ptr
-            )
-            var tp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                targets.ptr
-            )
+            var lp_w = mptr(logits.ptr)
+            var tp_w = mptr(targets.ptr)
             var logits_lt = LayoutTensor[DT, mat, MutAnyOrigin](lp_w)
             var targets_lt = LayoutTensor[DT, mat, MutAnyOrigin](tp_w)
             var softmax_lt = LayoutTensor[DT, mat, MutAnyOrigin](
@@ -184,12 +179,8 @@ struct SequenceCrossEntropyLoss[SEQ_LEN: Int, VOCAB: Int](Loss):
         comptime BT = BATCH * Self.SEQ_LEN
 
         comptime if target == "cpu":
-            var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                targets.ptr
-            )
-            var gp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_logits.ptr
-            )
+            var tp = mptr(targets.ptr)
+            var gp = mptr(grad_logits.ptr)
             var sm = TileTensor(self.softmax, row_major[BT, Self.VOCAB]())
             var inv: Scalar[DT] = 1.0 / Scalar[DT](BT)
             for r in range(BT):
@@ -199,12 +190,8 @@ struct SequenceCrossEntropyLoss[SEQ_LEN: Int, VOCAB: Int](Loss):
         else:
             var ctx = self.ts.ctx.value()
             comptime mat = Layout.row_major(BT, Self.VOCAB)
-            var tp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                targets.ptr
-            )
-            var gp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_logits.ptr
-            )
+            var tp_w = mptr(targets.ptr)
+            var gp_w = mptr(grad_logits.ptr)
             var softmax_lt = LayoutTensor[DT, mat, MutAnyOrigin](
                 self.softmax_dev.value()
             )

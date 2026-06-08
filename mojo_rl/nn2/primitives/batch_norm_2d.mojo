@@ -351,12 +351,8 @@ struct BatchNorm2D[
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                input.ptr
-            )
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
+            var in_p = input.ptr
+            var out_p = output_v.ptr
             var g_p = self.gamma.value_unsafe_ptr_cpu()
             var b_p = self.bias_unsafe_ptr_cpu()
             var rm_v = TileTensor(self.running_mean.t.cpu, row_major[Self.C]())
@@ -426,12 +422,8 @@ struct BatchNorm2D[
         else:
             comptime layout_2d = Layout.row_major(BATCH, Self.FLAT_DIM)
             comptime layout_c  = Layout.row_major(Self.C)
-            var in_p_w  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                input.ptr
-            )
-            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
+            var in_p_w  = input.ptr
+            var out_p_w = output_v.ptr
             var in_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p_w)
             var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p_w)
             var g_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
@@ -503,12 +495,8 @@ struct BatchNorm2D[
         var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var g_p = self.gamma.value_unsafe_ptr_cpu()
             var dg_p = self.gamma.grad_unsafe_ptr_cpu()
             var db_p = self.beta.grad_unsafe_ptr_cpu()
@@ -552,12 +540,8 @@ struct BatchNorm2D[
         else:
             comptime layout_2d = Layout.row_major(BATCH, Self.FLAT_DIM)
             comptime layout_c  = Layout.row_major(Self.C)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
             var g_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](

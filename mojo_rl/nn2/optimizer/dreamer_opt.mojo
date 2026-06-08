@@ -56,7 +56,7 @@ from layout import TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import ParamVisitor, GraphNode
-from ..core.module import Module
+from ..core.module import Module, mptr
 from ..core.optimizer import Optimizer
 from ..combinators.compute_graph import ComputeGraph
 from ..core.saveable import Saveable
@@ -232,8 +232,8 @@ struct _DreamerCPUStepVisitor(ParamVisitor):
         apply_decay: Bool,
     ) raises:
         var off = self.offsets_ptr[][self.idx]
-        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
-        var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        var p_ptr = mptr(param.ptr)
+        var g_ptr = mptr(grad.ptr)
         var nu_ptr = self.nu_flat_ptr[].unsafe_ptr() + off
         var mu_ptr = self.mu_flat_ptr[].unsafe_ptr() + off
 
@@ -322,7 +322,7 @@ struct _ZeroGradCPUVisitor(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        var g_ptr = mptr(grad.ptr)
         var zero: Scalar[DT] = 0.0
         for i in range(n_elems):
             g_ptr[i] = zero
@@ -385,8 +385,8 @@ struct _DreamerGPUStepVisitor(ParamVisitor):
         var off = self.offsets_ptr[][self.idx]
         var nu_off = self.nu_base + off
         var mu_off = self.mu_base + off
-        var p_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
-        var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        var p_ptr = mptr(param.ptr)
+        var g_ptr = mptr(grad.ptr)
 
         # Pass A: per-leaf AGC scale into scale_base[idx] (single block).
         self.ctx.enqueue_function[_agc_scale_kernel](
@@ -422,7 +422,7 @@ struct _ZeroGradGPUVisitor(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var grad_w_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        var grad_w_ptr = mptr(grad.ptr)
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_zero_fill_kernel](
             grad_w_ptr, n_elems, grid_dim=n_blocks, block_dim=TPB,
@@ -752,15 +752,11 @@ struct DreamerOpt(Optimizer, Saveable):
         out += prefix + ".beta1_pow_t=" + String(self.beta1_pow_t) + "\n"
         out += prefix + ".beta2_pow_t=" + String(self.beta2_pow_t) + "\n"
         out += prefix + ".nu_flat#size=" + String(self.total_size) + "\n"
-        var nu_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.nu_flat.unsafe_ptr()
-        )
+        var nu_ptr = mptr(self.nu_flat.unsafe_ptr())
         for k in range(self.total_size):
             out += String(nu_ptr[k]) + "\n"
         out += prefix + ".mu_flat#size=" + String(self.total_size) + "\n"
-        var mu_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.mu_flat.unsafe_ptr()
-        )
+        var mu_ptr = mptr(self.mu_flat.unsafe_ptr())
         for k in range(self.total_size):
             out += String(mu_ptr[k]) + "\n"
 
@@ -823,9 +819,7 @@ struct DreamerOpt(Optimizer, Saveable):
                 + expected_header + "`, got `" + header + "`"
             )
         idx += 1
-        var t_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            target.unsafe_ptr()
-        )
+        var t_ptr = mptr(target.unsafe_ptr())
         for k in range(expected_size):
             if idx >= len(lines):
                 raise Error(

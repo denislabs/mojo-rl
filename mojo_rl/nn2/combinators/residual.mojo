@@ -19,7 +19,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
@@ -118,8 +118,8 @@ struct Residual[Inner: Module](Module):
             self._ensure_mid_cpu(BATCH * Self.IN_DIMS[0])
             var mid = TileTensor(self.mid_cpu, row_major[BATCH, Self.IN_DIMS[0]]())
             self.inner.forward[target, BATCH, POLICY=POLICY](input, output=mid)
-            var ip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var ip = mptr(input.ptr)
+            var op = mptr(output_v.ptr)
             var mp = self.mid_cpu
             comptime N = BATCH * Self.IN_DIMS[0]
             var k = 0
@@ -134,8 +134,8 @@ struct Residual[Inner: Module](Module):
                 k += 1
         else:
             self._ensure_mid_gpu(BATCH * Self.IN_DIMS[0])
-            var in_p_w  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_p_w  = mptr(input.ptr)
+            var out_p_w = mptr(output_v.ptr)
             var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
             var mid = TileTensor(mp, row_major[BATCH, Self.IN_DIMS[0]]())
             self.inner.forward[target, BATCH, POLICY=POLICY](input, output=mid)
@@ -178,8 +178,8 @@ struct Residual[Inner: Module](Module):
             self.inner.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](grad_output_v, tmp)
-            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var gop = mptr(grad_output_v.ptr)
+            var gip = mptr(grad_input_v.ptr)
             var tp = self.mid_cpu
             comptime N = BATCH * Self.IN_DIMS[0]
             var k = 0
@@ -194,8 +194,8 @@ struct Residual[Inner: Module](Module):
                 k += 1
         else:
             self._ensure_mid_gpu(BATCH * Self.IN_DIMS[0])
-            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var go_p_w = mptr(grad_output_v.ptr)
+            var gi_p_w = mptr(grad_input_v.ptr)
             var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
             var tmp = TileTensor(mp, row_major[BATCH, Self.IN_DIMS[0]]())
             self.inner.vjp[

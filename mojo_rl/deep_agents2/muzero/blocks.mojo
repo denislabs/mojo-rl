@@ -36,7 +36,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn2.constants import DT, TPB
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.optimizer.adam import Adam
 
 from .loss_ops import soft_ce_slice_loss_and_grad
@@ -44,12 +44,12 @@ from ..zero.twohot_targets import mz_two_hot_target_batch
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
+    return mptr(alloc[Scalar[DT]](n))
 
 
 @always_inline
 def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+    return mptr(b.unsafe_ptr())
 
 
 @always_inline

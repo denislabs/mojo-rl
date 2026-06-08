@@ -47,7 +47,7 @@ from ..core import (
     for_each_param_auto,
     zero_grad_auto,
 )
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
@@ -233,8 +233,8 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
         assert_tag_for["BlockLinear", target](self.ts.target_tag)
         var input_v = inputs.tile[0, BATCH, Self.IN]()
         var output_v = typed_view_mut[BATCH, Self.OUT](output)
-        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
-        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+        var in_p = input_v.ptr
+        var out_p = output_v.ptr
         self._cached_input_ptr = in_p
 
         comptime if target == "cpu":
@@ -290,12 +290,8 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                 xblk_buf.free()
         else:
             var ctx = self.ts.ctx.value()
-            var w_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.weight.val.dev.value().unsafe_ptr()
-            )
-            var b_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.bias.val.dev.value().unsafe_ptr()
-            )
+            var w_p = mptr(self.weight.val.dev.value().unsafe_ptr())
+            var b_p = mptr(self.bias.val.dev.value().unsafe_ptr())
             comptime n_blk = (BATCH * Self.OUT + TPB - 1) // TPB
             comptime k_fwd = _bl_forward_kernel[
                 BATCH, Self.IN, Self.OUT, Self.BLOCKS
@@ -353,9 +349,7 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
         comptime if mode == "all":
             assert_tag_for["BlockLinear", target](self.ts.target_tag)
             var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
+            var go_p = grad_output_v.ptr
 
             comptime if target == "cpu":
                 var gw_p = self.weight.grad_unsafe_ptr_cpu()
@@ -425,12 +419,8 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                     xT_buf.free()
             else:
                 var ctx = self.ts.ctx.value()
-                var gw_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.weight.grd.dev.value().unsafe_ptr()
-                )
-                var gb_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    self.bias.grd.dev.value().unsafe_ptr()
-                )
+                var gw_p = mptr(self.weight.grd.dev.value().unsafe_ptr())
+                var gb_p = mptr(self.bias.grd.dev.value().unsafe_ptr())
                 var x_p = self._cached_input_ptr.value()
                 comptime n_w = (Self.W_SIZE + TPB - 1) // TPB
                 comptime k_dw = _bl_dweight_kernel[
@@ -466,12 +456,8 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
         assert_tag_for["BlockLinear", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
         var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN]()
-        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            grad_output_v.ptr
-        )
-        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            grad_input_v.ptr
-        )
+        var go_p = grad_output_v.ptr
+        var gi_p = grad_input_v.ptr
 
         comptime if target == "cpu":
             # grad_x_block = go_block @ kernel[k]ᵀ, [BATCH,OPB]@[OPB,IPB], via
@@ -519,9 +505,7 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                 gob_buf2.free()
         else:
             var ctx = self.ts.ctx.value()
-            var w_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.weight.val.dev.value().unsafe_ptr()
-            )
+            var w_p = mptr(self.weight.val.dev.value().unsafe_ptr())
             comptime n_x = (BATCH * Self.IN + TPB - 1) // TPB
             comptime k_dx = _bl_dx_kernel[
                 BATCH, Self.IN, Self.OUT, Self.BLOCKS

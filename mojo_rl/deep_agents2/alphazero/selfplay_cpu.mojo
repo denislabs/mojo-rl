@@ -19,7 +19,7 @@ from std.memory import alloc, UnsafePointer
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.optimizer import Adam
 from mojo_rl.nn2.initializer import Zero
 from mojo_rl.nn2.combinators.compute_graph import ComputeGraph
@@ -83,29 +83,17 @@ def run_alphazero_selfplay_cpu[
 
     # ── Host trajectory storage (single in-progress game) ──
     # Slabs rebound to MutAnyOrigin so the replay/tile signatures accept them.
-    var traj_obs = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](MAX_TRAJ * OBS)
-    )
-    var traj_pol = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](MAX_TRAJ * ACT)
-    )
+    var traj_obs = mptr(alloc[Scalar[DT]](MAX_TRAJ * OBS))
+    var traj_pol = mptr(alloc[Scalar[DT]](MAX_TRAJ * ACT))
     var tmp_tgt = alloc[Scalar[DT]](W)
     var root_save = alloc[Scalar[DT]](LATENT)
     var traj_len = 0
 
     # ── Train-batch host buffers + graph IO tiles ──
-    var tb_obs = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](BATCH * OBS)
-    )
-    var tb_tgt = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](BATCH * W)
-    )
-    var tb_loss = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](BATCH)
-    )
-    var tb_grad = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](BATCH)
-    )
+    var tb_obs = mptr(alloc[Scalar[DT]](BATCH * OBS))
+    var tb_tgt = mptr(alloc[Scalar[DT]](BATCH * W))
+    var tb_loss = mptr(alloc[Scalar[DT]](BATCH))
+    var tb_grad = mptr(alloc[Scalar[DT]](BATCH))
     for i in range(BATCH):
         tb_grad[i] = Scalar[DT](1.0) / Scalar[DT](BATCH)
     var tbo_t = TileTensor(tb_obs, row_major[BATCH, OBS]())

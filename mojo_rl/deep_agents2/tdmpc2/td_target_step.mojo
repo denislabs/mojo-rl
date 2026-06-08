@@ -28,6 +28,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.module import mptr
 from mojo_rl.nn2.initializer import Zero
 from mojo_rl.deep_agents2.primitives.rsample import RSample
 
@@ -42,7 +43,7 @@ def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 
 @always_inline
 def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+    return mptr(b.unsafe_ptr())
 
 
 @always_inline

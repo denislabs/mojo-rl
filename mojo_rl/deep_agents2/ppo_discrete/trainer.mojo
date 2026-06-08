@@ -36,6 +36,7 @@ from layout import TileTensor, row_major
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT, TPB, TPB_REDUCE
+from mojo_rl.nn2.core.module import mptr
 from ..training.device_mean_accum import DeviceMeanAccum
 from ..ppo.trainer import _ppo_ev_kernel
 from mojo_rl.nn2.core import Module
@@ -595,9 +596,7 @@ struct PPODiscreteTrainer[
 
         var obs_p = self.state.mb_obs.target_ptr["gpu"]()
         var obs_t = TileTensor(obs_p, row_major[MB, Self.OBS_DIM]())
-        var lg_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self._diag_logits_dev.value().unsafe_ptr()
-        )
+        var lg_p = mptr(self._diag_logits_dev.value().unsafe_ptr())
         var lg_t = TileTensor(lg_p, row_major[MB, N]())
         self.actor.forward["gpu", MB](obs_t, output=lg_t)
 

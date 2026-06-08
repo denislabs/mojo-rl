@@ -45,6 +45,7 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT, CPU_SIMD_W, TPB
+from ..core.module import mptr
 from ..core import Loss, AMPPolicy, NoAMP
 from ..core.target_storage import (
     TargetStorage, assert_tag_for, ensure_gpu_buffer,
@@ -243,8 +244,8 @@ struct GaussianNLLLoss[
 
         comptime if target == "cpu":
             self._ensure_cpu(BATCH)
-            var lp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
-            var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
+            var lp = mptr(logits.ptr)
+            var tp = mptr(targets.ptr)
             var diff_p = self.cache_diff.unsafe_ptr()
             var ivar_p = self.cache_inv_var.unsafe_ptr()
             var clamp_p = self.cache_in_clamp.unsafe_ptr()
@@ -281,8 +282,8 @@ struct GaussianNLLLoss[
             comptime mat_in = Layout.row_major(BATCH, 2 * Self.DIM)
             comptime mat_out = Layout.row_major(BATCH, Self.DIM)
             comptime row_layout = Layout.row_major(BATCH)
-            var lp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
-            var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
+            var lp = mptr(logits.ptr)
+            var tp = mptr(targets.ptr)
             var logits_lt = LayoutTensor[DT, mat_in, MutAnyOrigin](lp)
             var targets_lt = LayoutTensor[DT, mat_out, MutAnyOrigin](tp)
             var diff_lt = LayoutTensor[DT, mat_out, MutAnyOrigin](
@@ -336,7 +337,7 @@ struct GaussianNLLLoss[
         assert_tag_for["GaussianNLLLoss", target](self.ts.target_tag)
 
         comptime if target == "cpu":
-            var gp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_logits.ptr)
+            var gp = mptr(grad_logits.ptr)
             var diff_p = self.cache_diff.unsafe_ptr()
             var ivar_p = self.cache_inv_var.unsafe_ptr()
             var clamp_p = self.cache_in_clamp.unsafe_ptr()
@@ -360,7 +361,7 @@ struct GaussianNLLLoss[
             var ctx = self.ts.ctx.value()
             comptime mat_out = Layout.row_major(BATCH, Self.DIM)
             comptime mat_grad = Layout.row_major(BATCH, 2 * Self.DIM)
-            var gp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_logits.ptr)
+            var gp = mptr(grad_logits.ptr)
             var grad_lt = LayoutTensor[DT, mat_grad, MutAnyOrigin](gp)
             var diff_lt = LayoutTensor[DT, mat_out, MutAnyOrigin](
                 self.cache_diff_dev.value(),

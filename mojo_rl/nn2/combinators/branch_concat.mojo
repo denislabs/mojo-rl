@@ -24,7 +24,7 @@ from layout import TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 
@@ -289,7 +289,7 @@ def _branch_concat_backward_cpu[
         c._ensure_slab_cpu[i](BATCH * BRANCHES[i].OUT_DIM)
     c._ensure_gi_temp_cpu(BATCH * IN_DIM)
 
-    var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+    var gi_p = mptr(grad_input.ptr)
     var zero_v = SIMD[DT, CPU_SIMD_W](0)
     comptime N_TOTAL = BATCH * IN_DIM
     var k0 = 0

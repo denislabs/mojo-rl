@@ -150,10 +150,10 @@ struct SwiGLU[HIDDEN: Int](Module):
             comptime lin = Layout.row_major(BATCH, 2 * Self.HIDDEN)
             comptime lout = Layout.row_major(BATCH, Self.HIDDEN)
             var in_lt = LayoutTensor[DT, lin, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inp.ptr)
+                inp.ptr
             )
             var o_lt = LayoutTensor[DT, lout, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr)
+                out.ptr
             )
             var cu_lt = LayoutTensor[DT, lout, MutAnyOrigin](
                 self.cache_u.dev.value()
@@ -204,10 +204,10 @@ struct SwiGLU[HIDDEN: Int](Module):
             comptime lin = Layout.row_major(BATCH, 2 * Self.HIDDEN)
             comptime lout = Layout.row_major(BATCH, Self.HIDDEN)
             var go_lt = LayoutTensor[DT, lout, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go.ptr)
+                go.ptr
             )
             var gi_lt = LayoutTensor[DT, lin, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi.ptr)
+                gi.ptr
             )
             var cu_lt = LayoutTensor[DT, lout, MutAnyOrigin](
                 self.cache_u.dev.value()

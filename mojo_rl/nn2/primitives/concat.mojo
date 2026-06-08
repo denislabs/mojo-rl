@@ -171,9 +171,7 @@ struct Concat[*DIMS: Int](Module):
                     for d in range(D):
                         output_v[b, OFF + d] = in_i[b, d]
         else:
-            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
+            var o_p = output_v.ptr
             var o_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
             ](o_p)
@@ -181,9 +179,7 @@ struct Concat[*DIMS: Int](Module):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
                 var in_i = inputs.tile[i, BATCH, D]()
-                var i_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    in_i.ptr
-                )
+                var i_p = in_i.ptr
                 var i_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH, D), MutAnyOrigin,
                 ](i_p)
@@ -224,9 +220,7 @@ struct Concat[*DIMS: Int](Module):
                     for d in range(D):
                         gi[b, d] = grad_output_v[b, OFF + d]
         else:
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
+            var go_p = grad_output_v.ptr
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
             ](go_p)
@@ -234,9 +228,7 @@ struct Concat[*DIMS: Int](Module):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
                 var gi_v = grad_inputs.tile[i, BATCH, D]()
-                var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    gi_v.ptr
-                )
+                var gi_p = gi_v.ptr
                 var gi_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH, D), MutAnyOrigin,
                 ](gi_p)

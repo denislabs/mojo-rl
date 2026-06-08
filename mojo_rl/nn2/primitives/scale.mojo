@@ -108,8 +108,8 @@ struct Scale[DIM: Int](Module):
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_p = input_v.ptr
+            var out_p = output_v.ptr
             var m_v = SIMD[DT, CPU_SIMD_W](self.multiplier)
             comptime N = BATCH * Self.DIM
             var k = 0
@@ -120,8 +120,8 @@ struct Scale[DIM: Int](Module):
                 out_p[k] = in_p[k] * self.multiplier
                 k += 1
         else:
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_p = input_v.ptr
+            var out_p = output_v.ptr
             comptime N = BATCH * Self.DIM
             var in_lt = LayoutTensor[
                 DT, Layout.row_major(N), MutAnyOrigin,
@@ -164,8 +164,8 @@ struct Scale[DIM: Int](Module):
         var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var m_v = SIMD[DT, CPU_SIMD_W](self.multiplier)
             comptime N = BATCH * Self.DIM
             var k = 0
@@ -176,8 +176,8 @@ struct Scale[DIM: Int](Module):
                 gi_p[k] = go_p[k] * self.multiplier
                 k += 1
         else:
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             comptime N = BATCH * Self.DIM
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(N), MutAnyOrigin,

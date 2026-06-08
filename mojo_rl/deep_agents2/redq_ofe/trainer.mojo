@@ -63,7 +63,7 @@ from mojo_rl.nn2.core.checkpoint import (
     load_state_v2_body_gpu,
 )
 from mojo_rl.nn2.core.map_params import hard_copy_params
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.core.scratch import Scratch
 from mojo_rl.nn2.initializer import Xavier
 from mojo_rl.nn2.optimizer.adam import Adam
@@ -1157,9 +1157,7 @@ struct REDQOFETrainer[
                     length=needed, fill=Scalar[DT](0.0),
                 )
                 self._phi_s_batched_cap = needed
-            phi_s_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._phi_s_batched_cpu.unsafe_ptr()
-            )
+            phi_s_p = mptr(self._phi_s_batched_cpu.unsafe_ptr())
         else:
             if self._phi_s_batched_dev_cap < needed:
                 self._phi_s_batched_dev = (

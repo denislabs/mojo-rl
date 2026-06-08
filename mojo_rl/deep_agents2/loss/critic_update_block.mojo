@@ -44,7 +44,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.core.scratch import Scratch
 from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
@@ -186,7 +186,7 @@ struct CriticUpdateBlock[
 
         # Launder caller-supplied tiles to MutAnyOrigin — Module's variadic
         # forward/vjp surface requires it.
-        var sa_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](sa_t.ptr)
+        var sa_p = mptr(sa_t.ptr)
         var sa_t_rb = TileTensor(sa_p, row_major[Self.BATCH, Self.SA_DIM]())
 
         var mb_q_t = TileTensor(mb_q_p, row_major[Self.BATCH, 1]())

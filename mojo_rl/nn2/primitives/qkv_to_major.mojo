@@ -123,10 +123,8 @@ struct QKVToMajor[SEQ: Int, DIM: Int](Module):
                             ]
         else:
             comptime lay = Layout.row_major(BATCH, 3 * Self.SEQ * Self.DIM)
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
+            var in_p = input.ptr
+            var out_p = output_v.ptr
             var in_lt = LayoutTensor[DT, lay, MutAnyOrigin](in_p)
             var out_lt = LayoutTensor[DT, lay, MutAnyOrigin](out_p)
             comptime total = BATCH * 3 * Self.SEQ * Self.DIM
@@ -168,12 +166,8 @@ struct QKVToMajor[SEQ: Int, DIM: Int](Module):
                             )
         else:
             comptime lay = Layout.row_major(BATCH, 3 * Self.SEQ * Self.DIM)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var go_lt = LayoutTensor[DT, lay, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, lay, MutAnyOrigin](gi_p)
             comptime total = BATCH * 3 * Self.SEQ * Self.DIM

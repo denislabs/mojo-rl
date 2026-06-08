@@ -77,7 +77,7 @@ from ..core import (
     Cache,
     ParamVisitor,
 )
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for, ensure_cpu_buffer
 
@@ -415,9 +415,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         N: Int, FAN_IN: Int, FAN_OUT: Int, INIT: Initializer,
     ](ctx: DeviceContext, dst: DeviceBuffer[DT], is_bias: Bool) raises:
         var host = List[Scalar[DT]](length=N, fill=0.0)
-        var hp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            host.unsafe_ptr()
-        )
+        var hp = mptr(host.unsafe_ptr())
         if is_bias:
             INIT.init_bias(hp, N)
         else:
@@ -493,7 +491,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             ](h_pg)
             var out_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, H), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr))
+            ](output.ptr)
             var wih = LayoutTensor[
                 DT, Layout.row_major(Self.IN0_DIM, THREE_H), MutAnyOrigin
             ](self.W_ih.val.dev.value())
@@ -520,7 +518,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
 
         var x_p = inputs.ptr[0]()
         var h_p = inputs.ptr[1]()
-        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+        var out_p = output.ptr
         self._x_ptr = x_p
         self._h_ptr = h_p
 
@@ -649,7 +647,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             ](self._h_ptr.value())
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, H), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr))
+            ](grad_output.ptr)
             var cc = LayoutTensor[
                 DT, Layout.row_major(BATCH, 4 * H), MutAnyOrigin
             ](self._cache.dev.value())
@@ -707,7 +705,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             var z_c = self._z_cache.unsafe_ptr()
             var n_c = self._n_cache.unsafe_ptr()
             var hn_c = self._hn_pre.unsafe_ptr()
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var go_p = grad_output.ptr
 
             # Per-(b,col) gate gradients (scalar, O(BATCH·H)) → d_ix/d_hx
             # [BATCH, 3H] + bias accumulate. Reads caches + cached h only
@@ -813,7 +811,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             var ctx = self.ts.ctx.value()
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, H), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr))
+            ](grad_output.ptr)
             var dx_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.IN0_DIM), MutAnyOrigin
             ](grad_inputs.ptr[0]())
@@ -849,7 +847,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         var n_c = self._n_cache.unsafe_ptr()
         var hn_c = self._hn_pre.unsafe_ptr()
 
-        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+        var go_p = grad_output.ptr
         var dx_p = grad_inputs.ptr[0]()
         var dh_p = grad_inputs.ptr[1]()
 

@@ -27,6 +27,7 @@ from std.reflection import reflect
 from layout import TileTensor, row_major
 
 from ..constants import DT
+from .module import mptr
 from .tensor import Tensor
 from .param_visitor import ParamVisitor
 
@@ -106,13 +107,9 @@ struct State[NAME: StaticString, SIZE: Int, dtype: DType = DT](IsState):
         )
         var p: UnsafePointer[Scalar[DT], MutAnyOrigin]
         comptime if target == "cpu":
-            p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.t.cpu_ptr()
-            )
+            p = mptr(self.t.cpu_ptr())
         else:
-            p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.t.dev_ptr()
-            )
+            p = mptr(self.t.dev_ptr())
         var v_tt = TileTensor(p, row_major[Self.SIZE]())
         var g_tt = TileTensor(p, row_major[Self.SIZE]())
         visitor.visit(full_name, v_tt, g_tt, Self.SIZE, False)

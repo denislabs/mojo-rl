@@ -23,7 +23,7 @@ from layout import Layout, LayoutTensor, TileTensor
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
-from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut, mptr
 from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 
@@ -285,7 +285,7 @@ struct ActionSquash[ACT: Int](Module):
         assert_tag_for["ActionSquash", target](self.ts.target_tag)
         var iv = inputs.tile[0, BATCH, Self.ACT]()
         var ov = typed_view_mut[BATCH, Self.ACT](output)
-        var ip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](iv.ptr)
+        var ip = mptr(iv.ptr)
         self._cached_input_ptr = ip
         comptime if target == "cpu":
             for i in range(BATCH * Self.ACT):
@@ -295,7 +295,7 @@ struct ActionSquash[ACT: Int](Module):
                 ov.ptr[i] = v / denom
         else:
             comptime N = BATCH * Self.ACT
-            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](ov.ptr)
+            var op = mptr(ov.ptr)
             comptime nb = (N + TPB - 1) // TPB
             comptime kf = _asq_fwd_kernel[N]
             self.ts.ctx.value().enqueue_function[kf](
@@ -324,8 +324,8 @@ struct ActionSquash[ACT: Int](Module):
                 giv.ptr[i] = gov.ptr[i] / denom
         else:
             comptime N = BATCH * Self.ACT
-            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gov.ptr)
-            var gip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](giv.ptr)
+            var gop = mptr(gov.ptr)
+            var gip = mptr(giv.ptr)
             comptime nb = (N + TPB - 1) // TPB
             comptime kb = _asq_bwd_kernel[N]
             self.ts.ctx.value().enqueue_function[kb](
@@ -546,12 +546,8 @@ struct GRUGate[DETER: Int, BLOCKS: Int](Module):
         comptime g = Self.BLOCKS
         comptime dpb = Self.DPB
         comptime opb = Self.OPB
-        var gru = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            inputs.tile[0, BATCH, Self.GRU_DIM]().ptr
-        )
-        var deter = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            inputs.tile[1, BATCH, D]().ptr
-        )
+        var gru = mptr(inputs.tile[0, BATCH, Self.GRU_DIM]().ptr)
+        var deter = mptr(inputs.tile[1, BATCH, D]().ptr)
         self._gru_ptr = gru
         self._deter_ptr = deter
         var o = typed_view_mut[BATCH, D](output).ptr
@@ -711,9 +707,7 @@ struct StraightThroughSample[STOCH: Int, CLASSES: Int](Module):
         var o = typed_view_mut[BATCH, Self.SC](output).ptr
         comptime if target == "cpu":
             self._ensure(BATCH * Self.SC)
-            var sm = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._sm.unsafe_ptr()
-            )
+            var sm = mptr(self._sm.unsafe_ptr())
             for b in range(BATCH):
                 for s in range(Self.STOCH):
                     var base = (b * Self.STOCH + s) * C
@@ -741,9 +735,7 @@ struct StraightThroughSample[STOCH: Int, CLASSES: Int](Module):
             if (not self._sm_dev) or self._sm_dev_n < NN:
                 self._sm_dev = ctx.enqueue_create_buffer[DT](NN)
                 self._sm_dev_n = NN
-            var smp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._sm_dev.value().unsafe_ptr()
-            )
+            var smp = mptr(self._sm_dev.value().unsafe_ptr())
             var zp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](z)
             var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
             comptime nb = (NG + TPB - 1) // TPB
@@ -769,9 +761,7 @@ struct StraightThroughSample[STOCH: Int, CLASSES: Int](Module):
         var gz = grad_inputs.tile[0, BATCH, Self.SC]().ptr
         var one_m_u = Scalar[DT](1.0) - self.unimix
         comptime if target == "cpu":
-            var sm = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._sm.unsafe_ptr()
-            )
+            var sm = mptr(self._sm.unsafe_ptr())
             for b in range(BATCH):
                 for s in range(Self.STOCH):
                     var base = (b * Self.STOCH + s) * C
@@ -784,9 +774,7 @@ struct StraightThroughSample[STOCH: Int, CLASSES: Int](Module):
             comptime NN = BATCH * Self.SC
             comptime NG = BATCH * Self.STOCH
             var ctx = self.ts.ctx.value()
-            var smp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self._sm_dev.value().unsafe_ptr()
-            )
+            var smp = mptr(self._sm_dev.value().unsafe_ptr())
             var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
             var gzp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gz)
             comptime nb = (NG + TPB - 1) // TPB

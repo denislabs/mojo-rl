@@ -27,6 +27,7 @@ from std.math import max
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.module import mptr
 from .shortcut_loss import ShortcutDynamics, _ilog2
 
 
@@ -71,18 +72,12 @@ def sample_one_timestep[
     for i in range(B * ND):
         z[i] = z_init[i]
 
-    var packed_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        packed.unsafe_ptr()
-    )
-    var sig_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        sig_idx.unsafe_ptr()
-    )
-    var step_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        step_idx.unsafe_ptr()
-    )
+    var packed_p = mptr(packed.unsafe_ptr())
+    var sig_p = mptr(sig_idx.unsafe_ptr())
+    var step_p = mptr(step_idx.unsafe_ptr())
     var packed_t = TileTensor(packed_p, row_major[BF, ND]())
     var zhat_t = TileTensor(
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](zhat.unsafe_ptr()),
+        mptr(zhat.unsafe_ptr()),
         row_major[BF, ND](),
     )
 

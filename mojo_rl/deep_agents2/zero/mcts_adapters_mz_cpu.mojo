@@ -24,7 +24,7 @@ from std.memory import alloc, UnsafePointer
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.planners.tree_search import Representation, Dynamics, Prediction
 from .twohot_targets import mz_decode_value_batch
 
@@ -37,14 +37,10 @@ def _mz_decode_one[BINS: Int](
 ) -> Float64:
     """Decode one categorical head (``logits[off..off+BINS)``) to a raw scalar,
     via the shared `mz_decode_value_batch` (h-space linear bins → ``h⁻¹``)."""
-    var buf = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](BINS)
-    )
+    var buf = mptr(alloc[Scalar[DT]](BINS))
     for i in range(BINS):
         buf[i] = logits[off + i]
-    var out = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](1)
-    )
+    var out = mptr(alloc[Scalar[DT]](1))
     mz_decode_value_batch[1, BINS](buf, v_min, v_max, out)
     var v = Float64(out[0])
     buf.free()
@@ -68,14 +64,10 @@ struct MZRepCPU[OBS: Int, LATENT: Int, NET: Module](
     ) raises:
         comptime IN = Self.NET.IN_DIMS[0]
         comptime OUT = Self.NET.OUT_DIM
-        var ib = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            alloc[Scalar[DT]](IN)
-        )
+        var ib = mptr(alloc[Scalar[DT]](IN))
         for i in range(IN):
             ib[i] = Scalar[DT](obs[i]) if i < len(obs) else Scalar[DT](0.0)
-        var ob = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            alloc[Scalar[DT]](OUT)
-        )
+        var ob = mptr(alloc[Scalar[DT]](OUT))
         var it = TileTensor(ib, row_major[1, IN]())
         var ot = TileTensor(ob, row_major[1, OUT]())
         self.net[].forward["cpu", 1](it, output=ot)
@@ -106,17 +98,13 @@ struct MZDynCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
     ) raises -> Float64:
         comptime IN = Self.NET.IN_DIMS[0]     # LATENT + ACT
         comptime OUT = Self.NET.OUT_DIM       # LATENT + BINS
-        var ib = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            alloc[Scalar[DT]](IN)
-        )
+        var ib = mptr(alloc[Scalar[DT]](IN))
         for i in range(Self.LATENT):
             ib[i] = Scalar[DT](hidden_in[i])
         for a in range(Self.ACT):
             ib[Self.LATENT + a] = Scalar[DT](0.0)
         ib[Self.LATENT + action] = Scalar[DT](1.0)
-        var ob = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            alloc[Scalar[DT]](OUT)
-        )
+        var ob = mptr(alloc[Scalar[DT]](OUT))
         var it = TileTensor(ib, row_major[1, IN]())
         var ot = TileTensor(ob, row_major[1, OUT]())
         self.net[].forward["cpu", 1](it, output=ot)
@@ -149,14 +137,10 @@ struct MZPredCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
     ) raises -> Float64:
         comptime IN = Self.NET.IN_DIMS[0]     # LATENT
         comptime OUT = Self.NET.OUT_DIM       # ACT + BINS
-        var ib = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            alloc[Scalar[DT]](IN)
-        )
+        var ib = mptr(alloc[Scalar[DT]](IN))
         for i in range(Self.LATENT):
             ib[i] = Scalar[DT](hidden[i])
-        var ob = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            alloc[Scalar[DT]](OUT)
-        )
+        var ob = mptr(alloc[Scalar[DT]](OUT))
         var it = TileTensor(ib, row_major[1, IN]())
         var ot = TileTensor(ob, row_major[1, OUT]())
         self.net[].forward["cpu", 1](it, output=ot)

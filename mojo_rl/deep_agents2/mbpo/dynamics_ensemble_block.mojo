@@ -54,7 +54,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.core.scratch import Scratch
 from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
@@ -494,8 +494,8 @@ struct DynamicsEnsembleBlock[
                 in_t, output=pred_t,
             )
 
-            var mu_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out_mu_t.ptr)
-            var lv_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out_lv_t.ptr)
+            var mu_p = mptr(out_mu_t.ptr)
+            var lv_p = mptr(out_lv_t.ptr)
             var lv_min = Scalar[DT](Self.LOGVAR_MIN)
             var lv_max = Scalar[DT](Self.LOGVAR_MAX)
             var bo = member_idx * Self.PRED_DIM
@@ -530,8 +530,8 @@ struct DynamicsEnsembleBlock[
             var pred_lt = LayoutTensor[
                 DT, Layout.row_major(Self.BATCH, Self.OUT_DIM), MutAnyOrigin,
             ](pred_p)
-            var mu_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out_mu_t.ptr)
-            var lv_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out_lv_t.ptr)
+            var mu_p = mptr(out_mu_t.ptr)
+            var lv_p = mptr(out_lv_t.ptr)
             var mu_lt = LayoutTensor[
                 DT, Layout.row_major(Self.BATCH, Self.PRED_DIM), MutAnyOrigin,
             ](mu_p)
@@ -586,10 +586,8 @@ struct DynamicsEnsembleBlock[
         `_bnd_gmax`/`_bnd_gmin`. Returns the scalar NLL (nn2 convention)."""
         var bo = member_idx * Self.PRED_DIM
         comptime if target == "cpu":
-            var pp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](pred_t.ptr)
-            var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                mb_target_t.ptr
-            )
+            var pp = mptr(pred_t.ptr)
+            var tp = mptr(mb_target_t.ptr)
             var gp = self._mb_grad.cpu_ptr()
             var gmaxp = self._bnd_gmax.cpu_ptr()
             var gminp = self._bnd_gmin.cpu_ptr()
@@ -629,10 +627,10 @@ struct DynamicsEnsembleBlock[
             var ctx = self.ts.ctx.value()
             var pred_lt = LayoutTensor[
                 DT, Layout.row_major(Self.BATCH, Self.OUT_DIM), MutAnyOrigin,
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](pred_t.ptr))
+            ](mptr(pred_t.ptr))
             var tgt_lt = LayoutTensor[
                 DT, Layout.row_major(Self.BATCH, Self.PRED_DIM), MutAnyOrigin,
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](mb_target_t.ptr))
+            ](mptr(mb_target_t.ptr))
             var max_lt = LayoutTensor[
                 DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
             ](self._max_lv.dev_ptr() + bo)

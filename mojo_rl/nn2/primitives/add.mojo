@@ -104,7 +104,7 @@ struct Add[DIM_: Int, N_: Int](Module):
         comptime TOTAL = BATCH * Self.DIM_
 
         comptime if target == "cpu":
-            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var o_p = output.ptr
             var i0_p = inputs.ptr[0]()
             # Init: output = inputs[0]
             var k = 0
@@ -131,7 +131,7 @@ struct Add[DIM_: Int, N_: Int](Module):
         else:
             comptime layout = Layout.row_major(TOTAL)
             comptime n_blocks = (TOTAL + TPB - 1) // TPB
-            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var o_p = output.ptr
             var o_lt = LayoutTensor[DT, layout, MutAnyOrigin](o_p)
 
             # Init from inputs[0].
@@ -171,9 +171,7 @@ struct Add[DIM_: Int, N_: Int](Module):
         comptime TOTAL = BATCH * Self.DIM_
 
         comptime if target == "cpu":
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output.ptr
-            )
+            var go_p = grad_output.ptr
             comptime for i in range(Self.N_):
                 var gi_p = grad_inputs.ptr[i]()
                 var k = 0
@@ -186,9 +184,7 @@ struct Add[DIM_: Int, N_: Int](Module):
         else:
             comptime layout = Layout.row_major(TOTAL)
             comptime n_blocks = (TOTAL + TPB - 1) // TPB
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output.ptr
-            )
+            var go_p = grad_output.ptr
             var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](go_p)
             comptime for i in range(Self.N_):
                 var gi_p = grad_inputs.ptr[i]()

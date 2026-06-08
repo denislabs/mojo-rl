@@ -97,10 +97,8 @@ struct Transpose2D[A: Int, B: Int](Module):
                         output_v[b, j * Self.A + i] = input[b, i * Self.B + j]
         else:
             comptime layout_2d = Layout.row_major(BATCH, Self.A * Self.B)
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
+            var in_p = input.ptr
+            var out_p = output_v.ptr
             var in_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p)
             var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p)
             comptime total = BATCH * Self.A * Self.B
@@ -142,12 +140,8 @@ struct Transpose2D[A: Int, B: Int](Module):
                         ]
         else:
             comptime layout_2d = Layout.row_major(BATCH, Self.A * Self.B)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
             comptime total = BATCH * Self.A * Self.B

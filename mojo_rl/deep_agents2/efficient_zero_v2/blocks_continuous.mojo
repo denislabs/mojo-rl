@@ -24,7 +24,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn2.constants import DT, TPB
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.optimizer.adam import Adam
 
 from .loss_ops import consistency_loss_and_grad, consistency_loss_grad_k
@@ -49,7 +49,7 @@ from ..zero.twohot_targets import mz_two_hot_target_batch
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
+    return mptr(alloc[Scalar[DT]](n))
 
 
 def ezv2_unroll_train_step_continuous_cpu[

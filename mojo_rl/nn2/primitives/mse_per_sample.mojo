@@ -120,13 +120,13 @@ struct MSEPerSample[DIM: Int](Module):
             comptime lay2 = Layout.row_major(BATCH, Self.DIM)
             comptime lay1 = Layout.row_major(BATCH, 1)
             var a_lt = LayoutTensor[DT, lay2, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](a.ptr)
+                a.ptr
             )
             var b_lt = LayoutTensor[DT, lay2, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.ptr)
+                b.ptr
             )
             var o_lt = LayoutTensor[DT, lay1, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr)
+                out.ptr
             )
             var d_lt = LayoutTensor[DT, lay2, MutAnyOrigin](
                 self.cache_diff.dev.value()
@@ -164,13 +164,13 @@ struct MSEPerSample[DIM: Int](Module):
             comptime lay2 = Layout.row_major(BATCH, Self.DIM)
             comptime lay1 = Layout.row_major(BATCH, 1)
             var go_lt = LayoutTensor[DT, lay1, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go.ptr)
+                go.ptr
             )
             var ga_lt = LayoutTensor[DT, lay2, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](ga.ptr)
+                ga.ptr
             )
             var gb_lt = LayoutTensor[DT, lay2, MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gb.ptr)
+                gb.ptr
             )
             var d_lt = LayoutTensor[DT, lay2, MutAnyOrigin](
                 self.cache_diff.dev.value()

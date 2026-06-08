@@ -25,7 +25,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import (
@@ -51,7 +51,7 @@ def _mptr(
 ) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     """Origin-erase a device buffer pointer so `Module.forward` (which pins
     `origin=MutAnyOrigin` on its output) accepts the tile."""
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+    return mptr(b.unsafe_ptr())
 
 
 @fieldwise_init
@@ -194,12 +194,8 @@ def eval_policy_vs_random_cpu[
     net.set_attr["training"](Scalar[DT](0.0))
 
     var env = ENV()
-    var obs_buf = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](IN)
-    )
-    var pred_buf = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](OUT)
-    )
+    var obs_buf = mptr(alloc[Scalar[DT]](IN))
+    var pred_buf = mptr(alloc[Scalar[DT]](OUT))
     var obs_t = TileTensor(obs_buf, row_major[1, IN]())
     var pred_t = TileTensor(pred_buf, row_major[1, OUT]())
 

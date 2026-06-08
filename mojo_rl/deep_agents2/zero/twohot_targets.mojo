@@ -27,6 +27,7 @@ verbatim from legacy ``deep_agents/muzero/utils.mojo`` onto ``DT``).
 from std.math import sqrt
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.module import mptr
 from mojo_rl.nn2.loss.two_hot import (
     compute_bins,
     two_hot_encode,
@@ -133,9 +134,7 @@ def mz_decode_value_batch[
     ``h⁻¹`` recovers ``x``. Used by reanalyze / host-side sanity decoding.
     """
     var bins = compute_bins[NUM_BINS](v_min, v_max)
-    var bins_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        bins.unsafe_ptr()
-    )
+    var bins_ptr = mptr(bins.unsafe_ptr())
     # decode_value_batch_linear_ptr writes the h-space expectation in-place.
     decode_value_batch_linear_ptr[BATCH, NUM_BINS](logits, bins_ptr, values)
     for b in range(BATCH):

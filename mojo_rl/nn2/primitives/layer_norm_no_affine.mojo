@@ -217,10 +217,8 @@ struct LayerNormNoAffine[DIM: Int](Module):
             self._ensure_cache_gpu(BATCH)
             comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
             comptime layout_b = Layout.row_major(BATCH)
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
+            var in_p = input.ptr
+            var out_p = output_v.ptr
             var in_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p)
             var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p)
             var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
@@ -281,12 +279,8 @@ struct LayerNormNoAffine[DIM: Int](Module):
             var ctx = self.ts.ctx.value()
             comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
             comptime layout_b = Layout.row_major(BATCH)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
             var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](

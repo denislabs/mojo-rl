@@ -36,7 +36,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.optimizer import Adam
 from mojo_rl.nn2.initializer import Zero, Kaiming
 from mojo_rl.nn2.core.map_params import hard_copy_params
@@ -188,20 +188,12 @@ def run_alphazero_selfplay_arena[
 
     # ── Host trajectory storage (per-env in-progress game) ──
     # Augmenter signatures pin MutAnyOrigin — rebind the owned slabs to match.
-    var traj_obs = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](N_ENVS * MAX_TRAJ * OBS)
-    )
-    var traj_pol = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](N_ENVS * MAX_TRAJ * ACT)
-    )
+    var traj_obs = mptr(alloc[Scalar[DT]](N_ENVS * MAX_TRAJ * OBS))
+    var traj_pol = mptr(alloc[Scalar[DT]](N_ENVS * MAX_TRAJ * ACT))
     var traj_len = alloc[Int](N_ENVS)
     var tmp_tgt = alloc[Scalar[DT]](W)
-    var aug_obs = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](OBS)
-    )
-    var aug_pol = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        alloc[Scalar[DT]](ACT)
-    )
+    var aug_obs = mptr(alloc[Scalar[DT]](OBS))
+    var aug_pol = mptr(alloc[Scalar[DT]](ACT))
     for e in range(N_ENVS):
         traj_len[e] = 0
 

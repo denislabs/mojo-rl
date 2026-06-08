@@ -21,6 +21,7 @@ from std.math import tanh
 from std.random import random_float64
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.module import mptr
 from mojo_rl.nn2.initializer import Kaiming, Zero
 from mojo_rl.nn2.optimizer.adam import Adam
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -61,7 +62,7 @@ def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 
 @always_inline
 def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+    return mptr(b.unsafe_ptr())
 
 
 def _upload(

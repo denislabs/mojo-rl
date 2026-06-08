@@ -199,12 +199,8 @@ struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
         else:
             comptime N = BATCH * Self.DIM
             comptime n_blocks = (N + TPB - 1) // TPB
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                input.ptr
-            )
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
+            var in_p = input.ptr
+            var out_p = output_v.ptr
             var in_lt = LayoutTensor[
                 DT, Layout.row_major(N), MutAnyOrigin,
             ](in_p)
@@ -271,12 +267,8 @@ struct Dropout[DIM: Int, p: Float64, SEED: UInt64](Module):
         else:
             comptime N = BATCH * Self.DIM
             comptime n_blocks = (N + TPB - 1) // TPB
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_input_v.ptr
-            )
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(N), MutAnyOrigin,
             ](go_p)

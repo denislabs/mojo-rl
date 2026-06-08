@@ -21,11 +21,12 @@ the action is absorbing-zero.
 from std.memory import alloc
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.module import mptr
 from .nstep_targets import compute_nstep_value_targets
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
+    return mptr(alloc[Scalar[DT]](n))
 
 
 struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](

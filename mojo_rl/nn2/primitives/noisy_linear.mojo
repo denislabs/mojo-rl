@@ -447,8 +447,8 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
         assert_tag_for["NoisyLinear", target](self.ts.target_tag)
         var input_v = inputs.tile[0, BATCH, Self.IN]()
         var output_v = typed_view_mut[BATCH, Self.OUT](output)
-        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
-        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+        var in_p = input_v.ptr
+        var out_p = output_v.ptr
         self._cached_input_ptr = in_p
 
         comptime if target == "cpu":
@@ -649,7 +649,7 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
         comptime if mode == "all":
             assert_tag_for["NoisyLinear", target](self.ts.target_tag)
             var grad_out_v = typed_view[BATCH, Self.OUT](grad_output)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_out_v.ptr)
+            var go_p = grad_out_v.ptr
 
             comptime if target == "cpu":
                 var ni_p = self._noise_in.cpu_ptr()

@@ -157,10 +157,10 @@ struct LearnedTokens[N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool](Module):
         else:
             var in_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.IN_N), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inp.ptr))
+            ](inp.ptr)
             var o_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr))
+            ](out.ptr)
             var p_lt = LayoutTensor[
                 DT, Layout.row_major(Self.NEW_N), MutAnyOrigin
             ](self.tokens.val.dev.value())
@@ -205,10 +205,10 @@ struct LearnedTokens[N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool](Module):
             var ctx = self.ts.ctx.value()
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go.ptr))
+            ](go.ptr)
             var gi_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.IN_N), MutAnyOrigin
-            ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi.ptr))
+            ](gi.ptr)
             comptime gin_blocks = (BATCH * Self.IN_N + TPB - 1) // TPB
             comptime gik = _lt_grad_input_kernel[
                 BATCH, Self.IN_N, Self.OUT_DIM, Self.IN_OFF

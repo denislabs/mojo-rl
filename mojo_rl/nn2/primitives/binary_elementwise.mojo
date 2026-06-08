@@ -191,7 +191,7 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
             # is centralized in `of()`, not re-spelled per input here.
             var i0_p = inputs.ptr[0]()
             var i1_p = inputs.ptr[1]()
-            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var o_p = output.ptr
 
             comptime if Self.OP.owns_cache:
                 self.cache.ensure_cpu(N)
@@ -225,7 +225,7 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
             # the per-input `rebind` + manual `LayoutTensor` rebuild.
             var i0_lt = inputs.lt[0, layout]()
             var i1_lt = inputs.lt[1, layout]()
-            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var o_p = output.ptr
             var o_lt = LayoutTensor[DT, layout, MutAnyOrigin](o_p)
             comptime n_blocks = (N + TPB - 1) // TPB
 
@@ -271,7 +271,7 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
 
         comptime if target == "cpu":
             comptime N = BATCH * Self.DIM
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var go_p = grad_output.ptr
             var gi0_p = grad_inputs.ptr[0]()
             var gi1_p = grad_inputs.ptr[1]()
 
@@ -306,7 +306,7 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
         else:
             comptime N = BATCH * Self.DIM
             comptime layout = Layout.row_major(N)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
+            var go_p = grad_output.ptr
             var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](go_p)
             var gi0_lt = grad_inputs.lt[0, layout]()
             var gi1_lt = grad_inputs.lt[1, layout]()

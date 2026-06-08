@@ -135,9 +135,9 @@ struct GatherActionSlice[NA: Int, K: Int](Module):
                 for k in range(Self.K):
                     output_v[b, k] = values[b, base + k]
         else:
-            var v_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](values.ptr)
-            var i_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](idx.ptr)
-            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var v_p = values.ptr
+            var i_p = idx.ptr
+            var o_p = output_v.ptr
             var v_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.NA * Self.K), MutAnyOrigin,
             ](v_p)
@@ -184,8 +184,8 @@ struct GatherActionSlice[NA: Int, K: Int](Module):
                     grad_values_v[b, c] = Scalar[DT](0.0)
                 grad_idx_v[b, 0] = Scalar[DT](0.0)
         else:
-            var gv_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_values_v.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_idx_v.ptr)
+            var gv_p = grad_values_v.ptr
+            var gi_p = grad_idx_v.ptr
             var gv_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.NA * Self.K), MutAnyOrigin,
             ](gv_p)

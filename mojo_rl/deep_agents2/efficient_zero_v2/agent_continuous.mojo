@@ -29,7 +29,7 @@ from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.core.checkpoint import (
@@ -234,12 +234,8 @@ struct EZv2ContinuousAgent[
         ].make(self.pred)
 
         var d_obs = self.ctx.enqueue_create_buffer[DT](N_ENVS * Self.OBS)
-        var h_obs = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            alloc[Scalar[DT]](N_ENVS * Self.OBS)
-        )
-        var h_act = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            alloc[Scalar[DT]](N_ENVS * Self.ACT_DIM)
-        )
+        var h_obs = mptr(alloc[Scalar[DT]](N_ENVS * Self.OBS))
+        var h_act = mptr(alloc[Scalar[DT]](N_ENVS * Self.ACT_DIM))
         var mcts_seed = UInt32(0)
         var total = 0.0
         for _ in range(episodes):
@@ -254,8 +250,7 @@ struct EZv2ContinuousAgent[
                 self.ctx.enqueue_copy(d_obs, h_obs)
                 var obs_t = LayoutTensor[
                     DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
-                ](rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    d_obs.unsafe_ptr()))
+                ](mptr(d_obs.unsafe_ptr()))
                 planner.search_gpu[
                     MZRepGPU[Self.OBS, Self.LATENT, Self.REP],
                     MZDynGPU[Self.LATENT, Self.ACT_DIM, Self.BINS, Self.DYN],

@@ -56,7 +56,7 @@ from ..core import (
     LinearAMPState,
     ParamVisitor,
 )
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import (
     require_ctx,
@@ -248,8 +248,8 @@ struct Linear[IN: Int, OUT: Int](Module):
         var input_v = inputs.tile[0, BATCH, Self.IN]()
         var output_v = typed_view_mut[BATCH, Self.OUT](output)
 
-        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
-        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+        var in_p = input_v.ptr
+        var out_p = output_v.ptr
 
         # Save pointer alias for backward — NO copy.
         self._cached_input_ptr = in_p
@@ -266,15 +266,11 @@ struct Linear[IN: Int, OUT: Int](Module):
                 )
                 self.amp.ensure_cpu(BATCH)
 
-                var w_bf16_p = rebind[
-                    UnsafePointer[Scalar[DType.bfloat16], MutAnyOrigin]
-                ](self.amp.w_bf16_cpu.unsafe_ptr())
+                var w_bf16_p = mptr(self.amp.w_bf16_cpu.unsafe_ptr())
                 cast_fp32_to_bf16[target="cpu", N=Self.W_SIZE](
                     self.weight.value_unsafe_ptr_cpu(), w_bf16_p,
                 )
-                var in_bf16_p = rebind[
-                    UnsafePointer[Scalar[DType.bfloat16], MutAnyOrigin]
-                ](self.amp.in_bf16_cpu.unsafe_ptr())
+                var in_bf16_p = mptr(self.amp.in_bf16_cpu.unsafe_ptr())
                 cast_fp32_to_bf16[target="cpu", N = BATCH * Self.IN](
                     in_p, in_bf16_p,
                 )
@@ -290,9 +286,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                 max_matmul[target="cpu"](
                     ou_bf16_tt, in_bf16_tt, w_bf16_tt, None,
                 )
-                var ou_bf16_p = rebind[
-                    UnsafePointer[Scalar[DType.bfloat16], MutAnyOrigin]
-                ](self.amp.ou_bf16_cpu.unsafe_ptr())
+                var ou_bf16_p = mptr(self.amp.ou_bf16_cpu.unsafe_ptr())
                 cast_bf16_to_fp32[target="cpu", N = BATCH * Self.OUT](
                     ou_bf16_p, out_p,
                 )
@@ -325,20 +319,14 @@ struct Linear[IN: Int, OUT: Int](Module):
                 )
                 self.amp.ensure_gpu(BATCH, ctx)
 
-                var w_bf16_p = rebind[
-                    UnsafePointer[Scalar[DType.bfloat16], MutAnyOrigin]
-                ](self.amp.w_bf16_dev.value().unsafe_ptr())
+                var w_bf16_p = mptr(self.amp.w_bf16_dev.value().unsafe_ptr())
                 cast_fp32_to_bf16[target="gpu", N=Self.W_SIZE](
-                    rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                        self.weight.val.dev.value().unsafe_ptr()
-                    ),
+                    mptr(self.weight.val.dev.value().unsafe_ptr()),
                     w_bf16_p,
                     ctx,
                 )
 
-                var in_bf16_p = rebind[
-                    UnsafePointer[Scalar[DType.bfloat16], MutAnyOrigin]
-                ](self.amp.in_bf16_dev.value().unsafe_ptr())
+                var in_bf16_p = mptr(self.amp.in_bf16_dev.value().unsafe_ptr())
                 cast_fp32_to_bf16[target="gpu", N = BATCH * Self.IN](
                     in_p, in_bf16_p, ctx,
                 )
@@ -357,9 +345,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                 max_matmul[target="gpu"](
                     ou_bf16_tt, in_bf16_tt, w_bf16_tt, ctx,
                 )
-                var ou_bf16_p = rebind[
-                    UnsafePointer[Scalar[DType.bfloat16], MutAnyOrigin]
-                ](self.amp.ou_bf16_dev.value().unsafe_ptr())
+                var ou_bf16_p = mptr(self.amp.ou_bf16_dev.value().unsafe_ptr())
                 cast_bf16_to_fp32[target="gpu", N = BATCH * Self.OUT](
                     ou_bf16_p, out_p, ctx,
                 )
@@ -430,7 +416,7 @@ struct Linear[IN: Int, OUT: Int](Module):
         comptime if mode == "all":
             assert_tag_for["Linear", target](self.ts.target_tag)
             var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
+            var go_p = grad_output_v.ptr
 
             comptime if target == "cpu":
                 # ── (1) grad_b += column-sum(grad_output) ───
@@ -590,8 +576,8 @@ struct Linear[IN: Int, OUT: Int](Module):
         var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
         var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN]()
 
-        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+        var go_p = grad_output_v.ptr
+        var gi_p = grad_input_v.ptr
 
         comptime if target == "cpu":
             # ── (3) grad_input = grad_output @ W^T (always) ────────────
@@ -608,16 +594,12 @@ struct Linear[IN: Int, OUT: Int](Module):
                 )
                 self.amp.ensure_cpu(BATCH)
 
-                var w_bf16_p = rebind[
-                    UnsafePointer[Scalar[DType.bfloat16], MutAnyOrigin]
-                ](self.amp.w_bf16_cpu.unsafe_ptr())
+                var w_bf16_p = mptr(self.amp.w_bf16_cpu.unsafe_ptr())
                 cast_fp32_to_bf16[target="cpu", N=Self.W_SIZE](
                     self.weight.value_unsafe_ptr_cpu(), w_bf16_p,
                 )
 
-                var go_bf16_p = rebind[
-                    UnsafePointer[Scalar[DType.bfloat16], MutAnyOrigin]
-                ](self.amp.ou_bf16_cpu.unsafe_ptr())
+                var go_bf16_p = mptr(self.amp.ou_bf16_cpu.unsafe_ptr())
                 cast_fp32_to_bf16[target="cpu", N = BATCH * Self.OUT](
                     go_p, go_bf16_p,
                 )
@@ -635,9 +617,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                     gi_bf16_tt, go_bf16_tt, w_bf16_tt, None,
                 )
 
-                var gi_bf16_p = rebind[
-                    UnsafePointer[Scalar[DType.bfloat16], MutAnyOrigin]
-                ](self.amp.in_bf16_cpu.unsafe_ptr())
+                var gi_bf16_p = mptr(self.amp.in_bf16_cpu.unsafe_ptr())
                 cast_bf16_to_fp32[target="cpu", N = BATCH * Self.IN](
                     gi_bf16_p, gi_p,
                 )
@@ -659,19 +639,13 @@ struct Linear[IN: Int, OUT: Int](Module):
                 )
                 self.amp.ensure_gpu(BATCH, ctx)
 
-                var w_bf16_p = rebind[
-                    UnsafePointer[Scalar[DType.bfloat16], MutAnyOrigin]
-                ](self.amp.w_bf16_dev.value().unsafe_ptr())
+                var w_bf16_p = mptr(self.amp.w_bf16_dev.value().unsafe_ptr())
                 cast_fp32_to_bf16[target="gpu", N=Self.W_SIZE](
-                    rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                        self.weight.val.dev.value().unsafe_ptr()
-                    ),
+                    mptr(self.weight.val.dev.value().unsafe_ptr()),
                     w_bf16_p, ctx,
                 )
 
-                var go_bf16_p = rebind[
-                    UnsafePointer[Scalar[DType.bfloat16], MutAnyOrigin]
-                ](self.amp.ou_bf16_dev.value().unsafe_ptr())
+                var go_bf16_p = mptr(self.amp.ou_bf16_dev.value().unsafe_ptr())
                 cast_fp32_to_bf16[target="gpu", N = BATCH * Self.OUT](
                     go_p, go_bf16_p, ctx,
                 )
@@ -692,9 +666,7 @@ struct Linear[IN: Int, OUT: Int](Module):
                     gi_bf16_tt, go_bf16_tt, w_bf16_tt, ctx,
                 )
 
-                var gi_bf16_p = rebind[
-                    UnsafePointer[Scalar[DType.bfloat16], MutAnyOrigin]
-                ](self.amp.in_bf16_dev.value().unsafe_ptr())
+                var gi_bf16_p = mptr(self.amp.in_bf16_dev.value().unsafe_ptr())
                 cast_bf16_to_fp32[target="gpu", N = BATCH * Self.IN](
                     gi_bf16_p, gi_p, ctx,
                 )

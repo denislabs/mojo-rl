@@ -82,10 +82,8 @@ struct Flatten[DIM: Int](Module):
         assert_tag_for["Flatten", target](self.ts.target_tag)
         var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            output_v.ptr
-        )
+        var in_p = input.ptr
+        var out_p = output_v.ptr
         comptime N = BATCH * Self.DIM
 
         comptime if target == "cpu":
@@ -129,12 +127,8 @@ struct Flatten[DIM: Int](Module):
         assert_tag_for["Flatten", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
         var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            grad_output_v.ptr
-        )
-        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            grad_input_v.ptr
-        )
+        var go_p = grad_output_v.ptr
+        var gi_p = grad_input_v.ptr
         comptime N = BATCH * Self.DIM
 
         comptime if target == "cpu":

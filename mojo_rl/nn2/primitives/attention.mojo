@@ -38,7 +38,7 @@ from linalg.bmm import batched_matmul
 
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, Cache
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import (
     TargetStorage,
@@ -695,10 +695,8 @@ struct ScaledDotProductAttention[
         comptime lay_in = Layout.row_major(BATCH, Self.IN_DIMS[0])
         comptime lay_out = Layout.row_major(BATCH, Self.OUT_DIM)
         comptime lay_c = Layout.row_major(BATCH, Self.CACHE_SIZE)
-        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            output_v.ptr
-        )
+        var in_p = input.ptr
+        var out_p = output_v.ptr
         var in_lt = LayoutTensor[DT, lay_in, MutAnyOrigin](in_p)
         var out_lt = LayoutTensor[DT, lay_out, MutAnyOrigin](out_p)
         var c_lt = LayoutTensor[DT, lay_c, MutAnyOrigin](
@@ -735,17 +733,15 @@ struct ScaledDotProductAttention[
 
         # Slice the reused scratch buffer: 4 packed slots [0..3] then 2 scores
         # slots at 4*PACKED. Forward uses pq/pk/pv/pout + 1 scores.
-        var sb = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.scratch.dev.value().unsafe_ptr()
-        )
+        var sb = mptr(self.scratch.dev.value().unsafe_ptr())
         var pq = sb + 0 * PACKED
         var pk = sb + 1 * PACKED
         var pv = sb + 2 * PACKED
         var pout = sb + 3 * PACKED
         var sc = sb + 4 * PACKED
 
-        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+        var in_p = input.ptr
+        var out_p = output_v.ptr
         var in_lt = LayoutTensor[
             DT, Layout.row_major(BATCH, Self.IN_DIMS[0]), MutAnyOrigin
         ](in_p)
@@ -822,13 +818,9 @@ struct ScaledDotProductAttention[
         # stay scalar. Cache layout [Q|K|V|scores] is identical to the GPU
         # path, so backward reads it the same way.
         self.cache.ensure_cpu(BATCH * Self.CACHE_SIZE)
-        var ip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-        var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            output_v.ptr
-        )
-        var cp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.cache.cpu_ptr()
-        )
+        var ip = input.ptr
+        var op = output_v.ptr
+        var cp = mptr(self.cache.cpu_ptr())
         comptime IN = Self.IN_DIMS[0]
         comptime OUT = Self.OUT_DIM
         comptime C = Self.CACHE_SIZE
@@ -842,9 +834,7 @@ struct ScaledDotProductAttention[
         var scratch = List[Scalar[DT]](
             length=4 * PACKED + SCORES, fill=Scalar[DT](0)
         )
-        var sb = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            scratch.unsafe_ptr()
-        )
+        var sb = mptr(scratch.unsafe_ptr())
         var pq = sb + 0 * PACKED
         var pk = sb + 1 * PACKED
         var pv = sb + 2 * PACKED
@@ -981,12 +971,8 @@ struct ScaledDotProductAttention[
         comptime lay_in = Layout.row_major(BATCH, Self.IN_DIMS[0])
         comptime lay_out = Layout.row_major(BATCH, Self.OUT_DIM)
         comptime lay_c = Layout.row_major(BATCH, Self.CACHE_SIZE)
-        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            grad_output_v.ptr
-        )
-        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            grad_input_v.ptr
-        )
+        var go_p = grad_output_v.ptr
+        var gi_p = grad_input_v.ptr
         var go_lt = LayoutTensor[DT, lay_out, MutAnyOrigin](go_p)
         var gi_lt = LayoutTensor[DT, lay_in, MutAnyOrigin](gi_p)
         var c_lt = LayoutTensor[DT, lay_c, MutAnyOrigin](
@@ -1053,9 +1039,7 @@ struct ScaledDotProductAttention[
         #   p2: pk                        p3: pv     → (step5) dV
         #   s0: dattn  → (step4) attn_T → (step6) dscore_T
         #   s1: dscore
-        var sb = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.scratch.dev.value().unsafe_ptr()
-        )
+        var sb = mptr(self.scratch.dev.value().unsafe_ptr())
         var p0 = sb + 0 * PACKED
         var p1 = sb + 1 * PACKED
         var p2 = sb + 2 * PACKED
@@ -1063,8 +1047,8 @@ struct ScaledDotProductAttention[
         var s0 = sb + 4 * PACKED
         var s1 = sb + 4 * PACKED + SCORES
 
-        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+        var go_p = grad_output_v.ptr
+        var gi_p = grad_input_v.ptr
         var go_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin](go_p)
         var gi_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.IN_DIMS[0]), MutAnyOrigin](gi_p)
         var c_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin](
@@ -1163,15 +1147,9 @@ struct ScaledDotProductAttention[
         # stay scalar. grad_input is leaf-external (not the cache), so there is
         # no param-grad-before-grad_input aliasing constraint; we still write
         # grads only after all cache reads, matching the GPU ordering.
-        var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            grad_output_v.ptr
-        )
-        var gip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            grad_input_v.ptr
-        )
-        var cp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.cache.cpu_ptr()
-        )
+        var gop = grad_output_v.ptr
+        var gip = grad_input_v.ptr
+        var cp = mptr(self.cache.cpu_ptr())
         comptime IN = Self.IN_DIMS[0]
         comptime OUT = Self.OUT_DIM
         comptime C = Self.CACHE_SIZE
@@ -1189,9 +1167,7 @@ struct ScaledDotProductAttention[
         var scratch = List[Scalar[DT]](
             length=7 * PACKED + 4 * SCORES, fill=Scalar[DT](0)
         )
-        var sb = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            scratch.unsafe_ptr()
-        )
+        var sb = mptr(scratch.unsafe_ptr())
         var pdout = sb + 0 * PACKED
         var pq = sb + 1 * PACKED
         var pk = sb + 2 * PACKED

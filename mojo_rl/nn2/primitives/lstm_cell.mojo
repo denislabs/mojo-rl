@@ -48,7 +48,7 @@ from ..core import (
     Param,
     ParamVisitor,
 )
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
@@ -346,7 +346,7 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
         N: Int, FAN_IN: Int, FAN_OUT: Int, INIT: Initializer,
     ](ctx: DeviceContext, dst: DeviceBuffer[DT], is_bias: Bool) raises:
         var host = List[Scalar[DT]](length=N, fill=0.0)
-        var hp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](host.unsafe_ptr())
+        var hp = mptr(host.unsafe_ptr())
         if is_bias:
             INIT.init_bias(hp, N)
         else:
@@ -523,22 +523,22 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
         else:
             var ctx = self.ts.ctx.value()
             var x_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.IN_), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](x.ptr)
+                x.ptr
             )
             var hp_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](h_prev.ptr)
+                h_prev.ptr
             )
             var cp_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](c_prev.ptr)
+                c_prev.ptr
             )
             var ht_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](h_t.ptr)
+                h_t.ptr
             )
             var ct_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](c_t.ptr)
+                c_t.ptr
             )
             var cc_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](cache.ptr)
+                cache.ptr
             )
             var wih = LayoutTensor[DT, Layout.row_major(Self.IN_, FOURH), MutAnyOrigin](self.W_ih.val.dev.value())
             var whh = LayoutTensor[DT, Layout.row_major(H, FOURH), MutAnyOrigin](self.W_hh.val.dev.value())
@@ -614,26 +614,26 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
         else:
             var ctx = self.ts.ctx.value()
             var x_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.IN_), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](x.ptr)
+                x.ptr
             )
             var hp_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](h_prev.ptr)
+                h_prev.ptr
             )
             var cp_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](c_prev.ptr)
+                c_prev.ptr
             )
             var ht_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](h_t.ptr)
+                h_t.ptr
             )
             var ct_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](c_t.ptr)
+                c_t.ptr
             )
             var wih = LayoutTensor[DT, Layout.row_major(Self.IN_, FOURH), MutAnyOrigin](self.W_ih.val.dev.value())
             var whh = LayoutTensor[DT, Layout.row_major(H, FOURH), MutAnyOrigin](self.W_hh.val.dev.value())
             var bb = LayoutTensor[DT, Layout.row_major(FOURH), MutAnyOrigin](self.b.val.dev.value())
             # Reuse the fused kernel with WITH_CACHE=False (cache view unused).
             var dummy = LayoutTensor[DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](h_t.ptr)
+                h_t.ptr
             )
             comptime kern = _lstm_fwd_kernel[BATCH, Self.IN_, H, Self.CACHE_SIZE, False]
             ctx.enqueue_function[kern](
@@ -778,31 +778,31 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             var ctx = self.ts.ctx.value()
             self._ensure_dcomb_gpu(BATCH)
             var dh_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](dh.ptr)
+                dh.ptr
             )
             var dc_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](dc.ptr)
+                dc.ptr
             )
             var x_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.IN_), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](x.ptr)
+                x.ptr
             )
             var hp_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](h_prev.ptr)
+                h_prev.ptr
             )
             var cp_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](c_prev.ptr)
+                c_prev.ptr
             )
             var cc_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](cache.ptr)
+                cache.ptr
             )
             var dx_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.IN_), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](dx.ptr)
+                dx.ptr
             )
             var dhp_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](dh_prev.ptr)
+                dh_prev.ptr
             )
             var dcp_lt = LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](dc_prev.ptr)
+                dc_prev.ptr
             )
             var dcomb = LayoutTensor[DT, Layout.row_major(BATCH, FOURH), MutAnyOrigin](
                 self._dcomb_dev.value()

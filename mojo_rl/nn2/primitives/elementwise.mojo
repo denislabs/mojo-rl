@@ -167,8 +167,8 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
 
         comptime if target == "cpu":
             comptime N = BATCH * Self.DIM
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_p = input.ptr
+            var out_p = output_v.ptr
 
             comptime if Self.OP.owns_cache:
                 # Own cache: write y to both output and cache.
@@ -200,8 +200,8 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
                     k += 1
         else:
             comptime layout = Layout.row_major(BATCH, Self.DIM)
-            var in_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_ptr = input.ptr
+            var out_ptr = output_v.ptr
             var input_lt = LayoutTensor[DT, layout, MutAnyOrigin](in_ptr)
             var output_lt = LayoutTensor[DT, layout, MutAnyOrigin](out_ptr)
 
@@ -262,8 +262,8 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
         var gi_view = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go_view.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi_view.ptr)
+            var go_p = go_view.ptr
+            var gi_p = gi_view.ptr
             var c_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
             comptime if Self.OP.owns_cache:
                 c_p = self.cache.cpu_ptr()
@@ -281,8 +281,8 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
                 k += 1
         else:
             comptime layout = Layout.row_major(BATCH, Self.DIM)
-            var go_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go_view.ptr)
-            var gi_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi_view.ptr)
+            var go_ptr = go_view.ptr
+            var gi_ptr = gi_view.ptr
             var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](go_ptr)
             var gi_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi_ptr)
             var cache_lt: LayoutTensor[DT, layout, MutAnyOrigin]
