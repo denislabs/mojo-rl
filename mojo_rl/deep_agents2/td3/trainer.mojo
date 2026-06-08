@@ -62,7 +62,7 @@ from ..training.episode_tracker import EpisodeTracker
 from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
 from ..training.blocks import SampleBlock, TwinCriticStep
-from .blocks.target_y_step import TD3TargetYStep
+from .target_y_block import TD3TargetYBlock
 from .blocks.delayed_actor_polyak_step import TD3DelayedActorPolyakStep
 from .metrics import TD3Metrics
 
@@ -149,8 +149,8 @@ struct TD3Trainer[
     var critic2_opt: Adam
 
     var sample_blk: Self.SAMPLE
-    var target_y_blk: TD3TargetYStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+    var target_y_blk: TD3TargetYBlock[
+        Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM,
     ]
     var twin_critic_blk: TwinCriticStep[
         Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
@@ -206,8 +206,8 @@ struct TD3Trainer[
         self.critic1_opt = Adam()
         self.critic2_opt = Adam()
         self.sample_blk = Self.SAMPLE()
-        self.target_y_blk = TD3TargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        self.target_y_blk = TD3TargetYBlock[
+            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM,
         ]()
         self.twin_critic_blk = TwinCriticStep[
             Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
@@ -307,8 +307,8 @@ struct TD3Trainer[
         t.critic2_opt.lr = critic_lr
         t.critic2_opt.max_grad_norm = max_grad_norm
 
-        t.target_y_blk = TD3TargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        t.target_y_blk = TD3TargetYBlock[
+            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM,
         ].make[Self.train_target](
             action_scale=action_scale, gamma=gamma,
             noise_std=target_policy_noise, noise_clip=target_noise_clip,

@@ -61,7 +61,9 @@ from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
-from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn2.core.target_storage import (
+    TargetStorage, assert_tag_for, require_ctx,
+)
 from mojo_rl.nn2.initializer import Zero
 from mojo_rl.nn2.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn2.combinators.graph_nodes import (
@@ -77,6 +79,7 @@ from mojo_rl.nn2.primitives.binary_elem_min import BinaryElemMin
 from mojo_rl.nn2.random.box_muller import box_muller_normal, box_muller_normal_gpu
 from ..loss.loss_block import LossBlock
 from ..training.terminal_mask import apply_terminal_mask
+from ..training.trainer_block import TrainerState
 
 
 def _scale_inplace_kernel[N: Int](
@@ -148,8 +151,14 @@ struct TD3TargetYBlock[
         gamma: Scalar[DT] = Scalar[DT](0.99),
         noise_std: Scalar[DT] = Scalar[DT](0.2),
         noise_clip: Scalar[DT] = Scalar[DT](0.5),
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert target == "cpu", "TD3TargetYBlock: CPU only"
+        """Unified CPU/GPU factory (absorbed the former TD3TargetYStep).
+        `ctx=None` on CPU; required on GPU. GPU samples target-policy noise
+        on-device via Philox box-muller + a σ-scale kernel."""
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "TD3TargetYBlock: target must be 'cpu' or 'gpu'"
         comptime assert (
             Self.ACTOR.IN_DIMS[0] == Self.OBS
         ), "TD3TargetYBlock: ACTOR.IN_DIM must equal OBS"
@@ -163,57 +172,25 @@ struct TD3TargetYBlock[
             Self.CRITIC.OUT_DIM == 1
         ), "TD3TargetYBlock: CRITIC.OUT_DIM must equal 1"
         var blk = Self()
-        blk.graph = Self.TD3TargetYGraph.make[target="cpu", INIT=Zero]()
-        blk.noise_buf = Scratch["noise", Self.BATCH * Self.ACT].make_cpu()
-        blk.ts = TargetStorage.make_cpu()
+        comptime if target == "cpu":
+            blk.graph = Self.TD3TargetYGraph.make[target="cpu", INIT=Zero]()
+            blk.noise_buf = Scratch["noise", Self.BATCH * Self.ACT].make_cpu()
+            blk.ts = TargetStorage.make_cpu()
+        else:
+            var ctx_v = require_ctx["TD3TargetYBlock.make[target='gpu']"](ctx)
+            blk.graph = Self.TD3TargetYGraph.make[target="gpu", INIT=Zero](
+                ctx_v
+            )
+            blk.noise_buf = Scratch["noise", Self.BATCH * Self.ACT].make_gpu(
+                ctx_v
+            )
+            blk.ts = TargetStorage.make_gpu(ctx_v)
         blk.action_scale = action_scale
         blk.gamma = gamma
         blk.noise_std = noise_std
         blk.noise_clip = noise_clip
-        # Bake noise-clip + action-clamp + γ into the graph; constant across calls.
-        var clip_lim = noise_clip * action_scale
-        blk.graph.set_node_attr["noise_clip", "min_val"](-clip_lim)
-        blk.graph.set_node_attr["noise_clip", "max_val"](clip_lim)
-        blk.graph.set_node_attr["a_smoothed", "min_val"](-action_scale)
-        blk.graph.set_node_attr["a_smoothed", "max_val"](action_scale)
-        blk.graph.set_node_attr["gamma_q", "multiplier"](gamma)
-        return blk^
-
-    @staticmethod
-    def make[
-        target: StaticString
-    ](
-        ctx: DeviceContext,
-        action_scale: Scalar[DT] = Scalar[DT](1.0),
-        gamma: Scalar[DT] = Scalar[DT](0.99),
-        noise_std: Scalar[DT] = Scalar[DT](0.2),
-        noise_clip: Scalar[DT] = Scalar[DT](0.5),
-    ) raises -> Self:
-        """GPU factory. Noise is sampled on-device via Philox box-muller +
-        a σ-scale kernel; the FullGraph runs on GPU unchanged."""
-        comptime assert (
-            target == "gpu"
-        ), "TD3TargetYBlock.make[target='cpu'](ctx) — drop ctx for CPU"
-        comptime assert (
-            Self.ACTOR.IN_DIMS[0] == Self.OBS
-        ), "TD3TargetYBlock: ACTOR.IN_DIM must equal OBS"
-        comptime assert (
-            Self.ACTOR.OUT_DIM == Self.ACT
-        ), "TD3TargetYBlock: ACTOR.OUT_DIM must equal ACT"
-        comptime assert (
-            Self.CRITIC.IN_DIMS[0] == Self.SA_DIM
-        ), "TD3TargetYBlock: CRITIC.IN_DIM must equal OBS+ACT"
-        comptime assert (
-            Self.CRITIC.OUT_DIM == 1
-        ), "TD3TargetYBlock: CRITIC.OUT_DIM must equal 1"
-        var blk = Self()
-        blk.graph = Self.TD3TargetYGraph.make[target="gpu", INIT=Zero](ctx)
-        blk.noise_buf = Scratch["noise", Self.BATCH * Self.ACT].make_gpu(ctx)
-        blk.ts = TargetStorage.make_gpu(ctx)
-        blk.action_scale = action_scale
-        blk.gamma = gamma
-        blk.noise_std = noise_std
-        blk.noise_clip = noise_clip
+        # Bake noise-clip + action-clamp + γ into the graph; constant across
+        # calls.
         var clip_lim = noise_clip * action_scale
         blk.graph.set_node_attr["noise_clip", "min_val"](-clip_lim)
         blk.graph.set_node_attr["noise_clip", "max_val"](clip_lim)
@@ -285,4 +262,25 @@ struct TD3TargetYBlock[
 
         apply_terminal_mask[target, Self.BATCH](
             self.ts.ctx, mb_r_ptr, mb_term_ptr, mb_y_ptr,
+        )
+
+    def step[
+        target: StaticString,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
+        mut actor_t: Self.ACTOR,
+        mut critic1_t: Self.CRITIC,
+        mut critic2_t: Self.CRITIC,
+    ) raises:
+        """State-driven overload (absorbed the former TD3TargetYStep):
+        unpacks the minibatch pointers from `state` and delegates to the
+        positional `step`. Writes `state.mb_y` in-place."""
+        self.step[target, POLICY](
+            actor_t, critic1_t, critic2_t,
+            state.mb_sp.target_ptr[target](),
+            state.mb_r.target_ptr[target](),
+            state.mb_d.target_ptr[target](),
+            state.mb_y.target_ptr[target](),
         )

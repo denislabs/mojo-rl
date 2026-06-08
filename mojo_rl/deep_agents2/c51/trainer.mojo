@@ -57,7 +57,7 @@ from ..training.driver_offpolicy_discrete import (
 )
 from ..training.blocks import SampleBlock, SinglePolyakStep
 from ..data.n_step_replay import GPUNStepBuffer
-from .blocks.target_y_step import C51TargetYStep
+from .target_y_block import C51TargetYBlock
 from .blocks.q_update_step import C51QUpdateStep
 from .metrics import C51Metrics
 
@@ -133,9 +133,9 @@ struct C51Trainer[
     var pair: OnlineTargetPair[Self.Q_NET]
     var q_opt: Adam
     var sample_blk: Self.SAMPLE
-    var target_y_blk: C51TargetYStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.NUM_ACTIONS,
-        Self.N_ATOMS, Self.Q_NET, Self.DOUBLE,
+    var target_y_blk: C51TargetYBlock[
+        Self.Q_NET, Self.BATCH, Self.OBS_DIM, Self.NUM_ACTIONS,
+        Self.N_ATOMS, Self.DOUBLE,
     ]
     var q_update_blk: C51QUpdateStep[
         Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.NUM_ACTIONS,
@@ -203,9 +203,9 @@ struct C51Trainer[
         self.pair = OnlineTargetPair[Self.Q_NET]()
         self.q_opt = Adam()
         self.sample_blk = Self.SAMPLE()
-        self.target_y_blk = C51TargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.NUM_ACTIONS,
-            Self.N_ATOMS, Self.Q_NET, Self.DOUBLE,
+        self.target_y_blk = C51TargetYBlock[
+            Self.Q_NET, Self.BATCH, Self.OBS_DIM, Self.NUM_ACTIONS,
+            Self.N_ATOMS, Self.DOUBLE,
         ]()
         self.q_update_blk = C51QUpdateStep[
             Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.NUM_ACTIONS,
@@ -310,9 +310,9 @@ struct C51Trainer[
         t.q_opt.lr = lr
         t.q_opt.max_grad_norm = max_grad_norm
 
-        t.target_y_blk = C51TargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.NUM_ACTIONS,
-            Self.N_ATOMS, Self.Q_NET, Self.DOUBLE,
+        t.target_y_blk = C51TargetYBlock[
+            Self.Q_NET, Self.BATCH, Self.OBS_DIM, Self.NUM_ACTIONS,
+            Self.N_ATOMS, Self.DOUBLE,
         ].make[Self.train_target](
             gamma=gamma, nstep=nstep,
             v_min=v_min, v_max=v_max, ctx=ctx,
@@ -383,7 +383,12 @@ struct C51Trainer[
         var t_ty = perf_counter_ns()
         var m_ptr = self._mb_m.target_ptr[Self.train_target]()
         self.target_y_blk.step[Self.train_target, POLICY](
-            self.state, self.pair.target_net, self.pair.online, m_ptr,
+            self.pair.target_net,
+            self.pair.online,
+            self.state.mb_sp.target_ptr[Self.train_target](),
+            self.state.mb_r.target_ptr[Self.train_target](),
+            self.state.mb_d.target_ptr[Self.train_target](),
+            m_ptr,
         )
         self.timer.accumulate(Self._T_TARGET_Y, t_ty)
 
@@ -457,7 +462,7 @@ struct C51Trainer[
             var ctx_v = self.ctx.value()
             var lg_ptr = self.q_update_blk.inner._logits_a.target_ptr["gpu"]()
             var m_ptr = self._mb_m.target_ptr["gpu"]()
-            var z_ptr = self.target_y_blk.inner._z.target_ptr["gpu"]()
+            var z_ptr = self.target_y_blk._z.target_ptr["gpu"]()
             var eq_ptr = self._diag_eq_dev.value().unsafe_ptr()
             var ent_ptr = self._diag_ent_dev.value().unsafe_ptr()
             var tq_ptr = self._diag_tq_dev.value().unsafe_ptr()

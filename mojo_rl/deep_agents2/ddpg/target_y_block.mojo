@@ -56,7 +56,9 @@ from layout import TileTensor, row_major
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
-from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn2.core.target_storage import (
+    TargetStorage, assert_tag_for, require_ctx,
+)
 from mojo_rl.nn2.initializer import Zero
 from mojo_rl.nn2.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn2.combinators.graph_nodes import (
@@ -69,6 +71,7 @@ from mojo_rl.nn2.primitives.scale import Scale
 from mojo_rl.nn2.primitives.concat import Concat
 from ..loss.loss_block import LossBlock
 from ..training.terminal_mask import apply_terminal_mask
+from ..training.trainer_block import TrainerState
 
 
 struct DDPGTargetYBlock[
@@ -110,10 +113,13 @@ struct DDPGTargetYBlock[
     ](
         action_scale: Scalar[DT] = Scalar[DT](1.0),
         gamma: Scalar[DT] = Scalar[DT](0.99),
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
+        """Unified CPU/GPU factory (absorbed the former DDPGTargetYStep).
+        `ctx=None` on CPU; required on GPU."""
         comptime assert (
-            target == "cpu"
-        ), "DDPGTargetYBlock.make[target='gpu'] requires a DeviceContext"
+            target == "cpu" or target == "gpu"
+        ), "DDPGTargetYBlock: target must be 'cpu' or 'gpu'"
         comptime assert (
             Self.ACTOR.IN_DIMS[0] == Self.OBS
         ), "DDPGTargetYBlock: ACTOR.IN_DIM must equal OBS"
@@ -127,45 +133,18 @@ struct DDPGTargetYBlock[
             Self.CRITIC.OUT_DIM == 1
         ), "DDPGTargetYBlock: CRITIC.OUT_DIM must equal 1"
         var blk = Self()
-        blk.graph = Self.DDPGTargetYGraph.make[target="cpu", INIT=Zero]()
-        blk.ts = TargetStorage.make_cpu()
+        comptime if target == "cpu":
+            blk.graph = Self.DDPGTargetYGraph.make[target="cpu", INIT=Zero]()
+            blk.ts = TargetStorage.make_cpu()
+        else:
+            var ctx_v = require_ctx["DDPGTargetYBlock.make[target='gpu']"](ctx)
+            blk.graph = Self.DDPGTargetYGraph.make[target="gpu", INIT=Zero](
+                ctx_v
+            )
+            blk.ts = TargetStorage.make_gpu(ctx_v)
         blk.action_scale = action_scale
         blk.gamma = gamma
         # Bake action-scale clamp + γ into the graph; constant across calls.
-        blk.graph.set_node_attr["a_clipped", "min_val"](-action_scale)
-        blk.graph.set_node_attr["a_clipped", "max_val"](action_scale)
-        blk.graph.set_node_attr["gamma_q", "multiplier"](gamma)
-        return blk^
-
-    @staticmethod
-    def make[
-        target: StaticString
-    ](
-        ctx: DeviceContext,
-        action_scale: Scalar[DT] = Scalar[DT](1.0),
-        gamma: Scalar[DT] = Scalar[DT](0.99),
-    ) raises -> Self:
-        """GPU factory."""
-        comptime assert (
-            target == "gpu"
-        ), "DDPGTargetYBlock.make[target='cpu'](ctx) — drop ctx for CPU"
-        comptime assert (
-            Self.ACTOR.IN_DIMS[0] == Self.OBS
-        ), "DDPGTargetYBlock: ACTOR.IN_DIM must equal OBS"
-        comptime assert (
-            Self.ACTOR.OUT_DIM == Self.ACT
-        ), "DDPGTargetYBlock: ACTOR.OUT_DIM must equal ACT"
-        comptime assert (
-            Self.CRITIC.IN_DIMS[0] == Self.SA_DIM
-        ), "DDPGTargetYBlock: CRITIC.IN_DIM must equal OBS+ACT"
-        comptime assert (
-            Self.CRITIC.OUT_DIM == 1
-        ), "DDPGTargetYBlock: CRITIC.OUT_DIM must equal 1"
-        var blk = Self()
-        blk.graph = Self.DDPGTargetYGraph.make[target="gpu", INIT=Zero](ctx)
-        blk.ts = TargetStorage.make_gpu(ctx)
-        blk.action_scale = action_scale
-        blk.gamma = gamma
         blk.graph.set_node_attr["a_clipped", "min_val"](-action_scale)
         blk.graph.set_node_attr["a_clipped", "max_val"](action_scale)
         blk.graph.set_node_attr["gamma_q", "multiplier"](gamma)
@@ -204,4 +183,24 @@ struct DDPGTargetYBlock[
 
         apply_terminal_mask[target, Self.BATCH](
             self.ts.ctx, mb_r_ptr, mb_term_ptr, mb_y_ptr,
+        )
+
+    def step[
+        target: StaticString,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
+        mut actor_t: Self.ACTOR,
+        mut critic_t: Self.CRITIC,
+    ) raises:
+        """State-driven overload (absorbed the former DDPGTargetYStep):
+        unpacks the minibatch pointers from `state` and delegates to the
+        positional `step`. Writes `state.mb_y` in-place."""
+        self.step[target, POLICY](
+            actor_t, critic_t,
+            state.mb_sp.target_ptr[target](),
+            state.mb_r.target_ptr[target](),
+            state.mb_d.target_ptr[target](),
+            state.mb_y.target_ptr[target](),
         )

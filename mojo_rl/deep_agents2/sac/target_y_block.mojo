@@ -56,7 +56,9 @@ from layout import TileTensor, row_major
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
-from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn2.core.target_storage import (
+    TargetStorage, assert_tag_for, require_ctx,
+)
 from mojo_rl.nn2.initializer import Zero
 from mojo_rl.nn2.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn2.combinators.graph_nodes import (
@@ -72,6 +74,7 @@ from mojo_rl.nn2.primitives.binary_elem_min import BinaryElemMin
 from mojo_rl.nn2.primitives.binary_sub import BinarySub
 from ..loss.loss_block import LossBlock
 from ..training.terminal_mask import apply_terminal_mask
+from ..training.trainer_block import TrainerState
 
 
 struct TargetYBlock[
@@ -124,10 +127,13 @@ struct TargetYBlock[
     ](
         action_scale: Scalar[DT] = Scalar[DT](1.0),
         gamma: Scalar[DT] = Scalar[DT](0.99),
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
+        """Unified CPU/GPU factory (absorbed the former TargetYStep wrapper).
+        `ctx=None` on CPU; required on GPU (matmul-style Optional ctx)."""
         comptime assert (
-            target == "cpu"
-        ), "TargetYBlock.make[target='gpu'] requires a DeviceContext"
+            target == "cpu" or target == "gpu"
+        ), "TargetYBlock: target must be 'cpu' or 'gpu'"
         comptime assert (
             Self.ACTOR.IN_DIMS[0] == Self.OBS
         ), "TargetYBlock: ACTOR.IN_DIM must equal OBS"
@@ -141,48 +147,21 @@ struct TargetYBlock[
             Self.CRITIC.OUT_DIM == 1
         ), "TargetYBlock: CRITIC.OUT_DIM must equal 1"
         var blk = Self()
-        blk.graph = Self.TargetYGraph.make[target="cpu", INIT=Zero]()
-        blk.rsample = RSample[Self.ACT].make[target="cpu", INIT=Zero]()
+        comptime if target == "cpu":
+            blk.graph = Self.TargetYGraph.make[target="cpu", INIT=Zero]()
+            blk.rsample = RSample[Self.ACT].make[target="cpu", INIT=Zero]()
+            blk.ts = TargetStorage.make_cpu()
+        else:
+            var ctx_v = require_ctx["TargetYBlock.make[target='gpu']"](ctx)
+            blk.graph = Self.TargetYGraph.make[target="gpu", INIT=Zero](ctx_v)
+            blk.rsample = RSample[Self.ACT].make[target="gpu", INIT=Zero](ctx_v)
+            blk.ts = TargetStorage.make_gpu(ctx_v)
         blk.rsample.action_scale = action_scale
-        blk.ts = TargetStorage.make_cpu()
         blk.action_scale = action_scale
         blk.gamma = gamma
-        # γ on the gamma_softv Scale node is constant across calls; set once at make.
-        # (α on alpha_lp varies per step — set inside `step` from the caller's α.)
-        blk.graph.set_node_attr["gamma_softv", "multiplier"](gamma)
-        return blk^
-
-    @staticmethod
-    def make[
-        target: StaticString
-    ](
-        ctx: DeviceContext,
-        action_scale: Scalar[DT] = Scalar[DT](1.0),
-        gamma: Scalar[DT] = Scalar[DT](0.99),
-    ) raises -> Self:
-        """GPU factory."""
-        comptime assert (
-            target == "gpu"
-        ), "TargetYBlock.make[target='cpu'](ctx) — drop ctx for CPU"
-        comptime assert (
-            Self.ACTOR.IN_DIMS[0] == Self.OBS
-        ), "TargetYBlock: ACTOR.IN_DIM must equal OBS"
-        comptime assert (
-            Self.ACTOR.OUT_DIM == 2 * Self.ACT
-        ), "TargetYBlock: ACTOR.OUT_DIM must equal 2·ACT"
-        comptime assert (
-            Self.CRITIC.IN_DIMS[0] == Self.SA_DIM
-        ), "TargetYBlock: CRITIC.IN_DIM must equal OBS + ACT"
-        comptime assert (
-            Self.CRITIC.OUT_DIM == 1
-        ), "TargetYBlock: CRITIC.OUT_DIM must equal 1"
-        var blk = Self()
-        blk.graph = Self.TargetYGraph.make[target="gpu", INIT=Zero](ctx)
-        blk.rsample = RSample[Self.ACT].make[target="gpu", INIT=Zero](ctx)
-        blk.rsample.action_scale = action_scale
-        blk.ts = TargetStorage.make_gpu(ctx)
-        blk.action_scale = action_scale
-        blk.gamma = gamma
+        # γ on the gamma_softv Scale node is constant across calls; set once at
+        # make. (α on alpha_lp varies per step — set inside `step` from the
+        # caller's α.)
         blk.graph.set_node_attr["gamma_softv", "multiplier"](gamma)
         return blk^
 
@@ -251,4 +230,26 @@ struct TargetYBlock[
         # Reward add + terminal mask: mb_y[b] = r[b] + (1−term[b])·mb_y[b].
         apply_terminal_mask[target, Self.BATCH](
             self.ts.ctx, mb_r_ptr, mb_term_ptr, mb_y_ptr,
+        )
+
+    def step[
+        target: StaticString,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
+        mut actor: Self.ACTOR,
+        mut tgt1: Self.CRITIC,
+        mut tgt2: Self.CRITIC,
+    ) raises:
+        """State-driven overload (absorbed the former TargetYStep): unpacks
+        the minibatch pointers from `state` and delegates to the positional
+        `step`. Writes `state.mb_y` in-place."""
+        self.step[target, POLICY](
+            actor, tgt1, tgt2,
+            state.mb_sp.target_ptr[target](),
+            state.mb_r.target_ptr[target](),
+            state.mb_d.target_ptr[target](),
+            state.alpha,
+            state.mb_y.target_ptr[target](),
         )

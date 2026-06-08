@@ -76,7 +76,7 @@ from mojo_rl.nn2.training.timer import Timer
 from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.blocks import SampleBlock, TwinCriticStep, PolyakStep
-from .blocks.target_y_step import TargetYStep
+from .target_y_block import TargetYBlock
 from .blocks.actor_step import SACActorStep
 from .blocks.alpha_update_step import AlphaUpdateStep
 
@@ -220,12 +220,12 @@ struct SACTrainer[
     var alpha_opt: ScalarAdam
 
     var sample_blk: Self.SAMPLE
-    var target_y_blk: TargetYStep[
-        Self.OBS_DIM,
-        Self.ACT_DIM,
-        Self.BATCH,
+    var target_y_blk: TargetYBlock[
         Self.ACTOR,
         Self.CRITIC,
+        Self.BATCH,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
     ]
     var twin_critic_blk: TwinCriticStep[
         Self.OBS_DIM,
@@ -307,12 +307,12 @@ struct SACTrainer[
             eps=1e-8,
         )
         self.sample_blk = Self.SAMPLE()
-        self.target_y_blk = TargetYStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
+        self.target_y_blk = TargetYBlock[
             Self.ACTOR,
             Self.CRITIC,
+            Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
         ]()
         self.twin_critic_blk = TwinCriticStep[
             Self.OBS_DIM,
@@ -434,12 +434,12 @@ struct SACTrainer[
             t.pair2.online,
             ctx=ctx,
         )
-        t.target_y_blk = TargetYStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
+        t.target_y_blk = TargetYBlock[
             Self.ACTOR,
             Self.CRITIC,
+            Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
         ].make[Self.train_target](
             action_scale=action_scale,
             gamma=gamma,
@@ -614,7 +614,7 @@ struct SACTrainer[
             # GPU-SAC bundle: min of the two target-critic next-Q's). The
             # node output is stable after `target_y_blk.step`'s forward,
             # which ran earlier this train_step.
-            var nq_p = self.target_y_blk.inner.graph.node_out_ptr["min_q"]()
+            var nq_p = self.target_y_blk.graph.node_out_ptr["min_q"]()
             var sum_y: Scalar[DT] = 0.0
             var sum_r: Scalar[DT] = 0.0
             var sum_d: Scalar[DT] = 0.0
@@ -1254,7 +1254,7 @@ struct SACTrainer[
         var a_ptr = self.state.mb_a.target_ptr["gpu"]()
         # `min_q` is the target-y ComputeGraph's min(Q1_t, Q2_t)(s', a') node;
         # its device out_ptr is fresh from the last update's target_y forward.
-        var nq_ptr = self.target_y_blk.inner.graph.node_out_ptr["min_q"]()
+        var nq_ptr = self.target_y_blk.graph.node_out_ptr["min_q"]()
         self._q_mean_dev.accumulate_gpu[Self.BATCH](q_ptr)
         self._reward_mean_dev.accumulate_gpu[Self.BATCH](r_ptr)
         self._target_mean_dev.accumulate_gpu[Self.BATCH](y_ptr)

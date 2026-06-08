@@ -7,7 +7,7 @@ sequence of `<block>.step[target, POLICY]` calls against a shared
 
 Block decomposition:
   1. `sample_blk: SAMPLE` (SampleBlock trait — uniform / PER / N-step)
-  2. `target_y_blk: DQNTargetYStep` (forward-only, owns `Q_target.forward
+  2. `target_y_blk: DQNTargetYBlock` (forward-only, owns `Q_target.forward
      → ReduceMax → finalize fuse`; Double branch swaps in argmax+gather)
   3. `q_update_blk: DQNQUpdateStep` (owns gather+MSE+scatter+Q.vjp)
   4. `polyak_blk: SinglePolyakStep` (soft τ-update OR hard copy every N)
@@ -55,7 +55,7 @@ from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy_discrete import OffPolicyDiscreteAgent
 from ..training.blocks import SampleBlock, SinglePolyakStep
-from .blocks.target_y_step import DQNTargetYStep
+from .target_y_block import DQNTargetYBlock
 from .blocks.q_update_step import DQNQUpdateStep
 from .metrics import DQNMetrics
 
@@ -88,9 +88,8 @@ struct DQNTrainer[
     var pair: OnlineTargetPair[Self.Q_NET]
     var q_opt: Adam
     var sample_blk: Self.SAMPLE
-    var target_y_blk: DQNTargetYStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.NUM_ACTIONS,
-        Self.Q_NET, Self.DOUBLE,
+    var target_y_blk: DQNTargetYBlock[
+        Self.Q_NET, Self.BATCH, Self.OBS_DIM, Self.NUM_ACTIONS, Self.DOUBLE,
     ]
     var q_update_blk: DQNQUpdateStep[
         Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.NUM_ACTIONS, Self.Q_NET,
@@ -149,9 +148,9 @@ struct DQNTrainer[
         self.pair = OnlineTargetPair[Self.Q_NET]()
         self.q_opt = Adam()
         self.sample_blk = Self.SAMPLE()
-        self.target_y_blk = DQNTargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.NUM_ACTIONS,
-            Self.Q_NET, Self.DOUBLE,
+        self.target_y_blk = DQNTargetYBlock[
+            Self.Q_NET, Self.BATCH, Self.OBS_DIM, Self.NUM_ACTIONS,
+            Self.DOUBLE,
         ]()
         self.q_update_blk = DQNQUpdateStep[
             Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.NUM_ACTIONS,
@@ -245,9 +244,9 @@ struct DQNTrainer[
         t.q_opt.lr = lr
         t.q_opt.max_grad_norm = max_grad_norm
 
-        t.target_y_blk = DQNTargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.NUM_ACTIONS,
-            Self.Q_NET, Self.DOUBLE,
+        t.target_y_blk = DQNTargetYBlock[
+            Self.Q_NET, Self.BATCH, Self.OBS_DIM, Self.NUM_ACTIONS,
+            Self.DOUBLE,
         ].make[Self.train_target](gamma=gamma, nstep=nstep, ctx=ctx)
 
         t.q_update_blk = DQNQUpdateStep[
@@ -315,7 +314,12 @@ struct DQNTrainer[
         # 2. Target-Y.
         var t_ty = perf_counter_ns()
         self.target_y_blk.step[Self.train_target, POLICY](
-            self.state, self.pair.target_net, self.pair.online,
+            self.pair.target_net,
+            self.pair.online,
+            self.state.mb_sp.target_ptr[Self.train_target](),
+            self.state.mb_r.target_ptr[Self.train_target](),
+            self.state.mb_d.target_ptr[Self.train_target](),
+            self.state.mb_y.target_ptr[Self.train_target](),
         )
         self.timer.accumulate(Self._T_TARGET_Y, t_ty)
 

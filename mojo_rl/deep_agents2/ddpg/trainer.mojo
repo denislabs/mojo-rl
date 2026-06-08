@@ -67,7 +67,7 @@ from ..training.episode_tracker import EpisodeTracker
 from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
 from ..training.blocks import SampleBlock, SingleCriticStep
-from .blocks.target_y_step import DDPGTargetYStep
+from .target_y_block import DDPGTargetYBlock
 from .blocks.actor_step import DDPGActorStep
 from .blocks.polyak_step import DDPGPolyakStep
 from .metrics import DDPGMetrics
@@ -156,8 +156,8 @@ struct DDPGTrainer[
     var critic_opt: Adam
 
     var sample_blk: Self.SAMPLE
-    var target_y_blk: DDPGTargetYStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+    var target_y_blk: DDPGTargetYBlock[
+        Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM,
     ]
     var critic_blk: SingleCriticStep[
         Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
@@ -218,8 +218,8 @@ struct DDPGTrainer[
         self.actor_opt = Adam()
         self.critic_opt = Adam()
         self.sample_blk = Self.SAMPLE()
-        self.target_y_blk = DDPGTargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        self.target_y_blk = DDPGTargetYBlock[
+            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM,
         ]()
         self.critic_blk = SingleCriticStep[
             Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
@@ -313,8 +313,8 @@ struct DDPGTrainer[
         t.critic_opt.lr = critic_lr
         t.critic_opt.max_grad_norm = max_grad_norm
 
-        t.target_y_blk = DDPGTargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        t.target_y_blk = DDPGTargetYBlock[
+            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM,
         ].make[Self.train_target](
             action_scale=action_scale, gamma=gamma, ctx=ctx,
         )

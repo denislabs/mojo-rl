@@ -67,7 +67,7 @@ from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.off_policy_critic import concat_sa_gpu
 from ..training.blocks import DualSampleStep, TwinCriticStep, PolyakStep
-from ..sac.blocks.target_y_step import TargetYStep
+from ..sac.target_y_block import TargetYBlock
 from ..sac.blocks.actor_step import SACActorStep
 from ..sac.blocks.alpha_update_step import AlphaUpdateStep
 from .metrics import MBPOMetrics
@@ -320,8 +320,8 @@ struct MBPOTrainer[
     var alpha_opt: ScalarAdam
 
     var sample_blk: Self.SampleBlk
-    var target_y_blk: TargetYStep[
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+    var target_y_blk: TargetYBlock[
+        Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM,
     ]
     var twin_critic_blk: TwinCriticStep[
         Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
@@ -477,8 +477,8 @@ struct MBPOTrainer[
             lr=0.0003, beta1=0.9, beta2=0.999, eps=1e-8,
         )
         self.sample_blk = Self.SampleBlk()
-        self.target_y_blk = TargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        self.target_y_blk = TargetYBlock[
+            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM,
         ]()
         self.twin_critic_blk = TwinCriticStep[
             Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
@@ -638,8 +638,8 @@ struct MBPOTrainer[
         else:
             t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
 
-        t.target_y_blk = TargetYStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
+        t.target_y_blk = TargetYBlock[
+            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM,
         ].make[Self.train_target](
             action_scale=action_scale, gamma=gamma, ctx=ctx,
         )
