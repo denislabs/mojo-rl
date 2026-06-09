@@ -115,7 +115,7 @@ struct Holder[M: Module]:
 
     def __init__(out self):
         self._module_ptr = UnsafePointer[Self.M, MutAnyOrigin](
-            unsafe_from_address=0,
+            unsafe_from_address=Int(0),
         )
 
     def set_external_via(

@@ -175,6 +175,7 @@ def run_onpolicy_train[
         checkpoint_every: Checkpoint writing cadence (env-steps). 0 disables.
         checkpoint_path: Path to write checkpoints to.
         base_step: Base step counter for the training loop.
+        progress_label: Label for the progress bar.
 
     Returns:
         List of `trainer.mean_return()` snapshots taken at each completed

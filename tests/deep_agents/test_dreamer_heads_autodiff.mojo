@@ -329,7 +329,7 @@ def test_heads_grad_check() raises:
     # Zero-length model state (HeadsGraph is stateless).
     var state_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     M.forward[BATCH](feat_t, output_t, params_t, state_t, cache_t)
 

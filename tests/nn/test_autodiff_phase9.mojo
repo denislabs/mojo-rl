@@ -174,7 +174,7 @@ def test_resnet_forward_backward() -> Int:
     ](cache_data.unsafe_ptr())
     var s_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
@@ -275,7 +275,7 @@ def test_resnet_xor_training() -> Int:
         ](cache_data.unsafe_ptr())
         var s_t = LayoutTensor[
             dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
         M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
@@ -347,7 +347,7 @@ def test_resnet_gradient_flow() -> Int:
     ](cache_data.unsafe_ptr())
     var s_t = LayoutTensor[
         dtype, Layout.row_major(DeepResNet.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     DeepResNet.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
@@ -454,7 +454,7 @@ def test_multihead_forward_backward() -> Int:
     ](cache_data.unsafe_ptr())
     var s_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
@@ -557,7 +557,7 @@ def test_multihead_xor_training() -> Int:
         ](cache_data.unsafe_ptr())
         var s_t = LayoutTensor[
             dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
         M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
@@ -631,7 +631,7 @@ def test_multihead_3branch() -> Int:
     ](cache_data.unsafe_ptr())
     var s_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
@@ -750,7 +750,7 @@ def test_cnn_forward_backward() -> Int:
     ](cache_data.unsafe_ptr())
     var s_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
@@ -825,7 +825,7 @@ def test_lenet_forward_backward() -> Int:
     ](cache_data.unsafe_ptr())
     var s_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
@@ -930,7 +930,7 @@ def test_cnn_synthetic_training() -> Int:
         ](cache_data.unsafe_ptr())
         var s_t = LayoutTensor[
             dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
         M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
@@ -1090,7 +1090,7 @@ def test_tiny_gpt() -> Int:
     ](cache_data.unsafe_ptr())
     var s_t = LayoutTensor[
         dtype, Layout.row_major(GPT.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     GPT.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 

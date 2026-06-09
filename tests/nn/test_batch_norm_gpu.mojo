@@ -69,7 +69,7 @@ def test_bn_gpu_vs_cpu() raises:
     var cpu_params_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
     var cpu_cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cpu_cache)
     var cpu_state_t = LayoutTensor[dtype, Layout.row_major(BN.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
 
     BN.forward[BATCH](inp_t, cpu_out_t, cpu_params_t, cpu_state_t, cpu_cache_t)
@@ -112,7 +112,7 @@ def test_bn_gpu_vs_cpu() raises:
     var gpu_params_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](gpu_params.unsafe_ptr())
     var gpu_cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](gpu_cache.unsafe_ptr())
     var gpu_state_t = LayoutTensor[dtype, Layout.row_major(BN.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
 
     BN.forward_gpu[BATCH](ctx, gpu_out_t, gpu_inp_t, gpu_params_t, gpu_state_t, gpu_cache_t, gpu_ws)

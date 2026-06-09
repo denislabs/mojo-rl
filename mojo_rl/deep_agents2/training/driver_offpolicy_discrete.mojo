@@ -304,6 +304,7 @@ def run_offpolicy_discrete_train[
         eval_every: Greedy-eval cadence (env steps; 0 disables).
         eval_episodes: Episodes per greedy-eval pass.
         eval_max_steps: Max env iterations per eval episode (safety cap).
+        progress_label: Label for the progress bar.
 
     Returns:
         List of `trainer.mean_return()` snapshots at each completed
@@ -653,6 +654,8 @@ def run_offpolicy_discrete_train_gpu_batched[
         eval_every: Greedy-eval cadence (env steps; 0 disables).
         eval_episodes: Episodes per greedy-eval pass.
         eval_max_iters: Max env iterations per eval episode (safety cap).
+        progress_label: Label for the progress bar.
+        episode_sync_every: Batch the per-iteration reward+done D2H: copies.
 
     Returns:
         List of `trainer.mean_return()` snapshots at episode boundaries.
@@ -696,9 +699,7 @@ def run_offpolicy_discrete_train_gpu_batched[
     # log/diag/ckpt/eval/end boundary is imminent. `sync_every == 1` reproduces
     # the original per-iteration sync exactly. Mirrors the SAC GPU-env driver.
     # The selective_reset uses the DEVICE done buffer, so it is unaffected.
-    var sync_every: Int = (
-        episode_sync_every if episode_sync_every >= 1 else 1
-    )
+    var sync_every: Int = episode_sync_every if episode_sync_every >= 1 else 1
     var ring_reward = List[HostBuffer[DT]]()
     var ring_done = List[HostBuffer[DT]]()
     var pending_eps: Int = 0

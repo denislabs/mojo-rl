@@ -61,7 +61,7 @@ struct ComptimeIndexProbe[*DIMS: Int](Movable & ImplicitlyDestructible):
     def test_via_variadic[BATCH: Int]() raises:
         comptime for k in range(Self.ARITY):
             comptime dim_k = Self.DIMS[k]
-            var stub_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
+            var stub_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=Int(0))
             var t = TileTensor(stub_ptr, row_major[BATCH, dim_k]())
             print("  variadic[", k, "] dim =", dim_k)
 
@@ -86,7 +86,7 @@ struct InlineArrayIndexProbe(Movable & ImplicitlyDestructible):
     def test_inline_array_index[BATCH: Int]() raises:
         comptime for k in range(3):
             comptime dim_k = Self.IN_DIMS[k]   # ← THE QUESTION
-            var stub_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0)
+            var stub_ptr = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=Int(0))
             var t = TileTensor(stub_ptr, row_major[BATCH, dim_k]())
             print("  IN_DIMS[", k, "] dim =", dim_k)
 

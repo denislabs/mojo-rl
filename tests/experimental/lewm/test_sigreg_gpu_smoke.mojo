@@ -59,10 +59,10 @@ def main() raises:
 
     var empty_params = LayoutTensor[
         dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     var empty_grad_params = LayoutTensor[
         dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     var in_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, SR.IN_DIM), MutAnyOrigin

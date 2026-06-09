@@ -678,7 +678,7 @@ def test_dropout_chain() -> Int:
     ](cache1.unsafe_ptr())
     var s_t1 = LayoutTensor[
         dtype, Layout.row_major(Chain.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     Chain.forward[BATCH](inp_t1, out_t1, p_t1, s_t1, c_t1)
 
     # Forward without dropout
@@ -698,7 +698,7 @@ def test_dropout_chain() -> Int:
     ](cache2.unsafe_ptr())
     var s_t2 = LayoutTensor[
         dtype, Layout.row_major(ChainNoDrop.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     ChainNoDrop.forward[BATCH](inp_t2, out_t2, p_t2, s_t2, c_t2)
 
     var md = max_diff(out1, out2, BATCH * OUT)

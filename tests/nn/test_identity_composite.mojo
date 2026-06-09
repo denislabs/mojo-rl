@@ -48,7 +48,7 @@ def test_identity() raises:
     ](params.unsafe_ptr())
     var state_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     M.forward[BATCH](input_t, output_t, params_t, state_t)
 
@@ -131,7 +131,7 @@ def test_identity_in_compute_graph() raises:
     ](cache_arr.unsafe_ptr())
     var state_t = LayoutTensor[
         dtype, Layout.row_major(G.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     G.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
     print("  Output:", output_arr[0], output_arr[1], "...", output_arr[5])

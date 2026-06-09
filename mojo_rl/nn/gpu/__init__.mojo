@@ -2,14 +2,6 @@
 
 This module provides common GPU operations used across deep RL algorithms.
 
-## Elementwise Operations (elementwise.mojo)
-- gpu_add: output = a + b
-- gpu_mul: output = a * b
-- gpu_scale: output = input * scalar
-- gpu_relu: output = max(input, 0)
-- gpu_tanh: output = tanh(input)
-- gpu_sigmoid: output = 1 / (1 + exp(-input))
-
 ## Matrix Operations (matmul.mojo)
 - tiled_matmul_kernel: Optimized matmul using shared memory tiling
 
@@ -34,14 +26,6 @@ agent-specific kernels.mojo files (sac, td3, a2c).
 """
 
 
-from .elementwise import (
-    gpu_add,
-    gpu_mul,
-    gpu_scale,
-    gpu_relu,
-    gpu_tanh,
-    gpu_sigmoid,
-)
 from .matmul import (
     tiled_matmul_kernel,
     mma_matmul_kernel,

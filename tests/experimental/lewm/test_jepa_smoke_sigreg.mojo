@@ -203,7 +203,7 @@ def main() raises:
     # SIGReg forward on emb_bte (B, T*EMB). PARAM_SIZE=0 → empty params view.
     var empty_params = LayoutTensor[
         dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     var sigreg_out_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
     ](sigreg_out_arr.unsafe_ptr())
@@ -325,7 +325,7 @@ def main() raises:
     ](sigreg_grad_emb_arr.unsafe_ptr())
     var empty_grad_params = LayoutTensor[
         dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     SIG.vjp[BATCH](
         grad_sigreg_t,

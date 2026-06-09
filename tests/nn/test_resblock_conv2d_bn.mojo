@@ -122,10 +122,10 @@ def main() raises:
         # Forward
         print("Running forward...")
         var f_state_t = LayoutTensor[dtype, Layout.row_major(Fused.STATE_SIZE), MutAnyOrigin](
-            UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+            UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
         )
         var d_state_t = LayoutTensor[dtype, Layout.row_major(Decomp.STATE_SIZE), MutAnyOrigin](
-            UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+            UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
         )
         Fused.forward_gpu[BATCH](ctx, f_out_t, in_t, f_params_t, f_state_t, f_cache_t, fused_ws)
         Decomp.forward_gpu[BATCH](ctx, d_out_t, in_t, d_params_t, d_state_t, d_cache_t, decomp_ws)

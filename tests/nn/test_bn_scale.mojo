@@ -140,7 +140,7 @@ def test_A_single_layer() raises:
         gpu_cache.unsafe_ptr()
     )
     var s_t = LayoutTensor[dtype, Layout.row_major(Layer.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
 
     Layer.forward_gpu[BATCH](ctx, out_t, in_t, p_t, s_t, c_t, gpu_ws)
@@ -272,7 +272,7 @@ def test_B_two_layer() raises:
         gpu_cache.unsafe_ptr()
     )
     var s_t = LayoutTensor[dtype, Layout.row_major(Net.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
 
     Net.forward_gpu[BATCH](ctx, out_t, in_t, p_t, s_t, c_t, gpu_ws)
@@ -391,7 +391,7 @@ def test_C_deep_no_head() raises:
         gpu_cache.unsafe_ptr()
     )
     var s_t = LayoutTensor[dtype, Layout.row_major(Net.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
 
     Net.forward_gpu[BATCH](ctx, out_t, in_t, p_t, s_t, c_t, gpu_ws)

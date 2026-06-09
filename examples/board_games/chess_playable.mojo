@@ -198,7 +198,7 @@ def main() raises:
 
     # Sprite setup (lazy — created after renderer is initialized on first frame)
     var sprite_pixels = create_sprite_sheet()
-    var sprite_texture = UnsafePointer[Texture, MutAnyOrigin](unsafe_from_address=0)
+    var sprite_texture = UnsafePointer[Texture, MutAnyOrigin](unsafe_from_address=Int(0))
     var has_sprites = False
     var sprite_draw_size = 48  # Scale 24→48 to fit in 64px cells
     var sprite_pad = (sq_size - sprite_draw_size) // 2

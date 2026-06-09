@@ -63,7 +63,7 @@ def grad_check[
     ](cache_arr.unsafe_ptr())
     var state_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     M.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
 
     var grad_out_t = LayoutTensor[
@@ -300,7 +300,7 @@ def test_tdmpc2_single_step() raises:
 
     var state_t = LayoutTensor[
         dtype, Layout.row_major(TDMPC2Step.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     TDMPC2Step.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
 
     # Print output structure
@@ -428,7 +428,7 @@ def test_dreamer_heads() raises:
 
     var state_t = LayoutTensor[
         dtype, Layout.row_major(DreamerHeads.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     DreamerHeads.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
 
     print("  Output [obs_hat(6), rew(5), cont(1)]:")
@@ -571,7 +571,7 @@ def test_sac_actor_loss() raises:
 
     var state_t = LayoutTensor[
         dtype, Layout.row_major(SACGraph.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     SACGraph.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
 
     print("  Output [min_Q, log_prob]:", output_arr[0], output_arr[1])

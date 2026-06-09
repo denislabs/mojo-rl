@@ -60,7 +60,7 @@ def test_bn_gradient_check() raises:
     var p = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
     var c = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_data)
     var s = LayoutTensor[dtype, Layout.row_major(BN.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
 
     BN.forward[BATCH](inp, out, p, s, c)

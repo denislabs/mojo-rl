@@ -61,7 +61,7 @@ def finite_diff_check[
     ](cache_arr.unsafe_ptr())
     # Zero-length model state (gradcheck exercises stateless layers).
     var state_t = LayoutTensor[dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
 
     M.forward[BATCH](input_t, output_t, params, state_t, cache_t)

@@ -36,7 +36,7 @@ def test_relu_float16():
     )
     var state_view = LayoutTensor[
         DType.float16, Layout.row_major(ReLU[DIM].STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[DType.float16], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[DType.float16], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     # Call forward with explicit float16
     ReLU[DIM].forward[BATCH, DType.float16](input, output, params, state_view)

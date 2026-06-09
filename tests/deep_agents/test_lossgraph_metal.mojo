@@ -92,7 +92,7 @@ def test_gather_forward(ctx: DeviceContext) raises:
 
     var state_t = LayoutTensor[
         dtype, Layout.row_major(G.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     print("  Calling Gather.forward_gpu...")
     G.forward_gpu[BATCH](ctx, out_t, in_t, params_t, state_t, cache_t, ws)
@@ -149,7 +149,7 @@ def test_slice_forward(ctx: DeviceContext) raises:
 
     var state_t = LayoutTensor[
         dtype, Layout.row_major(S.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     print("  Calling Slice.forward_gpu...")
     S.forward_gpu[BATCH](ctx, out_t, in_t, params_t, state_t, cache_t, ws)
@@ -206,7 +206,7 @@ def test_mse_forward(ctx: DeviceContext) raises:
 
     var state_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     print("  Calling MSELoss.forward_gpu...")
     M.forward_gpu[BATCH](ctx, out_t, in_t, params_t, state_t, cache_t, ws)
@@ -257,7 +257,7 @@ def test_splitapply_forward(ctx: DeviceContext) raises:
 
     var state_t = LayoutTensor[
         dtype, Layout.row_major(SA.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     print("  Calling SplitApply.forward_gpu...")
     SA.forward_gpu[BATCH](ctx, out_t, in_t, params_t, state_t, cache_t, ws)
@@ -323,7 +323,7 @@ def test_full_lossgraph_forward(ctx: DeviceContext) raises:
 
     var state_t = LayoutTensor[
         dtype, Layout.row_major(LossGraph.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     print("  Calling LossGraph.forward_gpu...")
     LossGraph.forward_gpu[BATCH](ctx, out_t, in_t, params_t, state_t, cache_t, ws)
@@ -384,7 +384,7 @@ def test_full_lossgraph_backward(ctx: DeviceContext) raises:
 
     var state_t = LayoutTensor[
         dtype, Layout.row_major(LossGraph.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     # Forward first (populates cache)
     print("  Forward pass (for cache)...")
@@ -487,7 +487,7 @@ def test_huber_forward(ctx: DeviceContext) raises:
 
     var state_t = LayoutTensor[
         dtype, Layout.row_major(H.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     print("  Calling HuberLoss.forward_gpu...")
     H.forward_gpu[BATCH](ctx, out_t, in_t, params_t, state_t, cache_t, ws)
@@ -558,7 +558,7 @@ def test_huber_forward_linear(ctx: DeviceContext) raises:
 
     var state_t = LayoutTensor[
         dtype, Layout.row_major(H.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     H.forward_gpu[BATCH](ctx, out_t, in_t, params_t, state_t, cache_t, ws)
     ctx.synchronize()
@@ -651,7 +651,7 @@ def test_huber_backward_gpu_vs_cpu(ctx: DeviceContext) raises:
     # Zero-length model state (HuberLoss is stateless).
     var cpu_state_t = LayoutTensor[
         dtype, Layout.row_major(H.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     # CPU forward (populate cache)
     H.forward[BATCH](cpu_in_t, cpu_out_t, cpu_params_t, cpu_state_t, cpu_cache_t)
@@ -720,7 +720,7 @@ def test_huber_backward_gpu_vs_cpu(ctx: DeviceContext) raises:
     # Zero-length model state for GPU (HuberLoss is stateless).
     var gpu_state_t = LayoutTensor[
         dtype, Layout.row_major(H.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     # GPU forward (populate cache)
     H.forward_gpu[BATCH](
@@ -868,7 +868,7 @@ def test_full_huber_lossgraph_backward(ctx: DeviceContext) raises:
     # Zero-length model state (HuberLossGraph is stateless).
     var cpu_state_t = LayoutTensor[
         dtype, Layout.row_major(HuberLossGraph.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     HuberLossGraph.forward[BATCH](
         cpu_in_t, cpu_out_t, cpu_params_t, cpu_state_t, cpu_cache_t
@@ -932,7 +932,7 @@ def test_full_huber_lossgraph_backward(ctx: DeviceContext) raises:
     # Zero-length model state for GPU (HuberLossGraph is stateless).
     var gpu_state_t = LayoutTensor[
         dtype, Layout.row_major(HuberLossGraph.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     HuberLossGraph.forward_gpu[BATCH](
         ctx, gpu_out_t, gpu_in_t, gpu_params_t, gpu_state_t, gpu_cache_t, ws

@@ -278,10 +278,10 @@ def _grouped_scale_apply_kernel(
 
 
 struct GradClipState(Movable & ImplicitlyDestructible):
-    var partials:  Optional[DeviceBuffer[DT]]   # [N_PARAMS] (per-Param path)
-    var scale_buf: Optional[DeviceBuffer[DT]]   # [1]
-    var norm_buf:  Optional[DeviceBuffer[DT]]   # [1] — for D2H on log cadence
-    var n_params:  Int
+    var partials: Optional[DeviceBuffer[DT]]  # [N_PARAMS] (per-Param path)
+    var scale_buf: Optional[DeviceBuffer[DT]]  # [1]
+    var norm_buf: Optional[DeviceBuffer[DT]]  # [1] — for D2H on log cadence
+    var n_params: Int
     # Grouped (NVIDIA) path scratch: one partial per flat-grid block. Sized
     # to ceil(total_elems / TPB), allocated only when `make` is given total>0.
     var block_partials: Optional[DeviceBuffer[DT]]
@@ -298,10 +298,10 @@ struct GradClipState(Movable & ImplicitlyDestructible):
     @staticmethod
     def make(ctx: DeviceContext, n_params: Int, total: Int = 0) raises -> Self:
         var s = Self()
-        s.partials  = ctx.enqueue_create_buffer[DT](n_params)
+        s.partials = ctx.enqueue_create_buffer[DT](n_params)
         s.scale_buf = ctx.enqueue_create_buffer[DT](1)
-        s.norm_buf  = ctx.enqueue_create_buffer[DT](1)
-        s.n_params  = n_params
+        s.norm_buf = ctx.enqueue_create_buffer[DT](1)
+        s.n_params = n_params
         # Grouped path: per-block partials buffer (total>0 → grouped clip).
         if total > 0:
             var nb = (total + TPB - 1) // TPB
@@ -335,8 +335,12 @@ struct _GradSumSqVisitorGPU(ParamVisitor):
     ) raises:
         var g_ptr = mptr(grad.ptr)
         self.ctx.enqueue_function[_sum_sq_partial_kernel](
-            g_ptr, self.partials, self.slot, n_elems,
-            grid_dim=1, block_dim=GC_TPB,
+            g_ptr,
+            self.partials,
+            self.slot,
+            n_elems,
+            grid_dim=1,
+            block_dim=GC_TPB,
         )
         self.slot += 1
 
@@ -361,8 +365,11 @@ struct _GradScaleVisitorGPU(ParamVisitor):
         var g_ptr = mptr(grad.ptr)
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_grad_scale_kernel](
-            g_ptr, self.scale_buf, n_elems,
-            grid_dim=n_blocks, block_dim=TPB,
+            g_ptr,
+            self.scale_buf,
+            n_elems,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
 
 
@@ -397,9 +404,7 @@ def clip_grads_auto[
         )
         var norm = sqrt(sum_visitor.sum_sq)
         if norm > max_norm:
-            var scale_visitor = _GradScaleVisitorCPU(
-                scale=max_norm / norm
-            )
+            var scale_visitor = _GradScaleVisitorCPU(scale=max_norm / norm)
             model.for_each_param[target, _GradScaleVisitorCPU](
                 String(""), scale_visitor
             )
@@ -413,7 +418,9 @@ def clip_grads_auto[
         )
 
 
-def clip_grads_auto_gpu[M: Module](
+def clip_grads_auto_gpu[
+    M: Module
+](
     mut model: M,
     ctx: DeviceContext,
     mut state: GradClipState,
@@ -450,7 +457,8 @@ def clip_grads_auto_gpu[M: Module](
         state.norm_buf.value().unsafe_ptr(),
         max_norm,
         Scalar[DT](1e-12),
-        grid_dim=1, block_dim=1,
+        grid_dim=1,
+        block_dim=1,
     )
 
     # Pass 3: apply scale to every Param's grad.
@@ -473,7 +481,6 @@ def clip_grads_grouped_gpu(
     max_norm: Scalar[DT],
 ) raises:
     """GPU grouped (multi-tensor) clip — NVIDIA-only. Three launches total:
-
       1. `_grouped_sumsq_kernel`  — FLAT grid over all `total` grad elements,
          block-reduced into `state.block_partials` (one slot per block).
       2. `_grouped_compute_scale_kernel` — single block reduces the partials
@@ -496,7 +503,8 @@ def clip_grads_grouped_gpu(
         n_params,
         total,
         state.block_partials.value().unsafe_ptr(),
-        grid_dim=n_blocks, block_dim=TPB,
+        grid_dim=n_blocks,
+        block_dim=TPB,
     )
 
     # Pass 2: reduce partials → scale (single block).
@@ -507,7 +515,8 @@ def clip_grads_grouped_gpu(
         state.norm_buf.value().unsafe_ptr(),
         max_norm,
         Scalar[DT](1e-12),
-        grid_dim=1, block_dim=GC_TPB,
+        grid_dim=1,
+        block_dim=GC_TPB,
     )
 
     # Pass 3: flat-grid scale-apply over all grads.
@@ -517,5 +526,6 @@ def clip_grads_grouped_gpu(
         n_params,
         total,
         state.scale_buf.value().unsafe_ptr(),
-        grid_dim=n_blocks, block_dim=TPB,
+        grid_dim=n_blocks,
+        block_dim=TPB,
     )

@@ -98,7 +98,7 @@ def block_forward(
 ) raises:
     var empty_p = LayoutTensor[
         dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     SwishOp[D].eval[BT](c_t, silu_buf_t, empty_p, silu_cache_t)
     MatMul[D, 3 * D].eval[BT](silu_buf_t, ad_mm_buf_t, adaln_w_t, mm_ad_cache_t)
@@ -171,10 +171,10 @@ def block_backward(
 ) raises:
     var empty_p = LayoutTensor[
         dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     var empty_gp = LayoutTensor[
         dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     GateOp[D].vjp[BT](
         grad_x_next_t, sgg_t, empty_p, gate_cache_t, empty_gp

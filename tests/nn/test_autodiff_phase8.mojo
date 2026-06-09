@@ -483,7 +483,7 @@ def test_chain_with_attention() -> Int:
     ](cache_data.unsafe_ptr())
     var s_t = LayoutTensor[
         dtype, Layout.row_major(Chain.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     Chain.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
@@ -582,7 +582,7 @@ def test_residual_attention() -> Int:
     ](cache_data.unsafe_ptr())
     var s_t = LayoutTensor[
         dtype, Layout.row_major(ResAttn.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     ResAttn.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
@@ -693,7 +693,7 @@ def test_transformer_composites() -> Int:
     ](cache_data.unsafe_ptr())
     var s_t = LayoutTensor[
         dtype, Layout.row_major(TransformerLayer.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     TransformerLayer.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
@@ -809,7 +809,7 @@ def test_stacked_transformer() -> Int:
     ](cache_data.unsafe_ptr())
     var s_t = LayoutTensor[
         dtype, Layout.row_major(Encoder.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     Encoder.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 

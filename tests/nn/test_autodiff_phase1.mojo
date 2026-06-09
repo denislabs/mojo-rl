@@ -604,7 +604,7 @@ def test_chain_forward_matches_sequential() -> Int:
     ](ad_cache.unsafe_ptr())
     var ad_state_t = LayoutTensor[
         dtype, Layout.row_major(ADC.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     ADC.forward[BATCH](inp_t, ad_out_t, params_t, ad_state_t, ad_cache_t)
 
@@ -628,7 +628,7 @@ def test_chain_forward_matches_sequential() -> Int:
     ](seq_cache.unsafe_ptr())
     var seq_state_t = LayoutTensor[
         dtype, Layout.row_major(SEQ.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     SEQ.forward[BATCH](inp_t, seq_out_t, seq_params_t, seq_state_t, seq_cache_t)
 
@@ -697,7 +697,7 @@ def test_chain_backward_matches_sequential() -> Int:
     ](ad_cache.unsafe_ptr())
     var ad_state_t = LayoutTensor[
         dtype, Layout.row_major(ADC.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     ADC.forward[BATCH](inp_t, ad_out_t, ad_params_t, ad_state_t, ad_cache_t)
 
@@ -742,7 +742,7 @@ def test_chain_backward_matches_sequential() -> Int:
     ](seq_cache.unsafe_ptr())
     var seq_state_t = LayoutTensor[
         dtype, Layout.row_major(SEQ.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     SEQ.forward[BATCH](inp_t, seq_out_t, seq_params_t, seq_state_t, seq_cache_t)
 
@@ -874,7 +874,7 @@ def test_training_convergence() -> Int:
         ](cache.unsafe_ptr())
         var state_t = LayoutTensor[
             dtype, Layout.row_major(MLP.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
         MLP.forward[BATCH](inp_t, out_t, params_t, state_t, cache_t)
 

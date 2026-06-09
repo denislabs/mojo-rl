@@ -254,7 +254,7 @@ def test_workspace_with_critic_group() raises:
     # Zero-length model state (CriticGroup doesn't expose state views).
     var critic_state_t = LayoutTensor[
         dtype, Layout.row_major(CriticNet.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     for i in range(NUM_CRITICS):
         var q_t = ws.q_out(i)
         var p = critics.online_params_view(i)

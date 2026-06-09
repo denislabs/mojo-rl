@@ -90,7 +90,7 @@ def main() raises:
         var f_p_t = LayoutTensor[dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin](f_params)
         var f_c_t = LayoutTensor[dtype, Layout.row_major(BATCH, Fused.CACHE_SIZE), MutAnyOrigin](f_cache)
         var f_s_t = LayoutTensor[dtype, Layout.row_major(Fused.STATE_SIZE), MutAnyOrigin](
-            UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+            UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
         )
         Fused.forward_gpu[BATCH](ctx, f_out_t, f_in_t, f_p_t, f_s_t, f_c_t, f_ws)
 
@@ -98,7 +98,7 @@ def main() raises:
         var d_p_t = LayoutTensor[dtype, Layout.row_major(Decomp.PARAM_SIZE), MutAnyOrigin](d_params)
         var d_c_t = LayoutTensor[dtype, Layout.row_major(BATCH, Decomp.CACHE_SIZE), MutAnyOrigin](d_cache)
         var d_s_t = LayoutTensor[dtype, Layout.row_major(Decomp.STATE_SIZE), MutAnyOrigin](
-            UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+            UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
         )
         Decomp.forward_gpu[BATCH](ctx, d_out_t, in_t, d_p_t, d_s_t, d_c_t, d_ws)
         ctx.synchronize()

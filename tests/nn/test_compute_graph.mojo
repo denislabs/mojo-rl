@@ -136,7 +136,7 @@ def test_simple_chain() raises:
     ](seq_cache.unsafe_ptr())
     var seq_state_t = LayoutTensor[
         dtype, Layout.row_major(SeqModel.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     SeqModel.forward[BATCH](input_t, seq_out_t, params_t, seq_state_t, seq_cache_t)
 
     # Forward Graph
@@ -154,7 +154,7 @@ def test_simple_chain() raises:
     ](graph_cache.unsafe_ptr())
     var graph_state_t = LayoutTensor[
         dtype, Layout.row_major(GraphModel.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     GraphModel.forward[BATCH](
         input_t, graph_out_t, graph_params_t, graph_state_t, graph_cache_t
     )
@@ -321,7 +321,7 @@ def test_fan_out() raises:
 
     var state_t = LayoutTensor[
         dtype, Layout.row_major(FanOutGraph.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     FanOutGraph.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
 
     print("  Forward output:", output_arr[0], output_arr[1])
@@ -441,7 +441,7 @@ def test_dual_input_concat() raises:
 
     var state_t = LayoutTensor[
         dtype, Layout.row_major(DDPGGraph.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     DDPGGraph.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
     print("  Forward output:", output_arr[0], output_arr[1])
 
@@ -531,7 +531,7 @@ def test_grad_check_simple_chain() raises:
     ](cache_arr.unsafe_ptr())
     var state_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     var output_arr = InlineArray[Scalar[dtype], BATCH * 2](uninitialized=True)
     var output_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
@@ -660,7 +660,7 @@ def test_grad_check_fan_out() raises:
     ](cache_arr.unsafe_ptr())
     var state_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     var output_arr = InlineArray[Scalar[dtype], BATCH * 1](uninitialized=True)
     var output_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
@@ -772,7 +772,7 @@ def test_grad_check_dual_input() raises:
     ](cache_arr.unsafe_ptr())
     var state_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     var output_arr = InlineArray[Scalar[dtype], BATCH * 1](uninitialized=True)
     var output_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, 1), MutAnyOrigin

@@ -19,7 +19,7 @@ def check_zero_length_tensor() -> Bool:
     """Construct a zero-length LayoutTensor and confirm it can be passed around."""
     # Null pointer is fine because the tensor should never be dereferenced.
     var ptr = UnsafePointer[Scalar[DType.float32], MutAnyOrigin](
-        unsafe_from_address=0
+        unsafe_from_address=Int(0)
     )
     var empty = LayoutTensor[DType.float32, Layout.row_major(0), MutAnyOrigin](ptr)
     # If this line compiles and runs without crashing, the type is acceptable.

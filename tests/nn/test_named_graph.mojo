@@ -85,7 +85,7 @@ def test_simple_chain() raises:
     ](cache.unsafe_ptr())
     var st_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     M.forward[BATCH](inp_t, out_t, pt, st_t, cache_t)
 
     # Backward
@@ -159,7 +159,7 @@ def test_fan_out() raises:
     ](cache.unsafe_ptr())
     var st_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     M.forward[BATCH](inp_t, out_t, pt, st_t, cache_t)
 
     var go = InlineArray[Scalar[dtype], BATCH * M.OUT_DIM](uninitialized=True)
@@ -223,7 +223,7 @@ def test_dual_input() raises:
     ](cache.unsafe_ptr())
     var st_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     M.forward[BATCH](inp_t, out_t, pt, st_t, cache_t)
 
     var go = InlineArray[Scalar[dtype], BATCH * M.OUT_DIM](uninitialized=True)
@@ -288,7 +288,7 @@ def test_full_dag() raises:
     ](cache.unsafe_ptr())
     var st_t = LayoutTensor[
         dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     M.forward[BATCH](inp_t, out_t, pt, st_t, cache_t)
 
     var go = InlineArray[Scalar[dtype], BATCH * M.OUT_DIM](uninitialized=True)

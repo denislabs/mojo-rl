@@ -194,7 +194,7 @@ def main() raises:
     renderer.start_recording("gifs/chess_playable.gif", fps=15, skip=2)
 
     var sprite_pixels = create_sprite_sheet()
-    var sprite_texture = UnsafePointer[Texture, MutAnyOrigin](unsafe_from_address=0)
+    var sprite_texture = UnsafePointer[Texture, MutAnyOrigin](unsafe_from_address=Int(0))
     var has_sprites = False
     var sprite_draw_size = 48
     var sprite_pad = (sq_size - sprite_draw_size) // 2

@@ -122,7 +122,7 @@ def adaln_zero_forward[
     # Empty-param view for ops with PARAM_SIZE=0
     var empty_params = LayoutTensor[
         dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     # 1. c_silu = SiLU(c)
     SwishOp[D].eval[BATCH](c, c_silu_out, empty_params, silu_cache)
@@ -264,10 +264,10 @@ def adaln_zero_backward[
 ) raises:
     var empty_params = LayoutTensor[
         dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
     var empty_grad_params = LayoutTensor[
         dtype, Layout.row_major(0), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     # 10' Gate.vjp: grad_out → grad_gate_input
     GateOp[D].vjp[BATCH](

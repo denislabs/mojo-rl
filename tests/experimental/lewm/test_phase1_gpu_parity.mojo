@@ -95,7 +95,7 @@ def test_modulate_gpu_parity(ctx: DeviceContext) raises:
     ](gpu_params_buf.unsafe_ptr())
 
     var ws = UnsafePointer[Scalar[dtype], MutAnyOrigin](
-        unsafe_from_address=0
+        unsafe_from_address=Int(0)
     )
     ModulateOp[DIM].eval_gpu[BATCH](
         ctx, gpu_output_t, gpu_input_t, gpu_params_t, gpu_cache_t, ws
@@ -239,7 +239,7 @@ def test_gate_gpu_parity(ctx: DeviceContext) raises:
     ](gpu_params_buf.unsafe_ptr())
 
     var ws = UnsafePointer[Scalar[dtype], MutAnyOrigin](
-        unsafe_from_address=0
+        unsafe_from_address=Int(0)
     )
     GateOp[DIM].eval_gpu[BATCH](
         ctx, gpu_output_t, gpu_input_t, gpu_params_t, gpu_cache_t, ws

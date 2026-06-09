@@ -297,7 +297,7 @@ def test_sequential() raises:
     var inter_t = LayoutTensor[dtype, Layout.row_major(BS, A.OUT_DIM), MutAnyOrigin](inter)
     var ca_t = LayoutTensor[dtype, Layout.row_major(BS, A.CACHE_SIZE), MutAnyOrigin](ca)
     var sa_t = LayoutTensor[dtype, Layout.row_major(A.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
     A.forward[BS](input_t, inter_t, pa, sa_t, ca_t)
 
@@ -306,7 +306,7 @@ def test_sequential() raises:
     var manual_out_t = LayoutTensor[dtype, Layout.row_major(BS, B.OUT_DIM), MutAnyOrigin](manual_out)
     var cb_t = LayoutTensor[dtype, Layout.row_major(BS, B.CACHE_SIZE), MutAnyOrigin](cb)
     var sb_t = LayoutTensor[dtype, Layout.row_major(B.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
     B.forward[BS](inter_t, manual_out_t, pb, sb_t, cb_t)
 
@@ -359,7 +359,7 @@ def test_parallel() raises:
     var a_out_t = LayoutTensor[dtype, Layout.row_major(BS, A.OUT_DIM), MutAnyOrigin](a_out)
     var a_cache_t = LayoutTensor[dtype, Layout.row_major(BS, A.CACHE_SIZE), MutAnyOrigin](a_cache)
     var a_state_t = LayoutTensor[dtype, Layout.row_major(A.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
     A.forward[BS](input_t, a_out_t, pa, a_state_t, a_cache_t)
 
@@ -368,7 +368,7 @@ def test_parallel() raises:
     var b_out_t = LayoutTensor[dtype, Layout.row_major(BS, B.OUT_DIM), MutAnyOrigin](b_out)
     var b_cache_t = LayoutTensor[dtype, Layout.row_major(BS, B.CACHE_SIZE), MutAnyOrigin](b_cache)
     var b_state_t = LayoutTensor[dtype, Layout.row_major(B.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
     B.forward[BS](input_t, b_out_t, pb, b_state_t, b_cache_t)
 
@@ -439,7 +439,7 @@ def test_split_apply() raises:
     var l_out_t = LayoutTensor[dtype, Layout.row_major(BS, L.OUT_DIM), MutAnyOrigin](l_out)
     var lc_t = LayoutTensor[dtype, Layout.row_major(BS, L.CACHE_SIZE), MutAnyOrigin](lc)
     var ls_t = LayoutTensor[dtype, Layout.row_major(L.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
     L.forward[BS](left_in_t, l_out_t, pl, ls_t, lc_t)
 
@@ -449,7 +449,7 @@ def test_split_apply() raises:
     var r_out_t = LayoutTensor[dtype, Layout.row_major(BS, R.OUT_DIM), MutAnyOrigin](r_out)
     var rc_t = LayoutTensor[dtype, Layout.row_major(BS, R.CACHE_SIZE), MutAnyOrigin](rc)
     var rs_t = LayoutTensor[dtype, Layout.row_major(R.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
     R.forward[BS](right_in_t, r_out_t, pr, rs_t, rc_t)
 
@@ -512,7 +512,7 @@ def test_fanout() raises:
     var out0_t = LayoutTensor[dtype, Layout.row_major(BS, Inner.OUT_DIM), MutAnyOrigin](out0)
     var c0_t = LayoutTensor[dtype, Layout.row_major(BS, Inner.CACHE_SIZE), MutAnyOrigin](c0)
     var s0_t = LayoutTensor[dtype, Layout.row_major(Inner.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
     Inner.forward[BS](input_t, out0_t, p0, s0_t, c0_t)
 
@@ -521,7 +521,7 @@ def test_fanout() raises:
     var out1_t = LayoutTensor[dtype, Layout.row_major(BS, Inner.OUT_DIM), MutAnyOrigin](out1)
     var c1_t = LayoutTensor[dtype, Layout.row_major(BS, Inner.CACHE_SIZE), MutAnyOrigin](c1)
     var s1_t = LayoutTensor[dtype, Layout.row_major(Inner.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0))
     )
     Inner.forward[BS](input_t, out1_t, p1, s1_t, c1_t)
 

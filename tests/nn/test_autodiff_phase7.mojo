@@ -868,7 +868,7 @@ def test_conv_pool_dense_composition() -> Int:
     ](cache.unsafe_ptr())
     var sta_lt = LayoutTensor[
         dtype, Layout.row_major(Chain.STATE_SIZE), MutAnyOrigin
-    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=Int(0)))
 
     Chain.forward[BATCH](inp_lt, out_lt, par_lt, sta_lt, cch_lt)
 
