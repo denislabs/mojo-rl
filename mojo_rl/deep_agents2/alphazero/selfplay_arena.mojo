@@ -259,6 +259,11 @@ def run_alphazero_selfplay_arena[
     comptime W = NET.OUT_DIM          # ACT + 1
     comptime STATE = ENV.STATE_SIZE
     comptime NSYM = AUG.NUM_SYMMETRIES
+    # AlphaZero temperature schedule: sample ∝ visits for the first TEMP_MOVES
+    # plies of each game (opening diversity), then play greedy. Matches the
+    # legacy driver (TEMP_THRESH=4) and the CPU path; argmax-every-move left
+    # GPU self-play with no opening diversity.
+    comptime TEMP_MOVES = 4
     comptime MCTS = GenericGPUMCTS[
         N_ENVS, ACT, OBS, 1, MAX_NODES, NUM_SIMS, 1,
         AlphaGoPUCT[1.0], DirichletNoise[0.25, 0.25], SelfPlay,
@@ -291,6 +296,7 @@ def run_alphazero_selfplay_arena[
     var term = ctx.enqueue_create_buffer[DT](N_ENVS)
     var obs_next = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
     var legal_next = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
+    var ep_steps_dev = ctx.enqueue_create_buffer[DT](N_ENVS)  # per-env ply count
     var tb_obs = ctx.enqueue_create_buffer[DT](BATCH * OBS)
     var tb_tgt = ctx.enqueue_create_buffer[DT](BATCH * W)
     var tb_loss = ctx.enqueue_create_buffer[DT](BATCH)
@@ -306,6 +312,7 @@ def run_alphazero_selfplay_arena[
     var loss_h = ctx.enqueue_create_host_buffer[DT](BATCH)
     var grad_h = ctx.enqueue_create_host_buffer[DT](BATCH)
     var pred_h = ctx.enqueue_create_host_buffer[DT](BATCH * W)  # diag: net out
+    var ep_steps_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)  # per-env ply
     ctx.synchronize()
 
     # ── Host trajectory storage (per-env in-progress game) ──
@@ -371,6 +378,8 @@ def run_alphazero_selfplay_arena[
         ctx.enqueue_copy(pol_h, mcts.policies_out)
         ctx.synchronize()
         for e in range(N_ENVS):
+            # Current ply of env e's game = ep_steps for the temperature kernel.
+            ep_steps_h.unsafe_ptr()[e] = Scalar[DT](traj_len[e])
             var k = traj_len[e]
             if k < MAX_TRAJ:
                 var ob = (e * MAX_TRAJ + k) * OBS
@@ -380,6 +389,25 @@ def run_alphazero_selfplay_arena[
                 for a in range(ACT):
                     traj_pol[pb + a] = pol_h.unsafe_ptr()[e * ACT + a]
                 traj_len[e] = k + 1
+
+        # 2b. Apply the temperature schedule to the actual move: re-derive
+        #     mcts.actions_out from the live visit tree — sample ∝ visits for the
+        #     first TEMP_MOVES plies (per env), greedy after. The visit-count
+        #     policy *target* was already recorded above from the pre-temp
+        #     policies_out, so the one-hot policy this overwrites for greedy
+        #     plies is harmless. The kernel is legal-mask aware.
+        ctx.enqueue_copy(ep_steps_dev, ep_steps_h)
+        var ep_t = LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin](
+            ep_steps_dev.unsafe_ptr()
+        )
+        var legal_t = LayoutTensor[
+            DT, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+        ](legal_dev.unsafe_ptr())
+        mcts.extract_actions_temp[TEMP_MOVES](
+            ctx, ep_t, legal_t,
+            rng_seed=UInt32((seed + UInt64(it)) & 0xFFFFFFFF),
+            temp_min=0.0,
+        )
 
         # 3. Step every game by its chosen action.
         ENV.step_kernel_gpu[N_ENVS, STATE, OBS](
