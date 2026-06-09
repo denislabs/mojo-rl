@@ -131,6 +131,10 @@ struct LeWMDecoderTrainer[
     var opt: Adam
     var _loss_out: Scratch["dec_loss_out", Self.BATCH]
     var _grad_seed: Scratch["dec_grad_seed", Self.BATCH]
+    # Dummy `tgt` so a cold `recon_into` (no prior train_step) can run the
+    # full loss-graph forward — the loss it computes is ignored; `recon`
+    # (computed before `loss`) does not depend on `tgt`.
+    var _tgt_dummy: Scratch["dec_tgt_dummy", Self.BATCH * Self.RECON]
     var _loss_acc_dev: Optional[DeviceBuffer[DT]]
     var loss_host: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var ts: TargetStorage
@@ -140,6 +144,7 @@ struct LeWMDecoderTrainer[
         self.opt = Adam()
         self._loss_out = Scratch["dec_loss_out", Self.BATCH]()
         self._grad_seed = Scratch["dec_grad_seed", Self.BATCH]()
+        self._tgt_dummy = Scratch["dec_tgt_dummy", Self.BATCH * Self.RECON]()
         self._loss_acc_dev = None
         self.loss_host = alloc[Scalar[DT]](Self.BATCH)
         self.ts = TargetStorage.make_uninit()
@@ -228,12 +233,15 @@ struct LeWMDecoderTrainer[
         assert_tag_for["LeWMDecoderTrainer", Self.train_target](
             self.ts.target_tag
         )
-        # tgt input must be set for the graph forward; feed zeros (the loss
-        # node is computed but ignored — we only read `recon`).
+        # The loss graph's forward computes the `loss` node = MSE(recon, tgt),
+        # so BOTH inputs must point at valid buffers even though we only read
+        # `recon` (which is computed before `loss` and is tgt-independent).
+        # A cold recon_into (loaded weights, no prior train_step) would crash
+        # on an unset `tgt` slot — so always bind the dummy tgt buffer here.
         self.graph.set_input["emb", Self.BATCH](emb)
-        # reuse the emb-driven forward; tgt left as last value is fine since
-        # we don't read loss. But set it to a valid buffer to be safe: the
-        # recon node does not depend on tgt.
+        var tgt_p = self._tgt_dummy.target_ptr[Self.train_target]()
+        var tgt_t = TileTensor(tgt_p, row_major[Self.BATCH, Self.RECON]())
+        self.graph.set_input["tgt", Self.BATCH](tgt_t)
         var loss_p = self._loss_out.target_ptr[Self.train_target]()
         var loss_t = TileTensor(loss_p, row_major[Self.BATCH, 1]())
         self.graph.forward[Self.train_target, Self.BATCH, POLICY](loss_t)

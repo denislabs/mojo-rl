@@ -117,6 +117,22 @@ def main() raises:
     patchify["gpu", DEC_BATCH, IN_CH, IMG, PATCH_D](ctx, _p(pix_d), _p(tgt_d))
     var tgt_t = TileTensor(_p(tgt_d), row_major[DEC_BATCH, N_Q * PATCH_PX]())
 
+    # COLD recon_into (no prior train_step) must not crash on an unset `tgt`
+    # slot — mirrors the diagnostic/closed-loop usage (load weights → recon).
+    var cold = ctx.enqueue_create_host_buffer[DT](DEC_BATCH * N_Q * PATCH_PX)
+    ctx.synchronize()
+    dec.recon_into(
+        emb_t,
+        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](cold.unsafe_ptr()),
+    )
+    var cold_fin = True
+    for i in range(DEC_BATCH * N_Q * PATCH_PX):
+        var v = cold.unsafe_ptr()[i]
+        if not (v == v):
+            cold_fin = False
+    assert_true(cold_fin, "cold recon_into runs (tgt slot bound)")
+    print("   cold recon_into ok")
+
     print("train decoder on frozen emb ...")
     dec.reset_loss_accum()
     for _ in range(150):
