@@ -376,7 +376,7 @@ struct GPUPrioritizedReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             DT, Layout.row_major(Self.CAP), MutAnyOrigin,
         ](self.base.dne.unsafe_ptr())
 
-        comptime n_blocks = (BATCH + TPB - 1) // TPB
+        comptime n_blocks = (BATCH * Self.OBS + TPB - 1) // TPB
         comptime gather_kernel = _gather_batch_kernel[
             BATCH, Self.OBS, Self.ACT, Self.CAP,
         ]

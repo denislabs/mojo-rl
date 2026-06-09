@@ -250,24 +250,34 @@ def _gather_batch_kernel[
         DType.int32, Layout.row_major(BATCH), MutAnyOrigin
     ],
 ):
-    """Per-thread gather: thread `i` reads `indices[i] = idx` then
-    copies obs/act/rew/nxt/dne[idx] into mb[i, ...].
+    """Element-parallel gather: one thread per (batch lane × obs element).
 
-    Launched as grid=(ceil(BATCH/TPB),), block=(TPB,). One thread per
-    batch lane; OBS/ACT loops sequential within each thread (dims are
-    small in continuous control — Pendulum is 3/1).
-    """
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= BATCH:
+    Thread `t` → lane `i = t // OBS`, element `d = t % OBS`; reads
+    `idx = indices[i]` and copies `obs/next_obs[idx, d] → mb[i, d]`. The
+    `d < ACT` threads also copy act; the `d == 0` thread copies the scalar
+    rew/dne. Launched as `grid=(ceil(BATCH·OBS/TPB),), block=(TPB,)`.
+
+    Replaces the old one-thread-per-lane kernel that serialised the OBS
+    loop inside each thread (fine for Pendulum OBS=3, but it launched only
+    BATCH threads with uncoalesced scattered-row reads — ~73% of GPU time
+    on Pong-pixel OBS=28224, see
+    `project_rainbow_pong_pixel_replay_gather_bottleneck`). The result is
+    bit-identical: it is the same gather, only re-tiled. Requires OBS >= ACT
+    (always true for these envs — the act copy rides the obs grid)."""
+    comptime assert OBS >= ACT, "_gather_batch_kernel assumes OBS >= ACT"
+    var t = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if t >= BATCH * OBS:
         return
+    var i = t // OBS
+    var d = t % OBS
     var idx = Int(indices[i])
-    for d in range(OBS):
-        mb_s[i, d] = buf_s[idx, d]
-        mb_sp[i, d] = buf_sp[idx, d]
-    for j in range(ACT):
-        mb_a[i, j] = buf_a[idx, j]
-    mb_r[i] = buf_r[idx]
-    mb_d[i] = buf_d[idx]
+    mb_s[i, d] = buf_s[idx, d]
+    mb_sp[i, d] = buf_sp[idx, d]
+    if d < ACT:
+        mb_a[i, d] = buf_a[idx, d]
+    if d == 0:
+        mb_r[i] = buf_r[idx]
+        mb_d[i] = buf_d[idx]
 
 
 def _store_batch_kernel[
@@ -285,24 +295,30 @@ def _store_batch_kernel[
     buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
     start_pos: Int32,
 ):
-    """Batched store: thread `e` writes env e's transition into slot
-    `(start_pos + e) % CAP`. Mirrors `_store_one_kernel` shape but
-    with one lane per env.
+    """Element-parallel batched store: one thread per (env × obs element).
 
-    Launched as grid=(ceil(N_ENVS/TPB),), block=(TPB,). OBS/ACT loops
-    sequential within each thread.
-    """
-    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if e >= N_ENVS:
+    Thread `t` → env `e = t // OBS`, element `d = t % OBS`; writes env e's
+    transition into slot `(start_pos + e) % CAP`. The `d < ACT` threads copy
+    act; the `d == 0` thread writes the scalar rew/dne. Launched as
+    `grid=(ceil(N_ENVS·OBS/TPB),), block=(TPB,)`.
+
+    Replaces the old one-thread-per-env kernel (serial OBS loop, N_ENVS
+    threads) — same per-iteration write, only re-tiled for occupancy +
+    coalesced writes; bit-identical. Requires OBS >= ACT."""
+    comptime assert OBS >= ACT, "_store_batch_kernel assumes OBS >= ACT"
+    var t = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if t >= N_ENVS * OBS:
         return
+    var e = t // OBS
+    var d = t % OBS
     var slot = (Int(start_pos) + e) % CAP
-    for d in range(OBS):
-        buf_s[slot, d] = src_obs[e, d]
-        buf_sp[slot, d] = src_nxt[e, d]
-    for j in range(ACT):
-        buf_a[slot, j] = src_act[e, j]
-    buf_r[slot] = src_rew[e]
-    buf_d[slot] = src_dne[e]
+    buf_s[slot, d] = src_obs[e, d]
+    buf_sp[slot, d] = src_nxt[e, d]
+    if d < ACT:
+        buf_a[slot, d] = src_act[e, d]
+    if d == 0:
+        buf_r[slot] = src_rew[e]
+        buf_d[slot] = src_dne[e]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -692,7 +708,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             DT, Layout.row_major(Self.CAP), MutAnyOrigin
         ](self.dne.unsafe_ptr())
 
-        comptime n_blocks = (N_ENVS + TPB - 1) // TPB
+        comptime n_blocks = (N_ENVS * Self.OBS + TPB - 1) // TPB
         comptime kernel = _store_batch_kernel[
             N_ENVS, Self.OBS, Self.ACT, Self.CAP
         ]
@@ -824,6 +840,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             DT, Layout.row_major(Self.CAP), MutAnyOrigin
         ](self.dne.unsafe_ptr())
 
+        comptime n_blocks_gather = (BATCH * Self.OBS + TPB - 1) // TPB
         comptime gather_kernel = _gather_batch_kernel[
             BATCH, Self.OBS, Self.ACT, Self.CAP
         ]
@@ -831,7 +848,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             mb_s_lt, mb_a_lt, mb_r_lt, mb_sp_lt, mb_d_lt,
             buf_s_lt, buf_a_lt, buf_r_lt, buf_sp_lt, buf_d_lt,
             idx_lt,
-            grid_dim=n_blocks, block_dim=TPB,
+            grid_dim=n_blocks_gather, block_dim=TPB,
         )
 
     def sample_range[BATCH: Int](
@@ -900,6 +917,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
         var buf_d_lt = LayoutTensor[
             DT, Layout.row_major(Self.CAP), MutAnyOrigin
         ](self.dne.unsafe_ptr())
+        comptime n_blocks_gather = (BATCH * Self.OBS + TPB - 1) // TPB
         comptime gather_kernel = _gather_batch_kernel[
             BATCH, Self.OBS, Self.ACT, Self.CAP
         ]
@@ -907,5 +925,5 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             mb_s_lt, mb_a_lt, mb_r_lt, mb_sp_lt, mb_d_lt,
             buf_s_lt, buf_a_lt, buf_r_lt, buf_sp_lt, buf_d_lt,
             idx_lt,
-            grid_dim=n_blocks, block_dim=TPB,
+            grid_dim=n_blocks_gather, block_dim=TPB,
         )
