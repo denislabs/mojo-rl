@@ -39,7 +39,7 @@ critic2), each Adam clips its own model independently — no cross-model
 """
 
 from std.math import sqrt
-from std.gpu import global_idx, thread_idx
+from std.gpu import global_idx, block_idx, block_dim, thread_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
@@ -170,30 +170,143 @@ def _grad_scale_kernel(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# GPU GROUPED (multi-tensor) kernels — NVIDIA-only path. Reuse the Adam
+# grouped optimizer's device descriptor arrays (`grad_addrs` + cumulative
+# `moment_offs`) to clip EVERY param in 3 launches total (vs the per-Param
+# path's 2·N_PARAMS launches). The win is twofold: (1) launch overhead
+# collapses, (2) the sum-of-squares reduction is a single FLAT grid over
+# all params' elements, so a big param (e.g. the 3136×512 head) gets many
+# blocks instead of the per-Param path's single 128-thread block — that
+# single-block reduction over a ~1.6M-element tensor was the profile's
+# `_sum_sq_partial_kernel` 425µs tail.
+#
+# NOT bit-identical to the per-Param path: the reduction is regrouped, so
+# the L2 norm differs by fp-rounding (~1e-6). The CPU / Apple per-Param
+# path is unchanged and stays bit-identical. Same tradeoff the grouped
+# Adam update already makes.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _find_param_gc(
+    moment_offs: UnsafePointer[Int32, MutAnyOrigin], n_params: Int, flat: Int
+) -> Int:
+    """Map a flat element index → owning Param via the cumulative offset
+    table (`moment_offs[p]` = first flat index of Param p). Linear scan —
+    n_params is tiny. Mirrors Adam's `_find_param` (duplicated here to
+    avoid a grad_clip→adam import cycle)."""
+    var p = 0
+    while p + 1 < n_params and Int(moment_offs[p + 1]) <= flat:
+        p += 1
+    return p
+
+
+def _grouped_sumsq_kernel(
+    grad_addrs: UnsafePointer[UInt64, MutAnyOrigin],
+    moment_offs: UnsafePointer[Int32, MutAnyOrigin],
+    n_params: Int,
+    total: Int,
+    block_partials: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """Flat 1-D grid over ALL params' elements. Each thread reads its grad
+    element `g` (resolving owning Param via `moment_offs`), squares it; a
+    block-wide `block.sum` reduces the block's chunk and thread 0 writes
+    the partial to `block_partials[block_idx]`. Threads past `total`
+    contribute 0."""
+    var flat = Int(global_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    if flat < total:
+        var p = _find_param_gc(moment_offs, n_params, flat)
+        var local = flat - Int(moment_offs[p])
+        var grad = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=Int(grad_addrs[p])
+        )
+        var g = grad[local]
+        my_sum = g * g
+    var total_blk = block.sum[block_size=TPB, broadcast=False](val=my_sum)
+    if Int(thread_idx.x) == 0:
+        block_partials[Int(block_idx.x)] = total_blk[0]
+
+
+def _grouped_compute_scale_kernel(
+    block_partials: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    n_blocks: Int,
+    scale_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    norm_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    max_norm: Scalar[DT],
+    eps: Scalar[DT],
+):
+    """Single-block reduction of the per-block partials → global ‖grad‖²,
+    then `scale = min(1, max_norm / max(norm, eps))`. Writes scale + raw
+    norm. Same scale formula as `_compute_scale_kernel`."""
+    var t = Int(thread_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    var k = t
+    while k < n_blocks:
+        my_sum += block_partials[k]
+        k += GC_TPB
+    var s = block.sum[block_size=GC_TPB, broadcast=False](val=my_sum)
+    if t == 0:
+        var norm = sqrt(s[0])
+        norm_buf[0] = norm
+        var denom = norm if norm > eps else eps
+        var ratio = max_norm / denom
+        scale_buf[0] = ratio if ratio < Scalar[DT](1.0) else Scalar[DT](1.0)
+
+
+def _grouped_scale_apply_kernel(
+    grad_addrs: UnsafePointer[UInt64, MutAnyOrigin],
+    moment_offs: UnsafePointer[Int32, MutAnyOrigin],
+    n_params: Int,
+    total: Int,
+    scale_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """Flat 1-D grid over ALL params' elements: `grad[local] *= scale`."""
+    var flat = Int(global_idx.x)
+    if flat < total:
+        var p = _find_param_gc(moment_offs, n_params, flat)
+        var local = flat - Int(moment_offs[p])
+        var grad = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=Int(grad_addrs[p])
+        )
+        grad[local] = grad[local] * scale_buf[0]
+
+
+# ──────────────────────────────────────────────────────────────────────
 # GPU clip state — owns the per-param partials + scale + norm buffers.
 # Adam lazy-allocates on first GPU step with max_grad_norm > 0.
 # ──────────────────────────────────────────────────────────────────────
 
 
 struct GradClipState(Movable & ImplicitlyDestructible):
-    var partials:  Optional[DeviceBuffer[DT]]   # [N_PARAMS]
+    var partials:  Optional[DeviceBuffer[DT]]   # [N_PARAMS] (per-Param path)
     var scale_buf: Optional[DeviceBuffer[DT]]   # [1]
     var norm_buf:  Optional[DeviceBuffer[DT]]   # [1] — for D2H on log cadence
     var n_params:  Int
+    # Grouped (NVIDIA) path scratch: one partial per flat-grid block. Sized
+    # to ceil(total_elems / TPB), allocated only when `make` is given total>0.
+    var block_partials: Optional[DeviceBuffer[DT]]
+    var n_blocks: Int
 
     def __init__(out self):
         self.partials = None
         self.scale_buf = None
         self.norm_buf = None
         self.n_params = 0
+        self.block_partials = None
+        self.n_blocks = 0
 
     @staticmethod
-    def make(ctx: DeviceContext, n_params: Int) raises -> Self:
+    def make(ctx: DeviceContext, n_params: Int, total: Int = 0) raises -> Self:
         var s = Self()
         s.partials  = ctx.enqueue_create_buffer[DT](n_params)
         s.scale_buf = ctx.enqueue_create_buffer[DT](1)
         s.norm_buf  = ctx.enqueue_create_buffer[DT](1)
         s.n_params  = n_params
+        # Grouped path: per-block partials buffer (total>0 → grouped clip).
+        if total > 0:
+            var nb = (total + TPB - 1) // TPB
+            s.block_partials = ctx.enqueue_create_buffer[DT](nb)
+            s.n_blocks = nb
         return s^
 
 
@@ -347,4 +460,62 @@ def clip_grads_auto_gpu[M: Module](
     )
     model.for_each_param[target="gpu", V=_GradScaleVisitorGPU](
         String(""), scale_visitor
+    )
+
+
+def clip_grads_grouped_gpu(
+    ctx: DeviceContext,
+    mut state: GradClipState,
+    grad_addrs: UnsafePointer[UInt64, MutAnyOrigin],
+    moment_offs: UnsafePointer[Int32, MutAnyOrigin],
+    n_params: Int,
+    total: Int,
+    max_norm: Scalar[DT],
+) raises:
+    """GPU grouped (multi-tensor) clip — NVIDIA-only. Three launches total:
+
+      1. `_grouped_sumsq_kernel`  — FLAT grid over all `total` grad elements,
+         block-reduced into `state.block_partials` (one slot per block).
+      2. `_grouped_compute_scale_kernel` — single block reduces the partials
+         → ‖grad‖² → scale.
+      3. `_grouped_scale_apply_kernel` — FLAT grid scales every grad in place.
+
+    Reuses the Adam grouped descriptor arrays (`grad_addrs` + `moment_offs`);
+    `total` is the dense element count (== Adam.total_size). `state` must be
+    `make`-d with `total > 0` so `block_partials` exists. Numerically
+    equivalent to (not bit-identical with) the per-Param path. Zero D2H."""
+    if max_norm <= Scalar[DT](0.0) or total <= 0 or n_params <= 0:
+        return
+
+    var n_blocks = (total + TPB - 1) // TPB
+
+    # Pass 1: flat-grid sum of squares → per-block partials.
+    ctx.enqueue_function[_grouped_sumsq_kernel](
+        grad_addrs,
+        moment_offs,
+        n_params,
+        total,
+        state.block_partials.value().unsafe_ptr(),
+        grid_dim=n_blocks, block_dim=TPB,
+    )
+
+    # Pass 2: reduce partials → scale (single block).
+    ctx.enqueue_function[_grouped_compute_scale_kernel](
+        state.block_partials.value().unsafe_ptr(),
+        n_blocks,
+        state.scale_buf.value().unsafe_ptr(),
+        state.norm_buf.value().unsafe_ptr(),
+        max_norm,
+        Scalar[DT](1e-12),
+        grid_dim=1, block_dim=GC_TPB,
+    )
+
+    # Pass 3: flat-grid scale-apply over all grads.
+    ctx.enqueue_function[_grouped_scale_apply_kernel](
+        grad_addrs,
+        moment_offs,
+        n_params,
+        total,
+        state.scale_buf.value().unsafe_ptr(),
+        grid_dim=n_blocks, block_dim=TPB,
     )

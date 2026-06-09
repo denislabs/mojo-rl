@@ -31,6 +31,7 @@ from ..combinators.compute_graph import ComputeGraph
 from ..core.grad_clip import (
     clip_grads_auto,
     clip_grads_auto_gpu,
+    clip_grads_grouped_gpu,
     GradClipState,
 )
 from ..core.module import Module, mptr
@@ -664,19 +665,47 @@ struct Adam(Optimizer, Saveable):
             _ = clip_grads_auto[M, target](model, self.max_grad_norm)
         else:
             if self.max_grad_norm > Scalar[DT](0.0):
-                # Lazy-allocate clip state on first clipped GPU step.
-                # `len(self.offsets)` is the Param count after the init
-                # walker ran in `make[target='gpu']`.
-                if not self._clip_state:
-                    self._clip_state = GradClipState.make(
-                        self.ts.ctx.value(), len(self.offsets),
+                comptime if (
+                    has_nvidia_gpu_accelerator() and USE_GROUPED_GPU_OPTIMIZER
+                ):
+                    # Grouped clip: 3 launches total, reusing the multi-tensor
+                    # descriptor arrays. Big params get a full flat grid (vs
+                    # the per-Param single-block reduction). Lazy-alloc the
+                    # state WITH total_size so `block_partials` is sized.
+                    if self._mt_n_params > 0:
+                        if not self._clip_state:
+                            self._clip_state = GradClipState.make(
+                                self.ts.ctx.value(),
+                                self._mt_n_params,
+                                self.total_size,
+                            )
+                        clip_grads_grouped_gpu(
+                            self.ts.ctx.value(),
+                            self._clip_state.value(),
+                            rebind[UnsafePointer[UInt64, MutAnyOrigin]](
+                                self._mt_grad_addrs.value().unsafe_ptr()
+                            ),
+                            rebind[UnsafePointer[Int32, MutAnyOrigin]](
+                                self._mt_moment_offs.value().unsafe_ptr()
+                            ),
+                            self._mt_n_params,
+                            self.total_size,
+                            self.max_grad_norm,
+                        )
+                else:
+                    # Per-Param path (Apple / non-grouped). Lazy-allocate clip
+                    # state; `len(self.offsets)` is the Param count after the
+                    # init walker ran in `make[target='gpu']`.
+                    if not self._clip_state:
+                        self._clip_state = GradClipState.make(
+                            self.ts.ctx.value(), len(self.offsets),
+                        )
+                    clip_grads_auto_gpu[M](
+                        model,
+                        self.ts.ctx.value(),
+                        self._clip_state.value(),
+                        self.max_grad_norm,
                     )
-                clip_grads_auto_gpu[M](
-                    model,
-                    self.ts.ctx.value(),
-                    self._clip_state.value(),
-                    self.max_grad_norm,
-                )
 
         comptime if target == "cpu":
             # Host step + bias-correction (CPU path only).
