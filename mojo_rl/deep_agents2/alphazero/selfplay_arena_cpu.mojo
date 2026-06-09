@@ -15,7 +15,7 @@ from std.memory import alloc, UnsafePointer
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module, mptr
-from mojo_rl.nn2.optimizer import Adam
+from mojo_rl.nn2.optimizer import AdamW
 from mojo_rl.nn2.initializer import Zero
 from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.combinators.compute_graph import ComputeGraph
@@ -102,6 +102,8 @@ def run_alphazero_selfplay_arena_cpu[
     do_eval2: Bool = False,
     verbose: Bool = True,
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    max_grad_norm: Float64 = 0.0, # global grad-norm clip (0 = off ≡ plain Adam)
+    weight_decay: Float64 = 0.0,  # decoupled (AdamW) weight decay (0 = off)
 ) raises -> ArenaRunResult:
     comptime OBS = NET.IN_DIMS[0]
     comptime ACT = NET.OUT_DIM - 1
@@ -126,8 +128,11 @@ def run_alphazero_selfplay_arena_cpu[
     var learner = NET.make["cpu", INIT=Zero]()
     hard_copy_params["cpu", M=NET](net, learner)
 
-    var opt = Adam.make["cpu", M=NET](learner)
+    var opt = AdamW.make["cpu", M=NET](learner)
     opt.lr = lr
+    # Decoupled weight decay + grad-norm clip (both 0 ⇒ AdamW ≡ plain Adam).
+    opt.weight_decay = Scalar[DT](weight_decay)
+    opt.max_grad_norm = Scalar[DT](max_grad_norm)
     var graph = Graph.make["cpu", INIT=Zero]()
     var replay = MCTSExampleReplay[OBS, W, CAP]()
 

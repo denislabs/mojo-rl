@@ -104,13 +104,16 @@ def main() raises:
     ](ctx, lr=0.002)
 
     # ── Remaining deltas vs the legacy AlphaZero.jl-tuned config ──────────────
-    # These are hardcoded in deep_agents2/alphazero/selfplay_arena.mojo and not
-    # yet exposed as knobs; apply if convergence stalls or training is unstable:
-    #   * Optimizer: v2 uses plain Adam (no weight decay, NO grad clip). Legacy
-    #     used AdamW(WD=1e-4) + max_grad_norm=1.0 — the comment in the legacy
-    #     example says clipping was REQUIRED: the 5-block ResNet at lr=2e-3 spiked
-    #     grad norms >100 → policy_ce 1.5→3.0 → arena regression. Watch grad/CE
-    #     diagnostics; if they spike, add clipping (opt.max_grad_norm) first.
+    # Optimizer stability is now wired: v2 uses AdamW with `max_grad_norm=1.0`
+    # + `weight_decay=1e-4` (set on the train_arena call below), matching the
+    # legacy config. The first 10k-move run without clipping reproduced the
+    # documented failure exactly — policy CE bottomed ~1.18 at move ~2000 then
+    # climbed back toward uniform (entropy ↑, vs-Random winrate 69%→62%), and
+    # the arena rejected every challenger after the first promotion. Clipping is
+    # the #1 fix; WD regularizes the 5-block ResNet. If CE still climbs, drop
+    # lr 2e-3 → 1e-3 next.
+    #
+    # Remaining (still hardcoded in selfplay_arena.mojo, apply if it stalls):
     #   * batch_sims: v2 runs 1 (sequential). Legacy ran 6 → ~6× MCTS speedup at
     #     500-600 sims, plus within-round virtual-loss diversity.
     #   * Dirichlet alpha: v2 = 0.25; legacy = 1.0 (more uniform root noise for C4).
@@ -154,6 +157,11 @@ def main() raises:
         do_eval2=True,
         verbose=True,
         logger=UnsafePointer(to=logger),
+        # Stability (legacy AlphaZero.jl): clip grad norm to 1.0 + decoupled
+        # weight decay 1e-4. Without these the policy head diverged (CE climbed
+        # back past uniform after ~2000 moves) on this 5-block ResNet at lr=2e-3.
+        max_grad_norm=1.0,
+        weight_decay=1e-4,
     )
 
     logger.close()

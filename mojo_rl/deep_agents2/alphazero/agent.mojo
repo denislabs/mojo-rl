@@ -151,6 +151,8 @@ struct AlphaZeroAgent[
         do_eval2: Bool = False,
         verbose: Bool = True,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        max_grad_norm: Float64 = 0.0,
+        weight_decay: Float64 = 0.0,
     ) raises -> ArenaRunResult:
         """Full-AlphaZero training: best/learner split + Arena gating +
         symmetry augmentation, with two pluggable eval opponents and a logger.
@@ -204,6 +206,8 @@ struct AlphaZeroAgent[
                 do_eval2,
                 verbose,
                 logger,
+                max_grad_norm,
+                weight_decay,
             )
         else:
             return run_alphazero_selfplay_arena_cpu[
@@ -239,6 +243,8 @@ struct AlphaZeroAgent[
                 do_eval2,
                 verbose,
                 logger,
+                max_grad_norm,
+                weight_decay,
             )
 
     def eval_mcts[

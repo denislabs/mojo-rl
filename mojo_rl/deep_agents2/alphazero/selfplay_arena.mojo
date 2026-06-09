@@ -49,7 +49,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module, mptr
-from mojo_rl.nn2.optimizer import Adam
+from mojo_rl.nn2.optimizer import AdamW
 from mojo_rl.nn2.initializer import Zero, Kaiming
 from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.combinators.compute_graph import ComputeGraph
@@ -255,6 +255,13 @@ def run_alphazero_selfplay_arena[
     do_eval2: Bool = False,       # also MCTS-eval vs OPP2 each report
     verbose: Bool = True,         # print a per-report progress line
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    max_grad_norm: Float64 = 0.0, # global grad-norm clip (0 = off). The 5-block
+    #                               ResNet at lr=2e-3 spikes grad norms → policy
+    #                               CE climbs back past uniform → arena
+    #                               regression; 1.0 is the legacy AlphaZero.jl
+    #                               value and the #1 stability fix.
+    weight_decay: Float64 = 0.0,  # decoupled (AdamW) weight decay (0 = off ≡
+    #                               plain Adam; 1e-4 matches the legacy config).
 ) raises -> ArenaRunResult:
     # NOTE on units: one loop pass advances every one of `N_ENVS` games by a
     # single self-play *move* (not a full game). `iterations` is therefore the
@@ -285,8 +292,14 @@ def run_alphazero_selfplay_arena[
     var learner = NET.make["gpu", INIT=Kaiming](ctx=ctx)
     hard_copy_params["gpu", M=NET](net, learner, ctx)
 
-    var opt = Adam.make["gpu", M=NET](learner, ctx)
+    var opt = AdamW.make["gpu", M=NET](learner, ctx)
     opt.lr = lr
+    # Decoupled weight decay + global grad-norm clip (both 0 ⇒ AdamW reduces
+    # to plain Adam, bit-identical, so TicTacToe is unaffected). Per-param
+    # decay flags come from the net's Param decay bits (conv/linear weights
+    # decay; biases + BN/LayerNorm affine params do not).
+    opt.weight_decay = Scalar[DT](weight_decay)
+    opt.max_grad_norm = Scalar[DT](max_grad_norm)
     var graph = Graph.make["gpu", INIT=Zero](ctx=ctx)
     var mcts = MCTS(ctx, gamma=1.0, v_min=-1.0, v_max=1.0)
     var replay = MCTSExampleReplay[OBS, W, CAP]()
