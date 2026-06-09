@@ -211,7 +211,80 @@ struct NStepBuffer[N: Int, OBS: Int, ACT: Int](
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _nstep_process_kernel[
+def _nstep_decide_kernel[
+    N_ENVS: Int, N: Int,
+](
+    in_rew: LayoutTensor[
+        DT, Layout.row_major(N_ENVS), MutAnyOrigin,
+    ],
+    in_done: LayoutTensor[
+        DT, Layout.row_major(N_ENVS), MutAnyOrigin,
+    ],
+    ring_rew: LayoutTensor[
+        DT, Layout.row_major(N_ENVS, N), MutAnyOrigin,
+    ],
+    counts: LayoutTensor[
+        DType.int32, Layout.row_major(N_ENVS), MutAnyOrigin,
+    ],
+    out_rew: LayoutTensor[
+        DT, Layout.row_major(N_ENVS), MutAnyOrigin,
+    ],
+    out_done: LayoutTensor[
+        DT, Layout.row_major(N_ENVS), MutAnyOrigin,
+    ],
+    out_valid: LayoutTensor[
+        DType.int32, Layout.row_major(N_ENVS), MutAnyOrigin,
+    ],
+    proc_slot: LayoutTensor[
+        DType.int32, Layout.row_major(N_ENVS), MutAnyOrigin,
+    ],
+    gamma: Scalar[DT],
+):
+    """Phase 1 of the n-step process split — one thread per env (cheap
+    scalar + reward-ring work).
+
+    Appends `in_rew` at ring slot `count`, decides emit (done OR ring
+    full), computes the Horner `R_n`, writes `out_rew/out_done/out_valid`
+    plus the new `count`, and shifts the reward ring on a non-terminal
+    emit. Publishes the append slot (the PRE-increment count) into
+    `proc_slot` so the element-parallel copy kernel reads a stable index
+    instead of racing on `counts` (which this kernel overwrites). The
+    obs/act rings + obs emit copies are handled by `_nstep_copy_kernel`,
+    which recomputes the same emit decision from the read-only inputs.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var c = Int(counts[e])
+    proc_slot[e] = Int32(c)
+    ring_rew[e, c] = in_rew[e]
+    var newc = c + 1
+
+    var is_done = in_done[e] > Scalar[DT](0.5)
+
+    if is_done or newc == N:
+        var r_n = Scalar[DT](0.0)
+        for i in range(newc - 1, -1, -1):
+            r_n = r_n * gamma + rebind[Scalar[DT]](ring_rew[e, i])
+        out_rew[e] = r_n
+        out_done[e] = (
+            Scalar[DT](1.0) if is_done else Scalar[DT](0.0)
+        )
+        out_valid[e] = Int32(1)
+
+        if is_done:
+            counts[e] = Int32(0)
+        else:
+            for i in range(N - 1):
+                ring_rew[e, i] = ring_rew[e, i + 1]
+            counts[e] = Int32(N - 1)
+    else:
+        out_valid[e] = Int32(0)
+        counts[e] = Int32(newc)
+
+
+def _nstep_copy_kernel[
     N_ENVS: Int, N: Int, OBS: Int, ACT: Int,
 ](
     in_obs: LayoutTensor[
@@ -219,9 +292,6 @@ def _nstep_process_kernel[
     ],
     in_act: LayoutTensor[
         DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
-    ],
-    in_rew: LayoutTensor[
-        DT, Layout.row_major(N_ENVS), MutAnyOrigin,
     ],
     in_nobs: LayoutTensor[
         DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin,
@@ -235,89 +305,66 @@ def _nstep_process_kernel[
     ring_act: LayoutTensor[
         DT, Layout.row_major(N_ENVS, N * ACT), MutAnyOrigin,
     ],
-    ring_rew: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, N), MutAnyOrigin,
-    ],
-    counts: LayoutTensor[
-        DType.int32, Layout.row_major(N_ENVS), MutAnyOrigin,
-    ],
     out_obs: LayoutTensor[
         DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin,
     ],
     out_act: LayoutTensor[
         DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
     ],
-    out_rew: LayoutTensor[
-        DT, Layout.row_major(N_ENVS), MutAnyOrigin,
-    ],
     out_nobs: LayoutTensor[
         DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin,
     ],
-    out_done: LayoutTensor[
-        DT, Layout.row_major(N_ENVS), MutAnyOrigin,
-    ],
-    out_valid: LayoutTensor[
+    proc_slot: LayoutTensor[
         DType.int32, Layout.row_major(N_ENVS), MutAnyOrigin,
     ],
-    gamma: Scalar[DT],
 ):
-    """Per-env parallel n-step accumulation.
+    """Phase 2 of the n-step process split — element-parallel over
+    (env × OBS element); one thread per `(e, d)`.
 
-    Thread `e` (one per env):
-      1. Append `(in_obs, in_act, in_rew)` at ring slot `count`; ++count.
-      2. If `in_done` is set OR `count == N`: compute `R_n` via Horner,
-         emit `(ring_obs[0], ring_act[0], R_n, in_nobs, in_done)` and
-         either reset count to 0 (done) or shift-left + count=N−1.
-      3. Else: `out_valid[e] = 0`; no emit.
-    """
-    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if e >= N_ENVS:
+    Each thread owns column `d` of env `e`'s ring, so the append, the
+    slot-0 emit read, and the in-place left-shift all happen in program
+    order *within the thread* — no cross-thread race — while the heavy
+    OBS copies run at full occupancy + coalesced (replaces the old
+    one-thread-per-env serial OBS loops, ~43% of GPU time on Pong-pixel,
+    see `project_rainbow_pong_pixel_replay_gather_bottleneck`).
+
+    Reads the append slot from `proc_slot` (published by the decide
+    kernel) and recomputes `is_done`/emit from the read-only inputs, so
+    it stays bit-identical to the original fused kernel. The `d < ACT`
+    threads ride the OBS grid to carry the action lanes. Requires
+    OBS >= ACT (always true for these envs)."""
+    comptime assert OBS >= ACT, "_nstep_copy_kernel assumes OBS >= ACT"
+    var t = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if t >= N_ENVS * OBS:
         return
+    var e = t // OBS
+    var d = t % OBS
 
-    var c = Int(counts[e])
+    var c = Int(proc_slot[e])
+    # Append obs/act at ring slot c (mirrors the decide kernel's rew append).
+    ring_obs[e, c * OBS + d] = in_obs[e, d]
+    if d < ACT:
+        ring_act[e, c * ACT + d] = in_act[e, d]
 
-    for d in range(OBS):
-        ring_obs[e, c * OBS + d] = in_obs[e, d]
-    for j in range(ACT):
-        ring_act[e, c * ACT + j] = in_act[e, j]
-    ring_rew[e, c] = in_rew[e]
-    c += 1
-
+    var newc = c + 1
     var is_done = in_done[e] > Scalar[DT](0.5)
 
-    if is_done or c == N:
-        var r_n = Scalar[DT](0.0)
-        for i in range(c - 1, -1, -1):
-            r_n = r_n * gamma + rebind[Scalar[DT]](ring_rew[e, i])
+    if is_done or newc == N:
+        # Emit slot-0 (read before the shift below clobbers it).
+        out_obs[e, d] = rebind[Scalar[DT]](ring_obs[e, d])
+        out_nobs[e, d] = rebind[Scalar[DT]](in_nobs[e, d])
+        if d < ACT:
+            out_act[e, d] = rebind[Scalar[DT]](ring_act[e, d])
 
-        for d in range(OBS):
-            out_obs[e, d] = rebind[Scalar[DT]](ring_obs[e, d])
-            out_nobs[e, d] = rebind[Scalar[DT]](in_nobs[e, d])
-        for j in range(ACT):
-            out_act[e, j] = rebind[Scalar[DT]](ring_act[e, j])
-        out_rew[e] = r_n
-        out_done[e] = (
-            Scalar[DT](1.0) if is_done else Scalar[DT](0.0)
-        )
-        out_valid[e] = Int32(1)
-
-        if is_done:
-            counts[e] = Int32(0)
-        else:
+        if not is_done:
             for i in range(N - 1):
-                for d in range(OBS):
-                    ring_obs[e, i * OBS + d] = (
-                        ring_obs[e, (i + 1) * OBS + d]
+                ring_obs[e, i * OBS + d] = (
+                    rebind[Scalar[DT]](ring_obs[e, (i + 1) * OBS + d])
+                )
+                if d < ACT:
+                    ring_act[e, i * ACT + d] = (
+                        rebind[Scalar[DT]](ring_act[e, (i + 1) * ACT + d])
                     )
-                for j in range(ACT):
-                    ring_act[e, i * ACT + j] = (
-                        ring_act[e, (i + 1) * ACT + j]
-                    )
-                ring_rew[e, i] = ring_rew[e, i + 1]
-            counts[e] = Int32(N - 1)
-    else:
-        out_valid[e] = Int32(0)
-        counts[e] = Int32(c)
 
 
 @fieldwise_init
@@ -352,6 +399,9 @@ struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
     var ring_act: DeviceBuffer[DT]
     var ring_rew: DeviceBuffer[DT]
     var counts: DeviceBuffer[DType.int32]
+    # Append slot (pre-increment count) published by the decide kernel for
+    # the element-parallel copy kernel to read — avoids racing on `counts`.
+    var proc_slot: DeviceBuffer[DType.int32]
 
     var out_obs: DeviceBuffer[DT]
     var out_act: DeviceBuffer[DT]
@@ -375,10 +425,12 @@ struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
         )
         var ring_rew = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.N)
         var counts = ctx.enqueue_create_buffer[DType.int32](Self.N_ENVS)
+        var proc_slot = ctx.enqueue_create_buffer[DType.int32](Self.N_ENVS)
         ring_obs.enqueue_fill(Scalar[DT](0.0))
         ring_act.enqueue_fill(Scalar[DT](0.0))
         ring_rew.enqueue_fill(Scalar[DT](0.0))
         counts.enqueue_fill(Int32(0))
+        proc_slot.enqueue_fill(Int32(0))
 
         var out_obs = ctx.enqueue_create_buffer[DT](
             Self.N_ENVS * Self.OBS
@@ -401,7 +453,7 @@ struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
 
         return Self(
             ring_obs=ring_obs^, ring_act=ring_act^, ring_rew=ring_rew^,
-            counts=counts^,
+            counts=counts^, proc_slot=proc_slot^,
             out_obs=out_obs^, out_act=out_act^, out_rew=out_rew^,
             out_nobs=out_nobs^, out_done=out_done^, out_valid=out_valid^,
             gamma=gamma,
@@ -470,18 +522,36 @@ struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
         var out_valid_lt = LayoutTensor[
             DType.int32, Layout.row_major(Self.N_ENVS), MutAnyOrigin,
         ](self.out_valid.unsafe_ptr())
+        var proc_slot_lt = LayoutTensor[
+            DType.int32, Layout.row_major(Self.N_ENVS), MutAnyOrigin,
+        ](self.proc_slot.unsafe_ptr())
 
-        comptime n_blocks = (Self.N_ENVS + TPB - 1) // TPB
-        comptime kernel = _nstep_process_kernel[
+        # Phase 1 — decide (one thread per env): rew ring + emit decision +
+        # counts, publishing the append slot into proc_slot. Must precede
+        # phase 2, which reads proc_slot (enqueue order = execution order).
+        comptime n_blocks_decide = (Self.N_ENVS + TPB - 1) // TPB
+        comptime decide_kernel = _nstep_decide_kernel[Self.N_ENVS, Self.N]
+        ctx.enqueue_function[decide_kernel](
+            in_rew_lt, in_done_lt, ring_rew_lt, counts_lt,
+            out_rew_lt, out_done_lt, out_valid_lt, proc_slot_lt,
+            self.gamma,
+            grid_dim=n_blocks_decide, block_dim=TPB,
+        )
+
+        # Phase 2 — copy (element-parallel over N_ENVS × OBS): obs/act ring
+        # append + emit copies + in-place shift, each (e, d) thread owning
+        # its ring column.
+        comptime n_blocks_copy = (
+            Self.N_ENVS * Self.OBS + TPB - 1
+        ) // TPB
+        comptime copy_kernel = _nstep_copy_kernel[
             Self.N_ENVS, Self.N, Self.OBS, Self.ACT,
         ]
-        ctx.enqueue_function[kernel](
-            in_obs_lt, in_act_lt, in_rew_lt, in_nobs_lt, in_done_lt,
-            ring_obs_lt, ring_act_lt, ring_rew_lt, counts_lt,
-            out_obs_lt, out_act_lt, out_rew_lt, out_nobs_lt,
-            out_done_lt, out_valid_lt,
-            self.gamma,
-            grid_dim=n_blocks, block_dim=TPB,
+        ctx.enqueue_function[copy_kernel](
+            in_obs_lt, in_act_lt, in_nobs_lt, in_done_lt,
+            ring_obs_lt, ring_act_lt,
+            out_obs_lt, out_act_lt, out_nobs_lt, proc_slot_lt,
+            grid_dim=n_blocks_copy, block_dim=TPB,
         )
 
     def store_into[S: ReplayBuffer](

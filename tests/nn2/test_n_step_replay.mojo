@@ -44,9 +44,9 @@ def _approx(a: Scalar[DT], b: Float64) -> Bool:
 
 def test_cpu_no_emit_until_n() raises:
     var nb = NStepBuffer[N, OBS, ACT].new(gamma=Scalar[DT](GAMMA))
-    var obs = alloc[Scalar[DT]](OBS)
-    var act = alloc[Scalar[DT]](ACT)
-    var nxt = alloc[Scalar[DT]](OBS)
+    var obs = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+    var act = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+    var nxt = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
 
     # Add N − 1 transitions; expect no emit.
     for i in range(N - 1):
@@ -62,9 +62,9 @@ def test_cpu_no_emit_until_n() raises:
 
 def test_cpu_full_ring_emit() raises:
     var nb = NStepBuffer[N, OBS, ACT].new(gamma=Scalar[DT](GAMMA))
-    var obs = alloc[Scalar[DT]](OBS)
-    var act = alloc[Scalar[DT]](ACT)
-    var nxt = alloc[Scalar[DT]](OBS)
+    var obs = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+    var act = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+    var nxt = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
 
     # r_0=1.0, r_1=2.0, r_2=3.0. Expected R_n = 1 + 0.99*2 + 0.99^2 * 3
     #                                       = 1 + 1.98 + 2.9403 = 5.9203.
@@ -113,9 +113,9 @@ def test_cpu_done_flush_short() raises:
     """Push 2 transitions with done=True on the 2nd; expect a 2-step
     return flush with done=True."""
     var nb = NStepBuffer[N, OBS, ACT].new(gamma=Scalar[DT](GAMMA))
-    var obs = alloc[Scalar[DT]](OBS)
-    var act = alloc[Scalar[DT]](ACT)
-    var nxt = alloc[Scalar[DT]](OBS)
+    var obs = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+    var act = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+    var nxt = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
 
     obs[0] = Scalar[DT](10.0)
     obs[1] = Scalar[DT](11.0)
@@ -176,9 +176,10 @@ def test_gpu_parity_with_cpu() raises:
     var host_nobs = alloc[Scalar[DT]](N_ENVS * OBS)
     var host_done = alloc[Scalar[DT]](N_ENVS)
 
-    var cpu_obs = alloc[Scalar[DT]](OBS)
-    var cpu_act = alloc[Scalar[DT]](ACT)
-    var cpu_nxt = alloc[Scalar[DT]](OBS)
+    # CPU oracle takes Lists (NStepBuffer.add signature).
+    var cpu_obs = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+    var cpu_act = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+    var cpu_nxt = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
 
     var cpu_emit_reward = Scalar[DT](0.0)
     for i in range(N):
