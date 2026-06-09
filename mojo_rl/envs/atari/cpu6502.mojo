@@ -957,21 +957,19 @@ def _run_scanline_render(
     frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
     render_row: Int,
     palette: InlineArray[UInt32, 256],
+    pf_mask: UnsafePointer[UInt8, MutAnyOrigin],
 ) -> Int:
     """Run one scanline, rendering pixels beam-accurately as the CPU executes.
 
-    The TIA "races the beam": graphics registers (PF, GRP, ENABL, positions,
-    colors) are updated mid-scanline and only affect pixels drawn after the
-    write. This catches the beam up to the CPU's current clock before each
-    instruction, so every pixel is drawn with the TIA state active at that beam
-    position — fixing mid-line artifacts (Breakout brick-row seams, smeared
-    ball/missile objects) that a per-scanline snapshot can't represent.
+    Pass 1 (interleaved with CPU): draw the playfield/background beam-accurately
+    with live PF, so mid-line PF rewrites (Breakout bricks, Pong score) land at
+    the correct pixel; record the rendered PF into `pf_mask`.
 
-    Per-pixel VBLANK blanking is handled in render_collide_pixel, so this draws
-    every line into `render_row`; the caller decides (from end-of-line VBLANK)
-    whether the line counts as visible and advances the row. `render_row` < 0
-    or >= FRAME_HEIGHT updates collision only (no pixel output). Returns total
-    CPU cycles consumed.
+    Pass 2 (after the line): draw players/missiles/ball from the settled
+    end-of-line state, and compute ALL collisions against that end-of-line
+    sprite state plus the rendered `pf_mask` — so collisions match exactly what
+    was displayed. `render_row` is the frame_buf row (or < 0 / >= FRAME_HEIGHT
+    to skip output). Returns total CPU cycles consumed.
     """
     from .frame_render import render_pf_collide_pixel, overlay_sprites_pixel
     from .flags import FRAME_WIDTH, HBLANK_CLOCKS
@@ -984,11 +982,6 @@ def _run_scanline_render(
 
     var line_cycles: Int = overflow
     var next_pixel: Int = 0
-
-    # Collisions for this scanline are detected live (pass 1) into cx_pending
-    # and applied to state.collision at end-of-line, so a mid-line CXCLR can't
-    # wipe them before the game reads them.
-    state.cx_pending = 0
 
     # WSYNC carried over from the previous scanline.
     if state.wsync:
@@ -1008,7 +1001,7 @@ def _run_scanline_render(
             target = FRAME_WIDTH
         while next_pixel < target:
             render_pf_collide_pixel(
-                state, render_row, next_pixel, frame_buf, palette
+                state, render_row, next_pixel, frame_buf, palette, pf_mask
             )
             next_pixel += 1
 
@@ -1027,20 +1020,20 @@ def _run_scanline_render(
             elif line_cycles > CPU_CLOCKS_PER_LINE:
                 state.wsync = True
 
-    # Flush any remaining playfield pixels using the final state.
+    # Flush any remaining playfield pixels (and their collisions) using the
+    # final state for the right edge the CPU never explicitly stepped to.
     while next_pixel < FRAME_WIDTH:
         render_pf_collide_pixel(
-            state, render_row, next_pixel, frame_buf, palette
+            state, render_row, next_pixel, frame_buf, palette, pf_mask
         )
         next_pixel += 1
 
-    # Pass 2: overlay sprites + ball from the settled end-of-line state
-    # (avoids mid-line sprite-repositioning edge clipping).
+    # Pass 2: overlay sprites + ball from the settled end-of-line state. All
+    # collisions were already latched per beam pixel in pass 1 (live state).
     for x in range(FRAME_WIDTH):
-        overlay_sprites_pixel(state, render_row, x, frame_buf, palette)
-
-    # Apply this scanline's detected collisions (deferred from pass 1).
-    state.collision = state.collision | state.cx_pending
+        overlay_sprites_pixel(
+            state, render_row, x, frame_buf, palette, pf_mask
+        )
 
     return line_cycles
 
@@ -1070,8 +1063,9 @@ def run_frame_with_video(
         rom_size: ROM size in bytes.
         frame_buf: Output BGRA buffer (160×210×4 = 134400 bytes).
     """
-    from .flags import TIA_VBLANK, TIA_VSYNC, FRAME_HEIGHT as FH
+    from .flags import TIA_VBLANK, TIA_VSYNC, FRAME_HEIGHT as FH, FRAME_WIDTH
     from .palette import NTSC_PALETTE
+    from std.memory import alloc
 
     # Render exactly one VSYNC-aligned frame per call. A fixed 262-scanline
     # loop drifts against the ROM's actual frame length, splitting one game
@@ -1080,6 +1074,9 @@ def run_frame_with_video(
     # begins the *next* frame, so each call emits one complete, aligned frame.
     # Each scanline is rendered beam-accurately as the CPU executes it.
     var palette = materialize[NTSC_PALETTE]()
+    # Per-scanline rendered-playfield mask (filled in pass 1, read by pass 2 for
+    # collisions so they match the displayed frame). Reused across scanlines.
+    var pf_mask = alloc[UInt8](FRAME_WIDTH)
     var visible_line = 0
     var overflow = Int(state.cpu_cycles)  # Carry from previous frame
     var rendered_any = False
@@ -1099,7 +1096,7 @@ def run_frame_with_video(
         # area, so the renderer still updates collision without writing pixels).
         var render_row = visible_line if visible_line < FH else -1
         var total = _run_scanline_render(
-            state, rom, rom_size, overflow, frame_buf, render_row, palette
+            state, rom, rom_size, overflow, frame_buf, render_row, palette, pf_mask
         )
         overflow = total - CPU_CLOCKS_PER_LINE
 
@@ -1121,6 +1118,7 @@ def run_frame_with_video(
     state.scanline = UInt16(visible_line)
     state.cpu_cycles = UInt32(overflow)  # Persist overflow for next frame
     state.frame_number += 1
+    pf_mask.free()
 
 
 # Import here to avoid circular dependency

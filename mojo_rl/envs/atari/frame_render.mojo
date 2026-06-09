@@ -49,6 +49,11 @@ from .flags import (
 # Frame buffer size: 160x210 pixels, 4 bytes per pixel (BGRA)
 comptime FRAME_BUF_SIZE: Int = FRAME_WIDTH * FRAME_HEIGHT * 4
 
+# A/B toggle (temporary): True = Stella-style per-color-clock collision latched
+# in pass 1 from live state; False = legacy end-of-line collision in pass 2
+# against the rendered frame. Used to measure the laser/phantom impact.
+comptime COLLIDE_PER_CLOCK: Bool = False
+
 
 @always_inline
 def _get_pixel_color(state: AtariState, pixel: Int) -> UInt8:
@@ -122,24 +127,29 @@ def render_pf_collide_pixel(
     pixel: Int,
     buf: UnsafePointer[UInt8, MutAnyOrigin],
     palette: InlineArray[UInt32, 256],
+    pf_mask: UnsafePointer[UInt8, MutAnyOrigin],
 ):
-    """Pass 1 (beam-accurate): render playfield + background AND update collision.
+    """Pass 1 (beam-accurate): render playfield + background AND latch all
+    collisions for ONE beam pixel, from LIVE object state.
 
-    Called from the scanline loop while the CPU executes, so LIVE registers
-    hold the value active at this beam position. Two things must be
-    beam-accurate:
-      - Playfield: mid-line PF rewrites (Breakout brick rows, Pong score) land
-        at the correct pixel (no pixel-80 hack).
-      - Collision: objects collide as the beam draws them; fast objects the game
-        enables only on their own scanlines (e.g. the Space Invaders laser) are
-        missed by an end-of-line check, making shots pass through invaders.
+    Called from the scanline loop while the CPU executes, so every register
+    (PF, player/missile/ball positions, GRP, enables) holds the value active at
+    this exact beam position. This mirrors Stella's TIA, which evaluates each
+    object's 1-bit output and ORs the 15 collision pairs once per color clock
+    from the very same per-clock bits it renders (TIA::updateCollision). Doing
+    collisions here — rather than once at end-of-line — means a fast object
+    (Breakout ball, Space Invaders laser) is tested at the position it actually
+    occupied when the beam passed, so it can't slip past a target between the
+    render and a deferred collision check.
 
-    Only the playfield/background pixel is OUTPUT here; sprites are drawn later
-    from the settled end-of-line state (overlay_sprites_pixel) to avoid
-    mid-line RESP edge-clipping.
+    The playfield is drawn here too (live PF → mid-line rewrites land at the
+    right pixel); `pf_mask` records what was rendered so pass 2 can resolve
+    sprite-vs-PF draw priority. Sprites themselves are still DRAWN in pass 2
+    from the settled end-of-line state, which avoids the edge clipping that
+    per-pixel beam positioning causes for sprite-repositioning games.
     """
-    # Blanked: background only, no objects, no collision.
     if (state.tia_flags & TIA_VBLANK) != 0:
+        pf_mask[pixel] = 0
         if render_row >= 0 and render_row < FRAME_HEIGHT:
             _write_pixel_bgra(
                 buf,
@@ -149,54 +159,50 @@ def render_pf_collide_pixel(
             )
         return
 
+    # Live per-clock object bits (identical evaluation to the rendered pixel).
     var pf = playfield_mask(state, pixel, live=True)
-    var p0 = player_mask(state, 0, pixel)
-    var p1 = player_mask(state, 1, pixel)
-    var m0 = missile_mask(state, 0, pixel)
-    var m1 = missile_mask(state, 1, pixel)
-    var bl = ball_mask(state, pixel)
 
-    # --- Collision detection: LIVE, but DEFERRED ---
-    # Detect every collision at the live beam position (correct PF, and catches
-    # games that reposition players mid-scanline — e.g. the Space Invaders laser
-    # vs an invader copy). Accumulate into cx_pending instead of state.collision
-    # so a mid-line CXCLR can't wipe this scanline's hits before the caller
-    # applies them at end-of-line. Without this defer, the ball tunnels straight
-    # through bricks/paddle (the collision is cleared before the game reads it).
-    if m0 and p1:
-        state.cx_pending = state.cx_pending | CX_M0P1
-    if m0 and p0:
-        state.cx_pending = state.cx_pending | CX_M0P0
-    if m1 and p0:
-        state.cx_pending = state.cx_pending | CX_M1P0
-    if m1 and p1:
-        state.cx_pending = state.cx_pending | CX_M1P1
-    if p0 and pf:
-        state.cx_pending = state.cx_pending | CX_P0PF
-    if p0 and bl:
-        state.cx_pending = state.cx_pending | CX_P0BL
-    if p1 and pf:
-        state.cx_pending = state.cx_pending | CX_P1PF
-    if p1 and bl:
-        state.cx_pending = state.cx_pending | CX_P1BL
-    if m0 and pf:
-        state.cx_pending = state.cx_pending | CX_M0PF
-    if m0 and bl:
-        state.cx_pending = state.cx_pending | CX_M0BL
-    if m1 and pf:
-        state.cx_pending = state.cx_pending | CX_M1PF
-    if m1 and bl:
-        state.cx_pending = state.cx_pending | CX_M1BL
-    if bl and pf:
-        state.cx_pending = state.cx_pending | CX_BLPF
-    if p0 and p1:
-        state.cx_pending = state.cx_pending | CX_P0P1
-    if m0 and m1:
-        state.cx_pending = state.cx_pending | CX_M0M1
+    @parameter
+    if COLLIDE_PER_CLOCK:
+        var p0 = player_mask(state, 0, pixel)
+        var p1 = player_mask(state, 1, pixel)
+        var m0 = missile_mask(state, 0, pixel)
+        var m1 = missile_mask(state, 1, pixel)
+        var bl = ball_mask(state, pixel)
 
-    if render_row < 0 or render_row >= FRAME_HEIGHT:
-        return
+        # --- Collision latches (per color clock, from live state) ---
+        if m0 and p1:
+            state.collision = state.collision | CX_M0P1
+        if m0 and p0:
+            state.collision = state.collision | CX_M0P0
+        if m1 and p0:
+            state.collision = state.collision | CX_M1P0
+        if m1 and p1:
+            state.collision = state.collision | CX_M1P1
+        if p0 and pf:
+            state.collision = state.collision | CX_P0PF
+        if p0 and bl:
+            state.collision = state.collision | CX_P0BL
+        if p1 and pf:
+            state.collision = state.collision | CX_P1PF
+        if p1 and bl:
+            state.collision = state.collision | CX_P1BL
+        if m0 and pf:
+            state.collision = state.collision | CX_M0PF
+        if m0 and bl:
+            state.collision = state.collision | CX_M0BL
+        if m1 and pf:
+            state.collision = state.collision | CX_M1PF
+        if m1 and bl:
+            state.collision = state.collision | CX_M1BL
+        if bl and pf:
+            state.collision = state.collision | CX_BLPF
+        if p0 and p1:
+            state.collision = state.collision | CX_P0P1
+        if m0 and m1:
+            state.collision = state.collision | CX_M0M1
 
+    # --- Render playfield/background (sprites overlaid in pass 2) ---
     var color_idx: UInt8
     if pf:
         if (state.tia_flags & TIA_PF_SCORE) != 0:
@@ -206,39 +212,76 @@ def render_pf_collide_pixel(
     else:
         color_idx = state.colubk
 
-    _write_pixel_bgra(
-        buf, (render_row * FRAME_WIDTH + pixel) * 4, color_idx, palette
-    )
+    pf_mask[pixel] = 1 if pf else 0
+    if render_row >= 0 and render_row < FRAME_HEIGHT:
+        _write_pixel_bgra(
+            buf, (render_row * FRAME_WIDTH + pixel) * 4, color_idx, palette
+        )
 
 
 @always_inline
 def overlay_sprites_pixel(
-    state: AtariState,
+    mut state: AtariState,
     render_row: Int,
     pixel: Int,
     buf: UnsafePointer[UInt8, MutAnyOrigin],
     palette: InlineArray[UInt32, 256],
+    pf_mask: UnsafePointer[UInt8, MutAnyOrigin],
 ):
-    """Pass 2 (end-of-line snapshot): overlay sprites onto the pass-1 pixel.
+    """Pass 2 (end-of-line): overlay players/missiles/ball onto the frame.
 
-    Run after the scanline's CPU has executed, using the settled object state
-    (positions, GRP, enables). Overwrites the pass-1 playfield/background pixel
-    only where a player/missile/ball wins TIA priority. Drawing sprites from the
-    end-of-line state (as the legacy renderer did) avoids the edge clipping that
-    beam-accurate per-pixel positioning causes for sprite-repositioning games
-    (Space Invaders). Collision is detected live in pass 1, not here.
+    Collisions are NOT computed here — they were latched per beam pixel in
+    pass 1 (render_pf_collide_pixel) from live state, matching Stella's
+    per-color-clock collision model. This pass only resolves the VISIBLE pixel:
+    it draws sprites from the settled end-of-line state (which keeps
+    sprite-repositioning games like Space Invaders free of edge clipping) using
+    the playfield presence recorded in `pf_mask` for priority.
     """
     if (state.tia_flags & TIA_VBLANK) != 0:
         return
     if render_row < 0 or render_row >= FRAME_HEIGHT:
         return
 
-    var pf = playfield_mask(state, pixel, live=True)
+    var pf = pf_mask[pixel] != 0  # what pass 1 actually rendered here
     var p0 = player_mask(state, 0, pixel)
     var p1 = player_mask(state, 1, pixel)
     var m0 = missile_mask(state, 0, pixel)
     var m1 = missile_mask(state, 1, pixel)
     var bl = ball_mask(state, pixel)
+
+    # Legacy A/B path: latch collisions here (end-of-line) instead of per clock.
+    @parameter
+    if not COLLIDE_PER_CLOCK:
+        if m0 and p1:
+            state.collision = state.collision | CX_M0P1
+        if m0 and p0:
+            state.collision = state.collision | CX_M0P0
+        if m1 and p0:
+            state.collision = state.collision | CX_M1P0
+        if m1 and p1:
+            state.collision = state.collision | CX_M1P1
+        if p0 and pf:
+            state.collision = state.collision | CX_P0PF
+        if p0 and bl:
+            state.collision = state.collision | CX_P0BL
+        if p1 and pf:
+            state.collision = state.collision | CX_P1PF
+        if p1 and bl:
+            state.collision = state.collision | CX_P1BL
+        if m0 and pf:
+            state.collision = state.collision | CX_M0PF
+        if m0 and bl:
+            state.collision = state.collision | CX_M0BL
+        if m1 and pf:
+            state.collision = state.collision | CX_M1PF
+        if m1 and bl:
+            state.collision = state.collision | CX_M1BL
+        if bl and pf:
+            state.collision = state.collision | CX_BLPF
+        if p0 and p1:
+            state.collision = state.collision | CX_P0P1
+        if m0 and m1:
+            state.collision = state.collision | CX_M0M1
 
     # Decide whether a sprite/ball overwrites the pass-1 (PF/bg) pixel.
     var overwrite = False
