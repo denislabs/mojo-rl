@@ -62,6 +62,7 @@ def run_lewm2_closedloop[
     init_std: Float64 = 0.2,
     goal_agent_x: Float64 = 256.0,
     goal_agent_y: Float64 = 256.0,
+    goal_match_agent: Bool = True,
     seed0: Int = 1,
     viz_path: String = "",
     ctx: Optional[DeviceContext] = None,
@@ -108,26 +109,11 @@ def run_lewm2_closedloop[
         act_dev.unsafe_ptr()
     )
 
-    # ── goal latent: a frame with the block AT the goal pose (once) ─────
-    var tmp = alloc[Scalar[DT]](IMG_DIM)
-    sim_frame_chw_norm[IMG](
-        Scalar[DT](PConstants.GOAL_X), Scalar[DT](PConstants.GOAL_Y),
-        Scalar[DT](PConstants.GOAL_ANGLE),
-        Scalar[DT](goal_agent_x), Scalar[DT](goal_agent_y), tmp,
-    )
-    for b in range(BATCH):
-        for t in range(T):
-            for i in range(IMG_DIM):
-                pix_host[(b * T + t) * IMG_DIM + i] = tmp[i]
-    ctx_v.enqueue_copy(pix_dev, pix_host)
-    ctx_v.synchronize()
-    var gpix_t = TileTensor(pix_d_p, row_major[BATCH, PIX]())
-    var gact_t = TileTensor(act_d_p, row_major[BATCH, ACTIN]())
-    _ = wm.eval_loss(gpix_t, gact_t)
-    wm.read_node_into["emb"](emb_host, BATCH * TE)
-    for b in range(BATCH):
-        for d in range(EMB):
-            goal_lat[b * EMB + d] = emb_host[b * TE + d]
+    # Goal latent (block AT the goal pose) is recomputed per cycle inside the
+    # loop: with `goal_match_agent` the goal image uses each env's CURRENT
+    # agent position, so start vs goal differ ONLY in block pose — the planner
+    # then optimizes block pose, not "drift the agent to the goal's agent
+    # spot" (which a fixed-agent goal lets it cheat, freezing the block).
 
     # envs
     var envs = List[PushTEnv[DT]]()
@@ -170,6 +156,33 @@ def run_lewm2_closedloop[
         for b in range(BATCH):
             for d in range(EMB):
                 start_lat[b * EMB + d] = emb_host[b * TE + d]
+
+        # goal window: block @ goal pose + (current agent | fixed) per env,
+        # so the start↔goal latent diff is block-pose only.
+        for b in range(BATCH):
+            var ap = envs[b].agent_pos()
+            var gx = Float64(ap[0]) if goal_match_agent else goal_agent_x
+            var gy = Float64(ap[1]) if goal_match_agent else goal_agent_y
+            sim_frame_chw_norm[IMG](
+                Scalar[DT](PConstants.GOAL_X), Scalar[DT](PConstants.GOAL_Y),
+                Scalar[DT](PConstants.GOAL_ANGLE),
+                Scalar[DT](gx), Scalar[DT](gy),
+                pix_host + (b * T) * IMG_DIM,
+            )
+            for t in range(1, T):
+                for i in range(IMG_DIM):
+                    pix_host[(b * T + t) * IMG_DIM + i] = pix_host[
+                        (b * T) * IMG_DIM + i
+                    ]
+        ctx_v.enqueue_copy(pix_dev, pix_host)
+        ctx_v.synchronize()
+        var gpix_t = TileTensor(pix_d_p, row_major[BATCH, PIX]())
+        var gact_t = TileTensor(act_d_p, row_major[BATCH, ACTIN]())
+        _ = wm.eval_loss(gpix_t, gact_t)
+        wm.read_node_into["emb"](emb_host, BATCH * TE)
+        for b in range(BATCH):
+            for d in range(EMB):
+                goal_lat[b * EMB + d] = emb_host[b * TE + d]
         scorer.set_start_goal(start_lat, goal_lat)
 
         _ = cem.optimize(scorer, plan, verbose=False)
@@ -236,6 +249,6 @@ def run_lewm2_closedloop[
         )
 
     pix_host.free(); emb_host.free(); start_lat.free(); goal_lat.free()
-    tmp.free(); plan.free(); viz_buf.free(); viz_tmp.free()
+    plan.free(); viz_buf.free(); viz_tmp.free()
     _ = scorer^
     return (success_rate, mc)

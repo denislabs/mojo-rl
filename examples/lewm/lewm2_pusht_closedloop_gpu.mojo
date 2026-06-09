@@ -99,6 +99,7 @@ def main() raises:
         cem_iters=CEM_ITERS, cem_samples=CEM_SAMPLES, cem_topk=CEM_TOPK,
         init_std=INIT_STD,
         goal_agent_x=256.0, goal_agent_y=256.0,
+        goal_match_agent=True,   # goal = block@goal + CURRENT agent → block-pose-only objective
         seed0=1,
         viz_path=String("/tmp/lewm2_pusht_closedloop.ppm"),
         ctx=ctx,
