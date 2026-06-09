@@ -61,8 +61,11 @@ def _tp[
 struct LeWM2MPCScorer[
     EMB: Int, T: Int, ACT: Int, SMOOTHED: Int, AE_MLP: Int,
     H: Int, PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int, PRED_PROJ_H: Int,
-    BATCH: Int, MPC_HORIZON: Int, target: StaticString,
+    BATCH: Int, MPC_HORIZON: Int, target: StaticString, PRED_DIM_HEAD: Int = 0,
 ](ScorePlanCallback, Movable):
+    # PRED_DIM_HEAD (default 0 ⇒ EMB/PRED_HEADS) added last so the Pong
+    # categorical eval is unchanged; >0 matches a paper-width WM's expanded
+    # predictor attention so the name-synced weights align.
     comptime ROLL_T = Self.H + Self.MPC_HORIZON
     comptime NEEDED = Self.H + Self.MPC_HORIZON - 1
     comptime HE = Self.H * Self.EMB
@@ -71,7 +74,7 @@ struct LeWM2MPCScorer[
     comptime Predictor = LeWMPredictor[
         Self.EMB, Self.T, Self.ACT, Self.SMOOTHED, Self.AE_MLP,
         Self.H, Self.PRED_HEADS, Self.PRED_FF, Self.DEPTH, Self.PRED_PROJ_H,
-        Self.BATCH, Self.target,
+        Self.BATCH, Self.target, Self.PRED_DIM_HEAD,
     ]
 
     var pred_net: Self.Predictor

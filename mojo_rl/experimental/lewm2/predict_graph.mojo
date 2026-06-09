@@ -37,6 +37,7 @@ from .encoder import ActionEmbedder, ARPredictor, PredProj
 comptime LeWMPredictGraph[
     EMB: Int, T: Int, ACT: Int, SMOOTHED: Int, AE_MLP: Int,
     H: Int, PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int, PRED_PROJ_H: Int,
+    PRED_DIM_HEAD: Int = 0,
 ] = ComputeGraph[
     H * EMB,
     InputSlot["latent_ctx", H * EMB],
@@ -46,7 +47,7 @@ comptime LeWMPredictGraph[
     Node["x_pe", BiasAdd[H * EMB], "latent_ctx"],
     Node[
         "pred_raw",
-        ARPredictor[EMB, PRED_HEADS, H, PRED_FF, DEPTH],
+        ARPredictor[EMB, PRED_HEADS, H, PRED_FF, DEPTH, PRED_DIM_HEAD],
         "x_pe", "ctx_a",
     ],
     Node["pred", PredProj[H, EMB, PRED_PROJ_H], "pred_raw"],
@@ -100,11 +101,15 @@ struct _NamedImportVisitor(ParamVisitor):
 struct LeWMPredictor[
     EMB: Int, T: Int, ACT: Int, SMOOTHED: Int, AE_MLP: Int,
     H: Int, PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int, PRED_PROJ_H: Int,
-    BATCH: Int, target: StaticString = "cpu",
+    BATCH: Int, target: StaticString = "cpu", PRED_DIM_HEAD: Int = 0,
 ](Movable & ImplicitlyDestructible):
+    # PRED_DIM_HEAD added last (after target) so existing positional call
+    # sites (Pong, default 0 ⇒ EMB/PRED_HEADS) are unchanged; >0 selects the
+    # paper's expanded predictor attention to match a paper-width WM.
     comptime PG = LeWMPredictGraph[
         Self.EMB, Self.T, Self.ACT, Self.SMOOTHED, Self.AE_MLP,
         Self.H, Self.PRED_HEADS, Self.PRED_FF, Self.DEPTH, Self.PRED_PROJ_H,
+        Self.PRED_DIM_HEAD,
     ]
     comptime HE = Self.H * Self.EMB
     comptime ACTIN = Self.T * Self.ACT
