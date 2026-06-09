@@ -35,22 +35,36 @@ trick `linear.mojo` uses. On other targets we matmul into a temp slab
 and add elementwise. Both paths produce identical numerics modulo
 float32 rounding.
 
-GPU path: **naive-but-correct direct convolution kernels** — one thread
-per output position for the forward, one thread per input position
-for `d_input`, one thread per weight scalar for `d_weight`, one thread
-per output channel for `d_bias`. Mirrors the legacy nn
-`backward_dx_kernel_impl` layout (one thread per input element with no
-atomics — see `nn/autodiff/primitives/conv2d.mojo:790`). Tuned tiled +
-im2col-on-GPU paths are a follow-up; the plan documents them as
-consumer-gated under "Outstanding matmul-perf follow-ups".
+GPU path: **im2col + `max_matmul` (tensor-core GEMM)** — the same
+reduction as the CPU path, but the im2col is a GPU kernel and the matmul
+flows through `max_matmul[target="gpu"]` (cuBLAS-class GEMM on NVIDIA,
+MPS on Apple), mirroring `Linear`'s GPU forward/backward. Replaces the
+earlier naive direct-convolution kernels (one thread per output element)
+which were compute-bound and 5-10× slower than the legacy fused conv on
+conv nets (AlphaZero ResNet, Atari CNN, Dreamer image) — see
+`feedback_nn2_gpu_conv_naive_slow`.
+
+  * forward:  `col = im2col(x)` ([BS, COL]) → `out = col @ Wᵀ` ([BS, OC])
+              → scatter-add bias into the [BATCH, OC·SO] trait layout.
+  * d_weight: rebuild `col`, transpose grad_output → `goᵀ` ([OC, BS]),
+              `dW += goᵀ @ col` ([OC, COL]).
+  * d_bias:   block-per-OC reduction over BATCH·OH·OW (`block.sum`).
+  * d_input:  one thread per input element gathering over (kh,kw,oc) —
+              kept as the direct gather kernel (no atomics, already
+              parallel; mirrors legacy `backward_dx_kernel_impl`).
+
+`BS = BATCH·OH·OW`. The `col`/`out_packed`/`goᵀ` device scratch is
+lazily sized to BATCH on first call and reused (CUDA-graph-capture-safe,
+same pattern as `Linear.cacheT_dev`); `dW_tmp` is fixed [OC, COL] and
+allocated at `make` time.
 """
 
 from std.math import ceildiv
 from std.memory import alloc
 from std.sys import CompilationTarget
-from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu import thread_idx, block_idx, block_dim, global_idx
 from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
@@ -75,7 +89,12 @@ from ..core import (
 )
 from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
-from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
+from ..core.target_storage import (
+    require_ctx,
+    TargetStorage,
+    assert_tag_for,
+    ensure_gpu_buffer,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -151,11 +170,14 @@ def _col2im_one_batch[
 
 
 # ──────────────────────────────────────────────────────────────────────
-# GPU kernels — direct convolution (no GPU im2col yet).
+# GPU kernels — im2col + GEMM (forward, d_weight) and direct gather/reduce
+# (d_input, d_bias).
 #
-#   forward:    1 thread per (b, oc, oh, ow).
+#   im2col:     1 thread per (b·SO + s, ck) col element.
+#   scatter:    1 thread per output element — out_packed[BS,OC] → [B,OC·SO]
+#               + bias.
+#   go_transpose 1 thread per (oc, b·SO + s) — grad_output[B,OC·SO] → [OC,BS].
 #   backward_dx 1 thread per (b, ic, ih, iw).
-#   backward_dw 1 thread per (oc, ic, kh, kw). Sums over BATCH·OH·OW.
 #   backward_db 1 thread per oc.               Sums over BATCH·OH·OW.
 #
 # No atomics — every kernel writes a unique destination slot, matching
@@ -163,51 +185,98 @@ def _col2im_one_batch[
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _conv2d_forward_kernel[
-    BATCH: Int, IC: Int, OC: Int, K: Int, S: Int, P: Int,
+def _conv2d_im2col_kernel[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int,
     H: Int, W: Int, OH: Int, OW: Int,
-    IN_FLAT: Int, OUT_FLAT: Int,
+    IN_FLAT: Int, COL_SIZE: Int, SPATIAL_OUT: Int, BS: Int,
 ](
     input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
-    weight: LayoutTensor[
-        DT, Layout.row_major(OC * IC * K * K), MutAnyOrigin,
-    ],
-    bias:   LayoutTensor[DT, Layout.row_major(OC), MutAnyOrigin],
-    output: LayoutTensor[
-        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
-    ],
+    col: LayoutTensor[DT, Layout.row_major(BS, COL_SIZE), MutAnyOrigin],
 ):
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    """im2col into a [BS, COL_SIZE] row-major matrix, row = `b·SO + s`,
+    col index = `(ic·K + kh)·K + kw` (matches the weight flat layout so
+    the matmul lines up). Padded receptive fields write 0. One thread per
+    col element."""
+    var idx = Int(global_idx.x)
+    var total = BS * COL_SIZE
+    if idx >= total:
+        return
+    var row = idx // COL_SIZE
+    var ck = idx % COL_SIZE
+    var b = row // SPATIAL_OUT
+    var s = row % SPATIAL_OUT
+    var oh = s // OW
+    var ow = s % OW
+    var ic = ck // (K * K)
+    var rem = ck % (K * K)
+    var kh = rem // K
+    var kw = rem % K
+    var ih = oh * S + kh - P
+    var iw = ow * S + kw - P
+    if ih < 0 or ih >= H or iw < 0 or iw >= W:
+        col[row, ck] = Scalar[DT](0.0)
+    else:
+        col[row, ck] = rebind[Scalar[DT]](input[b, ic * H * W + ih * W + iw])
+
+
+def _conv2d_scatter_bias_kernel[
+    BATCH: Int, OC: Int, SPATIAL_OUT: Int, OUT_FLAT: Int, BS: Int,
+](
+    out_packed: LayoutTensor[DT, Layout.row_major(BS, OC), MutAnyOrigin],
+    bias: LayoutTensor[DT, Layout.row_major(OC), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin],
+):
+    """Scatter the GEMM result `out_packed[b·SO + s, oc]` into the
+    trait-mandated `[BATCH, OC·SO]` flat layout and add the per-channel
+    bias. One thread per output element."""
+    var idx = Int(global_idx.x)
     var total = BATCH * OUT_FLAT
     if idx >= total:
         return
     var b = idx // OUT_FLAT
     var out_pos = idx % OUT_FLAT
-    var spatial_out = OH * OW
-    var oc = out_pos // spatial_out
-    var rem = out_pos % spatial_out
-    var oh = rem // OW
-    var ow = rem % OW
+    var oc = out_pos // SPATIAL_OUT
+    var s = out_pos % SPATIAL_OUT
+    output[b, out_pos] = (
+        rebind[Scalar[DT]](out_packed[b * SPATIAL_OUT + s, oc])
+        + rebind[Scalar[DT]](bias[oc])
+    )
 
-    var acc = rebind[Scalar[DT]](bias[oc])
-    var w_oc_off = oc * IC * K * K
-    for ic in range(IC):
-        var in_c_off = ic * H * W
-        var w_ic_off = w_oc_off + ic * K * K
-        for kh in range(K):
-            var ih = oh * S + kh - P
-            if ih < 0 or ih >= H:
-                continue
-            var w_kh_off = w_ic_off + kh * K
-            for kw in range(K):
-                var iw = ow * S + kw - P
-                if iw < 0 or iw >= W:
-                    continue
-                acc += (
-                    rebind[Scalar[DT]](input[b, in_c_off + ih * W + iw])
-                    * rebind[Scalar[DT]](weight[w_kh_off + kw])
-                )
-    output[b, out_pos] = acc
+
+def _conv2d_go_transpose_kernel[
+    BATCH: Int, OC: Int, SPATIAL_OUT: Int, OUT_FLAT: Int, BS: Int,
+](
+    grad_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
+    ],
+    go_T: LayoutTensor[DT, Layout.row_major(OC, BS), MutAnyOrigin],
+):
+    """Repack grad_output `[BATCH, OC·SO]` → `goᵀ[OC, BS]` (BS = BATCH·SO,
+    column = `b·SO + s`) so `dW = goᵀ @ col` runs through `max_matmul`
+    (which rejects `transpose_a`). One thread per goᵀ element."""
+    var idx = Int(global_idx.x)
+    var total = OC * BS
+    if idx >= total:
+        return
+    var oc = idx // BS
+    var col = idx % BS
+    var b = col // SPATIAL_OUT
+    var s = col % SPATIAL_OUT
+    go_T[oc, col] = rebind[Scalar[DT]](grad_output[b, oc * SPATIAL_OUT + s])
+
+
+def _conv2d_accum_kernel[
+    N: Int
+](
+    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    """dst[i] += src[i]. Accumulates the `max_matmul` dW result into
+    grad_weight, preserving the vjp accumulate contract (mirrors
+    Linear's `_accum_kernel`)."""
+    var idx = Int(global_idx.x)
+    if idx < N:
+        dst[idx] = rebind[Scalar[DT]](dst[idx]) + rebind[Scalar[DT]](src[idx])
 
 
 def _conv2d_backward_dx_kernel[
@@ -266,74 +335,6 @@ def _conv2d_backward_dx_kernel[
     grad_input[b, in_pos] = acc
 
 
-def _conv2d_backward_dw_kernel[
-    BATCH: Int, IC: Int, OC: Int, K: Int, S: Int, P: Int,
-    H: Int, W: Int, OH: Int, OW: Int,
-    IN_FLAT: Int, OUT_FLAT: Int,
-](
-    grad_output: LayoutTensor[
-        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
-    ],
-    input: LayoutTensor[
-        DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin,
-    ],
-    grad_weight: LayoutTensor[
-        DT, Layout.row_major(OC * IC * K * K), MutAnyOrigin,
-    ],
-):
-    """dW reduction — one block per weight scalar, CONV_DW_TPB threads
-    stride over BATCH·OH·OW and `block.sum` the partials. Mirrors the
-    LayerNorm dx pattern (one block per sample, threads reduce over DIM)
-    but on the per-weight axis: every weight scalar accumulates over the
-    full `(b, oh, ow)` set. Replaces the previous "1 thread per weight
-    scalar with BATCH·OH·OW inner loop" layout, which had a 6k-iteration
-    inner loop per thread on NatureDQN-sized inputs."""
-    var weight_idx = Int(block_idx.x)
-    var t = Int(thread_idx.x)
-    var total_weights = OC * IC * K * K
-    if weight_idx >= total_weights:
-        return
-
-    var oc = weight_idx // (IC * K * K)
-    var rem0 = weight_idx % (IC * K * K)
-    var ic = rem0 // (K * K)
-    var rem1 = rem0 % (K * K)
-    var kh = rem1 // K
-    var kw = rem1 % K
-
-    var spatial_out = OH * OW
-    var n_eff = BATCH * spatial_out
-    var in_c_off = ic * H * W
-    var out_c_off = oc * spatial_out
-
-    var my_acc: Scalar[DT] = 0.0
-    var idx = t
-    while idx < n_eff:
-        var b = idx // spatial_out
-        var s_pos = idx % spatial_out
-        var oh = s_pos // OW
-        var ow = s_pos % OW
-        var ih = oh * S + kh - P
-        var iw = ow * S + kw - P
-        if ih >= 0 and ih < H and iw >= 0 and iw < W:
-            my_acc += (
-                rebind[Scalar[DT]](
-                    input[b, in_c_off + ih * W + iw]
-                )
-                * rebind[Scalar[DT]](
-                    grad_output[b, out_c_off + s_pos]
-                )
-            )
-        idx += CONV_DW_TPB
-    var total = block.sum[block_size=CONV_DW_TPB, broadcast=False](
-        val=my_acc
-    )
-    if t == 0:
-        grad_weight[weight_idx] = (
-            rebind[Scalar[DT]](grad_weight[weight_idx]) + total[0]
-        )
-
-
 def _conv2d_backward_db_kernel[
     BATCH: Int, OC: Int, OH: Int, OW: Int, OUT_FLAT: Int,
 ](
@@ -386,12 +387,29 @@ struct Conv2D[
     var weight: Param["weight", True,  Self.W_SIZE]
     var bias:   Param["bias",   False, Self.B_SIZE]
     var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    # GPU im2col + GEMM scratch. `col`/`out_packed`/`goᵀ` are lazily sized
+    # to BATCH·SPATIAL_OUT on first call and reused (capture-safe, mirrors
+    # Linear.cacheT_dev); `dW_tmp` is fixed [OC, COL] and made at make-time.
+    var col_dev: Optional[DeviceBuffer[DT]]
+    var col_n: Int
+    var outp_dev: Optional[DeviceBuffer[DT]]
+    var outp_n: Int
+    var goT_dev: Optional[DeviceBuffer[DT]]
+    var goT_n: Int
+    var dW_tmp_dev: Optional[DeviceBuffer[DT]]
     var ts: TargetStorage
 
     def __init__(out self):
         self.weight = Param["weight", True,  Self.W_SIZE]()
         self.bias   = Param["bias",   False, Self.B_SIZE]()
         self._cached_input_ptr = None
+        self.col_dev = None
+        self.col_n = 0
+        self.outp_dev = None
+        self.outp_n = 0
+        self.goT_dev = None
+        self.goT_n = 0
+        self.dW_tmp_dev = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -452,6 +470,10 @@ struct Conv2D[
             ctx_v.enqueue_copy(c.weight.val.dev.value(), w_hb)
             ctx_v.enqueue_copy(c.bias.val.dev.value(),   b_hb)
             ctx_v.synchronize()
+            # Fixed [OC, COL] dW scratch for the max_matmul grad_w path; the
+            # col / out_packed / goᵀ buffers stay None (lazily sized to
+            # BATCH·SPATIAL_OUT on the first forward / backward).
+            c.dW_tmp_dev = ctx_v.enqueue_create_buffer[DT](Self.W_SIZE)
             c.ts = TargetStorage.make_gpu(ctx_v)
         return c^
 
@@ -522,32 +544,65 @@ struct Conv2D[
                         i += 1
             col_buf.free()
         else:
+            # im2col + GEMM: col = im2col(x) [BS, COL]; out_packed = col @ Wᵀ
+            # [BS, OC]; scatter → output [BATCH, OC·SO] + bias. The GEMM runs
+            # through max_matmul (tensor cores), the same as Linear.
+            comptime BS = BATCH * Self.SPATIAL_OUT
+            var ctx = self.ts.ctx.value()
+            ensure_gpu_buffer(self.col_dev, self.col_n, BS * Self.COL_SIZE, ctx)
+            ensure_gpu_buffer(self.outp_dev, self.outp_n, BS * Self.OC, ctx)
+
             comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
-            comptime out_layout = Layout.row_major(
-                BATCH, Self.OUT_DIM_FLAT
-            )
-            comptime w_layout = Layout.row_major(Self.W_SIZE)
+            comptime out_layout = Layout.row_major(BATCH, Self.OUT_DIM_FLAT)
+            comptime col_layout = Layout.row_major(BS, Self.COL_SIZE)
+            comptime outp_layout = Layout.row_major(BS, Self.OC)
             comptime b_layout = Layout.row_major(Self.B_SIZE)
             var in_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](in_p)
-            var out_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](
-                out_p
-            )
-            var w_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
-                self.weight.val.dev.value()
+            var out_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](out_p)
+            var col_lt = LayoutTensor[DT, col_layout, MutAnyOrigin](
+                self.col_dev.value()
             )
             var b_lt = LayoutTensor[DT, b_layout, MutAnyOrigin](
                 self.bias.val.dev.value()
             )
-            comptime total = BATCH * Self.OUT_DIM_FLAT
-            comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kernel = _conv2d_forward_kernel[
-                BATCH, Self.IC, Self.OC, Self.K, Self.S, Self.P,
+
+            # ── (1) im2col → col[BS, COL] ──────────────────────────────
+            comptime n_blocks_col = (BS * Self.COL_SIZE + TPB - 1) // TPB
+            comptime im2col_kernel = _conv2d_im2col_kernel[
+                BATCH, Self.IC, Self.K, Self.S, Self.P,
                 Self.H, Self.W, Self.OH, Self.OW,
-                Self.IN_DIM_FLAT, Self.OUT_DIM_FLAT,
+                Self.IN_DIM_FLAT, Self.COL_SIZE, Self.SPATIAL_OUT, BS,
             ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, w_lt, b_lt, out_lt,
-                grid_dim=n_blocks, block_dim=TPB,
+            ctx.enqueue_function[im2col_kernel](
+                in_lt, col_lt, grid_dim=n_blocks_col, block_dim=TPB,
+            )
+
+            # ── (2) out_packed = col @ Wᵀ  ([BS, COL] @ [OC, COL]ᵀ) ────
+            var w_tt = TileTensor(
+                self.weight.val.dev.value(),
+                row_major[Self.OC, Self.COL_SIZE](),
+            )
+            var col_tt = TileTensor(
+                self.col_dev.value(), row_major[BS, Self.COL_SIZE](),
+            )
+            var outp_tt = TileTensor(
+                self.outp_dev.value(), row_major[BS, Self.OC](),
+            )
+            max_matmul[transpose_b=True, target="gpu"](
+                outp_tt, col_tt, w_tt, ctx,
+            )
+
+            # ── (3) scatter out_packed → output[B, OC·SO] + bias ───────
+            var outp_lt = LayoutTensor[DT, outp_layout, MutAnyOrigin](
+                self.outp_dev.value()
+            )
+            comptime n_blocks_sc = (BATCH * Self.OUT_DIM_FLAT + TPB - 1) // TPB
+            comptime scatter_kernel = _conv2d_scatter_bias_kernel[
+                BATCH, Self.OC, Self.SPATIAL_OUT, Self.OUT_DIM_FLAT, BS,
+            ]
+            ctx.enqueue_function[scatter_kernel](
+                outp_lt, b_lt, out_lt,
+                grid_dim=n_blocks_sc, block_dim=TPB,
             )
 
     # ----- Backward --------------------------------------------------------
@@ -703,46 +758,94 @@ struct Conv2D[
                 ):
                     dw_tmp.value().free()
             else:
+                # im2col + GEMM dW: rebuild col[BS, COL] from the cached
+                # input, transpose grad_output → goᵀ[OC, BS], then
+                # dW_tmp = goᵀ @ col ([OC, BS] @ [BS, COL]) and accumulate
+                # into grad_weight. d_bias keeps the block-per-OC reduction.
+                # The im2col reads `in_lt` (the cached forward input) and is
+                # enqueued in THIS phase so it precedes dx (the grad_input
+                # phase), which clobbers the aliased slab — the original
+                # Conv2D dx-first bug
+                # (feedback_nn2_gpu_backward_order_aliased_slab) stays
+                # structurally impossible.
+                comptime BS = BATCH * Self.SPATIAL_OUT
                 var go_p = grad_output_v.ptr
                 var x_p = self._cached_input_ptr.value()
+                var ctx = self.ts.ctx.value()
+                ensure_gpu_buffer(
+                    self.col_dev, self.col_n, BS * Self.COL_SIZE, ctx
+                )
+                ensure_gpu_buffer(self.goT_dev, self.goT_n, Self.OC * BS, ctx)
+
                 comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
                 comptime out_layout = Layout.row_major(
                     BATCH, Self.OUT_DIM_FLAT
                 )
+                comptime col_layout = Layout.row_major(BS, Self.COL_SIZE)
+                comptime goT_layout = Layout.row_major(Self.OC, BS)
                 comptime w_layout = Layout.row_major(Self.W_SIZE)
                 comptime b_layout = Layout.row_major(Self.B_SIZE)
                 var go_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](go_p)
                 var in_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](x_p)
-                var ctx = self.ts.ctx.value()
+                var col_lt = LayoutTensor[DT, col_layout, MutAnyOrigin](
+                    self.col_dev.value()
+                )
+                var goT_lt = LayoutTensor[DT, goT_layout, MutAnyOrigin](
+                    self.goT_dev.value()
+                )
 
-                # Param grads (dW, dB) read `in_lt` (the cached forward
-                # input); enqueued in THIS phase so they precede dx (the
-                # grad_input phase), which clobbers the aliased slab. The
-                # original Conv2D dx-first bug
-                # (feedback_nn2_gpu_backward_order_aliased_slab) is now
-                # structurally impossible: dx lives in a different method
-                # the orchestrator calls strictly after this one.
+                # ── (1) rebuild col[BS, COL] = im2col(x) ───────────────
+                comptime n_blocks_col = (
+                    BS * Self.COL_SIZE + TPB - 1
+                ) // TPB
+                comptime im2col_kernel = _conv2d_im2col_kernel[
+                    BATCH, Self.IC, Self.K, Self.S, Self.P,
+                    Self.H, Self.W, Self.OH, Self.OW,
+                    Self.IN_DIM_FLAT, Self.COL_SIZE, Self.SPATIAL_OUT, BS,
+                ]
+                ctx.enqueue_function[im2col_kernel](
+                    in_lt, col_lt, grid_dim=n_blocks_col, block_dim=TPB,
+                )
+
+                # ── (2) goᵀ[OC, BS] = transpose(grad_output) ───────────
+                comptime n_blocks_got = (Self.OC * BS + TPB - 1) // TPB
+                comptime got_kernel = _conv2d_go_transpose_kernel[
+                    BATCH, Self.OC, Self.SPATIAL_OUT, Self.OUT_DIM_FLAT, BS,
+                ]
+                ctx.enqueue_function[got_kernel](
+                    go_lt, goT_lt, grid_dim=n_blocks_got, block_dim=TPB,
+                )
+
+                # ── (3) dW_tmp = goᵀ @ col  → accumulate into grad_w ───
+                var goT_tt = TileTensor(
+                    self.goT_dev.value(), row_major[Self.OC, BS](),
+                )
+                var col_tt = TileTensor(
+                    self.col_dev.value(), row_major[BS, Self.COL_SIZE](),
+                )
+                var dW_tmp_tt = TileTensor(
+                    self.dW_tmp_dev.value(),
+                    row_major[Self.OC, Self.COL_SIZE](),
+                )
+                max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, ctx)
+
                 var dw_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
                     self.weight.grd.dev.value()
                 )
+                var dW_tmp_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
+                    self.dW_tmp_dev.value()
+                )
+                comptime n_blocks_acc = (Self.W_SIZE + TPB - 1) // TPB
+                comptime acc_kernel = _conv2d_accum_kernel[Self.W_SIZE]
+                ctx.enqueue_function[acc_kernel](
+                    dw_lt, dW_tmp_lt,
+                    grid_dim=n_blocks_acc, block_dim=TPB,
+                )
+
+                # ── (4) d_bias — 1 block per OC, block.sum over BS ─────
                 var db_lt = LayoutTensor[DT, b_layout, MutAnyOrigin](
                     self.bias.grd.dev.value()
                 )
-
-                # d_weight — 1 block per weight scalar, CONV_DW_TPB
-                # threads reduce over BATCH·OH·OW via `block.sum`.
-                comptime dw_kernel = _conv2d_backward_dw_kernel[
-                    BATCH, Self.IC, Self.OC, Self.K, Self.S, Self.P,
-                    Self.H, Self.W, Self.OH, Self.OW,
-                    Self.IN_DIM_FLAT, Self.OUT_DIM_FLAT,
-                ]
-                ctx.enqueue_function[dw_kernel](
-                    go_lt, in_lt, dw_lt,
-                    grid_dim=Self.W_SIZE, block_dim=CONV_DW_TPB,
-                )
-
-                # d_bias — 1 block per OC, CONV_DW_TPB threads reduce
-                # over BATCH·OH·OW via `block.sum`.
                 comptime db_kernel = _conv2d_backward_db_kernel[
                     BATCH, Self.OC, Self.OH, Self.OW, Self.OUT_DIM_FLAT,
                 ]

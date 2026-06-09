@@ -77,8 +77,10 @@ def main() raises:
     var ctx = DeviceContext()
     # NUM_SIMS=500 / MAX_NODES=1024 match the legacy AlphaZero.jl-tuned config
     # (legacy used 600 sims / 1024 nodes); 100 sims gave far weaker MCTS targets.
-    # NOTE: the v2 MCTS runs BATCH_SIMS=1, so 500 sequential sims is ~5-6× slower
-    # per move than the legacy's BATCH_SIMS=6 — see the tuning notes below.
+    # NOTE: nn2 GPU Conv2D now uses im2col + tensor-core GEMM (was a naive
+    # direct-conv kernel that made conv nets 5-10× slower) — the ResNet torso
+    # is no longer the per-eval bottleneck. BATCH_SIMS still batches the MCTS
+    # rounds (see the tuning notes below).
     var agent = AlphaZeroAgent[
         "gpu", Env, Net, N_ENVS=64, NUM_SIMS=500, MAX_NODES=1024,
         BATCH=128, CAP=1_000_000, MAX_TRAJ=42,
