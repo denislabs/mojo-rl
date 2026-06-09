@@ -166,7 +166,11 @@ def test_gpu_per() raises:
         trainer.record(obs, action, reward, next_obs, done)
         if trainer.train_step(step):
             n_trained += 1
-    var tree0 = Float64(trainer.sample_blk.buf.value().tree[0])
+    # `tree_total_sync` reads the live tree backend (device-resident by
+    # default since the Part A device-PER-tree rework).
+    var tree0 = Float64(
+        trainer.sample_blk.buf.value().tree_total_sync(ctx)
+    )
     var m = trainer.flush_metrics()
     print("  n_trained =", n_trained)
     print("  actor_loss =", m.actor_loss.to_f64())

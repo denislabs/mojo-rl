@@ -23,6 +23,17 @@ RNG: each `sample` call bumps `_rng_offset` by `2 * BATCH` so
 back-to-back calls draw disjoint Philox streams. Pattern mirrors
 RSample's device RNG handling (no shared global state).
 
+Obs storage dtype (`OBS_STORE_DT_`, default `DT`): the `obs` / `nxt`
+rings can store a narrower dtype than the `DT` minibatch the trainer
+consumes. With the default the store/gather conversions are rebinds
+(bit-identical to the historical buffer). With `DType.uint8` the store
+kernels quantize `round(x·255) → u8` and the gather kernels dequantize
+`k / 255.0` — lossless for exact `k/255` pixel obs (the resize kernel
+emits exactly that), and 4× the replay capacity in the same VRAM.
+Pixel-only: quantizing arbitrary state vectors (velocities etc.) is
+destructive, so non-pixel configs must keep the default. act/rew/done
+always stay `DT`.
+
 Bit-identity: there is no GPU bit-identity baseline. CPU SAC path is
 untouched, so the `-167.572` Pendulum 30k CPU baseline stays bit-
 identical by construction. GPU SAC convergence is gated by
@@ -42,20 +53,53 @@ from ..training.trainer_block import TrainerState
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Obs storage-dtype conversion helpers (Part B — uint8 pixel obs).
+# ──────────────────────────────────────────────────────────────────────
+
+
+@always_inline
+def _obs_quant[SDT: DType](x: Scalar[DT]) -> Scalar[SDT]:
+    """`DT` obs element → storage dtype. `SDT == DT` is a pure rebind
+    (bit-identical store). `uint8` quantizes `round(x·255)` clamped to
+    [0, 255] — exact for `k/255` pixel inputs."""
+    comptime if SDT == DT:
+        return rebind[Scalar[SDT]](x)
+    else:
+        var v = x * Scalar[DT](255.0) + Scalar[DT](0.5)
+        if v < Scalar[DT](0.0):
+            v = Scalar[DT](0.0)
+        if v > Scalar[DT](255.0):
+            v = Scalar[DT](255.0)
+        return v.cast[SDT]()
+
+
+@always_inline
+def _obs_dequant[SDT: DType](x: Scalar[SDT]) -> Scalar[DT]:
+    """Storage dtype → `DT` obs element. `SDT == DT` is a pure rebind.
+    `uint8` dequantizes `k / 255.0` — the same division the pixel
+    pipeline used to produce the stored value, so the round-trip is
+    bit-identical for `k/255` inputs."""
+    comptime if SDT == DT:
+        return rebind[Scalar[DT]](x)
+    else:
+        return x.cast[DT]() / Scalar[DT](255.0)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # GPU kernels.
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _store_one_kernel[OBS: Int, ACT: Int, CAP: Int](
+def _store_one_kernel[OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT](
     stage_s: LayoutTensor[DT, Layout.row_major(OBS), MutAnyOrigin],
     stage_a: LayoutTensor[DT, Layout.row_major(ACT), MutAnyOrigin],
     stage_r: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
     stage_sp: LayoutTensor[DT, Layout.row_major(OBS), MutAnyOrigin],
     stage_d: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
-    buf_s: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_s: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_a: LayoutTensor[DT, Layout.row_major(CAP, ACT), MutAnyOrigin],
     buf_r: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
-    buf_sp: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_sp: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
     slot: Int32,
 ):
@@ -70,8 +114,8 @@ def _store_one_kernel[OBS: Int, ACT: Int, CAP: Int](
     var d = Int(thread_idx.x)
     var s = Int(slot)
     if d < OBS:
-        buf_s[s, d] = stage_s[d]
-        buf_sp[s, d] = stage_sp[d]
+        buf_s[s, d] = _obs_quant[SDT](rebind[Scalar[DT]](stage_s[d]))
+        buf_sp[s, d] = _obs_quant[SDT](rebind[Scalar[DT]](stage_sp[d]))
     if d < ACT:
         buf_a[s, d] = stage_a[d]
     if d == 0:
@@ -234,17 +278,17 @@ def _sample_indices_ere_kernel[BATCH: Int, CAP: Int](
 
 
 def _gather_batch_kernel[
-    BATCH: Int, OBS: Int, ACT: Int, CAP: Int,
+    BATCH: Int, OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT,
 ](
     mb_s: LayoutTensor[DT, Layout.row_major(BATCH, OBS), MutAnyOrigin],
     mb_a: LayoutTensor[DT, Layout.row_major(BATCH, ACT), MutAnyOrigin],
     mb_r: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
     mb_sp: LayoutTensor[DT, Layout.row_major(BATCH, OBS), MutAnyOrigin],
     mb_d: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
-    buf_s: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_s: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_a: LayoutTensor[DT, Layout.row_major(CAP, ACT), MutAnyOrigin],
     buf_r: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
-    buf_sp: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_sp: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
     indices: LayoutTensor[
         DType.int32, Layout.row_major(BATCH), MutAnyOrigin
@@ -271,8 +315,8 @@ def _gather_batch_kernel[
     var i = t // OBS
     var d = t % OBS
     var idx = Int(indices[i])
-    mb_s[i, d] = buf_s[idx, d]
-    mb_sp[i, d] = buf_sp[idx, d]
+    mb_s[i, d] = _obs_dequant[SDT](rebind[Scalar[SDT]](buf_s[idx, d]))
+    mb_sp[i, d] = _obs_dequant[SDT](rebind[Scalar[SDT]](buf_sp[idx, d]))
     if d < ACT:
         mb_a[i, d] = buf_a[idx, d]
     if d == 0:
@@ -281,17 +325,17 @@ def _gather_batch_kernel[
 
 
 def _store_batch_kernel[
-    N_ENVS: Int, OBS: Int, ACT: Int, CAP: Int,
+    N_ENVS: Int, OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT,
 ](
     src_obs: LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin],
     src_act: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
     src_rew: LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin],
     src_nxt: LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin],
     src_dne: LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin],
-    buf_s: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_s: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_a: LayoutTensor[DT, Layout.row_major(CAP, ACT), MutAnyOrigin],
     buf_r: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
-    buf_sp: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_sp: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
     start_pos: Int32,
 ):
@@ -312,8 +356,8 @@ def _store_batch_kernel[
     var e = t // OBS
     var d = t % OBS
     var slot = (Int(start_pos) + e) % CAP
-    buf_s[slot, d] = src_obs[e, d]
-    buf_sp[slot, d] = src_nxt[e, d]
+    buf_s[slot, d] = _obs_quant[SDT](rebind[Scalar[DT]](src_obs[e, d]))
+    buf_sp[slot, d] = _obs_quant[SDT](rebind[Scalar[DT]](src_nxt[e, d]))
     if d < ACT:
         buf_a[slot, d] = src_act[e, d]
     if d == 0:
@@ -327,15 +371,22 @@ def _store_batch_kernel[
 
 
 @fieldwise_init
-struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
+struct GPUReplay[
+    OBS_: Int, ACT_: Int, CAP_: Int, OBS_STORE_DT_: DType = DT
+](ReplayBuffer):
     """Device-resident circular replay buffer.
 
     Stored layout:
-      obs  : [CAP, OBS] row-major DeviceBuffer
+      obs  : [CAP, OBS] row-major DeviceBuffer (dtype OBS_STORE_DT_)
       act  : [CAP, ACT] row-major DeviceBuffer
       rew  : [CAP] DeviceBuffer
-      nxt  : [CAP, OBS] row-major DeviceBuffer
+      nxt  : [CAP, OBS] row-major DeviceBuffer (dtype OBS_STORE_DT_)
       dne  : [CAP] DeviceBuffer
+
+    `OBS_STORE_DT_` (default `DT` — byte-identical to the historical
+    buffer) selects the obs/nxt storage dtype. `DType.uint8` quantizes
+    pixel obs on store and dequantizes on gather — 4× capacity, lossless
+    for exact `k/255` inputs. Pixel-only; see the module docstring.
 
     CPU bookkeeping: `pos` (next write slot), `size` (saturates at CAP
     after first wrap), `rng_seed`, `_rng_offset`.
@@ -352,12 +403,13 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime CAP = Self.CAP_
+    comptime SDT = Self.OBS_STORE_DT_
 
     # Device-resident circular storage.
-    var obs: DeviceBuffer[DT]
+    var obs: DeviceBuffer[Self.SDT]
     var act: DeviceBuffer[DT]
     var rew: DeviceBuffer[DT]
-    var nxt: DeviceBuffer[DT]
+    var nxt: DeviceBuffer[Self.SDT]
     var dne: DeviceBuffer[DT]
 
     # Single-transition device staging (used by `add`).
@@ -417,15 +469,15 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
         Zero-fills the circular storage. Staging buffers are not zeroed
         (every `add` rewrites them before the store kernel reads).
         """
-        var s = ctx.enqueue_create_buffer[DT](Self.CAP * Self.OBS)
+        var s = ctx.enqueue_create_buffer[Self.SDT](Self.CAP * Self.OBS)
         var a = ctx.enqueue_create_buffer[DT](Self.CAP * Self.ACT)
         var r = ctx.enqueue_create_buffer[DT](Self.CAP)
-        var sp = ctx.enqueue_create_buffer[DT](Self.CAP * Self.OBS)
+        var sp = ctx.enqueue_create_buffer[Self.SDT](Self.CAP * Self.OBS)
         var d = ctx.enqueue_create_buffer[DT](Self.CAP)
-        s.enqueue_fill(Scalar[DT](0.0))
+        s.enqueue_fill(Scalar[Self.SDT](0))
         a.enqueue_fill(Scalar[DT](0.0))
         r.enqueue_fill(Scalar[DT](0.0))
-        sp.enqueue_fill(Scalar[DT](0.0))
+        sp.enqueue_fill(Scalar[Self.SDT](0))
         d.enqueue_fill(Scalar[DT](0.0))
 
         var stage_s = ctx.enqueue_create_buffer[DT](Self.OBS)
@@ -617,7 +669,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             DT, Layout.row_major(1), MutAnyOrigin
         ](self.stage_dne.unsafe_ptr())
         var buf_s_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
         ](self.obs.unsafe_ptr())
         var buf_a_lt = LayoutTensor[
             DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin
@@ -626,7 +678,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             DT, Layout.row_major(Self.CAP), MutAnyOrigin
         ](self.rew.unsafe_ptr())
         var buf_sp_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
         ](self.nxt.unsafe_ptr())
         var buf_d_lt = LayoutTensor[
             DT, Layout.row_major(Self.CAP), MutAnyOrigin
@@ -635,7 +687,9 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
         # Single-block kernel. TPB = max(OBS, ACT) so each lane has a
         # thread; rew/dne are written by lane 0 only.
         comptime TPB = Self.OBS if Self.OBS > Self.ACT else Self.ACT
-        comptime kernel = _store_one_kernel[Self.OBS, Self.ACT, Self.CAP]
+        comptime kernel = _store_one_kernel[
+            Self.OBS, Self.ACT, Self.CAP, Self.SDT
+        ]
         ctx.enqueue_function[kernel](
             stage_s_lt, stage_a_lt, stage_r_lt, stage_sp_lt, stage_d_lt,
             buf_s_lt, buf_a_lt, buf_r_lt, buf_sp_lt, buf_d_lt,
@@ -693,7 +747,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             DT, Layout.row_major(N_ENVS), MutAnyOrigin
         ](src_dne.unsafe_ptr())
         var buf_s_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
         ](self.obs.unsafe_ptr())
         var buf_a_lt = LayoutTensor[
             DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin
@@ -702,7 +756,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             DT, Layout.row_major(Self.CAP), MutAnyOrigin
         ](self.rew.unsafe_ptr())
         var buf_sp_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
         ](self.nxt.unsafe_ptr())
         var buf_d_lt = LayoutTensor[
             DT, Layout.row_major(Self.CAP), MutAnyOrigin
@@ -710,7 +764,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
 
         comptime n_blocks = (N_ENVS * Self.OBS + TPB - 1) // TPB
         comptime kernel = _store_batch_kernel[
-            N_ENVS, Self.OBS, Self.ACT, Self.CAP
+            N_ENVS, Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
         ctx.enqueue_function[kernel](
             src_obs_lt, src_act_lt, src_rew_lt, src_nxt_lt, src_dne_lt,
@@ -825,7 +879,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             DT, Layout.row_major(BATCH), MutAnyOrigin
         ](mb_d.unsafe_ptr())
         var buf_s_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
         ](self.obs.unsafe_ptr())
         var buf_a_lt = LayoutTensor[
             DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin
@@ -834,7 +888,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             DT, Layout.row_major(Self.CAP), MutAnyOrigin
         ](self.rew.unsafe_ptr())
         var buf_sp_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
         ](self.nxt.unsafe_ptr())
         var buf_d_lt = LayoutTensor[
             DT, Layout.row_major(Self.CAP), MutAnyOrigin
@@ -842,7 +896,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
 
         comptime n_blocks_gather = (BATCH * Self.OBS + TPB - 1) // TPB
         comptime gather_kernel = _gather_batch_kernel[
-            BATCH, Self.OBS, Self.ACT, Self.CAP
+            BATCH, Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
         ctx.enqueue_function[gather_kernel](
             mb_s_lt, mb_a_lt, mb_r_lt, mb_sp_lt, mb_d_lt,
@@ -903,7 +957,7 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             DT, Layout.row_major(BATCH), MutAnyOrigin
         ](mb_d.unsafe_ptr())
         var buf_s_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
         ](self.obs.unsafe_ptr())
         var buf_a_lt = LayoutTensor[
             DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin
@@ -912,14 +966,14 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             DT, Layout.row_major(Self.CAP), MutAnyOrigin
         ](self.rew.unsafe_ptr())
         var buf_sp_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
         ](self.nxt.unsafe_ptr())
         var buf_d_lt = LayoutTensor[
             DT, Layout.row_major(Self.CAP), MutAnyOrigin
         ](self.dne.unsafe_ptr())
         comptime n_blocks_gather = (BATCH * Self.OBS + TPB - 1) // TPB
         comptime gather_kernel = _gather_batch_kernel[
-            BATCH, Self.OBS, Self.ACT, Self.CAP
+            BATCH, Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
         ctx.enqueue_function[gather_kernel](
             mb_s_lt, mb_a_lt, mb_r_lt, mb_sp_lt, mb_d_lt,

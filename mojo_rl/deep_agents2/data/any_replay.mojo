@@ -27,14 +27,22 @@ from .gpu_replay import GPUReplay
 
 @fieldwise_init
 struct AnyReplay[
-    target: StaticString, OBS_: Int, ACT_: Int, CAP_: Int
+    target: StaticString, OBS_: Int, ACT_: Int, CAP_: Int,
+    OBS_STORE_DT_: DType = DT,
 ](ReplayBuffer):
+    """`OBS_STORE_DT_` (default `DT` — no behaviour change) selects the
+    GPU backend's obs storage dtype; `DType.uint8` is the pixel-obs
+    capacity option (see gpu_replay.mojo). CPU backend ignores it
+    (pixel training is GPU-resident)."""
+
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime CAP = Self.CAP_
 
     var cpu: Optional[CPUReplay[Self.OBS_, Self.ACT_, Self.CAP_]]
-    var gpu: Optional[GPUReplay[Self.OBS_, Self.ACT_, Self.CAP_]]
+    var gpu: Optional[
+        GPUReplay[Self.OBS_, Self.ACT_, Self.CAP_, Self.OBS_STORE_DT_]
+    ]
 
     @staticmethod
     def make(
@@ -45,6 +53,9 @@ struct AnyReplay[
             Self.target == "cpu" or Self.target == "gpu"
         ), "AnyReplay: target must be 'cpu' or 'gpu'"
         comptime if Self.target == "cpu":
+            comptime assert Self.OBS_STORE_DT_ == DT, (
+                "AnyReplay[cpu]: OBS_STORE_DT is a GPU-backend option"
+            )
             return Self(
                 cpu=CPUReplay[Self.OBS_, Self.ACT_, Self.CAP_].make(),
                 gpu=None,
@@ -52,9 +63,9 @@ struct AnyReplay[
         else:
             return Self(
                 cpu=None,
-                gpu=GPUReplay[Self.OBS_, Self.ACT_, Self.CAP_].make(
-                    ctx=ctx, batch_capacity=batch_capacity
-                ),
+                gpu=GPUReplay[
+                    Self.OBS_, Self.ACT_, Self.CAP_, Self.OBS_STORE_DT_
+                ].make(ctx=ctx, batch_capacity=batch_capacity),
             )
 
     def add(

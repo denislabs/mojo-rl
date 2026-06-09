@@ -32,13 +32,21 @@ comptime BATCH = 16
 comptime ALPHA = Float64(0.6)
 comptime EPS = Float64(1e-6)
 
+# This file tests the HOST sum-tree path (the debugging / A-B oracle) —
+# it asserts host-internal state (`tree`, `_host_indices`,
+# `_host_weights`). The device-resident tree (now the default,
+# `DEVICE_TREE_=True`) is covered by `test_per_device_tree.mojo`.
+comptime HostTreePER = GPUPrioritizedReplay[
+    OBS, ACT, CAP, DT, False
+]
+
 
 def _approx(a: Scalar[DT], b: Float64) -> Bool:
     return fabs(Float64(a) - b) < 1e-3
 
 
 def _fill_buffer(
-    mut rb: GPUPrioritizedReplay[OBS, ACT, CAP],
+    mut rb: HostTreePER,
     ctx: DeviceContext,
     n: Int,
 ) raises:
@@ -62,7 +70,7 @@ def _fill_buffer(
 
 def test_fresh_buffer() raises:
     var ctx = DeviceContext()
-    var rb = GPUPrioritizedReplay[OBS, ACT, CAP].new(
+    var rb = HostTreePER.new(
         ctx,
         alpha=Scalar[DT](ALPHA),
         beta=Scalar[DT](0.4),
@@ -80,7 +88,7 @@ def test_fresh_buffer() raises:
 
 def test_add_initializes_tree_leaves() raises:
     var ctx = DeviceContext()
-    var rb = GPUPrioritizedReplay[OBS, ACT, CAP].new(
+    var rb = HostTreePER.new(
         ctx,
         alpha=Scalar[DT](ALPHA),
         beta=Scalar[DT](0.4),
@@ -126,7 +134,7 @@ def test_add_initializes_tree_leaves() raises:
 def test_sample_returns_valid_indices() raises:
     seed(42)
     var ctx = DeviceContext()
-    var rb = GPUPrioritizedReplay[OBS, ACT, CAP].new(
+    var rb = HostTreePER.new(
         ctx,
         alpha=Scalar[DT](ALPHA),
         beta=Scalar[DT](0.4),
@@ -196,7 +204,7 @@ def test_update_priorities_shifts_sampling() raises:
     sample should return that slot in (almost) every BATCH lane."""
     seed(42)
     var ctx = DeviceContext()
-    var rb = GPUPrioritizedReplay[OBS, ACT, CAP].new(
+    var rb = HostTreePER.new(
         ctx,
         alpha=Scalar[DT](ALPHA),
         beta=Scalar[DT](0.4),

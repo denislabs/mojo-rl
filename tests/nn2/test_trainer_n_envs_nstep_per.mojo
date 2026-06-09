@@ -134,7 +134,9 @@ def test_record_batch_gpu_routes_to_per() raises:
         + ", got "
         + String(trainer.sample_blk.buf.value().base.size),
     )
-    var total = trainer.sample_blk.buf.value()._tree_total()
+    # `tree_total_sync` reads whichever tree backend is hot (device tree
+    # by default since the Part A rework; host tree if DEVICE_TREE_=False).
+    var total = trainer.sample_blk.buf.value().tree_total_sync(ctx)
     assert_true(
         Float64(total) > 0.0,
         "Sum-tree total should be > 0 after batched add; got " + String(total),

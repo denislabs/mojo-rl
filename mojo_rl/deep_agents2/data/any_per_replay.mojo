@@ -22,14 +22,27 @@ from .per_replay import GPUPrioritizedReplay
 
 @fieldwise_init
 struct AnyPerReplay[
-    target: StaticString, OBS_: Int, ACT_: Int, CAP_: Int
+    target: StaticString, OBS_: Int, ACT_: Int, CAP_: Int,
+    OBS_STORE_DT_: DType = DT,
+    DEVICE_TREE_: Bool = True,
 ](ReplayBuffer):
+    """`OBS_STORE_DT_` (default `DT`) selects the GPU backend's obs
+    storage dtype (`uint8` = pixel-obs capacity option).
+    `DEVICE_TREE_` (default True) selects the GPU PER sum-tree backend
+    — device-resident (capture-ready) vs the host-tree oracle. CPU
+    backend ignores both."""
+
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime CAP = Self.CAP_
 
     var cpu: Optional[CPUPrioritizedReplay[Self.OBS_, Self.ACT_, Self.CAP_]]
-    var gpu: Optional[GPUPrioritizedReplay[Self.OBS_, Self.ACT_, Self.CAP_]]
+    var gpu: Optional[
+        GPUPrioritizedReplay[
+            Self.OBS_, Self.ACT_, Self.CAP_,
+            Self.OBS_STORE_DT_, Self.DEVICE_TREE_,
+        ]
+    ]
 
     @staticmethod
     def make(
@@ -40,6 +53,9 @@ struct AnyPerReplay[
             Self.target == "cpu" or Self.target == "gpu"
         ), "AnyPerReplay: target must be 'cpu' or 'gpu'"
         comptime if Self.target == "cpu":
+            comptime assert Self.OBS_STORE_DT_ == DT, (
+                "AnyPerReplay[cpu]: OBS_STORE_DT is a GPU-backend option"
+            )
             return Self(
                 cpu=CPUPrioritizedReplay[
                     Self.OBS_, Self.ACT_, Self.CAP_
@@ -50,7 +66,8 @@ struct AnyPerReplay[
             return Self(
                 cpu=None,
                 gpu=GPUPrioritizedReplay[
-                    Self.OBS_, Self.ACT_, Self.CAP_
+                    Self.OBS_, Self.ACT_, Self.CAP_,
+                    Self.OBS_STORE_DT_, Self.DEVICE_TREE_,
                 ].make(ctx=ctx, batch_capacity=batch_capacity),
             )
 
