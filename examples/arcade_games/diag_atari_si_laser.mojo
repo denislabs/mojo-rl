@@ -12,7 +12,7 @@ Usage:
 """
 
 from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
-from mojo_rl.envs.atari.cpu6502 import run_frame_with_video
+from mojo_rl.envs.atari.cpu6502 import run_frame_video
 from mojo_rl.envs.atari.games.space_invaders import SpaceInvadersDef
 from mojo_rl.envs.atari.flags import (
     ACTION_NOOP,
@@ -63,7 +63,7 @@ def main() raises:
             act = ACTION_LEFTFIRE
 
         set_action(env.state, act)
-        run_frame_with_video(env.state, env.rom, env.rom_size, buf)
+        run_frame_video(env.state, env.rom, env.rom_size, buf)
         step += 1
         shots += 1
 

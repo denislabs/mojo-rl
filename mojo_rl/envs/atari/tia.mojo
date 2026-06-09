@@ -49,13 +49,6 @@ from .flags import (
     CX_M0M1,
     FLAG_CON_FIRE,
 )
-from .tables import (
-    player_mask,
-    missile_mask,
-    ball_mask,
-    playfield_mask,
-    collision_mask,
-)
 
 
 # ============================================================================
@@ -384,67 +377,3 @@ def _apply_hmove(mut state: AtariState):
     state.pos_m1 = _clamp_pos(Int(state.pos_m1) - _hm_to_signed(state.hm_m1))
     state.pos_bl = _clamp_pos(Int(state.pos_bl) - _hm_to_signed(state.hm_bl))
     state.tia_flags = state.tia_flags | TIA_HMOVE
-
-
-# ============================================================================
-# TIA Collision Detection (per-scanline)
-# ============================================================================
-
-
-@always_inline
-@always_inline
-def tia_update_collision(mut state: AtariState, clock_pos: Int):
-    """Update collision registers for one pixel position.
-
-    This is called during frame emulation for each visible pixel.
-    It checks which objects are present at this position and sets
-    the corresponding collision bits.
-    """
-    var pf = playfield_mask(state, clock_pos)
-    var p0 = player_mask(state, 0, clock_pos)
-    var p1 = player_mask(state, 1, clock_pos)
-    var m0 = missile_mask(state, 0, clock_pos)
-    var m1 = missile_mask(state, 1, clock_pos)
-    var bl = ball_mask(state, clock_pos)
-
-    # Update collision bits
-    if m0 and p1:
-        state.collision = state.collision | CX_M0P1
-    if m0 and p0:
-        state.collision = state.collision | CX_M0P0
-    if m1 and p0:
-        state.collision = state.collision | CX_M1P0
-    if m1 and p1:
-        state.collision = state.collision | CX_M1P1
-    if p0 and pf:
-        state.collision = state.collision | CX_P0PF
-    if p0 and bl:
-        state.collision = state.collision | CX_P0BL
-    if p1 and pf:
-        state.collision = state.collision | CX_P1PF
-    if p1 and bl:
-        state.collision = state.collision | CX_P1BL
-    if m0 and pf:
-        state.collision = state.collision | CX_M0PF
-    if m0 and bl:
-        state.collision = state.collision | CX_M0BL
-    if m1 and pf:
-        state.collision = state.collision | CX_M1PF
-    if m1 and bl:
-        state.collision = state.collision | CX_M1BL
-    if bl and pf:
-        state.collision = state.collision | CX_BLPF
-    if p0 and p1:
-        state.collision = state.collision | CX_P0P1
-    if m0 and m1:
-        state.collision = state.collision | CX_M0M1
-
-
-@always_inline
-def tia_update_frame_scanline(mut state: AtariState):
-    """Process collision detection for one scanline.
-
-    During visible scanlines, check all 160 pixel positions for collisions.
-    """
-    for pixel in range(FRAME_WIDTH):
-        tia_update_collision(state, pixel)

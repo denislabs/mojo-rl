@@ -6,7 +6,8 @@ Designed to be GPU-friendly (no pointers, fixed size, ~350 bytes).
 Ported from CuLE (BSD-3): cule/atari/state.hpp, frame_state.hpp
 """
 
-from .flags import RAM_SIZE
+from .flags import RAM_SIZE, TIA_WRITE_LOG_CAP
+from .tia_cycle import CycleTIA
 
 
 struct AtariState(Copyable, Movable):
@@ -129,6 +130,23 @@ struct AtariState(Copyable, Movable):
     var paddle_pos: UInt8  # Paddle position (0=top, 255=bottom)
     var paddle_charge: UInt8  # Capacitor charge counter (reset by VBLANK bit 7)
 
+    # ========================================================================
+    # Cycle-accurate TIA: per-instruction TIA write log
+    # ========================================================================
+    # execute_one sets `pending_tia_write_clock` (the color clock at which a
+    # store lands), and the TIA write path appends (clock, reg, value) so the
+    # per-clock tick loop can replay each write at the exact clock via the
+    # DelayQueue.
+    var pending_tia_write_clock: Int
+    var tia_log_count: Int
+    var tia_log_clock: InlineArray[Int, TIA_WRITE_LOG_CAP]
+    var tia_log_reg: InlineArray[UInt8, TIA_WRITE_LOG_CAP]
+    var tia_log_value: InlineArray[UInt8, TIA_WRITE_LOG_CAP]
+
+    # Cycle-accurate TIA object counters (persist across frames). Used by
+    # run_frame_cycle_accurate (the single rendering path).
+    var ctia: CycleTIA
+
     def __init__(out self):
         """Initialize to power-on defaults."""
         # CPU
@@ -207,6 +225,14 @@ struct AtariState(Copyable, Movable):
         # Paddle
         self.paddle_pos = 128  # Center position
         self.paddle_charge = 0
+
+        # Cycle-accurate TIA write log
+        self.pending_tia_write_clock = 0
+        self.tia_log_count = 0
+        self.tia_log_clock = InlineArray[Int, TIA_WRITE_LOG_CAP](fill=0)
+        self.tia_log_reg = InlineArray[UInt8, TIA_WRITE_LOG_CAP](fill=0)
+        self.tia_log_value = InlineArray[UInt8, TIA_WRITE_LOG_CAP](fill=0)
+        self.ctia = CycleTIA()
 
     def reset(mut self):
         """Reset to power-on state (preserves nothing)."""

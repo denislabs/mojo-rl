@@ -21,7 +21,7 @@ Usage:
 """
 
 from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
-from mojo_rl.envs.atari.cpu6502 import run_frame_with_video
+from mojo_rl.envs.atari.cpu6502 import run_frame_video
 from mojo_rl.envs.atari.games.breakout import BreakoutDef
 from mojo_rl.envs.atari.flags import (
     ACTION_NOOP,
@@ -148,7 +148,7 @@ def main() raises:
         var served = False
         for _ in range(120):
             set_action(env.state, pa)
-            run_frame_with_video(env.state, env.rom, env.rom_size, buf)
+            run_frame_video(env.state, env.rom, env.rom_size, buf)
             if Int(env.state.enabl) != 0 or Int(env.state.enabl_old) != 0:
                 served = True
         print(
@@ -219,7 +219,7 @@ def main() raises:
             paddle_target = 255
         env.state.paddle_pos = UInt8(paddle_target)
 
-        run_frame_with_video(env.state, env.rom, env.rom_size, buf)
+        run_frame_video(env.state, env.rom, env.rom_size, buf)
         step += 1
 
         if step == 60 or step == 300 or step == 1200:

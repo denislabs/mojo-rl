@@ -20,7 +20,7 @@ Requires ROM files in 'roms/' (symlink to ale_py/roms/).
 from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
 from mojo_rl.envs.atari.renderer import AtariRenderer
 from mojo_rl.envs.atari.riot import set_action
-from mojo_rl.envs.atari.cpu6502 import run_frame_with_video
+from mojo_rl.envs.atari.cpu6502 import run_frame_video
 from mojo_rl.envs.atari.games.breakout import BreakoutDef
 from mojo_rl.envs.atari.flags import ACTION_NOOP, ACTION_RESET
 
@@ -64,7 +64,7 @@ def main() raises:
             # Set the action and run one frame with video rendering
             var act = renderer.current_action
             set_action(env.state, act)
-            run_frame_with_video(
+            run_frame_video(
                 env.state, env.rom, env.rom_size, renderer.get_pixel_buffer()
             )
             step_count += 1
@@ -99,7 +99,7 @@ def main() raises:
                 env.state.lives = UInt8(BreakoutDef.get_lives(env.state.ram))
                 step_count = 0
 
-        # Display the frame buffer (already filled by run_frame_with_video)
+        # Display the frame buffer (already filled by run_frame_video)
         renderer.display_buffer_with_hud(
             Int(env.state.score),
             Int(env.state.lives),

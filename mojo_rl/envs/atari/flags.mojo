@@ -35,11 +35,11 @@ comptime NUM_TOTAL_ACTIONS: Int = 18  # Excluding RESET
 
 comptime ROM_2K: UInt8 = 0
 comptime ROM_4K: UInt8 = 1
-comptime ROM_F8: UInt8 = 2    # 8K, two 4K banks
+comptime ROM_F8: UInt8 = 2  # 8K, two 4K banks
 comptime ROM_F8SC: UInt8 = 3  # 8K + 128 bytes super chip RAM
-comptime ROM_F6: UInt8 = 4    # 16K, four 4K banks
+comptime ROM_F6: UInt8 = 4  # 16K, four 4K banks
 comptime ROM_FE: UInt8 = 5
-comptime ROM_E0: UInt8 = 6    # 8K Parker Bros
+comptime ROM_E0: UInt8 = 6  # 8K Parker Bros
 comptime ROM_CV: UInt8 = 7
 comptime ROM_3E: UInt8 = 8
 comptime ROM_3F: UInt8 = 9
@@ -175,16 +175,16 @@ comptime TIA_INPT5: UInt8 = 0x0D
 # RIOT Registers (addresses relative to 0x280)
 # ============================================================================
 
-comptime RIOT_SWCHA: UInt8 = 0x00   # Port A data (joystick)
+comptime RIOT_SWCHA: UInt8 = 0x00  # Port A data (joystick)
 comptime RIOT_SWACNT: UInt8 = 0x01  # Port A DDR
-comptime RIOT_SWCHB: UInt8 = 0x02   # Port B data (console switches)
+comptime RIOT_SWCHB: UInt8 = 0x02  # Port B data (console switches)
 comptime RIOT_SWBCNT: UInt8 = 0x03  # Port B DDR
-comptime RIOT_INTIM: UInt8 = 0x04   # Timer output
+comptime RIOT_INTIM: UInt8 = 0x04  # Timer output
 comptime RIOT_INSTAT: UInt8 = 0x05  # Timer status
 
 # Timer write registers
-comptime RIOT_TIM1T: UInt8 = 0x14   # Set timer / 1
-comptime RIOT_TIM8T: UInt8 = 0x15   # Set timer / 8
+comptime RIOT_TIM1T: UInt8 = 0x14  # Set timer / 1
+comptime RIOT_TIM8T: UInt8 = 0x15  # Set timer / 8
 comptime RIOT_TIM64T: UInt8 = 0x16  # Set timer / 64
 comptime RIOT_T1024T: UInt8 = 0x17  # Set timer / 1024
 
@@ -192,16 +192,16 @@ comptime RIOT_T1024T: UInt8 = 0x17  # Set timer / 1024
 # Collision bit masks
 # ============================================================================
 
-comptime CX_M0P1: UInt16 = 1 << 0   # Missile 0 - Player 1
-comptime CX_M0P0: UInt16 = 1 << 1   # Missile 0 - Player 0
-comptime CX_M1P0: UInt16 = 1 << 2   # Missile 1 - Player 0
-comptime CX_M1P1: UInt16 = 1 << 3   # Missile 1 - Player 1
-comptime CX_P0PF: UInt16 = 1 << 4   # Player 0 - Playfield
-comptime CX_P0BL: UInt16 = 1 << 5   # Player 0 - Ball
-comptime CX_P1PF: UInt16 = 1 << 6   # Player 1 - Playfield
-comptime CX_P1BL: UInt16 = 1 << 7   # Player 1 - Ball
-comptime CX_M0PF: UInt16 = 1 << 8   # Missile 0 - Playfield
-comptime CX_M0BL: UInt16 = 1 << 9   # Missile 0 - Ball
+comptime CX_M0P1: UInt16 = 1 << 0  # Missile 0 - Player 1
+comptime CX_M0P0: UInt16 = 1 << 1  # Missile 0 - Player 0
+comptime CX_M1P0: UInt16 = 1 << 2  # Missile 1 - Player 0
+comptime CX_M1P1: UInt16 = 1 << 3  # Missile 1 - Player 1
+comptime CX_P0PF: UInt16 = 1 << 4  # Player 0 - Playfield
+comptime CX_P0BL: UInt16 = 1 << 5  # Player 0 - Ball
+comptime CX_P1PF: UInt16 = 1 << 6  # Player 1 - Playfield
+comptime CX_P1BL: UInt16 = 1 << 7  # Player 1 - Ball
+comptime CX_M0PF: UInt16 = 1 << 8  # Missile 0 - Playfield
+comptime CX_M0BL: UInt16 = 1 << 9  # Missile 0 - Ball
 comptime CX_M1PF: UInt16 = 1 << 10  # Missile 1 - Playfield
 comptime CX_M1BL: UInt16 = 1 << 11  # Missile 1 - Ball
 comptime CX_BLPF: UInt16 = 1 << 12  # Ball - Playfield
@@ -212,16 +212,20 @@ comptime CX_M0M1: UInt16 = 1 << 14  # Missile 0 - Missile 1
 # Display constants
 # ============================================================================
 
-comptime FRAME_WIDTH: Int = 160       # TIA output width
-comptime FRAME_HEIGHT: Int = 210      # Visible scanlines (NTSC)
-comptime TOTAL_SCANLINES: Int = 262   # Total scanlines per frame (NTSC)
-comptime CLOCKS_PER_LINE: Int = 228   # Color clocks per scanline
-comptime HBLANK_CLOCKS: Int = 68      # Horizontal blank clocks
+comptime FRAME_WIDTH: Int = 160  # TIA output width
+comptime FRAME_HEIGHT: Int = 210  # Visible scanlines (NTSC)
+comptime TOTAL_SCANLINES: Int = 262  # Total scanlines per frame (NTSC)
+comptime CLOCKS_PER_LINE: Int = 228  # Color clocks per scanline
+comptime HBLANK_CLOCKS: Int = 68  # Horizontal blank clocks
 comptime CPU_CLOCKS_PER_LINE: Int = 76  # CPU cycles per scanline (228/3)
 
 # Preprocessed observation dimensions
 comptime OBS_WIDTH: Int = 84
 comptime OBS_HEIGHT: Int = 84
+
+# Per-instruction TIA write log capacity (cycle-accurate path). A single 6502
+# instruction performs at most one TIA store; a couple slots covers RMW dummies.
+comptime TIA_WRITE_LOG_CAP: Int = 4
 
 # ============================================================================
 # Game IDs
@@ -243,4 +247,4 @@ comptime GAME_ASTEROIDS: Int = 9
 # ============================================================================
 
 comptime MAX_ROM_SIZE: Int = 16384  # 16KB max cartridge
-comptime RAM_SIZE: Int = 128        # 128 bytes system RAM
+comptime RAM_SIZE: Int = 128  # 128 bytes system RAM

@@ -15,7 +15,6 @@ from .atari_state import AtariState
 from .cpu6502 import cpu_reset, run_frame, mem_read
 from .cartridge import init_bank
 from .riot import set_action
-from .tia import tia_update_frame_scanline
 from .flags import (
     RAM_SIZE,
     ACTION_NOOP,

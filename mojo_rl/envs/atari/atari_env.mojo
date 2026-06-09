@@ -19,7 +19,7 @@ Usage:
 from std.memory import alloc, memset
 from mojo_rl.core import State, Action, BoxDiscreteActionEnv
 from .environment import AtariEnvironment, GameDef
-from .cpu6502 import run_frame, run_frame_with_video
+from .cpu6502 import run_frame, run_frame_video
 from .riot import set_action
 from .flags import (
     RAM_SIZE,
@@ -241,11 +241,11 @@ struct AtariEnv[
         self.frame_idx = (self.frame_idx + 1) % 4
 
     def _render_current_frame(mut self):
-        """Render the current emulator state into raw_frame_a using run_frame_with_video.
+        """Render the current emulator state into raw_frame_a using run_frame_video.
 
         Runs one NOOP frame with video output to capture the display.
         """
-        run_frame_with_video(
+        run_frame_video(
             self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_a.value()
         )
 
@@ -262,7 +262,7 @@ struct AtariEnv[
 
         comptime if Self.OBS_MODE == 1:
             # Render initial frame into all 4 stack slots
-            run_frame_with_video(
+            run_frame_video(
                 self.env.state,
                 self.env.rom,
                 self.env.rom_size,
@@ -397,8 +397,8 @@ struct AtariEnv[
 
         Frame skip = 4 (default):
           - Frames 0,1: set_action + run_frame (no render, fast)
-          - Frame 2: set_action + run_frame_with_video → raw_frame_a
-          - Frame 3: set_action + run_frame_with_video → raw_frame_b
+          - Frame 2: set_action + run_frame_video → raw_frame_a
+          - Frame 3: set_action + run_frame_video → raw_frame_b
         Then max-pool a/b → grayscale → resize → push to stack.
         """
         var ale_action = Self.GAME.map_action(action)
@@ -414,13 +414,13 @@ struct AtariEnv[
 
         # Frame skip-2: render into raw_frame_a
         set_action(self.env.state, ale_action)
-        run_frame_with_video(
+        run_frame_video(
             self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_a.value()
         )
 
         # Frame skip-1: render into raw_frame_b
         set_action(self.env.state, ale_action)
-        run_frame_with_video(
+        run_frame_video(
             self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_b.value()
         )
 

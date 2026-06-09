@@ -22,6 +22,7 @@ from .flags import (
     FLAG_V,
     FLAG_N,
     RAM_SIZE,
+    TIA_WRITE_LOG_CAP,
 )
 from .opcodes import (
     OPCODE_TABLE,
@@ -160,7 +161,18 @@ def mem_write(
         else:  # RAM
             write_ram(state.ram, Int(a & 0x7F), value)
     else:  # TIA
-        tia_write(state, UInt8(a & 0x3F), value)
+        var reg = UInt8(a & 0x3F)
+
+        # Record the write at its exact color clock for the cycle-accurate
+        # per-clock tick loop. pending_tia_write_clock was set by execute_one.
+        if state.tia_log_count < TIA_WRITE_LOG_CAP:
+            var i = state.tia_log_count
+            state.tia_log_clock[i] = state.pending_tia_write_clock
+            state.tia_log_reg[i] = reg
+            state.tia_log_value[i] = value
+            state.tia_log_count = i + 1
+
+        tia_write(state, reg, value)
 
 
 # ============================================================================
@@ -329,6 +341,15 @@ def execute_one(
     var mode = entry.addr_mode
     var cycles = entry.cycles
     var size = entry.size
+
+    # A 6502 store writes on its LAST cycle, so a TIA write lands (cycles-1)
+    # CPU cycles = 3*(cycles-1) color clocks after the instruction START. We
+    # store this as an OFFSET (not absolute) so the per-clock tick loop can
+    # match it against a per-instruction local clock index without any
+    # frame-absolute counter (which would overflow UInt16 at the 2x cap).
+    # entry.cycles already includes the fixed extra cycle store modes pay.
+    state.tia_log_count = 0
+    state.pending_tia_write_clock = (Int(cycles) - 1) * 3
 
     var operand_pc = state.pc + 1  # Points to first operand byte
     var addr = resolve_operand_addr(state, rom, rom_size, mode, operand_pc)
@@ -949,178 +970,6 @@ def run_frame(
     state.frame_number += 1
 
 
-def _run_scanline_render(
-    mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
-    rom_size: Int,
-    overflow: Int,
-    frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
-    render_row: Int,
-    palette: InlineArray[UInt32, 256],
-    pf_mask: UnsafePointer[UInt8, MutAnyOrigin],
-) -> Int:
-    """Run one scanline, rendering pixels beam-accurately as the CPU executes.
-
-    Pass 1 (interleaved with CPU): draw the playfield/background beam-accurately
-    with live PF, so mid-line PF rewrites (Breakout bricks, Pong score) land at
-    the correct pixel; record the rendered PF into `pf_mask`.
-
-    Pass 2 (after the line): draw players/missiles/ball from the settled
-    end-of-line state, and compute ALL collisions against that end-of-line
-    sprite state plus the rendered `pf_mask` — so collisions match exactly what
-    was displayed. `render_row` is the frame_buf row (or < 0 / >= FRAME_HEIGHT
-    to skip output). Returns total CPU cycles consumed.
-    """
-    from .frame_render import render_pf_collide_pixel, overlay_sprites_pixel
-    from .flags import FRAME_WIDTH, HBLANK_CLOCKS
-
-    # A TIA write happens a few CPU cycles into the instruction (the store
-    # cycle), not at instruction start where state.clock is sampled. Delay the
-    # beam catch-up by this many TIA clocks so a write lands at the correct
-    # pixel (e.g. a playfield rewrite at the pixel-80 repeat boundary).
-    comptime BEAM_WRITE_DELAY: Int = 8
-
-    var line_cycles: Int = overflow
-    var next_pixel: Int = 0
-
-    # WSYNC carried over from the previous scanline.
-    if state.wsync:
-        state.wsync = False
-        if line_cycles < CPU_CLOCKS_PER_LINE:
-            riot_update_timer(state, UInt32(CPU_CLOCKS_PER_LINE - line_cycles))
-            line_cycles = CPU_CLOCKS_PER_LINE
-
-    while line_cycles < CPU_CLOCKS_PER_LINE:
-        # Beam clock at instruction start (drives RESP/PF/etc. write timing).
-        state.clock = UInt16(line_cycles * 3)
-
-        # Pass 1: catch the playfield up to the current beam position using
-        # live PF, so mid-line PF rewrites land at the correct pixel.
-        var target = Int(state.clock) - HBLANK_CLOCKS + BEAM_WRITE_DELAY
-        if target > FRAME_WIDTH:
-            target = FRAME_WIDTH
-        while next_pixel < target:
-            render_pf_collide_pixel(
-                state, render_row, next_pixel, frame_buf, palette, pf_mask
-            )
-            next_pixel += 1
-
-        var cycles = Int(execute_one(state, rom, rom_size))
-        riot_update_timer(state, UInt32(cycles))
-        line_cycles += cycles
-
-        # WSYNC: halt CPU until end of scanline.
-        if state.wsync:
-            state.wsync = False
-            if line_cycles < CPU_CLOCKS_PER_LINE:
-                riot_update_timer(
-                    state, UInt32(CPU_CLOCKS_PER_LINE - line_cycles)
-                )
-                line_cycles = CPU_CLOCKS_PER_LINE
-            elif line_cycles > CPU_CLOCKS_PER_LINE:
-                state.wsync = True
-
-    # Flush any remaining playfield pixels (and their collisions) using the
-    # final state for the right edge the CPU never explicitly stepped to.
-    while next_pixel < FRAME_WIDTH:
-        render_pf_collide_pixel(
-            state, render_row, next_pixel, frame_buf, palette, pf_mask
-        )
-        next_pixel += 1
-
-    # Pass 2: overlay sprites + ball from the settled end-of-line state. All
-    # collisions were already latched per beam pixel in pass 1 (live state).
-    for x in range(FRAME_WIDTH):
-        overlay_sprites_pixel(
-            state, render_row, x, frame_buf, palette, pf_mask
-        )
-
-    return line_cycles
-
-
-def run_frame_with_video(
-    mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
-    rom_size: Int,
-    frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
-):
-    """Execute one frame with scanline-by-scanline pixel rendering.
-
-    The Atari 2600 is a "racing the beam" system: the CPU updates TIA
-    registers mid-frame. Each scanline may have different graphics.
-
-    For mid-scanline PF writes (e.g. score digits in Pong), _run_scanline
-    captures a PF snapshot at the beam midpoint (~cycle 49). The renderer
-    uses this snapshot for left-half pixels and the final PF for right-half.
-
-    Cycle overflow from each scanline's last instruction is carried forward
-    to the next scanline (matching ALE's myClocksToEndOfScanLine approach).
-    This prevents VSYNC drift that causes vertical display shaking.
-
-    Args:
-        state: Emulator state (modified in place).
-        rom: ROM data pointer.
-        rom_size: ROM size in bytes.
-        frame_buf: Output BGRA buffer (160×210×4 = 134400 bytes).
-    """
-    from .flags import TIA_VBLANK, TIA_VSYNC, FRAME_HEIGHT as FH, FRAME_WIDTH
-    from .palette import NTSC_PALETTE
-    from std.memory import alloc
-
-    # Render exactly one VSYNC-aligned frame per call. A fixed 262-scanline
-    # loop drifts against the ROM's actual frame length, splitting one game
-    # frame across two calls (the displayed buffer becomes a mix of two
-    # frames → tearing/flicker). Instead, run scanlines until the VSYNC that
-    # begins the *next* frame, so each call emits one complete, aligned frame.
-    # Each scanline is rendered beam-accurately as the CPU executes it.
-    var palette = materialize[NTSC_PALETTE]()
-    # Per-scanline rendered-playfield mask (filled in pass 1, read by pass 2 for
-    # collisions so they match the displayed frame). Reused across scanlines.
-    var pf_mask = alloc[UInt8](FRAME_WIDTH)
-    var visible_line = 0
-    var overflow = Int(state.cpu_cycles)  # Carry from previous frame
-    var rendered_any = False
-    var prev_vsync = (state.tia_flags & TIA_VSYNC) != 0
-    # Safety cap so a ROM that never asserts VSYNC can't spin forever.
-    comptime MAX_LINES: Int = TOTAL_SCANLINES * 2
-
-    for _ in range(MAX_LINES):
-        # Only charge paddle capacitor when not grounded (VBLANK bit 7 clear)
-        if (
-            state.paddle_charge < 255
-            and (state.tia_flags & TIA_PADDLE_GROUND) == 0
-        ):
-            state.paddle_charge += 1
-
-        # Candidate frame_buf row for this scanline (-1 once past the visible
-        # area, so the renderer still updates collision without writing pixels).
-        var render_row = visible_line if visible_line < FH else -1
-        var total = _run_scanline_render(
-            state, rom, rom_size, overflow, frame_buf, render_row, palette, pf_mask
-        )
-        overflow = total - CPU_CLOCKS_PER_LINE
-
-        # Detect the VSYNC rising edge (start of a frame).
-        var vsync_now = (state.tia_flags & TIA_VSYNC) != 0
-        var vsync_rising = vsync_now and not prev_vsync
-        prev_vsync = vsync_now
-        if vsync_rising:
-            if rendered_any:
-                break  # reached the start of the next frame — done
-            visible_line = 0  # anchor our frame at this VSYNC
-
-        # Decide visibility from end-of-line VBLANK — stable across frames
-        # (a clock-68 check flips on the transition line, jittering the image).
-        if (state.tia_flags & TIA_VBLANK) == 0 and visible_line < FH:
-            visible_line += 1
-            rendered_any = True
-
-    state.scanline = UInt16(visible_line)
-    state.cpu_cycles = UInt32(overflow)  # Persist overflow for next frame
-    state.frame_number += 1
-    pf_mask.free()
-
-
 # Import here to avoid circular dependency
 from .flags import (
     TOTAL_SCANLINES,
@@ -1128,3 +977,457 @@ from .flags import (
     FRAME_WIDTH,
     TIA_PADDLE_GROUND,
 )
+
+
+# ============================================================================
+# Cycle-accurate TIA frame runner — the single rendering path.
+# Drives the per-color-clock object counters in state.ctia from the exact write
+# clocks logged during execute_one, and latches per-clock collisions — Stella's
+# model. Playfield/colors are read live from AtariState (applied immediately by
+# tia_write); only sprite positions/enables/motion flow through the counters.
+# ============================================================================
+
+from .tia_cycle import (
+    resx_counter,
+    playfield_bit,
+    LIT_P0,
+    LIT_P1,
+    LIT_M0,
+    LIT_M1,
+    LIT_BL,
+    DELAY_PF,
+    DELAY_GRP,
+    DELAY_ENAM,
+    DELAY_ENABL,
+    DELAY_HMP,
+    DELAY_HMM,
+    DELAY_HMBL,
+    DELAY_REFP,
+    DELAY_HMCLR,
+)
+from .flags import (
+    HBLANK_CLOCKS,
+    CLOCKS_PER_LINE as CPL,
+    FRAME_HEIGHT as FH2,
+    TIA_VBLANK as VBL,
+    TIA_VSYNC as VSY,
+    TIA_VDELP0,
+    TIA_VDELP1,
+    TIA_VDELBL,
+    TIA_PF_PRIORITY,
+    TIA_PF_SCORE,
+    CX_M0P1,
+    CX_M0P0,
+    CX_M1P0,
+    CX_M1P1,
+    CX_P0PF,
+    CX_P0BL,
+    CX_P1PF,
+    CX_P1BL,
+    CX_M0PF,
+    CX_M0BL,
+    CX_M1PF,
+    CX_M1BL,
+    CX_BLPF,
+    CX_P0P1,
+    CX_M0M1,
+)
+from .frame_render import _write_pixel_bgra
+
+
+@always_inline
+def _cycle_reg_delay(reg: UInt8) -> Int:
+    """Color-clock latency for a TIA register write (TIA.cxx Delay enum).
+
+    Strobes (RESPx/RESMx/RESBL), NUSIZ, CTRLPF apply immediately (delay 0)."""
+    if reg == 0x0D or reg == 0x0E or reg == 0x0F:  # PF0/PF1/PF2
+        return DELAY_PF
+    if reg == 0x1B or reg == 0x1C:  # GRP0/GRP1
+        return DELAY_GRP
+    if reg == 0x1D or reg == 0x1E:  # ENAM0/ENAM1
+        return DELAY_ENAM
+    if reg == 0x1F:  # ENABL
+        return DELAY_ENABL
+    if reg == 0x20 or reg == 0x21:  # HMP0/HMP1
+        return DELAY_HMP
+    if reg == 0x22 or reg == 0x23:  # HMM0/HMM1
+        return DELAY_HMM
+    if reg == 0x24:  # HMBL
+        return DELAY_HMBL
+    if reg == 0x0B or reg == 0x0C:  # REFP0/REFP1
+        return DELAY_REFP
+    if reg == 0x2A:  # HMOVE
+        return 6
+    if reg == 0x2B:  # HMCLR
+        return DELAY_HMCLR
+    return 0
+
+
+@always_inline
+def _cycle_apply_reg(
+    mut state: AtariState, reg: UInt8, value: UInt8, hctr: Int, in_hblank: Bool
+):
+    """Route a (delayed) TIA register write to the cycle-accurate counters.
+
+    Position strobes use resx_counter() at the apply clock; graphics/enable use
+    the VDEL-resolved values that tia_write already latched into AtariState."""
+    if reg == 0x04:  # NUSIZ0
+        state.ctia.p0.set_nusiz(value)
+        state.ctia.m0.set_nusiz(value)
+    elif reg == 0x05:  # NUSIZ1
+        state.ctia.p1.set_nusiz(value)
+        state.ctia.m1.set_nusiz(value)
+    elif reg == 0x06:  # COLUP0
+        state.ctia.colup0 = value
+    elif reg == 0x07:  # COLUP1
+        state.ctia.colup1 = value
+    elif reg == 0x08:  # COLUPF
+        state.ctia.colupf = value
+    elif reg == 0x09:  # COLUBK
+        state.ctia.colubk = value
+    elif reg == 0x0A:  # CTRLPF (reflect/score/priority + ball width)
+        state.ctia.ctrlpf = value
+        state.ctia.bl.set_width_from_ctrlpf(value)
+    elif reg == 0x0D:  # PF0
+        state.ctia.pf0 = value
+    elif reg == 0x0E:  # PF1
+        state.ctia.pf1 = value
+    elif reg == 0x0F:  # PF2
+        state.ctia.pf2 = value
+    elif reg == 0x0B:  # REFP0
+        state.ctia.p0.set_reflect((value & 0x08) != 0)
+    elif reg == 0x0C:  # REFP1
+        state.ctia.p1.set_reflect((value & 0x08) != 0)
+    elif reg == 0x10:  # RESP0
+        state.ctia.p0.resp(resx_counter(hctr, in_hblank))
+    elif reg == 0x11:  # RESP1
+        state.ctia.p1.resp(resx_counter(hctr, in_hblank))
+    elif reg == 0x12:  # RESM0
+        state.ctia.m0.resm(resx_counter(hctr, in_hblank))
+    elif reg == 0x13:  # RESM1
+        state.ctia.m1.resm(resx_counter(hctr, in_hblank))
+    elif reg == 0x14:  # RESBL
+        state.ctia.bl.resbl(resx_counter(hctr, in_hblank))
+    elif reg == 0x1B:  # GRP0 (sets P0 new pattern; shuffles P1 old=new)
+        state.ctia.p0.set_grp_new(value)
+        state.ctia.p1.shuffle()
+    elif reg == 0x1C:  # GRP1 (sets P1 new; shuffles P0 old=new + ball, Stella)
+        state.ctia.p1.set_grp_new(value)
+        state.ctia.p0.shuffle()
+        state.ctia.bl.shuffle()
+    elif reg == 0x1D:  # ENAM0
+        state.ctia.m0.set_enam(value)
+    elif reg == 0x1E:  # ENAM1
+        state.ctia.m1.set_enam(value)
+    elif reg == 0x1F:  # ENABL
+        state.ctia.bl.set_enabl_new((value & 0x02) != 0)
+    elif reg == 0x20:  # HMP0
+        state.ctia.p0.set_hmp(value)
+    elif reg == 0x21:  # HMP1
+        state.ctia.p1.set_hmp(value)
+    elif reg == 0x22:  # HMM0
+        state.ctia.m0.set_hmm(value)
+    elif reg == 0x23:  # HMM1
+        state.ctia.m1.set_hmm(value)
+    elif reg == 0x24:  # HMBL
+        state.ctia.bl.set_hmbl(value)
+    elif reg == 0x25:  # VDELP0
+        state.ctia.p0.set_vdel((value & 0x01) != 0)
+    elif reg == 0x26:  # VDELP1
+        state.ctia.p1.set_vdel((value & 0x01) != 0)
+    elif reg == 0x27:  # VDELBL
+        state.ctia.bl.set_vdel((value & 0x01) != 0)
+    elif reg == 0x28:  # RESMP0
+        state.ctia.m0.set_resmp(value)
+    elif reg == 0x29:  # RESMP1
+        state.ctia.m1.set_resmp(value)
+    elif reg == 0x2A:  # HMOVE
+        state.ctia.start_hmove()
+    elif reg == 0x2B:  # HMCLR
+        state.ctia.p0.set_hmp(0x00)
+        state.ctia.p1.set_hmp(0x00)
+        state.ctia.m0.set_hmm(0x00)
+        state.ctia.m1.set_hmm(0x00)
+        state.ctia.bl.set_hmbl(0x00)
+
+
+@always_inline
+def _cycle_pixel(
+    mut state: AtariState,
+    render_row: Int,
+    pixel: Int,
+    lit: UInt8,
+    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    palette: InlineArray[UInt32, 256],
+):
+    """Latch per-clock collisions and render one pixel from the counter lit-mask
+    plus the live playfield."""
+    if (state.tia_flags & VBL) != 0:
+        if render_row >= 0:
+            _write_pixel_bgra(
+                buf,
+                (render_row * FRAME_WIDTH + pixel) * 4,
+                state.ctia.colubk,
+                palette,
+            )
+        return
+
+    var p0 = (lit & UInt8(1 << LIT_P0)) != 0
+    var p1 = (lit & UInt8(1 << LIT_P1)) != 0
+    var m0 = (lit & UInt8(1 << LIT_M0)) != 0
+    var m1 = (lit & UInt8(1 << LIT_M1)) != 0
+    var bl = (lit & UInt8(1 << LIT_BL)) != 0
+    # Playfield: render from the beam-accurate SHADOW (state.ctia.pf*), which is
+    # driven through the DelayQueue at each write's exact color clock
+    # (instr_start + (cycles-1)*3 + DELAY_PF ≈ the eol path's +8 write delay).
+    # Reading the immediate live state.pf* instead applies PF writes too early
+    # (at instruction start), shifting Breakout's walls. One source (the shadow)
+    # for both render+collide keeps them consistent (no phantom brick).
+    var reflect = (state.ctia.ctrlpf & 0x01) != 0
+    var pf = playfield_bit(
+        state.ctia.pf0, state.ctia.pf1, state.ctia.pf2, reflect, pixel
+    )
+    if m0 and p1:
+        state.collision = state.collision | CX_M0P1
+    if m0 and p0:
+        state.collision = state.collision | CX_M0P0
+    if m1 and p0:
+        state.collision = state.collision | CX_M1P0
+    if m1 and p1:
+        state.collision = state.collision | CX_M1P1
+    if p0 and pf:
+        state.collision = state.collision | CX_P0PF
+    if p0 and bl:
+        state.collision = state.collision | CX_P0BL
+    if p1 and pf:
+        state.collision = state.collision | CX_P1PF
+    if p1 and bl:
+        state.collision = state.collision | CX_P1BL
+    if m0 and pf:
+        state.collision = state.collision | CX_M0PF
+    if m0 and bl:
+        state.collision = state.collision | CX_M0BL
+    if m1 and pf:
+        state.collision = state.collision | CX_M1PF
+    if m1 and bl:
+        state.collision = state.collision | CX_M1BL
+    if bl and pf:
+        state.collision = state.collision | CX_BLPF
+    if p0 and p1:
+        state.collision = state.collision | CX_P0P1
+    if m0 and m1:
+        state.collision = state.collision | CX_M0M1
+
+    if render_row < 0:
+        return
+
+    # --- Render with TIA priority (beam-accurate shadow regs) ---
+    var color_idx: UInt8
+    var pf_pri = (state.ctia.ctrlpf & 0x04) != 0  # CTRLPF bit2 = priority
+    var pf_score = (state.ctia.ctrlpf & 0x02) != 0  # CTRLPF bit1 = score
+    if pf_pri:
+        if pf or bl:
+            if pf_score and pf:
+                color_idx = state.ctia.colup0 if pixel < 80 else state.ctia.colup1
+            else:
+                color_idx = state.ctia.colupf
+        elif p0 or m0:
+            color_idx = state.ctia.colup0
+        elif p1 or m1:
+            color_idx = state.ctia.colup1
+        else:
+            color_idx = state.ctia.colubk
+    else:
+        if p0 or m0:
+            color_idx = state.ctia.colup0
+        elif p1 or m1:
+            color_idx = state.ctia.colup1
+        elif pf or bl:
+            if pf_score and pf:
+                color_idx = state.ctia.colup0 if pixel < 80 else state.ctia.colup1
+            else:
+                color_idx = state.ctia.colupf
+        else:
+            color_idx = state.ctia.colubk
+
+    _write_pixel_bgra(
+        buf, (render_row * FRAME_WIDTH + pixel) * 4, color_idx, palette
+    )
+
+
+
+
+def run_frame_cycle_accurate(
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+    frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
+):
+    """Cycle-accurate frame: CPU and TIA in lockstep, per-color-clock collision.
+
+    One VSYNC-aligned frame. The TIA advances exactly 3 color clocks per CPU
+    cycle; each instruction's logged TIA writes are replayed at their exact clock
+    through the DelayQueue, driving the object counters in state.ctia. Per clock
+    we tick the objects, latch collisions, and render the pixel.
+    """
+    from .palette import NTSC_PALETTE
+
+    var palette = materialize[NTSC_PALETTE]()
+    # Seed the beam-accurate PF/color shadow from the live regs (kept current by
+    # tia_write) so registers written before this frame / not rewritten this
+    # frame still render correctly; mid-line writes then update it at exact clock.
+    state.ctia.pf0 = state.pf0
+    state.ctia.pf1 = state.pf1
+    state.ctia.pf2 = state.pf2
+    state.ctia.ctrlpf = state.ctrlpf
+    state.ctia.colup0 = state.colup0
+    state.ctia.colup1 = state.colup1
+    state.ctia.colupf = state.colupf
+    state.ctia.colubk = state.colubk
+    # Seed missile position/enable/size from the eol state. Breakout draws its
+    # side WALLS (and SI its laser BEAM) with missiles positioned ONCE during
+    # setup — which runs through the eol path (env.reset), invisible to the cycle
+    # counters. Without this seed the missile counters free-run at the wrong
+    # phase and the walls/beam render shifted into the playfield / off-screen.
+    # counter = (160 - pos) % 160 places the decode so the missile renders at
+    # `pos` (decode@156 + render offset, mod the 160-clock counter cycle).
+    state.ctia.m0.set_nusiz(state.nusiz0)
+    state.ctia.m0.set_enam(state.enam0)
+    state.ctia.m0.counter = (FRAME_WIDTH - Int(state.pos_m0)) % FRAME_WIDTH
+    state.ctia.m1.set_nusiz(state.nusiz1)
+    state.ctia.m1.set_enam(state.enam1)
+    state.ctia.m1.counter = (FRAME_WIDTH - Int(state.pos_m1)) % FRAME_WIDTH
+    # Seed player VDEL + GRP double-buffer from eol state (VDELPx / GRP may be
+    # set during the eol reset frames, invisible to the cycle path otherwise).
+    state.ctia.p0.set_vdel((state.tia_flags & TIA_VDELP0) != 0)
+    state.ctia.p0.grp_new = state.grp0
+    state.ctia.p0.grp_old = state.grp0_old
+    state.ctia.p1.set_vdel((state.tia_flags & TIA_VDELP1) != 0)
+    state.ctia.p1.grp_new = state.grp1
+    state.ctia.p1.grp_old = state.grp1_old
+    # Seed ball enable double-buffer (VDELBL) + width + position from eol state.
+    state.ctia.bl.set_width_from_ctrlpf(state.ctrlpf)
+    state.ctia.bl.enabl_new = (state.enabl & 0x02) != 0
+    state.ctia.bl.enabl_old = (state.enabl_old & 0x02) != 0
+    state.ctia.bl.set_vdel((state.tia_flags & TIA_VDELBL) != 0)
+    state.ctia.bl.counter = (FRAME_WIDTH - Int(state.pos_bl)) % FRAME_WIDTH
+    var visible_line = 0
+    var rendered_any = False
+    var prev_vsync = (state.tia_flags & VSY) != 0
+    var done = False
+    comptime MAX_CLOCKS: Int = TOTAL_SCANLINES * CPL * 2
+    var clocks = 0
+    var due_reg = List[UInt8]()
+    var due_val = List[UInt8]()
+
+    while not done and clocks < MAX_CLOCKS:
+        # --- one CPU instruction ---
+        var start_hctr = state.ctia.hctr
+        state.clock = UInt16(start_hctr)
+        var cyc: Int
+        var wsync_pad = False
+        if state.wsync:
+            state.wsync = False
+            # CPU idle to end of line: pad TIA clocks to the next line boundary.
+            cyc = 0
+            wsync_pad = True
+        else:
+            cyc = Int(execute_one(state, rom, rom_size))
+            riot_update_timer(state, UInt32(cyc))
+
+        var nclk = (CPL - (start_hctr % CPL)) if wsync_pad else cyc * 3
+        if wsync_pad:
+            # The CPU is halted by WSYNC but TIME still passes: advance the RIOT
+            # interval timer by the padded CPU cycles (nclk/3), exactly like
+            # run_frame. Omitting this lets the RIOT timer lag every
+            # line → the game's frame/scanline count and input timing drift
+            # (SI vertical shaking; Breakout paddle-position-dependent glitches).
+            riot_update_timer(state, UInt32(nclk // 3))
+
+        for j in range(nclk):
+            var hctr = state.ctia.hctr
+            var pixel = hctr - HBLANK_CLOCKS
+            # Extended HBLANK after HMOVE: the 8 clocks past the normal 68 stay
+            # "blank" so objects skip 8 frame ticks, canceling the comb's 8
+            # baseline ticks (net HMOVE motion = hmm_clocks - 8). resx strobes in
+            # this window also use the hblank counter (Stella myHstate==blank).
+            var hbe = 76 if state.ctia.extended_hblank else HBLANK_CLOCKS
+            var in_hblank = hctr < hbe
+
+            # Replay this instruction's TIA writes at their exact offset clock.
+            if not wsync_pad:
+                for li in range(state.tia_log_count):
+                    if state.tia_log_clock[li] == j:
+                        var r = state.tia_log_reg[li]
+                        state.ctia.dq.push(
+                            r, state.tia_log_value[li], _cycle_reg_delay(r)
+                        )
+
+            # Apply writes whose delay elapsed this clock.
+            due_reg.clear()
+            due_val.clear()
+            state.ctia.dq.cycle_collect(due_reg, due_val)
+            for k in range(len(due_reg)):
+                _cycle_apply_reg(state, due_reg[k], due_val[k], hctr, in_hblank)
+
+            # Tick objects + render/collide per color clock from the SAME state
+            # (Stella-style): render and collision both use the cycle counters +
+            # shadow PF, so they are always consistent (what breaks is what the
+            # ball visibly touches; the laser kills what it visibly overlaps).
+            var lit = state.ctia.tick(in_hblank)
+            var render_row = visible_line if visible_line < FH2 else -1
+            if pixel >= 0 and pixel < FRAME_WIDTH:
+                _cycle_pixel(state, render_row, pixel, lit, frame_buf, palette)
+
+            # Advance the line clock.
+            var nh = hctr + 1
+            clocks += 1
+            if nh >= CPL:
+                nh = 0
+                # Extended HBLANK is a per-line flag (Stella clears at hctr 0).
+                state.ctia.extended_hblank = False
+                # WSYNC satisfied by this very crossing: if the instruction that
+                # just ran asserted WSYNC AND its own clocks already carried the
+                # beam across the line boundary, the halt-to-next-line is already
+                # complete. Without this, the next iteration's wsync_pad would add
+                # a SECOND full scanline (eol lands exactly on the 76-cycle line
+                # end and pads zero) — the source of Breakout's ~5 extra brick
+                # scanlines (vertical stretch) and the Space Invaders shake.
+                if state.wsync and not wsync_pad:
+                    state.wsync = False
+                # End of scanline bookkeeping (mirrors run_frame).
+                if (
+                    state.paddle_charge < 255
+                    and (state.tia_flags & TIA_PADDLE_GROUND) == 0
+                ):
+                    state.paddle_charge += 1
+                var vsync_now = (state.tia_flags & VSY) != 0
+                var vsync_rising = vsync_now and not prev_vsync
+                prev_vsync = vsync_now
+                if vsync_rising:
+                    if rendered_any:
+                        done = True
+                    else:
+                        visible_line = 0
+                if (state.tia_flags & VBL) == 0 and visible_line < FH2:
+                    visible_line += 1
+                    rendered_any = True
+            state.ctia.hctr = nh
+            if done:
+                break
+
+    state.scanline = UInt16(visible_line)
+    state.frame_number += 1
+
+
+def run_frame_video(
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+    frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
+):
+    """Render one VSYNC-aligned frame into frame_buf (BGRA).
+
+    Thin alias for the cycle-accurate, Stella-style per-color-clock TIA path —
+    the single rendering path (the legacy end-of-line renderer was removed)."""
+    run_frame_cycle_accurate(state, rom, rom_size, frame_buf)
