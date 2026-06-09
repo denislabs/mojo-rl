@@ -147,6 +147,14 @@ struct AtariState(Copyable, Movable):
     # run_frame_cycle_accurate (the single rendering path).
     var ctia: CycleTIA
 
+    # Frame-geometry diagnostics (filled per frame by run_frame_cycle_accurate):
+    # total scanlines in the frame, and the line (counted from frame start ~
+    # VSYNC) at which the game first released VBLANK. Jitter in dbg_ystart with
+    # a constant dbg_frame_lines = vertical image shake under VBLANK-anchored
+    # row mapping (a real TV anchors to VSYNC instead).
+    var dbg_frame_lines: UInt16
+    var dbg_ystart: UInt16
+
     def __init__(out self):
         """Initialize to power-on defaults."""
         # CPU
@@ -233,6 +241,8 @@ struct AtariState(Copyable, Movable):
         self.tia_log_reg = InlineArray[UInt8, TIA_WRITE_LOG_CAP](fill=0)
         self.tia_log_value = InlineArray[UInt8, TIA_WRITE_LOG_CAP](fill=0)
         self.ctia = CycleTIA()
+        self.dbg_frame_lines = 0
+        self.dbg_ystart = 0
 
     def reset(mut self):
         """Reset to power-on state (preserves nothing)."""

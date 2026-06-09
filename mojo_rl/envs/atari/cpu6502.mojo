@@ -1314,6 +1314,10 @@ def run_frame_cycle_accurate(
     var visible_line = 0
     var rendered_any = False
     var prev_vsync = (state.tia_flags & VSY) != 0
+    # Frame-geometry diagnostics: total lines this frame + the line at which
+    # VBLANK was first released (counted from frame start ≈ VSYNC).
+    var total_lines = 0
+    var ystart = -1
     var done = False
     comptime MAX_CLOCKS: Int = TOTAL_SCANLINES * CPL * 2
     var clocks = 0
@@ -1409,7 +1413,12 @@ def run_frame_cycle_accurate(
                         done = True
                     else:
                         visible_line = 0
+                        total_lines = 0
+                        ystart = -1
+                total_lines += 1
                 if (state.tia_flags & VBL) == 0 and visible_line < FH2:
+                    if ystart < 0:
+                        ystart = total_lines - 1
                     visible_line += 1
                     rendered_any = True
             state.ctia.hctr = nh
@@ -1417,6 +1426,8 @@ def run_frame_cycle_accurate(
                 break
 
     state.scanline = UInt16(visible_line)
+    state.dbg_frame_lines = UInt16(total_lines)
+    state.dbg_ystart = UInt16(ystart) if ystart >= 0 else 0
     state.frame_number += 1
 
 

@@ -235,17 +235,23 @@ def riot_write(mut state: AtariState, addr: UInt8, value: UInt8):
 def riot_update_timer(mut state: AtariState, cycles: UInt32):
     """Advance the RIOT timer by the given number of CPU cycles.
 
-    Each CPU cycle = 3 TIA clocks. Timer counts down at (3 * cycles / interval).
-    After underflow, timer counts at 1x (every clock).
+    The 6532 runs at the CPU clock: TIM1T/TIM8T/TIM64T/T1024T intervals are
+    1/8/64/1024 CPU cycles (ALE M6532: `delta >> myIntervalShift` with delta in
+    CPU cycles). Counting color clocks against these intervals (the old
+    `cycles * 3`) ran the timer 3x too fast: the VBLANK wait expired before the
+    kernel's variable game-logic finished, INTIM free-ran past 0, and the
+    wait-for-INTIM loop sampled a wrapping counter — frame length then tracked
+    logic time (SI: 245-286 lines instead of a constant 262 = vertical shake).
+    After underflow, the timer counts at 1x (every CPU cycle), wrapping 0xFF.
     """
-    state.timer_clocks += cycles * 3
+    state.timer_clocks += cycles
 
     while state.timer_clocks >= state.timer_interval:
         state.timer_clocks -= state.timer_interval
         if state.timer_value > 0:
             state.timer_value -= 1
         else:
-            # After underflow, count at 1x rate
+            # After underflow, count at 1x rate (per CPU cycle)
             state.timer_interval = 1
             # Timer wraps to 0xFF
             state.timer_value = 0xFF
