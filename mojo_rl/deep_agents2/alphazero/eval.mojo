@@ -280,6 +280,7 @@ def eval_mcts_vs_opponent_cpu[
     comptime LATENT = ENV.SAVE_SIZE
     comptime EVAL_MCTS = GenericCPUMCTS[
         ACT, LATENT, NUM_SIMS, MAX_NODES, AlphaGoPUCT[1.0], NoNoise, SelfPlay,
+        NORMALIZE_Q=False,  # raw Q∈[-1,1] like legacy
     ]
 
     net.set_attr["training"](Scalar[DT](0.0))

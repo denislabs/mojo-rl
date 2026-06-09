@@ -407,6 +407,7 @@ def arena_match_cpu[
     comptime LATENT = ENV.SAVE_SIZE
     comptime AMCTS = GenericCPUMCTS[
         ACT, LATENT, NUM_SIMS, MAX_NODES, AlphaGoPUCT[1.0], NoNoise, SelfPlay,
+        NORMALIZE_Q=False,  # raw Q∈[-1,1] like legacy
     ]
     _ = ctx_unused
     a.set_attr["training"](Scalar[DT](0.0))

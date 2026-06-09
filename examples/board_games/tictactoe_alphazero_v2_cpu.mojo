@@ -110,7 +110,7 @@ def main() raises:
         MAX_PLIES=9,
         EVAL_GAMES=32,
     ](
-        iterations=10_000,
+        iterations=5_000,
         learning_starts=20,
         train_per_iter=4,
         seed=42,

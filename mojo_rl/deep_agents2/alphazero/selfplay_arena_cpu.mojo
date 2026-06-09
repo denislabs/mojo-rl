@@ -109,6 +109,7 @@ def run_alphazero_selfplay_arena_cpu[
     comptime MCTS = GenericCPUMCTS[
         ACT, LATENT, NUM_SIMS, MAX_NODES,
         AlphaGoPUCT[1.0], DirichletNoise[0.25, 0.25], SelfPlay,
+        NORMALIZE_Q=False,  # raw Q∈[-1,1] like legacy (MinMax over-explores)
     ]
     comptime Graph = ComputeGraph[
         1,
@@ -194,16 +195,23 @@ def run_alphazero_selfplay_arena_cpu[
                 traj_pol[pb + a] = Scalar[DT](policy[a])
             traj_len += 1
 
-        # 3. Sample a move from the visit policy, step the env.
-        rng = _xs(rng)
-        var u = Float64(rng % UInt64(1_000_000)) / 1_000_000.0
-        var cum: Float64 = 0.0
+        # 3. Choose a move via the AlphaZero temperature schedule: τ=1 (sample
+        #    ∝ visits) for the first `temp_moves` plies of each game for opening
+        #    diversity, then τ→0 (greedy argmax) so the rest of self-play is
+        #    high-quality. The legacy driver does exactly this (TEMP_THRESH=4);
+        #    sampling EVERY ply leaves late-game play near-random, poisoning the
+        #    value targets. `traj_len-1` is the current ply (0-based).
+        var temp_moves = 4
         var chosen = -1
-        for a in range(ACT):
-            cum += policy[a]
-            if u <= cum and policy[a] > 0.0:
-                chosen = a
-                break
+        if traj_len - 1 < temp_moves:
+            rng = _xs(rng)
+            var u = Float64(rng % UInt64(1_000_000)) / 1_000_000.0
+            var cum: Float64 = 0.0
+            for a in range(ACT):
+                cum += policy[a]
+                if u <= cum and policy[a] > 0.0:
+                    chosen = a
+                    break
         if chosen < 0:
             var bestv = Float64(-1.0)
             for a in range(ACT):

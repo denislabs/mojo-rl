@@ -238,3 +238,7 @@ logs/
 gifs/
 skills-lock.json
 .agents/
+
+# Training artifacts (large; not source)
+checkpoints/
+*.mp4
