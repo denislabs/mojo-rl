@@ -39,7 +39,8 @@ from mojo_rl.deep_agents2.alphazero.nets import AZConnectFourResNet
 from mojo_rl.deep_agents2.alphazero.agent import AlphaZeroAgent
 from mojo_rl.deep_agents2.zero.symmetries import HFlipColumnAugmenter
 from mojo_rl.deep_agents2.zero.evaluators import (
-    RandomOpponent, GPUMinimaxConnectFour,
+    RandomOpponent,
+    GPUMinimaxConnectFour,
 )
 from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
 
@@ -63,6 +64,15 @@ def main() raises:
     logger.set_config("env", "ConnectFour")
     logger.set_config("network", "AZConnectFourResNet[F=128,NB=5,FC=128]")
     logger.set_config("framework", "deep_agents2/nn2")
+    # logger.set_config("charts", json.dumps([
+    #     {
+    #         "title": "Eval vs MinMax",
+    #         "metrics": ["eval2_win", "eval2_draw", "eval2_loss"],
+    #         "type": "stacked-bar",      # or "stacked-area" / "line"
+    #         "normalize": True,          # 100%-stacked → win-rate view
+    #         "colors": ["#22c55e", "#eab308", "#ef4444"],  # optional
+    #     },
+    # ]))
 
     comptime OBS = 126
     comptime ACT = 7
@@ -82,8 +92,15 @@ def main() raises:
     # is no longer the per-eval bottleneck. BATCH_SIMS still batches the MCTS
     # rounds (see the tuning notes below).
     var agent = AlphaZeroAgent[
-        "gpu", Env, Net, N_ENVS=64, NUM_SIMS=500, MAX_NODES=1024,
-        BATCH=128, CAP=1_000_000, MAX_TRAJ=42,
+        "gpu",
+        Env,
+        Net,
+        N_ENVS=64,
+        NUM_SIMS=500,
+        MAX_NODES=1024,
+        BATCH=128,
+        CAP=1_000_000,
+        MAX_TRAJ=42,
     ](ctx, lr=0.002)
 
     # ── Remaining deltas vs the legacy AlphaZero.jl-tuned config ──────────────
