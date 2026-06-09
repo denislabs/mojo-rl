@@ -29,7 +29,7 @@ Batched driver (Tier-3) deferred until a consumer needs it.
 """
 
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
@@ -608,6 +608,7 @@ def run_offpolicy_discrete_train_gpu_batched[
     eval_episodes: Int = 16,
     eval_max_iters: Int = 20_000,
     progress_label: String = "dqn",
+    episode_sync_every: Int = 1,
 ) raises -> List[Scalar[DT]]:
     """GPU-batched discrete off-policy training driver (Tier-3).
 
@@ -689,9 +690,21 @@ def run_offpolicy_discrete_train_gpu_batched[
     var prev_obs = DriverScratch["prev_obs", N_ENVS, OBS].make["gpu"](ctx=ctx)
 
     var per_env_returns = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
-    # Host mirrors for per-step episode tracking (reward + done D2H).
-    var reward_host = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
-    var done_host = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
+    # `episode_sync_every` batches the per-iteration reward+done D2H: copies
+    # land async into a host ring (one slot per pending iteration) and the
+    # stream is drained with ONE `synchronize` only when the ring fills or a
+    # log/diag/ckpt/eval/end boundary is imminent. `sync_every == 1` reproduces
+    # the original per-iteration sync exactly. Mirrors the SAC GPU-env driver.
+    # The selective_reset uses the DEVICE done buffer, so it is unaffected.
+    var sync_every: Int = (
+        episode_sync_every if episode_sync_every >= 1 else 1
+    )
+    var ring_reward = List[HostBuffer[DT]]()
+    var ring_done = List[HostBuffer[DT]]()
+    var pending_eps: Int = 0
+    for _ in range(sync_every):
+        ring_reward.append(ctx.enqueue_create_host_buffer[DT](N_ENVS))
+        ring_done.append(ctx.enqueue_create_host_buffer[DT](N_ENVS))
 
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed)
 
@@ -773,23 +786,43 @@ def run_offpolicy_discrete_train_gpu_batched[
                 term_buf,
             )
 
-        # ── 5. Per-env episode tracking. D2H reward + done (combined done
-        # drives reset / episode boundaries), one sync per iteration.
+        # ── 5. Per-env episode tracking. Enqueue the small reward+done D2H
+        # into the next ring slot WITHOUT synchronizing; drain (one sync) only
+        # when the ring fills or a log/diag/ckpt/eval/end boundary is imminent.
+        # `step_idx` is pre-increment here, so the upcoming post-increment value
+        # the cadence blocks test is `step_idx + N_ENVS`.
         var reward_view = DeviceBuffer[DT](
             ctx, env.reward_ptr(), N_ENVS, owning=False
         )
         var done_view = DeviceBuffer[DT](
             ctx, env.done_ptr(), N_ENVS, owning=False
         )
-        ctx.enqueue_copy(reward_host.unsafe_ptr(), reward_view)
-        ctx.enqueue_copy(done_host.unsafe_ptr(), done_view)
-        ctx.synchronize()
-        for e in range(N_ENVS):
-            per_env_returns[e] = per_env_returns[e] + reward_host[e]
-            if done_host[e] > Scalar[DT](0.5):
-                trainer.add_complete_return(per_env_returns[e])
-                per_env_returns[e] = Scalar[DT](0.0)
-                ep_returns.append(trainer.mean_return())
+        ctx.enqueue_copy(ring_reward[pending_eps], reward_view)
+        ctx.enqueue_copy(ring_done[pending_eps], done_view)
+        pending_eps += 1
+
+        var post_step = step_idx + N_ENVS
+        var emit_now = post_step >= total_env_steps
+        if print_every > 0 and post_step >= next_print:
+            emit_now = True
+        if diag_every > 0 and post_step >= next_diag:
+            emit_now = True
+        if ckpt_on and post_step >= next_ckpt:
+            emit_now = True
+        if eval_on and post_step >= next_eval:
+            emit_now = True
+        if pending_eps >= sync_every or emit_now:
+            ctx.synchronize()
+            for s in range(pending_eps):
+                var rewards_h = ring_reward[s].unsafe_ptr()
+                var dones_h = ring_done[s].unsafe_ptr()
+                for e in range(N_ENVS):
+                    per_env_returns[e] = per_env_returns[e] + rewards_h[e]
+                    if dones_h[e] > Scalar[DT](0.5):
+                        trainer.add_complete_return(per_env_returns[e])
+                        per_env_returns[e] = Scalar[DT](0.0)
+                        ep_returns.append(trainer.mean_return())
+            pending_eps = 0
 
         # ── 6. Selective reset of the done envs.
         env.selective_reset_batch[N_ENVS](

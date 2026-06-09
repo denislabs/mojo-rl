@@ -142,6 +142,7 @@ def main() raises:
             print_every=10_000,
             verbose=True,
             nstep_gamma=Scalar[DT](0.99),
+            episode_sync_every=32,
         )
 
         var elapsed = Float64(perf_counter_ns() - start) / 1e9

@@ -246,6 +246,7 @@ def main() raises:
                 eval_env=UnsafePointer(to=eval_env),
                 eval_every=100_000,
                 eval_episodes=10,
+                episode_sync_every=32,
             )
 
             var elapsed_s = Float64(perf_counter_ns() - start_time) / 1e9
